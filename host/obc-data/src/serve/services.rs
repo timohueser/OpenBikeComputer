@@ -11,7 +11,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::Served;
-use crate::store::hash_file;
+use crate::release::{is_sha256, File as Named};
+use crate::store::{hash_file, Store};
+use crate::target::Target;
 
 pub struct Service {
     pub name: &'static str,
@@ -42,6 +44,13 @@ pub struct Programs {
     reads: Vec<(&'static str, String, u32)>,
 }
 
+/// Where the clients of a planner release reach its API and the objects of its target.
+pub struct Origins {
+    pub api: String,
+    /// The URL of `objects/`.
+    pub objects: String,
+}
+
 impl Programs {
     /// The programs, with the formats that each service prints with `--formats`: a JSON object of
     /// layer and format.
@@ -58,6 +67,12 @@ impl Programs {
             all.extend(reads.into_iter().map(|(layer, format)| (service.name, layer, format)));
         }
         Ok(Self { root, routing, reads: all })
+    }
+
+    /// Programs that read these formats, for a test that starts no service.
+    #[cfg(test)]
+    pub(crate) fn reading(reads: Vec<(&'static str, String, u32)>) -> Self {
+        Self { root: PathBuf::new(), routing: PathBuf::new(), reads }
     }
 }
 
@@ -83,24 +98,37 @@ fn readable(programs: &Programs, served: &Served) -> Result<(), String> {
 pub struct Processes {
     dir: PathBuf,
     children: Vec<Child>,
-    pub ports: [u16; SERVICES.len()],
+    ports: [u16; SERVICES.len()],
 }
 
-/// Install the files of the planner release of `served` from the dir target `target` in
-/// `work/<planner release id>/`, and start its services on free ports of this machine. `public`
-/// is the origin that clients reach `obc data serve` at.
+/// Check that the services read the layers of `served` in their formats, then give `store` the
+/// document of its planner release and the object of each file that its services read, from
+/// `target`. It can download for a long time.
+pub fn fetch(programs: &Programs, store: &Store, target: &Target, served: &Served) -> Result<(), String> {
+    readable(programs, served)?;
+    let object = |key: &str, sha256: &str| match store.object(sha256) {
+        object if object.is_file() => Ok(()),
+        _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
+    };
+    let document = &served.document;
+    object(&document.key, &document.sha256)?;
+    for (_, entry) in runtime(&read(store, document)?)? {
+        object(&format!("objects/{}", entry.transport.sha256), &entry.transport.sha256)?;
+    }
+    Ok(())
+}
+
+/// Install the files of the planner release of `served` (see [`install`]), and start its services
+/// on free ports of this machine.
 pub fn start(
     programs: &Programs,
-    target: &Path,
+    store: &Store,
     work: &Path,
     served: &Served,
-    public: &str,
+    origins: &Origins,
 ) -> Result<Processes, String> {
-    readable(programs, served)?;
-    // Dropped on an error, it removes what the start installed.
-    let mut processes = Processes { dir: work.join(&served.planner), children: Vec::new(), ports: [0; 3] };
+    let (mut processes, region) = install(store, work, served)?;
     let (dir, planner) = (processes.dir.clone(), &served.planner);
-    let region = materialize(target, planner, &dir)?;
     processes.ports = [free_port()?, free_port()?, free_port()?];
     let [routing, search, downloads] = processes.ports.map(|port| port.to_string());
     let mut commands = commands(&programs.root, &programs.routing);
@@ -116,13 +144,23 @@ pub fn start(
         .arg("--cache")
         .arg(dir.join("downloads"))
         .args(["--max-cache-bytes", &DOWNLOADS_CACHE.to_string(), "--port", &downloads])
-        .args(["--public-url", &format!("{public}/planner-api/releases/{planner}/downloads")])
-        .args(["--objects-url", &format!("{public}/objects")]);
+        .args(["--public-url", &format!("{}/planner-api/releases/{planner}/downloads", origins.api)])
+        .args(["--objects-url", &origins.objects]);
     for (mut command, service) in commands.into_iter().zip(&SERVICES) {
         let child = spawn(&mut command).map_err(|e| format!("cannot start the {} service: {e}", service.name))?;
         processes.children.push(child);
     }
     Ok(processes)
+}
+
+/// Install the files of the planner release of `served` in `work/<planner release id>/` from the
+/// objects that [`fetch`] gave `store`. Give the processes, which run nothing yet and remove the
+/// folder when they drop, and the region of the release.
+pub(crate) fn install(store: &Store, work: &Path, served: &Served) -> Result<(Processes, String), String> {
+    // Dropped on an error, it removes what the install wrote.
+    let processes = Processes { dir: work.join(&served.planner), children: Vec::new(), ports: [0; 3] };
+    let region = materialize(store, &served.document, &processes.dir)?;
+    Ok((processes, region))
 }
 
 /// Start `command` in a process group of its own, which [`stop`] stops. It writes its log to
@@ -166,6 +204,10 @@ impl super::Services for Processes {
             }
         }
         Ok(true)
+    }
+
+    fn ports(&self) -> [u16; SERVICES.len()] {
+        self.ports
     }
 
     fn stopped(&mut self) -> Option<String> {
@@ -235,21 +277,39 @@ struct Transport {
     encoding: String,
 }
 
-/// Install each file of the planner release `planner` under [`RUNTIME`] in `dir`, from the
-/// objects of the dir target `target`, and give the region of the release. A gzip object is
-/// decoded; each file must have the SHA-256 of the release.
-fn materialize(target: &Path, planner: &str, dir: &Path) -> Result<String, String> {
-    let path = target.join(format!("releases/{planner}/release.json"));
-    let document = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let document: Value = serde_json::from_slice(&document).map_err(|e| format!("{}: {e}", path.display()))?;
+/// The document of a planner release, from `store`.
+fn read(store: &Store, document: &Named) -> Result<Value, String> {
+    if !is_sha256(&document.sha256) {
+        return Err(format!("{} names no object", document.key));
+    }
+    let path = store.object(&document.sha256);
+    let read = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_slice(&read).map_err(|e| format!("{}: {e}", document.key))
+}
+
+/// Each file under [`RUNTIME`] of the planner release whose document is `document`.
+fn runtime(document: &Value) -> Result<Vec<(String, Entry)>, String> {
     let files = document["files"].as_object().ok_or("the planner release has no files")?;
-    for (name, entry) in files.iter().filter(|(name, _)| RUNTIME.iter().any(|folder| name.starts_with(folder))) {
-        crate::r2::check_key(name)?;
-        let entry: Entry = serde_json::from_value(entry.clone()).map_err(|e| format!("{name}: {e}"))?;
-        if !crate::release::is_sha256(&entry.transport.sha256) {
-            return Err(format!("{name} names no object"));
-        }
-        let (object, path) = (target.join("objects").join(&entry.transport.sha256), dir.join(name));
+    let runtime = files.iter().filter(|(name, _)| RUNTIME.iter().any(|folder| name.starts_with(folder)));
+    runtime
+        .map(|(name, entry)| {
+            crate::r2::check_key(name)?;
+            let entry: Entry = serde_json::from_value(entry.clone()).map_err(|e| format!("{name}: {e}"))?;
+            match is_sha256(&entry.transport.sha256) {
+                true => Ok((name.clone(), entry)),
+                false => Err(format!("{name} names no object")),
+            }
+        })
+        .collect()
+}
+
+/// Install each file under [`RUNTIME`] of the planner release whose document is `document` in
+/// `dir`, from the objects of `store`, and give the region of the release. A gzip object is
+/// decoded; each file must have the SHA-256 of the release.
+fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, String> {
+    let document = read(store, document)?;
+    for (name, entry) in runtime(&document)? {
+        let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
             "identity" => crate::target::link(&object, &path),
@@ -298,17 +358,23 @@ mod tests {
             ("search", "planner/index".into(), 3),
             ("downloads", "planner/index".into(), 3),
         ];
-        let programs = Programs { root: scratch.0.clone(), routing: scratch.0.join("planner-service"), reads };
+        let programs = Programs::reading(reads);
         let served = |routing, index| Served {
             id: "b".repeat(64),
             planner: "a".repeat(64),
+            document: Named {
+                key: format!("releases/{}/release.json", "a".repeat(64)),
+                size: 0,
+                sha256: "c".repeat(64),
+            },
             pointers: BTreeMap::new(),
             formats: [("planner/routing".into(), routing), ("planner/index".into(), index)].into(),
         };
-        let work = scratch.0.join("work");
-        let refused = start(&programs, &scratch.0, &work, &served(9, 3), "http://127.0.0.1:8710").err().unwrap();
+        let store = Store::at(scratch.0.join("store"));
+        let target = Target::Dir(scratch.0.join("target"));
+        let refused = fetch(&programs, &store, &target, &served(9, 3)).err().unwrap();
         assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
-        assert!(!work.exists(), "nothing is installed");
+        assert!(!store.root().exists(), "nothing downloads");
         let index = readable(&programs, &served(8, 4)).unwrap_err();
         assert_eq!(index, "needs a search service that reads planner/index format 4; it reads 3");
         assert!(readable(&programs, &served(8, 3)).is_ok());
@@ -337,13 +403,27 @@ mod tests {
             "maps/basemap.json": entry(b"basemap", &"0".repeat(64), "identity"),
         }});
         let release = |document: &Value| {
-            let path = target.join(format!("releases/{}/release.json", "a".repeat(64)));
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, serde_json::to_vec(document).unwrap()).unwrap();
+            let bytes = serde_json::to_vec(document).unwrap();
+            let key = format!("releases/{}/release.json", sha256_hex(&bytes));
+            fs::create_dir_all(target.join(&key).parent().unwrap()).unwrap();
+            fs::write(target.join(&key), &bytes).unwrap();
+            Named { key, size: bytes.len() as u64, sha256: sha256_hex(&bytes) }
         };
-        release(&document);
+        let (store, dir_target) = (Store::at(scratch.0.join("store")), Target::Dir(target.clone()));
+        let materialize = |document: &Named, dir: &Path| {
+            let served = Served {
+                id: String::new(),
+                planner: String::new(),
+                document: document.clone(),
+                pointers: BTreeMap::new(),
+                formats: BTreeMap::new(),
+            };
+            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served)?;
+            materialize(&store, document, dir)
+        };
+        let named = release(&document);
         let dir = scratch.0.join("work");
-        assert_eq!(materialize(&target, &"a".repeat(64), &dir).unwrap(), "test");
+        assert_eq!(materialize(&named, &dir).unwrap(), "test");
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
@@ -355,20 +435,18 @@ mod tests {
             fs::create_dir_all(again.join(name).parent().unwrap()).unwrap();
             fs::hard_link(&object, again.join(name)).unwrap();
         }
-        assert!(materialize(&target, &"a".repeat(64), &again).unwrap_err().contains("exists"));
+        assert!(materialize(&named, &again).unwrap_err().contains("exists"));
         fs::remove_file(again.join("routing/pages.bin")).unwrap();
-        materialize(&target, &"a".repeat(64), &again).unwrap();
+        materialize(&named, &again).unwrap();
         assert_eq!(fs::read(again.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert_eq!(fs::read(&object).unwrap(), b"store object");
 
         document["files"]["routing/pages.bin"]["sha256"] = json!("b".repeat(64));
-        release(&document);
-        let refused = materialize(&target, &"a".repeat(64), &scratch.0.join("other")).unwrap_err();
+        let refused = materialize(&release(&document), &scratch.0.join("other")).unwrap_err();
         assert!(refused.contains("not the file of the planner release"), "{refused}");
         document["files"]["routing/pages.bin"]["sha256"] = json!(sha256_hex(b"pages"));
         document["files"]["routing/../x"] = document["files"]["routing/pages.bin"].clone();
-        release(&document);
-        let refused = materialize(&target, &"a".repeat(64), &scratch.0.join("third")).unwrap_err();
+        let refused = materialize(&release(&document), &scratch.0.join("third")).unwrap_err();
         assert!(refused.contains("does not name"), "{refused}");
     }
 }

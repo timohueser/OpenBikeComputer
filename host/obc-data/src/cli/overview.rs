@@ -69,8 +69,8 @@ pub struct TargetState {
     /// What to do about `error`.
     pub fix: Option<String>,
     /// The command to run next, or the run to wait for while it holds the lock; `null` when the
-    /// target serves its settings as the steps make them now, or when no command of this `obc data`
-    /// writes the target: an R2 bucket.
+    /// target serves its settings as the steps make them now. For an R2 target, the command is the
+    /// review: its update needs the id that the owner approved.
     pub next: Option<String>,
 }
 
@@ -147,11 +147,7 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
         if let Some(fix) = &target.fix {
             rows.push(vec!["  fix".into(), fix.clone()]);
         }
-        let next = match (&target.next, target.kind == "r2") {
-            (Some(next), _) => next.clone(),
-            (None, true) => "a later `obc data` writes an R2 bucket".into(),
-            (None, false) => "nothing to do".into(),
-        };
+        let next = target.next.clone().unwrap_or_else(|| "nothing to do".into());
         rows.push(vec!["  next".into(), next]);
         print_table(&rows);
     }
@@ -169,7 +165,7 @@ fn state(
 ) -> TargetState {
     let (kind, at) = match target {
         Target::Dir(dir) => ("dir", dir.display().to_string()),
-        Target::R2 { public } => ("r2", public.clone()),
+        Target::R2(remote) => ("r2", remote.url("").trim_end_matches('/').to_string()),
     };
     let mut state = TargetState {
         target: name.into(),
@@ -186,7 +182,11 @@ fn state(
         fix: None,
         next: None,
     };
-    let writes = kind == "dir";
+    // An R2 target serves riders: its update starts from a review that the owner approves.
+    let update = match kind {
+        "dir" => format!("obc data update {name}"),
+        _ => format!("obc data update {name} --dry-run"),
+    };
     match lock::holder(target) {
         Ok(holder) => {
             state.lock = holder.map(|holder| Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder })
@@ -195,7 +195,7 @@ fn state(
     }
     let judged = (|| -> Result<(), Error> {
         let Some(bytes) = target.get(SERVING)? else {
-            state.next = writes.then(|| format!("obc data update {name} --region ID"));
+            state.next = Some(format!("{update} --region ID"));
             return Ok(());
         };
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
@@ -214,14 +214,14 @@ fn state(
         let outputs = release.outputs.into_iter().map(|output| (output.step.clone(), output)).collect();
         let layers = crate::engine::state::state(store, &listed.steps, &Environment { release: outputs, newer })?;
         let stale = layers.iter().any(|layer| layer.state == Verdict::Stale);
-        state.next = (writes && (stale || !state.drift.is_empty())).then(|| format!("obc data update {name}"));
+        state.next = (stale || !state.drift.is_empty()).then(|| update.clone());
         state.layers = Some(layers);
         Ok(())
     })();
     if let Err(error) = judged {
         (state.error, state.fix) = (Some(error.message), Some(error.fix));
     }
-    if let Some(Lock { holder, .. }) = state.lock.as_ref().filter(|_| writes) {
+    if let Some(Lock { holder, .. }) = &state.lock {
         state.next = Some(format!("wait for run {} of `{}` to end", holder.run, holder.machine));
     }
     state

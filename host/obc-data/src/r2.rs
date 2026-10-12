@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod s3;
+pub use s3::Remote;
+
 /// The removal history, at the bucket root, so that no prefix delete removes it.
 pub const REMOVAL_LOG: &str = "removed.jsonl";
 
@@ -36,6 +39,43 @@ impl Credentials {
             Self::Main => "OBC_R2",
             Self::Fixtures => "OBC_FIXTURE_R2",
         }
+    }
+}
+
+/// The R2 account, bucket and credential that `<PREFIX>_*` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    /// `https://<account id>.r2.cloudflarestorage.com`, or `<PREFIX>_ENDPOINT`.
+    pub endpoint: String,
+    pub bucket: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+}
+
+impl Account {
+    /// The account of the environment, or the name of the variable that is missing.
+    pub fn from_env(credentials: Credentials) -> Result<Self, String> {
+        Self::from_vars(credentials, |name| std::env::var(name).ok())
+    }
+
+    fn from_vars(credentials: Credentials, var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let prefix = credentials.prefix();
+        let set = |name: &str| var(name).filter(|value| !value.is_empty());
+        let need = |suffix: &str| {
+            let name = format!("{prefix}_{suffix}");
+            set(&name).ok_or_else(|| format!("{name} is not set; tools/obc.local or the environment holds it"))
+        };
+        let bucket = need("BUCKET")?;
+        let endpoint = match set(&format!("{prefix}_ENDPOINT")) {
+            Some(endpoint) => endpoint,
+            None => format!("https://{}.r2.cloudflarestorage.com", need("ACCOUNT_ID")?),
+        };
+        Ok(Account {
+            endpoint,
+            bucket,
+            access_key_id: need("ACCESS_KEY_ID")?,
+            secret_access_key: need("SECRET_ACCESS_KEY")?,
+        })
     }
 }
 
@@ -105,22 +145,14 @@ impl Bucket {
             }
             return Ok(Self::local(Path::new(&dir)));
         }
-        let need = |suffix: &str| {
-            let name = format!("{prefix}_{suffix}");
-            set(&name).ok_or_else(|| format!("{name} is not set; tools/obc.local or the environment holds it"))
-        };
-        let bucket = need("BUCKET")?;
-        let endpoint = match set(&format!("{prefix}_ENDPOINT")) {
-            Some(endpoint) => endpoint,
-            None => format!("https://{}.r2.cloudflarestorage.com", need("ACCOUNT_ID")?),
-        };
-        let secret = need("SECRET_ACCESS_KEY")?;
+        let Account { endpoint, bucket, access_key_id, secret_access_key: secret } =
+            Account::from_vars(credentials, var)?;
         let env = [
             ("TYPE", "s3".to_string()),
             ("PROVIDER", "Cloudflare".to_string()),
             ("REGION", "auto".to_string()),
             ("ENDPOINT", endpoint.clone()),
-            ("ACCESS_KEY_ID", need("ACCESS_KEY_ID")?),
+            ("ACCESS_KEY_ID", access_key_id),
             ("SECRET_ACCESS_KEY", secret.clone()),
             ("NO_CHECK_BUCKET", "true".to_string()),
         ];
@@ -141,6 +173,15 @@ impl Bucket {
             secret: None,
             describe: format!("local directory {}", dir.display()),
         }
+    }
+
+    /// The folder `prefix` of the bucket as a bucket; the bucket itself when `prefix` is empty.
+    pub fn within(mut self, prefix: &str) -> Self {
+        if !prefix.is_empty() {
+            self.root = format!("{}/{prefix}", self.root);
+            self.describe = format!("{}, folder {prefix}", self.describe);
+        }
+        self
     }
 
     /// Where the bucket is. It never holds a credential.

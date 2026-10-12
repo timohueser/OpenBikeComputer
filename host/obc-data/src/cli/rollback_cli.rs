@@ -19,6 +19,9 @@ use crate::target::Target;
 pub struct RollbackArgs {
     /// The target, as `data/targets.toml` names it.
     target: String,
+    /// Do not ask before the rollback of an R2 target. Required without a terminal.
+    #[arg(long)]
+    yes: bool,
 }
 
 /// What a rollback did.
@@ -35,9 +38,10 @@ pub struct RolledBack {
 pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    if let Target::R2 { .. } = target {
-        return Err(Code::Blocked
-            .error(format!("`obc data rollback` writes only a dir target, and `{}` is an R2 bucket", args.target)));
+    super::api::writable(&args.target, &target)?;
+    if let Target::R2(remote) = &target {
+        let question = format!("Serve the rollback release of `{}` ({}) to riders again?", args.target, remote.url(""));
+        super::confirm(&question, args.yes)?;
     }
     let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
     let result = rollback((&args.target, &target), &mut run);

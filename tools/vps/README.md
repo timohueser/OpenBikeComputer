@@ -5,8 +5,6 @@ and runs the routing, search and downloads services of each planner release that
 Caddy sends `/planner-api/*` of `releases.openbikecomputer.com` to it. Data never comes from this
 folder: `obc data update prod` publishes it.
 
-The owner installs the follower once `obc data serve prod` serves an R2 target.
-
 | File | Use |
 | --- | --- |
 | `deploy-services.sh` | Builds a commit on the VPS and restarts the follower |

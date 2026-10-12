@@ -955,11 +955,25 @@ One table per target. The name of the table is the name of the target, in lowerc
 | --- | --- | --- |
 | `kind` | string | `r2` or `dir` |
 | `public` | string | `r2` only: the `https://` origin that serves the keys of the bucket, without a path |
+| `bucket` | string | `r2` only: the name of the bucket. `OBC_R2_BUCKET` must name it to write the target |
+| `prefix` | string | `r2` only, optional: the folder under `test/` of the bucket that holds the target, such as `test/run-1`, without `/` at the end. Without it, the root of the bucket. A collection deletes keys of the target, and a folder outside `test/` can hold live keys |
 | `dir` | string | `dir` only, optional: an absolute path, or a path that starts with `~/` for the home directory. Without it, the folder with the name of the target beside the store |
 
 The file has `prod`, the public bucket, and `local`, a folder on each machine. A `dir` target and
 the store do not overlap, also through a link, so a clean of the store never deletes a file of a
-target. `obc data` reads an R2 target only through its public URL.
+target.
+
+`obc data` reads an R2 target through the S3 API when it has the credentials, because the public
+origin can serve a cached pointer. Else, and always in [serve](#serve), it reads through the public
+URL, with each part of a key percent-encoded, so a `#` in a key under `sources/` is no fragment.
+
+`obc data` writes an R2 target with the credentials of `OBC_R2_*` (see [Credentials](#credentials)):
+a small document through the S3 API, signed with AWS Signature Version 4, and the files of a
+release with rclone. `OBC_R2_BUCKET` must be the `bucket` of the target. A command that writes an
+R2 target without these variables or without rclone refuses (`blocked`). A tagged read and a
+review need the credentials too: the review id holds the tag of `release.json`, which is the ETag
+of the S3 API, and the public origin can give another form of it, such as the weak ETag of a
+compressed answer.
 
 ### Target layout
 
@@ -969,6 +983,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | --- | --- |
 | `release.json` | The release that the target serves, and its rollback. A switch writes it first |
 | `lock.json` | The [lock](#lock): the run that changes the target, or free |
+| `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
@@ -1022,8 +1037,13 @@ a file of the release.
 }
 ```
 
-`since` is the time at which the release took its role, or at which a switch to the serving
-release wrote its pointers again. `rollback` is `null` until the second switch.
+`since` is the time, by the clock of the target, at which the release took its role, or at which
+a switch to the serving release wrote its pointers again. `rollback` is `null` until the second
+switch.
+
+`planner/next.json` names one more release with the same fields as `serving`: a published release
+that the target does not serve yet. [Serve](#serve) starts the services of its planner release
+beside the others, and gives it to no client.
 
 ### Publish and switch
 
@@ -1047,6 +1067,14 @@ A `dir` target must be on a local file system. A conditional write holds `<dir>/
 compares and writes, and writes through a rename. The tag that it compares is the SHA-256 of the
 bytes. A key can be a hard link to an object of the store: nothing writes a key or an object in
 place.
+
+On an R2 target the tag is the ETag. A conditional write is a PUT with `If-None-Match: *` for an
+absent key, or `If-Match: <tag>`. Only HTTP 412 says that the condition fails; another answer
+that is not 2xx is an error. `release.json`, `planner/next.json` and `lock.json` get
+`Cache-Control: no-store`, a pointer `public, max-age=60, must-revalidate`, and every other key
+`public, max-age=31536000, immutable`. A document is `application/json`. After the upload and
+before the switch, each key of the release must be on the target with its size, else nothing
+switches.
 
 Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
 `planner/releases/` and `reference/v1/`. An update and a rollback never write or delete them.
@@ -1076,11 +1104,13 @@ it.
   of each phase, on the condition of the tag of its last write. `review` is `null` until the run
   has its review. The run makes its review after it takes the lock, so `--expect` compares the
   id of the target that the lock keeps.
-- When a write fails its condition, another run took the lock. Then the run stops and changes
-  nothing more. The write at the start of the phase `switch` checks this immediately before the
+- The server can apply a write whose answer does not come, so a later write on the old tag fails.
+  After a write that fails or gets no answer, the run reads `lock.json`: when it is what the run
+  wrote, the write is done; when it names this run on this machine, the run writes again on its
+  tag. Else another run took the lock: the run stops and changes nothing more. The write at the start of the phase `switch` checks this immediately before the
   switch. After the switch, a lost lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
+  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
   frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
@@ -1089,14 +1119,19 @@ it.
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
-  so the holder and `unlock` read the clock of one machine.
+  so the holder and `unlock` read the clock of one machine. On an R2 target, `unlock` measures the
+  age of the heartbeat with the clock of the server: its `Date` against the `Last-Modified` of
+  `lock.json`.
 - `progress` gives the steps done of the total of each layer that the run bakes, at the last
   heartbeat. `status.json` of the run has the detail, see [Runs](#runs).
 
 ### Update
 
-`obc data update TARGET` makes a target serve its settings as the steps make them now. It writes
-only a `dir` target. One run does each phase in this order, while it holds the [lock](#lock):
+`obc data update TARGET` makes a target serve its settings as the steps make them now. An R2
+target serves riders: its update starts only with `--expect ID`, the id of a review that the owner
+approved, and asks first, or needs `--yes` without a terminal. The first process checks the
+arguments of the person, before the run. One run does each phase in this order, while it holds the
+[lock](#lock):
 
 1. Prepare. It reads the serving release, applies the flags to its settings, and refuses a target
    without a region. It finds the fetches of the step lists, judges which are due (see
@@ -1193,8 +1228,8 @@ new data until they update. An update with a format change starts only with
 
 ### Rollback
 
-`obc data rollback TARGET` makes a `dir` target serve its rollback release again. The release
-that served becomes the rollback, so a second rollback undoes the first. A target without a
+`obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
+asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
 Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
 as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
@@ -1215,7 +1250,10 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
-- It runs while the update holds the [lock](#lock): no other run writes the target.
+- It runs while the update holds the [lock](#lock): no other run writes the target. Before each
+  100 deletes, a heartbeat checks that the run still holds it.
+- On an R2 target, it lists the keys under `objects/`, `releases/` and `sources/` only, and the
+  grace counts by the clock of the server: the `Date` of its answers, as `since` does.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
   that go. A collection that stops resumes at the next update that switches, from the manifests
   that remain.
@@ -1226,47 +1264,70 @@ stopped.
 
 ### Serve
 
-`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of every IPv4
-address of the machine. It refuses an R2 target. The current release is the release whose
-pointers clients get. Every answer allows each origin.
+`obc data serve [TARGET]` follows the releases that a target names, by default `local`, and runs
+the services of their planner releases. It answers on port 8710: for a `dir` target on every IPv4
+address of the machine, and for an R2 target on `127.0.0.1` only, behind a proxy. It reads an R2
+target through its public origin, without credentials. The current release is the serving
+release once its services answer: a `dir` target gives clients its pointers. Every answer allows
+each origin.
 
 | Path | Answer |
 | --- | --- |
-| `/cell-catalog/catalog.json` | The device pointer of the current release |
-| `/planner/catalog.json` | The planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
-| Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
+| `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
+| `/cell-catalog/catalog.json` | `dir` only: the device pointer of the current release |
+| `/planner/catalog.json` | `dir` only: the planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
+| Another path | `dir` only: the file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
-Serve reads `release.json` each second. When it changes:
+Serve reads `release.json` and `planner/next.json` of a `dir` target each second, and of an R2
+target every ten seconds. It reads the manifest and the pointers of a release once: a rollback
+reads nothing else. A `planner/next.json` that cannot be read, or whose release cannot be read,
+names no release: serve writes why, reads it again at each look, and loads the other releases.
+When one of the two files changes:
 
-1. Serve starts the services of the planner release of the serving release and of the rollback,
-   unless they run. The planner release of a release is `active.id` of its planner pointer.
+1. Serve loads the planner release of the serving release, of the rollback and of the release of
+   `planner/next.json`, unless it runs. The planner release of a release is `active.id` of its
+   planner pointer.
    First it compares the formats of the layers of the release with the formats that the services
    read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
-   release before anything starts: `needs a routing service that reads planner/routing format 9;
-   it reads 8`.
+   release before anything downloads: `needs a routing service that reads planner/routing format
+   9; it reads 8`. Then a thread downloads its objects into the store, and its services start once
+   they are there. Serve keeps reading the two files and checking the other services meanwhile.
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
-   `GET /catalog`. Until then clients keep the current release.
-3. A planner release fails when one of its services stops, or when its services do not answer
-   within 120 seconds after they start. Its other services stop, and its API answers 404. Clients
-   keep the current release, also when the failed planner release is the one of the current
-   release. A planner release that failed starts again at the next change of `release.json`, and
-   at no other time.
-4. The services of a planner release that neither the serving release, the rollback nor the
-   current release names stop.
+   `GET /catalog`. Until then clients keep the current release. No client gets the release of
+   `planner/next.json`.
+3. A planner release fails when its start fails, when one of its services stops, or when its
+   services do not answer within 120 seconds after they start. Its other services stop, and its
+   API answers 404. Clients keep the current release, also when the failed planner release is the
+   one of the current release. A planner release that failed starts again after 60 seconds, after
+   each later failure in a row twice the wait before, up to 30 minutes. It starts again at once
+   only when the two files name other releases.
+4. The services of a planner release that neither the serving release, the rollback, the release
+   of `planner/next.json` nor the current release names stop.
 
 When the serving release and the rollback fail one after the other, clients keep a release that
-`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
-release.
+`release.json` no longer names, and the services of its planner release keep answering. Serve
+then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
-`identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write opens
-an existing file. Each file must have the SHA-256 and the size that the planner release gives.
+`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
+manifest names lists them. Each file comes from an object of the store, which downloads an object
+that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
+object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
+existing file. Each file must have the SHA-256 and the size that the planner release gives. When
+serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
+grace; a wait before a retry, a connection or a hash does not see the stop.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
-touch it. Download bundles name the origin of the machine on its network when serve starts, else
-`http://127.0.0.1:8710`.
+touch it. For a `dir` target, download bundles name the origin of the machine on its network when
+serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
+`<objects_origin>/objects` of the planner pointer.
+
+For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
+the routing service is the `planner-service` program beside the program of serve, and serve
+needs no tile handler. When the thread that follows the target ends without a stop, such as on a
+panic, serve ends with a `failed` error, so that a supervisor starts it again.
 
 ### Overview
 
@@ -1276,17 +1337,17 @@ each layer against the steps of now, the blocked steps, the pointers that drift,
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
 the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
 checks of the last hour. A target that serves nothing has the next command
-`obc data update TARGET --region ID`. An R2 target has no next command: `obc data update` writes
-only a `dir` target.
+`obc data update TARGET --region ID`. For an R2 target, the next command is the review
+(`--dry-run`): its update needs the id that the owner approved.
 
 ## Commands
 
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
-| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
-| `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
-| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a `dir` target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
+| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
+| `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
+| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
@@ -1296,7 +1357,7 @@ only a `dir` target.
 | `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
-| `obc data serve [TARGET] [--json]` | [Serves](#serve) a `dir` target until Ctrl-C. Writes its origin on the machine and on its network |
+| `obc data serve [TARGET] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target on its network |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -1352,7 +1413,8 @@ and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under 
 | `OBC_R2_LOCAL_DIR` | A local directory that replaces the bucket. Tests use it. When it is set, it must not be empty, and `OBC_R2_BUCKET` must not be set |
 
 `--fixtures` reads the same variables with the prefix `OBC_FIXTURE_R2_` instead. A credential
-goes to rclone only in its environment, never in an argument or a file.
+goes to rclone only in its environment, never in an argument or a file. The S3 client of an R2
+target signs with the secret key and never sends it.
 
 ### Commands
 
@@ -2393,7 +2455,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What `serve` writes when it listens.",
       "properties": {
         "network": {
-          "description": "Its origin on the network of this machine, for a phone; `null` without a network.",
+          "description": "Its origin on the network, for a phone; `null` without a network and for an R2 target.",
           "type": [
             "string",
             "null"
@@ -4127,7 +4189,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "next": {
-          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now, or when no command of this `obc data`\nwrites the target: an R2 bucket.",
+          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now. For an R2 target, the command is the\nreview: its update needs the id that the owner approved.",
           "type": [
             "string",
             "null"
