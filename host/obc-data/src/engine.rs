@@ -35,7 +35,15 @@ pub struct Layer {
     /// A person changes it in the change that improves the output.
     pub revision: u32,
     /// The programs that read its files.
-    pub readers: &'static [&'static str],
+    pub readers: &'static [&'static Reader],
+}
+
+/// A program that reads the files of a layer.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Reader {
+    pub name: &'static str,
+    /// What a new format of the layer means for this reader, for the review.
+    pub on_new_format: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -734,16 +742,18 @@ open(os.path.join(request['output'], 'joined.txt'), 'w').write(upper + tail)
 json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 ";
 
+    /// The reader of the test layers.
+    pub(crate) static TESTS: super::Reader = super::Reader { name: "tests", on_new_format: "The tests read it." };
     /// The layer of the test steps.
     pub(crate) static TEST: Layer =
-        Layer { name: "test", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+        Layer { name: "test", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
     /// The layer that [`revise`] gives a step.
     pub(crate) static REVISED: Layer =
-        Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+        Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
 
     /// The layer of `test/upper` in [`layered`].
     pub(crate) static UPPER: Layer =
-        Layer { name: "upper", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+        Layer { name: "upper", shape: Shape::Whole, format: 1, revision: 1, readers: &[&TESTS] };
 
     /// The test pipeline, with `test/upper` in its own layer.
     pub(crate) fn layered() -> Vec<Step> {

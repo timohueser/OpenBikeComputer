@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
+import plan from "../../../test-support/data/clean.json";
 import example from "../../../test-support/data/setup.json";
 import status from "../../../test-support/data/status.json";
 import type { Setup } from "../../lib/data/shapes";
@@ -41,6 +42,30 @@ it("runs `obc data setup` when it opens, shows what the machine can do, and chec
         await vi.waitFor(() => expect(state("GEOS")).toBe("ready"));
         expect(fetch.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ args: ["setup"] }, { args: ["setup"] }]);
         expect(text()).toContain("Tools are ready. Ask the owner for an R2 key only if you will publish to prod.");
+    } finally {
+        await unmount(screen);
+    }
+});
+
+it("Clean shows the plan, and its confirm posts exactly `clean --apply --yes`", async () => {
+    const fetch = vi.fn(async (_url: string, init: { body: string }) => {
+        const args: string[] = JSON.parse(init.body).args;
+        return new Response(JSON.stringify({ exit: 0, output: args[0] === "setup" ? report : plan }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const screen = mount(Machine, { target: document.body, props: { machine: status.machine } });
+    const button = (label: string) => [...document.querySelectorAll("button")].find((button) => button.textContent === label)!;
+    try {
+        await vi.waitFor(() => expect(button("Clean…")).toBeDefined());
+        button("Clean…").click();
+        await vi.waitFor(() => expect(button("Clean now")).toBeDefined());
+        const text = document.body.textContent?.replace(/\s+/g, " ");
+        expect(text).toContain("A clean removes 437 MB: 1 record, 1 object and 50 MB of unfinished work.");
+        expect(text).toContain("It keeps 3.4 GB: served by local, newest of a request, served by prod, and inputs kept.");
+        button("Clean now").click();
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Removed 437 MB from the store."));
+        const posted = fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args);
+        expect(posted.filter((args) => args[0] === "clean")).toEqual([["clean"], ["clean", "--apply", "--yes"]]);
     } finally {
         await unmount(screen);
     }

@@ -33,6 +33,7 @@ export interface Target {
     /** `null` while the target serves nothing or its steps cannot be listed. */
     layers: Layer[] | null;
     blocked: { layer: string; step: string; reason: string }[];
+    notes: Note[];
     /** The pointer keys whose bytes are not those of the serving release. */
     drift: string[];
     error: string | null;
@@ -61,6 +62,12 @@ export interface Router {
 export interface Answer {
     release: string;
     reason: string | null;
+}
+
+/** What a layer bakes without, such as a prepared source that no target lists yet. */
+export interface Note {
+    layer: string;
+    text: string;
 }
 
 /** A release and the time that the target took it. */
@@ -133,9 +140,13 @@ export interface Review {
         /** The grid leaves of a tiled layer that bake. */
         leaves: string[];
         drops: string[];
+        /** The grid leaves of `drops`. */
+        dropped_leaves: string[];
         readers: string[];
-        format: { from: number; to: number } | null;
+        /** What the new format means for each reader. */
+        format: { from: number; to: number; readers: { reader: string; effect: string }[] } | null;
     }[];
+    notes: Note[];
     sources: { source: string; from: string | null; to: string }[];
     /** The outputs that the release keeps by reference. */
     kept: number;
@@ -226,13 +237,15 @@ export interface RunView extends RunSummary {
     /** Each phase that it entered, in order. `waiting` says why it waits, as `Holder` does. */
     phases: { phase: Phase; state: RunState; started: string; waiting?: string }[];
     /** Each layer that it bakes. A tiled layer names its leaves `<i>-<j>`. */
-    layers: { layer: string; total: number; done: number; leaves_done: string[]; leaves_baking: string[] }[];
+    layers: { layer: string; total: number; done: number; leaves_done: string[]; leaves_baking: string[]; started: string | null }[];
     /** The releases that it switched its target to. */
     switched: string[];
     /** `kept` names the steps whose layers the store keeps for the next update. */
     error: { code: string; message: string; fix: string; kept: string[] } | null;
     /** The last lines of its log. */
     log: string[];
+    /** The path of the log on the machine of the run. */
+    log_path: string;
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
@@ -244,6 +257,9 @@ export interface Machine {
     cores: number;
     memory_bytes: number | null;
     store_free_bytes: number | null;
+    /** The load average of the last minute. */
+    load: number | null;
+    memory_available_bytes: number | null;
 }
 
 /** `optional` is a missing thing that no main job needs. */
@@ -272,6 +288,9 @@ export function size(bytes: number): string {
     }
     return `${bytes < 10 && unit > 0 ? bytes.toFixed(1) : Math.round(bytes)} ${UNITS[unit]}`;
 }
+
+/** `1 cell`, `2 cells`. */
+export const count = (n: number, one: string): string => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 export function free(bytes: number | null): string {
     return bytes === null ? "free space unknown" : `${size(bytes)} free`;
@@ -322,4 +341,17 @@ export function title(args: readonly string[]): string {
 /** The target that a run changes: `update` and `rollback` name it first. */
 export function changes(args: readonly string[]): string | null {
     return ["update", "rollback"].includes(args[0]) && args[1] ? args[1] : null;
+}
+
+/** What `obc data clean --json` writes: the plan, or with `--apply` what it removed. */
+export interface CleanPlan {
+    store: {
+        kept: { entry: string; bytes: number; because: string[] }[];
+        snapshots: string[];
+        objects: [string, number][];
+        remove_bytes: number;
+        keep_objects: number;
+        keep_bytes: number;
+        partial_bytes: number;
+    };
 }

@@ -29,9 +29,14 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
     const run = running as RunView;
     // As the CLI does, `--stop` answers with the run as it was: it stops later.
     const fetch = serverAnswers({ [JSON.stringify(["runs", run.id])]: run, [JSON.stringify(["runs", run.id, "--stop"])]: run });
+    // Half an hour after device/map started.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-10-12T10:51:10Z") });
     const screen = mount(Run, { target: document.body, props: { id: run.id, status: status as Status } });
     try {
         await vi.waitFor(() => expect(text()).toContain("Layers in this run"));
+        expect(text()).toContain("3 of 6 · about 30 min left");
+        expect(text()).toContain("laptop · load 6.2 on 10 cores · RAM 12 GB free · store 412 GB free");
+        expect(text()).toContain(`The last 4 lines of ${run.log_path}.`);
         expect(document.querySelector("h1")?.textContent).toBe("update local");
         expect(document.querySelector(".phases")?.textContent?.replace(/\s+/g, " ")).toContain("◐ build running");
         expect(text()).toContain("3 of 6");
@@ -49,6 +54,7 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
         expect(posted.filter((args) => args.includes("--stop"))).toEqual([["runs", run.id, "--stop"]]);
         expect(document.querySelectorAll("button")).toHaveLength(0);
     } finally {
+        vi.useRealTimers();
         await unmount(screen);
     }
 });

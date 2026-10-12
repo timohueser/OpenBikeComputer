@@ -12,7 +12,7 @@ use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
-use crate::engine::{leaf, partition, Input, Run, Shape, Step};
+use crate::engine::{leaf, partition, Input, Reader, Run, Shape, Step};
 use crate::product::{Note, RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
@@ -73,6 +73,8 @@ pub struct LayerChange {
     pub partitions: Vec<String>,
     /// The steps of the serving release that no step makes now.
     pub drops: Vec<String>,
+    /// The grid leaves of `drops`, as `leaves` names them.
+    pub dropped_leaves: Vec<String>,
     /// The programs that read the layer.
     pub readers: Vec<String>,
     /// The format of the serving release and of the steps, when it changes. Old readers keep what
@@ -80,10 +82,18 @@ pub struct LayerChange {
     pub format: Option<FormatChange>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FormatChange {
     pub from: u32,
     pub to: u32,
+    /// What the new format means for each reader of the layer.
+    pub readers: Vec<FormatReader>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FormatReader {
+    pub reader: String,
+    pub effect: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -235,17 +245,19 @@ pub fn review(parts: Parts) -> Review {
                 None => Cause::Named,
             },
         };
+        let readers =
+            steps.iter().find(|step| step.layer.name == state.layer).map_or(&[][..], |step| step.layer.readers);
         let format = match &state.cause {
             Some(state::Cause::Version { field: Field::Format, from: Some(from), to }) if !mine.is_empty() => {
-                Some(FormatChange { from: *from, to: *to })
+                let effect =
+                    |reader: &&Reader| FormatReader { reader: reader.name.into(), effect: reader.on_new_format.into() };
+                Some(FormatChange { from: *from, to: *to, readers: readers.iter().map(effect).collect() })
             }
             _ => None,
         };
         let tiled = mine.iter().filter(|step| step.layer.shape == Shape::Tiled);
         let leaves: BTreeSet<&str> = tiled.filter_map(|step| leaf(&step.name)).collect();
         let partitions: BTreeSet<&str> = mine.iter().filter_map(|step| partition(step)).collect();
-        let readers =
-            steps.iter().find(|step| step.layer.name == state.layer).map_or(&[][..], |step| step.layer.readers);
         changes.push(LayerChange {
             layer: state.layer.clone(),
             text: text(&cause),
@@ -253,8 +265,9 @@ pub fn review(parts: Parts) -> Review {
             steps: mine.iter().map(|step| step.name.clone()).collect(),
             leaves: leaves.into_iter().map(str::to_string).collect(),
             partitions: partitions.into_iter().map(str::to_string).collect(),
+            dropped_leaves: drops.iter().filter_map(|step| leaf(step)).map(str::to_string).collect(),
             drops,
-            readers: readers.iter().map(|reader| reader.to_string()).collect(),
+            readers: readers.iter().map(|reader| reader.name.to_string()).collect(),
             format,
         });
     }
@@ -280,6 +293,7 @@ pub fn review(parts: Parts) -> Review {
                 leaves: leaf.into_iter().collect(),
                 partitions: part.into_iter().collect(),
                 drops: Vec::new(),
+                dropped_leaves: Vec::new(),
                 readers: Vec::new(),
                 format: None,
             }),
@@ -442,7 +456,7 @@ pub fn check(review: &Review, expect: Option<&str>, accept_format_change: bool) 
         .layers
         .iter()
         .filter_map(|layer| {
-            let FormatChange { from, to } = layer.format?;
+            let FormatChange { from, to, .. } = layer.format.as_ref()?;
             Some(format!("{} {from} → {to} (read by {})", layer.layer, layer.readers.join(", ")))
         })
         .collect();

@@ -8,11 +8,15 @@
             "layer": "device/map",
             "cause": {"kind": "stale", "cause": {"kind": "version", "field": "format", "from": 19, "to": 20}},
             "text": "format 19 → 20: readers need new data",
-            "steps": ["device/map/9-268-178", "device/map/9-268-179"],
-            "leaves": ["268-178", "268-179"],
-            "drops": [],
+            "steps": ["device/map/0037-0032", "device/map/0037-0033"],
+            "leaves": ["0037-0032", "0037-0033"],
+            "drops": ["device/map/0036-0032"],
+            "dropped_leaves": ["0036-0032"],
             "readers": ["device", "map builder"],
-            "format": {"from": 19, "to": 20}
+            "format": {"from": 19, "to": 20, "readers": [
+                {"reader": "device", "effect": "Maps already on a device keep working. The map builder gives new maps only to firmware that reads the new format."},
+                {"reader": "map builder", "effect": "An old map builder reads no new data: it needs a build that reads the new format."}
+            ]}
         },
         {
             "layer": "device/catalog",
@@ -21,6 +25,7 @@
             "steps": ["device/catalog"],
             "leaves": [],
             "drops": [],
+            "dropped_leaves": [],
             "readers": ["map builder", "desktop app"],
             "format": null
         }
@@ -51,5 +56,5 @@
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
     "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],
     "optional": ["climate", "snow", "sun"],
-    "notes": []
+    "notes": [{"layer": "device/terrain", "text": "terrain-reference/de has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/de"}]
 }

@@ -1,5 +1,5 @@
 {
-    "machine": {"name": "laptop", "colour": "#262624", "os": "macos", "cores": 10, "memory_bytes": 34359738368, "store_free_bytes": 442381631488},
+    "machine": {"name": "laptop", "colour": "#262624", "os": "macos", "cores": 10, "memory_bytes": 34359738368, "store_free_bytes": 442381631488, "load": 6.2, "memory_available_bytes": 12884901888},
     "targets": [
         {
             "target": "local",
@@ -68,7 +68,7 @@
                 {"layer": "planner/index", "state": "stale", "cause": {"kind": "input", "name": "planner/search"}, "text": "follows planner/search", "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner", "iOS", "search service", "downloads service"], "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
             "blocked": [],
-            "notes": [],
+            "notes": [{"layer": "device/terrain", "text": "terrain-reference/de has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/de"}],
             "drift": [],
             "error": null,
             "fix": null,

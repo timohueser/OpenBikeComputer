@@ -115,3 +115,23 @@ it("a preset, ticked Geofabrik areas and a box each become the area flag of the 
         await unmount(screen);
     }
 });
+
+it("a format change names what happens to each reader, and the map draws the cells that bake and go", async () => {
+    server();
+    const screen = mount(Review, { target: document.body, props });
+    const strokes = (color: string) => document.querySelectorAll(`.leaflet-overlay-pane path[stroke="${color}"]`).length;
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain(`Review ${review.id}`));
+        const rows = [...document.querySelectorAll(".format tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+        expect(rows.map((row) => row.slice(0, 4))).toEqual([
+            ["device/map", "device", "19", "20"],
+            ["device/map", "map builder", "19", "20"],
+        ]);
+        expect(rows[0][4]).toContain("Maps already on a device keep working");
+        expect(document.body.textContent).toContain("■ 2 cells bake · ■ 1 cell go");
+        await vi.waitFor(() => expect([strokes("var(--running)"), strokes("var(--missing)")]).toEqual([2, 1]));
+        expect(document.body.textContent).toContain("device/terrain · terrain-reference/de has no version");
+    } finally {
+        await unmount(screen);
+    }
+});

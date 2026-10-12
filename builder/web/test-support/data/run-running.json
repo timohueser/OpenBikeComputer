@@ -11,10 +11,10 @@
         {"phase": "build", "state": "running", "started": "2026-10-12T10:21:10Z"}
     ],
     "layers": [
-        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
-        {"layer": "device/map", "total": 6, "done": 3, "leaves_done": ["0037-0032", "0037-0033", "0038-0032"], "leaves_baking": ["0038-0033", "0036-0032"], "leaves_unchanged": []},
-        {"layer": "planner/search", "total": 3, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
-        {"layer": "device/catalog", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []}
+        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T10:21:10Z"},
+        {"layer": "device/map", "total": 6, "done": 3, "leaves_done": ["0037-0032", "0037-0033", "0038-0032"], "leaves_baking": ["0038-0033", "0036-0032"], "leaves_unchanged": [], "started": "2026-10-12T10:21:10Z"},
+        {"layer": "planner/search", "total": 3, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T10:21:30Z"},
+        {"layer": "device/catalog", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": null}
     ],
     "fetches": [],
     "steps": [],
@@ -22,5 +22,6 @@
     "bytes_built": 0,
     "error": null,
     "log": ["10:44:02 device/map 0037-0032 done (2.1 s, 312 MB)", "10:44:02 device/map 0037-0033 done (1.8 s, 288 MB)", "10:44:03 planner/search records 4.2 M of 10.5 M", "10:44:04 device/map 0038-0033 baking"],
+    "log_path": "/Users/rider/.cache/openbikecomputer/store/runs/2026-10-12-101500/log",
     "switched": []
 }

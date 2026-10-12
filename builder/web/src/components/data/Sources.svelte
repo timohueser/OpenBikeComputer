@@ -3,7 +3,7 @@
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { sourceAt } from "../../lib/data/screens";
-    import { list, type Status } from "../../lib/data/shapes";
+    import { count, list, type Status } from "../../lib/data/shapes";
     import { family, ORDER, policy, worst, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
@@ -123,7 +123,7 @@
                                 <td><a href="#/sources/{encodeURIComponent(id)}">{id}</a></td>
                                 <td>{row.id.includes("/") ? `${members(id).length} prepared` : versions(row).join(", ")}</td>
                                 <td>{Object.entries(row.targets).map(([name, target]) => `${name} ${policy(target.refresh)}`).join(", ")}</td>
-                                <td>{usedBy(id).length} {usedBy(id).length === 1 ? "layer" : "layers"}</td>
+                                <td>{count(usedBy(id).length, "layer")}</td>
                                 <td class={stateOf(id)}>{stateOf(id)}</td>
                             </tr>
                         {/each}
@@ -148,19 +148,8 @@
         padding: 8px 0;
         border-bottom: 1px solid var(--line);
     }
-    .table {
-        overflow-x: auto;
-    }
     table {
-        width: 100%;
-        border-collapse: collapse;
         white-space: nowrap;
-    }
-    th,
-    td {
-        padding: 8px 12px;
-        text-align: left;
-        border-bottom: 1px solid var(--line);
     }
     input {
         width: 9em;

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, type ComponentProps } from "svelte";
     import { corners, type Areas, type Bbox } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
@@ -7,9 +7,14 @@
     import Failure from "./Failure.svelte";
 
     // The area of the next review: a preset, Geofabrik areas, or a box. `apply` gives the flag. The
-    // map shows `boxes`, the area that the target serves, and the choice of the open tab only.
-    let { region, boxes, apply }: { region: string; boxes: Bbox[]; apply: (flag: "--region" | "--box", value: string) => void } =
-        $props();
+    // map shows `boxes`, the area that the target serves, the `cells` of the review, and the choice
+    // of the open tab only.
+    let {
+        region,
+        boxes,
+        cells: review = [],
+        apply,
+    }: { region: string; boxes: Bbox[]; cells?: ComponentProps<typeof DataMap>["cells"]; apply: (flag: "--region" | "--box", value: string) => void } = $props();
 
     const areas = new CliQuery<Areas>(["areas"]);
     onMount(() => void areas.refresh());
@@ -28,6 +33,7 @@
         return tab === "box" && drawn ? [box] : [];
     });
     const cells = $derived([
+        ...review,
         ...(tab === "geofabrik" ? found.filter((area) => !ticked.includes(area.id)) : []).map((area) => ({ bounds: corners(area.bounds), color: "var(--ink-faint)", label: area.name })),
         ...chosen.map((bounds) => ({ bounds: corners(bounds), color: "var(--running)", label: "the next area" })),
     ]);

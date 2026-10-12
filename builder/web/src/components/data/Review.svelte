@@ -3,7 +3,8 @@
     import { edit, reviewArgs, type Flags } from "../../lib/data/flags";
     import { followers } from "../../lib/data/graph";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { list, short, size, span, type Layer, type Review, type Router, type Started, type Target } from "../../lib/data/shapes";
+    import { leafSquare } from "../../lib/data/leaf";
+    import { count, list, short, size, span, type Layer, type Review, type Router, type Started, type Target } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import AreaPicker from "./AreaPicker.svelte";
     import Failure from "./Failure.svelte";
@@ -43,6 +44,15 @@
     });
     const review = $derived(query.output ?? last);
     const formats = $derived(review?.layers.filter((layer) => layer.format) ?? []);
+    // The cells that bake, and those that the release drops.
+    const leaves = (of: (layer: Review["layers"][number]) => string[]) => [...new Set(review?.layers.flatMap(of))];
+    const [baking, dropped] = $derived([leaves((layer) => layer.leaves), leaves((layer) => layer.dropped_leaves)]);
+    const cells = $derived(
+        [...baking.map((leaf) => [leaf, "bakes"]), ...dropped.map((leaf) => [leaf, "goes"])].flatMap(([leaf, state]) => {
+            const bounds = leafSquare(leaf);
+            return bounds ? [{ bounds, color: state === "goes" ? "var(--missing)" : "var(--running)", label: `${leaf} · ${state}` }] : [];
+        }),
+    );
     let accepted = $state<string | null>(null);
     // `obc data update` asks before it changes an R2 target; the page asks with this screen.
     const start = $derived(review ? [...review.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
@@ -95,7 +105,14 @@
         {/if}
         <fieldset class="area">
             <legend>Area · {name} serves {area?.name ?? "no area"}</legend>
-            <AreaPicker region={review.settings.region} boxes={area?.boxes ?? []} apply={setArea} />
+            {#if cells.length}
+                <p>
+                    <span class="running">■ {count(baking.length, "cell")} bake</span>{#if dropped.length}{" · "}<span class="missing"
+                            >■ {count(dropped.length, "cell")} go</span
+                        >{/if}
+                </p>
+            {/if}
+            <AreaPicker region={review.settings.region} boxes={area?.boxes ?? []} {cells} apply={setArea} />
         </fieldset>
         {#if review.optional.length}
             <fieldset class="title">
@@ -137,9 +154,18 @@
             <h2 id="formats">
                 {formats.length === 1 ? "A format changes" : `${formats.length} formats change`}: readers need new code before they read the new data
             </h2>
-            {#each formats as layer (layer.layer)}
-                <p><b>{layer.layer}</b> {layer.format?.from} → {layer.format?.to} · read by {list(layer.readers)}</p>
-            {/each}
+            <div class="table">
+                <table>
+                    <thead><tr><th>Layer</th><th>Reader</th><th>Reads now</th><th>Needs</th><th>What happens</th></tr></thead>
+                    <tbody>
+                        {#each formats as { layer, format } (layer)}
+                            {#each format?.readers ?? [] as { reader, effect } (reader)}
+                                <tr><td>{layer}</td><td>{reader}</td><td>{format?.from}</td><td>{format?.to}</td><td class="effect">{effect}</td></tr>
+                            {/each}
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
         </section>
     {/if}
 
@@ -165,6 +191,7 @@
         {:else}
             <p><b>Bake</b> · nothing: each layer is as its steps make it now</p>
         {/if}
+        {#each review.notes as note (note.layer)}<p class="missing"><b>{note.layer}</b> · {note.text}</p>{/each}
         <p><b>Keep</b> · {review.kept} outputs of the serving release</p>
         {#if review.downloads.files}
             <p><b>Download</b> · {review.downloads.files} files, {size(review.downloads.bytes)} from {name}</p>
@@ -261,5 +288,12 @@
     ul {
         margin: 4px 0 0;
         padding-left: 22px;
+    }
+    .format :is(th, td) {
+        white-space: nowrap;
+    }
+    .format .effect {
+        min-width: 16em;
+        white-space: normal;
     }
 </style>

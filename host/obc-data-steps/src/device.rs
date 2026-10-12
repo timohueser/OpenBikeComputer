@@ -26,6 +26,8 @@ use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
+use crate::readers;
+
 pub(crate) mod catalog;
 mod shared_content;
 
@@ -42,7 +44,7 @@ pub static DEVICE_TERRAIN: Layer = Layer {
     shape: obc_data::engine::Shape::Tiled,
     format: obct::SURFACE_VERSION as u32,
     revision: 1,
-    readers: &["device", "map builder"],
+    readers: &[&readers::DEVICE, &readers::MAP_BUILDER],
 };
 
 /// The map cells of each band in each leaf.
@@ -51,7 +53,7 @@ pub static DEVICE_MAP: Layer = Layer {
     shape: obc_data::engine::Shape::Tiled,
     format: obcm::VERSION as u32,
     revision: 1,
-    readers: &["device", "map builder"],
+    readers: &[&readers::DEVICE, &readers::MAP_BUILDER],
 };
 
 /// The landmark and peak artifacts of each leaf, and the content that they are compiled from.
@@ -61,7 +63,7 @@ pub static DEVICE_LANDMARKS: Layer = Layer {
     // The device checks both section versions; each only grows, so the sum grows when either changes.
     format: (obcm::landmarks::SECTION_VERSION + obcm::peaks::VERSION) as u32,
     revision: 1,
-    readers: &["device"],
+    readers: &[&readers::DEVICE],
 };
 
 pub struct Device;

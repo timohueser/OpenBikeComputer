@@ -663,7 +663,7 @@ process never started.
   [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (while it starts,
   the process that reserved it, then the process that it starts), its state (`starting`,
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
-  waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (steps done of the total, and
+  waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
   for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
   unchanged), its fetches and steps (each `unchanged` or not), the
   releases that it switched the target to, and its error with the code, the fix and the steps
@@ -1236,10 +1236,11 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
   [State of a layer](#state-of-a-layer), `named` by `--only`, `off`, or `unheld` as
   [Any machine](#any-machine) says), the steps that bake, the grid leaves (the last part `<i>-<j>`
   of the names of the steps of a tiled layer), the partitions whose steps bake, the steps of the
-  release that no step makes now, the readers and a format change. With `--only`, a layer that
-  bakes because it reads a named layer follows that layer. A layer that only other layers read is
-  not listed. A planned step can end unchanged (see [Runs](#runs)), so the text gives the bakes and
-  the leaves as upper bounds ("at most").
+  release that no step makes now and their grid leaves, the readers, and a format change with what
+  the new format means for each reader. With `--only`, a layer that bakes because it reads a named
+  layer follows that layer. A layer that only other layers read is not listed. A planned step can
+  end unchanged (see [Runs](#runs)), so the text gives the bakes and the leaves as upper bounds ("at
+  most").
 - `sources`: each fetch that a baked step reads at another version than the serving release.
 - `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
   what this machine fetches upstream, downloads from the target and bakes. A step whose output is
@@ -1590,7 +1591,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data runs [--json]` | Every run in the store, newest first: id, arguments, state, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log |
+| `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log with its path |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
 | `obc data serve [TARGET] [--detach] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target its origin on the network and how each app opens it. With `--detach`, it serves in a detached [run](#runs) and writes `{run}`; `runs RUN --stop` stops it. That run does not hold the store for [Clean](#clean) |
@@ -1624,7 +1625,7 @@ addition:
   or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
-  `--expect ID` (with `--yes`).
+  `--expect ID` (with `--yes`), `obc data clean`, and `obc data clean --apply --yes`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -2388,6 +2389,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "readers": {
+          "description": "What the new format means for each reader of the layer.",
+          "items": {
+            "$ref": "#/$defs/FormatReader"
+          },
+          "type": "array"
+        },
         "to": {
           "format": "uint32",
           "minimum": 0,
@@ -2396,7 +2404,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "from",
-        "to"
+        "to",
+        "readers"
+      ],
+      "type": "object"
+    },
+    "FormatReader": {
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "reader": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reader",
+        "effect"
       ],
       "type": "object"
     },
@@ -2628,6 +2652,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cause": {
           "$ref": "#/$defs/PlanCause"
         },
+        "dropped_leaves": {
+          "description": "The grid leaves of `drops`, as `leaves` names them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "drops": {
           "description": "The steps of the serving release that no step makes now.",
           "items": {
@@ -2688,6 +2719,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "steps",
         "leaves",
         "drops",
+        "dropped_leaves",
         "readers",
         "format"
       ],
@@ -2728,6 +2760,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "started": {
+          "default": null,
+          "description": "When its first step started, `YYYY-MM-DDTHH:MM:SSZ`; `null` before.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "total": {
           "default": 0,
           "description": "The steps of the layer that the run bakes, and those that finished.",
@@ -2742,7 +2782,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "done",
         "leaves_done",
         "leaves_baking",
-        "leaves_unchanged"
+        "leaves_unchanged",
+        "started"
       ],
       "type": "object"
     },
@@ -3010,6 +3051,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "load": {
+          "description": "The load average of the last minute; `null` where the system does not tell.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "memory_available_bytes": {
+          "description": "The memory that programs can still take; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "memory_bytes": {
           "description": "`null` where the system does not tell.",
           "format": "uint64",
@@ -3043,7 +3101,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "os",
         "cores",
         "memory_bytes",
-        "store_free_bytes"
+        "store_free_bytes",
+        "load",
+        "memory_available_bytes"
       ],
       "type": "object"
     },
@@ -5464,6 +5524,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "log_path": {
+          "description": "The path of that log on the machine of the run.",
+          "type": "string"
+        },
         "phases": {
           "default": [],
           "description": "Each phase that it entered, in order.",
@@ -5530,7 +5594,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "bytes_fetched",
         "bytes_built",
         "error",
-        "log"
+        "log",
+        "log_path"
       ],
       "type": "object"
     }

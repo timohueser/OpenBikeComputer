@@ -43,6 +43,10 @@ pub struct Machine {
     pub memory_bytes: Option<u64>,
     /// The free bytes of the disk of the store; `null` where the system does not tell.
     pub store_free_bytes: Option<u64>,
+    /// The load average of the last minute; `null` where the system does not tell.
+    pub load: Option<f64>,
+    /// The memory that programs can still take; `null` where the system does not tell.
+    pub memory_available_bytes: Option<u64>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -187,6 +191,8 @@ pub fn overview(
         cores: limits.jobs,
         memory_bytes: limits.memory_bytes,
         store_free_bytes: free,
+        load: load(),
+        memory_available_bytes: memory_available(),
     };
     let overview = Overview { machine, targets: targets.collect() };
     if json {
@@ -246,6 +252,23 @@ pub fn overview(
         print_table(&rows);
     }
     Ok(())
+}
+
+fn load() -> Option<f64> {
+    let mut load = [0f64];
+    #[cfg(unix)]
+    // SAFETY: getloadavg writes at most the one value that it is asked for.
+    if unsafe { libc::getloadavg(load.as_mut_ptr(), 1) } == 1 {
+        return Some(load[0]);
+    }
+    None
+}
+
+/// `MemAvailable` of `/proc/meminfo`, on Linux.
+fn memory_available() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kib = meminfo.lines().find_map(|line| line.strip_prefix("MemAvailable:"))?.trim().strip_suffix(" kB")?;
+    kib.trim().parse::<u64>().ok().map(|kib| kib * 1024)
 }
 
 fn state(

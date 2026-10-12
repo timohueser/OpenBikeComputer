@@ -1115,7 +1115,7 @@ pub(super) mod tests {
 
     /// The internal step `counter/split` writes line `n` of `head` as `split/0001-000<n>`, and the
     /// tiled layer `leaves` copies each of the two leaves. The file `split-2` gives the split a new
-    /// revision.
+    /// revision, and the file `one-leaf` drops the second leaf.
     fn leaves(root: &Path, inputs: &Inputs, store: &Store) -> Result<Steps, Unplanned> {
         use crate::engine::{tests::step, Client, Layer, Run, Shape};
         let head = crate::product::version(inputs, store, "head", &[]).map_err(Unplanned::Failed)?;
@@ -1129,7 +1129,8 @@ pub(super) mod tests {
             let read = Input::Step { name: "counter/split".into(), files: vec![format!("split/{leaf}")] };
             Step { layer: &LEAVES, ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(copy)) }
         };
-        Ok(vec![split, leaf("0001-0001"), leaf("0001-0002")].into())
+        let second = (!root.join("one-leaf").exists()).then(|| leaf("0001-0002"));
+        Ok([split, leaf("0001-0001")].into_iter().chain(second).collect::<Vec<_>>().into())
     }
 
     fn split(request: &crate::engine::Request) -> Result<(), String> {
@@ -1454,8 +1455,10 @@ pub(super) mod tests {
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let first = update(&fixture, &target, region).unwrap();
         write(&fixture.root().join("format-2"), "");
-        let format = review(&fixture, &target).layers[0].format.map(|format| (format.from, format.to));
-        assert_eq!(format, Some((1, 2)));
+        let format = review(&fixture, &target).layers[0].format.clone().unwrap();
+        let effects: Vec<_> =
+            format.readers.iter().map(|reader| (reader.reader.as_str(), reader.effect.as_str())).collect();
+        assert_eq!((format.from, format.to, &effects[..]), (1, 2, &[("tests", "The tests read it.")][..]));
         let refused = asked_update(&fixture, &target, &Asked::default()).unwrap_err();
         assert_eq!(refused.code, Code::Usage);
         assert!(refused.message.contains("test 1 → 2 (read by tests)"), "{}", refused.message);
@@ -1552,6 +1555,22 @@ pub(super) mod tests {
         let moved = &review(&fixture, &target).sources[0];
         assert_eq!((moved.source.as_str(), moved.from.as_ref(), &moved.to), ("natural-earth", Some(&one), &two));
         assert_eq!(steps(&update_with(&fixture, &target, &http, |_| Ok(())).unwrap()), ["counter/earth"]);
+    }
+
+    #[test]
+    fn the_review_names_the_leaves_that_no_step_makes_now() {
+        let fixture = fixture("update-dropped-leaf");
+        copied(&fixture, &["head", "tail"]);
+        write(&fixture.root().join("leaves"), "");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        write(&fixture.root().join("one-leaf"), "");
+        let review = review(&fixture, &target);
+        let layer = review.layers.iter().find(|layer| layer.layer == "leaves").unwrap();
+        assert_eq!(
+            (&layer.drops[..], &layer.dropped_leaves[..]),
+            (&["counter/leaf/0001-0002".into()][..], &["0001-0002".into()][..])
+        );
     }
 
     #[test]
