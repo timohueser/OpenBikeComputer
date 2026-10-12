@@ -979,7 +979,7 @@ pub(crate) mod tests {
             sources: &[],
             http: &http,
             kept: &kept,
-            served: &kept,
+            served: &Default::default(),
             limits: Limits::machine(),
         };
         let first = plan(&store, &steps(OLD)).unwrap();

@@ -130,7 +130,7 @@ time_zone = "Europe/Berlin"
         sources: &[],
         http: &http,
         kept: &kept,
-        served: &kept,
+        served: &Default::default(),
         limits: Limits::machine(),
     };
     let build = |steps: &[Step]| -> Vec<Built> {

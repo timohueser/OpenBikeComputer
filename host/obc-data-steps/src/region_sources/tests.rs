@@ -130,7 +130,7 @@ fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
         sources: &[],
         http: &http,
         kept: &kept,
-        served: &kept,
+        served: &Default::default(),
         limits: Limits::machine(),
     };
     let mut journal = Journal::create(&store, ["build", "inputs"]).unwrap();

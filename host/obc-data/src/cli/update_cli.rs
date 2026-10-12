@@ -568,11 +568,8 @@ fn apply(
         }
     }
     enter((run, held), name, Phase::Build)?;
-    let served: Kept = serving
-        .iter()
-        .flat_map(|release| &release.outputs)
-        .map(|output| (output.step.clone(), output.clone()))
-        .collect();
+    let served =
+        serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
     let context = Context {
         store,
         root,
@@ -589,16 +586,13 @@ fn apply(
         group.fetches.clear();
     }
     let built = run.build(&context, &steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
-    // A step that kept its output of the serving release is kept by reference.
-    update.kept.extend(built.iter().filter(|built| built.unchanged).map(|built| {
-        let step = &built.receipt.step;
-        (step.clone(), served[step].clone())
-    }));
+    // An unchanged step is kept by reference.
+    update.kept.extend(built.iter().filter_map(|built| Some((built.receipt.step.clone(), built.kept.clone()?))));
     let baked = built.into_iter().map(|built| Baked {
+        unchanged: built.kept.is_some(),
         step: built.receipt.step,
         key: built.receipt.key,
         reused: built.reused,
-        unchanged: built.unchanged,
     });
     let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
@@ -1602,6 +1596,29 @@ pub(super) mod tests {
             release.outputs.into_iter().filter(|output| output.layer == "leaves").collect()
         };
         assert_eq!(outputs(&elsewhere.serving), outputs(&refreshed.serving), "kept by reference");
+    }
+
+    #[test]
+    fn an_unchanged_step_takes_the_versions_and_the_client_of_its_step_now() {
+        let fixture = fixture("update-settles");
+        fixture.with_sources(&[]);
+        write(&fixture.root().join("upper-internal"), "");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+
+        // `head` 2 has the bytes of 1, `test/upper` gets a client file, and the store has no layer.
+        fixture.fetched_version("head", "2", "head.txt", b"head\n");
+        std::fs::remove_file(fixture.root().join("upper-internal")).unwrap();
+        std::fs::remove_dir_all(fixture.store.root().join("layers")).unwrap();
+        let moved = update(&fixture, &target, |_| Ok(())).unwrap();
+        assert!(!moved.baked.is_empty() && moved.baked.iter().all(|baked| baked.unchanged), "{:?}", moved.baked);
+        let release = Release::read(&target, &moved.serving).unwrap();
+        let upper = release.outputs.iter().find(|output| output.step == "test/upper").unwrap();
+        assert_eq!((upper.snapshots["head"].version.as_str(), &upper.client), ("2", &crate::engine::Client::All));
+        let file = &upper.files[0];
+        assert!(target.missing(&[(format!("objects/{}", file.sha256), file.size)]).unwrap().is_empty());
+        let settled = review(&fixture, &target);
+        assert!(settled.layers.is_empty() && settled.bakes.is_empty(), "{:?}", settled.layers);
     }
 
     #[test]

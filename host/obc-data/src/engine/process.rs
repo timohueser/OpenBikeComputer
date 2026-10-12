@@ -1,5 +1,6 @@
 //! Running a step and measuring what it cost.
 
+use std::cell::Cell;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -13,24 +14,37 @@ pub struct Usage {
     pub peak_rss_bytes: Option<u64>,
 }
 
-/// Run a step in this process. Its CPU time is the time of the whole process and of the children
-/// that it waited for, such as Osmium, so it is exact only while no other step runs. Its peak is
-/// the peak of the whole process so far, not the peak of the step: an upper bound, as the scheduler
-/// needs. A child that ends while the step runs, with the largest peak of any child so far, gives
-/// the step its peak when that is more.
+thread_local! {
+    /// The CPU milliseconds and the largest peak of the programs that the Rust step of this thread
+    /// ran with [`run_child`].
+    static CHILDREN: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+}
+
+/// Run a step in this process, on this thread. Its CPU time is the time of the whole process, so it
+/// is exact only while no other step runs. Its peak is the peak of the whole process so far, not
+/// the peak of the step: an upper bound, as the scheduler needs. The programs that the step runs
+/// with [`run_child`], such as Osmium, add their CPU time, and their peak when it is more.
 pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
     let start = Instant::now();
+    CHILDREN.set((0, 0));
     let before = own_usage();
     step()?;
     let after = own_usage();
+    let (cpu, peak) = CHILDREN.get();
     Ok(Usage {
         wall_ms: start.elapsed().as_millis() as u64,
-        cpu_ms: before.zip(after).map(|(before, after)| after.cpu_ms.saturating_sub(before.cpu_ms)),
-        peak_rss_bytes: before.zip(after).map(|(before, after)| {
-            let child = if after.children_peak > before.children_peak { after.children_peak } else { 0 };
-            after.peak.max(child)
-        }),
+        cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0) + cpu),
+        peak_rss_bytes: after.map(|after| after.1.max(peak)),
     })
+}
+
+/// Run `command` for the Rust step of this thread, and wait for it: its CPU time and its peak
+/// count as those of the step.
+pub fn run_child(command: &mut Command) -> Result<ExitStatus, String> {
+    let (status, cpu, peak) = wait(command.spawn().map_err(|e| e.to_string())?)?;
+    let (all, largest) = CHILDREN.get();
+    CHILDREN.set((all + cpu.unwrap_or(0), largest.max(peak.unwrap_or(0))));
+    Ok(status)
 }
 
 /// The interpreter of a Python step: the system Python that `uv python find` selects for the
@@ -115,35 +129,34 @@ fn wait(mut child: std::process::Child) -> Result<(ExitStatus, Option<u64>, Opti
     Ok((child.wait().map_err(|e| format!("wait for the step: {e}"))?, None, None))
 }
 
-/// What this process used so far: CPU with the children that it waited for, its peak resident
-/// bytes, and the peak of its largest child.
-#[derive(Clone, Copy)]
-struct Own {
-    cpu_ms: u64,
-    peak: u64,
-    children_peak: u64,
-}
-
+/// CPU milliseconds and peak resident bytes of this process so far.
 #[cfg(unix)]
-fn own_usage() -> Option<Own> {
-    let usage = |who| {
-        // SAFETY: rusage is plain data, and getrusage fills it.
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        (unsafe { libc::getrusage(who, &mut usage) } == 0).then(|| measure(&usage))
-    };
-    let ((cpu, peak), (children_cpu, children_peak)) = (usage(libc::RUSAGE_SELF)?, usage(libc::RUSAGE_CHILDREN)?);
-    Some(Own { cpu_ms: cpu + children_cpu, peak, children_peak })
+fn own_usage() -> Option<(u64, u64)> {
+    // SAFETY: rusage is plain data, and getrusage fills it.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    (unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } == 0).then(|| measure(&usage))
 }
 
 #[cfg(not(unix))]
-fn own_usage() -> Option<Own> {
+fn own_usage() -> Option<(u64, u64)> {
     None
 }
 
 /// The peak resident bytes of this process, or of the largest child that it waited for, when that is
 /// more.
+#[cfg(unix)]
 pub fn peak_rss() -> Option<u64> {
-    own_usage().map(|own| own.peak.max(own.children_peak))
+    let peak = |who| {
+        // SAFETY: rusage is plain data, and getrusage fills it.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        (unsafe { libc::getrusage(who, &mut usage) } == 0).then(|| measure(&usage).1)
+    };
+    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN))
+}
+
+#[cfg(not(unix))]
+pub fn peak_rss() -> Option<u64> {
+    None
 }
 
 /// User plus system CPU milliseconds, and the peak resident set in bytes.
@@ -164,8 +177,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_rust_step_has_the_peak_of_a_program_that_it_runs() {
-        let child = || Command::new("python3").args(["-c", "b'x' * (600 << 20)"]).status().map_err(|e| e.to_string());
-        let usage = in_process(|| child().map(drop)).unwrap();
+        let usage =
+            in_process(|| run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)).unwrap();
         assert!(usage.peak_rss_bytes.unwrap() > 600 << 20, "{:?}", usage.peak_rss_bytes);
     }
 

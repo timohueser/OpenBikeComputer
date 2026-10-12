@@ -134,7 +134,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTre
         sources: &[],
         http: &Http::new(),
         kept: &kept,
-        served: &kept,
+        served: &Default::default(),
         limits: Limits::machine(),
     };
     let built = run.build(&context, &steps, &plan).unwrap();
