@@ -214,6 +214,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
+| `prepared/<target>/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `scope.json`, the region of the run; `journal.jsonl`, the files that it uploaded and the source versions that it read; and `work/`, the files that it did not upload yet |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -250,7 +251,8 @@ record has for another URL fails the fetch.
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
-`digest` version is 64 lowercase hex digits.
+`digest` version is 64 lowercase hex digits. The version of a `prepared` source that a step reads
+is `<date>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
 
 ### Clean
 
@@ -1326,13 +1328,15 @@ its manifest.
   {
     "version": "2026-10-12",
     "manifest_sha256": "<sha256 of manifest.json>",
+    "format": 1,
     "bytes": 1048576,
     "time": "2026-10-19T08:00:00Z"
   }
 ]
 ```
 
-`bytes` is the size of the files of the version, and `time` is when it was complete. The manifest
+`format` is the `format` of the manifest, `bytes` is the size of the files of the version, and
+`time` is when it was complete. The manifest
 is compact JSON with the keys of each object in byte order:
 
 ```json
@@ -1368,13 +1372,14 @@ is compact JSON with the keys of each object in byte order:
 
 `obc data source prepare ID` makes a version for a target, `prod` by default:
 
-1. The version is the UTC date when its first run starts. A run keeps its work on its machine in
-   `<store>/prepared/<target>/<id>/<version>/`: its region, a journal of the files that it uploaded
-   and of the source versions that it read, and the files that it did not upload yet. The same
-   command resumes the version: the producer does not make a file of the journal again, and the
-   run uploads only the keys that the target lacks. A resume with another region refuses. When no
-   run of the machine resumes, a version that the target has complete refuses.
-2. The review names the version, the inputs with the size of their files in the store, the files
+1. The version is the UTC date when its first run starts. A run keeps its work in
+   `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
+   resumes the version: the producer does not make a file of the journal again. A resume with
+   another region refuses. A stopped version older than the newest complete version on the target
+   is not resumed: the run starts a new version, deletes the work of the old one, and the review
+   names it in `abandoned`. A new version that the target has complete refuses.
+2. The review names the version, the inputs with the size of their files in the store (`unknown`
+   lists an input whose size the store does not know), the files
    that earlier runs uploaded, the cost from the manifest of the newest version that the target
    lists, the bytes that go into the store and to the target, the check of this machine as in the
    [review](#review) of an update, and for each target that reads the versions of this target the
@@ -1385,11 +1390,16 @@ is compact JSON with the keys of each object in byte order:
 3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
    of a target. It makes the review again under the lock, and refuses a review that is not
    `--expect`.
-4. The producer writes each file. The run uploads it at once, records it in the journal and deletes
-   it from the work. A key that holds another size is refused.
-5. The run checks that it still holds the lock. It writes the manifest only when the key is absent:
-   a manifest that an earlier run of the version wrote stays when it names the same files. Then a
-   conditional write adds the version to `versions.json`, and the work of the version goes.
+4. A run of a new version deletes the folders of older versions of the source on the target that
+   have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
+   the lock.
+5. The producer writes each file. The run uploads it at once, records its SHA-256 in the journal
+   and deletes it from the work. No reader reads a version before its manifest, so the upload
+   replaces a key that a stopped run left with other bytes.
+6. The run checks that it still holds the lock, and that the target has each file of the journal
+   with its size. It writes the manifest only when the key is absent: a manifest that an earlier
+   run of the version wrote stays when it names the same files. Then a conditional write adds the
+   version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
 `--region` and `--box` make a version of that region only. Such a version is not for `prod`, whose
 versions every target reads. `obc data runs RUN --stop` stops a run, and the same command resumes
@@ -1397,21 +1407,28 @@ it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stop
 
 #### Read
 
-Every target knows the versions that `prod` lists, and the versions that it lists itself. Before
-an update or the [overview](#overview) lists the steps, each prepared source gets a version: the
-serving version of a `manual` source, else the newest version that the target knows. So a new
-version makes each layer that reads an older one stale, with the cause `source`, in each target
-that knows it, and in no target that reads it already. When `prod` cannot be read, another target
-reads the versions that it knows, and a bake from the store needs no network. When a target knows
-no version, the fetch fails and its message names the command that prepares one.
+Two targets can have other files under one version name, such as a region on `local` and all of
+the source on `prod`. So the manifest is the identity of a version: a step reads
+`<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
+(`copy` is `false`) and the fetch name it.
 
-A step names the files of a version that it reads. The fetch reads the manifest from the first
-target of `data/targets.toml` that has the complete version, `prod` first, through its public
-URL, without credentials. It downloads only the named files that the store lacks, and checks the
-SHA-256 of each against the manifest: a file with other bytes fails the fetch. The record of the
-version in the store has the manifest and these files, and the `url` of each is its key. A
-release pins the manifest: its `sources` entry of a prepared version names `manifest.json` with
-its SHA-256, and its `copy` is `false`.
+A target knows the versions that it lists, and a target other than `prod` also the versions that
+`prod` lists; on one name, its own entry wins. Before an update or the [overview](#overview) lists
+the steps, each prepared source that they read gets a version: the serving version of a `manual`
+source, else the newest version that the target knows in the `format` of the producer of this
+`obc data`. So a new version makes each layer that reads an older one stale, with the cause
+`source`, in each target that knows it, and in no target that reads it already. When `prod` cannot
+be read, another target reads the versions that it knows, and a bake from the store needs no
+network. When a target knows no version in that format, the fetch fails, and its message names the
+command that prepares one.
+
+A step names the files of a version that it reads; an update refuses a step that names none. The
+fetch reads the manifest of the version from the targets of `data/targets.toml`, `prod` first,
+through their public URLs, without credentials. It skips a target that it cannot read, and takes
+the first manifest with the SHA-256 of the version. It downloads only the named files that the
+store lacks, and checks the SHA-256 of each against the manifest: a file with other bytes fails the
+fetch. The record of the version in the store has the manifest and these files, and the `url` of
+each is its key.
 
 #### Delete
 
@@ -3090,6 +3107,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "PrepareReview": {
       "description": "The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when\nthey are the ones that a person read.",
       "properties": {
+        "abandoned": {
+          "description": "The version that a stopped run of this machine started and that this run does not resume:\nthe target has a newer complete version. `null` when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "args": {
           "description": "The arguments after `obc data` that start the prepare of this review.",
           "items": {
@@ -3101,7 +3125,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/PreparedCost"
         },
         "done": {
-          "$ref": "#/$defs/PreparedFiles",
+          "$ref": "#/$defs/Downloads",
           "description": "The files that earlier runs of the version uploaded: this run does not upload them again."
         },
         "format": {
@@ -3161,6 +3185,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "source",
         "target",
         "version",
+        "abandoned",
         "format",
         "revision",
         "scope",
@@ -3190,6 +3215,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "unknown": {
+          "description": "The inputs whose size the store does not know, as `SOURCE@VERSION`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "upload_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -3211,26 +3243,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "peak_rss_bytes",
         "store_bytes",
-        "upload_bytes"
-      ],
-      "type": "object"
-    },
-    "PreparedFiles": {
-      "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "files": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "files",
-        "bytes"
+        "upload_bytes",
+        "unknown"
       ],
       "type": "object"
     },

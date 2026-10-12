@@ -11,7 +11,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::update_cli::{self, MachineCheck, Started};
+use super::update_cli::{self, Downloads, MachineCheck};
 use super::{print_json, print_table, Code, Error};
 use crate::engine::runs::{self, Event, Phase, Run};
 use crate::fetch::http::Http;
@@ -19,7 +19,7 @@ use crate::lock::Held;
 use crate::prepared::{self, Job, Manifest, Opening, Prepared, Scope, PROD};
 use crate::settings::Settings;
 use crate::sources::{FetchKind, Registry, Source};
-use crate::store::{sha256_hex, Store, RESERVE};
+use crate::store::{sha256_hex, Store};
 use crate::target::Target;
 
 #[derive(Args)]
@@ -74,13 +74,16 @@ pub struct PrepareReview {
     pub target: String,
     /// The version that the run makes: the UTC date when its first run started.
     pub version: String,
+    /// The version that a stopped run of this machine started and that this run does not resume:
+    /// the target has a newer complete version. `null` when there is none.
+    pub abandoned: Option<String>,
     pub format: u32,
     pub revision: u32,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     pub inputs: Vec<PreparedInput>,
     /// The files that earlier runs of the version uploaded: this run does not upload them again.
-    pub done: PreparedFiles,
+    pub done: Downloads,
     pub cost: PreparedCost,
     pub machine: MachineCheck,
     /// Each target whose serving release reads an older version, with those layers: they are stale
@@ -100,12 +103,6 @@ pub struct PreparedInput {
     pub bytes: Option<u64>,
 }
 
-#[derive(Debug, Default, Serialize, JsonSchema)]
-pub struct PreparedFiles {
-    pub files: u64,
-    pub bytes: u64,
-}
-
 /// Estimates from the newest version that the target lists; `null` without one.
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct PreparedCost {
@@ -114,6 +111,8 @@ pub struct PreparedCost {
     /// What goes into the store: the inputs that it lacks, and the files of the version.
     pub store_bytes: u64,
     pub upload_bytes: Option<u64>,
+    /// The inputs whose size the store does not know, as `SOURCE@VERSION`.
+    pub unknown: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -145,28 +144,22 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     let context = Context { root, store: &store, http: &http, prepared };
     let asked =
         Asked { id: &args.id, scope: (args.region.as_deref(), args.bbox.as_deref()), expect: args.expect.as_deref() };
-    // The process of a detached run: it takes the lock and makes the review again under it.
-    if let Ok(id) = std::env::var(runs::RUN) {
-        std::env::remove_var(runs::RUN);
-        runs::stop_on_signals();
-        let mut run = Run::attach(&store, &id)?;
-        let result = prepare(&context, (&args.to, &target), &asked, &today, &mut run);
-        return match super::api::finish_run(run, result) {
-            Ok(done) => {
-                println!(
-                    "{}@{} on {}: {} files, {}, manifest {}; this run uploaded {}",
-                    done.source,
-                    done.version,
-                    done.target,
-                    done.files,
-                    runs::bytes(done.bytes),
-                    &done.manifest_sha256[..12],
-                    done.uploaded
-                );
-                Ok(())
-            }
-            Err(error) => std::process::exit(error.code.exit().into()),
-        };
+    let print = |done: &Done| {
+        println!(
+            "{}@{} on {}: {} files, {}, manifest {}; this run uploaded {}",
+            done.source,
+            done.version,
+            done.target,
+            done.files,
+            runs::bytes(done.bytes),
+            &done.manifest_sha256[..12],
+            done.uploaded
+        );
+        Ok(())
+    };
+    let work = |run: &mut Run| prepare(&context, (&args.to, &target), &asked, &today, run);
+    if let Some(done) = super::api::detached(&store, work, print) {
+        return done;
     }
     let mut review = plan(&context, (&args.to, &target), &asked, &today)?.review;
     review.args = ["source", "prepare", &args.id, "--to", &args.to].map(String::from).into();
@@ -177,21 +170,11 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
         return print_review(&review, json);
     }
     check(&review, asked.expect)?;
-    if let Target::R2(remote) = &target {
-        if args.expect.is_none() {
-            return Err(Code::Usage
-                .error(format!("a prepare for `{}` starts only with `--expect ID`, the id of the review that the owner approved; nothing changed", args.to))
-                .fix(format!("Run `obc data source prepare {} --to {} --dry-run`, have the owner approve its id, then run the command that it shows.", args.id, args.to)));
-        }
-        let question = format!("Publish {}@{} to `{}` ({})?", review.source, review.version, args.to, remote.url(""));
-        super::confirm(&question, args.yes)?;
-    }
-    let run = runs::detach(&store, &review.args)?;
-    if json {
-        return print_json(&Started { run, review: review.id });
-    }
-    eprintln!("obc data: run {run} of review {}", review.id);
-    super::runs_cli::follow(&store, &run, false)
+    let what = format!("a prepare for `{}`", args.to);
+    let dry_run = format!("obc data source prepare {} --to {} --dry-run`", args.id, args.to);
+    let question = format!("Publish {}@{} to `{}`", review.source, review.version, args.to);
+    super::api::approved(&target, (asked.expect.is_some(), args.yes), (&what, &dry_run, &question))?;
+    super::api::start(&store, &review.args, &review.id, json)
 }
 
 /// What a prepare decides before it changes anything.
@@ -201,6 +184,8 @@ struct Planned<'a> {
     source: Source,
     sources: Vec<Source>,
     scope: Option<Scope>,
+    /// Whether the run starts a new version, and resumes none.
+    fresh: bool,
 }
 
 /// Find the producer of the source, its version and its scope, and review the work.
@@ -238,16 +223,22 @@ fn plan<'a>(
                 "Prepare the region for another target, such as `--to local`, or all of `{id}` for `{PROD}`."
             )));
     }
-    let started = prepared::started(store, name, id)?;
-    let version = started.clone().unwrap_or_else(|| today.into());
-    if started.is_none() && prepared::manifest(target, id, &version)?.is_some() {
+    let listed = prepared::versions(target, id)?;
+    let newest = listed.iter().map(|listed| listed.version.as_str()).max();
+    // A stopped version behind a newer complete one is not resumed.
+    let (resumed, abandoned) = match prepared::started(store, name, id)? {
+        Some(started) if newest.is_some_and(|newest| newest > started.as_str()) => (None, Some(started)),
+        started => (started, None),
+    };
+    let fresh = resumed.is_none();
+    let version = resumed.unwrap_or_else(|| today.to_string());
+    if fresh && prepared::manifest(target, id, &version)?.is_some() {
         return Err(Code::Usage
             .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
             .fix("The next version starts on the next day, by UTC."));
     }
     let wanted = producer.inputs(id, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
-    let mut inputs = Vec::new();
-    let mut store_bytes = 0;
+    let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
     for wanted in wanted {
         let bytes = match &wanted.version {
             Some(version) => {
@@ -267,12 +258,16 @@ fn plan<'a>(
             }
             None => None,
         };
+        if bytes.is_none() {
+            let version = wanted.version.as_deref().unwrap_or("newest");
+            unknown.push(runs::fetched(&wanted.source, version, &wanted.params));
+        }
         inputs.push(PreparedInput { source: wanted.source, version: wanted.version, params: wanted.params, bytes });
     }
     let (files, bytes) = prepared::resumed(store, name, id, &version);
-    let done = PreparedFiles { files, bytes };
-    let mut cost = PreparedCost { store_bytes, ..PreparedCost::default() };
-    if let Some(newest) = prepared::versions(target, id)?.last() {
+    let done = Downloads { files, bytes };
+    let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
+    if let Some(newest) = listed.last() {
         let manifest = prepared::manifest(target, id, &newest.version)?;
         (cost.wall_ms, cost.peak_rss_bytes) =
             manifest.map_or((None, None), |m| (Some(m.cost.wall_ms), m.cost.peak_rss_bytes));
@@ -287,14 +282,7 @@ fn plan<'a>(
             runs::bytes(memory)
         ));
     }
-    if let Some(free) = machine.store_free_bytes.filter(|free| *free < cost.store_bytes.saturating_add(RESERVE)) {
-        machine.refusals.push(format!(
-            "the store gets about {}, and its disk has {} free and keeps {} free",
-            runs::bytes(cost.store_bytes),
-            runs::bytes(free),
-            runs::bytes(RESERVE)
-        ));
-    }
+    machine.refusals.extend(update_cli::disk_refusal(&machine, cost.store_bytes));
     let stale = stale(root, store, (name, target), id, &version)?;
     let decisions = serde_json::json!({
         "source": id,
@@ -311,6 +299,7 @@ fn plan<'a>(
         source: id.into(),
         target: name.into(),
         version,
+        abandoned,
         format: producer.format(),
         revision: producer.revision(),
         scope: scope.clone(),
@@ -321,7 +310,7 @@ fn plan<'a>(
         stale,
         args: Vec::new(),
     };
-    Ok(Planned { review, producer, source, sources, scope })
+    Ok(Planned { review, producer, source, sources, scope, fresh })
 }
 
 /// The layers of each target that read a version of `id` older than `version`. Every target reads
@@ -359,14 +348,7 @@ fn stale(
 
 /// Refuse a prepare whose review is not `expect`, or that this machine cannot do.
 fn check(review: &PrepareReview, expect: Option<&str>) -> Result<(), Error> {
-    if let Some(expect) = expect.filter(|expect| *expect != review.id) {
-        return Err(Code::Usage
-            .error(format!(
-                "the review of `{}` is {}, not {expect}: it changed; nothing changed",
-                review.source, review.id
-            ))
-            .fix("Read the review again: run the same command with `--dry-run` and without `--expect`."));
-    }
+    update_cli::expect(&review.source, &review.id, expect)?;
     if !review.machine.refusals.is_empty() {
         return Err(Code::Blocked
             .error(format!(
@@ -394,7 +376,7 @@ pub(super) fn prepare(
         run.record(&Event::Phase { phase: Phase::Prepare })?;
         let planned = plan(context, (name, target), asked, today)?;
         if !held.beat(Some(&planned.review.id), None, crate::date::now())? {
-            return Err(lost(&label));
+            return Err(update_cli::lost(&label));
         }
         check(&planned.review, asked.expect)?;
         make(context, (name, target), planned, (run, held))
@@ -407,10 +389,23 @@ fn make(
     planned: Planned,
     (run, held): (&mut Run, &Held),
 ) -> Result<Done, Error> {
-    let Planned { review, producer, source, sources, scope } = planned;
+    let Planned { review, producer, source, sources, scope, fresh } = planned;
     let (id, version) = (source.id.as_str(), review.version.as_str());
-    let label = format!("source `{id}` on `{name}`");
-    enter((run, held), (&label, id), Phase::Build)?;
+    let (label, again) = (format!("source `{id}` on `{name}`"), format!("obc data source prepare {id} --to {name}"));
+    let lock = (label.as_str(), again.as_str());
+    update_cli::enter_as((run, held), lock, Phase::Build)?;
+    if let Some(abandoned) = &review.abandoned {
+        prepared::forget(context.store, name, id, abandoned)?;
+    }
+    if fresh {
+        // Nothing resumes an older version without a manifest: a stopped run left it.
+        for (at, key) in prepared::incomplete(target, id, version)?.iter().enumerate() {
+            if at % 100 == 0 && !held.beat(None, None, crate::date::now())? {
+                return Err(update_cli::lost(lock.0));
+            }
+            target.remove(key)?;
+        }
+    }
     let start = Instant::now();
     let opening = Opening {
         root: context.root,
@@ -427,7 +422,7 @@ fn make(
     if files.is_empty() {
         return Err(Code::RunFailed.error(format!("{id}@{version}: the producer made no file; nothing is published")));
     }
-    enter((run, held), (&label, id), Phase::Upload)?;
+    update_cli::enter_as((run, held), lock, Phase::Upload)?;
     let manifest = Manifest {
         source: id.into(),
         version: version.into(),
@@ -455,27 +450,6 @@ fn make(
     })
 }
 
-/// Enter `phase`, after a check that nothing stopped the run and that it still holds the lock.
-fn enter((run, held): (&mut Run, &Held), (label, id): (&str, &str), phase: Phase) -> Result<(), Error> {
-    if run.stopping() {
-        return Err(Code::Failed
-            .error(format!("the run stopped before the phase {phase}; nothing more changed"))
-            .fix(format!("Run `obc data source prepare {id}` again: it resumes.")));
-    }
-    run.record(&Event::Phase { phase })?;
-    match held.beat(None, Some(phase), crate::date::now())? {
-        true => Ok(()),
-        false => Err(lost(label)),
-    }
-}
-
-/// The error of a run whose lock another run took.
-fn lost(label: &str) -> Error {
-    Code::Failed
-        .error(format!("another run took the lock of {label}; this run stopped before it changed more"))
-        .fix("Run `obc data runs` to see the run that holds it.")
-}
-
 fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     if json {
         return print_json(review);
@@ -485,6 +459,10 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
     rows.push(vec!["  version".into(), format!("format {}, revision {}", review.format, review.revision)]);
+    if let Some(abandoned) = &review.abandoned {
+        let text = format!("{abandoned} stays incomplete: the target has a newer complete version");
+        rows.push(vec!["  abandon".into(), text]);
+    }
     for input in &review.inputs {
         let size = input.bytes.map_or("size unknown".into(), runs::bytes);
         let version = input.version.as_deref().unwrap_or("newest");
@@ -508,10 +486,13 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
         text += &format!(", peak {} memory", runs::bytes(peak));
     }
     rows.push(vec!["  cost".into(), text]);
-    let machine = match review.machine.refusals.as_slice() {
+    let mut machine = match review.machine.refusals.as_slice() {
         [] => "this machine can do it".to_string(),
         refusals => format!("this machine cannot do it: {}", refusals.join("; ")),
     };
+    if !cost.unknown.is_empty() {
+        machine += &format!("; input sizes unknown: {}", cost.unknown.join(", "));
+    }
     rows.push(vec!["  machine".into(), machine]);
     for readers in &review.stale {
         let text = match (&readers.error, readers.layers.as_slice()) {
@@ -562,10 +543,10 @@ mod tests {
         Wanted { source: "head".into(), version: Some("1".into()), params: Vec::new() }
     }
 
-    /// The test producer: three files of `head@1`. The file `fail-<path>` of the repository fails
-    /// the run at that file, and the folder `gate` holds the first file until `gate/open` comes.
-    /// `made` gets each file that it makes.
-    struct Sample;
+    /// The test producer of the format of its number: three files of `head@1` and of the region.
+    /// The file `fail-<path>` of the repository fails the run at that file, and the folder `gate`
+    /// holds the first file until `gate/open` comes. `made` gets each file that it makes.
+    struct Sample(u32);
 
     impl Prepared for Sample {
         fn name(&self) -> &'static str {
@@ -573,7 +554,7 @@ mod tests {
         }
 
         fn format(&self) -> u32 {
-            1
+            self.0
         }
 
         fn revision(&self) -> u32 {
@@ -600,7 +581,8 @@ mod tests {
                 }
                 let mut made = fs::OpenOptions::new().create(true).append(true).open(job.root.join("made")).unwrap();
                 std::io::Write::write_all(&mut made, format!("{path}\n").as_bytes()).unwrap();
-                write(&job.work.join(path), &format!("{path} of {}: {head}", job.version));
+                let region = job.scope.as_ref().map_or("all", |scope| scope.region.as_str());
+                write(&job.work.join(path), &format!("{path} of {} for {region}: {head}", job.version));
                 job.finish(path)?;
             }
             Ok(())
@@ -685,18 +667,37 @@ mod tests {
         (fixture, Target::Dir(prod), Target::Dir(local))
     }
 
-    /// Prepare `sample` for the target `name` on the day `today`.
+    /// Prepare `sample` of format 1 for the target `name` on the day `today`.
     fn prepare(fixture: &Fixture, name: &str, today: &str, asked: Asked) -> Result<Done, Error> {
+        prepare_with(fixture, &Sample(1), (name, today), asked)
+    }
+
+    fn prepare_with(
+        fixture: &Fixture,
+        sample: &Sample,
+        (name, today): (&str, &str),
+        asked: Asked,
+    ) -> Result<Done, Error> {
         let (root, http) = (fixture.root(), Http::new());
         let target = crate::target::find(&root, name, &fixture.store).unwrap();
-        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample] };
+        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[sample] };
         let mut run = Run::create(&fixture.store, ["source", "prepare", "sample"]).unwrap();
         let done = super::prepare(&context, (name, &target), &Asked { id: "sample", ..asked }, today, &mut run);
         crate::cli::api::finish_run(run, done)
     }
 
+    /// Update the target `name` with the producer of format 1.
     fn update(
         fixture: &Fixture,
+        target: (&str, &Target),
+        asked: &update_cli::Asked,
+    ) -> Result<update_cli::Updated, Error> {
+        update_with(fixture, &Sample(1), target, asked)
+    }
+
+    fn update_with(
+        fixture: &Fixture,
+        sample: &Sample,
         (name, target): (&str, &Target),
         asked: &update_cli::Asked,
     ) -> Result<update_cli::Updated, Error> {
@@ -704,18 +705,55 @@ mod tests {
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Reader, &Second]);
         let machine = MachineCheck::default();
         let settings = |settings: &mut Settings| if settings.region.is_empty() { region(settings) } else { Ok(()) };
+        let code: (&[&dyn Product], &[&dyn Prepared]) = (&products, &[sample]);
         let updated = update_cli::update(
             &root,
             &fixture.store,
             &Http::new(),
             (name, target),
-            &products,
+            code,
             settings,
             asked,
             Some(&machine),
             &mut run,
         );
         crate::cli::api::finish_run(run, updated)
+    }
+
+    /// The layers that an update of the target `name` bakes, with the text of their cause.
+    fn changes(fixture: &Fixture, (name, target): (&str, &Target)) -> Vec<(String, String)> {
+        let (products, machine): ([&dyn Product; 2], _) = ([&Reader, &Second], MachineCheck::default());
+        let code: (&[&dyn Product], &[&dyn Prepared]) = (&products, &[&Sample(1)]);
+        let (root, http) = (fixture.root(), Http::new());
+        let prepared = update_cli::prepare(
+            &root,
+            &fixture.store,
+            &http,
+            (name, target),
+            code,
+            |_| Ok(()),
+            &[],
+            Some(&machine),
+            None,
+        );
+        prepared.unwrap().review.layers.into_iter().map(|layer| (layer.layer, layer.text)).collect()
+    }
+
+    /// The version of `sample` that the serving release of `target` reads, and the bytes of its
+    /// client file.
+    fn served(target: &Target) -> (String, String) {
+        let (serving, _) = crate::release::serving(target).unwrap().unwrap();
+        let release = crate::release::Release::read(target, &serving.serving.id).unwrap();
+        let output = release.outputs.iter().find(|output| output.step == "reader/copy").unwrap();
+        let bytes = target.get(&format!("objects/{}", output.files[0].sha256)).unwrap().unwrap();
+        (output.snapshots["sample"].version.clone(), String::from_utf8(bytes).unwrap())
+    }
+
+    /// The version of `sample` that a step reads for the entry of `day` in `versions.json` of `target`.
+    fn pinned(target: &Target, day: &str) -> String {
+        let listed = prepared::versions(target, "sample").unwrap();
+        let entry = listed.iter().find(|entry| entry.version == day).unwrap();
+        format!("{}/{}", entry.version, entry.manifest_sha256)
     }
 
     fn keys(target: &Target, prefix: &str) -> Vec<String> {
@@ -763,7 +801,7 @@ mod tests {
         prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
         update(&fixture, ("prod", &prod), &Default::default()).unwrap();
         let (root, http) = (fixture.root(), Http::new());
-        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample] };
+        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample(1)] };
         let review =
             plan(&context, ("prod", &prod), &Asked { id: "sample", ..Asked::default() }, "2026-10-02").unwrap().review;
         let stale: Vec<(&str, &[String])> =
@@ -772,24 +810,9 @@ mod tests {
         prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
         update(&fixture, ("local", &local), &Default::default()).unwrap();
 
-        let changes = |(name, target): (&str, &Target)| {
-            let products: [&dyn Product; 2] = [&Reader, &Second];
-            let machine = MachineCheck::default();
-            let prepared = update_cli::prepare(
-                &root,
-                &fixture.store,
-                &http,
-                (name, target),
-                &products,
-                |_| Ok(()),
-                &[],
-                Some(&machine),
-                None,
-            );
-            prepared.unwrap().review.layers.into_iter().map(|layer| (layer.layer, layer.text)).collect::<Vec<_>>()
-        };
-        assert_eq!(changes(("prod", &prod)), [("reads".to_string(), "sample 2026-10-01 → 2026-10-02".to_string())]);
-        assert_eq!(changes(("local", &local)), [], "it reads the new version already");
+        let cause = format!("sample {} → {}", pinned(&prod, "2026-10-01"), pinned(&prod, "2026-10-02"));
+        assert_eq!(changes(&fixture, ("prod", &prod)), [("reads".to_string(), cause)]);
+        assert_eq!(changes(&fixture, ("local", &local)), [], "it reads the new version already");
     }
 
     #[test]
@@ -878,5 +901,66 @@ mod tests {
         write(&file, "other bytes");
         let refused = update(&fixture, ("local", &local), &Default::default()).unwrap_err();
         assert!(refused.message.contains("2026-10-01/a.txt holds bytes with the SHA-256"), "{}", refused.message);
+    }
+
+    #[test]
+    fn a_target_reads_its_own_version_of_a_name_and_prod_reads_the_one_of_prod() {
+        let (fixture, prod, local) = setup("prepare-identity");
+        let boxed = Asked { scope: (None, Some("7,47,8,48")), ..Asked::default() };
+        prepare(&fixture, "local", "2026-10-01", boxed).unwrap();
+        update(&fixture, ("local", &local), &Default::default()).unwrap();
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        update(&fixture, ("prod", &prod), &Default::default()).unwrap();
+        let ((prod_reads, prod_bytes), (local_reads, local_bytes)) = (served(&prod), served(&local));
+        assert_eq!((prod_reads, local_reads), (pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01")));
+        assert_ne!(pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01"), "one name, two versions");
+        assert!(prod_bytes.contains("for all") && local_bytes.contains("for box"), "{prod_bytes} {local_bytes}");
+        assert_eq!(changes(&fixture, ("local", &local)), [], "the own version of `local` wins");
+    }
+
+    #[test]
+    fn a_prepare_replaces_a_key_that_a_stopped_run_left_with_other_bytes() {
+        let (fixture, prod, _) = setup("prepare-replace");
+        let Target::Dir(dir) = &prod else { unreachable!() };
+        let (key, right) = (dir.join("sources/sample/2026-10-01/a.txt"), "a.txt of 2026-10-01 for all: head\n");
+        write(&key, &right.replace("a.txt", "z.txt"));
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        assert_eq!(fs::read_to_string(&key).unwrap(), right);
+        let manifest = prepared::manifest(&prod, "sample", "2026-10-01").unwrap().unwrap();
+        assert_eq!(manifest.files[0].sha256, sha256_hex(right.as_bytes()));
+    }
+
+    #[test]
+    fn a_new_version_deletes_older_incomplete_ones_and_does_not_resume_one_behind_a_complete_version() {
+        let (fixture, prod, _) = setup("prepare-abandon");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        // Another machine starts the next version.
+        let (job, aside) =
+            (fixture.store.root().join("prepared/prod/sample/2026-10-01"), fixture.scratch.0.join("aside"));
+        fs::rename(&job, &aside).unwrap();
+        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        assert_eq!(keys(&prod, "sources/sample/2026-10-01"), Vec::<String>::new(), "the stopped version goes");
+
+        fs::rename(&aside, &job).unwrap();
+        let (root, http) = (fixture.root(), Http::new());
+        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Sample(1)] };
+        let asked = Asked { id: "sample", ..Asked::default() };
+        let review = plan(&context, ("prod", &prod), &asked, "2026-10-03").unwrap().review;
+        assert_eq!((review.version.as_str(), review.abandoned.as_deref()), ("2026-10-03", Some("2026-10-01")));
+        prepare(&fixture, "prod", "2026-10-03", Asked::default()).unwrap();
+        assert!(!job.exists(), "the work of the old version goes");
+    }
+
+    #[test]
+    fn a_target_reads_only_a_version_of_the_format_of_its_producer() {
+        let (fixture, prod, local) = setup("prepare-format");
+        prepare_with(&fixture, &Sample(1), ("prod", "2026-10-01"), Asked::default()).unwrap();
+        prepare_with(&fixture, &Sample(2), ("prod", "2026-10-02"), Asked::default()).unwrap();
+        update(&fixture, ("local", &local), &Default::default()).unwrap();
+        assert_eq!(served(&local).0, pinned(&prod, "2026-10-01"));
+        let refused = update_with(&fixture, &Sample(3), ("prod", &prod), &Default::default()).unwrap_err();
+        assert!(refused.message.contains("Fix: run `obc data source prepare sample`"), "{}", refused.message);
     }
 }

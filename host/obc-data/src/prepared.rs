@@ -1,7 +1,8 @@
 //! Prepared sources: a long job publishes one version of a source to a target, under
 //! `sources/<id>/<version>/`, its manifest last. A bake reads a version as it reads any other
-//! source: the files that a step names, each with the SHA-256 of the manifest.
-//! `specs/obc-data.md`, "Prepared sources", gives the layout.
+//! source: the files that a step names, each with the SHA-256 of the manifest. The manifest is the
+//! identity of a version: a step reads `<version>/<manifest sha256>`, because two targets can have
+//! other files under one version name. `specs/obc-data.md`, "Prepared sources", gives the layout.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -112,6 +113,8 @@ pub struct Read {
 pub struct Version {
     pub version: String,
     pub manifest_sha256: String,
+    /// The format of the manifest: a target reads only a version of the format of its producer.
+    pub format: u32,
     /// The size of its files.
     pub bytes: u64,
     /// When it was complete, `YYYY-MM-DDTHH:MM:SSZ`.
@@ -170,24 +173,44 @@ fn edit_versions(folder: &Target, edit: impl Fn(&mut Vec<Version>)) -> Result<()
     Err(format!("{VERSIONS} changed at each of 8 writes"))
 }
 
-/// Make `manifest` the manifest of its version on `target`, then list the version in
-/// `versions.json`. A manifest that an earlier run of the version wrote stays when it names the same
-/// files.
+/// The version that a step reads: the name of `listed` and the SHA-256 of its manifest.
+fn pinned(listed: &Version) -> String {
+    format!("{}/{}", listed.version, listed.manifest_sha256)
+}
+
+/// The name and the manifest SHA-256 of the version `pinned` that a step reads.
+fn unpin(pinned: &str) -> Option<(&str, &str)> {
+    pinned
+        .split_once('/')
+        .filter(|(name, sha256)| crate::date::parse(name).is_some() && crate::release::is_sha256(sha256))
+}
+
+/// Make `manifest` the manifest of its version on `target`, after a check that the target has each
+/// of its files with its size, then list the version in `versions.json`. A manifest that an earlier
+/// run of the version wrote stays when it names the same files.
 pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
     let (id, version) = (&manifest.source, &manifest.version);
     let (folder, key) = (folder(target, id), format!("{version}/{MANIFEST}"));
-    let mut bytes = manifest.canonical();
+    let sizes: Vec<(String, u64)> =
+        manifest.files.iter().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
+    if let Some(missing) = folder.missing(&sizes)?.first() {
+        return Err(format!("sources/{id}/{missing} is not on the target; no manifest is written"));
+    }
+    let (mut bytes, mut time) = (manifest.canonical(), manifest.time.clone());
     if folder.put(&key, &bytes, &Condition::Absent)?.is_none() {
         bytes = folder.get(&key)?.ok_or_else(|| format!("sources/{id}/{key} came and went"))?;
-        if Manifest::parse(id, version, &bytes)?.files != manifest.files {
+        let kept = Manifest::parse(id, version, &bytes)?;
+        if kept.files != manifest.files {
             return Err(format!("sources/{id}/{key} names other files than this run made"));
         }
+        time = kept.time;
     }
     let entry = Version {
         version: version.clone(),
         manifest_sha256: sha256_hex(&bytes),
+        format: manifest.format,
         bytes: manifest.files.iter().map(|file| file.size).sum(),
-        time: manifest.time.clone(),
+        time,
     };
     edit_versions(&folder, |versions| {
         if !versions.iter().any(|listed| listed.version == entry.version) {
@@ -366,12 +389,9 @@ impl<'a> Job<'a> {
         if let Some(done) = self.files.get(path).filter(|done| done.sha256 != sha256) {
             return Err(format!("{path} has other bytes than the {} bytes that a run uploaded", done.size));
         }
-        let key = format!("{}/{path}", self.version);
-        self.folder.upload(&[(file.clone(), key.clone())])?;
-        // A key is immutable: one with another size is refused here.
-        if !self.folder.missing(&[(key.clone(), size)])?.is_empty() {
-            return Err(format!("sources/{}/{key} is not on the target after the upload", self.id));
-        }
+        // No reader reads the version before its manifest: a key of a stopped run can hold other
+        // bytes, and they go.
+        self.folder.replace(&file, &format!("{}/{path}", self.version))?;
         if !self.done(path) {
             self.record(Entry::File(LayerFile { path: path.into(), size, sha256 }))?;
             self.uploaded += 1;
@@ -411,13 +431,15 @@ pub(crate) fn resumed(store: &Store, target: &str, id: &str, version: &str) -> (
 }
 
 /// Give `inputs` the version of each prepared source of `read`, the fetches that the steps of the
-/// target `name` read: the serving version of a `manual` source, else the newest version that the
-/// target or [`PROD`] lists. A source without one is due, and its fetch says how to prepare it.
+/// target `name` read: the serving version of a `manual` source, else the newest version of the
+/// format of its producer that the target lists, or, for a target that is not [`PROD`], that `prod`
+/// lists. The entry of the target wins over the one of `prod` with the same name. A source without
+/// one is due, and its fetch says how to prepare one.
 pub(crate) fn resolve(
     root: &Path,
     store: &Store,
     (name, target): (&str, &Target),
-    (sources, read): (&[Source], &BTreeSet<RequestKey>),
+    (sources, read, producers): (&[Source], &BTreeSet<RequestKey>, &[&dyn Prepared]),
     inputs: &mut Inputs,
 ) -> Result<(), String> {
     let prepared = sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared);
@@ -432,19 +454,35 @@ pub(crate) fn resolve(
     for source in prepared {
         let key = (source.id.clone(), Vec::new());
         let serving = inputs.serving.get(&key).cloned();
-        let mut known: Vec<String> = serving.iter().cloned().collect();
-        if source.refresh != Refresh::Manual || serving.is_none() {
-            known.extend(versions(target, &source.id)?.into_iter().map(|listed| listed.version));
-            match prod.as_ref().map(|prod| versions(prod, &source.id)) {
-                Some(Ok(listed)) => known.extend(listed.into_iter().map(|listed| listed.version)),
-                // A bake from the store needs no network.
-                Some(Err(e)) => {
-                    eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows")
+        let format = producer(producers, &source.id).map(|producer| producer.format());
+        let chosen = match serving {
+            Some(serving) if source.refresh == Refresh::Manual => Some(serving),
+            serving => {
+                let mut listed = versions(target, &source.id)?;
+                match prod.as_ref().map(|prod| versions(prod, &source.id)) {
+                    Some(Ok(more)) => {
+                        let own: BTreeSet<String> = listed.iter().map(|entry| entry.version.clone()).collect();
+                        listed.extend(more.into_iter().filter(|entry| !own.contains(&entry.version)));
+                    }
+                    // A bake from the store needs no network.
+                    Some(Err(e)) => {
+                        eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows")
+                    }
+                    None => {}
                 }
-                None => {}
+                let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
+                let newest = listed.iter().filter(|entry| fits(entry)).max_by(|a, b| a.version.cmp(&b.version));
+                // A serving version that no list names stays, as on a machine without network.
+                let listed_as = |serving: &String| listed.iter().find(|entry| pinned(entry) == *serving);
+                let serving = serving.filter(|serving| listed_as(serving).is_none_or(fits));
+                let name = |pinned: &String| unpin(pinned).map(|(version, _)| version.to_string());
+                match (newest.map(pinned), serving) {
+                    (Some(newest), Some(serving)) if name(&serving) > name(&newest) => Some(serving),
+                    (newest, serving) => newest.or(serving),
+                }
             }
-        }
-        match known.into_iter().max() {
+        };
+        match chosen {
             Some(version) => {
                 inputs.resolved.insert(key, version);
             }
@@ -456,9 +494,10 @@ pub(crate) fn resolve(
     Ok(())
 }
 
-/// Give `store` the manifest of the version of `request` and the files that `names` names, from the
-/// first target of `data/targets.toml` that has the complete version, [`PROD`] first. Each file
-/// must have the SHA-256 that the manifest gives. No target needs a credential.
+/// Give `store` the manifest of the version of `request`, `<version>/<manifest sha256>`, and the
+/// files that `names` names, from the first target of `data/targets.toml` whose manifest of the
+/// version has that SHA-256, [`PROD`] first. A target that cannot be read is skipped. Each file must
+/// have the SHA-256 that the manifest gives. No target needs a credential.
 pub(crate) fn fetch(
     root: &Path,
     store: &Store,
@@ -466,21 +505,35 @@ pub(crate) fn fetch(
     names: &[String],
 ) -> Result<Snapshot, String> {
     let id = &request.source.id;
-    let version = request.version.as_ref().ok_or_else(|| {
-        format!("no target lists a version of `{id}`. Fix: prepare one with `obc data source prepare {id}`")
-    })?;
+    let Some(pinned) = request.version.as_deref() else {
+        return Err(format!(
+            "no target lists a version of `{id}` that this `obc data` reads. Fix: run `obc data source prepare {id}`"
+        ));
+    };
+    let (version, sha256) =
+        unpin(pinned).ok_or_else(|| format!("`{pinned}` is not a version of `{id}`: <date>/<manifest sha256>"))?;
     let mut targets: Vec<(String, Target)> = crate::target::load(root, store)?.into_iter().collect();
     targets.sort_by_key(|(name, _)| name.as_str() != PROD);
     let key = format!("{version}/{MANIFEST}");
-    let mut found = None;
-    for (_, target) in targets {
+    let (mut found, mut unread) = (None, Vec::new());
+    for (name, target) in targets {
         let folder = folder(&target, id);
-        if let Some(bytes) = folder.get_public(&key)? {
-            found = Some((folder, bytes));
-            break;
+        match folder.get_public(&key) {
+            Ok(Some(bytes)) if sha256_hex(&bytes) == sha256 => {
+                found = Some((folder, bytes));
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => unread.push(format!("`{name}` ({e})")),
         }
     }
-    let (folder, bytes) = found.ok_or_else(|| format!("no target of data/targets.toml has {id}@{version}"))?;
+    let (folder, bytes) = found.ok_or_else(|| {
+        let unread = match unread.is_empty() {
+            true => String::new(),
+            false => format!("; these targets cannot be read: {}", unread.join(", ")),
+        };
+        format!("no target of data/targets.toml has {id}@{pinned}{unread}")
+    })?;
     let manifest = Manifest::parse(id, version, &bytes)?;
     let retrieved = crate::date::timestamp(crate::date::now());
     let record = |name: &str, size: u64, sha256: String| FileRecord {
@@ -490,13 +543,12 @@ pub(crate) fn fetch(
         sha256,
         retrieved: retrieved.clone(),
     };
-    let sha256 = sha256_hex(&bytes);
-    if !store.object(&sha256).is_file() {
+    if !store.object(sha256).is_file() {
         let part = store.partial(&format!("{sha256}.{}.manifest", std::process::id()));
         crate::store::write_atomic(&part, &bytes)?;
-        store.insert(&part, &sha256)?;
+        store.insert(&part, sha256)?;
     }
-    let mut records = vec![record(MANIFEST, bytes.len() as u64, sha256)];
+    let mut records = vec![record(MANIFEST, bytes.len() as u64, sha256.into())];
     for name in names.iter().filter(|name| *name != MANIFEST) {
         let file = manifest.files.iter().find(|file| &file.path == name);
         let file = file.ok_or_else(|| format!("{id}@{version} has no file {name}"))?;
@@ -508,8 +560,37 @@ pub(crate) fn fetch(
         }
         records.push(record(name, file.size, file.sha256.clone()));
     }
-    crate::fetch::record(store, id, version, &records)?;
-    Ok(Snapshot { source: id.clone(), version: version.clone(), files: records })
+    crate::fetch::record(store, id, pinned, &records)?;
+    Ok(Snapshot { source: id.clone(), version: pinned.into(), files: records })
+}
+
+/// Refuse a step that reads a prepared source without names: its files are not all in the store.
+pub(crate) fn named(steps: &[crate::engine::Step], sources: &[Source]) -> Result<(), String> {
+    let prepared = |id: &str| sources.iter().any(|source| source.id == id && source.fetch.kind == FetchKind::Prepared);
+    for step in steps {
+        for input in &step.inputs {
+            if let crate::engine::Input::Snapshot { source, files, .. } = input {
+                if files.is_empty() && prepared(source) {
+                    return Err(format!("step `{}` reads the prepared source `{source}` and names no file", step.name));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The keys of the versions of `id` on `target` before `version` that have no manifest: a stopped
+/// run left them, and no run of this machine resumes them.
+pub(crate) fn incomplete(target: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
+    let listed = target.list_under(&format!("sources/{id}"))?;
+    let prefix = format!("sources/{id}/");
+    let keys: BTreeSet<&str> = listed.iter().map(|listed| listed.key.as_str()).collect();
+    let older = |key: &str| {
+        let Some((name, _)) = key[prefix.len()..].split_once('/') else { return false };
+        let complete = keys.contains(format!("{prefix}{name}/{MANIFEST}").as_str());
+        crate::date::parse(name).is_some() && name < version && !complete
+    };
+    Ok(listed.iter().filter(|listed| older(&listed.key)).map(|listed| listed.key.clone()).collect())
 }
 
 /// A complete version on a target that a collection deletes.
@@ -529,8 +610,10 @@ pub(crate) fn obsolete<'a>(listed: &'a BTreeMap<String, Listed>, kept: &[Release
     let mut obsolete = Vec::new();
     for id in ids {
         let reads = kept.iter().flat_map(|release| &release.outputs).flat_map(|output| &output.snapshots);
-        let read: BTreeSet<&str> =
-            reads.filter(|(source, _)| *source == id).map(|(_, read)| read.version.as_str()).collect();
+        let read: BTreeSet<&str> = reads
+            .filter(|(source, _)| *source == id)
+            .map(|(_, read)| unpin(&read.version).map_or(read.version.as_str(), |(version, _)| version))
+            .collect();
         let Some(newest) = read.last() else { continue };
         let prefix = format!("sources/{id}/");
         let mut versions: BTreeMap<&str, Vec<&Listed>> = BTreeMap::new();

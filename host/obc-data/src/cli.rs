@@ -149,10 +149,10 @@ pub fn failed(message: String) -> ExitCode {
 fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Option<Ui>) -> Result<(), Error> {
     let json = cli.json;
     let Some(command) = cli.command else {
-        return overview::overview(&root()?, products, json);
+        return overview::overview(&root()?, (products, prepared), json);
     };
     match command {
-        Command::Update(args) => update_cli::command(&root()?, products, args, json),
+        Command::Update(args) => update_cli::command(&root()?, (products, prepared), args, json),
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
         Command::Unlock { target, from, source, yes } => {
             unlock_cli::command(&root()?, (&target, source.as_deref()), &from, yes, json)

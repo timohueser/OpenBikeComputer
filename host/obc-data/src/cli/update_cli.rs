@@ -14,7 +14,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{freshness, listing, print_json, Code, Error};
+use super::{freshness, listing, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
 use crate::engine::plan::{outputs, Fetch, Kept};
@@ -23,6 +23,7 @@ use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
 use crate::lock::{self, Held};
+use crate::prepared::Prepared as Producer;
 use crate::product::{Inputs, Product, RequestKey, Wanted};
 use crate::ready::{self, Next, Wait};
 use crate::regions::{Area, Bbox, Region, Regions};
@@ -31,7 +32,7 @@ use crate::settings::Settings;
 use crate::sources::{FetchKind, Refresh, Registry, Source};
 use crate::store::{sorted, Store};
 use crate::target::{Tag, Target};
-pub use review::{MachineCheck, Review};
+pub use review::{disk_refusal, expect, Downloads, MachineCheck, Review};
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -124,7 +125,12 @@ pub struct Baked {
     pub reused: bool,
 }
 
-pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: bool) -> Result<(), Error> {
+pub fn command(
+    root: &Path,
+    (products, producers): (&[&dyn Product], &[&dyn Producer]),
+    args: UpdateArgs,
+    json: bool,
+) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
     super::api::writable(&args.target, &target, true)?;
@@ -135,47 +141,22 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
     let target = (args.target.as_str(), &target);
     let asked =
         Asked { only: args.only.clone(), expect: args.expect.clone(), accept_format_change: args.accept_format_change };
-    // The process of a detached run: it takes the lock and makes the review again under it.
-    if let Ok(id) = std::env::var(runs::RUN) {
-        // A program that a step starts is not this run.
-        std::env::remove_var(runs::RUN);
-        runs::stop_on_signals();
-        let mut run = Run::attach(&store, &id)?;
-        let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
-        return match super::api::finish_run(run, result) {
-            Ok(updated) => print(&updated),
-            // The status and the log of the run have its error.
-            Err(error) => std::process::exit(error.code.exit().into()),
-        };
+    let code = (products, producers);
+    let work = |run: &mut Run| update(root, &store, &http, target, code, edit, &asked, None, run);
+    if let Some(done) = super::api::detached(&store, work, print) {
+        return done;
     }
-    let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
+    let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, None, None)?;
     prepared.review.args = args.args(&prepared.review);
     if args.dry_run {
         return review::print(&prepared.review, json);
     }
     review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
-    if let Target::R2(remote) = target.1 {
-        approved(&args, &prepared.review, remote)?;
-    }
-    let run = runs::detach(&store, &prepared.review.args)?;
-    if json {
-        return print_json(&Started { run, review: prepared.review.id });
-    }
-    eprintln!("obc data: run {run} of review {}", prepared.review.id);
-    super::runs_cli::follow(&store, &run, false)
-}
-
-/// Refuse an update of an R2 target, which serves riders, without the id of the review that the
-/// owner approved; then ask.
-fn approved(args: &UpdateArgs, review: &Review, remote: &crate::r2::Remote) -> Result<(), Error> {
-    if args.expect.is_none() {
-        return Err(Code::Usage
-            .error(format!("an update of `{}` starts only with `--expect ID`, the id of the review that the owner approved; nothing changed", args.target))
-            .fix(format!("Run `obc data update {} --dry-run` with the same flags, have the owner approve its id, then run the command that it shows.", args.target)));
-    }
-    let question =
-        format!("Publish review {} to `{}` ({}), which serves riders?", review.id, args.target, remote.url(""));
-    super::confirm(&question, args.yes)
+    let what = format!("an update of `{}`", args.target);
+    let dry_run = format!("obc data update {} --dry-run` with the same flags", args.target);
+    let question = format!("Publish review {} to `{}`, which serves riders", prepared.review.id, args.target);
+    super::api::approved(target.1, (asked.expect.is_some(), args.yes), (&what, &dry_run, &question))?;
+    super::api::start(&store, &prepared.review.args, &prepared.review.id, json)
 }
 
 /// What `obc data update --json` writes: the run that it started.
@@ -230,19 +211,19 @@ pub(super) fn update(
     store: &Store,
     http: &Http,
     target: (&str, &Target),
-    products: &[&dyn Product],
+    code: (&[&dyn Product], &[&dyn Producer]),
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     asked: &Asked,
     machine: Option<&MachineCheck>,
     run: &mut Run,
 ) -> Result<Updated, Error> {
     locked(target, run, |run, held| {
-        let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
+        let prepared = prepare(root, store, http, target, code, edit, &asked.only, machine, Some(run))?;
         if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
-            return Err(lost(target.0));
+            return Err(lost(&format!("target `{}`", target.0)));
         }
         review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
-        apply(root, store, http, target, products, prepared, (run, held))
+        apply(root, store, http, target, code.0, prepared, (run, held))
     })
 }
 
@@ -324,24 +305,33 @@ pub(super) fn locked_as<T>(
 }
 
 /// Enter `phase`, after a check that nothing stopped the run and that it still holds the lock.
-pub(super) fn enter((run, held): (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
+pub(super) fn enter(work: (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
+    enter_as(work, (&format!("target `{name}`"), &format!("obc data update {name}")), phase)
+}
+
+/// [`enter`] for the lock that messages name `label`, of a run that `again` does again.
+pub(super) fn enter_as(
+    (run, held): (&mut Run, &Held),
+    (label, again): (&str, &str),
+    phase: Phase,
+) -> Result<(), Error> {
     if run.stopping() {
         return Err(Code::Failed
             .error(format!("the run stopped before the phase {phase}; nothing more changed"))
-            .fix(format!("Run `obc data update {name}` again: it keeps what this run baked.")));
+            .fix(format!("Run `{again}` again: it keeps what this run did.")));
     }
     run.record(&Event::Phase { phase })?;
     match held.beat(None, Some(phase), crate::date::now())? {
         true => Ok(()),
-        false => Err(lost(name)),
+        false => Err(lost(label)),
     }
 }
 
-/// The error of a run whose lock another run took.
-fn lost(name: &str) -> Error {
+/// The error of a run whose lock, which messages name `label`, another run took.
+pub(super) fn lost(label: &str) -> Error {
     Code::Failed
-        .error(format!("another run took the lock of `{name}`; this run stopped before it changed more"))
-        .fix(format!("Run `obc data` to see what `{name}` serves now."))
+        .error(format!("another run took the lock of {label}; this run stopped before it changed more"))
+        .fix("Run `obc data` to see the run that holds it.")
 }
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
@@ -353,7 +343,7 @@ pub(super) fn prepare(
     store: &Store,
     http: &Http,
     (name, target): (&str, &Target),
-    products: &[&dyn Product],
+    (products, producers): (&[&dyn Product], &[&dyn Producer]),
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     only: &[String],
     machine: Option<&MachineCheck>,
@@ -391,7 +381,7 @@ pub(super) fn prepare(
             }
         }
     }
-    crate::prepared::resolve(root, store, (name, target), (&sources, &requests), &mut inputs)?;
+    crate::prepared::resolve(root, store, (name, target), (&sources, &requests, producers), &mut inputs)?;
     let listed = {
         let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
         // The listing asks for what the store lacks.
@@ -405,6 +395,9 @@ pub(super) fn prepare(
         };
         listing::steps(root, products, &mut inputs, &regions, store, false, refetch)?
     };
+    crate::prepared::named(&listed.steps, &sources).map_err(|e| {
+        Code::Failed.error(e).fix("The code of the product is wrong, not the data: name the files that the step reads.")
+    })?;
     if !listed.blocked.is_empty() {
         let reasons: Vec<String> =
             listed.blocked.iter().map(|b| format!("{} ({}): {}", b.layer, b.step, b.reason)).collect();
@@ -814,10 +807,7 @@ fn reads(
                 Code::Failed.error(format!("step `{}` reads {} and has no version of it", output.step, input.name))
             })?;
             let fetch = ((input.name.clone(), read.params.clone()), read.version.clone());
-            // A release pins the manifest of each prepared version that it read.
-            let prepared = sources.iter().any(|s| s.id == input.name && s.fetch.kind == FetchKind::Prepared);
-            let manifest = prepared.then(|| crate::prepared::MANIFEST.to_string());
-            names.entry(fetch).or_default().extend(input.files.iter().cloned().chain(manifest));
+            names.entry(fetch).or_default().extend(input.files.iter().cloned());
         }
     }
     let mut fetched = Vec::new();
@@ -1058,7 +1048,7 @@ pub(super) mod tests {
             &fixture.store,
             http,
             ("local", target),
-            &products,
+            (&products, &[]),
             edit,
             asked,
             Some(machine),
@@ -1111,7 +1101,7 @@ pub(super) mod tests {
             &fixture.store,
             &Http::new(),
             ("local", target),
-            &products,
+            (&products, &[]),
             |_| Ok(()),
             &[],
             Some(&machine),
@@ -1259,7 +1249,7 @@ pub(super) mod tests {
             &store,
             &Http::new(),
             ("local", target),
-            &products,
+            (&products, &[]),
             |_| Ok(()),
             &asked,
             Some(&machine),
@@ -1421,7 +1411,7 @@ pub(super) mod tests {
                 &fixture.store,
                 &Http::new(),
                 ("local", &target),
-                &products,
+                (&products, &[]),
                 edit,
                 &[],
                 Some(machine),

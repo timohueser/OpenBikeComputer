@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::engine::runs;
+
 /// Why a command failed, and what to do about it.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Error {
@@ -147,6 +149,59 @@ impl Error {
         }
         ExitCode::from(self.code.exit())
     }
+}
+
+/// In the process that [`runs::detach`] started: do `work` in its run, write what it did with
+/// `print`, or exit with the status of its error, which the status and the log of the run have.
+/// `None` in another process.
+pub(super) fn detached<T>(
+    store: &crate::store::Store,
+    work: impl FnOnce(&mut runs::Run) -> Result<T, Error>,
+    print: impl FnOnce(&T) -> Result<(), Error>,
+) -> Option<Result<(), Error>> {
+    let id = std::env::var(runs::RUN).ok()?;
+    // A program that a step starts is not this run.
+    std::env::remove_var(runs::RUN);
+    runs::stop_on_signals();
+    let mut run = match runs::Run::attach(store, &id) {
+        Ok(run) => run,
+        Err(e) => return Some(Err(e.into())),
+    };
+    let result = work(&mut run);
+    Some(match finish_run(run, result) {
+        Ok(done) => print(&done),
+        Err(error) => std::process::exit(error.code.exit().into()),
+    })
+}
+
+/// Refuse `what`, a run that changes the R2 `target`, which serves riders, without `--expect`, the
+/// id of the review that the owner approved and that `dry_run` shows; then ask `question` with the
+/// origin of the target.
+pub(super) fn approved(
+    target: &crate::target::Target,
+    (expect, yes): (bool, bool),
+    (what, dry_run, question): (&str, &str, &str),
+) -> Result<(), Error> {
+    let crate::target::Target::R2(remote) = target else { return Ok(()) };
+    if !expect {
+        return Err(Code::Usage
+            .error(format!(
+                "{what} starts only with `--expect ID`, the id of the review that the owner approved; nothing changed"
+            ))
+            .fix(format!("Run `{dry_run}, have the owner approve its id, then run the command that it shows.")));
+    }
+    confirm(&format!("{question} ({})?", remote.url("")), yes)
+}
+
+/// Start the detached run of `args`, the arguments after `obc data` of the review `review`: write
+/// its run with `json`, else follow its log until it ends.
+pub(super) fn start(store: &crate::store::Store, args: &[String], review: &str, json: bool) -> Result<(), Error> {
+    let run = runs::detach(store, args)?;
+    if json {
+        return print_json(&super::update_cli::Started { run, review: review.into() });
+    }
+    eprintln!("obc data: run {run} of review {review}");
+    super::runs_cli::follow(store, &run, false)
 }
 
 pub(super) fn start_run(store: &crate::store::Store, args: &[&str]) -> Result<crate::engine::runs::Run, Error> {
