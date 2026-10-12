@@ -465,8 +465,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     for layer in &review.layers {
         let verb = if layer.steps.is_empty() { "drop" } else { "bake" };
         let mut text = layer.text.clone();
+        // A planned step can end unchanged and not bake, so the counts are upper bounds.
         if !layer.leaves.is_empty() {
-            text += &format!("; {} leaves", layer.leaves.len());
+            text += &format!("; at most {} leaves", layer.leaves.len());
         }
         if !layer.readers.is_empty() {
             text += &format!("; read by {}", layer.readers.join(", "));
@@ -488,7 +489,7 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;
     let mut text = format!(
-        "{} fetches, {} downloads, {} bakes: about {} min, {} into the store, {} to the target",
+        "{} fetches, {} downloads, at most {} bakes: about {} min, {} into the store, {} to the target",
         review.fetches.len(),
         review.downloads.files,
         review.bakes.len(),

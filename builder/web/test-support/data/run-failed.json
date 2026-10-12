@@ -11,10 +11,10 @@
         {"phase": "build", "state": "failed", "started": "2026-10-12T09:37:40Z"}
     ],
     "layers": [
-        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": []},
-        {"layer": "device/map", "total": 6, "done": 6, "leaves_done": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "leaves_baking": []},
-        {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": []},
-        {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": []}
+        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
+        {"layer": "device/map", "total": 6, "done": 6, "leaves_done": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "leaves_baking": [], "leaves_unchanged": []},
+        {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
+        {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []}
     ],
     "fetches": [],
     "steps": [],

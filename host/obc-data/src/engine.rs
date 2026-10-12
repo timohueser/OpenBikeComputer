@@ -6,7 +6,7 @@
 pub mod changes;
 pub mod plan;
 mod process;
-pub use process::{peak_rss, python_executable};
+pub use process::{peak_rss, python_executable, run_child};
 
 pub mod runs;
 pub mod state;
@@ -209,6 +209,10 @@ pub struct LayerFile {
 pub struct Built {
     pub receipt: Receipt,
     pub reused: bool,
+    /// The output that the release keeps by reference when the step is unchanged: the files of its
+    /// output in the serving release, whose key is its key, with the versions and the client of the
+    /// step now. It did not bake.
+    pub kept: Option<crate::release::Output>,
 }
 
 /// The grid leaf of the step `name`: its last part when that is `<i>-<j>`.
@@ -602,7 +606,7 @@ fn build_step(
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
     if let Some(mut stored) = reusable(store, &receipt.key)?.filter(|_| !again) {
         stored.inputs = receipt.inputs.clone();
-        return Ok(Built { receipt: stored, reused: true });
+        return Ok(Built { receipt: stored, reused: true, kept: None });
     }
     let work = store.partial(&format!("layer-{}", receipt.key));
     request.output = work.join("output");
@@ -613,7 +617,7 @@ fn build_step(
     result?;
     removed?;
     store.put_layer(&receipt)?;
-    Ok(Built { receipt, reused: false })
+    Ok(Built { receipt, reused: false, kept: None })
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
@@ -801,7 +805,16 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, ["build", "test"])?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
-            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, kept, limits };
+            let served = BTreeMap::new();
+            let context = runs::Context {
+                store: &self.store,
+                root: &root,
+                sources: &[],
+                http: &http,
+                kept,
+                served: &served,
+                limits,
+            };
             let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(|e| runs::RunError::new(runs::RUN_FAILED, e, "")))?;
             built

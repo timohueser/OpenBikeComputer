@@ -563,8 +563,8 @@ ends.
 | `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
-| `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far: an upper bound |
+| `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs, and of each program that the step runs and waits for, such as Osmium. `null` when the system does not report it |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far, or the peak of a program that the step ran, such as Osmium, when that is more: an upper bound |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -634,6 +634,14 @@ Then it builds the builds of the plan. A layer that a planned step reads, and th
 not build, must be in the store or kept by reference. A planned key that is not the key of the
 step now fails the run.
 
+A planned step whose key, after the steps that it reads are built, is the key of its output in
+the serving release is unchanged: the step does not bake, also when the store lacks its layer. The
+new release keeps the files, the digest and the cost of that output by reference, with the
+versions and the client of the step now. This needs the store to have each file of that output
+that no client of the serving release reads. `--only` bakes the steps of the named layers also
+when they are unchanged. So a leaf whose input files are the same, such as the OSM of a leaf after a refresh of
+the extract, does not bake on any machine.
+
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
 - Independent Rust and command steps run in parallel within the same job and memory limits.
@@ -656,13 +664,16 @@ process never started.
   the process that reserved it, then the process that it starts), its state (`starting`,
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
   waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (steps done of the total, and
-  for a tiled layer the leaves done and the leaves that bake now), its fetches and steps, the
+  for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
+  unchanged), its fetches and steps (each `unchanged` or not), the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
   know.
 - `log` has one line per event, with the time, and the output of the process of a detached run:
-  any bytes, which a reader reads as UTF-8 with replacements.
+  any bytes, which a reader reads as UTF-8 with replacements. After the builds, one line per
+  tiled layer gives its leaves: `<layer>: <baked> of <total> leaves baked, <unchanged> unchanged`.
+  A leaf is baked when one of its steps baked, and unchanged when all of its steps are.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
   run, once. A run that stops frees the lock of its target, keeps what it baked, and ends as
@@ -1223,7 +1234,9 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
   [Any machine](#any-machine) says), the steps that bake, the grid leaves (the last part `<i>-<j>`
   of the names of the steps of a tiled layer), the steps of the release that no step makes now, the
   readers and a format change. With `--only`, a layer that bakes because it reads a named layer
-  follows that layer. A layer that only other layers read is not listed.
+  follows that layer. A layer that only other layers read is not listed. A planned step can end
+  unchanged (see [Runs](#runs)), so the text gives the bakes and the leaves as upper bounds ("at
+  most").
 - `sources`: each fetch that a baked step reads at another version than the serving release.
 - `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
   what this machine fetches upstream, downloads from the target and bakes. A step whose output is
@@ -2662,6 +2675,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "leaves_unchanged": {
+          "default": [],
+          "description": "The finished leaves whose steps all kept their output of the serving release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "total": {
           "default": 0,
           "description": "The steps of the layer that the run bakes, and those that finished.",
@@ -2675,7 +2696,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "total",
         "done",
         "leaves_done",
-        "leaves_baking"
+        "leaves_baking",
+        "leaves_unchanged"
       ],
       "type": "object"
     },
@@ -4111,6 +4133,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": "",
           "type": "string"
         },
+        "unchanged": {
+          "default": false,
+          "description": "It kept its output of the serving release: its key is the key of that output.",
+          "type": "boolean"
+        },
         "users": {
           "default": [],
           "description": "The steps of this run that read it. `runs RUN` gives it; the status file has none.",
@@ -4121,7 +4148,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "wall_ms": {
           "default": null,
-          "description": "`null` while it runs, and when it failed.",
+          "description": "`null` while it runs, when it failed, and when it is unchanged.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -4134,6 +4161,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "step",
         "layer",
         "reused",
+        "unchanged",
         "wall_ms",
         "peak_rss_bytes",
         "bytes_out",

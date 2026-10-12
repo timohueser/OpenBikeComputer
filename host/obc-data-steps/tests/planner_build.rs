@@ -124,8 +124,15 @@ time_zone = "Europe/Berlin"
         steps
     };
     let (http, kept) = (Http::new(), Kept::new());
-    let context =
-        Context { store: &store, root: &root, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
+    let context = Context {
+        store: &store,
+        root: &root,
+        sources: &[],
+        http: &http,
+        kept: &kept,
+        served: &Default::default(),
+        limits: Limits::machine(),
+    };
     let build = |steps: &[Step]| -> Vec<Built> {
         let mut run = RunLog::create(&store, ["build", "test"]).unwrap();
         let built = run.build(&context, steps, &plan(&store, steps).unwrap()).unwrap();
