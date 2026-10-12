@@ -1,0 +1,27 @@
+{
+    "machine": { "name": "laptop", "colour": "#262624", "os": "macOS 15", "cores": 10, "memory_bytes": 34359738368 },
+    "store": { "path": "~/.cache/openbikecomputer/store", "used_bytes": 0, "free_bytes": 442381631488 },
+    "jobs": [
+        { "name": "Bake device layers here", "state": "ready", "reason": "All tools are present." },
+        { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java 21. Install them, then check again." },
+        { "name": "Serve the local test instance", "state": "ready", "reason": "Node 24 and Python are present." },
+        { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner, then put it in tools/obc.local." },
+        { "name": "Fetch new climate or snow data", "state": "optional", "reason": "Optional: needs CDS and CDSE accounts. Bakes use the R2 copies." },
+        { "name": "Prepare a new wiki", "state": "optional", "reason": "Optional: needs a Wikimedia Enterprise token. Usually done on the bake machine." }
+    ],
+    "tools": [
+        { "name": "Rust", "needed_for": "every Rust baker", "state": "ready", "detail": "from rust-toolchain.toml" },
+        { "name": "C compiler", "needed_for": "native bakers", "state": "ready", "detail": "clang 17" },
+        { "name": "osmium-tool", "needed_for": "cutting OSM into cells", "state": "ready", "detail": "1.17" },
+        { "name": "GEOS", "needed_for": "planner layers", "state": "missing", "detail": "brew install geos" },
+        { "name": "Python 3.12+ and uv", "needed_for": "Python bakers", "state": "ready", "detail": "3.13 · uv 0.8" },
+        { "name": "Node 24+", "needed_for": "search service, web apps", "state": "ready", "detail": "24.21" },
+        { "name": "Java 21", "needed_for": "planner/basemap", "state": "missing", "detail": "brew install openjdk@21" }
+    ],
+    "credentials": [
+        { "name": "R2 key (OBC_R2_*)", "needed_for": "publish to prod", "state": "missing" },
+        { "name": "~/.cdsapirc", "needed_for": "fetch new ERA5-Land", "state": "optional" },
+        { "name": "cdse-s3.env", "needed_for": "fetch new HR-WSI", "state": "optional" },
+        { "name": "OBC_WIKIMEDIA_ENTERPRISE_TOKEN", "needed_for": "prepare wiki", "state": "optional" }
+    ]
+}

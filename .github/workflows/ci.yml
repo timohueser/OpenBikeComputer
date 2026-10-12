@@ -1072,6 +1072,8 @@ jobs:
         run: test "$JOURNEY_OUTCOME" = success
       - name: Planner request budget
         run: npm run test:planner --prefix builder/web/tests/browser
+      - name: Operator page at phone width
+        run: npm run test:data --prefix builder/web/tests/browser
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
