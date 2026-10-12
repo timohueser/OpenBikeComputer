@@ -119,8 +119,8 @@ pub fn step(request: &Request) -> Result<(), String> {
     let inputs = request.layers.values().flat_map(|files| files.values().cloned()).collect();
     let (region, profiles, attribution) = (text("region")?, list("profiles")?, text("attribution")?);
     let args = Build { inputs, region, bounds, profiles, countries, attribution };
-    let credit = obc_dem::step::text(options, "terrain_attribution")?;
-    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), credit, None, bounds)?;
+    let credit = text("terrain_attribution")?;
+    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, None, bounds)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
     let report = build(args, Some(terrain), &routing)?.expect("a build with countries writes the route catalog");

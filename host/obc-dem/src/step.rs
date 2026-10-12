@@ -92,15 +92,10 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
-    let credit = text(&request.options, "attribution")?;
+    let credit = request.options["attribution"].as_str().ok_or("option `attribution` is not a string")?;
     let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, None, bounds)?;
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
-}
-
-/// The text option `name`.
-pub fn text<'a>(options: &'a Value, name: &str) -> Result<&'a str, String> {
-    options[name].as_str().ok_or_else(|| format!("option `{name}` is not a string"))
 }
 
 /// The option `bounds`: `[west, south, east, north]` in degrees.

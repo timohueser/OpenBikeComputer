@@ -52,6 +52,12 @@ const STORE_LOCK: &str = "store";
 /// The number in `layout`. A change of the layout of the store changes it.
 const LAYOUT: &str = "1";
 
+/// The directories that a store without `layout` holds in an older format. Its snapshot records
+/// and objects keep their format.
+const OLDER: [&str; 7] = ["layers", "releases", "runs", "operations", "code", "producers", "local"];
+
+const FAILED: &str = "Correct the directory that the message names, then run the command again.";
+
 /// Why `Store::open` refuses the store, and what to do.
 #[derive(Debug)]
 pub struct Refused {
@@ -61,7 +67,7 @@ pub struct Refused {
 
 impl From<Refused> for String {
     fn from(refused: Refused) -> String {
-        format!("{} {}", refused.message, refused.fix)
+        format!("{}. {}", refused.message, refused.fix)
     }
 }
 
@@ -87,23 +93,54 @@ impl Store {
     pub fn open_at(root: impl Into<PathBuf>) -> Result<Self, Refused> {
         let store = Self::at(root);
         let marker = store.root.join("layout");
-        let empty = fs::read_dir(&store.root).map_or(true, |mut entries| entries.next().is_none());
-        match fs::read_to_string(&marker) {
-            Ok(text) if text.trim() == LAYOUT => Ok(store),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && empty => {
+        let read = || match fs::read_to_string(&marker) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            read => read
+                .map(Some)
+                .map_err(|e| Refused { message: format!("{}: {e}", marker.display()), fix: FAILED.into() }),
+        };
+        let root = store.root.display();
+        let layout = match read()? {
+            None if store.is_new() => {
                 let written = write_atomic(&marker, format!("{LAYOUT}\n").as_bytes());
-                let fix = "Correct the directory that the message names, then run the command again.";
-                written.map_err(|message| Refused { message, fix: fix.into() })?;
-                Ok(store)
+                written.map_err(|message| Refused { message, fix: FAILED.into() })?;
+                return Ok(store);
             }
-            _ => {
-                let root = store.root.display();
-                Err(Refused {
-                    message: format!("the store {root} has another layout than this `obc data`"),
-                    fix: format!("Move it aside with `mv {root} {root}.old`, then run the command again."),
-                })
-            }
+            // Another process can have written the marker since the first read.
+            None => match read()? {
+                None => {
+                    let older = OLDER.map(|dir| format!("{root}/{dir}")).join(" ");
+                    return Err(Refused {
+                        message: format!("the store {root} has records of an older `obc data`"),
+                        fix: format!(
+                            "Remove them and mark the store, then run the command again: `rm -rf {older} && \
+                             printf '{LAYOUT}\\n' > {root}/layout`. Its snapshots and objects stay."
+                        ),
+                    });
+                }
+                Some(layout) => layout,
+            },
+            Some(layout) => layout,
+        };
+        match layout.trim() == LAYOUT {
+            true => Ok(store),
+            false => Err(Refused {
+                message: format!(
+                    "the store {root} has the layout {}, and this `obc data` reads {LAYOUT}",
+                    layout.trim()
+                ),
+                fix: format!("Use the `obc data` of that layout, or move the store aside with `mv {root} {root}.old`."),
+            }),
         }
+    }
+
+    /// Whether the store directory is missing or holds nothing but temporary markers.
+    fn is_new(&self) -> bool {
+        let Ok(entries) = fs::read_dir(&self.root) else { return true };
+        entries.flatten().all(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(".layout.") && name.ends_with(".tmp")
+        })
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -491,13 +528,15 @@ pub(crate) mod tests {
         assert!(Store::open_at(store.root()).is_ok());
 
         let old = scratch.0.join("old");
-        write_atomic(&old.join("layers/key.json"), b"{}").unwrap();
+        for record in ["layers/key.json", "snapshots/osm/1.json"] {
+            write_atomic(&old.join(record), b"{}").unwrap();
+        }
         let Err(refused) = Store::open_at(&old) else { panic!("an old store is refused") };
-        assert_eq!(
-            refused.fix,
-            format!("Move it aside with `mv {0} {0}.old`, then run the command again.", old.display())
-        );
-        write_atomic(&old.join("layout"), b"0\n").unwrap();
+        let command = refused.fix.split('`').nth(1).unwrap();
+        assert!(std::process::Command::new("sh").args(["-c", command]).status().unwrap().success());
+        assert!(!old.join("layers").exists() && old.join("snapshots/osm/1.json").exists(), "{command}");
+        assert!(Store::open_at(&old).is_ok());
+        write_atomic(&old.join("layout"), b"2\n").unwrap();
         assert!(Store::open_at(&old).is_err(), "another layout");
     }
 

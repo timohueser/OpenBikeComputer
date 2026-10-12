@@ -232,8 +232,10 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 Rules:
 
-- `obc data` refuses a store whose `layout` is missing or holds another number. The fix names
-  the `mv` that moves the store aside. An empty or new store directory gets `layout`.
+- `obc data` refuses a store whose `layout` is missing or holds another number. An empty or new
+  store directory gets `layout`. For a store without it, the fix removes `layers/`, `releases/`,
+  `runs/`, `operations/`, `code/`, `producers/` and `local/`, which hold records of an older
+  format, and writes `layout`. Snapshot records and objects stay.
 - An object is complete. A download goes to `partial/` and moves into `objects/` with one
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
