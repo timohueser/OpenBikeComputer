@@ -12,7 +12,7 @@ use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
-use crate::engine::{leaf, Input, Run, Shape, Step};
+use crate::engine::{leaf, partition, Input, Run, Shape, Step};
 use crate::product::{Note, RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
@@ -68,6 +68,9 @@ pub struct LayerChange {
     /// The grid leaves whose steps bake, as `<i>-<j>`: the last part of the name of each step of a
     /// tiled layer that has that form.
     pub leaves: Vec<String>,
+    /// The partitions of a partitioned layer whose steps bake.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub partitions: Vec<String>,
     /// The steps of the serving release that no step makes now.
     pub drops: Vec<String>,
     /// The programs that read the layer.
@@ -240,6 +243,7 @@ pub fn review(parts: Parts) -> Review {
         };
         let tiled = mine.iter().filter(|step| step.layer.shape == Shape::Tiled);
         let leaves: BTreeSet<&str> = tiled.filter_map(|step| leaf(&step.name)).collect();
+        let partitions: BTreeSet<&str> = mine.iter().filter_map(|step| partition(step)).collect();
         let readers =
             steps.iter().find(|step| step.layer.name == state.layer).map_or(&[][..], |step| step.layer.readers);
         changes.push(LayerChange {
@@ -248,6 +252,7 @@ pub fn review(parts: Parts) -> Review {
             cause,
             steps: mine.iter().map(|step| step.name.clone()).collect(),
             leaves: leaves.into_iter().map(str::to_string).collect(),
+            partitions: partitions.into_iter().map(str::to_string).collect(),
             drops,
             readers: readers.iter().map(|reader| reader.to_string()).collect(),
             format,
@@ -257,11 +262,14 @@ pub fn review(parts: Parts) -> Review {
     // does not hold.
     for step in steps.iter().filter(|step| unheld.contains(&step.name)) {
         let leaf = leaf(&step.name).filter(|_| step.layer.shape == Shape::Tiled).map(str::to_string);
+        let part = partition(step).map(str::to_string);
         match changes.iter_mut().find(|change| change.layer == step.layer.name) {
             Some(change) if !change.steps.contains(&step.name) => {
                 change.steps.push(step.name.clone());
                 change.leaves.extend(leaf.filter(|leaf| !change.leaves.contains(leaf)));
                 change.leaves.sort();
+                change.partitions.extend(part.filter(|part| !change.partitions.contains(part)));
+                change.partitions.sort();
             }
             Some(_) => {}
             None => changes.push(LayerChange {
@@ -270,6 +278,7 @@ pub fn review(parts: Parts) -> Review {
                 text: text(&Cause::Unheld),
                 steps: vec![step.name.clone()],
                 leaves: leaf.into_iter().collect(),
+                partitions: part.into_iter().collect(),
                 drops: Vec::new(),
                 readers: Vec::new(),
                 format: None,
@@ -468,6 +477,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
         // A planned step can end unchanged and not bake, so the counts are upper bounds.
         if !layer.leaves.is_empty() {
             text += &format!("; at most {} leaves", layer.leaves.len());
+        }
+        if !layer.partitions.is_empty() {
+            text += &format!("; at most the partitions {}", layer.partitions.join(", "));
         }
         if !layer.readers.is_empty() {
             text += &format!("; read by {}", layer.readers.join(", "));
