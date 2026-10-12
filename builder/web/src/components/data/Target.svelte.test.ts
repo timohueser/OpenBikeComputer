@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
+import areas from "../../../test-support/data/areas.json";
 import review from "../../../test-support/data/review.json";
 import example from "../../../test-support/data/status.json";
 import { CliQuery } from "../../lib/data/query.svelte";
@@ -22,10 +23,12 @@ function status(stale: boolean): Status {
 function server() {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
+        if (args[0] === "areas") return new Response(JSON.stringify({ exit: 0, output: areas }));
         return new Response(JSON.stringify({ exit: 0, output: args.includes("--dry-run") ? review : {} }));
     });
     vi.stubGlobal("fetch", fetch);
-    return () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args as string[]);
+    // The area picker and the coverage read `areas` on their own.
+    return () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args as string[]).filter((args) => args[0] !== "areas");
 }
 
 function screen(hash: string, stale: boolean) {
@@ -75,6 +78,22 @@ it("a live run locks the update and the rollback, and only a confirm posts --yes
         flushSync();
         button("Roll back now").click();
         await vi.waitFor(() => expect(posted().at(-1)).toEqual(["rollback", "prod", "--expect", rollback, "--yes"]));
+    } finally {
+        await unmount(target);
+    }
+});
+
+it("the coverage colours the leaves of the chosen tiled layer by their state", async () => {
+    server();
+    const { screen: target } = screen("#/prod", false);
+    const strokes = (color: string) => document.querySelectorAll(`.leaflet-overlay-pane path[stroke="${color}"]`).length;
+    try {
+        await vi.waitFor(() => expect(strokes("var(--ready)")).toBe(6));
+        const select = document.querySelector<HTMLSelectElement>('[aria-labelledby="coverage"] select')!;
+        select.value = "device/map";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        await vi.waitFor(() => expect([strokes("var(--stale)"), strokes("var(--ready)")]).toEqual([4, 2]));
+        expect(document.body.textContent).toContain("● stale 4");
     } finally {
         await unmount(target);
     }

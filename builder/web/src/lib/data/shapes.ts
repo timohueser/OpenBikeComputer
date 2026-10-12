@@ -1,3 +1,4 @@
+import type { Bbox } from "./areas";
 import type { CliError } from "./cli";
 
 // The JSON of the commands that the page reads. `test-support/data/` has an example of each.
@@ -20,6 +21,8 @@ export interface Target {
     lock: Holder | null;
     lock_error: string | null;
     region: string | null;
+    /** The area of the serving release as boxes: a box region, and the bounds of Geofabrik areas. */
+    area: { name: string; boxes: Bbox[] } | null;
     /** Each source version that the serving release read; `retrieved` is when a machine first
      *  fetched it. */
     sources: { source: string; version: string; retrieved: string | null }[];
@@ -56,6 +59,9 @@ export interface Layer {
     served_revision: number | null;
     readers: string[];
     reads: string[];
+    /** The grid leaves of a tiled layer, `I-J`, and those that a build changes. */
+    leaves: string[];
+    stale_leaves: string[];
 }
 
 export const LAYER_MARK: Record<Layer["state"], string> = { ok: "✓", stale: "●", off: "○" };

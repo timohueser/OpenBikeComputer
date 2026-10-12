@@ -266,6 +266,7 @@ triggers = [
   "docs/assets/theme.css", "docs/assets/fonts/**",
   "builder/web/src/components/data/**",
   "builder/web/src/lib/data/**",
+  "builder/web/src/lib/map/**",
   "builder/web/src/styles/tokens.css",
   "builder/web/src/styles/data.css",
   "builder/web/src/data.ts",

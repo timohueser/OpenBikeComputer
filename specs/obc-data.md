@@ -1577,7 +1577,7 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`,
+  runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data runs`, `obc data runs RUN`,
   `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
   or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
@@ -1738,6 +1738,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "rollback",
         "collects"
+      ],
+      "type": "object"
+    },
+    "AreaBoxes": {
+      "description": "An area as boxes.",
+      "properties": {
+        "boxes": {
+          "description": "A box for each part: the box of a box region, and the bounds of each Geofabrik area in the\ncached index. A Geofabrik area that the store has no index for has no box.",
+          "items": {
+            "$ref": "#/$defs/Bbox"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "boxes"
       ],
       "type": "object"
     },
@@ -2666,6 +2686,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer": {
           "type": "string"
         },
+        "leaves": {
+          "description": "The grid leaves of a tiled layer, as `<i>-<j>`, sorted; empty for another layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "readers": {
           "description": "The programs that read its files.",
           "items": {
@@ -2716,6 +2743,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "How its steps bake; `null` for a layer that only the release has."
         },
+        "stale_leaves": {
+          "description": "The leaves whose steps a build changes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "state": {
           "$ref": "#/$defs/Verdict"
         },
@@ -2738,7 +2772,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "served_format",
         "served_revision",
         "readers",
-        "reads"
+        "reads",
+        "leaves",
+        "stale_leaves"
       ],
       "type": "object"
     },
@@ -4704,6 +4740,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "TargetState": {
       "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AreaBoxes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The area of the serving release, as boxes that a map draws; `null` while it serves nothing."
+        },
         "at": {
           "description": "The folder of a dir target, or the public URL of an R2 bucket.",
           "type": "string"
@@ -4812,6 +4859,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "area",
         "sources",
         "layers",
         "blocked",

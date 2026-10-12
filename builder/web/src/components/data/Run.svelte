@@ -2,9 +2,11 @@
     import { onMount } from "svelte";
     import { command } from "../../lib/data/cli";
     import { flagsOf, reviewArgs } from "../../lib/data/flags";
+    import { leafSquare } from "../../lib/data/leaf";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { changes, clock, list, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
+    import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
     import Layers from "./Layers.svelte";
     import Phases from "./Phases.svelte";
@@ -46,6 +48,18 @@
         if (changed && !changed.lock && (view.state === "failed" || view.state === "stopped")) facts.push(`the ${target} lock is free`);
         return facts.join(" · ");
     });
+    // The cell map: the leaves of one tiled layer that baked and that bake now.
+    const tiled = $derived(view?.layers.filter((layer) => layer.leaves_done.length || layer.leaves_baking.length) ?? []);
+    let chosen = $state<string | null>(null);
+    const mapped = $derived(tiled.find((layer) => layer.layer === chosen) ?? tiled[0]);
+    const cells = $derived(
+        [...(mapped?.leaves_done ?? []).map((leaf) => [leaf, "done"]), ...(mapped?.leaves_baking ?? []).map((leaf) => [leaf, "baking"])].flatMap(
+            ([leaf, state]) => {
+                const bounds = leafSquare(leaf);
+                return bounds ? [{ bounds, color: state === "done" ? "var(--ready)" : "var(--running)", label: `${leaf} · ${state}` }] : [];
+            },
+        ),
+    );
     /** The review of the same update again: the settings flags of the run. */
     const resume = $derived(view?.args[0] === "update" && target ? reviewArgs(target, flagsOf(view.args)) : null);
 </script>
@@ -102,6 +116,18 @@
     {#if view.phases.length}<Phases entered={view.phases} />{/if}
 
     {#if view.layers.length}<Layers layers={view.layers} running={live} />{/if}
+
+    {#if tiled.length}
+        <section class="card" aria-labelledby="cells">
+            <div class="title">
+                <h2 id="cells">Cells of {mapped?.layer}</h2>
+                {#if tiled.length > 1}
+                    <select value={mapped?.layer} aria-label="Layer" onchange={(event) => (chosen = event.currentTarget.value)}>{#each tiled as layer (layer.layer)}<option value={layer.layer}>{layer.layer}</option>{/each}</select>
+                {/if}
+            </div>
+            <DataMap {cells} />
+        </section>
+    {/if}
 
     <section class="card" aria-labelledby="log">
         <h2 id="log">Log</h2>

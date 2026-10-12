@@ -34,9 +34,10 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
         await vi.waitFor(() => expect(text()).toContain("Layers in this run"));
         expect(document.querySelector("h1")?.textContent).toBe("update local");
         expect(document.querySelector(".phases")?.textContent?.replace(/\s+/g, " ")).toContain("◐ build running");
-        expect(text()).toContain("14 of 24");
-        expect(text()).toContain("baking 18-42 · 19-42 · 20-42");
-        expect(text()).toContain("10:44:04 device/map 20-41 baking");
+        expect(text()).toContain("3 of 6");
+        expect(text()).toContain("baking 0038-0033 · 0036-0032");
+        expect(text()).toContain("10:44:04 device/map 0038-0033 baking");
+        expect(document.querySelectorAll("#cells ~ * path, .leaflet-overlay-pane path").length).toBe(5);
 
         button("Stop…")?.click();
         await vi.waitFor(() => expect(button("Stop the run")).toBeDefined());

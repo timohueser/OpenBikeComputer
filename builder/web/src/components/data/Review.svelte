@@ -5,6 +5,7 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { list, short, size, span, type Layer, type Review, type Started, type Target } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
+    import AreaPicker from "./AreaPicker.svelte";
     import Failure from "./Failure.svelte";
 
     // The review of an update of target `name`. An edit runs `--dry-run` again with its flags.
@@ -17,7 +18,16 @@
         machine,
         locked,
         layers,
-    }: { name: string; kind: Target["kind"]; flags: Flags; machine: string; locked: string | null; layers: Layer[] } = $props();
+        area,
+    }: {
+        name: string;
+        kind: Target["kind"];
+        flags: Flags;
+        machine: string;
+        locked: string | null;
+        layers: Layer[];
+        area: Target["area"];
+    } = $props();
 
     // svelte-ignore state_referenced_locally
     let flags = $state(initial);
@@ -42,9 +52,8 @@
     const scopes = $derived([
         ...new Set([...layers.filter((layer) => layer.state === "stale").map((layer) => layer.layer), ...(only ? [only] : [])]),
     ]);
-    let region = $state("");
     let refresh = $state("");
-    const setRegion = () => (flags = edit(flags, (flag) => flag === "--region" || flag === "--box", ["--region", region.trim()]));
+    const setArea = (flag: "--region" | "--box", value: string) => (flags = edit(flags, (old) => old === "--region" || old === "--box", [flag, value]));
     const setRefresh = () => {
         const source = refresh.trim().split("=")[0];
         flags = edit(flags, (flag, value) => flag === "--refresh" && value.split("=")[0] === source, ["--refresh", refresh.trim()]);
@@ -82,11 +91,10 @@
                 </select>
             </label>
         {/if}
-        <form class="title" onsubmit={(event) => (event.preventDefault(), setRegion())}>
-            <label>Area <input bind:value={region} placeholder={review.settings.region} required /></label>
-            <button type="submit">Review this area</button>
-            <span class="soft">A preset of data/regions/, or Geofabrik paths joined by a comma.</span>
-        </form>
+        <fieldset class="area">
+            <legend>Area · {name} serves {area?.name ?? "no area"}</legend>
+            <AreaPicker region={review.settings.region} boxes={area?.boxes ?? []} apply={setArea} />
+        </fieldset>
         {#if review.optional.length}
             <fieldset class="title">
                 <legend>Optional layers</legend>
@@ -227,6 +235,11 @@
     legend {
         float: left;
         margin-right: 8px;
+    }
+    .area legend {
+        float: none;
+        margin-bottom: 8px;
+        font-weight: 600;
     }
     input:not([type="checkbox"]) {
         min-height: 40px;

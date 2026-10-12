@@ -943,6 +943,12 @@ pub(crate) mod tests {
         assert!(inputs.requests.borrow().contains(&(EXTRACTS.into(), obc_data::store::sorted(&second))));
     }
 
+    /// The operator page reads a leaf from the last part of a step name (builder/web/src/lib/data/leaf.ts).
+    #[test]
+    fn a_leaf_names_its_steps_with_its_indices() {
+        assert_eq!(leaf_layer("x", LeafId { i: 37, j: 32 }), "x/0037-0032");
+    }
+
     #[test]
     fn a_new_glo30_tile_in_one_leaf_rebuilds_that_leaf_only() {
         let temp = temp("leaves");

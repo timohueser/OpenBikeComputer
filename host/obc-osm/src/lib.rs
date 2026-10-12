@@ -190,4 +190,10 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The operator page draws a leaf from its id: builder/web/src/lib/data/leaf.test.ts has these numbers.
+    #[test]
+    fn a_leaf_square_is_the_one_that_the_operator_page_draws() {
+        assert_eq!(LeafId { i: 37, j: 32 }.square(), (0, 41_943_040, 8_388_608, 50_331_648));
+    }
 }
