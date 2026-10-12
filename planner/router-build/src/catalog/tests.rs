@@ -83,11 +83,12 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
         .filter(|p| ["touring", "road", "gravel", "mtb", "hiking"].contains(&p.name.as_str()))
         .collect();
     let mut objects = HashMap::new();
-    let manifest = crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], |bytes| {
-        objects.insert(digest(bytes), bytes.to_vec());
-        Ok(digest(bytes))
-    })
-    .unwrap();
+    let manifest =
+        crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], "test".into(), |bytes| {
+            objects.insert(digest(bytes), bytes.to_vec());
+            Ok(digest(bytes))
+        })
+        .unwrap();
     (Package::open(Memory(Arc::new(objects)), &serde_json::to_vec(&manifest).unwrap()).unwrap(), graph.osm)
 }
 

@@ -87,14 +87,20 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 }
 
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
-/// degrees. The layer is `terrain.mbtiles`: the bytes that `planner-dem` writes from the same
-/// GLO-30 tiles without a reference archive.
+/// degrees, and `attribution` the credit of GLO-30. The layer is `terrain.mbtiles`: the bytes that
+/// `planner-dem` writes from the same GLO-30 tiles without a reference archive.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
-    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), None, bounds)?;
+    let credit = text(&request.options, "attribution")?;
+    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, None, bounds)?;
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
+}
+
+/// The text option `name`.
+pub fn text<'a>(options: &'a Value, name: &str) -> Result<&'a str, String> {
+    options[name].as_str().ok_or_else(|| format!("option `{name}` is not a string"))
 }
 
 /// The option `bounds`: `[west, south, east, north]` in degrees.

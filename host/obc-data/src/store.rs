@@ -49,17 +49,59 @@ pub struct Store {
 
 const STORE_LOCK: &str = "store";
 
+/// The number in `layout`. A change of the layout of the store changes it.
+const LAYOUT: &str = "1";
+
+/// Why `Store::open` refuses the store, and what to do.
+#[derive(Debug)]
+pub struct Refused {
+    pub message: String,
+    pub fix: String,
+}
+
+impl From<Refused> for String {
+    fn from(refused: Refused) -> String {
+        format!("{} {}", refused.message, refused.fix)
+    }
+}
+
 /// Held while it lives; the operating system releases it when the process ends.
 pub struct Lock(#[allow(dead_code)] File);
 
 impl Store {
     /// The store at `OBC_DATA_STORE`, or else at `~/.cache/openbikecomputer/store`.
-    pub fn open() -> Result<Self, String> {
+    pub fn open() -> Result<Self, Refused> {
         match std::env::var_os("OBC_DATA_STORE").filter(|dir| !dir.is_empty()) {
-            Some(dir) => Ok(Self::at(dir)),
+            Some(dir) => Self::open_at(dir),
             None => {
-                let home = std::env::var_os("HOME").ok_or("HOME is not set; set OBC_DATA_STORE")?;
-                Ok(Self::at(Path::new(&home).join(".cache/openbikecomputer/store")))
+                let home = std::env::var_os("HOME").ok_or_else(|| Refused {
+                    message: "HOME is not set".into(),
+                    fix: "Set OBC_DATA_STORE to the directory of the store.".into(),
+                })?;
+                Self::open_at(Path::new(&home).join(".cache/openbikecomputer/store"))
+            }
+        }
+    }
+
+    /// The store at `root`, when its `layout` is [`LAYOUT`]. An empty or new store gets the file.
+    pub fn open_at(root: impl Into<PathBuf>) -> Result<Self, Refused> {
+        let store = Self::at(root);
+        let marker = store.root.join("layout");
+        let empty = fs::read_dir(&store.root).map_or(true, |mut entries| entries.next().is_none());
+        match fs::read_to_string(&marker) {
+            Ok(text) if text.trim() == LAYOUT => Ok(store),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && empty => {
+                let written = write_atomic(&marker, format!("{LAYOUT}\n").as_bytes());
+                let fix = "Correct the directory that the message names, then run the command again.";
+                written.map_err(|message| Refused { message, fix: fix.into() })?;
+                Ok(store)
+            }
+            _ => {
+                let root = store.root.display();
+                Err(Refused {
+                    message: format!("the store {root} has another layout than this `obc data`"),
+                    fix: format!("Move it aside with `mv {root} {root}.old`, then run the command again."),
+                })
             }
         }
     }
@@ -439,6 +481,24 @@ pub(crate) mod tests {
                 let _ = fs::set_permissions(&path, permissions);
             }
         }
+    }
+
+    #[test]
+    fn a_store_without_the_current_layout_is_refused_and_a_new_one_gets_it() {
+        let scratch = Scratch::new("store-layout");
+        let store = Store::open_at(scratch.0.join("new")).unwrap();
+        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "1\n");
+        assert!(Store::open_at(store.root()).is_ok());
+
+        let old = scratch.0.join("old");
+        write_atomic(&old.join("layers/key.json"), b"{}").unwrap();
+        let Err(refused) = Store::open_at(&old) else { panic!("an old store is refused") };
+        assert_eq!(
+            refused.fix,
+            format!("Move it aside with `mv {0} {0}.old`, then run the command again.", old.display())
+        );
+        write_atomic(&old.join("layout"), b"0\n").unwrap();
+        assert!(Store::open_at(&old).is_err(), "another layout");
     }
 
     #[test]

@@ -201,15 +201,19 @@ mod tests {
         let ok = [("test/upper", State::Ok, None), ("test/join", State::Ok, None), ("test/count", State::Ok, None)];
         assert_eq!(states(&fixture, &pipeline(), &environment), expect(&ok));
 
+        static REVISION: crate::engine::Layer = crate::engine::Layer {
+            name: "test",
+            shape: crate::engine::Shape::Whole,
+            format: 1,
+            revision: 2,
+            readers: &["tests"],
+        };
         let mut steps = pipeline();
-        steps[1].layer = &crate::engine::tests::REVISED;
+        steps.iter_mut().for_each(|step| step.layer = &REVISION);
+        let revised = |name| (name, State::CodeChanged, Some("revision 1 → 2"));
         assert_eq!(
             states(&fixture, &steps, &environment),
-            expect(&[
-                ("test/upper", State::Ok, None),
-                ("test/join", State::CodeChanged, Some("revision 1 → 2")),
-                ("test/count", State::InputChanged, Some("test/join")),
-            ])
+            expect(&[revised("test/upper"), revised("test/join"), revised("test/count")])
         );
     }
 

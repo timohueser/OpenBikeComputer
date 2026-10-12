@@ -108,9 +108,6 @@ pub struct BlockedProduct {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchVersion {
-    /// Local product whose saved release supplies this pin; absent for the shared Live plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub product: Option<String>,
     pub source: String,
     /// The `NAME=VALUE`s of the fetch, sorted.
     pub params: Vec<(String, String)>,
@@ -800,7 +797,6 @@ fn env_plan(
 ) -> EnvPlan {
     let read = env.read.borrow();
     let versions = read.iter().map(|((source, params), version)| FetchVersion {
-        product: None,
         source: source.clone(),
         params: params.clone(),
         version: version.clone(),
@@ -1333,7 +1329,8 @@ fn listed_steps(
 
 /// Add the steps of `product` to `all`. Each step is named `<product>/…` after the product whose
 /// release holds it. A step that two products list, such as the landmark content that the maps
-/// and the planner read, has the same declaration in both and is listed once.
+/// and the planner read, has the same declaration in both and is listed once. A Rust function is
+/// not compared: two addresses of one function can differ.
 pub(super) fn add_steps(
     products: &[&dyn Product],
     product: &dyn Product,
@@ -1347,7 +1344,7 @@ pub(super) fn add_steps(
         }
         match all.iter().find(|listed| listed.name == step.name) {
             None => all.push(step),
-            Some(listed) if crate::engine::recipe(listed) == crate::engine::recipe(&step) => {}
+            Some(listed) if same(listed, &step) => {}
             Some(_) => {
                 let message =
                     format!("step `{}` of product `{name}` differs from the step of another product", step.name);
@@ -1356,6 +1353,17 @@ pub(super) fn add_steps(
         }
     }
     Ok(())
+}
+
+/// Whether two steps have the same recipe, outputs and kind of run, with the same arguments.
+fn same(a: &Step, b: &Step) -> bool {
+    use crate::engine::Run;
+    let run = |step: &Step| match &step.run {
+        Run::Rust(_) => (0, None),
+        Run::Command(argv) => (1, Some(argv.clone())),
+        Run::Python(argv) => (2, Some(argv.clone())),
+    };
+    crate::engine::recipe(a) == crate::engine::recipe(b) && a.outputs == b.outputs && run(a) == run(b)
 }
 
 #[cfg(test)]
@@ -1573,6 +1581,38 @@ pub(crate) mod tests {
         assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
         assert_eq!(events.iter().filter(|event| matches!(event, Event::Finished { .. })).count(), 1);
         assert!(!events.iter().any(|event| matches!(event, Event::StepStarted { .. })));
+    }
+
+    /// A product that lists the steps of `test` too.
+    struct Reader;
+
+    impl Product for Reader {
+        fn name(&self) -> &'static str {
+            "reader"
+        }
+
+        fn steps(
+            &self,
+            _: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Ok(pipeline().into())
+        }
+    }
+
+    #[test]
+    fn a_step_that_two_products_list_is_listed_once_and_has_one_declaration() {
+        let products: &[&dyn Product] = &[&Indexed, &Reader];
+        let mut all = Vec::new();
+        add_steps(products, &Indexed, &mut all, pipeline()).unwrap();
+        add_steps(products, &Reader, &mut all, pipeline()).unwrap();
+        assert_eq!(all.len(), 3);
+        let mut other = pipeline();
+        other[1].outputs = vec!["other.txt".into()];
+        let err = add_steps(products, &Reader, &mut all, other).unwrap_err();
+        assert_eq!(err.message, "step `test/join` of product `reader` differs from the step of another product");
     }
 
     /// The test pipeline, once the store has `index@1` and then `box@1`, which only the index names.
@@ -1905,10 +1945,7 @@ pub(crate) mod tests {
         };
         let first = build(None)[0].id.clone();
         let saved = plan_of(&root, &fixture.store, &[&Versioned]);
-        assert_eq!(
-            saved.versions,
-            [FetchVersion { product: None, source: "head".into(), params: Vec::new(), version: "1".into() }]
-        );
+        assert_eq!(saved.versions, [FetchVersion { source: "head".into(), params: Vec::new(), version: "1".into() }]);
         let file = root.join("plan.json");
         write(&file, &serde_json::to_string(&saved).unwrap());
 

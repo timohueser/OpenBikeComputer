@@ -39,7 +39,7 @@ pub const TILE_LIST: &str = "copernicus-glo-30-tiles";
 pub static DEVICE_TERRAIN: Layer = Layer {
     name: "device/terrain",
     shape: obc_data::engine::Shape::Tiled,
-    format: obct::VERSION as u32,
+    format: obct::SURFACE_VERSION as u32,
     revision: 1,
     readers: &["device", "map builder"],
 };
@@ -57,8 +57,8 @@ pub static DEVICE_MAP: Layer = Layer {
 pub static DEVICE_LANDMARKS: Layer = Layer {
     name: "device/landmarks",
     shape: obc_data::engine::Shape::Tiled,
-    // The artifacts are OBCM landmark and peak sections, which the assembler copies into a map.
-    format: obcm::VERSION as u32,
+    // The device checks both section versions; each only grows, so the sum grows when either changes.
+    format: (obcm::landmarks::SECTION_VERSION + obcm::peaks::VERSION) as u32,
     revision: 1,
     readers: &["device"],
 };
@@ -477,8 +477,8 @@ fn capture_params_at(
     }
     let read = reads(now.0, now.1, false)?
         .ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
-    let code = obc_pack::step::capture_code().map_err(Unplanned::Invalid)?;
-    let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", &code)];
+    let code = obc_pack::step::CAPTURE_REVISION;
+    let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", code)];
     Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
 }
 
@@ -1024,7 +1024,7 @@ pub(crate) mod tests {
             ("area".into(), area.into()),
             ("osm".into(), format!("sha256:{}", sha256_hex(osm.as_bytes()))),
             ("poly".into(), format!("sha256:{}", sha256_hex(poly.as_bytes()))),
-            ("code".into(), obc_pack::step::capture_code().unwrap()),
+            ("code".into(), obc_pack::step::CAPTURE_REVISION.into()),
         ]
     }
 

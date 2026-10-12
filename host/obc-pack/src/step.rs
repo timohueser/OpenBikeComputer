@@ -14,24 +14,10 @@ use obc_map_core::progress::{CancelToken, Progress};
 /// The sources of one landmark or peak capture.
 pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
-/// The digest of the code that makes the boundary and the candidates or the summits, which a
-/// capture pins: the param `code=` of a capture, so a capture with other code is another request.
-pub fn capture_code() -> Result<String, String> {
-    obc_pbf::geos_identity::libraries()?;
-    let code = [
-        include_str!("catalog/boundary.rs"),
-        include_str!("../../obc-pbf/src/area.rs"),
-        include_str!("../../obc-places/src/osm.rs"),
-        include_str!("../../obc-places/src/lib.rs"),
-        include_str!("../../obc-places/src/metadata.rs"),
-        include_str!("../../obc-places/src/name.rs"),
-        include_str!("landmarks/discover.rs"),
-        include_str!("landmarks/peaks.rs"),
-    ];
-    let mut hash = Sha256::new();
-    hash.update(code.concat());
-    Ok(hash.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect())
-}
+/// The revision of the code that makes the boundary and the candidates or the summits. A capture
+/// pins it as its param `code=`, so a capture of another revision is another request. A change that
+/// gives them other output increases it.
+pub const CAPTURE_REVISION: &str = "1";
 
 /// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
 /// files, the `.poly` and the `.osm.pbf` that the capture read. The capture keeps no copy of the

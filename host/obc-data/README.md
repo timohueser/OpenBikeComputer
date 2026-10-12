@@ -13,9 +13,11 @@ that changes its output; a reader that needs new data raises its `format`.
 
 A started run detaches from the terminal. Publication runs on the machine that applies: it
 needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
-settings stay in the store and need no commit. One machine applies at a time. An apply builds services on the VPS,
-stops them, installs the data and probes the new services. Allow a short outage. Before it replaces
-a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
+settings stay in the store and need no commit. One machine applies at a time. An apply that
+switches the planner release installs it on the VPS with the services of its commit and probes
+them. Allow a short outage. A change of service code alone switches no release, so no apply
+installs it. Before it replaces a pointer, an apply keeps the old bytes at
+`runs/RUN/previous/KEY` in the store for a rollback.
 
 | Configuration or credential | Purpose |
 | --- | --- |

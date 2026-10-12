@@ -3,7 +3,7 @@
 use super::*;
 use obc_data::product::{Pointer, PointerFn};
 use obc_pack::catalog::boundary::{simplified_rings, DEFAULT_TOLERANCE_UDEG};
-use obc_pack::catalog::engine::{Options, Pick};
+use obc_pack::catalog::engine::{Credits, Options, Pick};
 use obc_pack::catalog::{Boundary, CellSource};
 
 pub const INDEX: &str = "geofabrik-index";
@@ -154,6 +154,7 @@ pub fn step(
         posting_log2: V1_POSTING_LOG2,
         terrain_cell_log2: V1_CELL_LOG2,
         dataset_version: glo30.into(),
+        credits: Credits::of_sources(),
     };
     let mut inputs: Vec<Input> = listed
         .iter()

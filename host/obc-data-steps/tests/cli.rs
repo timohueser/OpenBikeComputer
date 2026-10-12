@@ -40,7 +40,7 @@ fn obc_data(temp: &Temp, args: &[&str]) -> Output {
 #[test]
 fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let temp = Temp::new("blocked");
-    let store = obc_data::store::Store::at(temp.0.join("store"));
+    let store = obc_data::store::Store::open_at(temp.0.join("store")).unwrap();
     let region = "europe/germany/baden-wuerttemberg";
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut settings = obc_data::settings::Settings::default();

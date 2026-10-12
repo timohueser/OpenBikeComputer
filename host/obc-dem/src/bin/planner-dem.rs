@@ -25,7 +25,8 @@ fn run(args: &[String]) -> Result<(), String> {
     };
     let values = text.split(',').map(str::parse).collect::<Result<Vec<f64>, _>>().map_err(|e| e.to_string())?;
     let bounds: [f64; 4] = values.try_into().map_err(|_| "Provide west,south,east,north")?;
-    let mut terrain = Terrain::open(&tiles_in(&dem, bounds), reference.as_deref(), bounds)?;
+    let credit = obc_data::sources::attribution(obc_dem::step::GLO30);
+    let mut terrain = Terrain::open(&tiles_in(&dem, bounds), credit, reference.as_deref(), bounds)?;
     obc_dem::terrarium::write(&mut terrain, bounds, &text, &output)
 }
 

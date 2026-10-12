@@ -133,6 +133,12 @@ impl From<String> for Error {
     }
 }
 
+impl From<crate::store::Refused> for Error {
+    fn from(refused: crate::store::Refused) -> Self {
+        Code::Failed.error(refused.message).fix(refused.fix)
+    }
+}
+
 impl Error {
     /// Replace the fix of the code with one that fits this error better.
     pub fn fix(mut self, fix: impl Into<String>) -> Self {

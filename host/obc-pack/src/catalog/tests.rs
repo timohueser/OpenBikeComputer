@@ -1986,7 +1986,7 @@ fn the_root_carries_terrain_grid_and_reference_credits() {
     let references = terrain.references.as_deref().expect("the example has a lifted cell");
     assert_eq!(references.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["ch"]);
     assert_eq!(references[0].attribution, "© swisstopo");
-    let license = license_txt(&g.root);
+    let license = license_txt(&g.root, &crate::landmarks::attribution());
     assert!(license.contains("swissALTI3D 2 m") && license.contains("© swisstopo"), "{license}");
 
     // One pinned index, digest-addressed like every other pinned object.

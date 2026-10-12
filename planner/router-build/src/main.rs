@@ -45,11 +45,18 @@ fn run(args: Args) -> Result<(), String> {
         (None, None) => None,
         (dem, reference) => {
             let glo30 = dem.as_deref().map(|dem| tiles_in(dem, bounds)).unwrap_or_default();
-            Some(Terrain::open(&glo30, reference.as_deref(), bounds)?)
+            let credit = obc_data::sources::attribution(obc_dem::step::GLO30);
+            Some(Terrain::open(&glo30, credit, reference.as_deref(), bounds)?)
         }
     };
-    let build_args =
-        Build { inputs: args.inputs, region: args.region, bounds, profiles: args.profiles, countries: args.countries };
+    let build_args = Build {
+        inputs: args.inputs,
+        region: args.region,
+        bounds,
+        profiles: args.profiles,
+        countries: args.countries,
+        attribution: obc_data::sources::attribution("osm-planet").into(),
+    };
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {

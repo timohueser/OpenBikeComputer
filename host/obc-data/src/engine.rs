@@ -287,13 +287,17 @@ pub fn sorted(value: Value) -> Value {
 
 /// The steps with each one after the steps whose layers it reads.
 fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
-    let mut names = HashSet::new();
+    let (mut names, mut layers) = (HashSet::new(), HashMap::new());
     for step in steps {
         if ![step.name.as_str(), step.layer.name].iter().all(|name| name.split('/').all(crate::is_kebab)) {
             return Err(format!("step `{}`: a name is kebab-case segments joined by `/`", step.name));
         }
         if !names.insert(step.name.as_str()) {
             return Err(format!("step `{}` is listed twice", step.name));
+        }
+        // The version of a layer applies to each of its steps.
+        if *layers.entry(step.layer.name).or_insert(step.layer) != step.layer {
+            return Err(format!("step `{}`: the layer `{}` has two declarations", step.name, step.layer.name));
         }
     }
     for step in steps {
@@ -706,12 +710,12 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     /// The layer of the test steps.
     pub(crate) static TEST: Layer =
         Layer { name: "test", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
-    /// The test layer at its next revision.
+    /// The layer that [`revise`] gives a step.
     pub(crate) static REVISED: Layer =
-        Layer { name: "test", shape: Shape::Whole, format: 1, revision: 2, readers: &["tests"] };
+        Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
 
     /// Give the step that the file `revised` of `root` names the layer [`REVISED`]: a test product
-    /// changes a version this way.
+    /// changes the key of a step this way.
     pub(crate) fn revise(root: &Path, steps: &mut [Step]) {
         if let Ok(name) = fs::read_to_string(root.join("revised")) {
             steps.iter_mut().find(|step| step.name == name.trim()).expect("a listed step").layer = &REVISED;
@@ -933,15 +937,18 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     #[test]
     fn the_version_of_its_layer_keys_a_step_and_its_code_does_not() {
+        static JOINED: Layer = Layer { name: "joined", shape: Shape::Whole, format: 1, revision: 1, readers: &[] };
+        static REVISION: Layer = Layer { name: "joined", shape: Shape::Whole, format: 1, revision: 2, readers: &[] };
         let fixture = fixture("engine-version");
-        let first = fixture.build(&pipeline()).unwrap();
+        let mut steps = pipeline();
+        steps[1].layer = &JOINED;
+        let first = fixture.build(&steps).unwrap();
 
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
-        assert_eq!(fixture.plan(&pipeline()).unwrap().groups, [], "other code with the same version");
+        assert_eq!(fixture.plan(&steps).unwrap().groups, [], "other code with the same version");
 
         write(&fixture.root().join("join.py"), JOIN);
-        let mut steps = pipeline();
-        steps[1].layer = &REVISED;
+        steps[1].layer = &REVISION;
         let second = fixture.build(&steps).unwrap();
         assert_eq!(summary(&second), [("test/join", false), ("test/count", true)], "the same bytes stop there");
         assert_ne!(second[0].receipt.key, first[1].receipt.key);

@@ -31,6 +31,27 @@ pub struct Options {
     pub terrain_cell_log2: u8,
     pub posting_log2: u8,
     pub dataset_version: String,
+    pub credits: Credits,
+}
+
+/// The credits that the catalog publishes. The step reads them from its options, so an edit of
+/// them in `data/sources.toml` changes its key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credits {
+    pub source: SourceEntry,
+    pub terrain: String,
+    pub articles: String,
+}
+
+impl Credits {
+    /// The credits of `data/sources.toml`.
+    pub fn of_sources() -> Credits {
+        Credits {
+            source: osm_source(),
+            terrain: obc_data::sources::attribution("copernicus-glo-30").into(),
+            articles: crate::landmarks::attribution(),
+        }
+    }
 }
 
 pub fn build(request: &Request) -> Result<(), String> {
@@ -244,7 +265,7 @@ pub fn build(request: &Request) -> Result<(), String> {
         dataset_version: terrain_doc.dataset_version.clone(),
         posting_log2: options.posting_log2,
         cell_log2: options.terrain_cell_log2,
-        attribution: obc_data::sources::attribution("copernicus-glo-30").into(),
+        attribution: options.credits.terrain.clone(),
         references: (!references.is_empty()).then(|| references.into_values().collect()),
         cell_index: TerrainIndexRef {
             cell_count: terrain_doc.cells.len() as u32,
@@ -336,7 +357,7 @@ pub fn build(request: &Request) -> Result<(), String> {
     }))?;
     let root = Catalog {
         schema_version: CATALOG_SCHEMA_VERSION,
-        source: Some(osm_source()),
+        source: Some(options.credits.source.clone()),
         schema: SchemaEntry {
             id: schema.id,
             sha256: schema.sha256,
@@ -359,7 +380,7 @@ pub fn build(request: &Request) -> Result<(), String> {
     };
     write_named(request, SCHEMA_DOC, schema_body)?;
     write_named(request, "terrain.json", document_json(root.terrain.as_ref().expect("terrain is published")))?;
-    write_named(request, LICENSE_NAME, license_txt(&root))?;
+    write_named(request, LICENSE_NAME, license_txt(&root, &options.credits.articles))?;
     write_named(request, DEFAULT_MANIFEST_NAME, root_json(&root))
 }
 
@@ -450,6 +471,7 @@ mod tests {
             terrain_cell_log2: 19,
             posting_log2: 9,
             dataset_version: "1".into(),
+            credits: Credits::of_sources(),
         };
         options.coverage.get_mut("fine").unwrap().insert(id.clone(), false);
         let mut request = Request {

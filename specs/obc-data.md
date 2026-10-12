@@ -217,6 +217,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 | Path | Holds |
 | --- | --- |
+| `layout` | The layout number of the store, `1`, and a line end |
 | `settings/pending.json`, `settings/applied.json` | Pending and last observed applied Live settings |
 | `regions/<id>.toml` | Saved region definitions |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
@@ -231,6 +232,8 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 Rules:
 
+- `obc data` refuses a store whose `layout` is missing or holds another number. The fix names
+  the `mv` that moves the store aside. An empty or new store directory gets `layout`.
 - An object is complete. A download goes to `partial/` and moves into `objects/` with one
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
@@ -285,9 +288,9 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
-`newest of a request` and `local PRODUCT, …`. Then one entry for the reached layers of each step (`inputs kept`). Then
-one entry for each kind of root that names objects that no reached record or layer has:
-`live release`, `local release`, `fixture` or `planner recipe`. The size of
+and `newest of a request`. Then one entry for the reached layers of each step (`inputs kept`).
+Then one entry for each kind of root that names objects that no reached record or layer has:
+`live release`, `fixture` or `planner recipe`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
 takes the store lock alone, or refuses to start while a mutating run or fetch holds it. A writer run holds it through verification and
 publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
@@ -449,7 +452,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | --- | --- |
 | `name` | Lowercase kebab-case segments joined by `/` |
 | `shape` | `tiled`: built per grid leaf. `whole`: built once over the full coverage. `whole` with named partitions |
-| `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::VERSION`, `obcm::VERSION`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. Another layer has the format that its spec states, or 1 |
+| `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::SURFACE_VERSION` for `device/terrain`, `obcm::VERSION` for `device/map`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. `device/landmarks` has the sum of `obcm::landmarks::SECTION_VERSION` and `obcm::peaks::VERSION`: each only grows. Another layer has the format that its spec states, or 1 |
 | `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
 | `readers` | The programs or layers that read its files. An internal layer has none |
 
@@ -655,7 +658,9 @@ environment (`Release::compose`). A product that no group or edit changes keeps 
 The maps catalog step consumes selected layer paths and their receipt metadata. Map and terrain
 layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
 and `terrain/` payloads are client files. The catalog layer publishes pinned satellites from
-`objects/`. Named schema, terrain, licence and region files remain release metadata.
+`objects/`. Named schema, terrain, licence and region files remain release metadata. The
+option `credits` holds the OSM source entry and the credits of GLO-30 and of the landmark
+articles, from `data/sources.toml`, so that a credit edit changes the key.
 
 The catalog selects only Geofabrik picks whose complete band and terrain coverage is available.
 A saved Box or multi-area definition has its own complete catalog pick. Source polygons determine
@@ -913,9 +918,10 @@ missing capture. Policy refresh selects one new version for the stale capture bu
 Commons keep matching manifest, article and image bytes. Other areas and collections keep
 their versions. The bundle retains its capture params. A saved plan replays those exact params. Status and ordinary plans do not
 start bulk captures. A capture that moves explicitly reads the extract and the `.poly` of now.
-Missing held capture inputs remain blocked; retained-copy failure never selects replacement data. `code=` is the digest of the code that makes the boundary and the
-candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
-A held request keeps its original `code=` even when source text changes. Its selection is
+Missing held capture inputs remain blocked; retained-copy failure never selects replacement data. `code=` is the revision of the code that makes the boundary and the
+candidates or the summits (`obc_pack::step::CAPTURE_REVISION`). A change that gives them other
+output increases it, so `--move wikidata` after that change asks for a new capture.
+A held request keeps its original `code=`. Its selection is
 provisional until the offline content step reconstructs the boundary and candidates or summits
 and checks their full SHA-256 pins. A mismatch fails before content output or a receipt.
 
@@ -942,8 +948,8 @@ reads no snapshot. No layer reads a national terrain model yet.
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
-| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
-| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
+| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
+| `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
 | `planner/model` | `query-model` | None | `model/`: `model.int8.onnx`, `tokenizer.json` and `tokenizer_config.json` of the archive, and `labels.json`, the labels of the query schema |
@@ -2544,13 +2550,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "type": "array"
           },
           "type": "array"
-        },
-        "product": {
-          "description": "Local product whose saved release supplies this pin; absent for the shared Live plan.",
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "source": {
           "type": "string"
