@@ -157,12 +157,11 @@ def command_fetch(args) -> int:
 
 
 def command_index_tiles(args) -> int:
-    """`index.json` of a version of `terrain-reference/<key>`: each tile of `--digests`, a
-    directory of the `<ti>-<tj>.sha256` files that `fetch` wrote, with that digest."""
+    """`index.json` of a version of `terrain-reference/<key>`: each tile of `--digests`, a JSON
+    object of tile id to the pixel digest that `fetch` wrote."""
 
     source = registered(args.source)
-    digests = {path.stem.replace("-", "/"): path.read_text(encoding="utf-8").strip()
-               for path in sorted(Path(args.digests).glob("*.sha256"))}
+    digests = dict(sorted(json.loads(Path(args.digests).read_text(encoding="utf-8")).items()))
     facts = {"product": source.product, "attribution": source.credit(args.fetched), "licence": source.licence,
              "vertical_datum": source.vertical_datum, "fetched": args.fetched}
     index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "sources": {source.key: facts},
@@ -417,7 +416,7 @@ def main(argv=None) -> int:
     tiles = commands.add_parser("index-tiles", help="index.json of the tiles that fetch wrote, for obc data")
     tiles.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
     tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
-    tiles.add_argument("--digests", required=True, help="the directory of the <ti>-<tj>.sha256 files")
+    tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
     tiles.add_argument("--out", required=True, help="the index.json to write")
     tiles.set_defaults(run=command_index_tiles)
 

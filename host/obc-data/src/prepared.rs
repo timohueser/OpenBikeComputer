@@ -401,13 +401,13 @@ impl<'a> Job<'a> {
     }
 
     /// The files that are on the target, by path.
-    pub(crate) fn files(&self) -> impl Iterator<Item = &LayerFile> {
+    pub fn files(&self) -> impl Iterator<Item = &LayerFile> {
         self.files.values()
     }
 
-    /// Fetch `wanted` into the store, and give the object of each file by name. The manifest names
-    /// the version that it read.
-    pub fn fetch(&mut self, wanted: &Wanted) -> Result<BTreeMap<String, PathBuf>, String> {
+    /// Fetch `wanted` into the store, and give the version and the object of each file by name. The
+    /// manifest names the version that it read.
+    pub fn fetch(&mut self, wanted: &Wanted) -> Result<(String, BTreeMap<String, PathBuf>), String> {
         let source = self.sources.iter().find(|source| source.id == wanted.source);
         let source = source.ok_or_else(|| format!("no source `{}` in data/sources.toml", wanted.source))?;
         let request = crate::fetch::Request {
@@ -419,7 +419,8 @@ impl<'a> Job<'a> {
         let snapshot = self.run.fetch_request(self.root, self.store, self.http, &request, &[])?;
         let files = snapshot.files.iter().map(|file| (file.name.clone(), file.sha256.clone())).collect();
         self.input(&snapshot.source, &snapshot.version, files)?;
-        Ok(snapshot.files.into_iter().map(|file| (file.name, self.store.object(&file.sha256))).collect())
+        let objects = snapshot.files.into_iter().map(|file| (file.name, self.store.object(&file.sha256))).collect();
+        Ok((snapshot.version, objects))
     }
 
     /// Record that the prepare read `files`, name to SHA-256, of `source@version` without a fetch:

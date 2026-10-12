@@ -137,9 +137,9 @@ impl Device {
         };
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let (mut steps, mut blocked, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut blocked, mut notes, mut shapes) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
-            let reference = reference(inputs, store, leaf, cells, &mut wanted, &mut notes)?;
+            let reference = reference(inputs, store, (leaf, cells), &mut shapes, &mut wanted, &mut notes)?;
             let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
             steps.extend(reference);
             steps.push(terrain);
@@ -450,17 +450,51 @@ fn map_cells(
     }
 }
 
+/// The polygon of a Geofabrik area that holds a national model, with the archive tiles that its
+/// boundary crosses. A step list reads each area once.
+type Shape = (Coverage, BTreeSet<CellId>);
+
+/// Whether one of `tiles` is in the polygon of one of the `areas` of `source`: the boundary of the
+/// polygon crosses the tile, or the polygon holds the centre of the tile. `None` while the store
+/// lacks a polygon; then `wanted` has it.
+fn in_areas(
+    inputs: &Inputs,
+    store: &Store,
+    (source, tiles): (&Source, &[CellId]),
+    shapes: &mut BTreeMap<String, Shape>,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<bool>, Unplanned> {
+    for area in &source.areas {
+        if shapes.contains_key(area) {
+            continue;
+        }
+        let Some(poly) = text(inputs, store, POLY, &[("area".into(), area.clone())], wanted)? else { continue };
+        let coverage = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
+        let boundary = coverage.boundary_cells(TILE_LOG2.into());
+        shapes.insert(area.clone(), (coverage, boundary));
+    }
+    if source.areas.iter().any(|area| !shapes.contains_key(area)) {
+        return Ok(None);
+    }
+    let inside = |tile: &CellId, (coverage, boundary): &Shape| {
+        let (west, south, _, _) = tile.square();
+        boundary.contains(tile) || coverage.contains(south + tile.size() / 2, west + tile.size() / 2)
+    };
+    let any = tiles.iter().any(|tile| source.areas.iter().any(|area| inside(tile, &shapes[area])));
+    Ok(Some(source.areas.is_empty() || any))
+}
+
 /// The national terrain models of the archive tiles that the terrain cells of `leaf` read with the
 /// halo of the crest rule, merged into the reference archive of the leaf. A model is the prepared
 /// source `terrain-reference/<key>` at the version that the target reads, and the leaf reads the
 /// tiles of its manifest among those. `None` when no model has one, or while the store lacks a
-/// manifest; then `wanted` has its fetch. A model without a version adds nothing, and `notes` say
-/// so: a new version is a new input of the leaf.
+/// manifest or a polygon; then `wanted` has its fetch. A model without a version adds nothing, and
+/// `notes` say so where it can have a height: a new version is a new input of the leaf.
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    leaf: LeafId,
-    cells: &[CellId],
+    (leaf, cells): (LeafId, &[CellId]),
+    shapes: &mut BTreeMap<String, Shape>,
     wanted: &mut Vec<Wanted>,
     notes: &mut Vec<Note>,
 ) -> Result<Option<Step>, Unplanned> {
@@ -472,22 +506,25 @@ fn reference(
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
     let paths: BTreeSet<String> = tiles.iter().map(|tile| format!("16/{:04}/{:04}.tif", tile.i, tile.j)).collect();
-    let meets = |source: &&Source| {
-        let square = |tile: &CellId| {
-            let (west, south, east, north) = tile.square();
-            [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
-        };
-        source.id.starts_with("terrain-reference/") && tiles.iter().any(|tile| source.meets(square(tile)))
+    let square = |tile: &&CellId| {
+        let (west, south, east, north) = tile.square();
+        [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
     };
     let (mut reads, mut models) = (Vec::new(), Vec::new());
-    for source in sources::all().iter().filter(meets) {
+    for source in sources::all().iter().filter(|source| source.id.starts_with("terrain-reference/")) {
+        let near: Vec<CellId> = tiles.iter().filter(|tile| source.meets(square(tile))).copied().collect();
+        if near.is_empty() {
+            continue;
+        }
         let id = &source.id;
         let Ok(pinned) = version(inputs, store, id, &[]).map_err(Unplanned::Failed)? else {
-            let text =
-                format!("{id} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare {id}");
-            let note = Note { layer: DEVICE_TERRAIN.name.into(), text };
-            if !notes.contains(&note) {
-                notes.push(note);
+            if in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
+                let text =
+                    format!("{id} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare {id}");
+                let note = Note { layer: DEVICE_TERRAIN.name.into(), text };
+                if !notes.contains(&note) {
+                    notes.push(note);
+                }
             }
             continue;
         };
@@ -637,6 +674,7 @@ pub(crate) mod tests {
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(store: &Store, glo30: &str) -> (Inputs, Regions) {
+        with_model_areas(store);
         let inputs = serving("grimsel", glo30);
         let regions = Regions::load(&root()).unwrap();
         let Area::Box { bbox } = &regions.get("grimsel").unwrap().area else { unreachable!() };
@@ -658,6 +696,7 @@ pub(crate) mod tests {
     /// A Geofabrik region about Freiburg, in leaf `0037-0032`, whose `.poly` the store has, and the
     /// tile list.
     fn freiburg(store: &Store) -> (Inputs, Regions) {
+        with_model_areas(store);
         let area = [("area".to_string(), "europe/test".to_string())];
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
         with_index(store);
@@ -726,6 +765,17 @@ pub(crate) mod tests {
             let names = files.iter().map(|(name, _)| name.clone()).collect();
             let requested = Requested { version: version.into(), params: params.to_vec(), files: names };
             store.put_requested(source, &requested).unwrap();
+        }
+    }
+
+    /// The polygon of each Geofabrik area of a national model: the box of its `extent`.
+    pub(crate) fn with_model_areas(store: &Store) {
+        for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-")) {
+            let [west, south, east, north] = source.extent.unwrap();
+            let poly = box_poly(&Bbox { west, south, east, north });
+            for area in &source.areas {
+                fetched(store, POLY, "1", &[("area".into(), area.clone())], &[(format!("{area}.poly"), poly.clone())]);
+            }
         }
     }
 
@@ -1084,9 +1134,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// A version of `terrain-reference/ch` whose manifest names a tile of the window of each Grimsel
-    /// leaf and one far away, for the inputs of the Grimsel: its pin and the bytes of its manifest.
-    fn swiss_version(inputs: &mut Inputs) -> (String, Vec<u8>) {
+    /// A version of `terrain-reference/ch` whose manifest names `paths`, for the inputs of the
+    /// Grimsel: its pin and the bytes of its manifest.
+    fn swiss_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
         let manifest = Manifest {
             source: "terrain-reference/ch".into(),
@@ -1094,7 +1144,7 @@ pub(crate) mod tests {
             format: 1,
             revision: 1,
             inputs: Vec::new(),
-            files: ["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"].map(file).into(),
+            files: paths.iter().map(|path| file(path)).collect(),
             scope: None,
             licence: None,
             attribution: None,
@@ -1114,7 +1164,8 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
-        let (pinned, manifest) = swiss_version(&mut inputs);
+        let (pinned, manifest) =
+            swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"]);
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
             panic!("no manifest")
         };
@@ -1143,30 +1194,36 @@ pub(crate) mod tests {
 
     #[test]
     fn a_leaf_over_a_model_without_a_version_reads_glo30_alone_and_its_first_version_stales_it() {
-        use obc_data::engine::state::{state, Environment, Newer, Verdict};
+        use obc_data::engine::{changes, state::Newer};
         let temp = temp("unprepared");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
+        // The boxes of `dtm-fr` and `dtm-de-by` reach the Grimsel; their polygons stop west and east of it.
+        for (area, [west, south, east, north]) in
+            [("europe/france", [-5.0, 42.0, 7.5, 51.0]), ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56])]
+        {
+            let poly = box_poly(&Bbox { west, south, east, north });
+            fetched(&store, POLY, "2", &[("area".into(), area.into())], &[(format!("{area}.poly"), poly)]);
+        }
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/reference/")));
         let text = "terrain-reference/ch has no version: device/terrain uses GLO-30 there. \
                     Fix: obc data source prepare terrain-reference/ch";
-        assert!(
-            listed.notes.contains(&Note { layer: "device/terrain".into(), text: text.into() }),
-            "{:?}",
-            listed.notes
-        );
-        let release = listed.steps.iter().map(|step| (step.name.clone(), declared(step, step.layer.format))).collect();
+        assert_eq!(listed.notes, [Note { layer: "device/terrain".into(), text: text.into() }]);
+        let declared: Vec<Output> = listed.steps.iter().map(|step| declared(step, step.layer.format)).collect();
+        let release = declared.iter().map(|output| (output.step.as_str(), output)).collect();
 
-        let (pinned, manifest) = swiss_version(&mut inputs);
+        // Swiss heights in the west leaf only.
+        let (pinned, manifest) = swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif"]);
         stored(&store, "terrain-reference/ch", &pinned, &[], &[(MANIFEST.into(), manifest)]);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
-        assert!(!listed.notes.iter().any(|note| note.text.starts_with("terrain-reference/ch ")));
-        let environment = Environment { release, newer: Newer::new() };
-        let states = state(&Store::at(temp.0.join("empty")), &listed.steps, &environment).unwrap();
-        let terrain = states.iter().find(|layer| layer.layer == "device/terrain").unwrap();
-        assert_eq!(terrain.state, Verdict::Stale, "{:?}", terrain.text);
+        assert_eq!(listed.notes, []);
+        let update = changes::update(&Store::at(temp.0.join("empty")), &listed.steps, &release, &Newer::new(), &[]);
+        let update = update.unwrap();
+        let terrain: BTreeSet<&str> =
+            builds(&update.plan).into_iter().filter(|step| step.starts_with("device/terrain/")).collect();
+        assert_eq!(terrain, ["device/terrain/0037-0032"].into(), "the leaf without a Swiss tile is kept");
     }
 }

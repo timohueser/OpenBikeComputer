@@ -612,7 +612,7 @@ mod tests {
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {
-            let head = fs::read_to_string(&job.fetch(&head())?["head.txt"]).map_err(|e| e.to_string())?;
+            let head = fs::read_to_string(&job.fetch(&head())?.1["head.txt"]).map_err(|e| e.to_string())?;
             for path in ["a.txt", "b.txt", "c.txt"] {
                 if job.done(path) {
                     continue;

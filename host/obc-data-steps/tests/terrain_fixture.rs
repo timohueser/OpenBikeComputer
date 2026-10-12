@@ -10,7 +10,7 @@ use obc_data::engine::runs::{Context, Limits, Run};
 use obc_data::fetch::http::Http;
 use obc_data::product::Inputs;
 use obc_data::product::Unplanned;
-use obc_data::regions::{parse_region, Area, Regions};
+use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::device::{box_poly, Device, TILE_LIST};
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
@@ -63,13 +63,20 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
             "urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
         "geometry":{"type":"Polygon","coordinates":[[[bbox.west,bbox.south],[bbox.east,bbox.south],
             [bbox.east,bbox.north],[bbox.west,bbox.north],[bbox.west,bbox.south]]]}}]});
+    // The store has no national data of the Grimsel: the polygon of each area of a national model
+    // is a speck at 0° 0°, so the terrain reads GLO-30 alone.
+    let speck = box_poly(&Bbox { west: 0.0, south: 0.0, east: 0.001, north: 0.001 });
+    let models = obc_data::sources::all()
+        .iter()
+        .flat_map(|source| &source.areas)
+        .map(|area| ("geofabrik-poly", format!("{area}.poly"), vec![("area".into(), area.clone())], speck.clone()));
     let inputs = [
         ("geofabrik-index", "index.json".into(), Vec::new(), index.to_string()),
         ("geofabrik-poly", format!("{AREA}.poly"), vec![("area".into(), AREA.into())], box_poly(&bbox)),
         ("geofabrik-extracts", format!("{AREA}.osm.pbf"), vec![("area".into(), AREA.into())], String::new()),
         ("land-polygons", "land.zip".into(), Vec::new(), "unused land input".into()),
     ];
-    for (source, name, params, bytes) in inputs {
+    for (source, name, params, bytes) in inputs.into_iter().chain(models) {
         let file = store.partial(source);
         let bytes = if source == "geofabrik-extracts" {
             std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cells.osm.pbf")).unwrap()

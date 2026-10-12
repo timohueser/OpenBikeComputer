@@ -58,7 +58,7 @@ impl Prepared for TerrainReference {
             tiles.retain(|tile| inside.contains(tile));
         }
         let model = Wanted { source: model(source), version: None, params: Vec::new() };
-        let inputs = std::iter::once(model).chain(source.areas.iter().map(|area| polygon(area))).collect();
+        let inputs = std::iter::once(model).chain(source.areas.iter().map(|area| polygon(area, None))).collect();
         Ok(Plan { inputs, files: tiles.len() as u64 + 1 })
     }
 
@@ -110,18 +110,20 @@ impl Prepared for TerrainReference {
             }
         }
         job.finish(&batch)?;
-        let mut command = (self.ingest)(job.root)?;
-        command.args(["index-tiles", key, "--fetched", &job.version, "--digests"]).arg(&marks);
-        job.program(command.arg("--out").arg(job.work.join("index.json")))?;
-        let mut digests = BTreeMap::new();
-        for entry in fs::read_dir(&marks).map_err(|e| format!("{}: {e}", marks.display()))? {
-            let mark = entry.map_err(|e| e.to_string())?.path();
-            let Some((ti, tj)) = mark.file_stem().and_then(|stem| stem.to_str()?.split_once('-')) else { continue };
-            if mark.extension().is_some_and(|extension| extension == "sha256") {
-                let digest = fs::read_to_string(&mark).map_err(|e| format!("{}: {e}", mark.display()))?;
-                digests.insert(format!("16/{ti}/{tj}.tif"), digest.trim().to_string());
-            }
+        // The index names the tiles of the version, each with the pixel digest of its mark.
+        let (mut digests, mut tiles) = (BTreeMap::new(), BTreeMap::new());
+        for path in job.files().map(|file| file.path.clone()).filter(|path| path.starts_with("16/")) {
+            let tile = path["16/".len()..].trim_end_matches(".tif").to_string();
+            let mark = marks.join(format!("{}.sha256", tile.replace('/', "-")));
+            let digest = fs::read_to_string(&mark).map_err(|e| format!("{}: {e}", mark.display()))?;
+            tiles.insert(tile, digest.trim().to_string());
+            digests.insert(path, digest.trim().to_string());
         }
+        let listed = job.state.join("digests.json");
+        obc_data::store::write_atomic(&listed, &serde_json::to_vec(&tiles).expect("digests serialize"))?;
+        let mut command = (self.ingest)(job.root)?;
+        command.args(["index-tiles", key, "--fetched", &job.version, "--digests"]).arg(&listed);
+        job.program(command.arg("--out").arg(job.work.join("index.json")))?;
         // The model has no versions of its own: the day of the prepare names what it read.
         let version = job.version.clone();
         job.input(&model(source), &version, digests)?;
@@ -134,8 +136,8 @@ fn model(source: &Source) -> String {
     format!("dtm-{}", &source.id["terrain-reference/".len()..])
 }
 
-fn polygon(area: &str) -> Wanted {
-    Wanted { source: POLY.into(), version: None, params: vec![("area".into(), area.into())] }
+fn polygon(area: &str, version: Option<String>) -> Wanted {
+    Wanted { source: POLY.into(), version, params: vec![("area".into(), area.into())] }
 }
 
 /// The archive tiles that `bbox` meets.
@@ -148,9 +150,19 @@ fn extent_tiles(source: &Source) -> Result<BTreeSet<CellId>, String> {
     box_tiles(&Bbox { west, south, east, north })
 }
 
-/// The archive tiles that the Geofabrik polygon of `area` meets.
+/// The archive tiles that the Geofabrik polygon of `area` meets. The first run of a version keeps
+/// the version of each polygon in `state/polygons.json`, so its tiles stay those of the first run.
 fn area_tiles(job: &mut Job, area: &str) -> Result<BTreeSet<CellId>, String> {
-    let files = job.fetch(&polygon(area))?;
+    let pins = job.state.join("polygons.json");
+    let mut versions: BTreeMap<String, String> = match fs::read(&pins) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
+        Err(_) => BTreeMap::new(),
+    };
+    let (version, files) = job.fetch(&polygon(area, versions.get(area).cloned()))?;
+    if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
+        let bytes = serde_json::to_vec(&versions).expect("versions serialize");
+        obc_data::store::write_atomic(&pins, &bytes)?;
+    }
     let [path] = files.values().collect::<Vec<_>>()[..] else {
         return Err(format!("a fetch of {POLY} of `{area}` gives {} files, not one", files.len()));
     };
@@ -207,8 +219,8 @@ mod tests {
     "#;
 
     /// `ingest.py` as a script that logs each call to `calls`: a tile with a file `none-<tile>`
-    /// has no height, one with `fail-<tile>` fails, and `index-tiles` writes the digests it finds
-    /// unless `fail-index` exists.
+    /// has no height, one with `fail-<tile>` fails, and `index-tiles` writes the digests that it
+    /// gets unless `fail-index` exists.
     const INGEST: &str = r#"echo "$1 $4" >> calls
 case "$1" in
 fetch)
@@ -217,7 +229,7 @@ fetch)
     mkdir -p "$8/16/${4%-*}" && echo "$4" > "$8/16/${4%-*}/${4#*-}.tif" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-tiles)
     [ -e fail-index ] && exit 1
-    cat "$6"/*.sha256 > "$8" ;;
+    cp "$6" "$8" ;;
 esac
 "#;
 
@@ -271,13 +283,19 @@ esac
         assert_eq!(calls, [fetches(&tiles[2..]), index()].concat());
 
         fs::remove_file(root.join("fail-index")).unwrap();
+        // A mark of a tile that is not in the version.
+        let marks = store.root().join("prepared/t/terrain-reference/xx/2026-10-01/state/tiles");
+        fs::write(marks.join("9999-9999.sha256"), "pixels of 9999-9999\n").unwrap();
         let (done, calls) = prepare();
         done.unwrap();
         assert_eq!(calls, index(), "a resume fetches no tile that the target has");
         let Target::Dir(dir) = &target else { unreachable!() };
         let version = dir.join("sources/terrain-reference/xx/2026-10-01");
-        let digests: Vec<String> = tiles[1..].iter().map(|tile| format!("pixels of {tile}")).collect();
-        assert_eq!(fs::read_to_string(version.join("index.json")).unwrap().lines().collect::<Vec<_>>(), digests);
+        let digests: BTreeMap<String, String> =
+            tiles[1..].iter().map(|tile| (tile.replace('-', "/"), format!("pixels of {tile}"))).collect();
+        let index: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(version.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index, digests, "the tiles of the version, each with its pixel digest");
         for tile in &tiles[1..] {
             let (ti, tj) = tile.split_once('-').unwrap();
             assert_eq!(fs::read_to_string(version.join(format!("16/{ti}/{tj}.tif"))).unwrap(), format!("{tile}\n"));

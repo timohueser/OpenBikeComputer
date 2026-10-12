@@ -786,9 +786,10 @@ those tiles reads the version that the target reads (see [Prepared sources](#pre
 the step list reads its manifest, and the leaf reads the files `16/<ti:04>/<tj:04>.tif` of the
 manifest among those tiles. So a machine with an empty store plans a region from the manifests
 alone. A model without such a file adds nothing, and a leaf where no model has one has no
-`device/reference` layer. A model that has no version adds nothing either, and a note on
-`device/terrain` names it and the command that prepares it; the first version is a new input of
-the leaves that read it.
+`device/reference` layer. A model that has no version adds nothing either. Where one of those
+tiles is in the `geofabrik-poly` polygon of one of its `areas`, as the producer selects tiles, a
+note on `device/terrain` names it and the command that prepares it; the first version is a new
+input of the leaves that read it.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
@@ -1454,6 +1455,7 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
 - The tiles are those that meet the `extent` of the source and the `geofabrik-poly` polygon of one
   of its `areas`: the boundary of the polygon crosses the tile, or the polygon holds the centre of
   the tile. A version of a region has only the tiles of its boxes and of the polygons of its areas.
+  A run keeps the version of each polygon that the first run of the version read.
   The review counts the tiles of the `extent`, in the box of a region of boxes, and `index.json`.
 - For each tile, `host/obc-dem/reference/ingest.py fetch <key> --tile <ti:04>-<tj:04>` writes
   `16/<ti:04>/<tj:04>.tif`, the rasters of the model in the tile pooled onto the lattice, and then
@@ -1462,10 +1464,10 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
   the `extent`, and it removes the raw rasters. The run keeps the SHA-256 or the `.none` of each
   tile until the version is complete, so a resume fetches no tile again that it has.
 - The run uploads the tiles in batches of 64, one upload each.
-- Last, `ingest.py index-tiles` writes `index.json`: each tile with the SHA-256 of its pixels,
-  `contributors` `[<key>]`, and the facts of the model with `fetched`, the date of the version. The
-  manifest names the input `dtm-<key>` at that date, with the [digest](#keys) of the pixel
-  SHA-256 of the tiles.
+- Last, `ingest.py index-tiles` writes `index.json`: each tile of the version with the SHA-256 of
+  its pixels, `contributors` `[<key>]`, and the facts of the model with `fetched`, the date of the
+  version. The manifest names the input `dtm-<key>` at that date, with the [digest](#keys) of the
+  pixel SHA-256 of the tiles.
 - Only the machine that prepares needs the `credential` of `dtm-<key>`. A `by-hand` model reads
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.

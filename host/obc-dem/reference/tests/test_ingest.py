@@ -464,7 +464,7 @@ class Fetch(ArchiveCase):
                                       "--work", str(self.root / "ingest"), "--per-tile"]), 0)
         tiles = self.index()["sha256"]
         self.assertEqual(len(tiles), 2)
-        (self.root / "digests").mkdir()
+        digests = {}
         for tile, digest in tiles.items():
             ti, tj = (int(part) for part in tile.split("/"))
             name, path = f"{ti:04}-{tj:04}", f"16/{tile}.tif"
@@ -473,11 +473,12 @@ class Fetch(ArchiveCase):
             self.assertEqual((self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8"), digest)
             self.assertEqual(ingest.tile_problems(self.root / "out" / path, ti, tj), [])
             self.assertFalse((self.root / "work").exists())
-            shutil.copy(self.root / "out" / f"{name}.sha256", self.root / "digests")
+            digests[tile] = (self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8")
 
-        index = self.root / "index.json"
+        index, listed = self.root / "index.json", self.root / "digests.json"
+        listed.write_text(json.dumps(digests), encoding="utf-8")
         self.assertEqual(ingest.main(["index-tiles", "ch", "--fetched", "2026-10-01", "--digests",
-                                      str(self.root / "digests"), "--out", str(index)]), 0)
+                                      str(listed), "--out", str(index)]), 0)
         index = json.loads(index.read_text(encoding="utf-8"))
         self.assertEqual((index["sha256"], index["sources"]["ch"]["fetched"]), (tiles, "2026-10-01"))
         self.assertEqual(index["contributors"], {tile: ["ch"] for tile in tiles})
