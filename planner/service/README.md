@@ -4,7 +4,11 @@
 cargo build --release -p planner-service
 target/release/planner-service /data/routes/freiburg --verify
 target/release/planner-service /data/routes/freiburg
+target/release/planner-service --formats
 ```
+
+`--formats` prints the format of the routing package that the service reads, such as
+`{"planner/routing":8}`. `obc data serve` starts no release in another format.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

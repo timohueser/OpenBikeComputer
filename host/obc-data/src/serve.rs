@@ -30,6 +30,8 @@ pub struct Served {
     pub planner: String,
     /// The bytes of each pointer key.
     pub pointers: BTreeMap<String, Vec<u8>>,
+    /// The format of each layer of the release.
+    pub formats: BTreeMap<String, u32>,
 }
 
 /// The release that `roles` of `target` serves, then its rollback.
@@ -48,7 +50,8 @@ fn served(target: &Target, id: &str) -> Result<Served, String> {
     let catalog: Value = serde_json::from_slice(&pointers[PLANNER]).map_err(|e| format!("{PLANNER} of {id}: {e}"))?;
     let planner = catalog["active"]["id"].as_str().filter(|planner| crate::release::is_sha256(planner));
     let planner = planner.ok_or_else(|| format!("{PLANNER} of release {id} names no planner release"))?;
-    Ok(Served { id: id.into(), planner: planner.into(), pointers })
+    let formats = release.outputs.iter().map(|output| (output.layer.clone(), output.format)).collect();
+    Ok(Served { id: id.into(), planner: planner.into(), pointers, formats })
 }
 
 /// The services of a planner release. They stop when they drop.
@@ -330,6 +333,7 @@ mod tests {
         case.answers(P3);
         assert_eq!(case.current(), d);
         assert_eq!(case.follower.current().unwrap().pointers[POINTERS[0]], b"device d");
+        assert_eq!(case.follower.current().unwrap().formats, [("test".to_string(), 1)].into(), "the layer formats");
         case.switch(&c);
         assert_eq!(case.current(), c, "a rollback to another planner release that runs");
         assert_eq!(case.log.borrow().started, [P1, P2, P3]);

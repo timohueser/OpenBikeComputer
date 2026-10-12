@@ -6,6 +6,12 @@ import {openRegion} from './installation.mjs';
 import { openingHours } from './hours.mjs';
 import { RequestError } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
+import { SCHEMA } from './federation.mjs';
+
+if (process.argv.includes('--formats')) {
+  console.log(JSON.stringify({ 'planner/search': SCHEMA }));
+  process.exit(0);
+}
 
 const root = import.meta.dirname,
   data = path.resolve(process.env.OBC_SEARCH_DATA || path.join(root, 'data'));

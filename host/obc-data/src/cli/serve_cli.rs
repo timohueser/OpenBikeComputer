@@ -201,7 +201,8 @@ fn programs(root: &Path) -> Result<Programs, Error> {
         artifact.then(|| message["executable"].as_str().map(PathBuf::from)).flatten()
     });
     let routing = routing.ok_or_else(|| Code::Failed.error("cargo built no `planner-service` program").fix(fix))?;
-    Ok(Programs { root: root.to_path_buf(), routing })
+    let prepare = "Prepare the services as host/obc-data/README.md says, then run again.";
+    Programs::new(root.to_path_buf(), routing).map_err(|e| Code::Blocked.error(e).fix(prepare))
 }
 
 /// The address of this machine on the network of its default route. A UDP connect sends nothing.

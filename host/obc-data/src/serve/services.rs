@@ -1,6 +1,7 @@
 //! The services of a planner release: routing, search and downloads, as processes on this machine
 //! that read the files of the release.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -35,8 +36,49 @@ const DOWNLOADS_CACHE: u64 = 256 << 20;
 
 /// The repository whose code runs the search and downloads services, and the routing service.
 pub struct Programs {
-    pub root: PathBuf,
-    pub routing: PathBuf,
+    root: PathBuf,
+    routing: PathBuf,
+    /// By layer: the service that reads it, and the format that it reads.
+    formats: BTreeMap<String, (&'static str, u32)>,
+}
+
+impl Programs {
+    /// The programs, with the formats that each service prints with `--formats`: a JSON object of
+    /// layer and format.
+    pub fn new(root: PathBuf, routing: PathBuf) -> Result<Self, String> {
+        let mut formats = BTreeMap::new();
+        for (mut command, service) in commands(&root, &routing).into_iter().zip(&SERVICES) {
+            let fail = |e: String| format!("the {} service does not give its formats: {e}", service.name);
+            let output = command.arg("--formats").output().map_err(|e| fail(e.to_string()))?;
+            if !output.status.success() {
+                return Err(fail(String::from_utf8_lossy(&output.stderr).trim().to_string()));
+            }
+            let reads: BTreeMap<String, u32> =
+                serde_json::from_slice(&output.stdout).map_err(|e| fail(e.to_string()))?;
+            formats.extend(reads.into_iter().map(|(layer, format)| (layer, (service.name, format))));
+        }
+        Ok(Self { root, routing, formats })
+    }
+}
+
+/// The command of each of the [`SERVICES`], before the arguments of a start.
+fn commands(root: &Path, routing: &Path) -> [Command; 3] {
+    let (mut search, mut downloads) = (Command::new("node"), Command::new("python3"));
+    search.arg("server.mjs").current_dir(root.join("planner/search"));
+    downloads.args(["-m", "tools.planner_downloads"]).current_dir(root);
+    [Command::new(routing), search, downloads]
+}
+
+/// Refuse a release with a layer that its service reads in another format.
+fn readable(programs: &Programs, served: &Served) -> Result<(), String> {
+    for (layer, (service, reads)) in &programs.formats {
+        if let Some(format) = served.formats.get(layer).filter(|format| *format != reads) {
+            return Err(format!(
+                "not ready: needs a {service} service that reads {layer} format {format}; it reads {reads}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The services of one planner release, and the folder of its files.
@@ -56,30 +98,28 @@ pub fn start(
     served: &Served,
     public: &str,
 ) -> Result<Processes, String> {
+    readable(programs, served)?;
     // Dropped on an error, it removes what the start installed.
     let mut processes = Processes { dir: work.join(&served.planner), children: Vec::new(), ports: [0; 3] };
     let (dir, planner) = (processes.dir.clone(), &served.planner);
     let region = materialize(target, planner, &dir)?;
     processes.ports = [free_port()?, free_port()?, free_port()?];
     let [routing, search, downloads] = processes.ports.map(|port| port.to_string());
-    let mut commands = [Command::new(&programs.routing), Command::new("node"), Command::new("python3")];
+    let mut commands = commands(&programs.root, &programs.routing);
     commands[0].arg(dir.join("routing")).env("ROUTE_LISTEN", format!("127.0.0.1:{routing}")).env_remove("ROUTE_ORIGIN");
     commands[1]
-        .arg("server.mjs")
-        .current_dir(programs.root.join("planner/search"))
         .env("OBC_SEARCH_DATA", dir.join("search"))
         .env("OBC_SEARCH_PORT", search)
         .env("OBC_SEARCH_REGIONS", region)
         .env_remove("OBC_SEARCH_ORIGINS");
     commands[2]
-        .args(["-m", "tools.planner_downloads", "--source"])
+        .arg("--source")
         .arg(dir.join("offline"))
         .arg("--cache")
         .arg(dir.join("downloads"))
         .args(["--max-cache-bytes", &DOWNLOADS_CACHE.to_string(), "--port", &downloads])
         .args(["--public-url", &format!("{public}/planner-api/releases/{planner}/downloads")])
-        .args(["--objects-url", &format!("{public}/objects")])
-        .current_dir(&programs.root);
+        .args(["--objects-url", &format!("{public}/objects")]);
     for (mut command, service) in commands.into_iter().zip(&SERVICES) {
         let child = spawn(&mut command).map_err(|e| format!("cannot start the {} service: {e}", service.name))?;
         processes.children.push(child);
@@ -251,6 +291,25 @@ mod tests {
     use super::*;
     use crate::store::sha256_hex;
     use crate::store::tests::Scratch;
+
+    #[test]
+    fn a_release_in_a_format_that_a_service_does_not_read_starts_nothing() {
+        let scratch = Scratch::new("serve-formats");
+        let formats = [("planner/routing".to_string(), ("routing", 8))].into();
+        let programs = Programs { root: scratch.0.clone(), routing: scratch.0.join("planner-service"), formats };
+        let served = |format| Served {
+            id: "b".repeat(64),
+            planner: "a".repeat(64),
+            pointers: BTreeMap::new(),
+            formats: [("planner/routing".into(), format), ("planner/search".into(), 6)].into(),
+        };
+        let work = scratch.0.join("work");
+        let refused = start(&programs, &scratch.0, &work, &served(9), "http://127.0.0.1:8710").err().unwrap();
+        assert_eq!(refused, "not ready: needs a routing service that reads planner/routing format 9; it reads 8");
+        assert!(!work.exists(), "nothing is installed");
+        let other = start(&programs, &scratch.0, &work, &served(8), "http://127.0.0.1:8710").err().unwrap();
+        assert!(other.contains("release.json"), "a release in the format passes the check: {other}");
+    }
 
     #[test]
     fn the_files_of_a_planner_release_come_from_its_objects() {

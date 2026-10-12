@@ -44,7 +44,8 @@ its filtered records.
 | `OBC_SEARCH_REGIONS` | `baden-wuerttemberg` |
 | `OBC_SEARCH_ORIGINS` | Loopback origins only when unset |
 
-One process serves the one region that `OBC_SEARCH_REGIONS` names.
+One process serves the one region that `OBC_SEARCH_REGIONS` names. `node server.mjs --formats`
+prints the search schema that it reads, such as `{"planner/search":6}`, and opens no data.
 
 Configure the Python and Node `major.minor` versions in `data/planner-runtime.toml`. The
 [runtime contract](../../specs/obc-data.md#service-runtimes) defines them.

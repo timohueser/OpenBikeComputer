@@ -176,6 +176,7 @@ mod tests {
             id: "b".repeat(64),
             planner: planner.clone(),
             pointers: [(POINTERS[0].into(), b"{}".to_vec()), (PLANNER.into(), pointer.clone().into())].into(),
+            formats: BTreeMap::new(),
         };
         let view = View { current: Some(current), ports: [(planner.clone(), [upstream; 3])].into() };
         let port = listen(&runtime, router(Arc::new(RwLock::new(view)), &scratch.0, upstream));
