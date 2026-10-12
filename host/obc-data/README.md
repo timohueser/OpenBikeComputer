@@ -43,8 +43,10 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
+| `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
-rollback of the target.
+rollback of the target. Run one update or rollback of a target at a time: a collection can delete
+a key that an update that runs at the same time counts on.

@@ -127,6 +127,7 @@ pub enum Phase {
     Verify,
     Upload,
     Switch,
+    Collect,
 }
 
 /// A change of a target.

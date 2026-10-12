@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{freshness, listing, print_json, Code, Error};
+use crate::collection::{self, Collected};
 use crate::engine::changes;
 use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
@@ -60,6 +61,8 @@ pub struct Updated {
     pub baked: Vec<Baked>,
     /// The number of outputs that the release keeps by reference.
     pub kept: usize,
+    /// What the collection after the switch did; `null` without a switch.
+    pub collection: Option<Collected>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -96,6 +99,9 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
             updated.kept
         ),
         None => println!("{} serves release {}", updated.target, &updated.serving[..12]),
+    }
+    if let Some(collected) = &updated.collection {
+        println!("{}", collected.text());
     }
     Ok(())
 }
@@ -169,6 +175,7 @@ pub(super) fn update(
         rollback: None,
         baked: baked.collect(),
         kept: update.kept.len(),
+        collection: None,
     };
     let changed = || {
         Code::Failed
@@ -200,9 +207,20 @@ pub(super) fn update(
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
+    let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
+    updated.collection = Some(collected(run, target, since)?);
     updated.rollback = base.map(|(base, _)| base.serving.id);
     updated.serving = id;
     Ok(updated)
+}
+
+/// The collection of `target` after a switch. A switch stays when the collection fails: the next
+/// switch collects again.
+pub(super) fn collected(run: &mut Run, target: &Target, served_since: Option<&str>) -> Result<Collected, Error> {
+    run.record(&Event::Phase { phase: Phase::Collect })?;
+    let collected = collection::collect(target, served_since, crate::date::now());
+    Ok(collected
+        .unwrap_or_else(|e| Collected { skipped: Some(format!("the collection failed: {e}")), ..Collected::default() }))
 }
 
 /// The release of `outputs`: the pointer and the named files of each product.
@@ -307,7 +325,7 @@ fn defined(settings: &mut Settings, region: Region) -> Result<(), Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, snapshot, write, Fixture};
     use crate::product::{Pointer, Steps, Unplanned};
@@ -356,7 +374,7 @@ mod tests {
         }
     }
 
-    fn update(
+    pub(in crate::cli) fn update(
         fixture: &Fixture,
         target: &Target,
         edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
@@ -378,7 +396,7 @@ mod tests {
         updated
     }
 
-    fn region(settings: &mut Settings) -> Result<(), Error> {
+    pub(in crate::cli) fn region(settings: &mut Settings) -> Result<(), Error> {
         let area = Area::Box { bbox: Bbox::new([7.0, 47.0, 8.0, 48.0]).unwrap() };
         defined(settings, Region { id: "box".into(), name: "Box".into(), area, countries: Vec::new(), time_zone: None })
     }
@@ -472,5 +490,48 @@ mod tests {
         std::fs::write(dir.join(release::SERVING), b"not json").unwrap();
         let refused = crate::cli::roots(&fixture.root(), &fixture.store).unwrap_err();
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
+    }
+
+    #[test]
+    fn a_collection_deletes_after_the_grace_only_what_a_dropped_release_alone_names() {
+        use crate::collection::{collect, GRACE};
+        use crate::date::{now, timestamp};
+        use std::collections::BTreeSet;
+        let fixture = fixture("update-collect");
+        fixture.with_sources(&[]);
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        let a = update(&fixture, &target, region).unwrap().serving;
+        fixture.fetched_version("head", "2", "head.txt", b"2\n");
+        let b = update(&fixture, &target, |_| Ok(())).unwrap().serving;
+        fixture.fetched_version("head", "3", "head.txt", b"3\n");
+        let c = update(&fixture, &target, |_| Ok(())).unwrap();
+        let collected = c.collection.unwrap();
+        assert_eq!((collected.deferred, collected.keys), (vec![a.clone()], 0), "a stopped serving just now");
+
+        let files = |id: &str| -> BTreeSet<String> {
+            Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key).collect()
+        };
+        let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
+        only_a.insert(release::manifest_key(&a));
+        let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
+        let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
+        for key in older.iter().chain(&orphans) {
+            write(&dir.join(key), key);
+        }
+        let keys = || target.list().unwrap().into_iter().map(|listed| listed.key).collect::<BTreeSet<_>>();
+        let before = keys();
+
+        let young = collect(&target, Some(&timestamp(0)), now()).unwrap();
+        assert_eq!((young.deferred, young.keys), (vec![a.clone()], 0), "its files changed within the grace");
+
+        // A collection that stopped after one file resumes from the manifest.
+        let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
+        target.remove(&first).unwrap();
+        let late = collect(&target, Some(&timestamp(now())), now() + GRACE + 60).unwrap();
+        assert_eq!(late.releases, [a]);
+        assert_eq!(late.keys as usize, only_a.len() - 1 + orphans.len());
+        let gone: BTreeSet<String> = only_a.into_iter().chain(orphans.map(String::from)).collect();
+        assert_eq!(keys(), &before - &gone);
     }
 }

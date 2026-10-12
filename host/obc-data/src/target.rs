@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 
 use crate::fetch::http::{self, Http};
-use crate::store::{durable, sha256_hex, Store};
+use crate::store::{durable, sha256_hex, Lock, Store};
 
 /// Where a target is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,16 @@ pub enum Target {
 /// A version of the bytes at a key: a write on that condition fails when the key changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag(pub String);
+
+/// A file of a dir target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub key: String,
+    pub size: u64,
+    /// When the file or its links last changed, in seconds since 1970: a link of an upload changes
+    /// it, and a copy of the bytes of an old object does not hide that.
+    pub changed: u64,
+}
 
 /// When a conditional write may replace the bytes at a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +225,65 @@ impl Target {
     }
 }
 
+impl Target {
+    /// Every file of a dir target, also a hidden one, sorted by key.
+    pub fn list(&self) -> Result<Vec<Listed>, String> {
+        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let mut listed = Vec::new();
+        let mut pending = vec![dir.clone()];
+        while let Some(folder) = pending.pop() {
+            let entries = match fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("{}: {e}", folder.display())),
+            };
+            for entry in entries {
+                let path = entry.map_err(|e| format!("{}: {e}", folder.display()))?.path();
+                let found = fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                if found.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let key = path.strip_prefix(dir).expect("below the target").to_string_lossy().replace('\\', "/");
+                listed.push(Listed { key, size: found.len(), changed: changed(&found) });
+            }
+        }
+        listed.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(listed)
+    }
+
+    /// Delete `key` of a dir target, and the folders that it leaves empty below its first part. A key
+    /// that the target lacks is no error.
+    pub fn remove(&self, key: &str) -> Result<(), String> {
+        crate::r2::check_key(key)?;
+        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let path = dir.join(key);
+        match fs::remove_file(&path) {
+            Err(e) if e.kind() != ErrorKind::NotFound => return Err(format!("{key}: {e}")),
+            _ => {}
+        }
+        let top = dir.join(key.split('/').next().expect("a key has a first part"));
+        for folder in path.ancestors().skip(1).take_while(|folder| folder.starts_with(&top) && *folder != top) {
+            if fs::remove_dir(folder).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn changed(found: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    u64::try_from(found.ctime()).unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+fn changed(found: &fs::Metadata) -> u64 {
+    let modified = found.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+    modified.map_or(0, |since| since.as_secs())
+}
+
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -223,14 +292,14 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// Hold the lock of the dir target `dir` until the file drops.
-fn lock(dir: &Path) -> Result<File, String> {
+/// Hold the lock of the dir target `dir` until the guard drops.
+fn lock(dir: &Path) -> Result<Lock, String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(LOCK);
     let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
     let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
     file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
-    Ok(file)
+    Ok(Lock(file))
 }
 
 #[cfg(test)]
