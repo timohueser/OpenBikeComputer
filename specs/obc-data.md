@@ -1697,6 +1697,7 @@ target signs with the secret key and never sends it.
 | `obc data r2 get KEY FILE [--json]` | Downloads one object |
 | `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable] [--json]` | Uploads with `--checksum` and the headers given, then verifies |
 | `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--legacy] [--yes] [--json]` | Deletes, see below |
+| `obc data r2 legacy TARGET [--prefix P] [--delete --expect DIGEST --reason TEXT [--yes]] [--json]` | Lists the legacy keys that the target does not use; with `--delete`, deletes them, see below |
 
 Rules:
 
@@ -1713,6 +1714,12 @@ Rules:
   same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, a key
   under `cell-catalog/`, `planner/` or `reference/` is refused without `--legacy`, and then nothing
   is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
+- `legacy` lists each key under `cell-catalog/`, `planner/` and `reference/v1/`, or under the one
+  `--prefix`, that the target does not use: no key that its serving or rollback release names, no
+  pointer and not `planner/next.json`. It refuses while the target serves no release. Its digest
+  is the SHA-256 of the lines `<bytes>  <key>\n`, sorted by key. With `--delete`, it lists again,
+  refuses when the digest is not `--expect` or a run holds the lock, and then deletes as
+  `delete --legacy`.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
@@ -1787,6 +1794,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
 | `r2 get` | `Downloaded` |
 | `r2 put` | `Uploaded` |
+| `r2 legacy` | `Legacy` |
 | Every command that fails | `Failure` |
 
 ```json
@@ -2414,6 +2422,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Folder": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefix",
+        "bytes",
+        "keys"
+      ],
+      "type": "object"
+    },
     "FormatChange": {
       "properties": {
         "from": {
@@ -2963,6 +2995,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "reads",
         "leaves",
         "stale_leaves"
+      ],
+      "type": "object"
+    },
+    "Legacy": {
+      "description": "The keys of the legacy pipelines that a target does not use.",
+      "properties": {
+        "digest": {
+          "description": "The SHA-256 of the lines `<bytes>  <key>` of the keys of every folder, sorted by key.",
+          "type": "string"
+        },
+        "folders": {
+          "items": {
+            "$ref": "#/$defs/Folder"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "folders",
+        "digest"
       ],
       "type": "object"
     },

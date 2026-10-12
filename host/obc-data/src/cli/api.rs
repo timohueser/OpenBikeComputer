@@ -319,6 +319,7 @@ mod tests {
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),
             schema("`r2 put`", generator.subschema_for::<r2_cli::Uploaded>()),
+            schema("`r2 legacy`", generator.subschema_for::<r2_cli::Legacy>()),
             schema("Every command that fails", generator.subschema_for::<Failure>()),
         ]
     }
