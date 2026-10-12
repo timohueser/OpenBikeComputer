@@ -21,7 +21,7 @@ use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::maps::{invalid, text, TILE_LIST};
+use crate::device::{invalid, text, TILE_LIST};
 use crate::python;
 use crate::region_sources::OSM;
 
@@ -209,7 +209,7 @@ impl Planner {
             Step {
                 layer: &OSM,
                 name: "planner/osm".into(),
-                inputs: vec![Input::Layer { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }],
+                inputs: vec![Input::Step { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }],
                 options: json!({"path": "osm.pbf"}),
                 outputs: vec!["osm.pbf".into()],
                 run: Run::Rust(obc_data::engine::pass),
@@ -219,7 +219,7 @@ impl Planner {
             osmium.map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
-        let mut inputs = vec![Input::layer(osm.name.clone())];
+        let mut inputs = vec![Input::step(osm.name.clone())];
         for source in BASEMAP_SOURCES {
             let mut input = snapshot(env, store, source, Vec::new(), &mut wanted)?;
             if let Input::Snapshot { files, .. } = &mut input {
@@ -252,7 +252,7 @@ impl Planner {
         let routing = Step {
             layer: &PLANNER_ROUTING,
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::layer(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
+            inputs: std::iter::once(Input::step(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -268,7 +268,7 @@ impl Planner {
         let overlays = python(
             &PLANNER_ROUTING,
             "planner/overlays",
-            vec![Input::layer(routing.name.clone())],
+            vec![Input::step(routing.name.clone())],
             json!({"attribution": attribution("osm-planet")}),
             ("tools.planner_overlays", Some("planner-maps")),
             &["overlays.pmtiles"],
@@ -297,7 +297,7 @@ impl Planner {
         let dump = Step {
             layer: &PLANNER_SEARCH,
             name: "planner/search/dump".into(),
-            inputs: vec![Input::layer(osm.name.clone()), Input::layer(policy.name.clone())],
+            inputs: vec![Input::step(osm.name.clone()), Input::step(policy.name.clone())],
             options: json!({"country": region.countries[0].to_lowercase()}),
             outputs: vec!["search.jsonl.zst".into()],
             run: Run::Rust(obc_search_bake::step::step),
@@ -308,20 +308,20 @@ impl Planner {
             ..python(
                 &PLANNER_SEARCH,
                 "planner/search/records",
-                vec![Input::layer(dump.name.clone())],
+                vec![Input::step(dump.name.clone())],
                 json!({}),
                 ("planner/search/split.py", Some("planner-search")),
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
-        let content = crate::maps::content_declarations(env, store, &selection)?;
+        let content = crate::device::content_declarations(env, store, &selection)?;
         let content_inputs = || {
             content
                 .steps
                 .iter()
                 .map(|step| step.name.clone())
                 .chain(content.blocked.iter().map(|blocked| blocked.step.clone()))
-                .map(|name| Input::Layer {
+                .map(|name| Input::Step {
                     files: vec![if name.contains("landmark-content") {
                         "landmarks/content.json".into()
                     } else {
@@ -355,7 +355,7 @@ impl Planner {
         let places = python(
             &PLANNER_PLACES,
             "planner/places",
-            vec![Input::layer(pois.name.clone())],
+            vec![Input::step(pois.name.clone())],
             json!({}),
             ("tools.planner_places", Some("planner-maps")),
             &["places.pmtiles"],
@@ -385,7 +385,7 @@ impl Planner {
             steps.push(python(
                 &PLANNER_SUN,
                 "planner/sun",
-                vec![Input::layer("planner/terrain/grid")],
+                vec![Input::step("planner/terrain/grid")],
                 json!({
                     "bounds": bounds,
                     "time_zone": region.time_zone,
@@ -428,7 +428,7 @@ impl Planner {
                 ..python(
                     layer,
                     &format!("{source}/grid"),
-                    vec![Input::layer(source)],
+                    vec![Input::step(source)],
                     options,
                     (module, group),
                     &["objects", "index.json"],
@@ -444,7 +444,7 @@ impl Planner {
                     layer_files("planner/basemap", &["basemap.pmtiles"]),
                     layer_files("planner/places", &["places.pmtiles"]),
                     layer_files("planner/routing", &["routing/overlays.sqlite"]),
-                    Input::layer("planner/assets"),
+                    Input::step("planner/assets"),
                 ],
                 json!({"kind": "fonts"}),
                 ("tools.planner_grid_fonts", Some("planner-maps")),
@@ -486,7 +486,7 @@ impl Planner {
 }
 
 fn layer_files(name: &str, files: &[&str]) -> Input {
-    Input::Layer { name: name.into(), files: files.iter().map(|file| (*file).into()).collect() }
+    Input::Step { name: name.into(), files: files.iter().map(|file| (*file).into()).collect() }
 }
 
 /// A map's transport objects ship; the small index is input to the offline catalog only.
@@ -497,7 +497,7 @@ fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
         ..python(
             source.layer,
             &format!("{}/grid", source.name),
-            vec![Input::layer(source.name.clone())],
+            vec![Input::step(source.name.clone())],
             json!({"kind": kind, "bounds": bounds}),
             ("tools.planner_grid_maps", Some("planner-maps")),
             &["objects", "index.json"],
@@ -620,8 +620,8 @@ mod tests {
     use obc_data::regions::parse_region;
 
     use super::*;
-    use crate::maps::tests::{fetched, root, temp, Temp};
-    use crate::maps::{Maps, EXTRACTS};
+    use crate::device::tests::{fetched, root, temp, Temp};
+    use crate::device::{Device, EXTRACTS};
 
     const AREA: &str = "europe/test";
 
@@ -655,7 +655,7 @@ mod tests {
     /// each of `days`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
-        crate::maps::tests::with_index(&store);
+        crate::device::tests::with_index(&store);
         let area = [("area".to_string(), AREA.to_string())];
         let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
@@ -665,7 +665,7 @@ mod tests {
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
         for day in days {
             fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
-            crate::maps::tests::captured(&store, "1", AREA, day, poly);
+            crate::device::tests::captured(&store, "1", AREA, day, poly);
         }
         store
     }
@@ -786,7 +786,7 @@ mod tests {
             "index",
         ];
         let mut expected = layers.map(|layer| format!("planner/{layer}")).to_vec();
-        expected.splice(1..1, ["maps/landmark-content".into(), "maps/peak-content".into()]);
+        expected.splice(1..1, ["device/landmark-content".into(), "device/peak-content".into()]);
         assert_eq!(names, expected, "content uses the same producers as device maps");
         let intermediate: Vec<&str> =
             steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
@@ -813,11 +813,11 @@ mod tests {
         let (source, osm, terrain, routing) =
             (get("planner/source/europe/test"), get("planner/osm"), get("planner/terrain"), get("planner/routing"));
         assert!(
-            matches!(&osm.inputs[0], Input::Layer { name, files } if name == "planner/source/europe/test" && files == &["source.osm.pbf"])
+            matches!(&osm.inputs[0], Input::Step { name, files } if name == "planner/source/europe/test" && files == &["source.osm.pbf"])
         );
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
-        for name in ["maps/landmark-content", "maps/peak-content"] {
-            assert!(pois.inputs.iter().any(|input| matches!(input,Input::Layer {name:found,..} if found == name)));
+        for name in ["device/landmark-content", "device/peak-content"] {
+            assert!(pois.inputs.iter().any(|input| matches!(input,Input::Step {name:found,..} if found == name)));
         }
         let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
@@ -828,9 +828,7 @@ mod tests {
             ["N47_00_E007", "N48_00_E007"],
             "the tile list names no square east of 8°"
         );
-        assert!(
-            matches!(&routing.inputs[0], Input::Layer { name, files } if name == "planner/osm" && files.is_empty())
-        );
+        assert!(matches!(&routing.inputs[0], Input::Step { name, files } if name == "planner/osm" && files.is_empty()));
         assert_eq!(tiles(&routing.inputs[1]), ["N47_00_E007", "N48_00_E007"]);
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.82, 48.02]));
         assert_eq!((&routing.options["region"], &routing.options["countries"]), (&json!("test"), &json!(["DE"])));
@@ -844,7 +842,7 @@ mod tests {
             .iter()
             .filter_map(|input| match input {
                 Input::Snapshot { source, .. } => Some(source.as_str()),
-                Input::Layer { .. } => None,
+                Input::Step { .. } => None,
             })
             .collect();
         assert_eq!(sources, BASEMAP_SOURCES);
@@ -876,19 +874,19 @@ mod tests {
         let temp = temp("planner-layers");
         let store = store(&temp, &["2026-10-01"]);
         let env = env(AREA, &["climate", "snow", "sun"]);
-        crate::maps::tests::without_models(&store, &env, &regions());
+        crate::device::tests::without_models(&store, &env, &regions());
         let mut steps = Planner.steps(&root(), &env, &regions(), &store).unwrap().steps;
-        steps.extend(Maps.steps_with_tool(&root(), &env, &regions(), &store, Ok(())).unwrap().steps);
+        steps.extend(Device.steps_with_tool(&root(), &env, &regions(), &store, Ok(())).unwrap().steps);
         let layer = |name: &str| {
             let parts: Vec<&str> = name.split('/').collect();
             match parts[..] {
-                ["maps" | "planner", "source", ..] | ["maps", "region-osm" | "osm"] | ["planner", "osm"] => "osm",
-                ["maps", "reference" | "terrain", _] => "device/terrain",
-                ["maps", "coarse" | "mid" | "fine" | "network", _] => "device/map",
-                ["maps", "landmark-content" | "peak-content", ..] | ["maps", "landmarks" | "peaks", _] => {
+                ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm"] => "osm",
+                ["device", "reference" | "terrain", _] => "device/terrain",
+                ["device", "coarse" | "mid" | "fine" | "network", _] => "device/map",
+                ["device", "landmark-content" | "peak-content", ..] | ["device", "landmarks" | "peaks", _] => {
                     "device/landmarks"
                 }
-                ["maps", "catalog"] => "device/catalog",
+                ["device", "catalog"] => "device/catalog",
                 ["planner", "basemap" | "assets", ..] => "planner/basemap",
                 ["planner", "terrain", ..] => "planner/terrain",
                 ["planner", "routing" | "overlays", ..] => "planner/routing",
@@ -916,7 +914,7 @@ mod tests {
             let step = snow(&env(AREA, &["snow"]), &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
             let inputs = step.inputs.iter().map(|input| match input {
                 Input::Snapshot { source, params, .. } => (source.clone(), params.clone()),
-                Input::Layer { .. } => panic!("a layer input"),
+                Input::Step { .. } => panic!("a step input"),
             });
             (inputs.collect::<Vec<_>>(), step.options)
         };
@@ -966,6 +964,6 @@ mod tests {
         assert!(index
             .inputs
             .iter()
-            .all(|input| matches!(input, Input::Layer { files, .. } if files == &["index.json"])));
+            .all(|input| matches!(input, Input::Step { files, .. } if files == &["index.json"])));
     }
 }

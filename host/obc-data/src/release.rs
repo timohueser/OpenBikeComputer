@@ -101,7 +101,7 @@ impl Output {
                 let params = crate::store::sorted(params);
                 Some((source.clone(), SnapshotRead { version: version.clone(), params }))
             }
-            Input::Layer { .. } => None,
+            Input::Step { .. } => None,
         });
         Output {
             layer: receipt.layer.clone(),

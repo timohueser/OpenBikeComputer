@@ -11,7 +11,7 @@ use obc_data::fetch::http::Http;
 use obc_data::product::Unplanned;
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
-use obc_data_steps::maps::{box_poly, Maps, TILE_LIST};
+use obc_data_steps::device::{box_poly, Device, TILE_LIST};
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::step::GLO30;
 use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
@@ -102,7 +102,7 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
 }
 
 fn steps(store: &Store, env: &Env, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {
-    Maps.steps_with_tool(
+    Device.steps_with_tool(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
         env,
         regions,
@@ -121,8 +121,8 @@ fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<S
         );
     }
     let listed = steps(store, &env, regions).unwrap();
-    assert!(listed.blocked.iter().any(|blocked| blocked.step == "maps/catalog"), "terrain alone cannot publish");
-    let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("maps/terrain/")).collect();
+    assert!(listed.blocked.iter().any(|blocked| blocked.step == "device/catalog"), "terrain alone cannot publish");
+    let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("device/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();

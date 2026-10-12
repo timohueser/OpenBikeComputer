@@ -111,15 +111,15 @@ pub enum Input {
         /// Without params: the names of the files the step reads, or none for every file.
         files: Vec<String>,
     },
-    /// The layer of another step. `files` names the paths in the layer that the step reads, or
+    /// The files of another step. `files` names the paths of the step that this step reads, or
     /// none for every file.
-    Layer { name: String, files: Vec<String> },
+    Step { name: String, files: Vec<String> },
 }
 
 impl Input {
-    /// Every file of the layer `name`.
-    pub fn layer(name: impl Into<String>) -> Self {
-        Input::Layer { name: name.into(), files: Vec::new() }
+    /// Every file of the step `name`.
+    pub fn step(name: impl Into<String>) -> Self {
+        Input::Step { name: name.into(), files: Vec::new() }
     }
 }
 
@@ -143,7 +143,7 @@ pub struct Request {
     pub snapshots: BTreeMap<String, BTreeMap<String, PathBuf>>,
     /// Step name, then path in its layer, then object path.
     pub layers: BTreeMap<String, BTreeMap<String, PathBuf>>,
-    /// Receipt metadata for exactly the selected files of each layer input.
+    /// Receipt metadata for exactly the selected files of each step input.
     pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
     /// An empty directory: the layer is the files the step writes in it.
@@ -183,7 +183,7 @@ pub struct InputRecord {
     /// The source id or the step name.
     pub name: String,
     pub digest: String,
-    /// Exact resolved snapshot file names, including an empty read. For a layer input, the
+    /// Exact resolved snapshot file names, including an empty read. For a step input, the
     /// selected paths, or none for every file. The digest names the bytes in the key.
     #[serde(default)]
     pub files: Vec<String>,
@@ -193,8 +193,8 @@ pub struct InputRecord {
 #[serde(rename_all = "lowercase")]
 pub enum InputKind {
     // In the byte order of the names: a key sorts its inputs by kind.
-    Layer,
     Snapshot,
+    Step,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -252,10 +252,10 @@ pub fn recipe(step: &Step) -> String {
                 let params = crate::store::sorted(params);
                 serde_json::json!({"kind": InputKind::Snapshot, "name": source, "version": version, "params": params, "files": files})
             }
-            Input::Layer { name, files } => {
+            Input::Step { name, files } => {
                 let mut files = files.clone();
                 files.sort();
-                serde_json::json!({"kind": InputKind::Layer, "name": name, "files": files})
+                serde_json::json!({"kind": InputKind::Step, "name": name, "files": files})
             }
         })
         .collect();
@@ -316,7 +316,7 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
                 return Err(format!("step `{}`: client path `{path}` is not a declared output", step.name));
             }
         }
-        if let Some(name) = step.layers().find(|name| !names.contains(name)) {
+        if let Some(name) = step.reads().find(|name| !names.contains(name)) {
             return Err(format!("step `{}` reads the step `{name}`, which is not listed", step.name));
         }
         let both = |input: &Input| matches!(input, Input::Snapshot { params, files, .. } if !params.is_empty() && !files.is_empty());
@@ -332,7 +332,7 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
     while ordered.len() < steps.len() {
         let ready: Vec<&Step> = steps
             .iter()
-            .filter(|step| !placed.contains(step.name.as_str()) && step.layers().all(|name| placed.contains(name)))
+            .filter(|step| !placed.contains(step.name.as_str()) && step.reads().all(|name| placed.contains(name)))
             .collect();
         if ready.is_empty() {
             return Err("the steps read each other's layers in a cycle".into());
@@ -345,9 +345,9 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
 
 impl Step {
     /// The names of the steps whose files it reads.
-    pub(crate) fn layers(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn reads(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(|input| match input {
-            Input::Layer { name, .. } => Some(name.as_str()),
+            Input::Step { name, .. } => Some(name.as_str()),
             Input::Snapshot { .. } => None,
         })
     }
@@ -445,7 +445,7 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
-/// A step whose files are the one file of its snapshot or selected layer inputs, at the path of
+/// A step whose files are the one file of its snapshot or selected step inputs, at the path of
 /// the option `path`: files that other steps read, whatever gives their bytes.
 pub fn pass(request: &Request) -> Result<(), String> {
     let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
@@ -505,7 +505,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, release::Layer>) -
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
                 (InputKind::Snapshot, source, names, files.collect())
             }
-            Input::Layer { name, files: selected } => {
+            Input::Step { name, files: selected } => {
                 let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
                 if let Some(path) = missing.first() {
                     return Err(format!("layer `{name}` has no file {path}"));
@@ -513,12 +513,12 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, release::Layer>) -
                 let files = files.into_iter().map(|file| (file.path.clone(), file.sha256.clone(), file.size));
                 let mut selected = selected.clone();
                 selected.sort();
-                (InputKind::Layer, name, selected, files.collect())
+                (InputKind::Step, name, selected, files.collect())
             }
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
         let record = InputRecord { kind, name: name.clone(), digest, files: selected };
-        if kind == InputKind::Layer {
+        if kind == InputKind::Step {
             let metadata = files
                 .iter()
                 .map(|(path, sha256, size)| LayerFile { path: path.clone(), sha256: sha256.clone(), size: *size })
@@ -538,7 +538,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, release::Layer>) -
         }
         let map = match record.kind {
             InputKind::Snapshot => &mut request.snapshots,
-            InputKind::Layer => &mut request.layers,
+            InputKind::Step => &mut request.layers,
         };
         if map.insert(record.name.clone(), paths).is_some() {
             return Err(format!("{} `{}` is an input twice", record.kind.label(), record.name));
@@ -638,7 +638,7 @@ impl InputKind {
     fn label(self) -> &'static str {
         match self {
             Self::Snapshot => "snapshot",
-            Self::Layer => "layer",
+            Self::Step => "step",
         }
     }
 }
@@ -889,8 +889,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     pub(crate) fn pipeline() -> Vec<Step> {
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![Input::layer("test/join")], "count", Run::Rust(count)),
-            step("test/join", vec![Input::layer("test/upper"), snapshot("tail", "1", &[])], "joined.txt", python),
+            step("test/count", vec![Input::step("test/join")], "count", Run::Rust(count)),
+            step("test/join", vec![Input::step("test/upper"), snapshot("tail", "1", &[])], "joined.txt", python),
             step("test/upper", vec![snapshot("head", "1", &["head.txt"])], "upper.txt", Run::Rust(upper)),
         ]
     }
@@ -1026,7 +1026,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
                 step("test/leaves", vec![snapshot("head", "1", &[])], "leaves", Run::Rust(split)),
                 step(
                     "test/one",
-                    vec![Input::Layer { name: "test/leaves".into(), files: vec![file.into()] }],
+                    vec![Input::Step { name: "test/leaves".into(), files: vec![file.into()] }],
                     "one.txt",
                     Run::Rust(one),
                 ),

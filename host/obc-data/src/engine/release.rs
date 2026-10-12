@@ -109,7 +109,7 @@ impl Layer {
             Input::Snapshot { source, version, params, .. } => {
                 Some((source.clone(), SnapshotRead { version: version.clone(), params: store::sorted(params) }))
             }
-            Input::Layer { .. } => None,
+            Input::Step { .. } => None,
         });
         Layer {
             layer: receipt.layer.clone(),

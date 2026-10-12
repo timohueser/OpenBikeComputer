@@ -25,7 +25,7 @@ struct CatalogInputs {
 
 impl CatalogInputs {
     fn read(release: &Release, store: &Store) -> Result<Self, String> {
-        let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no maps catalog")?;
+        let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no device catalog")?;
         let named = |name: &str| -> Result<Vec<u8>, String> {
             let file =
                 layer.files.iter().find(|file| file.path == name).ok_or_else(|| format!("catalog has no `{name}`"))?;
@@ -66,7 +66,7 @@ impl CatalogInputs {
                 return Err("duplicate band index".into());
             }
         }
-        let block = root.terrain.as_ref().ok_or("maps release has no terrain metadata")?;
+        let block = root.terrain.as_ref().ok_or("device release has no terrain metadata")?;
         let terrain: TerrainIndexDocument =
             serde_json::from_slice(&pin(&block.cell_index.sha256, block.cell_index.bytes, &block.cell_index.url)?)
                 .map_err(|e| e.to_string())?;
@@ -79,7 +79,7 @@ impl CatalogInputs {
         for cell in &terrain.cells {
             artifact(&cell.sha256, cell.bytes, &cell.url)?;
         }
-        let reference = root.articles.as_ref().ok_or("maps release has no article metadata")?;
+        let reference = root.articles.as_ref().ok_or("device release has no article metadata")?;
         let articles: ArticleIndexDocument =
             serde_json::from_slice(&pin(&reference.sha256, reference.bytes, &reference.url)?)
                 .map_err(|e| e.to_string())?;
@@ -111,7 +111,7 @@ impl CatalogInputs {
             }
         }
         if !picks.contains_key(&release.region) {
-            return Err("maps release omits its required region".into());
+            return Err("device release omits its required region".into());
         }
         Ok(Self { root, bands, terrain, articles: article_cells, picks })
     }

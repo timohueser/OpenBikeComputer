@@ -330,7 +330,7 @@ mod tests {
         let using = claim(&fixture.store, &id, &first.request_sha256).unwrap();
         let mut steps = vec![
             step("test/first", Vec::new(), "first.txt", Producer::Rust(stop_after_output)),
-            step("test/next", vec![crate::engine::Input::layer("test/first")], "next.txt", Producer::Rust(next)),
+            step("test/next", vec![crate::engine::Input::step("test/first")], "next.txt", Producer::Rust(next)),
         ];
         steps[0].options = serde_json::json!({"store":fixture.store.root(), "run":id});
         let plan = fixture.plan(&steps).unwrap();

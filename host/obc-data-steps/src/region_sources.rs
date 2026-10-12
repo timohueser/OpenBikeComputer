@@ -10,7 +10,7 @@ use obc_data::regions::{geofabrik, Area, Regions};
 use obc_data::store::Store;
 use serde_json::json;
 
-use crate::maps::{box_poly, text, EXTRACTS, POLY};
+use crate::device::{box_poly, text, EXTRACTS, POLY};
 
 const INDEX: &str = "geofabrik-index";
 
@@ -77,7 +77,7 @@ pub fn resolve(
         let shapes = index
             .iter()
             .map(|(id, area)| {
-                Coverage::parse_poly(&crate::maps::catalog::poly(area)).map(|coverage| (id.clone(), coverage))
+                Coverage::parse_poly(&crate::device::catalog::poly(area)).map(|coverage| (id.clone(), coverage))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(Unplanned::Failed)?;
@@ -236,7 +236,7 @@ pub fn combined(name: &str, inputs: &[Step]) -> Step {
         name,
         inputs
             .iter()
-            .map(|step| Input::Layer { name: step.name.clone(), files: vec!["source.osm.pbf".into()] })
+            .map(|step| Input::Step { name: step.name.clone(), files: vec!["source.osm.pbf".into()] })
             .collect(),
         json!({}),
         ("tools.region_osm", None),

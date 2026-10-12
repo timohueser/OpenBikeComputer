@@ -284,7 +284,7 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
   planner region recipe in `tools/planner-regions/`.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
-  digest of the files that it names (`files`) of a reached record of its source, and a layer input
+  digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
   `files` of the input, or all files when it names none.
 
@@ -460,11 +460,11 @@ The `obc data` binary declares each layer beside the steps that make it:
 
 | Layer | Steps |
 | --- | --- |
-| `osm` | `maps/source/<area>`, `maps/region-osm`, `maps/osm`, `planner/source/<area>`, `planner/osm` |
-| `device/terrain` | `maps/reference/<i>-<j>`, `maps/terrain/<i>-<j>` |
-| `device/map` | `maps/<band>/<i>-<j>` |
-| `device/landmarks` | `maps/landmark-content…`, `maps/peak-content…`, `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` |
-| `device/catalog` | `maps/catalog` |
+| `osm` | `device/source/<area>`, `device/region-osm`, `device/osm`, `planner/source/<area>`, `planner/osm` |
+| `device/terrain` | `device/reference/<i>-<j>`, `device/terrain/<i>-<j>` |
+| `device/map` | `device/<band>/<i>-<j>` |
+| `device/landmarks` | `device/landmark-content…`, `device/peak-content…`, `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` |
+| `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
 | `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun` | The step of the same name and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
@@ -497,7 +497,7 @@ The digest of a list of files is the SHA-256 of the text that `sha256sum` writes
 line `<sha256>  <name>` with a final newline per file, in byte order of the names.
 
 - The digest of a snapshot input lists its selected files by `name`.
-- The digest of the files of a step lists them by `path`. The digest of a layer input lists the
+- The digest of the files of a step lists them by `path`. The digest of a step input lists the
   files that it selects.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
@@ -508,19 +508,19 @@ of each object in byte order:
 | `layer` | The name of the layer of the step |
 | `step` | The name of the step |
 | `format`, `revision` | The version of the layer |
-| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the step name |
+| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `step`; `name` is the source id or the step name |
 | `options` | The options |
 
 Code is not in the key. A change of code with the same version reuses the files of the key. A
 change that gives other output changes the `revision` of its layer; a change of the readers
 changes its `format`.
 
-An input layer enters a key with its digest, not with its key. A rebuild that gives the same
+A step input enters a key with its digest, not with its key. A rebuild that gives the same
 files gives the same digest, so the keys of the steps that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
 The recipe of a step is the SHA-256 of the same object without digests and with `client`: each
-input as `{"kind", "name", "files"}` for a layer and `{"kind", "name", "version", "params",
+input as `{"kind", "name", "files"}` for a step and `{"kind", "name", "version", "params",
 "files"}` for a snapshot, `params` and `files` sorted, and the inputs sorted by their compact
 JSON. It holds no digest, so a plan has it also for a step whose key waits for a fetch or
 another build.
@@ -574,7 +574,7 @@ ends.
 | Key | Meaning |
 | --- | --- |
 | `layer`, `step`, `format`, `revision`, `key`, `options` | As in the key |
-| `inputs` | As in the key, and `files` for a layer input that selects files: the selected paths, sorted |
+| `inputs` | As in the key, and `files` for a step input that selects files: the selected paths, sorted |
 | `digest` | The digest of `files` |
 | `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
@@ -764,7 +764,7 @@ version that live reads fails, the fix names `--move SOURCE`.
 
 ### Products
 
-A product is a set of steps that makes one release, such as `planner` or `maps`. The
+A product is a set of steps that makes one release, such as `planner` or `device`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
 commands without products, for scripts that use R2. Each step name starts with `<product>/`,
@@ -861,7 +861,7 @@ When the store has the layer of every step of a product after the run, `build` w
 release of that product. A build of `live` writes the release of each product that its groups or
 edits change, as [Changes of live](#changes-of-live) composes it.
 
-#### `maps`
+#### `device`
 
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
@@ -899,20 +899,20 @@ the tile meets its `extent` and the `geofabrik-poly` polygon of one of its `area
 of the polygon crosses the tile, or the polygon holds the centre of the tile. Each such tile is
 one fetch `tile=<ti:04>-<tj:04>` at the version of the source, so leaves and regions share
 tiles and a stopped fetch resumes at the next tile. A source with only `.none` files in the leaf
-adds nothing, and a leaf where no source has a height has no `maps/reference` layer. While the
+adds nothing, and a leaf where no source has a height has no `device/reference` layer. While the
 store lacks a tile of a source whose `credential` is not on this machine, its reference and
 terrain layers are blocked. Bands that read that
 terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `maps/region-osm` | The selected PBF of each `maps/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
-| `maps/osm` | The PBF of one `maps/source/<area>`, or `maps/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
-| `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
-| `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with a height, without params, the files of its tiles | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the pooled tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
-| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
-| `maps/landmark-content[/<area>]`, `maps/peak-content[/<area>]` | Shared `wikidata`, `wikipedia` and `commons` facts requested by exact identity; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json`, device photos, and bounded `shared-content/` fact bundles. Only the bundles are selected publication outputs of this intermediate layer. Final device assets are published by the device cell layers |
-| `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | Every area's landmark content and `maps/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
+| `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
+| `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
+| `device/<band>/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
+| `device/reference/<i>-<j>` | Each `dtm-*` source of the leaf with a height, without params, the files of its tiles | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the pooled tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
+| `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
+| `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | Shared `wikidata`, `wikipedia` and `commons` facts requested by exact identity; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json`, device photos, and bounded `shared-content/` fact bundles. Only the bundles are selected publication outputs of this intermediate layer. Final device assets are published by the device cell layers |
+| `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `device/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
@@ -936,7 +936,7 @@ collection, exact area and pinned inputs match unambiguous live request metadata
 chooses held inputs by a layer name suffix alone. Article inputs keep separate file views;
 canonical content merge rules deduplicate overlaps without losing unique articles.
 
-`maps/source/<area>`, `maps/region-osm`, `maps/osm`, `maps/reference/<i>-<j>` and all content
+`device/source/<area>`, `device/region-osm`, `device/osm`, `device/reference/<i>-<j>` and all content
 layers are private intermediates. Their complete records stay in release provenance.
 
 #### `planner`
@@ -944,7 +944,7 @@ layers are private intermediates. Their complete records stay in release provena
 The planner accepts a definition that names its `countries` and `time_zone`. It uses the shared
 source selection above. Its bounds enclose the requested Box or union of selected outlines.
 Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
-at its version (see [Versions](#versions)), as for `maps`. The other options come from
+at its version (see [Versions](#versions)), as for `device`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
 reads no snapshot. No layer reads a national terrain model yet.
@@ -961,7 +961,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/search/policy` | `nominatim-country-data` | None | `policy.json`: the country names, postcode formats and address levels of the archive; `country_osm_grid.sql.gz`: the country grid of the archive, as it is |
 | `planner/search/dump` | `planner/osm`, `planner/search/policy` | `country`: the first of `countries` in lowercase, the country of a place outside each country polygon | `search.jsonl.zst`: the search records that `obc-search-bake` writes, one JSON object per line, with the keys of each object in byte order |
 | `planner/search/records` | `planner/search/dump` | None | `pois.jsonl.zst` and `addresses.jsonl.zst`: the records of the dump with a POI and with an address |
-| `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `maps/landmark-content*` and `maps/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
+| `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
@@ -1102,7 +1102,7 @@ judged: `attention` lists its layer as `blocked`, with the step and the reason.
 ## Live
 
 Live is the release that the pointer of each product names on R2. Each product has one prefix:
-`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Older
+`cell-catalog` for `device`, `planner` for `planner`. The input copies are under `inputs`. Older
 publishers wrote other keys under these prefixes and under `reference/v1`. Only the keys that a
 manifest of `obc data` names belong to `obc data`.
 
@@ -2927,8 +2927,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "InputKind": {
       "enum": [
-        "layer",
-        "snapshot"
+        "snapshot",
+        "step"
       ],
       "type": "string"
     },
@@ -2940,7 +2940,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "files": {
           "default": [],
-          "description": "Exact resolved snapshot file names, including an empty read. For a layer input, the\nselected paths, or none for every file. The digest names the bytes in the key.",
+          "description": "Exact resolved snapshot file names, including an empty read. For a step input, the\nselected paths, or none for every file. The digest names the bytes in the key.",
           "items": {
             "type": "string"
           },
