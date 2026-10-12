@@ -1,5 +1,6 @@
 //! Running a step and measuring what it cost.
 
+use std::cell::Cell;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -13,19 +14,37 @@ pub struct Usage {
     pub peak_rss_bytes: Option<u64>,
 }
 
-/// Run a step in this process. Its CPU time is the time of the whole process, so it is exact only
-/// while no other step runs. Its peak is the peak of the whole process so far, not the peak of the
-/// step: an upper bound, as the scheduler needs.
+thread_local! {
+    /// The CPU milliseconds and the largest peak of the programs that the Rust step of this thread
+    /// ran with [`run_child`].
+    static CHILDREN: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+}
+
+/// Run a step in this process, on this thread. Its CPU time is the time of the whole process, so it
+/// is exact only while no other step runs. Its peak is the peak of the whole process so far, not
+/// the peak of the step: an upper bound, as the scheduler needs. The programs that the step runs
+/// with [`run_child`], such as Osmium, add their CPU time, and their peak when it is more.
 pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
     let start = Instant::now();
+    CHILDREN.set((0, 0));
     let before = own_usage();
     step()?;
     let after = own_usage();
+    let (cpu, peak) = CHILDREN.get();
     Ok(Usage {
         wall_ms: start.elapsed().as_millis() as u64,
-        cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0)),
-        peak_rss_bytes: after.map(|after| after.1),
+        cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0) + cpu),
+        peak_rss_bytes: after.map(|after| after.1.max(peak)),
     })
+}
+
+/// Run `command` for the Rust step of this thread, and wait for it: its CPU time and its peak
+/// count as those of the step.
+pub fn run_child(command: &mut Command) -> Result<ExitStatus, String> {
+    let (status, cpu, peak) = wait(command.spawn().map_err(|e| e.to_string())?)?;
+    let (all, largest) = CHILDREN.get();
+    CHILDREN.set((all + cpu.unwrap_or(0), largest.max(peak.unwrap_or(0))));
+    Ok(status)
 }
 
 /// The interpreter of a Python step: the system Python that `uv python find` selects for the
@@ -154,6 +173,14 @@ mod tests {
     use super::*;
     use crate::engine::tests::write;
     use crate::store::tests::Scratch;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rust_step_has_the_peak_of_a_program_that_it_runs() {
+        let usage =
+            in_process(|| run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)).unwrap();
+        assert!(usage.peak_rss_bytes.unwrap() > 600 << 20, "{:?}", usage.peak_rss_bytes);
+    }
 
     #[test]
     fn a_python_step_runs_the_discovered_interpreter_despite_active_and_project_environments() {

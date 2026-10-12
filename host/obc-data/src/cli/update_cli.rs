@@ -123,6 +123,8 @@ pub struct Baked {
     pub step: String,
     pub key: String,
     pub reused: bool,
+    /// It kept its output of the serving release.
+    pub unchanged: bool,
 }
 
 pub fn command(
@@ -173,7 +175,12 @@ pub struct Started {
 /// Write what an update did.
 fn print(updated: &Updated) -> Result<(), Error> {
     for baked in &updated.baked {
-        println!("{:<7} {}  {}", if baked.reused { "reused" } else { "baked" }, &baked.key[..12], baked.step);
+        let verb = match (baked.unchanged, baked.reused) {
+            (true, _) => "unchanged",
+            (false, true) => "reused",
+            (false, false) => "baked",
+        };
+        println!("{verb:<9} {}  {}", &baked.key[..12], baked.step);
     }
     match &updated.rollback {
         Some(rollback) => println!(
@@ -562,7 +569,17 @@ fn apply(
         }
     }
     enter((run, held), name, Phase::Build)?;
-    let context = Context { store, root, sources: &sources, http, kept: &update.kept, limits: Limits::machine() };
+    let served =
+        serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
+    let context = Context {
+        store,
+        root,
+        sources: &sources,
+        http,
+        kept: &update.kept,
+        served: &served,
+        limits: Limits::machine(),
+    };
     // The fetches first: upstream too must give the bytes that the serving release read.
     run.fetch(&context, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
     same_bytes(store, &steps, &update.kept, serving.iter().flat_map(|release| &release.sources))?;
@@ -570,8 +587,14 @@ fn apply(
         group.fetches.clear();
     }
     let built = run.build(&context, &steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
-    let baked =
-        built.into_iter().map(|built| Baked { step: built.receipt.step, key: built.receipt.key, reused: built.reused });
+    // An unchanged step is kept by reference.
+    update.kept.extend(built.iter().filter_map(|built| Some((built.receipt.step.clone(), built.kept.clone()?))));
+    let baked = built.into_iter().map(|built| Baked {
+        unchanged: built.kept.is_some(),
+        step: built.receipt.step,
+        key: built.receipt.key,
+        reused: built.reused,
+    });
     let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
@@ -994,6 +1017,9 @@ pub(super) mod tests {
         }
 
         fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+            if root.join("leaves").exists() {
+                return leaves(root, inputs, store);
+            }
             if root.join("gate").exists() {
                 static GATE: crate::engine::Layer = crate::engine::Layer { name: "gate", ..crate::engine::tests::TEST };
                 let mut step =
@@ -1087,6 +1113,40 @@ pub(super) mod tests {
         }
     }
 
+    /// The internal step `counter/split` writes line `n` of `head` as `split/0001-000<n>`, and the
+    /// tiled layer `leaves` copies each of the two leaves. The file `split-2` gives the split a new
+    /// revision.
+    fn leaves(root: &Path, inputs: &Inputs, store: &Store) -> Result<Steps, Unplanned> {
+        use crate::engine::{tests::step, Client, Layer, Run, Shape};
+        let head = crate::product::version(inputs, store, "head", &[]).map_err(Unplanned::Failed)?;
+        let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+        static SPLIT: Layer = Layer { name: "split", readers: &[], ..crate::engine::tests::TEST };
+        static SPLIT_2: Layer = Layer { revision: 2, ..SPLIT };
+        static LEAVES: Layer = Layer { name: "leaves", shape: Shape::Tiled, ..crate::engine::tests::TEST };
+        let mut split = step("counter/split", vec![snapshot("head", &head, &["head.txt"])], "split", Run::Rust(split));
+        (split.layer, split.client) = (if root.join("split-2").exists() { &SPLIT_2 } else { &SPLIT }, Client::None);
+        let leaf = |leaf: &str| {
+            let read = Input::Step { name: "counter/split".into(), files: vec![format!("split/{leaf}")] };
+            Step { layer: &LEAVES, ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(copy)) }
+        };
+        Ok(vec![split, leaf("0001-0001"), leaf("0001-0002")].into())
+    }
+
+    fn split(request: &crate::engine::Request) -> Result<(), String> {
+        let head = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
+        std::fs::create_dir(request.output.join("split")).map_err(|e| e.to_string())?;
+        for n in 1..=2 {
+            let line = head.lines().nth(n - 1).unwrap_or_default();
+            std::fs::write(request.output.join(format!("split/0001-000{n}")), line).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn copy(request: &crate::engine::Request) -> Result<(), String> {
+        let read = request.layers["counter/split"].values().next().ok_or("no leaf")?;
+        std::fs::copy(read, request.output.join("leaf.txt")).map(drop).map_err(|e| e.to_string())
+    }
+
     fn earth(request: &crate::engine::Request) -> Result<(), String> {
         let copied = std::fs::copy(&request.snapshots["natural-earth"]["earth.zip"], request.output.join("earth.zip"));
         copied.map(|_| ()).map_err(|e| e.to_string())
@@ -1149,7 +1209,8 @@ pub(super) mod tests {
 
         write(&fixture.root().join("revised"), "test/join");
         let revised = update(&fixture, &target, |_| Ok(())).unwrap();
-        assert_eq!((steps(&revised), revised.kept), (vec!["test/join", "test/count"], 1));
+        // `test/join` writes the same bytes, so `test/count` keeps its output.
+        assert_eq!((steps(&revised), revised.kept), (vec!["test/join", "test/count"], 2));
         assert_eq!(revised.rollback.as_ref(), Some(&first.serving));
         assert_eq!(Release::read(&target, &revised.serving).unwrap().settings, release.settings, "remembered");
 
@@ -1494,6 +1555,74 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_refresh_bakes_only_the_leaves_whose_input_changed_also_on_another_machine() {
+        let fixture = fixture("update-leaves");
+        copied(&fixture, &["head", "tail"]);
+        write(&fixture.root().join("leaves"), "");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        let unchanged = |updated: &Updated| -> BTreeMap<String, bool> {
+            let leaves = updated.baked.iter().filter(|baked| baked.step.starts_with("counter/leaf/"));
+            leaves.map(|baked| (baked.step.clone(), baked.unchanged)).collect()
+        };
+        let leaves = |store: &Store| {
+            let id = runs::list(store).unwrap().remove(0).id;
+            let log = std::fs::read_to_string(store.root().join("runs").join(&id).join("log")).unwrap();
+            let status = runs::status(store, &id).unwrap();
+            let layer = status.layers.into_iter().find(|layer| layer.layer == "leaves").unwrap();
+            (layer.leaves_unchanged, log.lines().find(|line| line.contains(" leaves baked")).unwrap()[9..].to_string())
+        };
+
+        // Only the second line of `head` changes.
+        fixture.fetched_version("head", "2", "head.txt", b"head\nb\n");
+        let refreshed = update(&fixture, &target, |_| Ok(())).unwrap();
+        let expected = |first: bool| {
+            BTreeMap::from([("counter/leaf/0001-0001".into(), true), ("counter/leaf/0001-0002".into(), first)])
+        };
+        assert_eq!(unchanged(&refreshed), expected(false));
+        assert_eq!(
+            leaves(&fixture.store),
+            (vec!["0001-0001".into()], "leaves: 1 of 2 leaves baked, 1 unchanged".into())
+        );
+
+        // Another machine has no layer of the store: a new revision of the split gives the same
+        // leaves, which keep the outputs of the serving release.
+        write(&fixture.root().join("split-2"), "");
+        let (store, elsewhere) = elsewhere(&fixture, &target);
+        let elsewhere = elsewhere.unwrap();
+        assert_eq!(unchanged(&elsewhere), expected(true));
+        assert_eq!(leaves(&store).1, "leaves: 0 of 2 leaves baked, 2 unchanged");
+        let outputs = |id: &str| -> Vec<Output> {
+            let release = Release::read(&target, id).unwrap();
+            release.outputs.into_iter().filter(|output| output.layer == "leaves").collect()
+        };
+        assert_eq!(outputs(&elsewhere.serving), outputs(&refreshed.serving), "kept by reference");
+    }
+
+    #[test]
+    fn an_unchanged_step_takes_the_versions_and_the_client_of_its_step_now() {
+        let fixture = fixture("update-settles");
+        fixture.with_sources(&[]);
+        write(&fixture.root().join("upper-internal"), "");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+
+        // `head` 2 has the bytes of 1, `test/upper` gets a client file, and the store has no layer.
+        fixture.fetched_version("head", "2", "head.txt", b"head\n");
+        std::fs::remove_file(fixture.root().join("upper-internal")).unwrap();
+        std::fs::remove_dir_all(fixture.store.root().join("layers")).unwrap();
+        let moved = update(&fixture, &target, |_| Ok(())).unwrap();
+        assert!(!moved.baked.is_empty() && moved.baked.iter().all(|baked| baked.unchanged), "{:?}", moved.baked);
+        let release = Release::read(&target, &moved.serving).unwrap();
+        let upper = release.outputs.iter().find(|output| output.step == "test/upper").unwrap();
+        assert_eq!((upper.snapshots["head"].version.as_str(), &upper.client), ("2", &crate::engine::Client::All));
+        let file = &upper.files[0];
+        assert!(target.missing(&[(format!("objects/{}", file.sha256), file.size)]).unwrap().is_empty());
+        let settled = review(&fixture, &target);
+        assert!(settled.layers.is_empty() && settled.bakes.is_empty(), "{:?}", settled.layers);
+    }
+
+    #[test]
     fn a_machine_without_the_files_of_the_release_downloads_only_what_its_bakes_read() {
         let fixture = fixture("update-elsewhere");
         copied(&fixture, &["head", "tail"]);
@@ -1510,14 +1639,15 @@ pub(super) mod tests {
         assert_eq!(steps(&updated), ["test/join", "test/count"]);
         let release = Release::read(&target, &updated.serving).unwrap();
         let tail = &store.snapshot("tail", "1").unwrap().unwrap().files[0].sha256;
-        let objects: BTreeSet<String> = ["test/join", "test/count"].map(|step| file(&release, step)).into();
+        let objects: BTreeSet<String> = [file(&release, "test/join")].into();
         let downloads: BTreeSet<String> = [upper, tail.clone()].into();
         let folders = std::fs::read_dir(store.root().join("objects")).unwrap();
         let held: BTreeSet<String> = folders
             .flat_map(|folder| std::fs::read_dir(folder.unwrap().path()).unwrap())
             .map(|object| object.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(held, &objects | &downloads, "test/join reads upper.txt and tail@1, and nothing reads head@1");
+        let read = "test/join reads upper.txt and tail@1, test/count keeps its output, and nothing reads head@1";
+        assert_eq!(held, &objects | &downloads, "{read}");
     }
 
     #[test]

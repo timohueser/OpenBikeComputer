@@ -128,7 +128,15 @@ fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTre
     let plan = plan(store, &steps).unwrap();
     let mut run = Run::create(store, ["build", "test"]).unwrap();
     let kept = Kept::new();
-    let context = Context { store, root, sources: &[], http: &Http::new(), kept: &kept, limits: Limits::machine() };
+    let context = Context {
+        store,
+        root,
+        sources: &[],
+        http: &Http::new(),
+        kept: &kept,
+        served: &Default::default(),
+        limits: Limits::machine(),
+    };
     let built = run.build(&context, &steps, &plan).unwrap();
     run.finish(None).unwrap();
     let files = built[0].receipt.files.iter();

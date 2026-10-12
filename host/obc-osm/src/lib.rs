@@ -103,15 +103,16 @@ impl ShardRunner for OsmiumRunner {
         // `-F pbf`: a planet from the store is an object without a file extension. An extract has
         // no replication header of its input and names no Osmium version, so its bytes change only
         // with its OSM data.
-        let status = Command::new(&self.binary)
-            .args(["extract", "-F", "pbf", "--config"])
-            .arg(&config_path)
-            .args(["--directory"])
-            .arg(output_dir)
-            .args(["--strategy", "smart", "--set-bounds", "--generator", GENERATOR, "--overwrite", "--verbose"])
-            .arg(input)
-            .status()
-            .map_err(|e| format!("run {} extract: {e}", self.binary.display()))?;
+        let status = obc_data::engine::run_child(
+            Command::new(&self.binary)
+                .args(["extract", "-F", "pbf", "--config"])
+                .arg(&config_path)
+                .args(["--directory"])
+                .arg(output_dir)
+                .args(["--strategy", "smart", "--set-bounds", "--generator", GENERATOR, "--overwrite", "--verbose"])
+                .arg(input),
+        )
+        .map_err(|e| format!("run {} extract: {e}", self.binary.display()))?;
         if !status.success() {
             return Err(format!("{} extract failed with {status}", self.binary.display()));
         }
