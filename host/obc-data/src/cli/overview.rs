@@ -11,7 +11,7 @@ use crate::engine::runs::Limits;
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::product::{BlockedLayer, Inputs, Product};
-use crate::release::{self, Release, Serving, SERVING};
+use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
 use crate::store::Store;
 use crate::target::Target;
@@ -61,6 +61,8 @@ pub struct TargetState {
     pub drift: Vec<String>,
     /// Why the target or its steps could not be read; `null` when they could.
     pub error: Option<String>,
+    /// What to do about `error`.
+    pub fix: Option<String>,
     /// The command to run next; `null` when the target serves its settings as the steps make them
     /// now, or when no command of this `obc data` writes the target: an R2 bucket.
     pub next: Option<String>,
@@ -114,6 +116,9 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
         if let Some(error) = &target.error {
             rows.push(vec!["  error".into(), error.clone()]);
         }
+        if let Some(fix) = &target.fix {
+            rows.push(vec!["  fix".into(), fix.clone()]);
+        }
         let next = match (&target.next, target.kind == "r2") {
             (Some(next), _) => next.clone(),
             (None, true) => "a later `obc data` writes an R2 bucket".into(),
@@ -148,6 +153,7 @@ fn state(
         blocked: Vec::new(),
         drift: Vec::new(),
         error: None,
+        fix: None,
         next: None,
     };
     let writes = kind == "dir";
@@ -157,7 +163,7 @@ fn state(
             return Ok(());
         };
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
-        let release = Release::read(target, &serving.serving.id)?;
+        let release = super::update_cli::read(name, target, &serving.serving.id)?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
         state.drift = release::drift(target, &release)?;
         let regions = release.settings.regions()?;
@@ -177,7 +183,7 @@ fn state(
         Ok(())
     })();
     if let Err(error) = judged {
-        state.error = Some(error.message);
+        (state.error, state.fix) = (Some(error.message), Some(error.fix));
     }
     state
 }

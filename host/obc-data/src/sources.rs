@@ -239,14 +239,21 @@ pub struct Source {
     #[serde(default)]
     pub refresh: Refresh,
     pub redistribute: bool,
-    /// R2 keeps a copy, because upstream cannot give a version again.
-    #[serde(default)]
-    pub r2_copy: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<Credential>,
 }
 
+/// The Wikimedia API captures, which a target does not copy.
+const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+
 impl Source {
+    /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
+    /// give the bytes to others. The national terrain models (`dtm-*`) have no copy: `obc data`
+    /// reads them through a capture per archive tile.
+    pub fn copied(&self) -> bool {
+        self.redistribute && !NOT_COPIED.contains(&self.id.as_str()) && !self.id.starts_with("dtm-")
+    }
+
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
     /// the two boxes overlap. Boxes that only touch do not: their overlap has no area.
     pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
@@ -294,9 +301,6 @@ impl Source {
         }
         if !self.areas.is_empty() && self.extent.is_none() {
             return fail("`areas` narrow an `extent`");
-        }
-        if self.r2_copy && !self.redistribute {
-            return fail("`r2_copy` needs `redistribute`: R2 is public");
         }
         if let Some(credential) = &self.credential {
             if credential.env.is_empty() == credential.file.is_none() {
@@ -535,12 +539,6 @@ mod tests {
         for bad in ["", "Open data", "MIT AND", "(MIT", "MIT)", "MIT WITH", "AND MIT", "MIT OR OR GPL-3.0-only"] {
             assert!(!is_licence_expression(bad), "{bad}");
         }
-    }
-
-    #[test]
-    fn an_r2_copy_needs_redistribution() {
-        let text = OSM.replace("redistribute = true", "redistribute = false\nr2_copy = true");
-        assert!(parse_sources(&text).unwrap_err().contains("r2_copy"));
     }
 
     #[test]

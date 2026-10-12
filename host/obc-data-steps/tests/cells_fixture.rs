@@ -387,6 +387,7 @@ fn composed(store: &Store, steps: &[Step]) -> Release {
         outputs,
         pointers: Vec::new(),
         named: Vec::new(),
+        sources: Vec::new(),
         machine: "test".into(),
         time: "2026-10-01T00:00:00Z".into(),
     }

@@ -55,7 +55,7 @@ enum Command {
     /// Switch a target back to its rollback release. The release that served becomes the rollback,
     /// so a second rollback undoes the first.
     Rollback(rollback_cli::RollbackArgs),
-    /// Every source with licence, R2 copy, and the policy, versions and state for each target.
+    /// Every source with licence, target copy, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
@@ -195,23 +195,32 @@ type Releases = Result<Vec<Release>, Error>;
 /// The [`Releases`] of each target, by target.
 fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error> {
     let targets = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
-    let read = |target: &crate::target::Target| -> Result<Vec<Release>, Error> {
+    let read = |name: &str, target: &crate::target::Target| -> Result<Vec<Release>, Error> {
         let Some(bytes) = target.get(SERVING)? else { return Ok(Vec::new()) };
-        let serving: crate::release::Serving =
-            serde_json::from_slice(&bytes).map_err(|e| Code::InvalidData.error(format!("{SERVING}: {e}")))?;
+        let serving: crate::release::Serving = serde_json::from_slice(&bytes)
+            .map_err(|e| Code::InvalidData.error(format!("target `{name}`: {SERVING}: {e}")))?;
         let ids = std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str());
-        Ok(ids.map(|id| Release::read(target, id)).collect::<Result<_, _>>()?)
+        ids.map(|id| update_cli::read(name, target, id)).collect()
     };
-    Ok(targets.into_iter().map(|(name, target)| (name, read(&target))).collect())
+    Ok(targets
+        .into_iter()
+        .map(|(name, target)| {
+            let releases = read(&name, &target);
+            (name, releases)
+        })
+        .collect())
 }
 
 /// The roots of a collection: the releases of the targets, and the checkout at `root`.
 fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
     let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
     for (name, releases) in releases(root, store)? {
-        let releases = releases.map_err(|e| {
-            let fix = "A clean keeps what each target serves: run it again when every target can be read.";
-            Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
+        let releases = releases.map_err(|e| match e.code {
+            Code::InvalidData => e,
+            _ => {
+                let fix = "A clean keeps what each target serves: run it again when every target can be read.";
+                Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
+            }
         })?;
         releases.iter().for_each(|release| roots.add_release(&name, release));
     }
@@ -347,6 +356,8 @@ struct Sources {
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
+    /// Whether a target keeps a copy of the files of the source that its release reads.
+    copy: bool,
     /// By target: its policy, and the state of each request that its serving release reads.
     targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
@@ -404,14 +415,14 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
-        rows.push(SourceRow { source, targets, snapshots, credential_missing });
+        rows.push(SourceRow { copy: source.copied(), source, targets, snapshots, credential_missing });
     }
     if json {
         return print_json(&Sources { sources: rows });
     }
     let names: Vec<&str> = served.iter().map(|(name, _)| name.as_str()).collect();
     let mut table = vec![[
-        vec!["SOURCE".to_string(), "LICENCE".into(), "R2 COPY".into()],
+        vec!["SOURCE".to_string(), "LICENCE".into(), "COPY".into()],
         names.iter().map(|n| n.to_uppercase()).collect(),
     ]
     .concat()];
@@ -427,7 +438,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
         let mut cells = vec![
             s.id.clone(),
             s.licence.clone().unwrap_or_else(|| none.into()),
-            if s.r2_copy { "yes" } else { "no" }.into(),
+            if row.copy { "yes" } else { "no" }.into(),
         ];
         for name in &names {
             let target = &row.targets[*name];

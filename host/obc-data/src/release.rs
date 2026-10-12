@@ -31,6 +31,8 @@ pub struct Release {
     /// Client files of outputs that a client finds by name, at `releases/<folder>/<path>`. The
     /// folder is the digest of its files, so other files make another folder. Sorted by key.
     pub named: Vec<File>,
+    /// The files of each fetch that an output read, sorted by source, params and version.
+    pub sources: Vec<Fetched>,
     /// The machine that made the release.
     pub machine: String,
     /// `YYYY-MM-DDTHH:MM:SSZ`
@@ -42,6 +44,34 @@ pub struct Release {
 #[serde(deny_unknown_fields)]
 pub struct File {
     pub key: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// The files of one fetch that outputs of a release read.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fetched {
+    pub source: String,
+    pub version: String,
+    /// The sorted `NAME=VALUE`s of the fetch.
+    pub params: Vec<(String, String)>,
+    /// Sorted by name.
+    pub files: Vec<FetchedFile>,
+    /// Whether the target holds a copy of each file at `sources/<source>/<version>/<name>`: when
+    /// the licence lets us give the bytes to others.
+    pub copy: bool,
+    /// The licence and the credit of the source in `data/sources.toml`, for a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchedFile {
+    pub name: String,
     pub size: u64,
     pub sha256: String,
 }
@@ -152,15 +182,22 @@ impl Release {
         self.outputs.iter().flat_map(Output::client_files).map(|file| (file.sha256.as_str(), file.size)).collect()
     }
 
-    /// The keys of the release but its manifest: the objects of the client files, then the named
-    /// files.
+    /// The keys of the release but its manifest: the objects of the client files, the named files,
+    /// then the copies of the source files.
     pub fn files(&self) -> Vec<File> {
         let objects = self.objects().into_iter().map(|(sha256, size)| File {
             key: format!("objects/{sha256}"),
             size,
             sha256: sha256.into(),
         });
-        objects.chain(self.named.iter().cloned()).collect()
+        let mut copies = BTreeMap::new();
+        for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
+            for file in &fetched.files {
+                let key = copy_key(&fetched.source, &fetched.version, &file.name);
+                copies.insert(key.clone(), File { key, size: file.size, sha256: file.sha256.clone() });
+            }
+        }
+        objects.chain(self.named.iter().cloned()).chain(copies.into_values()).collect()
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -185,7 +222,6 @@ impl Release {
         }
         let mut folders: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
         for file in &self.named {
-            crate::r2::check_key(&file.key)?;
             let place = file.key.strip_prefix("releases/").and_then(|rest| rest.split_once('/'));
             let Some((folder, path)) = place.filter(|(folder, _)| is_sha256(folder)) else {
                 return Err(format!("the named file {} is not in a folder `releases/<sha256>/`", file.key));
@@ -195,6 +231,31 @@ impl Release {
         if let Some((folder, _)) = folders.into_iter().find(|(folder, files)| digest(files.iter().copied()) != *folder)
         {
             return Err(format!("releases/{folder}/ is not the digest of its files"));
+        }
+        let fetch = |fetched: &Fetched| (fetched.source.clone(), fetched.params.clone(), fetched.version.clone());
+        if self.sources.windows(2).any(|pair| fetch(&pair[0]) >= fetch(&pair[1])) {
+            return Err("the sources are not sorted by source, params and version, or a fetch is there twice".into());
+        }
+        for fetched in &self.sources {
+            if fetched.files.windows(2).any(|pair| pair[0].name >= pair[1].name) {
+                return Err(format!("the files of {}@{} are not sorted by name", fetched.source, fetched.version));
+            }
+            if let Some(file) = fetched.files.iter().find(|file| !is_sha256(&file.sha256)) {
+                return Err(format!("the file {} of {}@{} has no SHA-256", file.name, fetched.source, fetched.version));
+            }
+        }
+        for file in self.files() {
+            crate::r2::check_key(&file.key)?;
+        }
+        // Two fetches of one version can name one file: its copy has one SHA-256.
+        let mut copies = BTreeMap::new();
+        for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
+            for file in &fetched.files {
+                let key = copy_key(&fetched.source, &fetched.version, &file.name);
+                if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
+                    return Err(format!("{key} is the copy of two files"));
+                }
+            }
         }
         Ok(())
     }
@@ -214,7 +275,12 @@ impl Release {
     /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
         let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
+        // Whether the target copies a source, and its credit, change no file of the release.
+        fn read(fetched: &Fetched) -> (&String, &String, &Vec<(String, String)>, &Vec<FetchedFile>) {
+            (&fetched.source, &fetched.version, &fetched.params, &fetched.files)
+        }
         (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
+            && self.sources.iter().map(read).eq(other.sources.iter().map(read))
             && self.outputs.len() == other.outputs.len()
             && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }
@@ -223,10 +289,16 @@ impl Release {
     pub fn read(target: &Target, id: &str) -> Result<Release, String> {
         let key = manifest_key(id);
         let bytes = target.get(&key)?.ok_or_else(|| format!("the target has no {key}"))?;
-        if sha256_hex(&bytes) != id {
+        Release::parse(id, &bytes)
+    }
+
+    /// The release `id` from the bytes of its manifest.
+    pub fn parse(id: &str, bytes: &[u8]) -> Result<Release, String> {
+        let key = manifest_key(id);
+        if sha256_hex(bytes) != id {
             return Err(format!("{key}: its SHA-256 is not its id"));
         }
-        let release: Release = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
+        let release: Release = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
         release.check().map_err(|e| format!("{key}: {e}"))?;
         Ok(release)
     }
@@ -234,6 +306,11 @@ impl Release {
 
 pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
+}
+
+/// The key of the copy of the file `name` of `source` at `version`.
+pub fn copy_key(source: &str, version: &str, name: &str) -> String {
+    format!("sources/{source}/{version}/{name}")
 }
 
 pub(crate) fn is_sha256(text: &str) -> bool {
@@ -365,6 +442,7 @@ pub(crate) mod tests {
             outputs: vec![output],
             pointers: Vec::new(),
             named: Vec::new(),
+            sources: Vec::new(),
             machine: "test".into(),
             time: "2026-10-12T00:00:00Z".into(),
         }
@@ -388,6 +466,7 @@ pub(crate) mod tests {
                 file(format!("releases/{folder}/count.txt"), &count),
                 file(format!("releases/{folder}/joined.txt"), &joined),
             ],
+            sources: Vec::new(),
             outputs,
             machine: "laptop".into(),
             time: "2026-10-12T00:00:00Z".into(),
@@ -484,10 +563,24 @@ pub(crate) mod tests {
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");
         assert!(refused(&|r| drop(r.named.pop())).contains("not the digest"));
+        let fetch = |params: &str, sha256: &str| Fetched {
+            source: "land".into(),
+            version: "1".into(),
+            params: vec![("area".into(), params.into())],
+            files: vec![FetchedFile { name: "land.zip".into(), size: 1, sha256: sha256.into() }],
+            copy: true,
+            licence: None,
+            attribution: None,
+        };
+        let copies = |r: &mut Release| r.sources = vec![fetch("a", &"a".repeat(64)), fetch("b", &"b".repeat(64))];
+        assert!(refused(&copies).contains("copy of two files"));
 
         let mut rebuilt = Release { machine: "desktop".into(), ..valid.clone() };
         rebuilt.outputs[0].cost.wall_ms += 1;
         assert!(rebuilt.serves_as(&valid), "a rebuild of the same bytes serves as the release");
+        rebuilt.sources = vec![Fetched { copy: false, ..fetch("a", &"a".repeat(64)) }];
+        let copied = Release { sources: vec![fetch("a", &"a".repeat(64))], ..valid.clone() };
+        assert!(rebuilt.serves_as(&copied), "a copy alone changes no file of the release");
         rebuilt.outputs[0].key = "other".into();
         assert!(!rebuilt.serves_as(&valid));
     }

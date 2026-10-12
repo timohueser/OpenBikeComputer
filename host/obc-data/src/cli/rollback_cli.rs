@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use super::{print_json, Code, Error};
 use crate::engine::runs::{Event, Phase, Publication, Run};
-use crate::release::{self, Release};
+use crate::release;
 use crate::store::Store;
 use crate::target::Target;
 
@@ -61,7 +61,7 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
         )));
     };
     run.record(&Event::Phase { phase: Phase::Verify })?;
-    let release = Release::read(target, &rollback.id)?;
+    let release = super::update_cli::read(name, target, &rollback.id)?;
     let files: Vec<(String, u64)> = release.files().into_iter().map(|file| (file.key, file.size)).collect();
     let missing = target.missing(&files)?;
     if let Some(key) = missing.first() {
@@ -89,6 +89,7 @@ mod tests {
     use super::*;
     use crate::cli::update_cli::tests::{region, update};
     use crate::engine::tests::fixture;
+    use crate::release::Release;
 
     fn rollback(fixture: &crate::engine::tests::Fixture, target: &Target) -> Result<RolledBack, Error> {
         let mut run = Run::create(&fixture.store, "rollback local").unwrap();

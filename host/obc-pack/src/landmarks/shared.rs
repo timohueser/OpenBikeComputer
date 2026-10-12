@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(record["pin"]["revision"], 7);
         assert!(!String::from_utf8(data).unwrap().contains("private.jpg"));
         for source in ["wikidata", "wikipedia", "commons"] {
-            assert!(!obc_data::sources::embedded(source).r2_copy);
+            assert!(!obc_data::sources::embedded(source).copied());
         }
         fs::remove_dir_all(root).unwrap();
     }

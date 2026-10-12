@@ -1,6 +1,6 @@
 //! The collection of a target: after a switch, delete the files that only the releases that the
-//! target no longer serves name, and the files that no release names. A key of an older publisher,
-//! a pointer and `release.json` always stay.
+//! target no longer serves name, and the files under `objects/` and `releases/` that no release
+//! names. A key of an older publisher, a pointer and `release.json` always stay.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +15,9 @@ use crate::target::{Listed, Target};
 /// change it here.
 pub const GRACE: u64 = 600;
 
-/// The folders where a collection deletes. Every other key stays.
+/// The folders where a collection deletes each key that no kept release names. Elsewhere it deletes
+/// only what a release that it drops names, such as a copy under `sources/`, and the temporary files
+/// of a stopped write.
 const COLLECTED: [&str; 2] = ["objects/", "releases/"];
 
 /// What a collection did.
@@ -86,7 +88,7 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
         }
         let release = Release::read(target, id).map_err(|e| format!("the files of a release are not known: {e}"))?;
         if stopped && old(manifest.changed) {
-            dropped.push(manifest);
+            dropped.push((manifest, release));
         } else {
             collected.deferred.push(id.into());
             kept.push(release);
@@ -94,13 +96,15 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
     }
     let keep: BTreeSet<String> = kept.iter().flat_map(Release::files).map(|file| file.key).collect();
     // The files first and the manifests last: a collection that stops resumes from the manifests.
+    let of_dropped: BTreeSet<String> =
+        dropped.iter().flat_map(|(_, release)| release.files()).map(|file| file.key).collect();
     let files = listed.values().filter(|listed| {
         manifest_id(&listed.key).is_none()
             && !keep.contains(&listed.key)
             && old(listed.changed)
-            && (collectable(&listed.key) || temporary(&listed.key))
+            && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
     });
-    for listed in files.chain(dropped) {
+    for listed in files.chain(dropped.iter().map(|(manifest, _)| *manifest)) {
         target.remove(&listed.key)?;
         (collected.keys, collected.bytes) = (collected.keys + 1, collected.bytes + listed.size);
         if let Some(id) = manifest_id(&listed.key) {

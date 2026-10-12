@@ -4,7 +4,7 @@
 
 mod review;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use clap::Args;
@@ -17,11 +17,11 @@ use crate::engine::changes::{self, Update};
 use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
-use crate::engine::Step;
+use crate::engine::{Input, InputKind, Step};
 use crate::fetch::http::Http;
-use crate::product::{Inputs, Product};
+use crate::product::{Inputs, Product, RequestKey};
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::release::{self, File, Output, Release, Serving};
+use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
 use crate::settings::Settings;
 use crate::sources::{Refresh, Registry, Source};
 use crate::store::Store;
@@ -206,9 +206,9 @@ pub(super) fn prepare(
     mut run: Option<&mut Run>,
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
-    let serving = base.as_ref().map(|(serving, _)| Release::read(target, &serving.serving.id)).transpose()?;
+    let serving = base.as_ref().map(|(serving, _)| read(name, target, &serving.serving.id)).transpose()?;
     let rollback = base.as_ref().and_then(|(serving, _)| serving.rollback.as_ref());
-    let rollback = rollback.map(|rollback| Release::read(target, &rollback.id)).transpose()?;
+    let rollback = rollback.map(|rollback| read(name, target, &rollback.id)).transpose()?;
     let mut settings = serving.as_ref().map(|release| release.settings.clone()).unwrap_or_default();
     edit(&mut settings)?;
     if settings.region.is_empty() {
@@ -253,6 +253,7 @@ pub(super) fn prepare(
         Some(machine) => machine.clone(),
         None => MachineCheck::this(store)?,
     };
+    let copies = new_copies(store, &listed.steps, &update, serving.as_ref(), &sources)?;
     let review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
@@ -264,6 +265,7 @@ pub(super) fn prepare(
         plan: &update.plan,
         kept: &update.kept,
         layers: &update.layers,
+        copies,
         machine: &machine,
     });
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
@@ -288,7 +290,8 @@ fn apply(
     let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
-    let next = compose(products, settings, outputs)?;
+    let fetched = reads(store, &outputs, serving.as_ref(), &sources)?;
+    let next = compose(products, settings, outputs, fetched)?;
     let mut updated = Updated {
         run: run.id().into(),
         target: name.into(),
@@ -338,7 +341,12 @@ fn apply(
 }
 
 /// The release of `outputs`: the pointer and the named files of each product.
-fn compose(products: &[&dyn Product], settings: Settings, outputs: Vec<Output>) -> Result<Release, Error> {
+fn compose(
+    products: &[&dyn Product],
+    settings: Settings,
+    outputs: Vec<Output>,
+    sources: Vec<Fetched>,
+) -> Result<Release, Error> {
     let (mut pointers, mut named) = (Vec::new(), Vec::new());
     for product in products {
         let bug = |message: String| {
@@ -365,11 +373,108 @@ fn compose(products: &[&dyn Product], settings: Settings, outputs: Vec<Output>) 
         outputs,
         pointers,
         named,
+        sources,
         machine: crate::machine(),
         time: crate::date::timestamp(crate::date::now()),
     };
     release.check().map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
     Ok(release)
+}
+
+/// The release `id` of the target `name`. A manifest that does not parse is `invalid_data`; a failed
+/// read stays what it is.
+pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Error> {
+    let key = release::manifest_key(id);
+    let bytes = target.get(&key)?.ok_or_else(|| Code::Failed.error(format!("target `{name}` has no {key}")))?;
+    Release::parse(id, &bytes).map_err(|e| {
+        let fix = match target {
+            Target::Dir(dir) => format!(
+                "An older `obc data` can have written it: move the folder aside with `mv {0} {0}.old`, then run \
+                 `obc data update {name} --region ID` again.",
+                dir.display()
+            ),
+            Target::R2 { .. } => {
+                "An older `obc data` can have written it: publish the bucket again once `obc data update` writes \
+                 R2."
+                .into()
+            }
+        };
+        Code::InvalidData.error(format!("target `{name}`: {e}")).fix(fix)
+    })
+}
+
+/// The size of the copies under `sources/` that the update adds to the target: the files of a copied
+/// source that a step that bakes reads, and that the serving release does not name. A fetch that
+/// the store lacks yet counts nothing.
+fn new_copies(
+    store: &Store,
+    steps: &[Step],
+    update: &Update,
+    serving: Option<&Release>,
+    sources: &[Source],
+) -> Result<u64, Error> {
+    let named: BTreeSet<String> = serving.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
+    let mut copies = BTreeMap::new();
+    for input in steps.iter().filter(|step| !update.kept.contains_key(&step.name)).flat_map(|step| &step.inputs) {
+        let Input::Snapshot { source, version, params, files } = input else { continue };
+        if !sources.iter().any(|declared| declared.id == *source && declared.copied()) {
+            continue;
+        }
+        let objects = crate::engine::snapshot_files(store, source, version, params, files)?;
+        for (name, object) in objects.into_iter().flatten() {
+            let size = std::fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.len();
+            copies.insert(release::copy_key(source, version, &name), size);
+        }
+    }
+    Ok(copies.into_iter().filter(|(key, _)| !named.contains(key)).map(|(_, size)| size).sum())
+}
+
+/// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
+/// the serving release, whose kept outputs read them. A target copies the files of a source that
+/// `sources` lets it give to others.
+fn reads(
+    store: &Store,
+    outputs: &[Output],
+    serving: Option<&Release>,
+    sources: &[Source],
+) -> Result<Vec<Fetched>, Error> {
+    // The names of the files of each fetch and version.
+    let mut names: BTreeMap<(RequestKey, String), BTreeSet<String>> = BTreeMap::new();
+    for output in outputs {
+        for input in output.inputs.iter().filter(|input| input.kind == InputKind::Snapshot) {
+            let read = output.snapshots.get(&input.name).ok_or_else(|| {
+                Code::Failed.error(format!("step `{}` reads {} and has no version of it", output.step, input.name))
+            })?;
+            let fetch = ((input.name.clone(), read.params.clone()), read.version.clone());
+            names.entry(fetch).or_default().extend(input.files.iter().cloned());
+        }
+    }
+    let mut fetched = Vec::new();
+    for (((source, params), version), names) in names {
+        let recorded = store.snapshot(&source, &version)?.map(|snapshot| {
+            let files = snapshot.files.into_iter();
+            files.map(|file| FetchedFile { name: file.name, size: file.size, sha256: file.sha256 }).collect()
+        });
+        let served = serving.iter().flat_map(|release| &release.sources);
+        let earlier = served.into_iter().find(|f| (&f.source, &f.version, &f.params) == (&source, &version, &params));
+        let mut files = [recorded, earlier.map(|fetched| fetched.files.clone())]
+            .into_iter()
+            .flatten()
+            .map(|files: Vec<FetchedFile>| {
+                files.into_iter().filter(|file| names.contains(&file.name)).collect::<Vec<_>>()
+            })
+            .find(|files| files.len() == names.len())
+            .ok_or_else(|| {
+                Code::Failed
+                    .error(format!("neither the store nor the serving release has the files of {source}@{version}"))
+            })?;
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        let copied = sources.iter().find(|declared| declared.id == source && declared.copied());
+        let (licence, attribution) =
+            copied.map_or((None, None), |source| (source.licence.clone(), source.attribution.clone()));
+        fetched.push(Fetched { source, version, params, files, copy: copied.is_some(), licence, attribution });
+    }
+    Ok(fetched)
 }
 
 /// Apply the flags of `args` to `settings`.
@@ -617,7 +722,25 @@ pub(super) mod tests {
         let moved = update(&fixture, &target, |_| Ok(())).unwrap();
         assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
         let serving = release::serving(&target).unwrap().unwrap().0;
-        assert_eq!((serving.serving.id, serving.rollback.map(|role| role.id)), (moved.serving, Some(revised.serving)));
+        assert_eq!(
+            (serving.serving.id, serving.rollback.map(|role| role.id)),
+            (moved.serving.clone(), Some(revised.serving))
+        );
+
+        // An older `obc data` wrote a manifest without `sources`.
+        let key = release::manifest_key(&moved.serving);
+        let mut older: serde_json::Value = serde_json::from_slice(&target.get(&key).unwrap().unwrap()).unwrap();
+        older.as_object_mut().unwrap().remove("sources");
+        let bytes = serde_json::to_vec(&older).unwrap();
+        let id = crate::store::sha256_hex(&bytes);
+        let any = crate::target::Condition::Any;
+        target.put(&release::manifest_key(&id), &bytes, &any).unwrap();
+        let named =
+            release::Serving { serving: release::Role { id, since: "2026-10-12T00:00:00Z".into() }, rollback: None };
+        target.put(release::SERVING, &serde_json::to_vec(&named).unwrap(), &any).unwrap();
+        let refused = update(&fixture, &target, |_| Ok(())).unwrap_err();
+        assert_eq!(refused.code, Code::InvalidData, "{}", refused.message);
+        assert!(refused.fix.contains("local.old"), "{}", refused.fix);
     }
 
     #[test]
@@ -669,9 +792,17 @@ pub(super) mod tests {
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
     }
 
+    /// A target copies the files of `head`.
+    fn copy_head(fixture: &Fixture) {
+        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
+        head.id = "head".into();
+        fixture.with_sources(&[head]);
+    }
+
     /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
+    /// The target copies the files of `head`.
     fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
-        fixture.with_sources(&[]);
+        copy_head(fixture);
         let a = update(fixture, target, region).unwrap().serving;
         fixture.fetched_version("head", "2", "head.txt", b"2\n");
         let b = update(fixture, target, |_| Ok(())).unwrap().serving;
@@ -703,13 +834,18 @@ pub(super) mod tests {
             Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key).collect()
         };
         let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
+        assert!(only_a.contains("sources/head/1/head.txt"), "the copy of a source file: {only_a:?}");
+        assert!(!files(&a).iter().any(|key| key.starts_with("sources/tail/")), "tail is not declared");
         only_a.insert(release::manifest_key(&a));
-        let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
+        // `sources/x/y` is a key that no release names, such as a prepared source.
+        let older =
+            ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part", "sources/x/y"];
         let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
         for key in older.iter().chain(&orphans) {
             write(&dir.join(key), key);
         }
         let before = keys(&target);
+        assert!(before.contains("sources/head/1/head.txt"), "the publish copies it");
 
         let epoch = crate::date::timestamp(0);
         let young = collection::collect(&target, Some(&epoch), crate::date::now());
@@ -769,6 +905,18 @@ pub(super) mod tests {
         assert_eq!((review.layers.len(), review.layers[0].text.as_str()), (1, "head 1 → 2"));
         let updated = asked_update(&fixture, &target, &expect(&review.id)).unwrap();
         assert_eq!((&updated.review, updated.rollback.as_ref()), (&review.id, Some(&first.serving)));
+    }
+
+    #[test]
+    fn the_upload_of_a_review_counts_the_copies_that_the_serving_release_does_not_name() {
+        let fixture = fixture("update-upload");
+        copy_head(&fixture);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        let review = review(&fixture, &target);
+        let bakes: u64 = review.bakes.iter().filter_map(|bake| bake.estimate).map(|bake| bake.client_bytes).sum();
+        assert_eq!(review.cost.upload_bytes, bakes + 6, "with the copy of head 2");
     }
 
     #[test]
