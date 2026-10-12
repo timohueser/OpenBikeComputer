@@ -199,7 +199,8 @@ pub fn version(
 /// params, or of any fetch of a source with a `start`, is the newest serving version of the source:
 /// one version names all its requests, such as the GLO-30 tiles of every region. A `commit` or a
 /// `digest` has no order: its `start`, so that a change of `data/sources.toml` moves it; else the
-/// serving version; else the one version in the store, when there is one.
+/// version that `obc data source refresh` took; else the serving version; else the one version in
+/// the store, when there is one.
 fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<String>, String> {
     let declared = crate::sources::all().iter().find(|s| s.id == source);
     let start = declared.and_then(|s| s.start.clone());
@@ -217,7 +218,7 @@ fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String
     };
     if declared.is_some_and(|source| !source.version.ordered()) {
         let only = <[String; 1]>::try_from(stored).ok().map(|[version]| version);
-        return Ok(start.or(serving).or(only));
+        return Ok(start.or(store.refreshed(source)?).or(serving).or(only));
     }
     Ok(newest(&mut serving.into_iter().chain(stored).chain(start)))
 }
@@ -281,6 +282,8 @@ mod tests {
         inputs.serving.insert(("natural-earth".into(), Vec::new()), "d".into());
         fixture.fetched_version("natural-earth", "e", "earth.zip", b"other earth\n");
         assert_eq!(version(&inputs, "natural-earth", &[]), Ok("d".into()), "a digest keeps its serving version");
+        fixture.store.put_refreshed("natural-earth", "e").unwrap();
+        assert_eq!(version(&inputs, "natural-earth", &[]), Ok("e".into()), "until a refresh");
 
         inputs.due.insert(("head".into(), Vec::new()));
         assert_eq!(version(&inputs, "head", &[]), Err(None), "a due fetch without a newer name");

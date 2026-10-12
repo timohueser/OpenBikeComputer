@@ -8,6 +8,7 @@ mod overview;
 mod r2_cli;
 mod rollback_cli;
 mod runs_cli;
+mod source_cli;
 mod update_cli;
 
 use std::collections::BTreeMap;
@@ -51,6 +52,11 @@ enum Command {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
         check_now: bool,
+    },
+    /// Act on one source of `data/sources.toml`.
+    Source {
+        #[command(subcommand)]
+        command: source_cli::SourceCommand,
     },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
@@ -114,6 +120,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
         Command::Update(args) => update_cli::command(&root()?, products, args, json),
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
         Command::Sources { check_now } => print_sources(&root()?, check_now, json),
+        Command::Source { command } => source_cli::run(&root()?, command, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {

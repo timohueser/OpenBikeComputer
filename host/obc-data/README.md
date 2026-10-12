@@ -46,6 +46,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
+| `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
 

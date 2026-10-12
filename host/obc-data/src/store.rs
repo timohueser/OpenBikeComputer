@@ -324,6 +324,15 @@ impl Store {
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
         write_record(&self.request_path(source, &record.version, &record.params), record)
     }
+
+    /// The version of `source` that `obc data source refresh` took last.
+    pub fn refreshed(&self, source: &str) -> Result<Option<String>, String> {
+        Ok(read_text(&self.root.join("refreshed").join(source))?.map(|text| text.trim().to_string()))
+    }
+
+    pub fn put_refreshed(&self, source: &str, version: &str) -> Result<(), String> {
+        write_atomic(&self.root.join("refreshed").join(source), format!("{version}\n").as_bytes())
+    }
 }
 
 pub fn sorted(params: &[(String, String)]) -> Vec<(String, String)> {

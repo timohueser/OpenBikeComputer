@@ -198,6 +198,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
+| `refreshed/<source>` | The version that `obc data source refresh` took last, and a line end |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `locks/` | One lock file per key and per run |
@@ -673,9 +674,10 @@ A step list gets the version of each fetch that it reads from one function
 A `date` or a `release` version is newer by its parts: a run of digits by its number, any other
 run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
 and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
-its `start`, so that a change of `data/sources.toml` moves it; else the serving version; else the
-one version in the store, when the store has exactly one. So an update after an update that
-changed nothing reads the same versions.
+its `start`, so that a change of `data/sources.toml` moves it; else the version that
+`obc data source refresh` took last on this machine; else the serving version; else the one
+version in the store, when the store has exactly one. So an update after an update that changed
+nothing reads the same versions.
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
 metadata fetched (see [Products](#products)). It judges each of them, as
@@ -1118,6 +1120,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
 | `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a source and writes it to `refreshed/<source>` of the store: the next update of each target on this machine reads it, as [Versions](#versions) says. Refuses a source that needs a `NAME=VALUE`, and a `commit` or `digest` source with a `start` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
@@ -1242,6 +1245,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `update --dry-run` | `Review` |
 | `rollback` | `RolledBack` |
 | `sources` | `Sources` |
+| `source refresh` | `Refreshed` |
 | `fetch` | `Fetched` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
@@ -3021,6 +3025,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ],
       "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale."
+    },
+    "Refreshed": {
+      "description": "What `source refresh` did.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "description": "Upstream's newest version, now in the store.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "bytes"
+      ],
+      "type": "object"
     },
     "Region": {
       "oneOf": [
