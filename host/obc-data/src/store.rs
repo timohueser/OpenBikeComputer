@@ -45,6 +45,8 @@ impl Snapshot {
 
 pub struct Store {
     root: PathBuf,
+    /// The target whose client files fill an object that the store lacks: a store is a cache.
+    remote: Option<crate::target::Target>,
 }
 
 const STORE_LOCK: &str = "store";
@@ -148,7 +150,26 @@ impl Store {
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self { root: root.into(), remote: None }
+    }
+
+    /// This store, which takes an object that it lacks from `objects/` of `target`.
+    pub fn reading(self, target: &crate::target::Target) -> Self {
+        Self { remote: Some(target.clone()), ..self }
+    }
+
+    /// The object `sha256`, downloaded from the target of [`Store::reading`] when the store lacks
+    /// it.
+    pub fn ensure(&self, sha256: &str) -> Result<PathBuf, String> {
+        let object = self.object(sha256);
+        if object.is_file() {
+            return Ok(object);
+        }
+        let downloaded = match &self.remote {
+            Some(target) => target.download(&format!("objects/{sha256}"), sha256, self)?,
+            None => None,
+        };
+        downloaded.ok_or_else(|| format!("the store and its target have no object {sha256}"))
     }
 
     pub fn root(&self) -> &Path {

@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::engine::{digest, sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::settings::Settings;
-use crate::store::{hash_file, sha256_hex, Store};
+use crate::store::{hash_file, sha256_hex, FileRecord, Requested, Store};
 use crate::target::{Condition, Tag, Target};
 
 /// The key that names the release that a target serves, and its rollback.
@@ -67,8 +67,46 @@ pub struct Fetched {
 #[serde(deny_unknown_fields)]
 pub struct FetchedFile {
     pub name: String,
+    /// Where upstream gives it.
+    pub url: String,
     pub size: u64,
     pub sha256: String,
+}
+
+impl Fetched {
+    /// The key of the copy of `file` on a target.
+    pub fn key(&self, file: &FetchedFile) -> String {
+        format!("sources/{}/{}/{}", self.source, self.version, file.name)
+    }
+
+    /// Give `store` the files of the fetch from their copies on `target`, and their records.
+    pub fn restore(&self, target: &Target, store: &Store) -> Result<(), String> {
+        for file in self.files.iter().filter(|file| !store.object(&file.sha256).is_file()) {
+            let downloaded = target.download(&self.key(file), &file.sha256, store)?;
+            downloaded.ok_or_else(|| format!("the target has no {}", self.key(file)))?;
+        }
+        let retrieved = crate::date::timestamp(crate::date::now());
+        let records: Vec<FileRecord> = self
+            .files
+            .iter()
+            .map(|file| FileRecord {
+                name: file.name.clone(),
+                url: file.url.clone(),
+                size: file.size,
+                sha256: file.sha256.clone(),
+                retrieved: retrieved.clone(),
+            })
+            .collect();
+        crate::fetch::record(store, &self.source, &self.version, &records)?;
+        if !self.params.is_empty() {
+            let files = self.files.iter().map(|file| file.name.clone()).collect();
+            store.put_requested(
+                &self.source,
+                &Requested { version: self.version.clone(), params: self.params.clone(), files },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// The files of one step: its receipt, what it read of each source, and what a client reads.
@@ -188,7 +226,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = format!("sources/{}/{}/{}", fetched.source, fetched.version, file.name);
+                let key = fetched.key(file);
                 copies.insert(key.clone(), File { key, size: file.size, sha256: file.sha256.clone() });
             }
         }

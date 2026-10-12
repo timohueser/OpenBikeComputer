@@ -17,14 +17,14 @@ use crate::engine::changes::{self, Update};
 use crate::engine::plan::{outputs, Estimate};
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
-use crate::engine::{InputKind, Step};
+use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
 use crate::product::{Inputs, Product, RequestKey};
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
 use crate::settings::Settings;
 use crate::sources::{Refresh, Registry, Source};
-use crate::store::Store;
+use crate::store::{sorted, Store};
 use crate::target::{Tag, Target};
 pub use review::{MachineCheck, Review};
 
@@ -125,6 +125,8 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
             .error(format!("`obc data update` writes only a dir target, and `{}` is an R2 bucket", args.target))
             .fix("Update a dir target, such as `obc data update local`."));
     }
+    // A step reads a kept output from the target when this store lacks it.
+    let store = store.reading(&target);
     let (http, machine) = (Http::new(), MachineCheck::this(&store)?);
     let edit = |settings: &mut Settings| edit(root, products, &args, settings);
     let target = (args.target.as_str(), &target);
@@ -169,6 +171,8 @@ pub(super) struct Prepared {
     sources: Vec<Source>,
     steps: Vec<Step>,
     update: Update,
+    /// The fetches whose files this machine downloads from their copies on the target.
+    copies: Vec<Fetched>,
 }
 
 /// Update `target` with the settings of its serving release after `edit`, when the review passes
@@ -259,6 +263,17 @@ pub(super) fn prepare(
             });
         }
     }
+    // A fetch whose files the target copies comes from the target.
+    let copies: Vec<Fetched> = serving
+        .iter()
+        .flat_map(|release| &release.sources)
+        .filter(|fetched| fetched.copy && update.plan.fetches().iter().any(|fetch| covers(fetched, fetch)))
+        .cloned()
+        .collect();
+    for group in &mut update.plan.groups {
+        group.fetches.retain(|fetch| !copies.iter().any(|copy| covers(copy, fetch)));
+    }
+    let downloads = downloads(store, &listed.steps, &update, &copies);
     let review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
@@ -270,9 +285,35 @@ pub(super) fn prepare(
         plan: &update.plan,
         kept: &update.kept,
         layers: &update.layers,
+        downloads,
         machine,
     });
-    Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
+    Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
+}
+
+/// Whether the copy `fetched` on a target has the files that `fetch` gets.
+fn covers(fetched: &Fetched, fetch: &crate::engine::plan::Fetch) -> bool {
+    (&fetched.source, &fetched.version, &fetched.params) == (&fetch.source, &fetch.version, &sorted(&fetch.params))
+        && fetch.files.iter().all(|name| fetched.files.iter().any(|file| &file.name == name))
+}
+
+/// What this machine downloads from the target: the copies, and the files of kept steps that a
+/// step that bakes reads.
+fn downloads(store: &Store, steps: &[Step], update: &Update, copies: &[Fetched]) -> review::Downloads {
+    let mut objects: BTreeMap<&str, u64> = BTreeMap::new();
+    for file in copies.iter().flat_map(|copy| &copy.files) {
+        objects.insert(&file.sha256, file.size);
+    }
+    for step in update.plan.builds().filter_map(|build| steps.iter().find(|step| step.name == build.step)) {
+        for input in &step.inputs {
+            let Input::Step { name, files } = input else { continue };
+            let Some(output) = update.kept.get(name) else { continue };
+            objects
+                .extend(select_layer(&output.files, files).0.into_iter().map(|file| (file.sha256.as_str(), file.size)));
+        }
+    }
+    objects.retain(|sha256, _| !store.object(sha256).is_file());
+    review::Downloads { files: objects.len() as u64, bytes: objects.values().sum() }
 }
 
 /// Bake, publish and switch as `prepared` says, then collect.
@@ -285,7 +326,13 @@ fn apply(
     prepared: Prepared,
     run: &mut Run,
 ) -> Result<Updated, Error> {
-    let Prepared { review, base, serving, settings, sources, steps, update } = prepared;
+    let Prepared { review, base, serving, settings, sources, steps, update, copies } = prepared;
+    if !copies.is_empty() {
+        run.record(&Event::Phase { phase: Phase::Download })?;
+        for copy in &copies {
+            copy.restore(target, store)?;
+        }
+    }
     run.record(&Event::Phase { phase: Phase::Build })?;
     let context = Context { store, root, sources: &sources, http, kept: &update.kept, limits: Limits::machine() };
     let built = run.build(&context, &steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
@@ -407,24 +454,31 @@ fn reads(
     }
     let mut fetched = Vec::new();
     for (((source, params), version), names) in names {
-        let recorded = store.snapshot(&source, &version)?.map(|snapshot| {
+        let pick = |files: Vec<FetchedFile>| {
+            let mut files: Vec<FetchedFile> = files.into_iter().filter(|file| names.contains(&file.name)).collect();
+            files.sort_by(|a, b| a.name.cmp(&b.name));
+            (files.len() == names.len()).then_some(files)
+        };
+        let recorded = store.snapshot(&source, &version)?.and_then(|snapshot| {
             let files = snapshot.files.into_iter();
-            files.map(|file| FetchedFile { name: file.name, size: file.size, sha256: file.sha256 }).collect()
+            pick(
+                files
+                    .map(|file| FetchedFile { name: file.name, url: file.url, size: file.size, sha256: file.sha256 })
+                    .collect(),
+            )
         });
         let served = serving.iter().flat_map(|release| &release.sources);
         let earlier = served.into_iter().find(|f| (&f.source, &f.version, &f.params) == (&source, &version, &params));
-        let mut files = [recorded, earlier.map(|fetched| fetched.files.clone())]
-            .into_iter()
-            .flatten()
-            .map(|files: Vec<FetchedFile>| {
-                files.into_iter().filter(|file| names.contains(&file.name)).collect::<Vec<_>>()
-            })
-            .find(|files| files.len() == names.len())
-            .ok_or_else(|| {
-                Code::Failed
-                    .error(format!("neither the store nor the serving release has the files of {source}@{version}"))
-            })?;
-        files.sort_by(|a, b| a.name.cmp(&b.name));
+        let earlier = earlier.and_then(|fetched| pick(fetched.files.clone()));
+        let digests = |files: &[FetchedFile]| files.iter().map(|file| file.sha256.clone()).collect::<Vec<_>>();
+        if recorded.as_deref().zip(earlier.as_deref()).is_some_and(|(now, then)| digests(now) != digests(then)) {
+            return Err(Code::VerifyFailed
+                .error(format!("the store holds other bytes of {source}@{version} than the serving release read; nothing changed"))
+                .fix(format!("Upstream gives other bytes for this version: move `{source}` to another version, such as with `obc data source refresh {source}`.")));
+        }
+        let files = recorded.or(earlier).ok_or_else(|| {
+            Code::Failed.error(format!("neither the store nor the serving release has the files of {source}@{version}"))
+        })?;
         let copy = sources.iter().any(|declared| declared.id == source && declared.copied());
         fetched.push(Fetched { source, version, params, files, copy });
     }
@@ -522,6 +576,10 @@ pub(super) mod tests {
             let mut steps = pipeline();
             steps[2].inputs = vec![snapshot("head", &head, &["head.txt"])];
             crate::engine::tests::revise(root, &mut steps);
+            // The file `upper-internal` gives `test/upper` no client file.
+            if root.join("upper-internal").exists() {
+                steps[2].client = crate::engine::Client::None;
+            }
             // The file `format-2` gives the layer `test` a new format.
             static FORMAT_2: crate::engine::Layer = crate::engine::Layer { format: 2, ..crate::engine::tests::TEST };
             if root.join("format-2").exists() {
@@ -710,12 +768,45 @@ pub(super) mod tests {
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
     }
 
+    /// Declare the sources `ids`, which a target copies.
+    fn copied(fixture: &Fixture, ids: &[&str]) {
+        let sources = ids.iter().map(|id| {
+            let mut source = crate::fetch::tests::source(&format!("https://example.org/{id}.txt"), "date");
+            source.id = id.to_string();
+            source
+        });
+        fixture.with_sources(&sources.collect::<Vec<_>>());
+    }
+
+    /// An update without flags on another machine: its store has no objects, records or receipts,
+    /// and takes what it lacks from `target`.
+    fn elsewhere(fixture: &Fixture, target: &Target) -> (Store, Updated) {
+        for dir in ["objects", "snapshots", "requests", "layers"] {
+            let _ = std::fs::remove_dir_all(fixture.store.root().join(dir));
+        }
+        let store = Store::at(fixture.store.root()).reading(target);
+        let mut run = Run::create(&store, "update local").unwrap();
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let (asked, machine) = (Asked::default(), MachineCheck::default());
+        let updated = super::update(
+            &root,
+            &store,
+            &Http::new(),
+            ("local", target),
+            &products,
+            |_| Ok(()),
+            &asked,
+            &machine,
+            &mut run,
+        );
+        run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
+        (store, updated.unwrap())
+    }
+
     /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
     /// The target copies the files of `head`.
     fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
-        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
-        head.id = "head".into();
-        fixture.with_sources(&[head]);
+        copied(fixture, &["head"]);
         let a = update(fixture, target, region).unwrap().serving;
         fixture.fetched_version("head", "2", "head.txt", b"2\n");
         let b = update(fixture, target, |_| Ok(())).unwrap().serving;
@@ -892,5 +983,45 @@ pub(super) mod tests {
         let moved = &review(&fixture, &target).sources[0];
         assert_eq!((moved.source.as_str(), moved.from.as_ref(), &moved.to), ("natural-earth", Some(&one), &two));
         assert_eq!(steps(&update_with(&fixture, &target, &http, |_| Ok(())).unwrap()), ["counter/earth"]);
+    }
+
+    #[test]
+    fn a_machine_without_the_files_of_the_release_downloads_only_what_its_bakes_read() {
+        let fixture = fixture("update-elsewhere");
+        copied(&fixture, &["head", "tail"]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let first = update(&fixture, &target, region).unwrap();
+        let file = |release: &Release, step: &str| {
+            release.outputs.iter().find(|output| output.step == step).unwrap().files[0].sha256.clone()
+        };
+        let upper = file(&Release::read(&target, &first.serving).unwrap(), "test/upper");
+
+        write(&fixture.root().join("revised"), "test/join");
+        let (store, updated) = elsewhere(&fixture, &target);
+        assert_eq!(steps(&updated), ["test/join", "test/count"]);
+        let release = Release::read(&target, &updated.serving).unwrap();
+        let tail = &store.snapshot("tail", "1").unwrap().unwrap().files[0].sha256;
+        let objects: BTreeSet<String> = ["test/join", "test/count"].map(|step| file(&release, step)).into();
+        let downloads: BTreeSet<String> = [upper, tail.clone()].into();
+        let folders = std::fs::read_dir(store.root().join("objects")).unwrap();
+        let held: BTreeSet<String> = folders
+            .flat_map(|folder| std::fs::read_dir(folder.unwrap().path()).unwrap())
+            .map(|object| object.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(held, &objects | &downloads, "test/join reads upper.txt and tail@1, and nothing reads head@1");
+    }
+
+    #[test]
+    fn a_bake_that_reads_a_file_that_no_client_reads_bakes_its_step_again_on_a_machine_without_it() {
+        let fixture = fixture("update-unheld");
+        copied(&fixture, &["head", "tail"]);
+        write(&fixture.root().join("upper-internal"), "");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let first = update(&fixture, &target, region).unwrap();
+        write(&fixture.root().join("revised"), "test/join");
+        let (store, updated) = elsewhere(&fixture, &target);
+        assert_eq!(steps(&updated), ["test/upper", "test/join", "test/count"]);
+        assert!(store.snapshot("head", "1").unwrap().is_some(), "from the copy on the target");
+        assert_eq!(updated.rollback, Some(first.serving));
     }
 }

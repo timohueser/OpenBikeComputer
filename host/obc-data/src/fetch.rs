@@ -310,7 +310,7 @@ fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
 
 /// Add `files` to the snapshot record of the version. A version names one set of bytes, so a
 /// record that has a URL with other bytes is an error; a name names one URL.
-fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<(), String> {
+pub(crate) fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<(), String> {
     let _lock = store.lock(&snapshot_lock(source, version))?;
     match merge(store, source, version, files)? {
         Some(snapshot) => store.put_snapshot(&snapshot),

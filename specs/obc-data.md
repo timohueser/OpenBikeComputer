@@ -651,7 +651,7 @@ run. A run without a `finished` event whose lock is free has failed.
 | `event` | Keys |
 | --- | --- |
 | `started` | `command`, and `at` (`YYYY-MM-DDTHH:MM:SSZ`) |
-| `phase` | `phase`: `prepare`, `build`, `verify`, `upload`, `switch` or `collect` |
+| `phase` | `phase`: `prepare`, `download`, `build`, `verify`, `upload`, `switch` or `collect` |
 | `published` | `mutation`: `{"kind": "switched", "release"}` after the switch of the target |
 | `fetch_started` | `source`, `version` and `params` |
 | `fetch_finished` | `source`, `version`, `params`, `resolved` (the acquired version), `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
@@ -965,7 +965,7 @@ SHA-256 of these bytes.
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
-| `sources` | `[{source, version, params, files, copy}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, size, sha256}]`, sorted by `name`), and whether the target copies them under `sources/` |
+| `sources` | `[{source, version, params, files, copy}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, url, size, sha256}]`, sorted by `name`; `url` is where upstream gives the file), and whether the target copies them under `sources/` |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
@@ -1052,18 +1052,33 @@ only a `dir` target. One run does each phase in this order:
 
 An update that stops keeps what it baked in the store, and the next update reuses it.
 
+### Any machine
+
+An update needs no file of the serving release in the store of the machine. It takes only what
+its bakes and the checks of the products read:
+
+- A fetch that the serving release lists with `copy` comes from the copies on the target, with its
+  snapshot record, in the phase `download`. Another fetch comes from upstream. When the store then
+  holds other bytes of a fetch than the serving release lists, nothing changes.
+- A file of a kept step that a step that bakes reads, or that the check of a product reads, comes
+  from `objects/` of the target when the store lacks it.
+- A kept step whose file a step that bakes reads, when no client reads that file and the store
+  lacks it, bakes again on this machine: the target does not hold it. Its cause is `unheld`.
+
 ### Review
 
 The review of an update says what it does before it changes a target. `--dry-run` writes the
 review and creates no run. It fetches only what the step lists need to know their versions.
 
 - `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
-  [State of a layer](#state-of-a-layer), `named` by `--only`, or `off`), the steps that bake, the
+  [State of a layer](#state-of-a-layer), `named` by `--only`, `off`, or `unheld` as
+  [Any machine](#any-machine) says), the steps that bake, the
   grid leaves of a tiled layer, the steps of the release that no step makes now, the readers and
   a format change. A layer that only other layers read is not listed.
 - `sources`: each fetch that a baked step reads at another version than the serving release.
-- `kept`, `fetches` and `bakes`: the outputs that the release keeps by reference, and what this
-  machine fetches and bakes. A step whose output is in the store already does not bake.
+- `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
+  what this machine fetches upstream, downloads from the target and bakes. A step whose output is
+  in the store already does not bake.
 - `cost`: each bake has the estimate of [Plan](#plan), else the `cost` of the step in the serving
   release. The bakes without either are listed.
 - `machine`: the memory of the machine and the free bytes of the disk of the store. A bake whose
@@ -1784,6 +1799,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "key",
         "file"
+      ],
+      "type": "object"
+    },
+    "Downloads": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files",
+        "bytes"
       ],
       "type": "object"
     },
@@ -2819,6 +2853,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Phase": {
       "enum": [
         "prepare",
+        "download",
         "build",
         "verify",
         "upload",
@@ -2909,6 +2944,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "properties": {
             "kind": {
               "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A step that bakes reads files of the layer that no client reads, so the target does not hold\nthem, and the store of this machine lacks them.",
+          "properties": {
+            "kind": {
+              "const": "unheld",
               "type": "string"
             }
           },
@@ -3318,6 +3367,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cost": {
           "$ref": "#/$defs/ReviewCost"
         },
+        "downloads": {
+          "$ref": "#/$defs/Downloads",
+          "description": "What this machine downloads from the target: copies of source files, and files of kept steps\nthat a step that bakes reads."
+        },
         "fetches": {
           "description": "What this machine fetches into its store.",
           "items": {
@@ -3369,6 +3422,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kept",
         "fetches",
         "bakes",
+        "downloads",
         "cost",
         "machine",
         "after",
@@ -3388,7 +3442,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "store_bytes": {
-          "description": "What the fetches and the bakes write into the store; the upload is the client files of it.",
+          "description": "What the fetches, the downloads and the bakes write into the store; the upload is the client\nfiles of it.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

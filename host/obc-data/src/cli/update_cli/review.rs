@@ -40,6 +40,9 @@ pub struct Review {
     pub fetches: Vec<Fetch>,
     /// The steps that this machine bakes. A step whose output is in the store already is not here.
     pub bakes: Vec<Build>,
+    /// What this machine downloads from the target: copies of source files, and files of kept steps
+    /// that a step that bakes reads.
+    pub downloads: Downloads,
     pub cost: ReviewCost,
     pub machine: MachineCheck,
     pub after: AfterUpdate,
@@ -81,13 +84,20 @@ pub struct SourceMove {
     pub to: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema)]
+pub struct Downloads {
+    pub files: u64,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct ReviewCost {
     /// The estimated times of the bakes, added as if one ran after another.
     pub wall_ms: u64,
     /// The highest estimated peak of one bake.
     pub peak_rss_bytes: Option<u64>,
-    /// What the fetches and the bakes write into the store; the upload is the client files of it.
+    /// What the fetches, the downloads and the bakes write into the store; the upload is the client
+    /// files of it.
     pub store_bytes: u64,
     /// The bakes without an estimate: the store has no receipt of the step, and the serving release
     /// no cost.
@@ -144,12 +154,14 @@ pub struct Parts<'a> {
     pub plan: &'a Plan,
     pub kept: &'a Kept,
     pub layers: &'a [LayerState],
+    pub downloads: Downloads,
     pub machine: &'a MachineCheck,
 }
 
 /// The review of an update from `parts`.
 pub fn review(parts: Parts) -> Review {
-    let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, machine } = parts;
+    let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, downloads, machine } =
+        parts;
     let outputs: BTreeMap<&str, &crate::release::Output> =
         serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
@@ -168,6 +180,7 @@ pub fn review(parts: Parts) -> Review {
             _ if !mine.is_empty() && only.contains(&state.layer) => Cause::Named,
             (Some(cause), Verdict::Stale) => Cause::Stale { cause: cause.clone() },
             _ if mine.is_empty() => Cause::Off,
+            _ if only.is_empty() => Cause::Unheld,
             _ => Cause::Named,
         };
         let format = mine.iter().find_map(|step| {
@@ -228,8 +241,8 @@ pub fn review(parts: Parts) -> Review {
         }
     }
     let fetches = plan.fetches();
-    let mut cost =
-        ReviewCost { store_bytes: fetches.iter().filter_map(|fetch| fetch.bytes).sum(), ..ReviewCost::default() };
+    let fetched: u64 = fetches.iter().filter_map(|fetch| fetch.bytes).sum();
+    let mut cost = ReviewCost { store_bytes: fetched + downloads.bytes, ..ReviewCost::default() };
     for build in &bakes {
         match build.estimate {
             Some(estimate) => {
@@ -265,6 +278,7 @@ pub fn review(parts: Parts) -> Review {
         kept: kept.len(),
         fetches,
         bakes,
+        downloads,
         cost,
         machine,
         after,
@@ -367,8 +381,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;
     let mut text = format!(
-        "{} fetches, {} bakes: about {} min, {} into the store",
+        "{} fetches, {} downloads, {} bakes: about {} min, {} into the store",
         review.fetches.len(),
+        review.downloads.files,
         review.bakes.len(),
         cost.wall_ms.div_ceil(60_000),
         size(cost.store_bytes)
@@ -409,6 +424,7 @@ fn text(cause: &Cause) -> String {
         Cause::Stale { cause } => cause.text(),
         Cause::Named => "named by --only".into(),
         Cause::Off => "no step makes it".into(),
+        Cause::Unheld => "a bake reads files of it that only a store holds".into(),
     }
 }
 

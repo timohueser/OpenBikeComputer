@@ -123,6 +123,7 @@ pub enum Event {
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Prepare,
+    Download,
     Build,
     Verify,
     Upload,
@@ -283,6 +284,13 @@ impl Run {
                 let prepared = prepare(store, step, &done).and_then(|(receipt, request)| match key {
                     Some(key) if key != receipt.key => Err(outdated.to_string()),
                     _ => Ok((receipt, request)),
+                });
+                // The files of the steps that it reads; a kept step's come from the target.
+                let prepared = prepared.and_then(|(receipt, request)| {
+                    for file in request.layer_files.values().flatten() {
+                        store.ensure(&file.sha256)?;
+                    }
+                    Ok((receipt, request))
                 });
                 let started = self.record(&Event::StepStarted { step: step.name.clone() });
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {

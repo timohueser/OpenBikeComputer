@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::order;
 use super::plan::{build, build_of, needs, sized, walk, Build, Cause, Group, Kept, Plan};
 use super::state::{judge, LayerState, Newer};
-use super::Step;
+use super::{select_layer, Input, Step};
 use crate::release::Output;
 use crate::store::Store;
 
@@ -44,7 +44,7 @@ pub fn update(
     let named: BTreeSet<&str> =
         steps.iter().filter(|step| only.iter().any(|name| name == step.layer.name)).map(|s| s.name.as_str()).collect();
     let ordered = order(steps)?;
-    let changed = if only.is_empty() {
+    let mut changed = if only.is_empty() {
         stale
     } else {
         let mut changed = named.clone();
@@ -63,6 +63,23 @@ pub fn update(
         }
         changed
     };
+    // A target holds only client files. A step that bakes and reads a file of a kept step that no
+    // client reads, which the store lacks, needs that step baked again on this machine.
+    for step in ordered.iter().rev() {
+        if !changed.contains(step.name.as_str()) {
+            continue;
+        }
+        for input in &step.inputs {
+            let Input::Step { name, files } = input else { continue };
+            let Some(output) = release.get(name.as_str()).filter(|_| !changed.contains(name.as_str())) else {
+                continue;
+            };
+            let (read, _) = select_layer(&output.files, files);
+            if read.iter().any(|file| !output.client.includes(&file.path) && !store.object(&file.sha256).is_file()) {
+                changed.insert(name);
+            }
+        }
+    }
     let kept: Kept = steps
         .iter()
         .filter(|step| !changed.contains(step.name.as_str()))

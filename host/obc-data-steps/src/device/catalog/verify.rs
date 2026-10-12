@@ -285,7 +285,7 @@ fn assemble_pick(
 }
 
 fn checked(store: &Store, sha256: &str, size: u64) -> Result<Vec<u8>, String> {
-    let path = store.object(sha256);
+    let path = store.ensure(sha256)?;
     if hash_file(&path)? != (sha256.into(), size) {
         return Err(format!("catalog metadata `{sha256}` failed its digest pin"));
     }
@@ -293,7 +293,7 @@ fn checked(store: &Store, sha256: &str, size: u64) -> Result<Vec<u8>, String> {
 }
 
 fn open(store: &Store, sha256: &str) -> Result<FileSource, String> {
-    FileSource::open(&store.object(sha256)).map_err(|e| format!("artifact `{sha256}`: {e}"))
+    FileSource::open(&store.ensure(sha256)?).map_err(|e| format!("artifact `{sha256}`: {e}"))
 }
 
 fn digest(text: &str) -> Result<[u8; 32], String> {
