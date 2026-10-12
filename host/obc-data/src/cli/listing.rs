@@ -57,7 +57,7 @@ pub(super) fn fetcher<'a>(
         let request =
             Request { refresh: false, source, version: wanted.version.clone(), params: wanted.params.clone() };
         let snapshot = match run.as_deref_mut() {
-            Some(run) => run.fetch_request(root, store, http, &request),
+            Some(run) => run.fetch_request(root, store, http, &request, &[]),
             None => fetch::fetch(root, store, http, &request),
         };
         fetched(source, snapshot).map(|snapshot| snapshot.version)

@@ -209,7 +209,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        overview, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
+        overview, prepare_cli, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
 
@@ -226,6 +226,8 @@ mod tests {
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
             schema("`source refresh`", generator.subschema_for::<source_cli::Refreshed>()),
+            schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
+            schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
             schema("`areas`", generator.subschema_for::<crate::cli::Areas>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),

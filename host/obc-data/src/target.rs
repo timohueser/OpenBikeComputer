@@ -378,6 +378,14 @@ impl Target {
 }
 
 impl Target {
+    /// The folder `folder` of the target, as a target of its own.
+    pub fn within(&self, folder: &str) -> Target {
+        match self {
+            Target::Dir(dir) => Target::Dir(dir.join(folder)),
+            Target::R2(remote) => Target::R2(r2::Remote { prefix: remote.key(folder), ..remote.clone() }),
+        }
+    }
+
     /// The time of now by the clock of the target: of this machine for a dir target, of the
     /// server for an R2 target.
     pub fn now(&self) -> Result<u64, String> {

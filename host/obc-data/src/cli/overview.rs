@@ -195,6 +195,8 @@ fn state(
         release.settings.policies(&mut sources)?;
         let mut inputs =
             Inputs { settings: release.settings.clone(), serving: release.versions(), ..Inputs::default() };
+        let read = inputs.serving.keys().cloned().collect();
+        crate::prepared::resolve(root, store, (name, target), (&sources, &read), &mut inputs)?;
         let fetch = listing::fetcher(root, store, http, &sources, None, false);
         let listed = listing::steps(root, products, &mut inputs, &regions, store, true, fetch)?;
         state.blocked = listed.blocked;

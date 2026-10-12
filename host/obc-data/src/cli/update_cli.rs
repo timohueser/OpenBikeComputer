@@ -253,12 +253,22 @@ pub(super) fn locked<T>(
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
+    locked_as((&format!("target `{name}`"), &format!("obc data unlock {name}")), target, run, work)
+}
+
+/// [`locked`] for the lock of `target`, which messages name `label` and `unlock` frees.
+pub(super) fn locked_as<T>(
+    (label, unlock): (&str, &str),
+    target: &Target,
+    run: &mut Run,
+    work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
+) -> Result<T, Error> {
     crate::engine::runs::stop_on_signals();
     let held = Held::take(target, run.id(), crate::date::now()).map_err(|refused| match refused {
         lock::Refused::Held(holder) => {
-            Code::Blocked.error(format!("target `{name}`: {}", lock::held_by(&holder))).fix(format!(
+            Code::Blocked.error(format!("{label}: {}", lock::held_by(&holder))).fix(format!(
                 "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
-                 last heartbeat: `obc data unlock {name} --from {0}`.",
+                 last heartbeat: `{unlock} --from {0}`.",
                 holder.machine,
                 crate::date::timestamp(
                     lock::stale_since(target, &holder).map_or(lock::stale_at(&holder), |(at, _)| at)
@@ -266,7 +276,7 @@ pub(super) fn locked<T>(
             ))
         }
         lock::Refused::Failed(e) => Code::Failed
-            .error(format!("target `{name}`: {e}"))
+            .error(format!("{label}: {e}"))
             .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK)),
     })?;
     let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
@@ -288,9 +298,9 @@ pub(super) fn locked<T>(
         result
     });
     let Err(e) = held.release() else { return result };
-    let stays = format!("the lock of `{name}` stays taken: {e}");
+    let stays = format!("the lock of {label} stays taken: {e}");
     let fix = format!(
-        "Its heartbeat stopped. After {} minutes, free it: `obc data unlock {name} --from {}`.",
+        "Its heartbeat stopped. After {} minutes, free it: `{unlock} --from {}`.",
         lock::STALE / 60,
         crate::machine()
     );
@@ -371,6 +381,7 @@ pub(super) fn prepare(
             }
         }
     }
+    crate::prepared::resolve(root, store, (name, target), (&sources, &requests), &mut inputs)?;
     let listed = {
         let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
         // The listing asks for what the store lacks.
@@ -727,7 +738,10 @@ fn reads(
                 Code::Failed.error(format!("step `{}` reads {} and has no version of it", output.step, input.name))
             })?;
             let fetch = ((input.name.clone(), read.params.clone()), read.version.clone());
-            names.entry(fetch).or_default().extend(input.files.iter().cloned());
+            // A release pins the manifest of each prepared version that it read.
+            let prepared = sources.iter().any(|s| s.id == input.name && s.fetch.kind == FetchKind::Prepared);
+            let manifest = prepared.then(|| crate::prepared::MANIFEST.to_string());
+            names.entry(fetch).or_default().extend(input.files.iter().cloned().chain(manifest));
         }
     }
     let mut fetched = Vec::new();
@@ -773,10 +787,14 @@ fn reads(
     Ok(fetched)
 }
 
-/// Apply the flags of `args` to `settings`.
-fn edit(root: &Path, products: &[&dyn Product], args: &UpdateArgs, settings: &mut Settings) -> Result<(), Error> {
+/// Give `settings` the region of `--region` and `--box`.
+pub(super) fn select(
+    root: &Path,
+    (region, bbox): (Option<&str>, Option<&str>),
+    settings: &mut Settings,
+) -> Result<(), Error> {
     let usage = |message: String| Code::Usage.error(message);
-    if let Some(region) = &args.region {
+    if let Some(region) = region {
         let presets = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
         match presets.get(region) {
             Some(_) => settings.select(&presets, region).map_err(usage)?,
@@ -795,7 +813,7 @@ fn edit(root: &Path, products: &[&dyn Product], args: &UpdateArgs, settings: &mu
             }
         }
     }
-    if let Some(text) = &args.bbox {
+    if let Some(text) = bbox {
         let numbers: Vec<f64> = text
             .split(',')
             .map(|n| n.trim().parse())
@@ -809,6 +827,13 @@ fn edit(root: &Path, products: &[&dyn Product], args: &UpdateArgs, settings: &mu
             Region { id: "box".into(), name, area: Area::Box { bbox }, countries: Vec::new(), time_zone: None },
         )?;
     }
+    Ok(())
+}
+
+/// Apply the flags of `args` to `settings`.
+fn edit(root: &Path, products: &[&dyn Product], args: &UpdateArgs, settings: &mut Settings) -> Result<(), Error> {
+    let usage = |message: String| Code::Usage.error(message);
+    select(root, (args.region.as_deref(), args.bbox.as_deref()), settings)?;
     for layer in &args.add {
         if !products.iter().any(|product| product.optional().contains(&layer.as_str())) {
             return Err(usage(format!("no product has the optional layer `{layer}`")));

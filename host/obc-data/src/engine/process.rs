@@ -123,6 +123,23 @@ fn own_usage() -> Option<(u64, u64)> {
     None
 }
 
+/// The peak resident bytes of this process, or of the largest child that it waited for, when that is
+/// more.
+#[cfg(unix)]
+pub fn peak_rss() -> Option<u64> {
+    let peak = |who| {
+        // SAFETY: rusage is plain data, and getrusage fills it.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        (unsafe { libc::getrusage(who, &mut usage) } == 0).then(|| measure(&usage).1)
+    };
+    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN))
+}
+
+#[cfg(not(unix))]
+pub fn peak_rss() -> Option<u64> {
+    None
+}
+
 /// User plus system CPU milliseconds, and the peak resident set in bytes.
 #[cfg(unix)]
 fn measure(usage: &libc::rusage) -> (u64, u64) {

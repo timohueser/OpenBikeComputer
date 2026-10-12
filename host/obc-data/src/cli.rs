@@ -6,6 +6,7 @@ mod freshness;
 mod listing;
 mod open_cli;
 mod overview;
+mod prepare_cli;
 mod r2_cli;
 mod rollback_cli;
 mod runs_cli;
@@ -25,6 +26,7 @@ use serde::Serialize;
 
 use crate::fetch::http::Http;
 use crate::fetch::Request;
+use crate::prepared::Prepared;
 use crate::product::Product;
 use crate::regions::{geofabrik, Area, Bbox, Region, Regions};
 use crate::release::{Release, SERVING};
@@ -62,6 +64,9 @@ enum Command {
         target: String,
         #[arg(long, value_name = "MACHINE")]
         from: String,
+        /// The lock of this prepared source on the target, not the lock of the target.
+        #[arg(long, value_name = "ID")]
+        source: Option<String>,
         /// Do not ask. Required without a terminal.
         #[arg(long)]
         yes: bool,
@@ -115,8 +120,9 @@ enum Command {
     Open { machine: String },
 }
 
-/// Run `obc data` with the products whose steps this binary links, and its page.
-pub fn main(products: &[&dyn Product], ui: Option<Ui>) -> ExitCode {
+/// Run `obc data` with the products and the producers of prepared sources that this binary links,
+/// and its page.
+pub fn main(products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Option<Ui>) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -129,7 +135,7 @@ pub fn main(products: &[&dyn Product], ui: Option<Ui>) -> ExitCode {
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products, ui) {
+    match run(cli, products, prepared, ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => error.report(json),
     }
@@ -140,7 +146,7 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error> {
+fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Option<Ui>) -> Result<(), Error> {
     let json = cli.json;
     let Some(command) = cli.command else {
         return overview::overview(&root()?, products, json);
@@ -148,9 +154,11 @@ fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error>
     match command {
         Command::Update(args) => update_cli::command(&root()?, products, args, json),
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
-        Command::Unlock { target, from, yes } => unlock_cli::command(&root()?, &target, &from, yes, json),
+        Command::Unlock { target, from, source, yes } => {
+            unlock_cli::command(&root()?, (&target, source.as_deref()), &from, yes, json)
+        }
         Command::Sources { check_now } => print_sources(&root()?, check_now, json),
-        Command::Source { command } => source_cli::run(&root()?, command, json),
+        Command::Source { command } => source_cli::run(&root()?, prepared, command, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {
