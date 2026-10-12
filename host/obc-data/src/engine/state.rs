@@ -47,6 +47,12 @@ pub struct LayerState {
     pub leaves: Vec<String>,
     /// The leaves whose steps a build changes.
     pub stale_leaves: Vec<String>,
+    /// The partitions of a partitioned layer that its steps make, sorted; absent for another layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partitions: Vec<String>,
+    /// The partitions whose steps a build changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_partitions: Vec<String>,
 }
 
 /// How the steps of a layer bake.
@@ -55,7 +61,7 @@ pub struct LayerState {
 pub enum LayerShape {
     /// Per grid leaf.
     Tiled,
-    /// Once over the coverage of a target, also in named partitions.
+    /// Once over the coverage of a target, also in named partitions (`partitions`).
     Whole,
 }
 
@@ -158,12 +164,15 @@ impl Judged<'_> {
         };
         let text = self.cause.as_ref().map(Cause::text);
         let declared = self.steps.first().map(|(step, _)| step.layer);
-        let tiled = declared.is_some_and(|layer| layer.shape == Shape::Tiled);
-        let leaves = |stale: bool| -> Vec<String> {
-            let steps = self.steps.iter().filter(|(_, cause)| tiled && (!stale || cause.is_some()));
-            let leaves: BTreeSet<&str> = steps.filter_map(|(step, _)| super::leaf(&step.name)).collect();
-            leaves.into_iter().map(str::to_string).collect()
+        // The leaves or the partitions of the steps, or of the steps that a build changes.
+        let parts = |stale: bool, part: fn(&Step) -> Option<&str>| -> Vec<String> {
+            let steps = self.steps.iter().filter(|(_, cause)| !stale || cause.is_some());
+            let parts: BTreeSet<&str> = steps.filter_map(|(step, _)| part(step)).collect();
+            parts.into_iter().map(str::to_string).collect()
         };
+        fn leaf(step: &Step) -> Option<&str> {
+            super::leaf(&step.name).filter(|_| step.layer.shape == Shape::Tiled)
+        }
         LayerState {
             layer: self.name.clone(),
             state,
@@ -180,8 +189,10 @@ impl Judged<'_> {
             readers: declared
                 .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.to_string()).collect()),
             reads: self.reads.iter().cloned().collect(),
-            leaves: leaves(false),
-            stale_leaves: leaves(true),
+            leaves: parts(false, leaf),
+            stale_leaves: parts(true, leaf),
+            partitions: parts(false, super::partition),
+            stale_partitions: parts(true, super::partition),
         }
     }
 }

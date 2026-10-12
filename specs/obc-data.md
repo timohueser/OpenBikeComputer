@@ -437,7 +437,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | Field | Meaning |
 | --- | --- |
 | `name` | Lowercase kebab-case segments joined by `/` |
-| `shape` | `tiled`: built per grid leaf. `whole`: built once over the full coverage. `whole` with named partitions |
+| `shape` | `tiled`: built per grid leaf. `whole`: built once over the full coverage. `whole` with named partitions: the last part of the name of each step names a declared partition, else the plan fails. A partition stales, bakes and is published on its own, as a step is |
 | `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::SURFACE_VERSION` for `device/terrain`, `obcm::VERSION` for `device/map`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. `device/landmarks` has the sum of `obcm::landmarks::SECTION_VERSION` and `obcm::peaks::VERSION`: each only grows. Another layer has the format that its spec states, or 1 |
 | `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
 | `readers` | The programs or layers that read its files. An internal layer has none |
@@ -639,8 +639,8 @@ the serving release is unchanged: the step does not bake, also when the store la
 new release keeps the files, the digest and the cost of that output by reference, with the
 versions and the client of the step now. This needs the store to have each file of that output
 that no client of the serving release reads. `--only` bakes the steps of the named layers also
-when they are unchanged. So a leaf whose input files are the same, such as the OSM of a leaf after a refresh of
-the extract, does not bake on any machine.
+when they are unchanged. So a leaf whose input files are the same, such as the OSM of a leaf
+after a refresh of the extract, does not bake on any machine.
 
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
@@ -951,7 +951,9 @@ A step that reads a step of its own layer, or of an internal layer, gets the cau
 
 Each layer also gives what a picture of the layers needs: `shape` (`tiled` or `whole`), the
 `format` and the `revision` of its steps, its `readers`, and `reads`, the layers and the sources
-that its steps read, sorted. In place of an internal layer, `reads` names what that layer reads.
+that its steps read, sorted. A layer with partitions gives `partitions`, those of its steps, and
+`stale_partitions`, those whose steps a build changes. In place of an internal layer, `reads`
+names what that layer reads.
 A layer that only the release has gives `null` and empty lists.
 `obc data` does not list an internal layer: the layers that read it show its cause. In JSON, a
 layer is `{"layer", "state", "cause", "text"}`; `cause` and `text` are `null` unless it is stale.
@@ -1232,11 +1234,11 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
 - `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
   [State of a layer](#state-of-a-layer), `named` by `--only`, `off`, or `unheld` as
   [Any machine](#any-machine) says), the steps that bake, the grid leaves (the last part `<i>-<j>`
-  of the names of the steps of a tiled layer), the steps of the release that no step makes now, the
-  readers and a format change. With `--only`, a layer that bakes because it reads a named layer
-  follows that layer. A layer that only other layers read is not listed. A planned step can end
-  unchanged (see [Runs](#runs)), so the text gives the bakes and the leaves as upper bounds ("at
-  most").
+  of the names of the steps of a tiled layer), the partitions whose steps bake, the steps of the
+  release that no step makes now, the readers and a format change. With `--only`, a layer that
+  bakes because it reads a named layer follows that layer. A layer that only other layers read is
+  not listed. A planned step can end unchanged (see [Runs](#runs)), so the text gives the bakes and
+  the leaves as upper bounds ("at most").
 - `sources`: each fetch that a baked step reads at another version than the serving release.
 - `kept`, `fetches`, `downloads` and `bakes`: the outputs that the release keeps by reference, and
   what this machine fetches upstream, downloads from the target and bakes. A step whose output is
@@ -2618,6 +2620,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "partitions": {
+          "description": "The partitions of a partitioned layer whose steps bake.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "readers": {
           "description": "The programs that read the layer.",
           "items": {
@@ -2711,7 +2720,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "whole",
-          "description": "Once over the coverage of a target, also in named partitions.",
+          "description": "Once over the coverage of a target, also in named partitions (`partitions`).",
           "type": "string"
         }
       ]
@@ -2744,6 +2753,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "leaves": {
           "description": "The grid leaves of a tiled layer, as `<i>-<j>`, sorted; empty for another layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "partitions": {
+          "description": "The partitions of a partitioned layer that its steps make, sorted; absent for another layer.",
           "items": {
             "type": "string"
           },
@@ -2801,6 +2817,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "stale_leaves": {
           "description": "The leaves whose steps a build changes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stale_partitions": {
+          "description": "The partitions whose steps a build changes.",
           "items": {
             "type": "string"
           },

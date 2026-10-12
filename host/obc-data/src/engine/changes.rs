@@ -191,6 +191,43 @@ mod tests {
         assert_eq!(update(&wider), [upper, test, off]);
     }
 
+    #[test]
+    fn a_partitioned_layer_stales_and_bakes_one_partition_alone() {
+        use crate::engine::tests::{snapshot, step};
+        static ROUTING: crate::engine::Layer = crate::engine::Layer {
+            name: "routing",
+            shape: crate::engine::Shape::Partitioned(&["east", "west"]),
+            ..TEST
+        };
+        fn copy(request: &Request) -> Result<(), String> {
+            let read = request.snapshots.values().flat_map(|files| files.values()).next().ok_or("no file")?;
+            std::fs::copy(read, request.output.join("part.txt")).map(drop).map_err(|e| e.to_string())
+        }
+        let part =
+            |name: &str, read: Input| Step { layer: &ROUTING, ..step(name, vec![read], "part.txt", Run::Rust(copy)) };
+        let steps = |head: &str| {
+            let west = part("test/routing/west", snapshot("tail", "1", &["tail.txt"]));
+            vec![part("test/routing/east", snapshot("head", head, &["head.txt"])), west]
+        };
+        let fixture = fixture("changes-partitions");
+        let release = released(&fixture, &steps("1"));
+        fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
+        let update = super::update(&fixture.store, &steps("2"), &by_step(&release), &Newer::new(), &[]).unwrap();
+        let routing = &update.layers[0];
+        assert_eq!((&routing.partitions, &routing.stale_partitions), (&names(&["east", "west"]), &names(&["east"])));
+        assert_eq!(update.kept.keys().collect::<Vec<_>>(), ["test/routing/west"], "kept by reference");
+        let built = fixture.run_kept(&steps("2"), &update.plan, &update.kept).unwrap();
+        assert_eq!(summary(&built), [("test/routing/east", false)]);
+
+        let mut north = steps("1");
+        north[1].name = "test/routing/north".into();
+        let refused = fixture.plan(&north).unwrap_err();
+        assert_eq!(
+            refused,
+            "step `test/routing/north`: the last part of its name is no partition of `routing`: east, west"
+        );
+    }
+
     /// `test/upper` with an exclamation mark: other files of the same key.
     fn louder(request: &Request) -> Result<(), String> {
         let text = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;

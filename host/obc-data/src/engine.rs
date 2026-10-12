@@ -44,7 +44,8 @@ pub enum Shape {
     Tiled,
     /// Baked once over the full coverage of a target.
     Whole,
-    /// Whole, in these named partitions.
+    /// Whole, in these named partitions: the last part of the name of each of its steps names one
+    /// ([`partition`]). A partition stales, bakes and publishes on its own, as a step does.
     Partitioned(&'static [&'static str]),
 }
 
@@ -215,6 +216,13 @@ pub struct Built {
     pub kept: Option<crate::release::Output>,
 }
 
+/// The partition of a step of a partitioned layer: the last part of its name, when the layer
+/// declares it.
+pub fn partition(step: &Step) -> Option<&str> {
+    let Shape::Partitioned(partitions) = step.layer.shape else { return None };
+    step.name.rsplit('/').next().filter(|last| partitions.contains(last))
+}
+
 /// The grid leaf of the step `name`: its last part when that is `<i>-<j>`.
 pub fn leaf(name: &str) -> Option<&str> {
     let (_, last) = name.rsplit_once('/')?;
@@ -306,6 +314,14 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
         }
         if !names.insert(step.name.as_str()) {
             return Err(format!("step `{}` is listed twice", step.name));
+        }
+        if let (Shape::Partitioned(partitions), None) = (step.layer.shape, partition(step)) {
+            return Err(format!(
+                "step `{}`: the last part of its name is no partition of `{}`: {}",
+                step.name,
+                step.layer.name,
+                partitions.join(", ")
+            ));
         }
         // The version of a layer applies to each of its steps.
         if *layers.entry(step.layer.name).or_insert(step.layer) != step.layer {
