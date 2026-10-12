@@ -1,6 +1,6 @@
 """Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
 
-    uv run --locked --group planner-climate python -m tools.planner_climate REGION
+    uv run --locked --group planner-climate python -m tools.planner_climate REGION --first-year YEAR
 
 The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
 token in `~/.cdsapirc`. The bake reads only the source chunks around the region and keeps them in
