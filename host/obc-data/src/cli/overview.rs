@@ -108,8 +108,12 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
             }
         }
         if let Some(holder) = &target.lock {
-            let held =
-                format!("run {} of `{}`, {}, heartbeat {}", holder.run, holder.machine, holder.phase, holder.heartbeat);
+            let (done, total) =
+                holder.progress.iter().fold((0, 0), |(done, total), layer| (done + layer.done, total + layer.total));
+            let held = format!(
+                "run {} of `{}`, {}, {done} of {total} steps, heartbeat {}",
+                holder.run, holder.machine, holder.phase, holder.heartbeat
+            );
             rows.push(vec!["  lock".into(), held]);
         }
         if let Some(error) = &target.lock_error {

@@ -126,7 +126,7 @@ fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
     let (http, kept) = (Http::new(), Kept::new());
     let context =
         Context { root: &root, store: &store, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
-    let mut journal = Journal::create(&store, "build inputs").unwrap();
+    let mut journal = Journal::create(&store, ["build", "inputs"]).unwrap();
     journal.build(&context, &steps, &plan).unwrap();
     journal.finish(None).unwrap();
     let outputs = outputs(&store, &steps, &kept).unwrap().unwrap();

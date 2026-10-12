@@ -30,7 +30,7 @@ pub fn command(root: &Path, name: &str, from: &str, yes: bool, json: bool) -> Re
     let unreadable = |e: String| {
         Code::Failed
             .error(format!("target `{name}`: {e}"))
-            .fix(format!("Correct {} of the target, or move it aside: a target without it is free.", lock::LOCK))
+            .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK))
     };
     let (holder, tag) = match lock::read(&target).map_err(unreadable)? {
         Some((LockFile::Held(holder), tag)) => (holder, tag),

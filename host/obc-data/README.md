@@ -41,7 +41,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | --- | --- |
 | `obc data` | Show each target and what needs attention |
 | `obc data update local --region ID` | Name the region of a target, bake and switch |
-| `obc data update local` | Bake what is stale, keep the rest, switch |
+| `obc data update local` | Bake what is stale, keep the rest, switch, in a run that closing the terminal does not stop |
 | `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
 | `obc data update local --expect ID` | Start the update only when its review still has this id |
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
@@ -50,17 +50,22 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
-| `obc data runs RUN --follow` | Observe progress |
+| `obc data runs RUN --follow` | Observe progress; Ctrl-C ends only the following |
+| `obc data runs RUN --stop` | Stop a run: it frees the lock and keeps what it baked |
 | `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
 | `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |
 
-An update that stops keeps what it baked: run it again. The previous release stays as the
-rollback of the target. A target takes one update or rollback at a time: the run holds
-`lock.json` of the target, and another run refuses to start. A run that fails, or stops on Ctrl-C,
-frees the lock. A crash or an out-of-memory kill keeps it: `obc data unlock TARGET --from MACHINE`
-frees it after 10 minutes without a heartbeat.
+An update runs in a process of its own: Ctrl-C ends only the following of its log, and
+`obc data runs RUN --stop` stops it. An update that stops keeps what it baked: run it again. The
+previous release stays as the rollback of the target. A target takes one update or rollback at a
+time: the run holds `lock.json` of the target, and another run refuses to start. A run that fails
+or stops frees the lock. A crash or an out-of-memory kill keeps it:
+`obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
+
+On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
+`loginctl enable-linger USER` is set for the user.
 
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.

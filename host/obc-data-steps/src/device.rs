@@ -971,7 +971,7 @@ pub(crate) mod tests {
             Context { store: &store, root: &root, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
         let first = plan(&store, &steps(OLD)).unwrap();
         assert_eq!(builds(&first), names);
-        let mut run = RunLog::create(&store, "build test").unwrap();
+        let mut run = RunLog::create(&store, ["build", "test"]).unwrap();
         run.build(&context, &steps(OLD), &first).unwrap();
         run.finish(None).unwrap();
         glo30_fetched(&store, &steps(NEW), NEW, |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));

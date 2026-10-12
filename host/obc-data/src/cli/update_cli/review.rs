@@ -12,7 +12,7 @@ use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
-use crate::engine::{Input, Run, Shape, Step};
+use crate::engine::{leaf, Input, Run, Shape, Step};
 use crate::product::{RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
@@ -374,14 +374,6 @@ pub fn review(parts: Parts) -> Review {
     }
 }
 
-/// The leaf of the step `name`: its last part when that is `<i>-<j>`.
-fn leaf(name: &str) -> Option<&str> {
-    let (_, last) = name.rsplit_once('/')?;
-    let (i, j) = last.split_once('-')?;
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    (digits(i) && digits(j)).then_some(last)
-}
-
 /// Why `machine` cannot bake `own`, the bakes that run in their own process, and write
 /// `store_bytes`. Only a child process has a peak of its own (`wait4`), so only such a bake can
 /// need more memory than the machine has.
@@ -545,15 +537,5 @@ fn size(bytes: u64) -> String {
     match bytes {
         bytes if bytes >= 1 << 30 => format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64),
         bytes => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_leaf_is_the_last_part_of_a_step_name_of_the_form_i_j() {
-        assert_eq!(super::leaf("device/coarse/0037-0033"), Some("0037-0033"));
-        assert_eq!(super::leaf("device/landmark-content"), None);
-        assert_eq!(super::leaf("device/landmark-content/europe-alps"), None);
     }
 }

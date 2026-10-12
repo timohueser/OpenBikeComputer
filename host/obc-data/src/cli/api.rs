@@ -92,17 +92,20 @@ impl Code {
     }
 }
 
-/// Finish the journal of the run once, and keep the error of the command.
-pub(super) fn finish_run<T>(
-    run: crate::engine::runs::Run,
-    mut result: Result<T, Error>,
-    incomplete: Option<&str>,
-) -> Result<T, Error> {
-    let id = run.id().to_string();
-    let finished = run.finish(result.as_ref().err().map(|error| error.message.as_str()).or(incomplete));
-    if let Err(message) = finished {
+/// Finish the run once, with the error of the command, and keep that error.
+pub(super) fn finish_run<T>(run: crate::engine::runs::Run, mut result: Result<T, Error>) -> Result<T, Error> {
+    let (id, detached) = (run.id().to_string(), run.detached());
+    let error = result.as_ref().err().map(|error| {
+        let code = serde_json::to_value(error.code).expect("a code serializes");
+        crate::engine::runs::RunError::new(code.as_str().unwrap_or_default(), &error.message, &error.fix)
+    });
+    if let Err(message) = run.finish(error) {
+        // The status cannot say it. A detached run writes no error report, so its log gets it.
+        if detached {
+            eprintln!("obc data: the run could not finish: {message}");
+        }
         match &mut result {
-            Err(error) => error.message += &format!("; the run journal could not finish: {message}"),
+            Err(error) => error.message += &format!("; the run could not finish: {message}"),
             Ok(_) => result = Err(Code::Failed.error(message)),
         }
     }
@@ -139,17 +142,17 @@ impl Error {
         } else {
             eprintln!("obc data: {}\n{}", self.message, self.fix);
             if let Some(run) = &self.run {
-                eprintln!("run {run}; `obc data runs {run}` shows its events");
+                eprintln!("run {run}; `obc data runs {run}` shows it");
             }
         }
         ExitCode::from(self.code.exit())
     }
 }
 
-pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
-    let run = crate::engine::runs::Run::create(store, command)?;
+pub(super) fn start_run(store: &crate::store::Store, args: &[&str]) -> Result<crate::engine::runs::Run, Error> {
+    let run = crate::engine::runs::Run::create(store, args.iter().copied())?;
     let id = run.id();
-    eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
+    eprintln!("obc data: run {id}; `obc data runs {id}` shows it");
     Ok(run)
 }
 
@@ -189,7 +192,7 @@ mod tests {
     use crate::cli::{
         overview, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
     };
-    use crate::engine::runs::{Details, Event};
+    use crate::engine::runs::{Status, View};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
 
@@ -198,7 +201,7 @@ mod tests {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
             schema("`obc data`", generator.subschema_for::<overview::Overview>()),
-            schema("`update`", generator.subschema_for::<update_cli::Updated>()),
+            schema("`update`", generator.subschema_for::<update_cli::Started>()),
             schema("`update --dry-run`", generator.subschema_for::<update_cli::Review>()),
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
@@ -210,8 +213,8 @@ mod tests {
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),
             schema("`setup`", generator.subschema_for::<setup_cli::Setup>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
-            schema("`runs RUN`", generator.subschema_for::<Details>()),
-            schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
+            schema("`runs RUN`, `runs RUN --stop`", generator.subschema_for::<View>()),
+            schema("`runs RUN --follow`, one per line", generator.subschema_for::<Status>()),
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),
             schema("`r2 put`", generator.subschema_for::<r2_cli::Uploaded>()),
