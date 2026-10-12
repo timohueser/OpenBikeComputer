@@ -22,7 +22,7 @@ export interface Target {
     lock_error: string | null;
     region: string | null;
     /** The area of the serving release as boxes: a box region, and the bounds of Geofabrik areas. */
-    area: { name: string; boxes: Bbox[] } | null;
+    area: { name: string; boxes: Bbox[]; missing: string | null } | null;
     /** Each source version that the serving release read; `retrieved` is when a machine first
      *  fetched it. */
     sources: { source: string; version: string; retrieved: string | null }[];
@@ -48,6 +48,8 @@ export interface Role {
 export interface Layer {
     layer: string;
     state: "ok" | "stale" | "off";
+    /** Why a stale layer is stale: `source` names a source that has a newer version. */
+    cause: { kind: string; source?: string } | null;
     /** Why a stale layer is stale, in a few words. */
     text: string | null;
     shape: "tiled" | "whole" | null;

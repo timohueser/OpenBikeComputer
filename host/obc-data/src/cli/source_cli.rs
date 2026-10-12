@@ -1,6 +1,7 @@
 //! `obc data source refresh ID`: fetch upstream's newest version of a `digest` source, so that the
 //! next update of each target that serves the version of now reads it. A source whose versions
-//! have no order moves no other way. `obc data source prepare ID`: see [`super::prepare_cli`].
+//! have no order moves no other way. The fetch can take long, so it is a detached run.
+//! `obc data source prepare ID`: see [`super::prepare_cli`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -10,6 +11,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{fetched, find, print_json, registry, releases, Code, Error};
+use crate::engine::runs;
 use crate::fetch::{self, http::Http, Request};
 use crate::prepared::Prepared;
 use crate::sources::VersionScheme;
@@ -24,8 +26,14 @@ pub enum SourceCommand {
     Prepare(super::prepare_cli::PrepareArgs),
 }
 
-/// What `source refresh` did.
+/// What `source refresh --json` writes: the run that fetches.
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct Refreshing {
+    pub run: String,
+}
+
+/// What `source refresh` did.
+#[derive(Debug)]
 pub struct Refreshed {
     pub source: String,
     /// The versions that the targets served: a target that serves one of them, or none, moves.
@@ -41,29 +49,47 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
         SourceCommand::Refresh { id } => id,
         SourceCommand::Prepare(args) => return super::prepare_cli::command(root, prepared, args, json),
     };
-    let refreshed = refresh(root, &Store::open()?, &Http::new(), &id)?;
-    if json {
-        return print_json(&refreshed);
+    let store = Store::open()?;
+    // The process of a detached run: it fetches, and its log gets the outcome. It holds no lock, so
+    // `runs RUN --stop` ends it at once.
+    if let Ok(run) = std::env::var(runs::RUN) {
+        std::env::remove_var(runs::RUN);
+        let run = runs::Run::attach(&store, &run)?;
+        let refreshed = super::api::finish_run(run, refresh(root, &store, &Http::new(), &id));
+        let Refreshed { source, from, version, bytes } =
+            refreshed.unwrap_or_else(|e| std::process::exit(e.code.exit().into()));
+        let size = runs::bytes(bytes);
+        println!(
+            "{source} {}: the next update of a target that serves it moves to {version} ({size})",
+            from.join(", ")
+        );
+        return Ok(());
     }
-    println!(
-        "{} {}: the next update of a target that serves it moves to {}",
-        refreshed.source,
-        refreshed.from.join(", "),
-        refreshed.version
-    );
-    Ok(())
+    refreshable(&registry(root)?, &id)?;
+    let run = runs::detach(&store, &["source".into(), "refresh".into(), id])?;
+    if json {
+        return print_json(&Refreshing { run });
+    }
+    eprintln!("obc data: run {run}");
+    super::runs_cli::follow(&store, &run, false)
+}
+
+/// Source `id` of `registry` when `source refresh` can move it.
+fn refreshable<'a>(registry: &'a crate::sources::Registry, id: &str) -> Result<&'a crate::sources::Source, Error> {
+    let source = find(registry, id)?;
+    if source.version != VersionScheme::Digest || source.start.is_some() || !fetch::params(source).is_empty() {
+        return Err(Code::Usage
+            .error(format!("`source refresh` moves a `digest` source without a `start` or params, and `{id}` is not one"))
+            .fix("A `date` or `release` source moves when a newer version is due or in the store; a `commit` source, or a source with a `start`, moves with its `start` in data/sources.toml."));
+    }
+    Ok(source)
 }
 
 /// Fetch the newest version of the `digest` source `id`, and record it with the versions that the
 /// targets serve.
 pub(super) fn refresh(root: &Path, store: &Store, http: &Http, id: &str) -> Result<Refreshed, Error> {
     let registry = registry(root)?;
-    let source = find(&registry, id)?;
-    if source.version != VersionScheme::Digest || source.start.is_some() || !fetch::params(source).is_empty() {
-        return Err(Code::Usage
-            .error(format!("`source refresh` moves a `digest` source without a `start` or params, and `{id}` is not one"))
-            .fix("A `date` or `release` source moves when a newer version is due or in the store; a `commit` source, or a source with a `start`, moves with its `start` in data/sources.toml."));
-    }
+    let source = refreshable(&registry, id)?;
     // A target that cannot be read keeps its version: a refresh never moves what it did not see.
     let serving = releases(root, store)?.into_iter().filter_map(|(_, releases)| releases.ok()?.into_iter().next());
     let from: BTreeSet<String> =

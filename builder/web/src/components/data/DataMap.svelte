@@ -4,7 +4,7 @@
     import { CoverageMapView, type DegPoint } from "../../lib/map/coverageMap";
 
     // Squares and an outline on the basemap. With `picking`, a click picks the smallest of `regions`
-    // that holds the point. With `drawing`, a drag draws a box.
+    // that holds the point; the regions are not drawn. With `drawing`, a drag draws a box.
     type Bounds = [DegPoint, DegPoint];
     let {
         cells = [],
@@ -43,7 +43,7 @@
     });
     $effect(() => view?.setCells(cells));
     $effect(() => view?.setParts([{ id: "area", kind: "box", rings: outline.map(ring), highlighted: false }]));
-    $effect(() => view?.setRegions(regions));
+    $effect(() => view?.setRegions(regions, true));
     $effect(() => view?.setRegionToolArmed(picking));
     $effect(() => void (drawing ? view?.armBoxDraw() : view?.cancelBoxDraw()));
     // The map frames the squares and the outline once they are known, and again when they move.

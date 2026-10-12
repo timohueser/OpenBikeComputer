@@ -213,6 +213,9 @@ pub(crate) fn expand_home(path: &str) -> PathBuf {
 pub struct Source {
     pub id: String,
     pub kind: Kind,
+    /// The heading under which the operator page lists the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence: Option<String>,
