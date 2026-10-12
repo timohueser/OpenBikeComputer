@@ -6,6 +6,9 @@ mod review;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 use clap::Args;
 use schemars::JsonSchema;
@@ -19,6 +22,7 @@ use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
+use crate::lock::{self, Held};
 use crate::product::{Inputs, Product, RequestKey, Wanted};
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
@@ -190,9 +194,63 @@ pub(super) fn update(
     machine: Option<&MachineCheck>,
     run: &mut Run,
 ) -> Result<Updated, Error> {
-    let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
-    review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
-    apply(root, store, http, target, products, prepared, run)
+    locked(target, run, |run, held| {
+        let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
+        held.beat(Some(&prepared.review.id), None, crate::date::now())?;
+        review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
+        apply(root, store, http, target, products, prepared, (run, held))
+    })
+}
+
+/// Do `work` while the run holds the lock of `target`: a thread writes the heartbeat, and the lock
+/// is free again at the end. When another run takes the lock, the run stops.
+pub(super) fn locked<T>(
+    (name, target): (&str, &Target),
+    run: &mut Run,
+    work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let held = Held::take(target, run.id(), crate::date::now()).map_err(|e| {
+        Code::Blocked.error(format!("target `{name}`: {e}")).fix(format!(
+            "Wait for that run to end. When its machine stopped it, free the lock: `obc data unlock {name} --from \
+             MACHINE`."
+        ))
+    })?;
+    let (stop, (done, wait)) = (run.stopper(), mpsc::channel::<()>());
+    let result = std::thread::scope(|scope| {
+        let held = &held;
+        scope.spawn(move || {
+            while let Err(RecvTimeoutError::Timeout) = wait.recv_timeout(Duration::from_secs(lock::BEAT)) {
+                // A write that fails is tried again at the next beat; a lock that another run took
+                // stops this run.
+                if let Ok(false) = held.beat(None, None, crate::date::now()) {
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        });
+        let result = work(run, held);
+        drop(done);
+        result
+    });
+    let released = held.release();
+    let result = result?;
+    released.map_err(|e| {
+        Code::Failed
+            .error(format!("the lock of `{name}` stays taken: {e}"))
+            .fix(format!("Free it: `obc data unlock {name} --from {}`.", crate::machine()))
+    })?;
+    Ok(result)
+}
+
+/// Enter `phase`, after a check that the run still holds the lock.
+pub(super) fn enter((run, held): (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
+    run.record(&Event::Phase { phase })?;
+    if held.beat(None, Some(phase), crate::date::now())? {
+        return Ok(());
+    }
+    Err(Code::Failed
+        .error(format!("another run took the lock of `{name}`; this run stopped before it changed more"))
+        .fix(format!("Run `obc data` to see what `{name}` serves now.")))
 }
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
@@ -397,16 +455,16 @@ fn apply(
     (name, target): (&str, &Target),
     products: &[&dyn Product],
     prepared: Prepared,
-    run: &mut Run,
+    (run, held): (&mut Run, &Held),
 ) -> Result<Updated, Error> {
     let Prepared { review, base, serving, settings, sources, steps, mut update, copies } = prepared;
     if !copies.is_empty() {
-        run.record(&Event::Phase { phase: Phase::Download })?;
+        enter((run, held), name, Phase::Download)?;
         for (copy, names) in &copies {
             copy.restore(target, store, names)?;
         }
     }
-    run.record(&Event::Phase { phase: Phase::Build })?;
+    enter((run, held), name, Phase::Build)?;
     let context = Context { store, root, sources: &sources, http, kept: &update.kept, limits: Limits::machine() };
     // The fetches first: upstream too must give the bytes that the serving release read.
     run.fetch(&context, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
@@ -440,29 +498,31 @@ fn apply(
     if let Some(serving) = serving.as_ref().filter(|serving| serving.serves_as(&next)) {
         let (current, _) = base.as_ref().expect("a serving release has a base");
         // The serving release has every change: a switch to it writes a pointer that drifts.
-        if !release::drift(target, serving)?.is_empty() && !release::switch(target, base.as_ref(), &current.serving.id)?
-        {
-            return Err(changed());
+        if !release::drift(target, serving)?.is_empty() {
+            enter((run, held), name, Phase::Switch)?;
+            if !release::switch(target, base.as_ref(), &current.serving.id)? {
+                return Err(changed());
+            }
         }
         updated.serving = current.serving.id.clone();
         return Ok(updated);
     }
 
-    run.record(&Event::Phase { phase: Phase::Verify })?;
+    enter((run, held), name, Phase::Verify)?;
     for product in products {
         let failed =
             |e: String| Code::VerifyFailed.error(format!("product `{}`: {e}; nothing changed", product.name()));
         product.verify(root, serving.as_ref(), &next, store).map_err(failed)?;
     }
-    run.record(&Event::Phase { phase: Phase::Upload })?;
+    enter((run, held), name, Phase::Upload)?;
     let id = release::publish(target, store, &next)?;
-    run.record(&Event::Phase { phase: Phase::Switch })?;
+    enter((run, held), name, Phase::Switch)?;
     if !release::switch(target, base.as_ref(), &id)? {
         return Err(changed());
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
-    run.record(&Event::Phase { phase: Phase::Collect })?;
+    enter((run, held), name, Phase::Collect)?;
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
     updated.collection = Some(collection::collect(target, since, crate::date::now()));
     updated.rollback = base.map(|(base, _)| base.serving.id);
@@ -752,6 +812,14 @@ pub(super) mod tests {
         }
 
         fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+            if root.join("gate").exists() {
+                static GATE: crate::engine::Layer = crate::engine::Layer { name: "gate", ..crate::engine::tests::TEST };
+                let mut step =
+                    crate::engine::tests::step("counter/gate", Vec::new(), "gate.txt", crate::engine::Run::Rust(gate));
+                (step.layer, step.options) =
+                    (&GATE, serde_json::json!({ "gate": root.join("gate").display().to_string() }));
+                return Ok(vec![step].into());
+            }
             if !root.join("earth").exists() {
                 return Ok(Vec::new().into());
             }
@@ -810,6 +878,21 @@ pub(super) mod tests {
         );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
         updated
+    }
+
+    /// A step that writes `waiting` in the folder `gate` of its options, and waits for `open` there.
+    fn gate(request: &crate::engine::Request) -> Result<(), String> {
+        let gate = Path::new(request.options["gate"].as_str().unwrap());
+        write(&gate.join("waiting"), "");
+        arrives(&gate.join("open"));
+        std::fs::write(request.output.join("gate.txt"), "open").map_err(|e| e.to_string())
+    }
+
+    /// Wait until `path` exists.
+    fn arrives(path: &Path) {
+        while !path.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     fn earth(request: &crate::engine::Request) -> Result<(), String> {
@@ -1035,10 +1118,6 @@ pub(super) mod tests {
         }
         let before = keys(&target);
         assert!(before.contains("sources/head/1/head.txt"), "the publish copies it");
-
-        let epoch = crate::date::timestamp(0);
-        let young = collection::collect(&target, Some(&epoch), crate::date::now());
-        assert_eq!((young.deferred, young.keys), (vec![a.clone()], 0), "its files changed within the grace");
 
         // A collection that stopped after one file resumes from the manifest.
         let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
@@ -1306,5 +1385,50 @@ pub(super) mod tests {
         assert!(refused.message.contains("head.txt of head@1"), "{}", refused.message);
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving);
         assert_eq!(fixture.store.layers().unwrap().len(), layers, "nothing baked");
+    }
+
+    #[test]
+    fn of_two_updates_at_the_same_time_one_holds_the_lock_and_the_other_stops() {
+        let fixture = fixture("update-lock");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        let gate = fixture.root().join("gate");
+        std::fs::create_dir_all(&gate).unwrap();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| update(&fixture, &target, |_| Ok(())));
+            arrives(&gate.join("waiting"));
+            let second = update(&fixture, &target, |_| Ok(())).unwrap_err();
+            assert_eq!(second.code, Code::Blocked);
+            assert!(second.message.contains("holds the lock (phase build"), "{}", second.message);
+            write(&gate.join("open"), "");
+            assert_eq!(steps(&first.join().unwrap().unwrap()), ["counter/gate"]);
+        });
+        assert_eq!(lock::read(&target).unwrap().unwrap().0, lock::LockFile::Free, "the run frees it");
+    }
+
+    #[test]
+    fn a_run_whose_lock_another_took_does_not_switch() {
+        let fixture = fixture("update-takeover");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let served = update(&fixture, &target, region).unwrap().serving;
+        let gate = fixture.root().join("gate");
+        std::fs::create_dir_all(&gate).unwrap();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| update(&fixture, &target, |_| Ok(())));
+            arrives(&gate.join("waiting"));
+            let machine = crate::machine();
+            assert!(lock::stale(&target, &machine, crate::date::now()).unwrap_err().contains("younger than 10"));
+            let (_, tag) = lock::stale(&target, &machine, crate::date::now() + lock::STALE).unwrap();
+            lock::free(&target, tag).unwrap();
+            let taken = lock::Held::take(&target, "another", crate::date::now()).unwrap();
+            write(&gate.join("open"), "");
+            let refused = first.join().unwrap().unwrap_err();
+            assert!(refused.message.starts_with("another run took the lock"), "{}", refused.message);
+            assert_eq!(lock::holder(&target).unwrap().unwrap().run, "another", "the old run does not free it");
+            taken.release().unwrap();
+        });
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
     }
 }

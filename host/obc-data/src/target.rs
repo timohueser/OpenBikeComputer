@@ -31,9 +31,6 @@ pub struct Tag(pub String);
 pub struct Listed {
     pub key: String,
     pub size: u64,
-    /// The time of the last change of the file, in seconds since 1970. On unix it is the ctime: an
-    /// upload sets it, also when it links an old object of the store.
-    pub changed: u64,
 }
 
 /// When a conditional write may replace the bytes at a key.
@@ -100,13 +97,13 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
         };
         targets.insert(name, target);
     }
-    let dirs: Vec<(&String, &PathBuf)> = targets
+    let dirs: Vec<(&String, PathBuf)> = targets
         .iter()
         .filter_map(|(name, target)| match target {
-            Target::Dir(dir) => Some((name, dir)),
+            Target::Dir(dir) => Some(real(dir).map(|dir| (name, dir))),
             Target::R2 { .. } => None,
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     for (a, outer) in &dirs {
         // A collection of the outer target would delete the files of the inner one.
         if let Some((b, _)) = dirs.iter().find(|(b, inner)| b != a && inner.starts_with(outer)) {
@@ -296,7 +293,7 @@ impl Target {
                     continue;
                 }
                 let key = path.strip_prefix(dir).expect("below the target").to_string_lossy().replace('\\', "/");
-                listed.push(Listed { key, size: found.len(), changed: changed(&found) });
+                listed.push(Listed { key, size: found.len() });
             }
         }
         listed.sort_by(|a, b| a.key.cmp(&b.key));
@@ -321,20 +318,6 @@ impl Target {
         }
         Ok(())
     }
-}
-
-#[cfg(unix)]
-fn changed(found: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    u64::try_from(found.ctime()).unwrap_or(0)
-}
-
-/// The modification time. An upload that writes a copy sets it; a hard link keeps the time of the
-/// old object of the store, so a key that an upload linked a moment ago can look old.
-#[cfg(not(unix))]
-fn changed(found: &fs::Metadata) -> u64 {
-    let modified = found.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
-    modified.map_or(0, |since| since.as_secs())
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {

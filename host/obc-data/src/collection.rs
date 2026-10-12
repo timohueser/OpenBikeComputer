@@ -55,8 +55,7 @@ impl Collected {
 /// Collect `target` at the time `now`. A release that `release.json` does not name stopped serving
 /// at or before `served_since`, when the release that served before the switch began to serve; or
 /// at an unknown time when it is `None`. The first collection [`GRACE`] seconds or more after that
-/// time deletes it. A file or a manifest that changed within the grace stays: another update can be
-/// about to switch to it.
+/// time deletes it. The run holds the lock of the target, so no other run writes a file meanwhile.
 pub fn collect(target: &Target, served_since: Option<&str>, now: u64) -> Collected {
     let mut collected = Collected::default();
     if let Err(e) = pass(target, served_since, now, &mut collected) {
@@ -77,8 +76,7 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
     }
     let listed: BTreeMap<String, Listed> =
         target.list()?.into_iter().map(|listed| (listed.key.clone(), listed)).collect();
-    let old = |changed: u64| changed.saturating_add(GRACE) <= now;
-    let stopped = served_since.and_then(crate::date::seconds).is_some_and(old);
+    let expired = served_since.and_then(crate::date::seconds).is_some_and(|since| since.saturating_add(GRACE) <= now);
     let named: BTreeSet<&str> =
         std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str()).collect();
     let mut dropped = Vec::new();
@@ -87,7 +85,7 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
             continue;
         }
         let release = Release::read(target, id).map_err(|e| format!("the files of a release are not known: {e}"))?;
-        if stopped && old(manifest.changed) {
+        if expired {
             dropped.push((manifest, release));
         } else {
             collected.deferred.push(id.into());
@@ -101,7 +99,6 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
     let files = listed.values().filter(|listed| {
         manifest_id(&listed.key).is_none()
             && !keep.contains(&listed.key)
-            && old(listed.changed)
             && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
     });
     for listed in files.chain(dropped.iter().map(|(manifest, _)| *manifest)) {

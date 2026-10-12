@@ -10,6 +10,7 @@ use super::{cells, freshness, listing, print_json, print_table, Code, Error};
 use crate::engine::runs::Limits;
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
+use crate::lock::{self, Holder};
 use crate::product::{BlockedLayer, Inputs, Product};
 use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
@@ -50,6 +51,8 @@ pub struct TargetState {
     pub at: String,
     /// What `release.json` of the target says; `null` while it serves nothing.
     pub release: Option<Serving>,
+    /// The run that holds the lock of the target; `null` while it is free.
+    pub lock: Option<Holder>,
     /// The region of the serving release.
     pub region: Option<String>,
     /// Each layer of the steps and of the serving release; `null` while the target serves nothing
@@ -101,6 +104,11 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
                 }
             }
         }
+        if let Some(holder) = &target.lock {
+            let held =
+                format!("run {} of `{}`, {}, heartbeat {}", holder.run, holder.machine, holder.phase, holder.heartbeat);
+            rows.push(vec!["  lock".into(), held]);
+        }
         if let Some(region) = &target.region {
             rows.push(vec!["  region".into(), region.clone()]);
         }
@@ -148,6 +156,7 @@ fn state(
         kind: kind.into(),
         at,
         release: None,
+        lock: None,
         region: None,
         layers: None,
         blocked: Vec::new(),
@@ -158,6 +167,7 @@ fn state(
     };
     let writes = kind == "dir";
     let judged = (|| -> Result<(), Error> {
+        state.lock = lock::holder(target)?;
         let Some(bytes) = target.get(SERVING)? else {
             state.next = writes.then(|| format!("obc data update {name} --region ID"));
             return Ok(());

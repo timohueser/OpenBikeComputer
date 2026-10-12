@@ -6,7 +6,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
@@ -131,6 +132,13 @@ pub enum Phase {
     Collect,
 }
 
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        f.write_str(name.as_str().unwrap_or_default())
+    }
+}
+
 /// A change of a target.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -145,6 +153,8 @@ pub struct Run {
     id: String,
     file: File,
     start: Instant,
+    /// Set when another run took the lock of the target of this run.
+    stop: Arc<AtomicBool>,
     _lock: Lock,
     _using: Lock,
 }
@@ -165,7 +175,8 @@ impl Run {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run = Run { id, file, start: Instant::now(), _lock: lock, _using: using };
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut run = Run { id, file, start: Instant::now(), stop, _lock: lock, _using: using };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
             File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
@@ -185,7 +196,15 @@ impl Run {
     }
 
     pub fn check_stop(&self, store: &Store) -> Result<(), String> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err("the run stopped: another run took the lock of its target".into());
+        }
         crate::store::check_free(store.root(), 0)
+    }
+
+    /// The flag that stops the run before its next fetch or step.
+    pub fn stopper(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop)
     }
 
     /// Flush the journal.

@@ -51,13 +51,16 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress |
+| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
 | `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
-rollback of the target. Run one update or rollback of a target at a time: a collection can delete
-a key that an update that runs at the same time counts on.
+rollback of the target. A target takes one update or rollback at a time: the run holds
+`lock.json` of the target, and another run refuses to start. When a machine stops without
+freeing the lock, `obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a
+heartbeat.
 
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.
