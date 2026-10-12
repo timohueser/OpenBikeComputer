@@ -205,9 +205,9 @@ pub(super) fn prepare(
     mut run: Option<&mut Run>,
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
-    let serving = base.as_ref().map(|(serving, _)| Release::read(target, &serving.serving.id)).transpose()?;
+    let serving = base.as_ref().map(|(serving, _)| read(name, target, &serving.serving.id)).transpose()?;
     let rollback = base.as_ref().and_then(|(serving, _)| serving.rollback.as_ref());
-    let rollback = rollback.map(|rollback| Release::read(target, &rollback.id)).transpose()?;
+    let rollback = rollback.map(|rollback| read(name, target, &rollback.id)).transpose()?;
     let mut settings = serving.as_ref().map(|release| release.settings.clone()).unwrap_or_default();
     edit(&mut settings)?;
     if settings.region.is_empty() {
@@ -383,6 +383,21 @@ fn compose(
     };
     release.check().map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
     Ok(release)
+}
+
+/// The release `id` of the target `name`.
+pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Error> {
+    Release::read(target, id).map_err(|e| {
+        let fix = match target {
+            Target::Dir(dir) => format!(
+                "An older `obc data` can have written it: move the folder aside with `mv {0} {0}.old`, then run \
+                 `obc data update {name} --region ID` again.",
+                dir.display()
+            ),
+            Target::R2 { .. } => "Correct the release of the bucket, or switch it to its rollback.".into(),
+        };
+        Code::InvalidData.error(format!("target `{name}`: {e}")).fix(fix)
+    })
 }
 
 /// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
@@ -658,7 +673,25 @@ pub(super) mod tests {
         let moved = update(&fixture, &target, |_| Ok(())).unwrap();
         assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
         let serving = release::serving(&target).unwrap().unwrap().0;
-        assert_eq!((serving.serving.id, serving.rollback.map(|role| role.id)), (moved.serving, Some(revised.serving)));
+        assert_eq!(
+            (serving.serving.id, serving.rollback.map(|role| role.id)),
+            (moved.serving.clone(), Some(revised.serving))
+        );
+
+        // An older `obc data` wrote a manifest without `sources`.
+        let key = release::manifest_key(&moved.serving);
+        let mut older: serde_json::Value = serde_json::from_slice(&target.get(&key).unwrap().unwrap()).unwrap();
+        older.as_object_mut().unwrap().remove("sources");
+        let bytes = serde_json::to_vec(&older).unwrap();
+        let id = crate::store::sha256_hex(&bytes);
+        let any = crate::target::Condition::Any;
+        target.put(&release::manifest_key(&id), &bytes, &any).unwrap();
+        let named =
+            release::Serving { serving: release::Role { id, since: "2026-10-12T00:00:00Z".into() }, rollback: None };
+        target.put(release::SERVING, &serde_json::to_vec(&named).unwrap(), &any).unwrap();
+        let refused = update(&fixture, &target, |_| Ok(())).unwrap_err();
+        assert_eq!(refused.code, Code::InvalidData, "{}", refused.message);
+        assert!(refused.fix.contains("local.old"), "{}", refused.fix);
     }
 
     #[test]
