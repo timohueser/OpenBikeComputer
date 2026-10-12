@@ -1,5 +1,6 @@
-//! `obc data serve [TARGET]`: serve a dir target to the apps of this machine and of its network,
-//! and follow the release that the target serves.
+//! `obc data serve [TARGET]`: follow the releases that a target names and run their planner
+//! services. A dir target goes to the apps of this machine and of its network; an R2 target has
+//! the API only, on this machine, for a proxy such as Caddy.
 
 use std::future::IntoFuture;
 use std::net::{IpAddr, UdpSocket};
@@ -16,13 +17,14 @@ use serde_json::Value;
 
 use super::{print_json, Code, Error};
 use crate::release;
-use crate::serve::http::{self, Shared, View};
-use crate::serve::services::{self, Processes, Programs};
-use crate::serve::{wanted, Follower, Served, PLANNER};
+use crate::serve::http::{self, Planner, Shared};
+use crate::serve::services::{self, Origins, Processes, Programs};
+use crate::serve::{look, Follower, Seen, Served, PLANNER};
 use crate::store::Store;
 use crate::target::Target;
 
-/// The port of `obc data serve` on every IPv4 address of this machine.
+/// The port of `obc data serve`: on every IPv4 address of this machine for a dir target, and on
+/// 127.0.0.1 for an R2 target.
 const PORT: u16 = 8710;
 
 /// How long the open requests may take after a signal stops `obc data serve`.
@@ -41,21 +43,21 @@ pub struct Listening {
     pub target: String,
     /// The origin of `obc data serve` on this machine.
     pub url: String,
-    /// Its origin on the network of this machine, for a phone; `null` without a network.
+    /// Its origin on the network, for a phone; `null` without a network and for an R2 target.
     pub network: Option<String>,
 }
 
 pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    let Target::Dir(dir) = target.clone() else {
-        return Err(Code::Blocked
-            .error(format!("`obc data serve` serves a dir target, and `{}` is an R2 bucket", args.target))
-            .fix("Serve a dir target, such as `obc data serve local`."));
+    let dir = match &target {
+        Target::Dir(dir) => Some(dir.clone()),
+        Target::R2 { .. } => None,
     };
-    let programs = programs(root)?;
+    let programs = programs(root, dir.is_some())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let listener = runtime.block_on(tokio::net::TcpListener::bind(("0.0.0.0", PORT))).map_err(|e| {
+    let address = if dir.is_some() { "0.0.0.0" } else { "127.0.0.1" };
+    let listener = runtime.block_on(tokio::net::TcpListener::bind((address, PORT))).map_err(|e| {
         Code::Usage
             .error(format!("port {PORT}: {e}"))
             .fix("Stop the other `obc data serve`, or the program that uses the port, then run again.")
@@ -63,33 +65,47 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let listening = Listening {
         target: args.target.clone(),
         url: format!("http://127.0.0.1:{PORT}"),
-        network: network_address().map(|address| format!("http://{address}:{PORT}")),
+        network: dir.as_ref().and(network_address()).map(|address| format!("http://{address}:{PORT}")),
     };
     if json {
         print_json(&listening)?;
-    } else {
+    } else if dir.is_some() {
         print_links(root, &listening);
+    } else {
+        println!("obc data serve: the planner API of {} at {}", listening.target, listening.url);
     }
     let work = store.root().join("serve").join(&args.target);
     // The work folder holds what a serve that did not stop left.
     let _ = std::fs::remove_dir_all(&work);
-    // The tile server reads the folder of the target, also before the first update.
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tiles = services::free_port()?;
-    let mut tile_server = Command::new("node");
-    tile_server.arg("src/local.mjs").arg(&dir).arg(tiles.to_string()).current_dir(root.join("planner/tiles"));
-    let mut tile_server =
-        [services::spawn(&mut tile_server).map_err(|e| format!("cannot start the tile server: {e}"))?];
+    let mut tile_server = Vec::new();
+    let mut files = None;
+    if let Some(dir) = &dir {
+        // The tile server reads the folder of the target, also before the first update.
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let tiles = services::free_port()?;
+        let mut command = Command::new("node");
+        command.arg("src/local.mjs").arg(dir).arg(tiles.to_string()).current_dir(root.join("planner/tiles"));
+        tile_server.push(services::spawn(&mut command).map_err(|e| format!("cannot start the tile server: {e}"))?);
+        files = Some((dir.as_path(), tiles));
+    }
 
     let (shared, stop) = (Shared::default(), Arc::new(AtomicBool::new(false)));
     let public = listening.network.clone().unwrap_or(listening.url.clone());
     let follower = {
-        let (target, shared, stop, dir, work) =
-            (target.clone(), shared.clone(), stop.clone(), dir.clone(), work.clone());
-        let start = move |served: &Served| services::start(&programs, &dir, &work, served, &public);
+        let (target, shared, stop, work) = (target.clone(), shared.clone(), stop.clone(), work.clone());
+        let (reader, marks) = (target.clone(), shared.clone());
+        let start = move |served: &Served| {
+            // A start can download for a long time: `ready` says that it starts.
+            marks.write().unwrap().planners.insert(served.planner.clone(), Planner::Starting);
+            let origins = match &reader {
+                Target::Dir(_) => Origins { api: public.clone(), objects: format!("{public}/objects") },
+                Target::R2 { .. } => served.origins()?,
+            };
+            services::start(&programs, &store, &reader, &work, served, &origins)
+        };
         std::thread::spawn(move || follow(&target, start, &shared, &stop))
     };
-    let router = http::router(shared, &dir, tiles);
+    let router = http::router(shared, files);
     let served = runtime.block_on(async {
         let signalled = Arc::new(tokio::sync::Notify::new());
         let shutdown = {
@@ -137,44 +153,43 @@ fn print_links(root: &Path, listening: &Listening) {
     println!("Other machines on the local network can reach port {PORT} while it runs. Ctrl-C stops it.");
 }
 
-/// Follow `target` until `stop`: a change of its `release.json` starts the services of the
-/// releases that it names, and each second the follower checks them and gives `shared` what
-/// clients get.
+/// Follow `target` until `stop`: each second the follower checks the services, and gives `shared`
+/// what clients get. It reads what a dir target names each second, and an R2 target, through its
+/// public origin, every ten seconds.
 fn follow(
     target: &Target,
     mut start: impl FnMut(&Served) -> Result<Processes, String>,
     shared: &Shared,
     stop: &AtomicBool,
 ) {
-    let mut follower = Follower::default();
-    let mut seen = None;
-    while !stop.load(Ordering::Relaxed) {
-        let read = release::serving(target);
-        let tag = read.as_ref().map(|roles| roles.as_ref().map(|(_, tag)| tag.clone())).map_err(Clone::clone);
-        if seen.as_ref() == Some(&tag) {
-            follower.poll(Instant::now());
-        } else {
-            match read.and_then(|roles| roles.map(|(roles, _)| wanted(target, &roles)).transpose()) {
-                Ok(None) => eprintln!("obc data serve: the target serves no release yet; `obc data update` makes one"),
-                Ok(Some(wanted)) => follower.want(wanted, &mut start, &Instant::now),
-                Err(e) => eprintln!("obc data serve: {e}; the current release stays"),
-            }
-            seen = Some(tag);
+    let every = match target {
+        Target::Dir(_) => 1,
+        Target::R2 { .. } => 10,
+    };
+    let (mut follower, mut seen) = (Follower::default(), Seen::default());
+    for tick in 0u64.. {
+        if stop.load(Ordering::Relaxed) {
+            break;
         }
-        let ports = follower.ready().map(|(id, processes)| (id.to_string(), processes.ports)).collect();
-        *shared.write().unwrap() = View { current: follower.current().cloned(), ports };
+        if tick % every == 0 {
+            look(&mut follower, target, &mut seen, &mut start, &Instant::now);
+        } else {
+            follower.poll(&mut start, &Instant::now);
+        }
+        *shared.write().unwrap() = follower.view();
         std::thread::sleep(Duration::from_secs(1));
     }
 }
 
-/// The programs of the services. It builds the routing service with cargo.
-fn programs(root: &Path) -> Result<Programs, Error> {
+/// The programs of the services. For a dir target it builds the routing service with cargo; for an
+/// R2 target the routing service is beside this program, as `tools/vps/deploy-services.sh` builds it.
+fn programs(root: &Path, dir: bool) -> Result<Programs, Error> {
     let setup = "Run `python3 planner/search/setup.py`: it installs the packages of the search service.";
-    for (path, fix) in [
-        ("planner/search/node_modules", setup),
-        ("planner/search/.venv", setup),
-        ("planner/tiles/node_modules", "Run `npm ci --prefix planner/tiles`."),
-    ] {
+    let mut needed = vec![("planner/search/node_modules", setup), ("planner/search/.venv", setup)];
+    if dir {
+        needed.push(("planner/tiles/node_modules", "Run `npm ci --prefix planner/tiles`."));
+    }
+    for (path, fix) in needed {
         if !root.join(path).is_dir() {
             return Err(Code::Blocked.error(format!("{path} is missing")).fix(fix));
         }
@@ -186,6 +201,25 @@ fn programs(root: &Path) -> Result<Programs, Error> {
                 .fix("Install the Node and Python versions of `data/planner-runtime.toml`, then run again."));
         }
     }
+    let routing = match dir {
+        true => build_routing(root)?,
+        false => {
+            let routing = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("planner-service");
+            if !routing.is_file() {
+                return Err(Code::Blocked
+                    .error(format!("{} is missing", routing.display()))
+                    .fix("Deploy the services as tools/vps/README.md says."));
+            }
+            routing
+        }
+    };
+    Programs::new(root.to_path_buf(), routing).map_err(|e| {
+        Code::Blocked.error(e).fix("Prepare the services as host/obc-data/README.md says, then run again.")
+    })
+}
+
+/// Build the routing service with cargo, and give its program.
+fn build_routing(root: &Path) -> Result<PathBuf, Error> {
     let cargo = std::env::var_os("CARGO").unwrap_or("cargo".into());
     let args = ["build", "--release", "--locked", "-p", "planner-service", "--message-format=json-render-diagnostics"];
     eprintln!("obc data serve: cargo {}", args[..5].join(" "));
@@ -200,9 +234,7 @@ fn programs(root: &Path) -> Result<Programs, Error> {
         let artifact = message["reason"] == "compiler-artifact" && message["target"]["name"] == "planner-service";
         artifact.then(|| message["executable"].as_str().map(PathBuf::from)).flatten()
     });
-    let routing = routing.ok_or_else(|| Code::Failed.error("cargo built no `planner-service` program").fix(fix))?;
-    let prepare = "Prepare the services as host/obc-data/README.md says, then run again.";
-    Programs::new(root.to_path_buf(), routing).map_err(|e| Code::Blocked.error(e).fix(prepare))
+    routing.ok_or_else(|| Code::Failed.error("cargo built no `planner-service` program").fix(fix))
 }
 
 /// The address of this machine on the network of its default route. A UDP connect sends nothing.

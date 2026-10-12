@@ -7,6 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -144,7 +145,7 @@ impl Target {
         crate::r2::check_key(key)?;
         match self {
             Target::Dir(dir) => read(&dir.join(key)),
-            Target::R2 { public } => match Http::new().bytes(&format!("{public}/{key}"), "*/*") {
+            Target::R2 { public } => match http().bytes(&url(public, key), "*/*") {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(e) if http::not_found(&e) => Ok(None),
                 Err(e) => Err(e),
@@ -256,7 +257,19 @@ impl Target {
     /// key; an error when its bytes have another SHA-256.
     pub fn download(&self, key: &str, sha256: &str, store: &Store) -> Result<Option<PathBuf>, String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2 { public } => {
+                let url = url(public, key);
+                let _lock = Http::lock(store, &url)?;
+                return match http().download(store, &url, &http::Expect { sha256: Some(sha256), ..Default::default() })
+                {
+                    Ok(downloaded) => Ok(Some(downloaded.object)),
+                    Err(e) if http::not_found(&e) => Ok(None),
+                    Err(e) => Err(e),
+                };
+            }
+        };
         // Two processes on one store download into other files.
         let part =
             store.partial(&format!("{sha256}.{}.{}.target", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -335,6 +348,24 @@ fn changed(found: &fs::Metadata) -> u64 {
 fn changed(found: &fs::Metadata) -> u64 {
     let modified = found.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
     modified.map_or(0, |since| since.as_secs())
+}
+
+/// The public URL of `key` of an R2 target. Each part of the key is percent-encoded, so a key with
+/// `#` or `?` names its own object.
+fn url(public: &str, key: &str) -> String {
+    let encode = |part: &str| -> String {
+        let keep = |byte: u8| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte);
+        part.bytes()
+            .map(|byte| if keep(byte) { char::from(byte).to_string() } else { format!("%{byte:02X}") })
+            .collect()
+    };
+    format!("{public}/{}", key.split('/').map(encode).collect::<Vec<_>>().join("/"))
+}
+
+/// The client of the reads of an R2 target: one for the process, so its connections stay open.
+fn http() -> &'static Http {
+    static HTTP: OnceLock<Http> = OnceLock::new();
+    HTTP.get_or_init(Http::new)
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -417,6 +448,26 @@ mod tests {
         });
         assert_eq!(won, 1, "one of the writers that start together");
         assert!(target.put("../x", b"", &Condition::Any).is_err());
+    }
+
+    #[test]
+    fn an_r2_target_gives_the_store_an_object_through_its_public_origin() {
+        let scratch = Scratch::new("target-r2");
+        let (bucket, key) = (scratch.0.join("bucket"), "sources/osm/2026#1/a b.pbf");
+        fs::create_dir_all(bucket.join("sources/osm/2026#1")).unwrap();
+        fs::write(bucket.join(key), b"pbf").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+        let public = format!("http://{}", listener.local_addr().unwrap());
+        let router = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(&bucket));
+        runtime.spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (target, store) = (Target::R2 { public }, Store::at(scratch.0.join("store")));
+
+        let object = target.download(key, &sha256_hex(b"pbf"), &store).unwrap().unwrap();
+        assert_eq!(fs::read(object).unwrap(), b"pbf");
+        assert!(target.download(key, &"0".repeat(64), &store).unwrap_err().contains("the SHA-256 is"));
+        assert_eq!(target.download("objects/none", &"0".repeat(64), &store).unwrap(), None);
+        assert_eq!(url("https://maps.example", "sources/a#b/c?d"), "https://maps.example/sources/a%23b/c%3Fd");
     }
 
     #[test]

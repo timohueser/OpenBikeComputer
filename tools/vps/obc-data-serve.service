@@ -14,12 +14,12 @@ Environment=OBC_DATA_STORE=/var/lib/obc-data/store
 ExecStart=/opt/obc-data/current/target/release/obc-data-plumbing serve prod
 Restart=on-failure
 RestartSec=10
-# Twice the sum of the limits of the legacy planner units for routing (2048M), search (768M) and
-# downloads (256M), each with CPUQuota=200% and TasksMax=64: serve runs these three services for the
-# serving and the rollback release.
-MemoryMax=6144M
-CPUQuota=1200%
-TasksMax=384
+# Three times the sum of the limits of the legacy planner units for routing (2048M), search (768M)
+# and downloads (256M), each with CPUQuota=200% and TasksMax=64: serve runs these three services for
+# the release of planner/next.json, the serving release and the rollback.
+MemoryMax=9216M
+CPUQuota=1800%
+TasksMax=576
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
