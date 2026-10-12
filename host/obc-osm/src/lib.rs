@@ -141,8 +141,8 @@ impl OsmiumRunner {
 /// `runner` writes at most two extracts, so its memory stays bounded also for the planet: the
 /// rectangle around the leaves is halved along its longer side, and each half is cut from the
 /// extract of its parent, until each part is one leaf. A smart extract of a parent holds every
-/// object that a leaf in it references, so a leaf has the bytes of a direct extract. `work` holds
-/// the halves while they are cut, and is gone at the end.
+/// object that a leaf in it references, so a leaf has the bytes of a direct extract. The caller
+/// creates `out`. `work` holds the halves while they are cut, and is gone at the end.
 pub fn split(
     runner: &dyn ShardRunner,
     input: &Path,
@@ -348,8 +348,9 @@ mod tests {
             assert!(status.success(), "osmium {args:?}");
         };
         // One node, way or relation per line around the corner of four leaves at 0°, 0°; leaf
-        // (33, 33) is empty. Way 105 crosses from leaf (32, 31) into (32, 32), and the forest of
-        // relation 201 lies in (31, 31) and (31, 32).
+        // (33, 33) is empty. Way 105 crosses from leaf (32, 31) into (32, 32). The forest of
+        // relation 201 lies in (31, 31) and (31, 32), with a second ring, way 107, in leaf (30, 33)
+        // outside every half. The bicycle route 202 has members in (31, 31), (32, 32) and (30, 33).
         let node = |id: u32, lat: f64, lon: f64| format!(r#"<node id="{id}" version="1" lat="{lat}" lon="{lon}"/>"#);
         let way = |id: u32, nodes: &[u32], tag: &str| {
             let nodes: String = nodes.iter().map(|n| format!(r#"<nd ref="{n}"/>"#)).collect();
@@ -358,15 +359,23 @@ mod tests {
         let track = r#"<tag k="highway" v="track"/>"#;
         let at =
             [(-1.5, -1.5), (-0.5, -0.5), (-1.5, 0.5), (-0.5, 1.5), (0.5, -1.5), (1.5, -0.5), (0.5, 0.5), (1.5, 1.5)];
+        let far = [(-9.5, 9.5), (-9.5, 9.7), (-9.3, 9.6)];
         let mut osm = vec![r#"<?xml version="1.0"?><osm version="0.6">"#.to_string()];
-        osm.extend(at.iter().zip(1..).map(|(&(lat, lon), id)| node(id, lat, lon)));
+        osm.extend(at.iter().chain(&far).zip(1..).map(|(&(lat, lon), id)| node(id, lat, lon)));
         osm.extend([(101, [1, 2]), (102, [3, 4]), (103, [5, 6]), (104, [7, 8])].map(|(id, n)| way(id, &n, track)));
         osm.push(way(105, &[6, 7], r#"<tag k="highway" v="primary"/>"#));
-        osm.push(way(106, &[1, 2, 3, 1], ""));
-        osm.push(
-            r#"<relation id="201" version="1"><member type="way" ref="106" role="outer"/><tag k="type" v="multipolygon"/><tag k="landuse" v="forest"/></relation></osm>"#
-                .into(),
-        );
+        osm.extend([way(106, &[1, 2, 3, 1], ""), way(107, &[9, 10, 11, 9], "")]);
+        let relation = |id: u32, members: &[(u32, &str)], tags: &str| {
+            let members: String = members
+                .iter()
+                .map(|(way, role)| format!(r#"<member type="way" ref="{way}" role="{role}"/>"#))
+                .collect();
+            format!(r#"<relation id="{id}" version="1">{members}{tags}</relation>"#)
+        };
+        let forest = r#"<tag k="type" v="multipolygon"/><tag k="landuse" v="forest"/>"#;
+        osm.push(relation(201, &[(106, "outer"), (107, "outer")], forest));
+        let route = r#"<tag k="type" v="route"/><tag k="route" v="bicycle"/>"#;
+        osm.extend([relation(202, &[(101, ""), (104, ""), (107, "")], route), "</osm>".into()]);
         std::fs::write(path("base.osm"), osm.join("\n")).unwrap();
         let replication = |sequence: &str| format!("--output-header=osmosis_replication_sequence_number={sequence}");
         osmium(&["cat", "base.osm", "-o", "base.osm.pbf", &replication("10")]);
