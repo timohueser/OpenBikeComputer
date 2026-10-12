@@ -174,7 +174,18 @@ extension PlannerDataSource {
 /// Sends the requests of a planning session to one release. When a catalogue switch removes it, the requests
 /// move to the new active release.
 public actor PlannerService: PlannerDataSource {
+#if DEBUG
+    /// The catalogue of `-OBCPlannerCatalog URL` or `OBC_PLANNER_CATALOG`, such as the one that `obc data serve` prints.
+    public static let shared = launchCatalog().map { PlannerService(catalogURL: $0) } ?? PlannerService()
+
+    static func launchCatalog(arguments: [String] = ProcessInfo.processInfo.arguments,
+                              environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        let value = arguments.firstIndex(of: "-OBCPlannerCatalog").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+        return (value ?? environment["OBC_PLANNER_CATALOG"]).flatMap(URL.init(string:))
+    }
+#else
     public static let shared = PlannerService()
+#endif
     private let catalogURL: URL
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     private let transport: Transport
@@ -249,13 +260,15 @@ public actor PlannerService: PlannerDataSource {
             do { data = try await Self.send(request, transport: transport) } catch is ReleaseGone { throw PlannerFailure.unavailable }
             let catalog = try Self.decode(Catalog.self, data: data)
             let r = catalog.active
+            // A catalogue names its URLs with its own scheme: HTTPS when it is published, HTTP from `obc data serve`.
+            let scheme = catalogURL.scheme ?? "https"
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
-                  r.basemap.scheme == "https", r.places.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
-                  r.overlays.scheme == "https",
-                  r.routes.map({ $0.hasPrefix("https://") && $0.contains("{cell}") }) ?? true,
-                  [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
+                  r.basemap.scheme == scheme, r.places.scheme == scheme, r.routing.scheme == scheme, r.manifest.scheme == scheme, r.search.scheme == scheme,
+                  r.overlays.scheme == scheme,
+                  r.routes.map({ $0.hasPrefix(scheme + "://") && $0.contains("{cell}") }) ?? true,
+                  [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix(scheme + "://") })
             else { throw PlannerFailure.invalidData }
             return r
         }

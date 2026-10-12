@@ -65,7 +65,9 @@ header says how to keep your edit out of git.
 Debug uses `MockTransport` by default. The authoritative launch arguments are in
 `OBCMock/MockLaunchOptions.swift`, and the scenario presets in `OBCMock/Scenario.swift`. Useful
 entry points: `-OBCScenario`, `-OBCFixtures`, `-OBCConnection`, `-OBCImportSample`,
-`-OBCShowDevPanel`, `-OBCShowUIGallery`.
+`-OBCShowDevPanel`, `-OBCShowUIGallery`. `-OBCPlannerCatalog URL` (in
+`OBCPlanner/PlannerService.swift`) gives the planner another catalogue, such as the one that
+`obc data serve` prints.
 
 `-OBCHideMockHUD`, `-OBCDisableAnimations` and `-OBCHoldConfirmations` make automated captures
 deterministic. Website captures come from `scripts/capture-website-screenshots.sh`. **Wait for an

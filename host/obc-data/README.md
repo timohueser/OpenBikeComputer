@@ -53,9 +53,10 @@ rollback of the target.
 ## Serve
 
 `obc data serve` serves `local` on port 8710 of each address of the machine, also on its network.
-It prints the URLs of the pointers. It runs the routing, search and downloads services of each
-planner release and the tile server of `planner/tiles`. At start it builds `planner-service`
-with cargo. Prepare Node and the other services once:
+It prints the command that opens each app on `local`: the web planner, the map builder, the
+desktop app, the simulator and the Debug iOS app. It runs the routing, search and downloads
+services of each planner release and the tile server of `planner/tiles`. At start it builds
+`planner-service` with cargo. Prepare Node and the other services once:
 
 ```sh
 python3 planner/search/setup.py

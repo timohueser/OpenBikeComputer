@@ -60,12 +60,12 @@ describe('planner config', () => {
 const CATALOG = 'https://maps.openbikecomputer.com/planner/catalog.json';
 const release = (id: string) => ({ ...testConfig, id, routing: `https://api.test/releases/${id}/routing` });
 
-/** The planner modules of a page with no preview config, on a stub catalogue. */
-async function page(catalogs: unknown[], objects: (url: string) => Response = () => new Response('{}')) {
+/** The planner modules of a page with no preview config, on a stub catalogue at `at`. */
+async function page(catalogs: unknown[], objects: (url: string) => Response = () => new Response('{}'), at = CATALOG) {
     vi.stubEnv('VITE_PLANNER_CONFIG', '');
     const reload = vi.fn();
     vi.stubGlobal('location', { href: 'https://openbikecomputer.com/plan/', reload });
-    const fetch = vi.fn(async (url: string) => url === CATALOG ? Response.json(catalogs.length > 1 ? catalogs.shift() : catalogs[0]) : objects(url));
+    const fetch = vi.fn(async (url: string) => url === at ? Response.json(catalogs.length > 1 ? catalogs.shift() : catalogs[0]) : objects(url));
     vi.stubGlobal('fetch', fetch);
     return { fetch, reload, load: () => import('./map-data') };
 }
@@ -73,6 +73,13 @@ async function page(catalogs: unknown[], objects: (url: string) => Response = ()
 describe('live catalogue', () => {
     it('gives the page the active release of the catalogue', async () => {
         const { load } = await page([{ format: 1, active: release('a'), previous: null }]);
+        expect((await load()).config).toEqual(release('a'));
+    });
+
+    it('reads the catalogue that VITE_PLANNER_CATALOG names, such as that of obc data serve', async () => {
+        const local = 'http://127.0.0.1:8710/planner/catalog.json';
+        vi.stubEnv('VITE_PLANNER_CATALOG', local);
+        const { load } = await page([{ format: 1, active: release('a') }], undefined, local);
         expect((await load()).config).toEqual(release('a'));
     });
 

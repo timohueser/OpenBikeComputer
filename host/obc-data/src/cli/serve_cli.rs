@@ -94,11 +94,15 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
 
 fn print_links(listening: &Listening) {
     let Listening { target, url, network } = listening;
+    let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/cell-catalog/catalog.json"));
     println!("obc data serve: {target} at {url}");
-    println!("  planner catalog  {url}/{PLANNER}");
-    println!("  device catalog   {url}/cell-catalog/catalog.json");
+    println!("  web planner  cd builder/web && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner");
+    println!("               then open /planner.html");
+    println!("  map builder  VITE_PLANNER_CATALOG={planner} obc site");
+    println!("  desktop app  OBC_CATALOG_URL={device} obc desktop");
+    println!("  simulator    obc sim MAP.obcm, with a map that the map builder or the desktop app assembles");
     if let Some(network) = network {
-        println!("  on this network  {network}/{PLANNER}");
+        println!("  iPhone       the Debug app with the launch argument -OBCPlannerCatalog {network}/{PLANNER}");
     }
     println!("Other machines on the local network can reach port {PORT} while it runs. Ctrl-C stops it.");
 }

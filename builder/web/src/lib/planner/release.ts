@@ -1,7 +1,11 @@
 import type { RequestParameters } from "maplibre-gl";
 
-/** The planner catalogue of specs/planner-release.md. The site reads it at page load, so a release needs no site build. */
-export const PLANNER_CATALOG = "https://maps.openbikecomputer.com/planner/catalog.json";
+/**
+ * The planner catalogue of specs/planner-release.md. The site reads it at page load, so a release needs no site build.
+ * `VITE_PLANNER_CATALOG` names another catalogue for a build or a dev server, such as the one of `obc data serve`.
+ */
+// `||`, not `??`: an unset variable can arrive as an empty string.
+export const PLANNER_CATALOG: string = import.meta.env.VITE_PLANNER_CATALOG || "https://maps.openbikecomputer.com/planner/catalog.json";
 
 const UNAVAILABLE = "The map catalogue is unavailable. Reload the page later.";
 
