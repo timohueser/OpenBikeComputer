@@ -12,7 +12,7 @@
     ],
     "layers": [
         {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": []},
-        {"layer": "device/map", "total": 24, "done": 24, "leaves_done": ["16-40", "17-40", "18-40", "19-40", "20-40", "21-40", "16-41", "17-41", "18-41", "19-41", "20-41", "21-41", "16-42", "17-42", "18-42", "19-42", "20-42", "21-42", "16-43", "17-43", "18-43", "19-43", "20-43", "21-43"], "leaves_baking": []},
+        {"layer": "device/map", "total": 6, "done": 6, "leaves_done": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "leaves_baking": []},
         {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": []},
         {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": []}
     ],

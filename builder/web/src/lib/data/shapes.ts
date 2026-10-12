@@ -56,6 +56,9 @@ export interface Layer {
     served_revision: number | null;
     readers: string[];
     reads: string[];
+    /** The grid leaves of a tiled layer, `I-J`, and those that a build changes. */
+    leaves: string[];
+    stale_leaves: string[];
 }
 
 export const LAYER_MARK: Record<Layer["state"], string> = { ok: "✓", stale: "●", off: "○" };

@@ -8,6 +8,7 @@ const ANSWERS = {
   '[]': status,
   '["setup"]': fixture('setup'),
   '["runs"]': fixture('runs'),
+  '["areas"]': fixture('areas'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
   [JSON.stringify(['update', 'local', '--dry-run'])]: review,

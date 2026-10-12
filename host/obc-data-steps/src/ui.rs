@@ -152,7 +152,7 @@ fn refused(args: &[String]) -> Option<Error> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
-        [] | ["setup"] | ["runs"] => true,
+        [] | ["setup"] | ["runs"] | ["areas"] => true,
         // Not `--follow`: it answers only when the run ends.
         ["runs", run] | ["runs", run, "--stop"] => name(run),
         ["update", target, ref rest @ ..] => name(target) && reviewed(rest),
@@ -347,6 +347,8 @@ mod tests {
             &["runs", "r1", "--stop", "--follow"],
             &["runs", "--stop"],
             &["r2", "list"],
+            &["areas", "freiburg"],
+            &["areas", "--at", "8,48"],
             &["update", "local"],
             &["update", "local", "--yes"],
             &["update", "local", "--dry-run", "--expect", "4c1e"],
@@ -374,6 +376,7 @@ mod tests {
             &[][..],
             &["setup"],
             &["runs"],
+            &["areas"],
             &["runs", "r1"],
             &["runs", "r1", "--stop"],
             &["update", "local", "--dry-run"],

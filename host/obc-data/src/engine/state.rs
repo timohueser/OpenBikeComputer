@@ -43,6 +43,10 @@ pub struct LayerState {
     /// The layers and the sources that its steps read, sorted. In place of a layer that no program
     /// reads, it names what that layer reads.
     pub reads: Vec<String>,
+    /// The grid leaves of a tiled layer, as `<i>-<j>`, sorted; empty for another layer.
+    pub leaves: Vec<String>,
+    /// The leaves whose steps a build changes.
+    pub stale_leaves: Vec<String>,
 }
 
 /// How the steps of a layer bake.
@@ -151,6 +155,12 @@ impl Judged<'_> {
         };
         let text = self.cause.as_ref().map(Cause::text);
         let declared = self.steps.first().map(|(step, _)| step.layer);
+        let tiled = declared.is_some_and(|layer| layer.shape == Shape::Tiled);
+        let leaves = |stale: bool| -> Vec<String> {
+            let steps = self.steps.iter().filter(|(_, cause)| tiled && (!stale || cause.is_some()));
+            let leaves: BTreeSet<&str> = steps.filter_map(|(step, _)| super::leaf(&step.name)).collect();
+            leaves.into_iter().map(str::to_string).collect()
+        };
         LayerState {
             layer: self.name.clone(),
             state,
@@ -167,6 +177,8 @@ impl Judged<'_> {
             readers: declared
                 .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.to_string()).collect()),
             reads: self.reads.iter().cloned().collect(),
+            leaves: leaves(false),
+            stale_leaves: leaves(true),
         }
     }
 }
@@ -379,6 +391,31 @@ mod tests {
             named(&[("test", &["head", "tail"])])[0],
             "what an internal layer reads, in its place"
         );
+    }
+
+    #[test]
+    fn a_tiled_layer_names_its_leaves_and_those_that_a_build_changes() {
+        static TILED: crate::engine::Layer = crate::engine::Layer { shape: Shape::Tiled, ..TEST };
+        fn out(request: &crate::engine::Request) -> Result<(), String> {
+            std::fs::write(request.output.join("out.txt"), &request.step).map_err(|e| e.to_string())
+        }
+        let tiled = |version: &str| -> Vec<Step> {
+            let leaf = |name: &str, version: &str| Step {
+                layer: &TILED,
+                ..crate::engine::tests::step(
+                    name,
+                    vec![snapshot("head", version, &["head.txt"])],
+                    "out.txt",
+                    crate::engine::Run::Rust(out),
+                )
+            };
+            vec![leaf("test/0001-0002", "1"), leaf("test/0001-0003", version)]
+        };
+        let fixture = fixture("state-leaves");
+        let release = released(&fixture, &tiled("1"));
+        let layer = &judged(&fixture, &tiled("2"), &release, &Newer::new())[0];
+        let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        assert_eq!((&layer.leaves, &layer.stale_leaves), (&ids(&["0001-0002", "0001-0003"]), &ids(&["0001-0003"])));
     }
 
     #[test]

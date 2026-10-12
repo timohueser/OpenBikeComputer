@@ -4,7 +4,10 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { targetAt } from "../../lib/data/screens";
     import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type RunView, type Status } from "../../lib/data/shapes";
+    import { corners, outline, type Areas } from "../../lib/data/areas";
+    import { leafSquare } from "../../lib/data/leaf";
     import Action from "./Action.svelte";
+    import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
     import Review from "./Review.svelte";
 
@@ -27,6 +30,20 @@
     // A ticked layer bakes again, also when it is up to date: `--only`.
     let ticked = $state<string[]>([]);
     const only = $derived(route.only ? ([["--only", route.only]] as Flags) : []);
+
+    // The coverage: the leaves of one tiled layer, coloured by state, inside the outline of the area.
+    const areas = new CliQuery<Areas>(["areas"]);
+    $effect(() => void areas.refresh());
+    const tiled = $derived(target?.layers?.filter((layer) => layer.leaves.length) ?? []);
+    let colour = $state<string | null>(null);
+    const coloured = $derived(tiled.find((layer) => layer.layer === colour) ?? tiled[0]);
+    const cells = $derived(
+        (coloured?.leaves ?? []).flatMap((leaf) => {
+            const bounds = leafSquare(leaf);
+            const stale = coloured!.stale_leaves.includes(leaf);
+            return bounds ? [{ bounds, color: stale ? "var(--stale)" : "var(--ready)", label: `${leaf} · ${stale ? "stale" : "up to date"}` }] : [];
+        }),
+    );
 
     let asking = $state<"rollback" | "forward" | "unlock" | null>(null);
     // The banner after a change stays while the target is as before the change or as after it.
@@ -121,6 +138,25 @@
                 <p class="missing">No heartbeat since {when(lock.heartbeat)}: the run likely ended without freeing the lock. Open {lock.machine} first.</p>
                 <button type="button" onclick={() => (asking = "unlock")}>Take over the lock…</button>
             {/if}
+        </section>
+    {/if}
+
+    {#if target.layers}
+        <section class="card" aria-labelledby="coverage">
+            <div class="title">
+                <h2 id="coverage">Coverage</h2>
+                <span class="soft">{target.region ?? "no region"}</span>
+                <span class="grow"></span>
+                {#if !locked}<a href="#/{name}/review">Change area…</a>{/if}
+            </div>
+            {#if coloured}
+                <div class="title">
+                    <label>Colour cells by <select value={coloured.layer} onchange={(event) => (colour = event.currentTarget.value)}>{#each tiled as layer (layer.layer)}<option value={layer.layer}>{layer.layer}</option>{/each}</select></label>
+                    <span class="stale">● stale {coloured.stale_leaves.length}</span>
+                    <span class="ok">✓ up to date {coloured.leaves.length - coloured.stale_leaves.length}</span>
+                </div>
+            {/if}
+            <DataMap {cells} outline={outline(areas.output, target.region).map(corners)} />
         </section>
     {/if}
 

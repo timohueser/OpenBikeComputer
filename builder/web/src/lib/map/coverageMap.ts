@@ -151,6 +151,7 @@ export class CoverageMapView {
     private partLayer: L.LayerGroup = L.layerGroup();
     private warnLayer: L.LayerGroup = L.layerGroup();
     private previewLayer: L.LayerGroup = L.layerGroup();
+    private cellLayer: L.LayerGroup = L.layerGroup();
 
     private drawArmed = false;
     private drawing = false;
@@ -182,6 +183,7 @@ export class CoverageMapView {
         // Draw order bottom-up: shelf, selection, warnings on top of the
         // selection they annotate, preview above everything settled.
         this.regionLayer.addTo(this.map);
+        this.cellLayer.addTo(this.map);
         this.partLayer.addTo(this.map);
         this.warnLayer.addTo(this.map);
         this.previewLayer.addTo(this.map);
@@ -386,6 +388,15 @@ export class CoverageMapView {
             if (part.route && part.route.length > 1) {
                 L.polyline(part.route, ROUTE_STYLE).addTo(this.partLayer);
             }
+        }
+    }
+
+    /** Squares, such as the leaves of a tiled layer, each in its colour and with its label. */
+    setCells(cells: { bounds: [DegPoint, DegPoint]; color: string; label: string }[]): void {
+        this.cellLayer.clearLayers();
+        for (const { bounds, color, label } of cells) {
+            const style = { color, weight: 1.5, fillColor: color, fillOpacity: 0.35 };
+            L.rectangle(bounds, style).bindTooltip(label, { className: "preview-tip", sticky: true }).addTo(this.cellLayer);
         }
     }
 
