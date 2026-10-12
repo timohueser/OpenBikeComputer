@@ -397,28 +397,35 @@ fn refusals(machine: &MachineCheck, own: &[&Build], store_bytes: u64) -> Vec<Str
             }
         }
     }
-    if let Some(free) = machine.store_free_bytes.filter(|free| *free < store_bytes.saturating_add(RESERVE)) {
-        refusals.push(format!(
-            "the store gets about {}, and its disk has {} free and keeps {} free",
-            size(store_bytes),
-            size(free),
-            size(RESERVE)
-        ));
-    }
+    refusals.extend(disk_refusal(machine, store_bytes));
     refusals
+}
+
+/// Why the disk of the store of `machine` cannot take `store_bytes` more.
+pub fn disk_refusal(machine: &MachineCheck, store_bytes: u64) -> Option<String> {
+    let free = machine.store_free_bytes.filter(|free| *free < store_bytes.saturating_add(RESERVE))?;
+    Some(format!(
+        "the store gets about {}, and its disk has {} free and keeps {} free",
+        size(store_bytes),
+        size(free),
+        size(RESERVE)
+    ))
+}
+
+/// Refuse a run of `what` whose review `id` is not `expect`.
+pub fn expect(what: &str, id: &str, expect: Option<&str>) -> Result<(), Error> {
+    match expect.filter(|expect| *expect != id) {
+        Some(expect) => Err(Code::Usage
+            .error(format!("the review of `{what}` is {id}, not {expect}: it changed; nothing changed"))
+            .fix("Read the review again: run the same command with `--dry-run` and without `--expect`.")),
+        None => Ok(()),
+    }
 }
 
 /// Refuse an update whose review is not `expect`, that changes a format without
 /// `accept_format_change`, or that this machine cannot do.
 pub fn check(review: &Review, expect: Option<&str>, accept_format_change: bool) -> Result<(), Error> {
-    if let Some(expect) = expect.filter(|expect| *expect != review.id) {
-        return Err(Code::Usage
-            .error(format!(
-                "the review of `{}` is {}, not {expect}: it changed; nothing changed",
-                review.target, review.id
-            ))
-            .fix("Read the review again: run the same command with `--dry-run` and without `--expect`."));
-    }
+    self::expect(&review.target, &review.id, expect)?;
     let formats: Vec<String> = review
         .layers
         .iter()
@@ -465,11 +472,11 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     }
     for source in &review.sources {
         let params: Vec<String> = source.params.iter().map(|(name, value)| format!("{name}={value}")).collect();
-        let from = source.from.as_deref().unwrap_or("new");
+        let from = source.from.as_deref().map_or("new".into(), crate::prepared::show);
         rows.push(vec![
             "  source".into(),
             format!("{} {}", source.source, params.join(" ")).trim().into(),
-            format!("{from} → {}", source.to),
+            format!("{from} → {}", crate::prepared::show(&source.to)),
         ]);
     }
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);

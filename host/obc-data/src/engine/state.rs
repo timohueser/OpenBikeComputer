@@ -114,7 +114,10 @@ impl Cause {
             Cause::Version { field: Field::Revision, from: Some(from), to } => {
                 format!("revision {from} → {to}: improved output")
             }
-            Cause::Source { source, from, to } => format!("{source} {from} → {}", to.as_deref().unwrap_or("newer")),
+            Cause::Source { source, from, to } => {
+                let to = to.as_deref().map_or("newer".into(), crate::prepared::show);
+                format!("{source} {} → {to}", crate::prepared::show(from))
+            }
             Cause::Input { name } if name == OPTIONS => "options changed".into(),
             Cause::Input { name } => format!("follows {name}"),
         }

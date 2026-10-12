@@ -12,6 +12,7 @@ use crate::engine::runs::Limits;
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::lock::{self, Holder};
+use crate::prepared::Prepared;
 use crate::product::{BlockedLayer, Inputs, Product};
 use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
@@ -96,11 +97,16 @@ pub struct Lock {
     pub stale: bool,
 }
 
-pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<(), Error> {
+pub fn overview(
+    root: &Path,
+    (products, producers): (&[&dyn Product], &[&dyn Prepared]),
+    json: bool,
+) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let targets = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
     let sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
-    let targets = targets.iter().map(|(name, target)| state(root, &store, &http, products, &sources, name, target));
+    let targets =
+        targets.iter().map(|(name, target)| state(root, &store, &http, (products, producers), &sources, name, target));
     let limits = Limits::machine();
     let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
     let name = crate::machine();
@@ -170,7 +176,7 @@ fn state(
     root: &Path,
     store: &Store,
     http: &Http,
-    products: &[&dyn Product],
+    (products, producers): (&[&dyn Product], &[&dyn Prepared]),
     sources: &[Source],
     name: &str,
     target: &Target,
@@ -234,6 +240,8 @@ fn state(
         release.settings.policies(&mut sources)?;
         let mut inputs =
             Inputs { settings: release.settings.clone(), serving: release.versions(), ..Inputs::default() };
+        let read = inputs.serving.keys().cloned().collect();
+        crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
         let fetch = listing::fetcher(root, store, http, &sources, None, false);
         let listed = listing::steps(root, products, &mut inputs, &regions, store, true, fetch)?;
         state.blocked = listed.blocked;

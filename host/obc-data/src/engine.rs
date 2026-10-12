@@ -6,7 +6,7 @@
 pub mod changes;
 pub mod plan;
 mod process;
-pub use process::python_executable;
+pub use process::{peak_rss, python_executable};
 
 pub mod runs;
 pub mod state;

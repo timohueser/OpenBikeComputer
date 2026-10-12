@@ -1,6 +1,6 @@
 //! `obc data source refresh ID`: fetch upstream's newest version of a `digest` source, so that the
 //! next update of each target that serves the version of now reads it. A source whose versions
-//! have no order moves no other way.
+//! have no order moves no other way. `obc data source prepare ID`: see [`super::prepare_cli`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::{fetched, find, print_json, registry, releases, Code, Error};
 use crate::fetch::{self, http::Http, Request};
+use crate::prepared::Prepared;
 use crate::sources::VersionScheme;
 use crate::store::{RefreshedVersion, Store};
 
@@ -19,6 +20,8 @@ pub enum SourceCommand {
     /// Fetch upstream's newest version of a `digest` source: the next update of each target that
     /// serves the version of now reads it.
     Refresh { id: String },
+    /// Make a version of a prepared source and publish it to a target; the same command resumes it.
+    Prepare(super::prepare_cli::PrepareArgs),
 }
 
 /// What `source refresh` did.
@@ -33,8 +36,11 @@ pub struct Refreshed {
     pub bytes: u64,
 }
 
-pub fn run(root: &Path, command: SourceCommand, json: bool) -> Result<(), Error> {
-    let SourceCommand::Refresh { id } = command;
+pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json: bool) -> Result<(), Error> {
+    let id = match command {
+        SourceCommand::Refresh { id } => id,
+        SourceCommand::Prepare(args) => return super::prepare_cli::command(root, prepared, args, json),
+    };
     let refreshed = refresh(root, &Store::open()?, &Http::new(), &id)?;
     if json {
         return print_json(&refreshed);

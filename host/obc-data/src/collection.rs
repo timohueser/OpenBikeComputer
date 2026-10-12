@@ -1,6 +1,7 @@
 //! The collection of a target: after a switch, delete the files that only the releases that the
-//! target no longer serves name, and the files under `objects/` and `releases/` that no release
-//! names. A key of an older publisher, a pointer and `release.json` always stay.
+//! target no longer serves name, the files under `objects/` and `releases/` that no release names,
+//! and the prepared versions that [`crate::prepared::obsolete`] names. A key of an older publisher,
+//! a pointer and `release.json` always stay.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,8 @@ pub struct Collected {
     pub releases: Vec<String>,
     /// The releases that `release.json` does not name, which stay for now.
     pub deferred: Vec<String>,
+    /// The prepared versions that it deleted, as `<id>@<version>`.
+    pub versions: Vec<String>,
     /// The keys that it deleted, also of files that no release names, and their size.
     pub keys: u64,
     pub bytes: u64,
@@ -39,6 +42,9 @@ impl Collected {
             return format!("collected nothing: {stopped}");
         }
         let mut text = format!("collected {} releases, {} keys, {} bytes", self.releases.len(), self.keys, self.bytes);
+        if !self.versions.is_empty() {
+            text += &format!("; prepared versions {}", self.versions.join(", "));
+        }
         if !self.deferred.is_empty() {
             text += &format!("; {} releases stay until a later collection", self.deferred.len());
         }
@@ -113,7 +119,21 @@ fn pass(
             && !keep.contains(&listed.key)
             && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
     });
-    for (at, listed) in files.chain(dropped.iter().map(|(manifest, _)| *manifest)).enumerate() {
+    let obsolete = crate::prepared::obsolete(&listed, &kept);
+    let mut unlisted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut versions = BTreeMap::new();
+    for version in &obsolete {
+        unlisted.entry(&version.id).or_default().push(&version.version);
+        let manifest = version.keys.last().expect("a complete version has a manifest");
+        versions.insert(manifest.key.as_str(), format!("{}@{}", version.id, version.version));
+    }
+    // A version leaves `versions.json` first, so no reader takes it while its files go.
+    for (id, versions) in unlisted {
+        holds()?;
+        crate::prepared::unlist(target, id, &versions)?;
+    }
+    let prepared = obsolete.iter().flat_map(|version| version.keys.iter().copied());
+    for (at, listed) in files.chain(prepared).chain(dropped.iter().map(|(manifest, _)| *manifest)).enumerate() {
         if at % BATCH == 0 {
             holds()?;
         }
@@ -122,6 +142,7 @@ fn pass(
         if let Some(id) = manifest_id(&listed.key) {
             collected.releases.push(id.into());
         }
+        collected.versions.extend(versions.get(listed.key.as_str()).cloned());
     }
     Ok(())
 }

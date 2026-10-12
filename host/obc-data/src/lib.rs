@@ -10,6 +10,7 @@ pub mod engine;
 pub mod fetch;
 pub mod lock;
 pub mod machines;
+pub mod prepared;
 pub mod product;
 pub mod r2;
 pub mod ready;

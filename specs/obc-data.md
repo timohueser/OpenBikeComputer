@@ -17,7 +17,7 @@ One `[[source]]` table per source.
 
 | Key | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | yes | Unique, lowercase kebab-case |
+| `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
 | `licence` | string | no | SPDX licence expression: ids or `LicenseRef-…`, joined by `AND`, `OR`, `WITH` and parentheses |
 | `licence_url` | string | no | Where the licence text is |
@@ -46,6 +46,7 @@ One `[[source]]` table per source.
 | `github` | A GitHub release asset or source archive |
 | `by-hand` | A person orders or downloads the files at `url` |
 | `installed` | A person installs it, or another source's build brings it. It has no `url` |
+| `prepared` | `obc data source prepare` publishes its versions to a target, see [Prepared sources](#prepared-sources). It has no `url` |
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
 `{version}` is the version, `{yymmdd}` a date version as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
@@ -56,7 +57,8 @@ credit fills.
 Rules:
 
 - An id is listed once.
-- Each kind of fetch but `installed` has a `url`, and the `url` starts with `https://`.
+- Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
+- A `prepared` source has `version = "date"` and `redistribute = true`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - A credential has `env` or `file`, not both.
 - An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
@@ -182,7 +184,7 @@ reads. The source has the least state of its fetches, in the order of this table
 | `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
 | `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture. Or its version is before the serving version of the source that `fetch.from` names |
 | `unused` | The serving release reads no fetch of the source |
-| `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source is never stale by age |
+| `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
 Data age is the number of days from the serving version to today (UTC). A fetch is due only when
 its age is greater than `refresh`. An unchanged successful check does not change data age: the
@@ -212,6 +214,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
+| `prepared/<target>/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `scope.json`, the region of the run; `journal.jsonl`, the files that it uploaded and the source versions that it read; and `work/`, the files that it did not upload yet |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -248,7 +251,8 @@ record has for another URL fails the fetch.
 
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
-`digest` version is 64 lowercase hex digits.
+`digest` version is 64 lowercase hex digits. The version of a `prepared` source that a step reads
+is `<date>/<manifest sha256>`, see [Prepared sources](#prepared-sources).
 
 ### Clean
 
@@ -328,6 +332,7 @@ version. A file that fails it is deleted.
 | `capture` | A program writes the files, see below |
 | `by-hand` of a `dtm-*` source | A program takes the files from the delivery, see below |
 | `by-hand`, `installed` | None; the fetch fails |
+| `prepared` | The manifest and the files that a step names, from a target, see [Prepared sources](#prepared-sources) |
 
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
@@ -704,7 +709,8 @@ its `start`, so that a change of `data/sources.toml` moves it; else the version 
 targets served then, or none: a refresh never moves a target that another machine moved since;
 else the serving version; else the one
 version in the store, when the store has exactly one. So an update after an update that changed
-nothing reads the same versions.
+nothing reads the same versions. A `prepared` source has the rule of
+[Prepared sources](#prepared-sources).
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
 metadata fetched (see [Products](#products)). It judges each of them, as
@@ -996,6 +1002,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
 | `sources/<source>/<version>/<name>` | A copy of a file of a source version that an output of a release read, when the source has `redistribute = true`. Immutable |
+| `sources/<id>/…` | The lock, the list of versions and the versions of a [prepared source](#prepared-sources) |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
@@ -1284,6 +1291,7 @@ another release, it collects the target. The grace of a collection is 10 minutes
   The pointers, `release.json` and the keys of older publishers stay.
 - A publish that stops can leave copies under `sources/` that no manifest names. They stay, and a
   later publish of the same version uses them again.
+- It deletes the versions of a prepared source that [Prepared sources](#prepared-sources) names.
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
@@ -1298,6 +1306,150 @@ another release, it collects the target. The grace of a collection is 10 minutes
 
 A collection that stops does not undo the switch: the output gives what it deleted and why it
 stopped.
+
+### Prepared sources
+
+A prepared source is a source whose versions `obc data source prepare` makes in a long job, such
+as the processing of large dumps. A version is a fixed set of files on a target. A bake reads a
+version as it reads any other source.
+
+A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`. The `obc data`
+binary links a producer for each name: the producer of `<name>` makes the source `<name>` and
+each source `<name>/<key>`. Only a source whose licence lets us give its bytes to others is
+prepared. Its raw inputs get no copy on a target.
+
+A prepared source has these keys in the folder `sources/<id>/` of a target:
+
+| Key | Holds |
+| --- | --- |
+| `sources/<id>/lock.json` | The lock of the source: one prepare at a time. It has the format of the [lock](#lock) of a target |
+| `sources/<id>/versions.json` | The complete versions, sorted by version |
+| `sources/<id>/<version>/<path>` | A file of the version. Immutable |
+| `sources/<id>/<version>/manifest.json` | The manifest of the version, written last. Immutable |
+
+`lock.json` and `versions.json` get `Cache-Control: no-store`. A version is complete when it has
+its manifest.
+
+```json
+[
+  {
+    "version": "2026-10-12",
+    "manifest_sha256": "<sha256 of manifest.json>",
+    "format": 1,
+    "bytes": 1048576,
+    "time": "2026-10-19T08:00:00Z"
+  }
+]
+```
+
+`format` is the `format` of the manifest, `bytes` is the size of the files of the version, and
+`time` is when it was complete. The manifest
+is compact JSON with the keys of each object in byte order:
+
+```json
+{
+  "attribution": "<credit>",
+  "cost": {"peak_rss_bytes": 8589934592, "wall_ms": 3600000},
+  "files": [{"path": "common.tar.zst", "sha256": "<sha256>", "size": 1048576}],
+  "format": 1,
+  "inputs": [{"digest": "<digest>", "source": "wikidata", "version": "2026-10-01"}],
+  "licence": "<SPDX expression>",
+  "machine": "<machine>",
+  "revision": 1,
+  "scope": null,
+  "source": "wiki",
+  "time": "2026-10-19T08:00:00Z",
+  "version": "2026-10-12"
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `source`, `version` | The id of the source and the version |
+| `format` | The number that readers check |
+| `revision` | A person changes it in the change that improves the output |
+| `inputs` | Each source version that the prepare read, sorted by source and version, with the [digest](#keys) of the files that it read |
+| `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
+| `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
+| `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
+| `machine`, `time` | The machine that made the version, and when the version was complete |
+| `cost` | The wall time of the last run of the version, and the peak memory of its process or of the largest program that it ran (`null` when the system does not report it) |
+
+#### Prepare
+
+`obc data source prepare ID` makes a version for a target, `prod` by default:
+
+1. The version is the UTC date when its first run starts. A run keeps its work in
+   `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
+   resumes the version: the producer does not make a file of the journal again, unless the target
+   lacks its key. A resume with another region refuses. When the manifest of a stopped version is
+   on the target and names the files of its journal, its run stopped after the manifest: the run
+   only adds the version to `versions.json`, and the review says `listing`. Another stopped version
+   that is not newer than the newest complete version on the target, or whose manifest is on the
+   target, is not resumed: the run starts a new version, deletes the work of the old one, and the
+   review names it in `abandoned`. So a run never writes a key of a complete version. A new version
+   that the target has complete refuses.
+2. The review names the version, the inputs with the size of their files in the store (`unknown`
+   lists an input whose size the store does not know), the files
+   that earlier runs uploaded, the cost from the manifest of the newest version that the target
+   lists, the bytes that go into the store and to the target, the check of this machine as in the
+   [review](#review) of an update, and for each target that reads the versions of this target the
+   layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
+   first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
+   version, the format, the revision, the scope and the source, version and params of each input.
+   For an R2 target, the prepare starts only with `--expect ID`, and asks first or needs `--yes`.
+3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
+   of a target. It makes the review again under the lock, and refuses a review that is not
+   `--expect`.
+4. A run of a new version deletes the folders of older versions of the source on the target that
+   have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
+   the lock.
+5. The producer writes each file. The run uploads it at once, records its SHA-256 in the journal
+   and deletes it from the work. No reader reads a version before its manifest, so the upload
+   replaces a key that a stopped run left with other bytes.
+6. The run checks that it still holds the lock, and that the target has each file of the journal
+   with its size. It writes the manifest only when the key is absent: a manifest that an earlier
+   run of the version wrote stays when it names the same files. Then a conditional write adds the
+   version to `versions.json`, with the time of the manifest, and the work of the version goes.
+
+`--region` and `--box` make a version of that region only. Such a version is not for `prod`, whose
+versions every target reads. `obc data runs RUN --stop` stops a run, and the same command resumes
+it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stopped run left.
+
+#### Read
+
+Two targets can have other files under one version name, such as a region on `local` and all of
+the source on `prod`. So the manifest is the identity of a version: a step reads
+`<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
+(`copy` is `false`) and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
+of the SHA-256>)`; with `--json`, a command gives the whole version.
+
+A target knows the versions that it lists, and a target other than `prod` also the versions that
+`prod` lists; on one name, its own entry wins. Before an update or the [overview](#overview) lists
+the steps, each prepared source that they read gets a version in the `format` of the producer of
+this `obc data`: the serving version of a `manual` source, else the newest version that the target
+knows. So a new version makes each layer that reads an older one stale, with the cause
+`source`, in each target that knows it, and in no target that reads it already. When `prod` cannot
+be read, another target reads the versions that it knows, and a bake from the store needs no
+network. When a target knows no version in that format, the listing blocks the layers that read the
+source (`blocked`), and the fix names the command that prepares one.
+
+A step names the files of a version that it reads; an update refuses a step that names none. The
+fetch reads the manifest of the version from the targets of `data/targets.toml`, `prod` first,
+through their public URLs, without credentials. It skips a target that it cannot read, and takes
+the first manifest with the SHA-256 of the version. It downloads only the named files that the
+store lacks, and checks the SHA-256 of each against the manifest: a file with other bytes fails the
+fetch. The record of the version in the store has the manifest and these files, and the `url` of
+each is its key.
+
+#### Delete
+
+After a switch, the [collection](#collection) of a target deletes a complete version of a prepared
+source only when no kept release reads it and a kept release reads a newer version. It removes the
+version from `versions.json` first, then deletes its files, the manifest last. The newest version
+that no release reads, a version without a manifest, and every key that no version holds stay.
+The store of a machine keeps the files of a version that a release of one of its targets reads,
+as [Clean](#clean) says, also after the target deleted the version.
 
 ### Serve
 
@@ -1388,9 +1540,10 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
-| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
+| `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
+| `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
@@ -1543,6 +1696,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
 | `source refresh` | `Refreshed` |
+| `source prepare` | `Started` |
+| `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
@@ -2039,6 +2194,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "const": "installed",
           "description": "A person installs it, or another source's build brings it.",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "description": "`obc data source prepare` publishes its versions to a target.",
           "type": "string"
         }
       ]
@@ -3040,6 +3200,201 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "PrepareReview": {
+      "description": "The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when\nthey are the ones that a person read.",
+      "properties": {
+        "abandoned": {
+          "description": "The version that a stopped run of this machine started and that this run does not resume:\nthe target has a newer complete version. `null` when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "The arguments after `obc data` that start the prepare of this review.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cost": {
+          "$ref": "#/$defs/PreparedCost"
+        },
+        "done": {
+          "$ref": "#/$defs/Downloads",
+          "description": "The files that earlier runs of the version uploaded: this run does not upload them again."
+        },
+        "format": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope and the source, version and params of each input.",
+          "type": "string"
+        },
+        "inputs": {
+          "items": {
+            "$ref": "#/$defs/PreparedInput"
+          },
+          "type": "array"
+        },
+        "listing": {
+          "description": "Whether the manifest of the version is on the target and names the files of the journal: the\nrun only lists the version, and makes and writes nothing else.",
+          "type": "boolean"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineCheck"
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null`: every place that the source covers."
+        },
+        "source": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Each target whose serving release reads an older version, with those layers: they are stale\nonce the version is complete.",
+          "items": {
+            "$ref": "#/$defs/StaleReaders"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        },
+        "version": {
+          "description": "The version that the run makes: the UTC date when its first run started.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "target",
+        "version",
+        "abandoned",
+        "listing",
+        "format",
+        "revision",
+        "scope",
+        "inputs",
+        "done",
+        "cost",
+        "machine",
+        "stale",
+        "args"
+      ],
+      "type": "object"
+    },
+    "PreparedCost": {
+      "description": "Estimates from the newest version that the target lists; `null` without one.",
+      "properties": {
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "store_bytes": {
+          "description": "What goes into the store: the inputs that it lacks, and the files of the version.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown": {
+          "description": "The inputs whose size the store does not know, as `SOURCE@VERSION`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "upload_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "wall_ms",
+        "peak_rss_bytes",
+        "store_bytes",
+        "upload_bytes",
+        "unknown"
+      ],
+      "type": "object"
+    },
+    "PreparedInput": {
+      "properties": {
+        "bytes": {
+          "description": "The size of its files that the store records; `null` when the store has no record.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "description": "`null` for the newest version upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "bytes"
+      ],
+      "type": "object"
+    },
     "Progress": {
       "description": "The steps of a layer that a run bakes, and those that finished.",
       "properties": {
@@ -3673,6 +4028,27 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Scope": {
+      "additionalProperties": false,
+      "description": "The part of the world that a version covers, as the settings of a target name a region.",
+      "properties": {
+        "definitions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The TOML text of the region and of the members of a union, by id.",
+          "type": "object"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "definitions"
+      ],
+      "type": "object"
+    },
     "Serving": {
       "additionalProperties": false,
       "description": "`release.json`: the release that a target serves, and the one that a rollback switches to.",
@@ -3995,6 +4371,32 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "sources"
+      ],
+      "type": "object"
+    },
+    "StaleReaders": {
+      "properties": {
+        "error": {
+          "description": "Why the target cannot be read; `null` when it can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "layers",
+        "error"
       ],
       "type": "object"
     },
@@ -4483,12 +4885,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/Holder",
           "description": "The run that held the lock."
         },
+        "source": {
+          "description": "The prepared source whose lock it freed; `null` for the lock of the target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "target": {
           "type": "string"
         }
       },
       "required": [
         "target",
+        "source",
         "holder"
       ],
       "type": "object"

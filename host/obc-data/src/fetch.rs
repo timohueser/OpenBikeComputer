@@ -36,18 +36,21 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
-    fetch_recorded(root, store, http, request, None)
+    fetch_recorded(root, store, http, request, &[], None)
 }
 
+/// [`fetch`], with the names of the files of a prepared version that a step reads: a fetch of a
+/// prepared version gives its manifest and only these files.
 pub(crate) fn fetch_recorded(
     root: &Path,
     store: &Store,
     http: &Http,
     request: &Request,
+    names: &[String],
     acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let _using = store.using()?;
-    let snapshot = fetch_files(root, store, http, request, acquisition)?;
+    let snapshot = fetch_files(root, store, http, request, names, acquisition)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
         let record = Requested { version: snapshot.version.clone(), params: request.params.clone(), files };
@@ -61,6 +64,7 @@ fn fetch_files(
     store: &Store,
     http: &Http,
     request: &Request,
+    names: &[String],
     acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
@@ -79,6 +83,7 @@ fn fetch_files(
             source.fetch.url.as_deref().unwrap_or_default()
         )),
         FetchKind::Installed => Err(format!("source `{}` is installed, not fetched", source.id)),
+        FetchKind::Prepared => crate::prepared::fetch(root, store, request, names),
     }
 }
 
