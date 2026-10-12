@@ -346,12 +346,17 @@ fn same_bytes<'a>(
     Ok(())
 }
 
-/// Refuse `fetch` when the serving release read it, upstream gives only the newest version of its
-/// source, and the target does not copy it: this machine cannot get that version again.
+/// Refuse `fetch` when the serving release read its version, upstream gives only the newest version
+/// of its source, and the target does not copy it: this machine cannot get that version again. One
+/// version of such a source names all its requests, such as the tiles of a national terrain model,
+/// so the params do not count.
 fn refetchable(fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> Result<(), Error> {
     let Some(source) = sources.iter().find(|source| source.id == fetch.source) else { return Ok(()) };
     let newest_only = matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Dtm | FetchKind::ByHand);
-    let read = |serving: &&Release| serving.sources.iter().any(|read| !read.copy && covers(read, fetch));
+    let read = |serving: &&Release| {
+        let version = |read: &&Fetched| (&read.source, &read.version) == (&fetch.source, &fetch.version);
+        serving.sources.iter().filter(version).any(|read| !read.copy)
+    };
     let Some(serving) = serving.filter(|serving| newest_only && read(serving)) else { return Ok(()) };
     let (id, version) = (&source.id, &fetch.version);
     let policy = match source.refresh {
@@ -716,10 +721,12 @@ pub(super) mod tests {
         fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
             let head = crate::product::version(inputs, store, "head", &[]).map_err(Unplanned::Failed)?;
             let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
-            // The file `listed` makes the step list read `head`, as the list of a capture does.
+            // The file `listed` makes the step list read `head` per tile, as the device reads a
+            // national terrain model. Its step reads `head` without params.
             let files = crate::engine::snapshot_files(store, "head", &head, &[], &[]).map_err(Unplanned::Failed)?;
             if root.join("listed").exists() && files.is_none() {
-                let wanted = Wanted { source: "head".into(), version: Some(head), params: Vec::new() };
+                let params = vec![("tile".into(), "0001-0002".into())];
+                let wanted = Wanted { source: "head".into(), version: Some(head), params };
                 return Err(Unplanned::NeedsFetch(vec![wanted]));
             }
             let mut steps = pipeline();
