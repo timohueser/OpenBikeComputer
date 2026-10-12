@@ -45,8 +45,11 @@ pub fn update(
         stale
     } else {
         let mut changed = named.clone();
-        for step in ordered.iter().rev().filter(|step| changed.contains(step.name.as_str())).collect::<Vec<_>>() {
-            changed.extend(step.reads().filter(|input| stale.contains(input)));
+        // Readers come after what they read, so a stale input at any depth joins before its turn.
+        for step in ordered.iter().rev() {
+            if changed.contains(step.name.as_str()) {
+                changed.extend(step.reads().filter(|input| stale.contains(input)));
+            }
         }
         let new = |step: &&Step| release.get(step.name.as_str()).is_none_or(|output| output.layer != step.layer.name);
         changed.extend(steps.iter().filter(new).map(|step| step.name.as_str()));
@@ -108,7 +111,7 @@ mod tests {
     use crate::engine::plan::outputs;
     use crate::engine::runs::Limits;
     use crate::engine::state::{Cause as Why, Field, OPTIONS};
-    use crate::engine::tests::{fixture, layered, summary, Fixture, TEST};
+    use crate::engine::tests::{fixture, layered, summary, Fixture, REVISED, TEST};
     use crate::engine::{Request, Run};
 
     /// The id, the cause, the layers and the drops of a group.
@@ -214,5 +217,20 @@ mod tests {
         assert_eq!(builds, [("test/upper", false), ("test/join", true), ("test/count", true)]);
         let unknown = super::update(&fixture.store, &layered(), &release, &Newer::new(), &names(&["nothing"]));
         assert_eq!(unknown.err(), Some("no step makes the layer `nothing`".into()));
+
+        // `test/count` alone is named: it reads `test/join`, which reads the stale `test/upper`.
+        let counted = || {
+            let mut steps = layered();
+            steps[0].layer = &REVISED;
+            steps
+        };
+        let release = released(&fixture, &counted());
+        let mut deep = counted();
+        deep[2].options = serde_json::json!({"bounds": [7, 43, 8, 44]});
+        let update = super::update(&fixture.store, &deep, &by_step(&release), &Newer::new(), &names(&["revised"]));
+        let builds: Vec<(String, bool)> =
+            update.unwrap().plan.builds().map(|build| (build.step.clone(), build.again)).collect();
+        let expected = [("test/upper", false), ("test/join", false), ("test/count", true)];
+        assert_eq!(builds, expected.map(|(step, again)| (step.to_string(), again)));
     }
 }

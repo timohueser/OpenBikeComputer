@@ -1,6 +1,6 @@
 use super::*;
-use crate::device::tests::{fetched, root, temp};
-use obc_data::engine::plan::{outputs, plan, Kept};
+use crate::device::tests::{fetched, plan, root, temp};
+use obc_data::engine::plan::{outputs, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as Journal};
 use obc_data::fetch::http::Http;
 use obc_data::regions::parse_region;
@@ -49,7 +49,7 @@ fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fet
         [Wanted { source: POLY.into(), version: None, params: vec![("area".into(), "europe/parent".into())] }]
     );
     assert!(
-        !inputs.read.borrow().keys().any(|(source, _)| source == EXTRACTS),
+        !inputs.requests.borrow().iter().any(|(source, _)| source == EXTRACTS),
         "coverage precedes bulk request selection"
     );
     source(&store, "europe/parent", "2026-03-01", "2", &poly(7.0, 9.0));
@@ -134,7 +134,7 @@ fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
     let extracts: Vec<_> = outputs.iter().map(|output| &output.snapshots[EXTRACTS]).collect();
     assert!(extracts.iter().any(|read| read.version == "2026-01-01" && read.params[0].1 == "europe/west"));
     assert!(extracts.iter().any(|read| read.version == "2026-02-01" && read.params[0].1 == "europe/east"));
-    assert_eq!(inputs.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
+    assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
 }
 
 /// The inputs of `region` without a serving release.

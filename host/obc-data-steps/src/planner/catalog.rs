@@ -55,7 +55,7 @@ pub fn named<'a>(
         if step == INDEX {
             let public = files.iter().filter(|file| file.path == "release.json" || file.path.starts_with("public/"));
             named.extend(public.map(|file| (file.path.clone(), file.clone())));
-        } else if step.ends_with("/grid") {
+        } else if step.starts_with("planner/") && step.ends_with("/grid") {
             let file =
                 files.iter().find(|file| file.path == "index.json").ok_or(format!("{step} has no index.json"))?;
             named.push((format!("indexes/{step}/index.json"), file.clone()));

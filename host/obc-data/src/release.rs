@@ -211,10 +211,12 @@ impl Release {
     }
 
     /// Whether `other` has the same settings, outputs, pointers and named files: what a target
-    /// serves, whoever made it and when.
+    /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
-        (&self.settings, &self.outputs, &self.pointers, &self.named)
-            == (&other.settings, &other.outputs, &other.pointers, &other.named)
+        let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
+        (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
+            && self.outputs.len() == other.outputs.len()
+            && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }
 
     /// The release `id` of `target`.
@@ -474,5 +476,11 @@ pub(crate) mod tests {
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");
         assert!(refused(&|r| drop(r.named.pop())).contains("not the digest"));
+
+        let mut rebuilt = Release { machine: "desktop".into(), ..valid.clone() };
+        rebuilt.outputs[0].cost.wall_ms += 1;
+        assert!(rebuilt.serves_as(&valid), "a rebuild of the same bytes serves as the release");
+        rebuilt.outputs[0].key = "other".into();
+        assert!(!rebuilt.serves_as(&valid));
     }
 }

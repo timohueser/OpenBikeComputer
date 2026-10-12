@@ -156,7 +156,6 @@ each of them once in `references` (`OBCC_Spec.md` §13.1).
 
 ## Publishing and mirroring
 
-`publish` refuses once live reads `dtm-*`. Run `obc data apply live`.
 Both commands pass these R2 variables through the child environment:
 
 ```

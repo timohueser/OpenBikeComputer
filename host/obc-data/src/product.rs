@@ -10,7 +10,7 @@ use crate::engine::{snapshot_files, LayerFile, Step};
 use crate::regions::Regions;
 use crate::release::{Output, Release};
 use crate::settings::Settings;
-use crate::sources::VersionScheme;
+use crate::sources::compare_versions;
 use crate::store::{sorted, Store};
 
 pub trait Product: Sync {
@@ -20,11 +20,6 @@ pub trait Product: Sync {
     /// The optional layers that the settings of a target can switch on.
     fn optional(&self) -> &'static [&'static str] {
         &[]
-    }
-
-    /// Sources whose credentials a selected layer may need for new acquisition.
-    fn credential_sources(&self, _settings: &Settings) -> Vec<&'static str> {
-        Vec::new()
     }
 
     /// Its steps for `inputs`, with tool paths relative to `root`. A step list that reads a
@@ -151,8 +146,6 @@ pub struct Inputs {
     pub manual: BTreeSet<String>,
     /// Every fetch that a step list asked for, also one without files in the store.
     pub requests: RefCell<BTreeSet<RequestKey>>,
-    /// Each version that [`version`] gave.
-    pub read: RefCell<Versions>,
     /// The fetches that failed in this listing. A product blocks only the layers that need them.
     pub fetch_failures: Vec<(Wanted, String)>,
 }
@@ -177,10 +170,14 @@ impl Inputs {
     }
 }
 
-/// The version of the fetch of `source` with `params` that a step list reads: the version that
-/// this update chose, or else the newest version that this machine knows ([`known`]).
-/// `Err(Wanted)` names a fetch of the newest version upstream. Every step list gets its versions
-/// here, and `inputs` records each version that it gives.
+/// The version of the fetch of `source` with `params` that a step list reads:
+///
+/// 1. For a due fetch, the version that this update took upstream; before that fetch,
+///    `Err(Wanted)` names a fetch of the newest version upstream.
+/// 2. Otherwise the newest version that this machine knows ([`known`]).
+/// 3. Otherwise `Err(Wanted)`: the newest version upstream.
+///
+/// Every step list gets its versions here, and `inputs` records each fetch that it asks for.
 pub fn version(
     inputs: &Inputs,
     store: &Store,
@@ -194,47 +191,33 @@ pub fn version(
         None if inputs.due.contains(&key) => None,
         None => known(inputs, store, source, params)?,
     };
-    if let Some(version) = &version {
-        inputs.read.borrow_mut().insert(key, version.clone());
-    }
     Ok(version.ok_or(Wanted { source: source.into(), version: None, params: params.to_vec() }))
 }
 
-/// The version of a fetch that the serving release reads, or a newer one that the store has. A
-/// date or a release version is newer by its text; a commit or a digest, when the store fetched
-/// it after the version of the release. Without a serving version: the `start` of the source, or
-/// else the newest version in the store. A fetch without params of a source that the release
-/// reads per params, such as the GLO-30 tiles, gives their version; so does a new request of a
-/// source with a `start`.
+/// The newest of the serving version of the fetch, its versions in the store and the `start` of
+/// its source, by the order of the source's versions. The serving version of a fetch without
+/// params, or of any fetch of a source with a `start`, is the newest serving version of the source:
+/// one version names all its requests, such as the GLO-30 tiles of every region. A `commit` or a
+/// `digest` has no order: the serving version, or else the `start`.
 fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<String>, String> {
     let declared = crate::sources::all().iter().find(|s| s.id == source);
     let start = declared.and_then(|s| s.start.clone());
-    let ordered = declared.is_none_or(|s| matches!(s.version, VersionScheme::Date | VersionScheme::Release));
+    let newest = |versions: &mut dyn Iterator<Item = String>| versions.max_by(|a, b| compare_versions(a, b));
     let serving = match inputs.serving.get(&(source.to_string(), sorted(params))) {
         Some(version) => Some(version.clone()),
         None if params.is_empty() || start.is_some() => {
-            inputs.serving.iter().filter(|((id, _), _)| id == source).map(|(_, version)| version.clone()).max()
+            newest(&mut inputs.serving.iter().filter(|((id, _), _)| id == source).map(|(_, version)| version.clone()))
         }
         None => None,
     };
-    let versions = match params {
-        [] => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
-        params => store.requests(source, params)?.into_iter().map(|request| request.version).collect::<Vec<_>>(),
-    };
-    let mut stored = Vec::new();
-    for version in versions {
-        let snapshot = store.snapshot(source, &version)?;
-        let retrieved = snapshot.and_then(|snapshot| snapshot.files.into_iter().map(|file| file.retrieved).max());
-        stored.push((if ordered { version.clone() } else { retrieved.unwrap_or_default() }, version));
+    if declared.is_some_and(|source| !source.version.ordered()) {
+        return Ok(serving.or(start));
     }
-    stored.sort();
-    let Some(serving) = serving else {
-        return Ok(start.or_else(|| stored.pop().map(|(_, version)| version)));
+    let stored: Vec<String> = match params {
+        [] => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
+        params => store.requests(source, params)?.into_iter().map(|request| request.version).collect(),
     };
-    let order = stored.iter().find(|(_, version)| *version == serving).map(|(order, _)| order.clone());
-    let order = if ordered { Some(serving.clone()) } else { order };
-    let newer = stored.into_iter().rfind(|(at, _)| order.as_ref().is_some_and(|order| at > order));
-    Ok(Some(newer.map_or(serving, |(_, version)| version)))
+    Ok(newest(&mut serving.into_iter().chain(stored).chain(start)))
 }
 
 /// The files of the fetch of `source` with `params` that a step list reads, at its [`version`].
@@ -275,10 +258,22 @@ mod tests {
         assert_eq!(version(&inputs, "copernicus-glo-30", &area("a")), Ok("2022-05-09".into()), "the `start`");
         assert_eq!(version(&inputs, "absent", &area("a")), Err(None), "the newest upstream");
 
+        // `query-model` starts at `v2`: a newer version in the store is newer than the start, and
+        // the update after the one that took it reads it again.
+        fixture.fetched_version("query-model", "v3", "model.zip", b"model\n");
+        assert_eq!(version(&inputs, "query-model", &[]), Ok("v3".into()), "newer than the `start`");
+        inputs.serving.insert(("query-model".into(), Vec::new()), "v3".into());
+        assert_eq!(version(&inputs, "query-model", &[]), Ok("v3".into()), "the next update");
+        fixture.fetched_version("nominatim-country-data", "5.10.0", "data.whl", b"data\n");
+        inputs.serving.insert(("nominatim-country-data".into(), Vec::new()), "5.3.2".into());
+        assert_eq!(version(&inputs, "nominatim-country-data", &[]), Ok("5.10.0".into()), "by number, not text");
+        inputs.serving.insert(("protomaps-assets".into(), Vec::new()), "a".into());
+        fixture.fetched_version("protomaps-assets", "b", "assets.zip", b"assets\n");
+        assert_eq!(version(&inputs, "protomaps-assets", &[]), Ok("a".into()), "a commit has no order");
+
         inputs.due.insert(("head".into(), Vec::new()));
         assert_eq!(version(&inputs, "head", &[]), Err(None), "a due fetch without a newer name");
         inputs.resolve(&Wanted { source: "head".into(), version: None, params: Vec::new() }, "3".into());
         assert_eq!(version(&inputs, "head", &[]), Ok("3".into()), "the version that this update chose");
-        assert_eq!(inputs.read.borrow()[&("head".to_string(), Vec::new())], "3");
     }
 }

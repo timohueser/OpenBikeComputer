@@ -759,8 +759,10 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             );
         }
 
+        /// The plan of `steps` against a release that has none of them.
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
-            plan::plan(&self.store, steps)
+            let none = std::collections::BTreeMap::new();
+            Ok(changes::update(&self.store, steps, &none, &state::Newer::new(), &[])?.plan)
         }
 
         /// Plan `steps`, and run the plan.
@@ -910,7 +912,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         }
         assert_eq!(first[2].receipt.files[0].path, "count/lines.txt");
 
-        assert_eq!(fixture.plan(&pipeline()).unwrap().groups, [], "the store has every layer");
+        assert_eq!(fixture.plan(&pipeline()).unwrap().builds().count(), 0, "the store has every layer");
     }
 
     #[test]
@@ -948,7 +950,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let first = fixture.build(&steps).unwrap();
 
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
-        assert_eq!(fixture.plan(&steps).unwrap().groups, [], "other code with the same version");
+        assert_eq!(fixture.plan(&steps).unwrap().builds().count(), 0, "other code with the same version");
 
         write(&fixture.root().join("join.py"), JOIN);
         steps[1].layer = &REVISION;
@@ -975,7 +977,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         );
 
         fixture.fetched("head", "other.txt", b"other\n");
-        assert_eq!(fixture.plan(&pipeline()).unwrap().groups, []);
+        assert_eq!(fixture.plan(&pipeline()).unwrap().builds().count(), 0);
 
         fixture.fetched("tail", "other.txt", b"other\n");
         let built = fixture.build(&pipeline()).unwrap();
@@ -983,7 +985,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
         let mut steps = pipeline();
         steps[2].inputs = vec![snapshot("head", "1", &["x"])];
-        let fetches = &fixture.plan(&steps).unwrap().groups[0].fetches;
+        let fetches = &fixture.plan(&steps).unwrap().fetches();
         assert_eq!(fetches[0].files, ["x"], "a missing file is a fetch");
         let err = fixture.build(&steps).err().unwrap();
         assert_eq!(err, "fetch head@1: no source `head` in data/sources.toml");

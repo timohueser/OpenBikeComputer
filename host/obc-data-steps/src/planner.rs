@@ -15,7 +15,6 @@ use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Sha
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::settings::Settings;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
@@ -124,14 +123,6 @@ impl Product for Planner {
 
     fn verify(&self, root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
         catalog::verify(root, previous, release, store)
-    }
-
-    fn credential_sources(&self, settings: &Settings) -> Vec<&'static str> {
-        [("climate", "era5-land"), ("snow", "hr-wsi")]
-            .into_iter()
-            .filter(|(layer, _)| settings.layers.iter().any(|selected| selected == layer))
-            .map(|(_, source)| source)
-            .collect()
     }
 
     fn optional(&self) -> &'static [&'static str] {
@@ -630,6 +621,7 @@ mod tests {
     use super::*;
     use crate::device::tests::{fetched, root, temp, Temp};
     use crate::device::{Device, EXTRACTS};
+    use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
 
@@ -688,8 +680,7 @@ mod tests {
         fetched(&store, obc_draw::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
         for day in days {
-            fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
-            crate::device::tests::captured(&store, "1", AREA, day, poly);
+            crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
         }
         store
     }
@@ -765,7 +756,7 @@ mod tests {
         assert_eq!(osm.inputs.len(), 2);
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
-        assert_eq!(inputs.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
+        assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
     }
 
     #[test]
@@ -893,6 +884,15 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         let result = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store);
         assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("no country")));
+        // A newer index names the country of the area.
+        let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+            "properties":{"id":"test","name":"Test","parent":null,"iso3166-1:alpha2":["DE"],
+                "urls":{"pbf":"https://download.geofabrik.de/europe/test-latest.osm.pbf"}},
+            "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+        fetched(&store, crate::device::catalog::INDEX, "2", &[], &[("index-v1.json".into(), index.to_string())]);
+        let steps = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store).unwrap().steps;
+        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
+        assert_eq!(routing.options["countries"], json!(["DE"]));
         let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         assert_eq!(pois.options["time_zone"], "UTC");

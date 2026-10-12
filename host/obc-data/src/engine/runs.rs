@@ -1003,7 +1003,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             ]
         );
         assert_eq!(runs[0].bytes_fetched, 6);
-        assert_eq!(fixture.plan(&steps).unwrap().groups, [], "the store knows the files of the params");
+        assert_eq!(fixture.plan(&steps).unwrap().builds().count(), 0, "the store knows the files of the params");
         assert_eq!(log.lock().unwrap().len(), 1);
 
         // A fetch that gave no file: its input reads no file, not every file of the version.

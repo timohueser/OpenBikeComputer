@@ -4,36 +4,24 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use obc_data::engine::Request;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use obc_map_core::config::{Config, CELL_SCHEMA as SCHEMA};
 use obc_map_core::grid::CellId;
 use obc_map_core::progress::{CancelToken, Progress};
 
-/// The sources of one landmark or peak capture.
+/// The sources of the shared Wikimedia content.
 pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
-/// The revision of the code that makes the boundary and the candidates or the summits. A capture
-/// pins it as its param `code=`, so a capture of another revision is another request. A change that
-/// gives them other output increases it.
-pub const CAPTURE_REVISION: &str = "1";
-
-/// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
-/// files, the `.poly` and the `.osm.pbf` that the capture read. The capture keeps no copy of the
-/// boundary or of the candidates, which are OSM data, so the step makes them again, byte for byte.
+/// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the shared
+/// facts, the `.poly` and the `.osm.pbf`. The step makes the boundary and the candidates, which are
+/// OSM data, from the `.poly` and the `.osm.pbf`.
 pub fn landmark_content(request: &Request) -> Result<(), String> {
-    let (view, boundary, extract) = capture_view(request)?;
+    let (view, boundary, extract) = content_view(request)?;
     crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
-    if view.join("recipe.json").is_file() {
-        check_pins(&view, &boundary, "candidates")?;
-    } else {
-        let candidates: crate::landmarks::discover::Candidates =
-            serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let files = shared_files(request);
-        crate::landmarks::shared::landmark_view(&files, &view, &candidates.qids)?;
-    }
+    let candidates: crate::landmarks::discover::Candidates =
+        serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    crate::landmarks::shared::landmark_view(&shared_files(request), &view, &candidates.qids)?;
     crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)?;
     crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
@@ -41,67 +29,28 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
 /// The compiled peaks of a region: `peaks/peaks.json` and its photos, as [`landmark_content`]
 /// makes the landmarks, with the summits in place of the candidates.
 pub fn peak_content(request: &Request) -> Result<(), String> {
-    let (view, boundary, extract) = capture_view(request)?;
+    let (view, boundary, extract) = content_view(request)?;
     crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
-    if view.join("recipe.json").is_file() {
-        check_pins(&view, &boundary, "summits")?;
-    } else {
-        crate::landmarks::shared::peak_view(&shared_files(request), &view)?;
-    }
+    crate::landmarks::shared::peak_view(&shared_files(request), &view)?;
     crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)?;
     crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
 
-/// Refuse a capture whose recipe pinned another boundary, or other `candidates` or `summits`, than
-/// the step made again: the code that makes them changed since the capture, and a new capture
-/// with this code is the fix.
-fn check_pins(view: &Path, boundary: &Path, made: &str) -> Result<(), String> {
-    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let recipe: Value = serde_json::from_slice(&read(&view.join("recipe.json"))?)
-        .map_err(|e| format!("the recipe of the capture: {e}"))?;
-    for (name, path) in [("boundary", boundary.to_path_buf()), (made, view.join(format!("{made}.json")))] {
-        let digest: String = Sha256::digest(read(&path)?).iter().map(|byte| format!("{byte:02x}")).collect();
-        if recipe[format!("{name}_sha256")].as_str() != Some(digest.as_str()) {
-            return Err(format!(
-                "the capture of `{}` is out of date for this code: the {name} that it pinned and the {name} that \
-                 this code makes are not the same. Plan with `--move {}`",
-                CAPTURES[0], CAPTURES[0]
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The capture files as the capture wrote them, the boundary from the `.poly`, and the `.osm.pbf`.
-fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let mut capture = BTreeMap::new();
-    let mut other = Vec::new();
-    for (source, files) in &request.snapshots {
-        for (name, object) in files {
-            if !CAPTURES.contains(&source.as_str()) {
-                other.push((name, object));
-                continue;
-            }
-            // A capture file is `#<query>/<path in the capture>`.
-            let path = if name.starts_with("#content/") {
-                Some(name.trim_start_matches('#'))
-            } else {
-                name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path)
-            };
-            capture.insert(path.ok_or(format!("{source}: {name} is not a capture file"))?.to_string(), object.clone());
-        }
-    }
+/// An empty view directory beside the output, the boundary from the `.poly`, and the `.osm.pbf`.
+fn content_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let other: Vec<(&String, &PathBuf)> = request
+        .snapshots
+        .iter()
+        .filter(|(source, _)| !CAPTURES.contains(&source.as_str()))
+        .flat_map(|(_, files)| files.iter())
+        .collect();
     let one = |suffix: &str| match other.iter().filter(|(name, _)| name.ends_with(suffix)).collect::<Vec<_>>()[..] {
         [(_, object)] => Ok((*object).clone()),
         ref found => Err(format!("the step reads {} {suffix} files, not one", found.len())),
     };
     let (poly, extract) = (one(".poly")?, one(".osm.pbf")?);
     let view = request.output.with_file_name("view");
-    if capture.keys().any(|name| name.starts_with("content/")) {
-        std::fs::create_dir_all(&view).map_err(|e| e.to_string())?;
-    } else {
-        copied_view(&capture, &view)?;
-    }
+    std::fs::create_dir_all(&view).map_err(|e| e.to_string())?;
     let boundary = request.output.with_file_name("boundary.geojson");
     let poly = std::fs::read_to_string(&poly).map_err(|e| format!("{}: {e}", poly.display()))?;
     std::fs::write(&boundary, crate::catalog::boundary::geojson(&poly)?)
@@ -205,6 +154,8 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
+/// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
+/// refuses a symbolic link, which could name a file outside its directory.
 fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for (path, object) in files {
@@ -223,8 +174,9 @@ fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
-    use crate::landmarks::peaks::{discover, PeakContent};
 
     #[test]
     fn regions_without_content_identities_compile_empty_landmarks_and_peaks() {
@@ -316,68 +268,5 @@ mod tests {
         peaks(&empty).unwrap();
         assert!(empty.output.join("peaks").is_dir(), "valid empty content fulfills the declared output");
         assert_eq!(std::fs::read_dir(empty.output.join("peaks")).unwrap().count(), 0, "no placeholder payload");
-    }
-
-    /// The capture keeps no summits, which are OSM data: the step makes them again from the
-    /// extract, byte for byte, and refuses a capture whose recipe pinned others, as after a change
-    /// of the code that makes them.
-    #[test]
-    fn a_peak_capture_compiles_with_the_summits_that_the_step_makes_again() {
-        let dir = obcm_testkit::scratch::scratch_dir("step", "peak-content");
-        let osm = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/peak-discovery.osm.pbf");
-        let poly = dir.join("area.poly");
-        std::fs::write(&poly, "world\n1\n -179 -89\n 179 -89\n 179 89\n -179 89\n -179 -89\nEND\nEND\n").unwrap();
-        let capture = dir.join("capture");
-        std::fs::create_dir_all(&capture).unwrap();
-        let boundary = capture.join("boundary.geojson");
-        std::fs::write(&boundary, crate::catalog::boundary::geojson(&std::fs::read_to_string(&poly).unwrap()).unwrap())
-            .unwrap();
-        let summits = capture.join("summits.json");
-        discover(&osm, &boundary, &summits).unwrap();
-        let hex = |bytes: &[u8]| Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let bytes = std::fs::read(&summits).unwrap();
-        let manifest = capture.join("manifest.json");
-        let source = serde_json::json!({"path": "summits.json", "url": "urn:summits", "bytes": bytes.len(), "sha256": hex(&bytes)});
-        let document = serde_json::json!({"schema": 1, "sources": [source], "places": [],
-            "peaks": {"summits_path": "summits.json", "resolutions": []}});
-        std::fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
-
-        let files = |name: &str, path: &Path| (name.to_string(), path.to_path_buf());
-        let boundary_sha256 = hex(&std::fs::read(&boundary).unwrap());
-        let build = |name: &str, boundary_sha256: &str, summits_sha256: &str| {
-            let recipe = dir.join(format!("{name}.json"));
-            let pins = serde_json::json!({"boundary_sha256": boundary_sha256, "summits_sha256": summits_sha256});
-            std::fs::write(&recipe, pins.to_string()).unwrap();
-            let capture = [files("#peaks=0/manifest.json", &manifest), files("#peaks=0/recipe.json", &recipe)];
-            let request = Request {
-                step: "maps/peak-content".into(),
-                snapshots: BTreeMap::from([
-                    ("wikidata".to_string(), BTreeMap::from(capture)),
-                    ("geofabrik-poly".to_string(), BTreeMap::from([files("area.poly", &poly)])),
-                    ("geofabrik-extracts".to_string(), BTreeMap::from([files("area.osm.pbf", &osm)])),
-                ]),
-                layers: BTreeMap::new(),
-                layer_files: BTreeMap::new(),
-                options: serde_json::json!({}),
-                output: dir.join(name).join("output"),
-                metrics: dir.join(name).join("metrics.json"),
-            };
-            peak_content(&request).map(|()| request.output)
-        };
-        let output = build("current", &boundary_sha256, &hex(&bytes)).unwrap();
-        let content = std::fs::read(output.join("peaks/peaks.json")).unwrap();
-        let content: PeakContent = serde_json::from_slice(&content).unwrap();
-        let summits: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(content.counts.captured > 0);
-        assert_eq!(content.counts.captured, summits["summits"].as_array().unwrap().len());
-        for (name, boundary_pin, summit_pin, changed) in [
-            ("other-summits", boundary_sha256.as_str(), hex(b"other summits"), "summits"),
-            ("other-boundary", "other boundary", hex(&bytes), "boundary"),
-        ] {
-            let refused = build(name, boundary_pin, &summit_pin).unwrap_err();
-            assert!(refused.contains(&format!("the {changed} that it pinned")), "{refused}");
-            assert!(refused.ends_with("Plan with `--move wikidata`"), "{refused}");
-            assert!(!dir.join(name).join("output/peaks/peaks.json").exists(), "pin mismatch writes no content");
-        }
     }
 }

@@ -11,11 +11,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use obc_bake::cut::{cut, CutOptions};
-use obc_data::engine::plan::{outputs, Kept};
+use obc_data::engine::plan::{outputs, Kept, Plan};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
-use obc_data::product::{Inputs, Product};
+use obc_data::product::{Inputs, Product, Unplanned, Wanted};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::release::Release;
 use obc_data::settings::Settings;
@@ -63,6 +63,46 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
         let params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
         store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name.into()] }).unwrap();
     }
+}
+
+/// Record the shared facts of `wanted` at [`VERSION`]: Wikidata has each entity and link as
+/// missing, and Wikipedia and Commons give no file.
+fn missing_facts(store: &Store, wanted: &Wanted) {
+    let query: serde_json::Value = serde_json::from_str(&wanted.params[0].1).unwrap();
+    let mut facts = Vec::new();
+    if wanted.source == "wikidata" {
+        for (kind, list) in [("entity", "entities"), ("link", "links")] {
+            for key in query[list].as_array().unwrap() {
+                facts.push(
+                    serde_json::to_vec(&serde_json::json!({"kind": kind, "key": key, "status": "missing"})).unwrap(),
+                );
+            }
+        }
+    }
+    let mut snapshot = store.snapshot(&wanted.source, VERSION).unwrap().unwrap_or_else(|| Snapshot {
+        source: wanted.source.clone(),
+        version: VERSION.into(),
+        files: Vec::new(),
+    });
+    let mut names = Vec::new();
+    for bytes in facts {
+        let sha256 = obc_data::store::sha256_hex(&bytes);
+        let (name, file) = (format!("#content/fact/{sha256}.json"), store.partial("fact"));
+        write_atomic(&file, &bytes).unwrap();
+        store.insert(&file, &sha256).unwrap();
+        let url = format!("https://example.org/{name}");
+        snapshot.files.push(FileRecord {
+            name: name.clone(),
+            url,
+            size: bytes.len() as u64,
+            sha256,
+            retrieved: String::new(),
+        });
+        names.push(name);
+    }
+    store.put_snapshot(&snapshot).unwrap();
+    let requested = Requested { version: VERSION.into(), params: wanted.params.clone(), files: names };
+    store.put_requested(&wanted.source, &requested).unwrap();
 }
 
 /// Record the polygon of each area of a national model as a speck at 0° 0°: the store has no
@@ -118,6 +158,12 @@ fn copy(request: &Request) -> Result<(), String> {
     Ok(())
 }
 
+/// The plan of `steps` against a release that has none of them.
+fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
+    let none = BTreeMap::new();
+    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
+}
+
 #[test]
 fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader() {
     let temp = Temp(std::env::temp_dir().join(format!("obc-data-cells-{}", std::process::id())));
@@ -148,21 +194,6 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let zip = temp.0.join("land.zip");
     land_zip(&zip);
     fetched(&store, "land-polygons", &[], "land-polygons-split-3857.zip", &zip);
-    // The Wikimedia captures, which only the compiles read, and this test has none.
-    let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
-    let code = obc_pack::step::CAPTURE_REVISION;
-    for collection in ["landmarks", "peaks"] {
-        let params = [
-            ("collection", collection),
-            ("area", AREA),
-            ("osm", osm.as_str()),
-            ("poly", poly.as_str()),
-            ("code", code),
-        ];
-        for source in obc_pack::step::CAPTURES {
-            fetched(&store, source, &params, &format!("#{collection}=0/recipe.json"), &zip);
-        }
-    }
 
     let region = parse_region("grimsel-box", REGION).unwrap();
     let regions = Regions::new(vec![region]).unwrap();
@@ -174,9 +205,13 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let inputs = Inputs { settings, serving, ..Inputs::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
-    let listed = Device
-        .steps_with_tool(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &inputs, &regions, &store, Ok(()))
-        .unwrap();
+    // The shared Wikimedia facts, which only the stand-in compiles read: every identity is missing.
+    let list = || Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(()));
+    for _ in 0..3 {
+        let Err(Unplanned::NeedsFetch(wanted)) = list() else { break };
+        wanted.iter().for_each(|wanted| missing_facts(&store, wanted));
+    }
+    let listed = list().unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
@@ -191,7 +226,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             _ => {}
         }
     }
-    let plan = obc_data::engine::plan::plan(&store, &steps).unwrap();
+    let planned = plan(&store, &steps).unwrap();
     let mut run = RunLog::create(&store, "build test").unwrap();
     let kept = Kept::new();
     let context = Context {
@@ -202,7 +237,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         kept: &kept,
         limits: Limits::machine(),
     };
-    let built = run.build(&context, &steps, &plan).unwrap();
+    let built = run.build(&context, &steps, &planned).unwrap();
     run.finish(None).unwrap();
     let layers: BTreeMap<&str, &Receipt> =
         built.iter().map(|built| (built.receipt.step.as_str(), &built.receipt)).collect();
@@ -340,7 +375,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             step.run = Run::Rust(malformed_network);
         }
     }
-    let changed = obc_data::engine::plan::plan(&store, &steps).unwrap();
+    let changed = plan(&store, &steps).unwrap();
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();

@@ -41,6 +41,8 @@ pub struct Machine {
 #[derive(Serialize, JsonSchema)]
 pub struct TargetState {
     pub target: String,
+    /// `dir` or `r2`, as `data/targets.toml` says.
+    pub kind: String,
     /// The folder of a dir target, or the public URL of an R2 bucket.
     pub at: String,
     /// What `release.json` of the target says; `null` while it serves nothing.
@@ -56,7 +58,8 @@ pub struct TargetState {
     pub drift: Vec<String>,
     /// Why the target or its steps could not be read; `null` when they could.
     pub error: Option<String>,
-    /// The command to run next; `null` when the target serves its settings as the steps make them now.
+    /// The command to run next; `null` when the target serves its settings as the steps make them
+    /// now, or when no command of this `obc data` writes the target: an R2 bucket.
     pub next: Option<String>,
 }
 
@@ -106,7 +109,12 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
         if let Some(error) = &target.error {
             rows.push(vec!["  error".into(), error.clone()]);
         }
-        rows.push(vec!["  next".into(), target.next.clone().unwrap_or_else(|| "nothing to do".into())]);
+        let next = match (&target.next, target.kind == "r2") {
+            (Some(next), _) => next.clone(),
+            (None, true) => "a later `obc data` writes an R2 bucket".into(),
+            (None, false) => "nothing to do".into(),
+        };
+        rows.push(vec!["  next".into(), next]);
         print_table(&rows);
     }
     Ok(())
@@ -121,12 +129,13 @@ fn state(
     name: &str,
     target: &Target,
 ) -> TargetState {
-    let at = match target {
-        Target::Dir(dir) => dir.display().to_string(),
-        Target::R2 { public } => public.clone(),
+    let (kind, at) = match target {
+        Target::Dir(dir) => ("dir", dir.display().to_string()),
+        Target::R2 { public } => ("r2", public.clone()),
     };
     let mut state = TargetState {
         target: name.into(),
+        kind: kind.into(),
         at,
         release: None,
         region: None,
@@ -136,9 +145,10 @@ fn state(
         error: None,
         next: None,
     };
+    let writes = kind == "dir";
     let judged = (|| -> Result<(), Error> {
         let Some(bytes) = target.get(SERVING)? else {
-            state.next = Some(format!("obc data update {name} --region ID"));
+            state.next = writes.then(|| format!("obc data update {name} --region ID"));
             return Ok(());
         };
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
@@ -157,7 +167,7 @@ fn state(
         let outputs = release.outputs.into_iter().map(|output| (output.step.clone(), output)).collect();
         let layers = crate::engine::state::state(store, &listed.steps, &Environment { release: outputs, newer })?;
         let stale = layers.iter().any(|layer| layer.state == Verdict::Stale);
-        state.next = (stale || !state.drift.is_empty()).then(|| format!("obc data update {name}"));
+        state.next = (writes && (stale || !state.drift.is_empty())).then(|| format!("obc data update {name}"));
         state.layers = Some(layers);
         Ok(())
     })();

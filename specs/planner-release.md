@@ -31,9 +31,10 @@ identities and layer receipts. These are not client files.
 
 ## Objects and services
 
-R2 stores release files under `planner/releases/ID/`. It stores source mirrors
-under `planner/sources/`, without the local `sources/` path prefix. A source name
-starts with its SHA-256. Source mirrors can be shared by releases.
+The standalone publisher stores release files under `planner/releases/ID/` of R2. It
+stores source mirrors under `planner/sources/`, without the local `sources/` path prefix.
+A source name starts with its SHA-256. Source mirrors can be shared by releases. A grid
+release of `obc data` uses the layout of [Canonical grid storage](#canonical-grid-storage).
 
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`,
 `terrain.pmtiles`, map assets, and their manifest. When the region recipe names a

@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use obc_bake::terrain::{DemCutter, TerrainBakeOptions, TerrainBakery, TerrainCellStatus, TerrainDoc};
-use obc_data::engine::plan::Kept;
+use obc_data::engine::plan::{Kept, Plan};
 use obc_data::engine::runs::{Context, Limits, Run};
+use obc_data::engine::Step;
 use obc_data::fetch::http::Http;
 use obc_data::product::Inputs;
 use obc_data::product::Unplanned;
@@ -102,6 +103,12 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     store
 }
 
+/// The plan of `steps` against a release that has none of them.
+fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
+    let none = BTreeMap::new();
+    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
+}
+
 fn steps(store: &Store, inputs: &Inputs, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {
     Device.steps_with_tool(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
@@ -125,7 +132,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTre
     assert!(listed.blocked.iter().any(|blocked| blocked.step == "device/catalog"), "terrain alone cannot publish");
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("device/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
-    let plan = obc_data::engine::plan::plan(store, &steps).unwrap();
+    let plan = plan(store, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
     let kept = Kept::new();
     let context = Context { store, root, sources: &[], http: &Http::new(), kept: &kept, limits: Limits::machine() };

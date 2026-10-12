@@ -138,3 +138,20 @@ fn delete_with_yes_appends_to_the_removal_log_then_deletes() {
     assert_eq!(record["reason"], "a stray upload");
     assert!(record["removed"].as_str().unwrap().ends_with('Z') && record["by"].is_string());
 }
+
+#[test]
+fn once_the_bucket_has_a_release_only_an_update_writes_its_keys() {
+    let temp = Temp::new("owned");
+    let file = temp.file("file", b"bytes");
+    let file = file.to_str().unwrap();
+    let status = |args: &[&str]| obc_data_r2(&temp, args).status.code();
+    assert_eq!(status(&["put", file, "planner/catalog.json"]), Some(0), "without a release, a pointer is free");
+    assert_eq!(status(&["put", file, "release.json"]), Some(0));
+    for key in ["planner/catalog.json", "objects/a", "releases/b.json", "lock.json"] {
+        assert_eq!(status(&["put", file, key]), Some(1), "{key}");
+    }
+    assert_eq!(status(&["delete", "planner/catalog.json", "--reason", "x", "--yes"]), Some(1));
+    assert!(temp.bucket().join("planner/catalog.json").exists(), "a refused delete deletes nothing");
+    assert_eq!(status(&["put", file, "uploads/other"]), Some(0), "another key stays free");
+    assert!(obc_data::r2::refuse_older_publish(&Bucket::local(&temp.bucket())).is_err());
+}

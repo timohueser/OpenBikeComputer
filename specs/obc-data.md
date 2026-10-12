@@ -29,7 +29,7 @@ One `[[source]]` table per source.
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
-| `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that a release reads, because upstream cannot give it again |
+| `r2_copy` | boolean | no, `false` | Reserved: no command copies a source to R2 |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -207,8 +207,8 @@ Rules:
 - `obc data` refuses a store whose `layout` is missing or holds another number. An empty or new
   store directory gets `layout`. For a store without it or with `1`, the fix removes `layers/`,
   `releases/`, `runs/`, `operations/`, `settings/`, `regions/`, `code/`, `producers/` and
-  `local/`, which hold records of an older format, and writes `layout`. Snapshot records and
-  objects stay.
+  `local/`, which hold records of an older format, and writes `layout`. A receipt of layout 1
+  names the input kind `layer`: a clean cannot read it. Snapshot records and objects stay.
 - An object is complete. A download goes to `partial/` and moves into `objects/` with one
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
@@ -655,21 +655,23 @@ acquired version separately. `runs RUN` gives the last phase, also after a later
 ### Versions
 
 A step list gets the version of each fetch that it reads from one function
-(`obc_data::product::version`), in this order:
+(`obc_data::product::version`), by three rules:
 
-1. The version that this update chose: the newer upstream version of a due fetch, or the version
-   that a fetch of the newest version gave in this update.
-2. For a due fetch whose newer upstream version has no name, such as a capture: the newest
-   version upstream.
-3. The version that the serving release reads, or a newer version of the fetch in the store. A
-   `date` or `release` version is newer by its text; a `commit` or `digest` version when the store
-   fetched it after the serving version. A fetch without `NAME=VALUE`s of a source that the release
-   reads only with them, such as the GLO-30 tiles that one version names, reads their version. So
-   does a new fetch of a source with a `start`, such as the extract of a new region.
-4. Without a serving version: the `start` of the source, or else the newest version in the store.
-5. The newest version upstream: the product names the fetch, and the update fetches it. A source
-   whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a fetch of
-   it without that value fails with `failed`, and the fix names the code of the product.
+1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
+2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
+   version, the versions of the fetch in the store and the `start` of the source. The serving
+   version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the
+   newest serving version of the source: one version names all its fetches, such as the GLO-30
+   tiles of every region, or the extract of a new area.
+3. Otherwise it reads the newest version upstream: the product names the fetch, and the update
+   fetches it. A source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest
+   version: a fetch of it without that value fails with `failed`, and the fix names the code of the
+   product.
+
+A `date` or a `release` version is newer by its parts: a run of digits by its number, any other
+run as text, so `v1.9` comes before `v1.11`. A `commit` or a `digest` has no order: rule 2 gives
+the serving version, or else the `start`. So an update after an update that changed nothing reads
+the same versions, and two machines with the same store read the same versions.
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
 metadata fetched (see [Products](#products)). It judges each of them, as
@@ -772,15 +774,9 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
-The content of a collection reads a capture of the region alone while the store has it: the
-capture that the serving release reads, or else the newest capture of the region in the store, with
-the extract and the `.poly` that it read. A new extract alone therefore asks for no new capture.
-Only a store of older code holds such a capture: a fetch gives none. When the store lacks a file
-of it, such as after a due refresh, the content reads shared Wikimedia content (see
-[Shared Wikimedia content](wikimedia-content.md)) for the extract and the `.poly` of now.
-`code=` of a capture is the revision of the code that made its boundary and its candidates or
-summits (`obc_pack::step::CAPTURE_REVISION`). The content step checks its full SHA-256 pins
-offline before it writes content or a receipt.
+The content of a collection reads the [shared Wikimedia content](wikimedia-content.md) of the
+identities that the extract and the `.poly` of its area name, and that extract and `.poly`. The
+step makes the boundary and the candidates or the summits again from them, offline.
 
 A single-area definition keeps the unsuffixed content layer names. Other definitions have one
 content layer per collection and source area. Article inputs keep separate file views;
@@ -939,10 +935,8 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
-source that we may not give to others, and a bucket is public. A machine that needs such an output
-of a kept layer bakes it again from the sources at the versions of the release, with the same key.
-When that bake gives another digest, the output replaces the kept one in the next release, and the
-layers that read it are stale with the cause `input`.
+source that we may not give to others, and a bucket is public. A step that reads such an output
+of a kept layer reads it from the store of the machine.
 
 ### Release manifest
 
@@ -1043,7 +1037,8 @@ An update that stops keeps what it baked in the store, and the next update reuse
 its rollback, the region, the state of each layer against the steps of now, the blocked steps,
 the pointers that drift, an error that stopped the judgement, and the command to run next. It
 fetches only small metadata, and checks upstream with the checks of the last hour. A target that
-serves nothing has the next command `obc data update TARGET --region ID`.
+serves nothing has the next command `obc data update TARGET --region ID`. An R2 target has no next
+command: `obc data update` writes only a `dir` target.
 
 ## Commands
 
@@ -3180,6 +3175,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "kind": {
+          "description": "`dir` or `r2`, as `data/targets.toml` says.",
+          "type": "string"
+        },
         "layers": {
           "description": "Each layer of the steps and of the serving release; `null` while the target serves nothing\nor its steps cannot be listed.",
           "items": {
@@ -3191,7 +3190,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "next": {
-          "description": "The command to run next; `null` when the target serves its settings as the steps make them now.",
+          "description": "The command to run next; `null` when the target serves its settings as the steps make them\nnow, or when no command of this `obc data` writes the target: an R2 bucket.",
           "type": [
             "string",
             "null"
@@ -3221,6 +3220,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "target",
+        "kind",
         "at",
         "release",
         "region",

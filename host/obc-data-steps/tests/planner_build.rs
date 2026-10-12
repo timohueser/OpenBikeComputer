@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use obc_data::engine::plan::{outputs, plan, Kept};
+use obc_data::engine::plan::{outputs, Kept, Plan};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{digest, Built, Input, Request, Run, Step};
 use obc_data::fetch::http::Http;
@@ -16,6 +16,7 @@ use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
 use obc_data::release::Release;
 use obc_data::settings::Settings;
+use obc_data::sources::embedded;
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::device::TILE_LIST;
 use obc_data_steps::planner::Planner;
@@ -45,6 +46,12 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     }
 }
 
+/// The plan of `steps` against a release that has none of them.
+fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
+    let none = BTreeMap::new();
+    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
+}
+
 #[test]
 fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_nothing() {
     let temp = Temp(std::env::temp_dir().join(format!("obc-data-planner-{}", std::process::id())));
@@ -64,7 +71,16 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
     fetched(&store, TILE_LIST, "1", Vec::new(), "tileList.txt", b"");
 
-    fetched(&store, "nominatim-country-data", "1", Vec::new(), "nominatim_db-1-py3-none-any.whl", &country_data());
+    // At its `start`: a version older than the `start` is not the newest that the machine knows.
+    let nominatim = embedded("nominatim-country-data").start.clone().unwrap();
+    fetched(
+        &store,
+        "nominatim-country-data",
+        &nominatim,
+        Vec::new(),
+        "nominatim_db-1-py3-none-any.whl",
+        &country_data(),
+    );
 
     let text = r#"name = "Test"
 kind = "box"
@@ -89,7 +105,8 @@ time_zone = "Europe/Berlin"
         "qrank",
         "pgf-encoding",
     ];
-    let serving = read.map(|id| ((id.to_string(), Vec::new()), "1".to_string()));
+    let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
+    let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
     let settings = Settings { region: AREA.into(), layers: vec!["sun".into()], ..Settings::default() };
     let inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
@@ -298,14 +315,12 @@ for name, entry in catalog['files'].items():
     };
     wanted.iter().for_each(|wanted| climate.resolve(wanted, DAY.into()));
     let climate = plan(&store, &steps(true, &climate)).unwrap();
-    assert_eq!(
-        climate.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(),
-        ["planner/climate", "planner/climate/grid", "planner/index", "planner/catalog"],
-        "optional climate reuses every other layer"
-    );
+    let builds: std::collections::BTreeSet<&str> = climate.builds().map(|build| build.step.as_str()).collect();
+    let expected = ["planner/catalog", "planner/climate", "planner/climate/grid", "planner/index"];
+    assert_eq!(builds, expected.into(), "optional climate reuses every other layer");
 
     let steps = steps(true, &inputs);
-    assert_eq!(plan(&store, &steps).unwrap().groups.len(), 0);
+    assert_eq!(plan(&store, &steps).unwrap().builds().count(), 0);
     let outputs = outputs(&store, &steps, &Kept::new()).unwrap().expect("the store has every layer");
     let named = Planner.named(&outputs).unwrap();
     assert!(named.iter().any(|(path, _)| path == "indexes/planner/routing/grid/index.json"));

@@ -61,6 +61,45 @@ pub enum VersionScheme {
     Digest,
 }
 
+impl VersionScheme {
+    /// Whether a version of the scheme is newer than another by its name: a date or a release. A
+    /// commit and a digest have no order.
+    pub fn ordered(self) -> bool {
+        matches!(self, VersionScheme::Date | VersionScheme::Release)
+    }
+}
+
+/// The order of two versions by their parts: a run of digits by its number, any other run as
+/// text. So `v1.9` comes before `v1.11`, and a date is in the order of its days.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(text: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut start = 0;
+        for (at, char) in text.char_indices().skip(1) {
+            let before = text[..at].chars().next_back().expect("a char before `at`");
+            if before.is_ascii_digit() != char.is_ascii_digit() {
+                parts.push(&text[start..at]);
+                start = at;
+            }
+        }
+        parts.push(&text[start..]);
+        parts
+    }
+    fn number(part: &str) -> Option<&str> {
+        part.bytes().all(|byte| byte.is_ascii_digit()).then(|| part.trim_start_matches('0'))
+    }
+    for (a, b) in parts(a).into_iter().zip(parts(b)) {
+        let order = match (number(a), number(b)) {
+            (Some(a), Some(b)) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+            _ => a.cmp(b),
+        };
+        if order.is_ne() {
+            return order;
+        }
+    }
+    parts(a).len().cmp(&parts(b).len())
+}
+
 /// How old the serving version may get before the source is stale.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
@@ -455,6 +494,15 @@ mod tests {
     fn an_unknown_field_is_rejected() {
         let err = parse_sources(&format!("{OSM}licence_text = \"x\"\n")).unwrap_err();
         assert!(err.contains("licence_text"), "{err}");
+    }
+
+    #[test]
+    fn a_version_is_newer_by_the_numbers_of_its_parts() {
+        use std::cmp::Ordering::Less;
+        for (older, newer) in [("v1.9", "v1.11"), ("5.3.2", "5.10.0"), ("2026-09-30", "2026-10-01"), ("1", "1.1")] {
+            assert_eq!(compare_versions(older, newer), Less, "{older} < {newer}");
+            assert_eq!(compare_versions(newer, older), Less.reverse(), "{newer} > {older}");
+        }
     }
 
     #[test]

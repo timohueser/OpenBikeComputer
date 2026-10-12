@@ -132,39 +132,6 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
     Ok(walked)
 }
 
-/// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
-/// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
-/// another build.
-pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-    let receipts = store.layers()?;
-    let walked = walk(store, steps, &Kept::new())?;
-    let builds: Vec<(&Step, Build, &Vec<Fetch>)> =
-        walked.iter().filter_map(|walked| Some((walked.step, build(walked, &receipts)?, &walked.fetches))).collect();
-
-    // A build joins the builds whose layers it reads.
-    let index: HashMap<&str, usize> =
-        builds.iter().enumerate().map(|(i, (step, ..))| (step.name.as_str(), i)).collect();
-    let mut parent: Vec<usize> = (0..builds.len()).collect();
-    for (i, (step, ..)) in builds.iter().enumerate() {
-        for j in step.reads().filter_map(|name| index.get(name)) {
-            union(&mut parent, i, *j);
-        }
-    }
-    let mut groups: Vec<Group> = Vec::new();
-    let mut group_of: HashMap<usize, usize> = HashMap::new();
-    for (i, (_, build, fetches)) in builds.iter().enumerate() {
-        let g = *group_of.entry(find(&mut parent, i)).or_insert_with(|| {
-            groups.push(Group::new(build.step.clone(), None));
-            groups.len() - 1
-        });
-        groups[g].builds.push(build.clone());
-        for fetch in fetches.iter() {
-            add_fetch(&mut groups[g].fetches, fetch);
-        }
-    }
-    sized(store, groups)
-}
-
 /// The build of a walked step, when the store lacks its layer.
 pub(super) fn build(walked: &Walked, receipts: &[Receipt]) -> Option<Build> {
     walked.stored.is_none().then(|| build_of(walked, receipts))
@@ -311,27 +278,11 @@ fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, String> {
     Ok(None)
 }
 
-/// The first build of the group of build `i`.
-fn find(parent: &mut [usize], i: usize) -> usize {
-    let mut root = i;
-    while parent[root] != root {
-        root = parent[root];
-    }
-    parent[i] = root;
-    root
-}
-
-/// Join the groups of `a` and `b` under the earlier root, so that a root is its group's first build.
-fn union(parent: &mut [usize], a: usize, b: usize) {
-    let (a, b) = (find(parent, a), find(parent, b));
-    parent[a.max(b)] = a.min(b);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::runs::Limits;
-    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary};
+    use crate::engine::tests::{fixture, pipeline, snapshot, step};
     use crate::engine::{Request, Run};
 
     fn lower(request: &Request) -> Result<(), String> {
@@ -347,29 +298,22 @@ mod tests {
         steps
     }
 
-    fn outline<'a>(plan: &'a Plan) -> Vec<(&'a str, Vec<&'a str>)> {
-        let outline = |group: &'a Group| (group.id.as_str(), group.builds.iter().map(|b| b.step.as_str()).collect());
-        plan.groups.iter().map(outline).collect()
-    }
-
     #[test]
-    fn a_plan_has_independent_groups_and_a_run_of_one_leaves_the_other() {
-        let fixture = fixture("plan-groups");
+    fn a_plan_names_each_fetch_once_with_its_size_and_estimates_each_build() {
+        let fixture = fixture("plan-fetches");
         let plan = fixture.plan(&steps("1")).unwrap();
-        let chain = ("test/upper", vec!["test/upper", "test/join", "test/count"]);
-        assert_eq!(outline(&plan), [chain.clone(), ("test/lower", vec!["test/lower"])]);
-        let keys: Vec<bool> = plan.builds().map(|build| build.key.is_some()).collect();
-        assert_eq!(keys, [true, false, false, true], "a key waits for the layers that it reads");
+        let keys: BTreeMap<&str, bool> =
+            plan.builds().map(|build| (build.step.as_str(), build.key.is_some())).collect();
+        let waits = [("test/count", false), ("test/join", false), ("test/lower", true), ("test/upper", true)];
+        assert_eq!(keys, waits.into(), "a key waits for the layers that it reads");
+        fixture.run(&steps("1"), &plan, Limits::machine()).unwrap();
+        assert_eq!(fixture.plan(&steps("1")).unwrap().builds().count(), 0, "the store has every layer");
 
-        let lower = Plan { groups: plan.groups[1..].to_vec() };
-        let built = fixture.run(&steps("1"), &lower, Limits::machine()).unwrap();
-        assert_eq!(summary(&built), [("test/lower", false)]);
-        assert_eq!(fixture.plan(&steps("1")).unwrap().groups, plan.groups[..1], "the other group is the same");
-
-        // A version that the store lacks: a fetch, sized from the version that the store has, and a
-        // build that the earlier receipt estimates.
-        let plan = fixture.plan(&steps("2")).unwrap();
-        assert_eq!(outline(&plan), [chain.clone(), ("test/lower", vec!["test/lower"])]);
+        // A version that the store lacks, which two steps read: one fetch, sized from the version that
+        // the store has, and builds that the earlier receipts estimate.
+        let mut both = steps("2");
+        both[2].inputs = vec![snapshot("head", "2", &["head.txt"])];
+        let plan = fixture.plan(&both).unwrap();
         let fetch = Fetch {
             source: "head".into(),
             version: "2".into(),
@@ -377,17 +321,9 @@ mod tests {
             files: vec!["head.txt".into()],
             bytes: Some(5),
         };
-        assert_eq!(plan.groups[1].fetches, std::slice::from_ref(&fetch));
-        assert_eq!(plan.groups[1].builds[0].key, None);
-        assert_eq!(plan.groups[1].builds[0].estimate.map(|estimate| estimate.bytes_out), Some(5));
-
-        // Two groups can need the same fetch.
-        let mut both = steps("2");
-        both[2].inputs = vec![snapshot("head", "2", &["head.txt"])];
-        let plan = fixture.plan(&both).unwrap();
-        assert_eq!(outline(&plan), [chain, ("test/lower", vec!["test/lower"])]);
-        assert_eq!((&plan.groups[0].fetches, &plan.groups[1].fetches), (&vec![fetch.clone()], &vec![fetch.clone()]));
         assert_eq!(plan.fetches(), [fetch], "a run fetches it once");
+        let lower = plan.builds().find(|build| build.step == "test/lower").unwrap();
+        assert_eq!((&lower.key, lower.estimate.map(|estimate| estimate.bytes_out)), (&None, Some(5)));
     }
 
     #[test]

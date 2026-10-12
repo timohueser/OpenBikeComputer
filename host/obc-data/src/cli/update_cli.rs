@@ -170,11 +170,17 @@ pub(super) fn update(
         baked: baked.collect(),
         kept: update.kept.len(),
     };
+    let changed = || {
+        Code::Failed
+            .error(format!("release.json of `{name}` changed during the update; nothing switched"))
+            .fix(format!("Run `obc data update {name}` again: it keeps what this run baked."))
+    };
     if let Some(serving) = serving.as_ref().filter(|serving| serving.serves_as(&next)) {
         let (current, _) = base.as_ref().expect("a serving release has a base");
         // The serving release has every change: a switch to it writes a pointer that drifts.
-        if !release::drift(target, serving)?.is_empty() {
-            release::switch(target, base.as_ref(), &current.serving.id)?;
+        if !release::drift(target, serving)?.is_empty() && !release::switch(target, base.as_ref(), &current.serving.id)?
+        {
+            return Err(changed());
         }
         updated.serving = current.serving.id.clone();
         return Ok(updated);
@@ -190,9 +196,7 @@ pub(super) fn update(
     let id = release::publish(target, store, &next)?;
     run.record(&Event::Phase { phase: Phase::Switch })?;
     if !release::switch(target, base.as_ref(), &id)? {
-        return Err(Code::Failed
-            .error(format!("release.json of `{name}` changed during the update; nothing switched"))
-            .fix(format!("Run `obc data update {name}` again: it keeps what this run baked.")));
+        return Err(changed());
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
@@ -357,10 +361,19 @@ mod tests {
         target: &Target,
         edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     ) -> Result<Updated, Error> {
+        update_with(fixture, target, &Http::new(), edit)
+    }
+
+    fn update_with(
+        fixture: &Fixture,
+        target: &Target,
+        http: &Http,
+        edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
+    ) -> Result<Updated, Error> {
         let mut run = Run::create(&fixture.store, "update local").unwrap();
-        let (root, http) = (fixture.root(), Http::new());
+        let root = fixture.root();
         let updated =
-            super::update(&root, &fixture.store, &http, ("local", target), &[&Pipeline, &Counter], edit, &[], &mut run);
+            super::update(&root, &fixture.store, http, ("local", target), &[&Pipeline, &Counter], edit, &[], &mut run);
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
         updated
     }
@@ -410,5 +423,54 @@ mod tests {
         assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
         let serving = release::serving(&target).unwrap().unwrap().0;
         assert_eq!((serving.serving.id, serving.rollback.map(|role| role.id)), (moved.serving, Some(revised.serving)));
+    }
+
+    #[test]
+    fn a_due_source_moves_to_the_newer_version_that_upstream_names() {
+        use crate::fetch::tests::{serve, whole};
+        // Upstream gives `head.txt` with the day 2026-10-05.
+        let (actual, _) = serve(|_, _| whole(b"newer head\n"));
+        let actual = actual.replacen("file.bin", "head.txt", 1);
+        let fixture = fixture("update-due");
+        let url = actual.replacen("http://", "https://", 1);
+        write(
+            &fixture.root().join("data/sources.toml"),
+            &format!(
+                "[[source]]\nid = \"head\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Head\"\n\
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"date\"\nrefresh = 1\nredistribute = true\n"
+            ),
+        );
+        fixture.fetched_version("head", "2026-01-01", "head.txt", b"head\n");
+        let (target, http) = (Target::Dir(fixture.scratch.0.join("local")), Http::loopback(&actual));
+        let first = update_with(&fixture, &target, &http, region).unwrap();
+        let read = |id: &str| Release::read(&target, id).unwrap().versions()[&("head".to_string(), Vec::new())].clone();
+        assert_eq!(read(&first.serving), "2026-01-01");
+
+        let moved = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
+        assert_eq!(steps(&moved), ["test/upper", "test/join", "test/count"]);
+        assert_eq!(read(&moved.serving), "2026-10-05", "the policy is due, and upstream names a newer day");
+    }
+
+    #[test]
+    fn a_clean_keeps_what_each_target_serves_and_its_rollback_and_reads_every_target() {
+        let fixture = fixture("update-clean");
+        fixture.with_sources(&[]);
+        let dir = fixture.scratch.0.join("local");
+        write(
+            &fixture.root().join("data/targets.toml"),
+            &format!("[local]\nkind = \"dir\"\ndir = \"{}\"\n", dir.display()),
+        );
+        let target = Target::Dir(dir.clone());
+        update(&fixture, &target, region).unwrap();
+        fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        update(&fixture, &target, |_| Ok(())).unwrap();
+        let roots = crate::cli::roots(&fixture.root(), &fixture.store).unwrap();
+        for version in ["1", "2"] {
+            assert_eq!(roots.served[&("head".to_string(), version.to_string())], ["local"], "head {version}");
+        }
+
+        std::fs::write(dir.join(release::SERVING), b"not json").unwrap();
+        let refused = crate::cli::roots(&fixture.root(), &fixture.store).unwrap_err();
+        assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
     }
 }
