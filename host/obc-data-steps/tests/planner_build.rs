@@ -12,6 +12,7 @@ use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{digest, Built, Input, Request, Run, Step};
 use obc_data::fetch::http::Http;
+use obc_data::prepared::{Cost, Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
 use obc_data::release::Release;
@@ -31,6 +32,28 @@ impl Drop for Temp {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A version of `wiki` whose manifest names no shard: the region has no Wikimedia subject. Its pin.
+fn wiki(store: &Store) -> String {
+    let manifest = Manifest {
+        source: "wiki".into(),
+        version: DAY.into(),
+        format: 1,
+        revision: 1,
+        inputs: Vec::new(),
+        files: Vec::new(),
+        scope: None,
+        licence: None,
+        attribution: None,
+        machine: "test".into(),
+        time: format!("{DAY}T00:00:00Z"),
+        cost: Cost { wall_ms: 0, peak_rss_bytes: None },
+    };
+    let bytes = manifest.canonical();
+    let pinned = format!("{DAY}/{}", sha256_hex(&bytes));
+    fetched(store, "wiki", &pinned, Vec::new(), MANIFEST, &bytes);
+    pinned
 }
 
 /// Record `bytes` as the file `name` of `source@version`, as a fetch with `params` gives it.
@@ -102,7 +125,8 @@ time_zone = "Europe/Berlin"
     let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
     let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
     let settings = Settings { region: AREA.into(), layers: vec!["sun".into()], ..Settings::default() };
-    let inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
+    let mut inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
+    inputs.resolved.insert(("wiki".into(), Vec::new()), wiki(&store));
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, inputs: &Inputs| {
         let planned = Planner.steps(&root, inputs, &regions, &store).unwrap();

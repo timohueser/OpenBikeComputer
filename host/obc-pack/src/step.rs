@@ -9,21 +9,22 @@ use obc_map_core::config::{Config, CELL_SCHEMA as SCHEMA};
 use obc_map_core::grid::CellId;
 use obc_map_core::progress::{CancelToken, Progress};
 
-/// The sources of the shared Wikimedia content.
-pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+/// The prepared source of the shared Wikimedia content: geographic shards of its facts and photos.
+pub const WIKI: &str = "wiki";
 
-/// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the shared
-/// facts, the `.poly` and the `.osm.pbf`. The step makes the boundary and the candidates, which are
-/// OSM data, from the `.poly` and the `.osm.pbf`.
+/// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the `wiki`
+/// shards, the `.poly` and the `.osm.pbf`. The step makes the boundary and the candidates, which
+/// are OSM data, from the `.poly` and the `.osm.pbf`. Its metrics count the facts that the version
+/// lacks.
 pub fn landmark_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = content_view(request)?;
     crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
     let candidates: crate::landmarks::discover::Candidates =
         serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    crate::landmarks::shared::landmark_view(&shared_files(request), &view, &candidates.qids)?;
+    let absent = crate::landmarks::shared::landmark_view(&wiki_files(request)?, &view, &candidates.qids)?;
     crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)?;
-    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
+    metrics(request, &absent)
 }
 
 /// The compiled peaks of a region: `peaks/peaks.json` and its photos, as [`landmark_content`]
@@ -31,20 +32,15 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
 pub fn peak_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = content_view(request)?;
     crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
-    crate::landmarks::shared::peak_view(&shared_files(request), &view)?;
+    let absent = crate::landmarks::shared::peak_view(&wiki_files(request)?, &view)?;
     crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)?;
-    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
+    metrics(request, &absent)
 }
 
 /// An empty view directory beside the output, the boundary from the `.poly`, and the `.osm.pbf`.
 fn content_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let other: Vec<(&String, &PathBuf)> = request
-        .snapshots
-        .iter()
-        .filter(|(source, _)| !CAPTURES.contains(&source.as_str()))
-        .flat_map(|(_, files)| files.iter())
-        .collect();
-    let one = |suffix: &str| match other.iter().filter(|(name, _)| name.ends_with(suffix)).collect::<Vec<_>>()[..] {
+    let files: Vec<(&String, &PathBuf)> = request.snapshots.values().flat_map(|files| files.iter()).collect();
+    let one = |suffix: &str| match files.iter().filter(|(name, _)| name.ends_with(suffix)).collect::<Vec<_>>()[..] {
         [(_, object)] => Ok((*object).clone()),
         ref found => Err(format!("the step reads {} {suffix} files, not one", found.len())),
     };
@@ -58,15 +54,36 @@ fn content_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String
     Ok((view, boundary, extract))
 }
 
-fn shared_files(request: &Request) -> BTreeMap<String, PathBuf> {
-    request
-        .snapshots
-        .iter()
-        .filter(|(source, _)| CAPTURES.contains(&source.as_str()))
-        .flat_map(|(_, files)| files.iter())
-        .filter(|(name, _)| name.starts_with("#content/"))
-        .map(|(name, path)| (name.trim_start_matches('#').into(), path.clone()))
-        .collect()
+/// The members of the `wiki` shards that the step reads, unpacked beside the output, by name. A
+/// fact that two shards hold has the same bytes in both.
+fn wiki_files(request: &Request) -> Result<BTreeMap<String, PathBuf>, String> {
+    let dir = request.output.with_file_name("wiki");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut files = BTreeMap::new();
+    let shards = request.snapshots.get(WIKI).into_iter().flatten();
+    for (_, shard) in shards.filter(|(name, _)| name.ends_with(".tar.zst")) {
+        let failed = |e: std::io::Error| format!("{}: {e}", shard.display());
+        let decoder = zstd::Decoder::new(std::fs::File::open(shard).map_err(failed)?).map_err(failed)?;
+        let mut archive = tar::Archive::new(decoder);
+        for entry in archive.entries().map_err(failed)? {
+            let mut entry = entry.map_err(failed)?;
+            let name = entry.path().map_err(failed)?.to_string_lossy().into_owned();
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            if !entry.unpack_in(&dir).map_err(failed)? {
+                return Err(format!("{}: the member {name} leaves the shard", shard.display()));
+            }
+            files.insert(name.clone(), dir.join(name));
+        }
+    }
+    Ok(files)
+}
+
+/// The facts that the version lacks, as the metrics of the step.
+fn metrics(request: &Request, absent: &crate::landmarks::shared::Absent) -> Result<(), String> {
+    let metrics = serde_json::json!({ "absent": absent });
+    std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))
 }
 
 /// The landmark artifacts of one leaf: `landmarks/<i>/<j>.bin` for each cell of the option `cells`
@@ -176,6 +193,19 @@ mod tests {
 
     use super::*;
 
+    /// A `wiki` shard of one fact, as `tools.wiki shards` writes it.
+    fn shard(path: &Path, fact: &Value) {
+        let bytes = serde_json::to_vec(fact).unwrap();
+        let name = format!("content/entity/{}.json", obc_data::store::sha256_hex(&bytes));
+        let mut tar = tar::Builder::new(zstd::Encoder::new(std::fs::File::create(path).unwrap(), 3).unwrap());
+        let mut header = tar::Header::new_ustar();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, name, bytes.as_slice()).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+    }
+
     #[test]
     fn regions_without_content_identities_compile_empty_landmarks_and_peaks() {
         let dir = obcm_testkit::scratch::scratch_dir("step", "empty-content");
@@ -183,6 +213,8 @@ mod tests {
         let poly = dir.join("area.poly");
         std::fs::write(&poly, "test\n1\n 7.79 47.99\n 7.82 47.99\n 7.82 48.02\n 7.79 48.02\n 7.79 47.99\nEND\nEND\n")
             .unwrap();
+        let common = dir.join("common.tar.zst");
+        shard(&common, &serde_json::json!({"kind": "entity", "key": "Q5", "status": "missing"}));
         for (collection, compile, document) in [
             ("landmarks", landmark_content as fn(&Request) -> Result<(), String>, "content.json"),
             ("peaks", peak_content, "peaks.json"),
@@ -192,6 +224,7 @@ mod tests {
                 snapshots: BTreeMap::from([
                     ("geofabrik-poly".into(), BTreeMap::from([("area.poly".into(), poly.clone())])),
                     ("geofabrik-extracts".into(), BTreeMap::from([("area.osm.pbf".into(), osm.clone())])),
+                    (WIKI.into(), BTreeMap::from([("common.tar.zst".into(), common.clone())])),
                 ]),
                 layers: BTreeMap::new(),
                 layer_files: BTreeMap::new(),
@@ -204,7 +237,10 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(request.output.join(collection).join(document)).unwrap())
                     .unwrap();
             assert!(content["records"].as_array().unwrap().is_empty());
-            assert_eq!(std::fs::read_dir(request.output.join("shared-content")).unwrap().count(), 0);
+            let unpacked = request.output.with_file_name("wiki").join("content/entity");
+            assert_eq!(std::fs::read_dir(unpacked).unwrap().count(), 1, "{collection}");
+            let metrics: Value = serde_json::from_slice(&std::fs::read(&request.metrics).unwrap()).unwrap();
+            assert_eq!(metrics, serde_json::json!({"absent": {}}));
         }
     }
 

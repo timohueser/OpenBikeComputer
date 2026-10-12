@@ -11,21 +11,9 @@ use crate::sources::{Refresh, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
 
 /// A source of `kind = "capture"`: the program that captures it, with the `NAME=VALUE` it takes.
-pub(crate) fn run(
-    root: &Path,
-    store: &Store,
-    request: &Request,
-    acquisition: Option<crate::fetch::Acquisition<'_>>,
-) -> Result<Snapshot, String> {
+pub(crate) fn run(root: &Path, store: &Store, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
-        "wikidata" | "wikipedia" | "commons" => {
-            if request.params.iter().any(|(name, _)| name == "content") {
-                super::wikimedia::run(root, store, request, acquisition)
-            } else {
-                legacy(store, request)
-            }
-        }
         "modis-snow" | "hr-wsi" => {
             let [bbox, seasons] = values(request, ["bbox", "seasons"])?;
             let bbox = parse_bbox(bbox)?;
@@ -88,24 +76,6 @@ pub(crate) fn run(
         }
         _ => Err(format!("source `{}`: its kind of fetch has no fetcher yet", source.id)),
     }
-}
-
-/// Retained regional captures are immutable compiler inputs. New facts use shared acquisition.
-fn legacy(store: &Store, request: &Request) -> Result<Snapshot, String> {
-    let snapshots = if let Some(version) = &request.version {
-        store.snapshot(&request.source.id, version)?.into_iter().collect()
-    } else {
-        store.snapshots(&request.source.id)?
-    };
-    for snapshot in snapshots.into_iter().rev() {
-        if let Some(names) = store.requested(&request.source.id, &snapshot.version, &request.params)? {
-            let files: Vec<_> = snapshot.files.into_iter().filter(|file| names.contains(&file.name)).collect();
-            if files.len() == names.len() && files.iter().all(|file| store.object(&file.sha256).is_file()) {
-                return Ok(Snapshot { source: snapshot.source, version: snapshot.version, files });
-            }
-        }
-    }
-    Err("regional Wikimedia capture is read-only; prepare shared content to acquire missing facts".into())
 }
 
 /// Whether a capture can give the version `version` of `source` for a request that the store lacks.
@@ -333,7 +303,7 @@ mod tests {
             )
             .unwrap();
         let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, None).unwrap();
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());
         assert!(!scratch.0.join("absent-checkout").exists());

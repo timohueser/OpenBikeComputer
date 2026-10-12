@@ -4,7 +4,7 @@
 //! in for the Osmium crop of `device/osm`. The bands are fine and network, which read the terrain:
 //! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
 //! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
-//! compile of a capture, and give one artifact each.
+//! compile of the `wiki` shards, and give one artifact each.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use obc_bake::cut::{cut, CutOptions};
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{view, Receipt, Request, Run, Step};
+use obc_data::engine::{view, LayerFile, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
-use obc_data::product::{Inputs, Product, Unplanned, Wanted};
+use obc_data::prepared::{Manifest, MANIFEST};
+use obc_data::product::{Inputs, Product};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::release::Release;
 use obc_data::settings::Settings;
@@ -28,6 +29,7 @@ use obc_map_core::config::Config;
 use obc_map_core::grid::{BandTable, CellId};
 use obc_map_core::progress::Progress;
 use obc_osm::LeafId;
+use obc_pack::step::WIKI;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";
@@ -65,44 +67,43 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
     }
 }
 
-/// Record the shared facts of `wanted` at [`VERSION`]: Wikidata has each entity and link as
-/// missing, and Wikipedia and Commons give no file.
-fn missing_facts(store: &Store, wanted: &Wanted) {
-    let query: serde_json::Value = serde_json::from_str(&wanted.params[0].1).unwrap();
-    let mut facts = Vec::new();
-    if wanted.source == "wikidata" {
-        for (kind, list) in [("entity", "entities"), ("link", "links")] {
-            for key in query[list].as_array().unwrap() {
-                facts.push(
-                    serde_json::to_vec(&serde_json::json!({"kind": kind, "key": key, "status": "missing"})).unwrap(),
-                );
-            }
-        }
-    }
-    let mut snapshot = store.snapshot(&wanted.source, VERSION).unwrap().unwrap_or_else(|| Snapshot {
-        source: wanted.source.clone(),
-        version: VERSION.into(),
-        files: Vec::new(),
-    });
-    let mut names = Vec::new();
-    for bytes in facts {
-        let sha256 = obc_data::store::sha256_hex(&bytes);
-        let (name, file) = (format!("#content/fact/{sha256}.json"), store.partial("fact"));
-        write_atomic(&file, &bytes).unwrap();
-        store.insert(&file, &sha256).unwrap();
-        let url = format!("https://example.org/{name}");
-        snapshot.files.push(FileRecord {
-            name: name.clone(),
-            url,
-            size: bytes.len() as u64,
-            sha256,
-            retrieved: String::new(),
-        });
-        names.push(name);
-    }
-    store.put_snapshot(&snapshot).unwrap();
-    let requested = Requested { version: VERSION.into(), params: wanted.params.clone(), files: names };
-    store.put_requested(&wanted.source, &requested).unwrap();
+/// A version of `wiki` whose one shard, the common one, only the stand-in compiles read: its pin,
+/// with its manifest and its shard in the store.
+fn wiki(store: &Store, dir: &Path) -> String {
+    let common = dir.join("common.tar.zst");
+    std::fs::write(&common, b"").unwrap();
+    let (sha256, size) = hash_file(&common).unwrap();
+    store.insert(&common, &sha256).unwrap();
+    let manifest = Manifest {
+        source: WIKI.into(),
+        version: "2026-10-01".into(),
+        format: 1,
+        revision: 1,
+        inputs: Vec::new(),
+        files: vec![LayerFile { path: "common.tar.zst".into(), size, sha256: sha256.clone() }],
+        scope: None,
+        licence: None,
+        attribution: None,
+        machine: "test".into(),
+        time: "2026-10-01T00:00:00Z".into(),
+        cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+    };
+    let bytes = manifest.canonical();
+    let manifest_sha256 = obc_data::store::sha256_hex(&bytes);
+    let file = store.partial("manifest");
+    write_atomic(&file, &bytes).unwrap();
+    store.insert(&file, &manifest_sha256).unwrap();
+    let record = |name: &str, size, sha256| FileRecord {
+        name: name.into(),
+        url: format!("https://example.org/{name}"),
+        size,
+        sha256,
+        retrieved: String::new(),
+    };
+    let pinned = format!("2026-10-01/{manifest_sha256}");
+    let files = vec![record(MANIFEST, bytes.len() as u64, manifest_sha256), record("common.tar.zst", size, sha256)];
+    store.put_snapshot(&Snapshot { source: WIKI.into(), version: pinned.clone(), files }).unwrap();
+    pinned
 }
 
 /// Record the polygon of each area of a national model as a speck at 0° 0°: the store has no
@@ -196,16 +197,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         ((TILE_LIST.into(), Vec::new()), VERSION.to_string()),
     ]);
     let settings = Settings { region: "grimsel-box".into(), ..Settings::default() };
-    let inputs = Inputs { settings, serving, ..Inputs::default() };
+    let mut inputs = Inputs { settings, serving, ..Inputs::default() };
+    inputs.resolved.insert((WIKI.into(), Vec::new()), wiki(&store, &temp.0));
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
-    // The shared Wikimedia facts, which only the stand-in compiles read: every identity is missing.
-    let list = || Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(()));
-    for _ in 0..3 {
-        let Err(Unplanned::NeedsFetch(wanted)) = list() else { break };
-        wanted.iter().for_each(|wanted| missing_facts(&store, wanted));
-    }
-    let listed = list().unwrap();
+    let listed = Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(())).unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
@@ -405,7 +401,6 @@ fn credit() -> serde_json::Value {
 }
 
 fn write_content(request: &Request, path: &str, content: serde_json::Value) -> Result<(), String> {
-    std::fs::create_dir_all(request.output.join("shared-content")).map_err(|e| e.to_string())?;
     let path = request.output.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(path, serde_json::to_vec(&content).unwrap()).map_err(|e| e.to_string())

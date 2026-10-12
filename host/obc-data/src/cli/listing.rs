@@ -147,12 +147,6 @@ fn product_steps(
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
                     inputs.fetch_failures.push((wanted.clone(), error.message.clone()));
-                    // These owners share a capture. A sibling must not restart a failed one.
-                    if error.code == Code::FetchFailed
-                        && matches!(wanted.source.as_str(), "wikidata" | "wikipedia" | "commons")
-                    {
-                        return Err(error);
-                    }
                     failure = Some(error);
                     continue;
                 }

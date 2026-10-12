@@ -46,7 +46,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
 | `obc data update local --expect ID` | Start the update only when its review still has this id |
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
-| `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
+| `obc data update local --refresh geofabrik-extracts=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data update prod --dry-run` | Review an update of `prod`; the owner approves its id |
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |

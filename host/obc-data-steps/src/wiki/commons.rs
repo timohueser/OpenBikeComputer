@@ -1,5 +1,5 @@
 //! The Commons rounds of `wiki`: the metadata and the 500 px thumbnails of the photos that the
-//! compilers choose for the selected subjects, asked as `device/shared_content.rs` asks a region.
+//! compilers choose for the selected subjects.
 //! Round 0 names the categories of the subjects, round 1 the metadata of their photo candidates,
 //! and round 2 the files that the compilers choose. A thumbnail that fails the checks of the
 //! compilers makes them choose another file, so round 2 repeats for the subjects with new files
