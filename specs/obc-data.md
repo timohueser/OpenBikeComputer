@@ -1353,8 +1353,9 @@ Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc d
 touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
 releases that the two files name change, and after downloads, serve deletes there each object and
 each unfinished download that the services of none of them read, once no download runs. A
-download for a planner release that no release names any more stops at its next object. For a `dir` target, download bundles name the origin of the machine on its network when
-serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
+download for a planner release that no release names any more stops at its next object. For a
+`dir` target, download bundles name the origin of the machine on its network when serve starts,
+else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
 
 For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,

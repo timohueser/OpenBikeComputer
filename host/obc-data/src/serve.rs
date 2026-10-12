@@ -266,14 +266,17 @@ impl<S: Services> Follower<S> {
     }
 
     /// Fetch the objects of each wanted planner release that does not run, or that failed and
-    /// waited, and start its services once they are in the store; the time to answer counts from
-    /// the return of the start. Check the services that start, and fail a planner release whose
-    /// service stopped. Clients get the serving release of the target once its services answer;
-    /// until then they keep the current release. Stop the services that neither the wanted
-    /// releases nor the current one need.
+    /// waited, and start its services once they are in the store, also those of the current
+    /// release that no release names any more; the time to answer counts from the return of the
+    /// start. Check the services that start, and fail a planner release whose service stopped.
+    /// Clients get the serving release of the target once its services answer; until then they
+    /// keep the current release. Stop the services that neither the wanted releases nor the
+    /// current one need.
     pub fn poll(&mut self, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
         self.prune(load);
-        for served in self.wanted.serving.iter().chain(&self.wanted.next) {
+        // The current release, last, only finishes a download that it has.
+        let wanted = self.wanted.serving.len() + usize::from(self.wanted.next.is_some());
+        for (at, served) in self.wanted.serving.iter().chain(&self.wanted.next).chain(&self.current).enumerate() {
             let mut fetch = |backoff| {
                 let wanted = Arc::new(AtomicBool::new(true));
                 self.dirty = true;
@@ -283,8 +286,9 @@ impl<S: Services> Follower<S> {
                 }
             };
             let state = match self.planners.remove(&served.planner) {
-                None => fetch(BACKOFF),
-                Some(State::Failed { retry, backoff, .. }) if retry <= now() => fetch(backoff),
+                None if at < wanted => fetch(BACKOFF),
+                None => continue,
+                Some(State::Failed { retry, backoff, .. }) if at < wanted && retry <= now() => fetch(backoff),
                 Some(State::Fetching { worker, backoff, .. }) if worker.is_finished() => {
                     let fetched = worker.join().unwrap_or_else(|_| Err("the download stopped".into()));
                     match fetched.and_then(|()| load.start(served)) {
@@ -428,6 +432,8 @@ pub(crate) mod tests {
         holding: BTreeSet<String>,
         started: Vec<String>,
         stopped: Vec<String>,
+        /// How often the follower pruned the store.
+        pruned: usize,
     }
 
     /// The fake services of a planner release, and the files that its start installed.
@@ -561,6 +567,7 @@ pub(crate) mod tests {
         }
 
         fn keep(&mut self, wanted: &[&Served]) {
+            self.log.borrow_mut().pruned += 1;
             if let Some((store, _)) = self.install {
                 services::prune(&Store::at(store.clone()), self.reader, wanted).unwrap();
             }
@@ -981,5 +988,30 @@ pub(crate) mod tests {
         target.remove(NEXT).unwrap();
         published.follow();
         assert_eq!(held(), reads(&[(&b, b"routing b"), (&d, b"routing d")]));
+    }
+
+    #[test]
+    fn a_download_of_the_current_release_that_no_release_names_ends_and_then_the_store_is_pruned() {
+        let mut case = Case::new("serve-join");
+        let (_, pa) = publish(&case.target, "device a", b"routing a");
+        case.follow();
+        case.answers(&pa);
+        case.log.borrow_mut().exited.insert(pa.clone());
+        case.step(false);
+        case.log.borrow_mut().exited.clear();
+        let held = case.hold(&pa);
+        case.now += BACKOFF;
+        case.step(false);
+        let pruned = case.log.borrow().pruned;
+        publish(&case.target, "device b", b"routing b");
+        publish(&case.target, "device c", b"routing c");
+        case.follow();
+        let a = release(&case.target, "device a", b"routing a", 1).0;
+        assert_eq!(case.current(), a, "a is current, and release.json names it no more");
+        assert_eq!(case.log.borrow().pruned, pruned, "the download of a defers the prune");
+
+        case.release(&pa, held);
+        assert!(case.log.borrow().pruned > pruned, "the prune waited for the download of a");
+        assert_eq!(case.log.borrow().started.iter().filter(|started| **started == pa).count(), 2, "a starts again");
     }
 }
