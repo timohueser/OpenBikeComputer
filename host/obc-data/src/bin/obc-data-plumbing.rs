@@ -2,5 +2,5 @@
 //! that the `obc data` binary links.
 
 fn main() -> std::process::ExitCode {
-    obc_data::cli::main(&[])
+    obc_data::cli::main(&[], None)
 }

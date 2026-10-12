@@ -1,5 +1,5 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
 import { testConfig } from "./test-support/planner/config";
@@ -43,6 +43,15 @@ export default defineConfig(({ mode }) => {
     // A preview config that the planner cannot use fails the build. Without one, the planner reads the live catalogue.
     const preview = loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG;
     if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
+    // Dev mode: `python -m builder.server --no-browser` on :8000 serves
+    // the API; Vite proxies it (plain http-proxy streams SSE fine).
+    // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead.
+    const proxy: Record<string, string | ProxyOptions> = mode === "data" ? { "/api": "http://127.0.0.1:8700" } : {
+        "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
+        "/routing": { target: process.env.OBC_PLANNER_ROUTING_URL || "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
+        "/tiles": { target: process.env.OBC_PLANNER_TILES_URL || "http://127.0.0.1:8789", rewrite: (path: string) => path.replace(/^\/tiles/, '') },
+        "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
+    };
     return {
         // base "./" keeps every asset URL relative, so the built app works mounted at
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
@@ -81,14 +90,7 @@ export default defineConfig(({ mode }) => {
             // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
             // dev server expose files only as far as this repository root.
             fs: { allow: ["../..", ...[process.env.OBC_PLANNER_MAPS_DIR, process.env.OBC_PLANNER_ROUTES_FILE].filter((path): path is string => Boolean(path))] },
-            // Dev mode: `python -m builder.server --no-browser` on :8000 serves
-            // the API; Vite proxies it (plain http-proxy streams SSE fine).
-            proxy: {
-                "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
-                "/routing": { target: process.env.OBC_PLANNER_ROUTING_URL || "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
-                "/tiles": { target: process.env.OBC_PLANNER_TILES_URL || "http://127.0.0.1:8789", rewrite: (path: string) => path.replace(/^\/tiles/, '') },
-                "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
-            },
+            proxy,
         },
         test: {
             environment: "node",
