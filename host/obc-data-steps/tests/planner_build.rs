@@ -216,6 +216,13 @@ time_zone = "Europe/Berlin"
             assert!(receipt.files.iter().any(|file| file.path == format!("objects/{hash}")));
         }
     }
+    let fonts = &built.iter().find(|built| built.receipt.step == "planner/fonts/grid").unwrap().receipt;
+    let index = fonts.files.iter().find(|file| file.path == "index.json").unwrap();
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.object(&index.sha256)).unwrap()).unwrap();
+    // The labels of the grids use range 0, so the joined stack is the fixture range file.
+    let joined = &index["files"]["offline/fonts/Noto Sans Regular.pbf"]["bytes"];
+    assert_eq!(*joined, b"fixture glyph range".len());
 
     let verification = temp.0.join("verified");
     for receipt in built
