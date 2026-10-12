@@ -1413,10 +1413,11 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command and `obc data setup`.
+  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`
+  and `obc data runs RUN --stop`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
-it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
+it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
 A request that does not, and a command that the page does not run, get HTTP 403 and
 `{"exit": 2, "output": {"error": …}}` with the code `usage`.
 
@@ -2509,6 +2510,54 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "target",
         "url",
         "network"
+      ],
+      "type": "object"
+    },
+    "Lock": {
+      "description": "The run that holds the lock of a target, as its `lock.json` says.",
+      "properties": {
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "progress": {
+          "default": [],
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the\nrun likely ended without freeing the lock.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat",
+        "progress",
+        "stale"
       ],
       "type": "object"
     },
@@ -4179,7 +4228,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Holder"
+              "$ref": "#/$defs/Lock"
             },
             {
               "type": "null"

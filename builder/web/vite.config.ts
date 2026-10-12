@@ -45,8 +45,11 @@ export default defineConfig(({ mode }) => {
     if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
     // Dev mode: `python -m builder.server --no-browser` on :8000 serves
     // the API; Vite proxies it (plain http-proxy streams SSE fine).
-    // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead.
-    const proxy: Record<string, string> = mode === "data" ? { "/api": "http://127.0.0.1:8700" } : {
+    // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead. It keeps the Host:
+    // `obc data ui` refuses an Origin that is not `http://` and the Host.
+    const proxy: Record<string, string | { target: string; changeOrigin: false }> = mode === "data" ? {
+        "/api": { target: "http://127.0.0.1:8700", changeOrigin: false },
+    } : {
         "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
     };
     return {

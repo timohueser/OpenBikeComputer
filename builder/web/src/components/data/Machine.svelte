@@ -88,32 +88,11 @@
 {/if}
 
 <style>
-    .title {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px 16px;
-    }
-    h1 {
-        font-size: 28px;
-        line-height: 36px;
-    }
     h2 {
-        font-size: 18px;
-        line-height: 26px;
         margin-bottom: 6px;
     }
-    .grow {
-        flex-grow: 1;
-    }
     .card {
-        display: flex;
-        flex-direction: column;
         gap: 4px;
-        padding: 20px;
-        background: var(--panel);
-        border: 1px solid var(--parchment-3);
-        border-radius: 12px;
     }
     .can {
         border: 2px solid var(--ink);
@@ -160,29 +139,12 @@
         flex: 1 1 140px;
         min-width: 0;
     }
-    p,
     ol {
         margin: 0;
-    }
-    ol {
         padding-left: 22px;
         display: flex;
         flex-direction: column;
         gap: 6px;
-    }
-    code {
-        font-family: var(--mono);
-        font-size: 13px;
-        overflow-wrap: anywhere;
-    }
-    .soft {
-        color: var(--ink-soft);
-    }
-    .ready {
-        color: var(--ready);
-    }
-    .missing {
-        color: var(--missing);
     }
     .optional {
         color: var(--ink-faint);

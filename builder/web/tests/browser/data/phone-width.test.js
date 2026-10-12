@@ -2,8 +2,27 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`../../../test-support/data/${name}.json`, import.meta.url), 'utf8'));
-const ANSWERS = { '[]': fixture('status'), '["setup"]': fixture('setup') };
-const SCREENS = ['#/', '#/prod', '#/local', '#/sources', '#/runs', '#/machine'];
+const [status, running, failed] = [fixture('status'), fixture('run-running'), fixture('run-failed')];
+const elsewhere = status.targets.find(target => target.lock).lock.run;
+const ANSWERS = {
+  '[]': status,
+  '["setup"]': fixture('setup'),
+  '["runs"]': fixture('runs'),
+  [JSON.stringify(['runs', running.id])]: running,
+  [JSON.stringify(['runs', failed.id])]: failed,
+};
+// Each screen, and a text that it shows once its answers came.
+const SCREENS = [
+  ['#/', 'Not built yet'],
+  ['#/prod', 'Not built yet'],
+  ['#/local', 'Not built yet'],
+  ['#/sources', 'Not built yet'],
+  ['#/runs', 'The runs of this machine'],
+  [`#/runs/${running.id}`, 'Layers in this run'],
+  [`#/runs/${failed.id}`, 'The next update reuses them'],
+  [`#/runs/${elsewhere}`, 'You can watch this run here'],
+  ['#/machine', 'What this machine can do'],
+];
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -14,10 +33,10 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
   });
   await page.goto('/data.html');
   await expect(page.getByText('This page runs on')).toBeVisible();
-  for (const hash of SCREENS) {
+  for (const [hash, shows] of SCREENS) {
     await page.evaluate(next => { location.hash = next; }, hash);
-    await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash);
-    if (hash === '#/machine') await expect(page.getByRole('heading', { name: 'What this machine can do' })).toBeVisible();
+    await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash.split('/').slice(0, 2).join('/'));
+    await expect(page.getByText(shows).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), hash).toBeLessThanOrEqual(390);
   }
 });

@@ -1,0 +1,7 @@
+{
+    "runs": [
+        {"id": "2026-10-12-101500", "args": ["update", "local", "--region", "freiburg", "--expect", "a91d222222222222222222222222222222222222222222222222222222222222"], "started": "2026-10-12T10:15:00Z", "state": "running", "wall_ms": null, "bytes_fetched": 2469606195, "bytes_built": 0},
+        {"id": "2026-10-12-093055", "args": ["update", "local", "--add", "sun", "--expect", "b77c333333333333333333333333333333333333333333333333333333333333"], "started": "2026-10-12T09:30:55Z", "state": "failed", "wall_ms": 4214000, "bytes_fetched": 0, "bytes_built": 7381975040},
+        {"id": "2026-10-11-180210", "args": ["update", "local", "--expect", "0d9e444444444444444444444444444444444444444444444444444444444444"], "started": "2026-10-11T18:02:10Z", "state": "ok", "wall_ms": 912000, "bytes_fetched": 104857600, "bytes_built": 524288000}
+    ]
+}
