@@ -287,31 +287,6 @@ inspect *args:
     ( cd "$OBC_ROOT" && _run cargo build --release --quiet -p obc-inspect )
     _run "$OBC_ROOT/target/release/obc-inspect" "$@"
 
-# The one guarded way to delete from the R2 maps bucket: cells, terrain objects,
-# reference tiles and strays alike. It reads the bucket and the credential from
-# tools/obc.local, the same variables `obc bake publish` uses.
-#
-#   obc r2 rm cell-catalog/cells/fine/1204/1052.<sha256>.obcm   # the plan, and no more
-#   obc r2 rm --prefix reference/v1/16/3410
-#   obc r2 rm <key> --apply --reason "bad ingest" --confirm "<the plan's own string>"
-#
-# A published cell, preview or index carries the digest of its bytes in its key. `rm`
-# prints what it would delete, with each object's size and age, and stops. `--apply` takes
-# back the confirmation that plan printed — a count and a digest of the whole key list —
-# so neither a stale command line nor a bucket that moved under it deletes anything.
-# The catalogue root, any object the live catalogue names (cells included, through their
-# band indexes) and the reference index each need `--i-mean-it <key>` on top; nothing
-# deletes `removed.jsonl`. A catalogue this cannot read is a refusal. Every removal is appended to
-# `removed.jsonl` at the bucket root.
-[doc("Delete objects from the R2 maps bucket, with a plan first. Args: rm <KEY>… | rm --prefix P")]
-[group('maps')]
-r2 *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/r2.py" "$@"
-
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
 # `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
