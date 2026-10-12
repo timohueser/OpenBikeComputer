@@ -23,24 +23,50 @@ pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(S
 }
 
 pub fn selected(facts: &BTreeMap<(String, String), Value>, ids: &[String]) -> BTreeSet<String> {
-    let parents = facts
-        .values()
-        .filter(|fact| fact["kind"] == "entity" && fact["status"] == "present")
-        .filter_map(|fact| {
-            class_ancestors(fact["key"].as_str()?, &fact["entity"])
-                .ok()
-                .map(|parents| (fact["key"].as_str().unwrap().into(), parents))
-        })
-        .collect();
-    let policy = policy::Policy::load();
+    let mut landmarks = Landmarks::new();
+    for fact in facts.values().filter(|fact| fact["kind"] == "entity") {
+        landmarks.class(fact);
+    }
     ids.iter()
-        .filter(|id| {
-            facts.get(&("entity".into(), (*id).clone())).is_some_and(|fact| {
-                policy.category(&entity_ids(&fact["entity"], "P31"), &parents).is_ok_and(|category| category.is_some())
-            })
-        })
+        .filter(|id| facts.get(&("entity".into(), (*id).clone())).is_some_and(|fact| landmarks.selects(fact)))
         .cloned()
         .collect()
+}
+
+/// The landmark rule of the compilers over entity facts that arrive one at a time: each class
+/// fact first, then each subject.
+pub struct Landmarks {
+    policy: policy::Policy,
+    parents: BTreeMap<String, Vec<String>>,
+}
+
+impl Landmarks {
+    pub fn new() -> Self {
+        Landmarks { policy: policy::Policy::load(), parents: BTreeMap::new() }
+    }
+
+    /// Learn the parents of the class of an entity fact.
+    pub fn class(&mut self, fact: &Value) {
+        if fact["status"] != "present" {
+            return;
+        }
+        let Some(key) = fact["key"].as_str() else { return };
+        if let Ok(parents) = class_ancestors(key, &fact["entity"]) {
+            self.parents.insert(key.into(), parents);
+        }
+    }
+
+    /// Whether the compilers select the subject of an entity fact as a landmark: it has a category.
+    pub fn selects(&self, fact: &Value) -> bool {
+        let instances = entity_ids(&fact["entity"], "P31");
+        self.policy.category(&instances, &self.parents).is_ok_and(|category| category.is_some())
+    }
+}
+
+impl Default for Landmarks {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn subject(facts: &BTreeMap<(String, String), Value>, id: &str) -> Option<Value> {

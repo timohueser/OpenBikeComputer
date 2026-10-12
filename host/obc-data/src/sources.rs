@@ -246,6 +246,10 @@ pub struct Source {
     pub redistribute: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<Credential>,
+    /// A prepared source of article text publishes the text in its versions, unless this is
+    /// `false`: then the text stays on the machine that prepares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_text: Option<bool>,
 }
 
 /// The Wikimedia API captures, which a target does not copy.
@@ -290,6 +294,9 @@ impl Source {
         }
         if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
             return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
+        }
+        if self.publish_text.is_some() && !prepared {
+            return fail("only a prepared source has `publish_text`");
         }
         if let Some(licence) = &self.licence {
             if !is_licence_expression(licence) {

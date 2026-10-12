@@ -58,8 +58,9 @@ impl Prepared for TerrainReference {
             tiles.retain(|tile| inside.contains(tile));
         }
         let model = Wanted { source: model(source), version: None, params: Vec::new() };
-        let inputs = std::iter::once(model).chain(source.areas.iter().map(|area| polygon(area, None))).collect();
-        Ok(Plan { inputs, files: tiles.len() as u64 + 1 })
+        let polygons = source.areas.iter().map(|area| polygon(area, None));
+        let inputs = std::iter::once(model).chain(polygons).map(|wanted| (wanted, None)).collect();
+        Ok(Plan { inputs, files: Some(tiles.len() as u64 + 1) })
     }
 
     /// Each tile that the model has a height in: fetched once, then uploaded with the batch of
@@ -158,7 +159,14 @@ fn area_tiles(job: &mut Job, area: &str) -> Result<BTreeSet<CellId>, String> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
         Err(_) => BTreeMap::new(),
     };
-    let (version, files) = job.fetch(&polygon(area, versions.get(area).cloned()))?;
+    let pinned = versions.get(area).cloned();
+    let (version, files) = job.fetch(&polygon(area, pinned.clone())).map_err(|e| match pinned {
+        Some(_) => format!(
+            "{e}. Fix: the polygon version of the first run is gone: delete {}; the next run starts a new version",
+            job.state.parent().unwrap_or(&job.state).display()
+        ),
+        None => e,
+    })?;
     if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
         let bytes = serde_json::to_vec(&versions).expect("versions serialize");
         obc_data::store::write_atomic(&pins, &bytes)?;

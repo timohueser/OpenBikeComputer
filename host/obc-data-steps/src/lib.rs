@@ -6,6 +6,7 @@ pub mod planner;
 mod region_sources;
 pub mod terrain_reference;
 pub mod ui;
+pub mod wiki;
 
 use obc_data::engine::{Client, Input, Layer, Run, Step};
 use obc_data::prepared::Prepared;
@@ -15,7 +16,7 @@ use serde_json::Value;
 pub const PRODUCTS: &[&dyn Product] = &[&device::Device, &planner::Planner];
 
 /// The producers of the prepared sources.
-pub const PREPARED: &[&dyn Prepared] = &[&terrain_reference::TERRAIN_REFERENCE];
+pub const PREPARED: &[&dyn Prepared] = &[&terrain_reference::TERRAIN_REFERENCE, &wiki::WIKI];
 
 /// A Python step of `layer`: `entry`, a `tools.*` module or a script, with the argument `--step`,
 /// under `uv run` with the packages of `group` of `pyproject.toml`. The hash seed is fixed, so the

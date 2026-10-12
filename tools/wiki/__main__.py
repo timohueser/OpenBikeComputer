@@ -2,17 +2,20 @@
 
 Each step resumes in its work directory. The producer runs them in this order:
 
-    python -m tools.wiki subjects --osm PLANET.osm.pbf --work W --out subjects.ndjson
-    python -m tools.wiki import   --work W --inputs inputs.json --subjects subjects.ndjson
-    python -m tools.wiki articles --work W --inputs inputs.json --selected selected.json
-    python -m tools.wiki commons  --work W --requests requests.json
-    python -m tools.wiki shards   --work W --out OUT
+    python -m tools.wiki subjects   --osm PLANET.osm.pbf --work W --out subjects.ndjson [--bbox W,S,E,N]
+    python -m tools.wiki import     --work W --inputs inputs.json --subjects subjects.ndjson
+    python -m tools.wiki candidates --work W --out candidates.jsonl
+    python -m tools.wiki articles   --work W --inputs inputs.json --selected selected.json
+    python -m tools.wiki commons    --work W --requests requests.json
+    python -m tools.wiki shards     --work W --out OUT [--done done.json] [--no-text]
 
-`inputs.json` gives the local path of each dump that the producer downloaded:
-`{"wikidata": PATH, "wikidata_pages": PATH, "wikidata_redirects": PATH, "wikipedia": {LANG: PATH},
-"langlinks": {LANG: PATH}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
+`inputs.json` gives each dump that the producer reads in place, as `{"path": PATH, "sha256": HEX}`:
+`{"wikidata": DUMP, "wikidata_pages": DUMP, "wikidata_redirects": DUMP, "wikipedia": {LANG: DUMP},
+"langlinks": {LANG: DUMP}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
 others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
-`selected.json` lists the QIDs whose articles the compilers read. `requests.json` maps each
+`candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
+QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
+that is published already. `requests.json` maps each
 subject that the compilers select to its Commons `categories`, `commons` and `files`; see
 `commons.acquire`.
 
@@ -26,26 +29,27 @@ import json
 from pathlib import Path
 
 from ..landmark_capture import LANGUAGES
-from . import catalog, commons, dumps, shards, subjects
+from . import catalog, commons, shards, subjects
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("step", choices=["subjects", "import", "articles", "commons", "shards"])
+    parser.add_argument("step", choices=["subjects", "import", "candidates", "articles", "commons", "shards"])
     parser.add_argument("--work", type=Path, required=True)
-    for name in ("osm", "out", "inputs", "subjects", "selected", "requests"):
+    for name in ("osm", "out", "inputs", "subjects", "selected", "requests", "done"):
         parser.add_argument(f"--{name}", type=Path)
+    parser.add_argument("--bbox", type=lambda text: [float(value) for value in text.split(",")])
+    parser.add_argument("--no-text", action="store_true")
     args = parser.parse_args()
     if args.step == "subjects":
-        subjects.extract(args.osm, args.out, args.work)
+        subjects.extract(args.osm, args.out, args.work, args.bbox)
         return 0
     db = catalog.connect(args.work)
     inputs = json.loads(args.inputs.read_bytes()) if args.inputs else {}
 
-    def source(name: str, path: str) -> tuple[Path, str]:
-        digest = dumps.sha(Path(path))
-        print(f"{name}: {path} sha256 {digest}", flush=True)
-        return Path(path), digest
+    def source(name: str, dump: dict) -> tuple[Path, str]:
+        print(f"{name}: {dump['path']} sha256 {dump['sha256']}", flush=True)
+        return Path(dump["path"]), dump["sha256"]
 
     if args.step == "import":
         subjects.load(db, args.work, args.subjects)
@@ -54,6 +58,8 @@ def main() -> int:
         for name in ("wikidata_pages", "wikidata_redirects"):
             catalog.sql(db, args.work, name, *source(name, inputs[name]))
         catalog.wikidata(db, args.work, *source("wikidata", inputs["wikidata"]))
+    elif args.step == "candidates":
+        catalog.candidates(db, args.out)
     elif args.step == "articles":
         catalog.want(db, args.work, json.loads(args.selected.read_bytes()))
         for language, spec in inputs.get("langlinks", {}).items():
@@ -65,7 +71,8 @@ def main() -> int:
     elif args.step == "commons":
         commons.acquire(db, args.work, json.loads(args.requests.read_bytes()))
     else:
-        shards.write(db, args.work, args.out)
+        done = json.loads(args.done.read_bytes()) if args.done else None
+        shards.write(db, args.work, args.out, done, text=not args.no_text)
     db.close()
     return 0
 
