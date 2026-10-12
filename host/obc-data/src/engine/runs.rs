@@ -1172,7 +1172,7 @@ pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
 /// `SOURCE@VERSION NAME=VALUE…`
 pub fn fetched(source: &str, version: &str, params: &[(String, String)]) -> String {
     let params = params.iter().map(|(name, value)| format!(" {name}={value}"));
-    format!("{source}@{version}{}", params.collect::<String>())
+    format!("{source}@{}{}", crate::prepared::show(version), params.collect::<String>())
 }
 
 pub fn duration(ms: u64) -> String {

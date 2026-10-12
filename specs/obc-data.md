@@ -1374,10 +1374,12 @@ is compact JSON with the keys of each object in byte order:
 
 1. The version is the UTC date when its first run starts. A run keeps its work in
    `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
-   resumes the version: the producer does not make a file of the journal again. A resume with
-   another region refuses. A stopped version older than the newest complete version on the target
-   is not resumed: the run starts a new version, deletes the work of the old one, and the review
-   names it in `abandoned`. A new version that the target has complete refuses.
+   resumes the version: the producer does not make a file of the journal again, unless the target
+   lacks its key. A resume with another region refuses. A stopped version that is not newer than
+   the newest complete version on the target, or whose manifest is on the target, is not resumed:
+   the run starts a new version, deletes the work of the old one, and the review names it in
+   `abandoned`. So a run never writes a key of a complete version. A new version that the target
+   has complete refuses.
 2. The review names the version, the inputs with the size of their files in the store (`unknown`
    lists an input whose size the store does not know), the files
    that earlier runs uploaded, the cost from the manifest of the newest version that the target
@@ -1410,17 +1412,18 @@ it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stop
 Two targets can have other files under one version name, such as a region on `local` and all of
 the source on `prod`. So the manifest is the identity of a version: a step reads
 `<version>/<manifest sha256>`, and the record in the store, the `sources` entry of a release
-(`copy` is `false`) and the fetch name it.
+(`copy` is `false`) and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
+of the SHA-256>)`; with `--json`, a command gives the whole version.
 
 A target knows the versions that it lists, and a target other than `prod` also the versions that
 `prod` lists; on one name, its own entry wins. Before an update or the [overview](#overview) lists
-the steps, each prepared source that they read gets a version: the serving version of a `manual`
-source, else the newest version that the target knows in the `format` of the producer of this
-`obc data`. So a new version makes each layer that reads an older one stale, with the cause
+the steps, each prepared source that they read gets a version in the `format` of the producer of
+this `obc data`: the serving version of a `manual` source, else the newest version that the target
+knows. So a new version makes each layer that reads an older one stale, with the cause
 `source`, in each target that knows it, and in no target that reads it already. When `prod` cannot
 be read, another target reads the versions that it knows, and a bake from the store needs no
-network. When a target knows no version in that format, the fetch fails, and its message names the
-command that prepares one.
+network. When a target knows no version in that format, the listing blocks the layers that read the
+source (`blocked`), and the fix names the command that prepares one.
 
 A step names the files of a version that it reads; an update refuses a step that names none. The
 fetch reads the manifest of the version from the targets of `data/targets.toml`, `prod` first,

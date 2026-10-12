@@ -462,13 +462,17 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
         ];
         for name in &names {
             let target = &row.targets[*name];
-            let versions: Vec<&str> = target.requests.iter().filter_map(|r| r.serving.as_deref()).collect();
+            let versions: Vec<String> =
+                target.requests.iter().filter_map(|r| r.serving.as_deref()).map(crate::prepared::show).collect();
             let versions = if versions.is_empty() { "—".to_string() } else { versions.join(", ") };
             cells.push(format!("{versions} · {} · {}", target.refresh, target.state));
         }
         table.push(cells);
     }
     print_table(&table);
+    if rows.iter().any(|row| row.source.fetch.kind == crate::sources::FetchKind::Prepared) {
+        println!("A prepared version shows its date and the start of its manifest SHA-256: the full pin is in --json.");
+    }
     Ok(())
 }
 

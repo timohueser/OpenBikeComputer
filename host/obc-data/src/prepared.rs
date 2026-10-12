@@ -178,8 +178,17 @@ fn pinned(listed: &Version) -> String {
     format!("{}/{}", listed.version, listed.manifest_sha256)
 }
 
+/// A version as text shows it: a prepared version as `<date> (<first 12 hex digits of its manifest
+/// SHA-256>)`. JSON gives the whole version.
+pub fn show(version: &str) -> String {
+    match unpin(version) {
+        Some((name, sha256)) => format!("{name} ({})", &sha256[..12]),
+        None => version.into(),
+    }
+}
+
 /// The name and the manifest SHA-256 of the version `pinned` that a step reads.
-fn unpin(pinned: &str) -> Option<(&str, &str)> {
+pub(crate) fn unpin(pinned: &str) -> Option<(&str, &str)> {
     pinned
         .split_once('/')
         .filter(|(name, sha256)| crate::date::parse(name).is_some() && crate::release::is_sha256(sha256))
@@ -325,6 +334,12 @@ impl<'a> Job<'a> {
         for entry in text.lines().filter_map(|line| serde_json::from_str::<Entry>(line).ok()) {
             job.apply(entry);
         }
+        // The cleanup of a newer version can delete the keys of the journal: the run makes them again.
+        let sizes: Vec<(String, u64)> =
+            job.files.values().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
+        for key in job.folder.missing(&sizes)? {
+            job.files.remove(&key[version.len() + 1..]);
+        }
         Ok(job)
     }
 
@@ -431,10 +446,10 @@ pub(crate) fn resumed(store: &Store, target: &str, id: &str, version: &str) -> (
 }
 
 /// Give `inputs` the version of each prepared source of `read`, the fetches that the steps of the
-/// target `name` read: the serving version of a `manual` source, else the newest version of the
-/// format of its producer that the target lists, or, for a target that is not [`PROD`], that `prod`
-/// lists. The entry of the target wins over the one of `prod` with the same name. A source without
-/// one is due, and its fetch says how to prepare one.
+/// target `name` read, in the format of its producer: the serving version of a `manual` source,
+/// else the newest version that the target lists, or, for a target that is not [`PROD`], that
+/// `prod` lists. The entry of the target wins over the one of `prod` with the same name. A source
+/// without one is due, and the listing blocks it.
 pub(crate) fn resolve(
     root: &Path,
     store: &Store,
@@ -455,32 +470,27 @@ pub(crate) fn resolve(
         let key = (source.id.clone(), Vec::new());
         let serving = inputs.serving.get(&key).cloned();
         let format = producer(producers, &source.id).map(|producer| producer.format());
-        let chosen = match serving {
-            Some(serving) if source.refresh == Refresh::Manual => Some(serving),
-            serving => {
-                let mut listed = versions(target, &source.id)?;
-                match prod.as_ref().map(|prod| versions(prod, &source.id)) {
-                    Some(Ok(more)) => {
-                        let own: BTreeSet<String> = listed.iter().map(|entry| entry.version.clone()).collect();
-                        listed.extend(more.into_iter().filter(|entry| !own.contains(&entry.version)));
-                    }
-                    // A bake from the store needs no network.
-                    Some(Err(e)) => {
-                        eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows")
-                    }
-                    None => {}
-                }
-                let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
-                let newest = listed.iter().filter(|entry| fits(entry)).max_by(|a, b| a.version.cmp(&b.version));
-                // A serving version that no list names stays, as on a machine without network.
-                let listed_as = |serving: &String| listed.iter().find(|entry| pinned(entry) == *serving);
-                let serving = serving.filter(|serving| listed_as(serving).is_none_or(fits));
-                let name = |pinned: &String| unpin(pinned).map(|(version, _)| version.to_string());
-                match (newest.map(pinned), serving) {
-                    (Some(newest), Some(serving)) if name(&serving) > name(&newest) => Some(serving),
-                    (newest, serving) => newest.or(serving),
-                }
+        let mut listed = versions(target, &source.id)?;
+        match prod.as_ref().map(|prod| versions(prod, &source.id)) {
+            Some(Ok(more)) => {
+                let own: BTreeSet<String> = listed.iter().map(|entry| entry.version.clone()).collect();
+                listed.extend(more.into_iter().filter(|entry| !own.contains(&entry.version)));
             }
+            // A bake from the store needs no network.
+            Some(Err(e)) => eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows"),
+            None => {}
+        }
+        let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
+        // A serving version that no list names stays, as on a machine without network.
+        let serving = serving.filter(|serving| listed.iter().find(|entry| pinned(entry) == *serving).is_none_or(fits));
+        let newest = listed.iter().filter(|entry| fits(entry)).max_by(|a, b| a.version.cmp(&b.version)).map(pinned);
+        let date = |pinned: &String| unpin(pinned).map(|(version, _)| version.to_string());
+        let manual = source.refresh == Refresh::Manual && inputs.serving.contains_key(&key);
+        let chosen = match (newest, serving) {
+            // A `manual` source keeps its serving version, unless that is of another format.
+            (_, serving) if manual => serving,
+            (Some(newest), Some(serving)) if date(&serving) > date(&newest) => Some(serving),
+            (newest, serving) => newest.or(serving),
         };
         match chosen {
             Some(version) => {
@@ -506,9 +516,7 @@ pub(crate) fn fetch(
 ) -> Result<Snapshot, String> {
     let id = &request.source.id;
     let Some(pinned) = request.version.as_deref() else {
-        return Err(format!(
-            "no target lists a version of `{id}` that this `obc data` reads. Fix: run `obc data source prepare {id}`"
-        ));
+        return Err(format!("`{id}` is prepared: name its version, `{id}@<date>/<manifest sha256>`"));
     };
     let (version, sha256) =
         unpin(pinned).ok_or_else(|| format!("`{pinned}` is not a version of `{id}`: <date>/<manifest sha256>"))?;

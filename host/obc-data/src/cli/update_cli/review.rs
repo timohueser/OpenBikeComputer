@@ -468,11 +468,11 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     }
     for source in &review.sources {
         let params: Vec<String> = source.params.iter().map(|(name, value)| format!("{name}={value}")).collect();
-        let from = source.from.as_deref().unwrap_or("new");
+        let from = source.from.as_deref().map_or("new".into(), crate::prepared::show);
         rows.push(vec![
             "  source".into(),
             format!("{} {}", source.source, params.join(" ")).trim().into(),
-            format!("{from} → {}", source.to),
+            format!("{from} → {}", crate::prepared::show(&source.to)),
         ]);
     }
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);

@@ -225,9 +225,15 @@ fn plan<'a>(
     }
     let listed = prepared::versions(target, id)?;
     let newest = listed.iter().map(|listed| listed.version.as_str()).max();
-    // A stopped version behind a newer complete one is not resumed.
+    // A stopped version is resumed only while the target has no complete version as new as it: a
+    // run never rewrites a key of a complete version.
     let (resumed, abandoned) = match prepared::started(store, name, id)? {
-        Some(started) if newest.is_some_and(|newest| newest > started.as_str()) => (None, Some(started)),
+        Some(started)
+            if newest.is_some_and(|newest| newest >= started.as_str())
+                || prepared::manifest(target, id, &started)?.is_some() =>
+        {
+            (None, Some(started))
+        }
         started => (started, None),
     };
     let fresh = resumed.is_none();
@@ -260,7 +266,7 @@ fn plan<'a>(
         };
         if bytes.is_none() {
             let version = wanted.version.as_deref().unwrap_or("newest");
-            unknown.push(runs::fetched(&wanted.source, version, &wanted.params));
+            unknown.push(format!("{}@{version}", wanted.source));
         }
         inputs.push(PreparedInput { source: wanted.source, version: wanted.version, params: wanted.params, bytes });
     }
@@ -332,7 +338,8 @@ fn stale(
             let Some((serving, _)) = crate::release::serving(&target)? else { return Ok(Vec::new()) };
             let release = update_cli::read(&name, &target, &serving.serving.id)?;
             let old = |output: &&crate::release::Output| {
-                output.snapshots.get(id).is_some_and(|read| read.version.as_str() < version)
+                let read = output.snapshots.get(id).and_then(|read| prepared::unpin(&read.version));
+                read.is_some_and(|(read, _)| read < version)
             };
             let layers: BTreeSet<String> =
                 release.outputs.iter().filter(old).map(|output| output.layer.clone()).collect();
@@ -810,7 +817,8 @@ mod tests {
         prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
         update(&fixture, ("local", &local), &Default::default()).unwrap();
 
-        let cause = format!("sample {} → {}", pinned(&prod, "2026-10-01"), pinned(&prod, "2026-10-02"));
+        let show = |day: &str| prepared::show(&pinned(&prod, day));
+        let cause = format!("sample {} → {}", show("2026-10-01"), show("2026-10-02"));
         assert_eq!(changes(&fixture, ("prod", &prod)), [("reads".to_string(), cause)]);
         assert_eq!(changes(&fixture, ("local", &local)), [], "it reads the new version already");
     }
@@ -961,6 +969,69 @@ mod tests {
         update(&fixture, ("local", &local), &Default::default()).unwrap();
         assert_eq!(served(&local).0, pinned(&prod, "2026-10-01"));
         let refused = update_with(&fixture, &Sample(3), ("prod", &prod), &Default::default()).unwrap_err();
-        assert!(refused.message.contains("Fix: run `obc data source prepare sample`"), "{}", refused.message);
+        assert_eq!((refused.code, refused.fix.as_str()), (Code::Blocked, "Run `obc data source prepare sample`."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_run_never_rewrites_a_version_that_another_machine_completed() {
+        use std::os::unix::fs::MetadataExt;
+        let (fixture, prod, _) = setup("prepare-completed");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        let (job, aside) =
+            (fixture.store.root().join("prepared/prod/sample/2026-10-01"), fixture.scratch.0.join("aside"));
+        fs::rename(&job, &aside).unwrap();
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        let Target::Dir(dir) = &prod else { unreachable!() };
+        let folder = dir.join("sources/sample/2026-10-01");
+        let state = || {
+            let mut files: Vec<_> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()).collect();
+            files.sort();
+            files
+                .into_iter()
+                .map(|path| (fs::metadata(&path).unwrap().ino(), fs::read(&path).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let before = state();
+
+        fs::rename(&aside, &job).unwrap();
+        let refused = prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        assert!(refused.message.contains("complete on `prod`"), "{}", refused.message);
+        assert_eq!(prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap().version, "2026-10-02");
+        assert_eq!(state(), before, "the keys and the manifest of the complete version stay");
+        assert!(!job.exists());
+    }
+
+    #[test]
+    fn a_resume_makes_again_the_files_whose_keys_a_newer_version_deleted() {
+        let (fixture, _, _) = setup("prepare-pruned");
+        write(&fixture.root().join("fail-c.txt"), "");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
+        let jobs = fixture.store.root().join("prepared/prod/sample");
+        let aside = fixture.scratch.0.join("aside");
+        fs::rename(jobs.join("2026-10-01"), &aside).unwrap();
+        // Another run starts a newer version, deletes the files of 2026-10-01, and stops too.
+        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap_err();
+        fs::remove_dir_all(jobs.join("2026-10-02")).unwrap();
+        fs::rename(&aside, jobs.join("2026-10-01")).unwrap();
+        fs::remove_file(fixture.root().join("fail-c.txt")).unwrap();
+        let done = prepare(&fixture, "prod", "2026-10-03", Asked::default()).unwrap();
+        assert_eq!((done.version.as_str(), done.files, done.uploaded), ("2026-10-01", 3, 3));
+    }
+
+    #[test]
+    fn a_fetch_skips_a_target_that_it_cannot_read() {
+        let (fixture, _, local) = setup("prepare-unread");
+        let Target::Dir(dir) = &local else { unreachable!() };
+        let targets = format!(
+            "[prod]\nkind = \"r2\"\nbucket = \"b\"\npublic = \"https://127.0.0.1:1\"\n[local]\nkind = \"dir\"\ndir = \"{}\"\n",
+            dir.display()
+        );
+        write(&fixture.root().join("data/targets.toml"), &targets);
+        prepare(&fixture, "local", "2026-10-01", Asked::default()).unwrap();
+        update(&fixture, ("local", &local), &Default::default()).unwrap();
+        assert_eq!(served(&local).0, pinned(&local, "2026-10-01"));
     }
 }
