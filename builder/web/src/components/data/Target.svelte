@@ -4,7 +4,7 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { targetAt } from "../../lib/data/screens";
     import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type RunView, type Status } from "../../lib/data/shapes";
-    import { corners, outline, type Areas } from "../../lib/data/areas";
+    import { corners } from "../../lib/data/areas";
     import { leafSquare } from "../../lib/data/leaf";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
@@ -31,9 +31,7 @@
     let ticked = $state<string[]>([]);
     const only = $derived(route.only ? ([["--only", route.only]] as Flags) : []);
 
-    // The coverage: the leaves of one tiled layer, coloured by state, inside the outline of the area.
-    const areas = new CliQuery<Areas>(["areas"]);
-    $effect(() => void areas.refresh());
+    // The coverage: the leaves of one tiled layer, coloured by state, inside the boxes of the area.
     const tiled = $derived(target?.layers?.filter((layer) => layer.leaves.length) ?? []);
     let colour = $state<string | null>(null);
     const coloured = $derived(tiled.find((layer) => layer.layer === colour) ?? tiled[0]);
@@ -88,11 +86,11 @@
     {#if resumed?.error}<Failure error={resumed.error} />{/if}
     {#if !route.resume}
         {#key route.only}
-            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} />
+            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} area={target.area} />
         {/key}
     {:else if resumed?.output}
         <p class="soft">This review resumes run <a href="#/runs/{route.resume}">{route.resume}</a> with its settings.</p>
-        <Review {name} kind={target.kind} flags={flagsOf(resumed.output.args)} {machine} {locked} layers={target.layers ?? []} />
+        <Review {name} kind={target.kind} flags={flagsOf(resumed.output.args)} {machine} {locked} layers={target.layers ?? []} area={target.area} />
     {/if}
 {:else}
     {@const error = failure(target)}
@@ -145,7 +143,7 @@
         <section class="card" aria-labelledby="coverage">
             <div class="title">
                 <h2 id="coverage">Coverage</h2>
-                <span class="soft">{target.region ?? "no region"}</span>
+                <span class="soft">{target.area?.name ?? "no area"}</span>
                 <span class="grow"></span>
                 {#if !locked}<a href="#/{name}/review">Change area…</a>{/if}
             </div>
@@ -156,7 +154,7 @@
                     <span class="ok">✓ up to date {coloured.leaves.length - coloured.stale_leaves.length}</span>
                 </div>
             {/if}
-            <DataMap {cells} outline={outline(areas.output, target.region).map(corners)} />
+            <DataMap {cells} outline={(target.area?.boxes ?? []).map(corners)} />
         </section>
     {/if}
 

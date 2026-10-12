@@ -26,21 +26,3 @@ export const corners = ({ west, south, east, north }: Bbox): [DegPoint, DegPoint
     [south, west],
     [north, east],
 ];
-
-/** The rectangles of region or Geofabrik path `id`: a preset by its kind, a union by its members. */
-export function outline(areas: Areas | null, id: string | null, seen = new Set<string>()): Bbox[] {
-    if (!areas || !id || seen.has(id)) return [];
-    seen.add(id);
-    const region = areas.regions.find((region) => region.id === id);
-    if (region?.kind === "box") return [region.box];
-    if (region?.kind === "union") return region.union.flatMap((member) => outline(areas, member, seen));
-    const paths = region?.kind === "geofabrik" ? region.areas : [id];
-    return paths.flatMap((path) => areas.areas.filter((area) => area.id === path).map((area) => area.bounds));
-}
-
-/** The smallest Geofabrik area whose bounds hold `box`: the extract that a box reads. */
-export function extract(areas: Areas | null, box: Bbox): string | null {
-    const holds = ({ bounds: b }: Areas["areas"][number]) => b.west <= box.west && b.south <= box.south && b.east >= box.east && b.north >= box.north;
-    const size = ({ bounds: b }: Areas["areas"][number]) => (b.east - b.west) * (b.north - b.south);
-    return (areas?.areas.filter(holds).sort((a, b) => size(a) - size(b))[0]?.id) ?? null;
-}

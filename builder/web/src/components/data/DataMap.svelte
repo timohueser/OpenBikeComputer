@@ -3,8 +3,8 @@
     import { onMount } from "svelte";
     import { CoverageMapView, type DegPoint } from "../../lib/map/coverageMap";
 
-    // Squares and an outline on the basemap. With `picking`, a click picks one of `regions`: when
-    // several hold the point, the smallest first, the page asks which. With `drawing`, a drag draws a box.
+    // Squares and an outline on the basemap. With `picking`, a click picks the smallest of `regions`
+    // that holds the point. With `drawing`, a drag draws a box.
     type Bounds = [DegPoint, DegPoint];
     let {
         cells = [],
@@ -26,13 +26,12 @@
 
     let element: HTMLElement;
     let view = $state<CoverageMapView>();
-    let ladder = $state<{ ids: string[]; x: number; y: number } | null>(null);
     const ring = ([[south, west], [north, east]]: Bounds): DegPoint[] => [[south, west], [south, east], [north, east], [north, west], [south, west]];
     onMount(() => {
         const box = (...edges: number[]) => edges.map((edge) => edge.toFixed(3)).join(", ");
         view = new CoverageMapView(element, {
             onRegionPick: (id) => onpick?.(id),
-            onRegionLadder: (ids, _, x, y) => (ladder = { ids, x, y }),
+            onRegionLadder: (ids) => onpick?.(ids[0]),
             onBoxDrawn: (south, west, north, east) => onbox?.(south, west, north, east),
             boxDragLabel: (south, west, north, east) => box(west, south, east, north),
             onLassoDrawn: () => {},
@@ -56,45 +55,14 @@
     $effect(() => {
         if (view && frame) view.flyTo(...(JSON.parse(frame) as [number, number, number, number]));
     });
-    const named = (id: string) => regions.find((region) => region.id === id)?.name ?? id;
 </script>
 
-<div class="frame">
-    <div class="map" bind:this={element}></div>
-    {#if ladder}
-        <div class="ladder" role="group" aria-label="Which area" style:left="{ladder.x}px" style:top="{ladder.y}px">
-            {#each ladder.ids as id (id)}
-                <button
-                    type="button"
-                    onclick={() => {
-                        onpick?.(id);
-                        ladder = null;
-                    }}>{named(id)}</button
-                >
-            {/each}
-            <button type="button" onclick={() => (ladder = null)}>Cancel</button>
-        </div>
-    {/if}
-</div>
+<div class="map" bind:this={element}></div>
 
 <style>
-    .frame {
-        position: relative;
-    }
     .map {
         height: 360px;
         border: 1px solid var(--line-strong);
-        border-radius: 8px;
-    }
-    .ladder {
-        position: absolute;
-        z-index: 1000;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        padding: 8px;
-        background: var(--panel);
-        border: 1px solid var(--ink);
         border-radius: 8px;
     }
 </style>

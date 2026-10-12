@@ -2,12 +2,12 @@
     import { onMount } from "svelte";
     import { command } from "../../lib/data/cli";
     import { flagsOf, reviewArgs } from "../../lib/data/flags";
+    import { leafSquare } from "../../lib/data/leaf";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { changes, clock, list, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
-    import Failure from "./Failure.svelte";
-    import { leafSquare } from "../../lib/data/leaf";
     import DataMap from "./DataMap.svelte";
+    import Failure from "./Failure.svelte";
     import Layers from "./Layers.svelte";
     import Phases from "./Phases.svelte";
 

@@ -13,6 +13,7 @@ use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::lock::{self, Holder};
 use crate::product::{BlockedLayer, Inputs, Product};
+use crate::regions::{geofabrik, Area, Bbox, Regions};
 use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
 use crate::store::Store;
@@ -58,6 +59,8 @@ pub struct TargetState {
     pub lock_error: Option<String>,
     /// The region of the serving release.
     pub region: Option<String>,
+    /// The area of the serving release, as boxes that a map draws; `null` while it serves nothing.
+    pub area: Option<AreaBoxes>,
     /// Each source version that the serving release read.
     pub sources: Vec<SourceVersion>,
     /// Each layer of the steps and of the serving release; `null` while the target serves nothing
@@ -75,6 +78,27 @@ pub struct TargetState {
     /// target serves its settings as the steps make them now. For an R2 target, the command is the
     /// review: its update needs the id that the owner approved.
     pub next: Option<String>,
+}
+
+/// An area as boxes.
+#[derive(Serialize, JsonSchema)]
+pub struct AreaBoxes {
+    pub name: String,
+    /// A box for each part: the box of a box region, and the bounds of each Geofabrik area in the
+    /// cached index. A Geofabrik area that the store has no index for has no box.
+    pub boxes: Vec<Bbox>,
+}
+
+/// The area of region `id` of `regions`, with the bounds of its Geofabrik areas from `index`.
+fn area(regions: &Regions, id: &str, index: Option<&BTreeMap<String, geofabrik::Area>>) -> Option<AreaBoxes> {
+    let name = regions.get(id)?.name.clone();
+    let parts = regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf));
+    let boxes = parts.flat_map(|part| match &part.area {
+        Area::Box { bbox } => vec![*bbox],
+        Area::Geofabrik { areas } => areas.iter().filter_map(|path| Some(index?.get(path)?.bounds)).collect(),
+        Area::Union { .. } => Vec::new(),
+    });
+    Some(AreaBoxes { name, boxes: boxes.collect() })
 }
 
 /// A source version that a release read.
@@ -100,7 +124,11 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
     let (store, http) = (Store::open()?, Http::new());
     let targets = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
     let sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
-    let targets = targets.iter().map(|(name, target)| state(root, &store, &http, products, &sources, name, target));
+    // A target names its Geofabrik areas without their bounds; the cached index has them.
+    let index = super::cached_index(&store).ok().flatten();
+    let index = index.as_ref().map(|(_, areas)| areas);
+    let targets =
+        targets.iter().map(|(name, target)| state(root, &store, &http, products, (&sources, index), name, target));
     let limits = Limits::machine();
     let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
     let name = crate::machine();
@@ -171,7 +199,7 @@ fn state(
     store: &Store,
     http: &Http,
     products: &[&dyn Product],
-    sources: &[Source],
+    (sources, index): (&[Source], Option<&BTreeMap<String, geofabrik::Area>>),
     name: &str,
     target: &Target,
 ) -> TargetState {
@@ -187,6 +215,7 @@ fn state(
         lock: None,
         lock_error: None,
         region: None,
+        area: None,
         sources: Vec::new(),
         layers: None,
         blocked: Vec::new(),
@@ -230,6 +259,7 @@ fn state(
             .collect();
         state.drift = release::drift(target, &release)?;
         let regions = release.settings.regions()?;
+        state.area = area(&regions, &release.settings.region, index);
         let mut sources = sources.to_vec();
         release.settings.policies(&mut sources)?;
         let mut inputs =
@@ -252,4 +282,37 @@ fn state(
         state.next = Some(format!("wait for run {} of `{}` to end", holder.run, holder.machine));
     }
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::regions::Region;
+
+    #[test]
+    fn the_area_of_a_box_and_of_two_geofabrik_areas_is_their_boxes() {
+        let bbox = |edges| Bbox::new(edges).unwrap();
+        let region =
+            |id: &str, area| Region { id: id.into(), name: id.into(), area, countries: Vec::new(), time_zone: None };
+        let paths = vec!["europe/a".to_string(), "europe/b".to_string()];
+        let box_ = bbox([7.65, 47.85, 8.15, 48.15]);
+        let regions = Regions::new(vec![
+            region("box", Area::Box { bbox: box_ }),
+            region("areas", Area::Geofabrik { areas: paths.clone() }),
+        ])
+        .unwrap();
+        let bounds = [bbox([5.0, 45.0, 6.0, 46.0]), bbox([6.0, 45.0, 7.0, 46.0])];
+        let index: BTreeMap<String, geofabrik::Area> = paths
+            .iter()
+            .zip(bounds)
+            .map(|(id, bounds)| {
+                let (name, parent, countries, polygons) = (id.clone(), None, Vec::new(), Vec::new());
+                (id.clone(), geofabrik::Area { id: id.clone(), name, parent, countries, polygons, bounds })
+            })
+            .collect();
+        let boxes = |id| area(&regions, id, Some(&index)).unwrap().boxes;
+        assert_eq!(boxes("box"), [box_]);
+        assert_eq!(boxes("areas"), bounds);
+        assert!(area(&regions, "areas", None).unwrap().boxes.is_empty(), "no index, no boxes");
+    }
 }

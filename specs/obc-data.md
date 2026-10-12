@@ -1586,6 +1586,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "AreaBoxes": {
+      "description": "An area as boxes.",
+      "properties": {
+        "boxes": {
+          "description": "A box for each part: the box of a box region, and the bounds of each Geofabrik area in the\ncached index. A Geofabrik area that the store has no index for has no box.",
+          "items": {
+            "$ref": "#/$defs/Bbox"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "boxes"
+      ],
+      "type": "object"
+    },
     "Areas": {
       "description": "What `areas` writes.",
       "properties": {
@@ -4318,6 +4338,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "TargetState": {
       "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AreaBoxes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The area of the serving release, as boxes that a map draws; `null` while it serves nothing."
+        },
         "at": {
           "description": "The folder of a dir target, or the public URL of an R2 bucket.",
           "type": "string"
@@ -4426,6 +4457,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "area",
         "sources",
         "layers",
         "blocked",

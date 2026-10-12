@@ -9,7 +9,8 @@ import Review from "./Review.svelte";
 
 const review = example as ReviewShape;
 const layers = (status as Status).targets.find(({ target }) => target === "local")!.layers!;
-const props = { name: "local", kind: "dir" as const, flags: [], machine: "laptop", locked: null, layers };
+const area = (status as Status).targets.find(({ target }) => target === "local")!.area;
+const props = { name: "local", kind: "dir" as const, flags: [], machine: "laptop", locked: null, layers, area };
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -108,7 +109,6 @@ it("a preset, ticked Geofabrik areas and a box each become the area flag of the 
         tab("Draw a box");
         await vi.waitFor(() => expect(document.querySelectorAll('input[type="number"]').length).toBe(4));
         document.querySelectorAll<HTMLInputElement>('input[type="number"]').forEach((edge, i) => type(edge, ["7.65", "47.85", "8.15", "48.15"][i]));
-        await vi.waitFor(() => expect(document.body.textContent).toContain("It reads the extract europe/germany/baden-wuerttemberg/freiburg-regbez."));
         button("Review this box").click();
         await vi.waitFor(() => expect(last()).toEqual(["update", "local", "--box", "7.65,47.85,8.15,48.15", "--dry-run"]));
     } finally {

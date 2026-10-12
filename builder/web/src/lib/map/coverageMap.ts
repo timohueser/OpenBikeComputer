@@ -257,7 +257,7 @@ export class CoverageMapView {
         this.map.invalidateSize();
     }
 
-    /** The catalog's named regions as quiet outlines. Called once. */
+    /** The catalog's named regions as quiet outlines, in place of those before. */
     setRegions(regions: { id: string; name: string; rings: DegPoint[][] }[]): void {
         this.regionLayer.clearLayers();
         this.regionPolys.clear();

@@ -18,7 +18,16 @@
         machine,
         locked,
         layers,
-    }: { name: string; kind: Target["kind"]; flags: Flags; machine: string; locked: string | null; layers: Layer[] } = $props();
+        area,
+    }: {
+        name: string;
+        kind: Target["kind"];
+        flags: Flags;
+        machine: string;
+        locked: string | null;
+        layers: Layer[];
+        area: Target["area"];
+    } = $props();
 
     // svelte-ignore state_referenced_locally
     let flags = $state(initial);
@@ -83,8 +92,8 @@
             </label>
         {/if}
         <fieldset class="area">
-            <legend>Area · now {review.settings.region}</legend>
-            <AreaPicker region={review.settings.region} apply={setArea} />
+            <legend>Area · {name} serves {area?.name ?? "no area"}</legend>
+            <AreaPicker region={review.settings.region} boxes={area?.boxes ?? []} apply={setArea} />
         </fieldset>
         {#if review.optional.length}
             <fieldset class="title">

@@ -1,12 +1,15 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { corners, type Areas, type Bbox } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
-    import { corners, extract, outline, type Areas, type Bbox } from "../../lib/data/areas";
     import { CliQuery } from "../../lib/data/query.svelte";
     import DataMap from "./DataMap.svelte";
+    import Failure from "./Failure.svelte";
 
-    // The area of the next review: a preset, Geofabrik areas, or a box. `apply` gives the flag.
-    let { region, apply }: { region: string; apply: (flag: "--region" | "--box", value: string) => void } = $props();
+    // The area of the next review: a preset, Geofabrik areas, or a box. `apply` gives the flag. The
+    // map shows `boxes`, the area that the target serves, and the choice of the open tab only.
+    let { region, boxes, apply }: { region: string; boxes: Bbox[]; apply: (flag: "--region" | "--box", value: string) => void } =
+        $props();
 
     const areas = new CliQuery<Areas>(["areas"]);
     onMount(() => void areas.refresh());
@@ -14,24 +17,27 @@
     let query = $state("");
     let ticked = $state<string[]>([]);
     let box = $state<Bbox>({ west: NaN, south: NaN, east: NaN, north: NaN });
+    const all = $derived(areas.output?.areas ?? []);
     const found = $derived.by(() => {
         const words = query.trim().toLowerCase();
-        const all = areas.output?.areas ?? [];
         return words ? all.filter((area) => area.id.includes(words) || area.name.toLowerCase().includes(words)).slice(0, 40) : [];
     });
     const drawn = $derived(Object.values(box).every(Number.isFinite));
-    const reads = $derived(drawn ? extract(areas.output, box) : null);
-    const cells = $derived([
-        ...ticked.flatMap((id) => outline(areas.output, id)).map((bounds) => ({ bounds: corners(bounds), color: "var(--running)", label: "ticked" })),
-        ...(drawn ? [{ bounds: corners(box), color: "var(--running)", label: "box" }] : []),
-    ]);
-    const regions = $derived(found.map(({ id, name, bounds }) => ({ id, name, rings: [rectangle(bounds)] })));
+    const chosen = $derived.by(() => {
+        if (tab === "geofabrik") return all.filter((area) => ticked.includes(area.id)).map((area) => area.bounds);
+        return tab === "box" && drawn ? [box] : [];
+    });
+    const cells = $derived(chosen.map((bounds) => ({ bounds: corners(bounds), color: "var(--running)", label: "the next area" })));
+    // Every Geofabrik area, so that a click picks the smallest that holds the point, also with no search.
+    const regions = $derived(all.map(({ id, name, bounds: b }) => ({ id, name, rings: [rectangle(b)] })));
     function rectangle({ west, south, east, north }: Bbox) {
         return [[south, west], [south, east], [north, east], [north, west], [south, west]] as [number, number][];
     }
     const toggle = (id: string) => (ticked = ticked.includes(id) ? ticked.filter((at) => at !== id) : [...ticked, id]);
     const edge = (value: number) => +value.toFixed(4);
 </script>
+
+{#if areas.error}<Failure error={areas.error} />{/if}
 
 <div class="tabs" role="tablist" aria-label="Area">
     {#each [["preset", "Preset"], ["geofabrik", "Geofabrik area"], ["box", "Draw a box"]] as [id, label] (id)}
@@ -67,12 +73,12 @@
         {/each}
         <button type="submit">Review this box</button>
     </form>
-    {#if reads}<p class="soft">It reads the extract {reads}.</p>{/if}
+    <p class="soft">The Fetch line of the review names the extract that the box reads.</p>
 {/if}
 
 <DataMap
     {cells}
-    outline={outline(areas.output, region).map(corners)}
+    outline={boxes.map(corners)}
     regions={tab === "geofabrik" ? regions : []}
     picking={tab === "geofabrik"}
     drawing={tab === "box"}
