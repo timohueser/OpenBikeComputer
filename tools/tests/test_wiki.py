@@ -269,7 +269,7 @@ class Wiki(unittest.TestCase):
         lines = [json.loads(line) for line in out.read_text().splitlines()]
         self.assertEqual([line["class"]["key"] for line in lines if "class" in line], ["Q2", "Q3"])
         self.assertEqual([line["subject"]["key"] for line in lines if "subject" in line], ["Q1", "Q999"])
-        self.assertEqual([line["peak"] for line in lines if "peak" in line], ["Q1"])
+        self.assertEqual([(line["peak"], line["links"]) for line in lines if "peak" in line], [("Q1", ["wikidata:Q1"])])
 
     def test_the_facts_of_a_chunk_hold_its_subjects_and_the_classes_of_their_types(self):
         self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]), dict(osm="n2", wikidata="Q999"))
@@ -329,7 +329,7 @@ class Wiki(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "import step first"):
             shards.write(self.db, self.work, self.root / "out")
         self.wikidata()
-        shards.write(self.db, self.work, self.root / "out")
+        shards.write(self.db, self.work, self.root / "out", counts={"photo_compile_failures": 2})
         index = json.loads((self.root / "out/index.json").read_text())
         # The way w11 crosses the border at 47.185920° between these two cells.
         self.assertEqual([shard["path"] for shard in index["shards"]], ["common.tar.zst", "cells/0300-0262.tar.zst", "cells/0301-0262.tar.zst"])
@@ -340,7 +340,7 @@ class Wiki(unittest.TestCase):
         # The long river, the route relation and every class.
         self.assertEqual(common, {("link", "wikidata:Q4"), ("link", "wikidata:Q5"), ("entity", "Q2"), ("entity", "Q3"),
                                   ("entity", "Q4"), ("entity", "Q5")})
-        self.assertEqual((index["counts"]["subjects"], index["counts"]["subjects_in_common"]), (4, 2))
+        self.assertEqual([index["counts"][name] for name in ("subjects", "subjects_in_common", "photo_compile_failures")], [4, 2, 2])
 
 
 def members(path):

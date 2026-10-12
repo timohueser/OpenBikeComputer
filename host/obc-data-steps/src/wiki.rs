@@ -18,6 +18,7 @@ use obc_data::product::Wanted;
 use obc_data::settings::Settings;
 use obc_data::sources::Source;
 use obc_data::store::{hash_file, write_atomic};
+use obc_pack::landmarks::peaks::Summit;
 use obc_pack::landmarks::shared::Landmarks;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -105,22 +106,25 @@ impl Prepared for Wiki {
         if !selection.exists() {
             let candidates = state.join("candidates.jsonl");
             job.program(step("candidates")?.arg("--out").arg(&candidates))?;
-            write_atomic(&selection, &serde_json::to_vec(&select(&candidates)?).expect("a selection serializes"))?;
+            let summits = commons::summits(&subjects)?;
+            let chosen = select(&candidates, &summits)?;
+            write_atomic(&selection, &serde_json::to_vec(&chosen).expect("a selection serializes"))?;
         }
         let chosen: commons::Selection = read_json(&selection)?;
         let selected = state.join("selected.json");
         let ids: BTreeSet<&String> = chosen.landmarks.iter().chain(&chosen.peaks).collect();
         write_atomic(&selected, &serde_json::to_vec(&ids).expect("ids serialize"))?;
         job.program(step("articles")?.arg("--inputs").arg(&inputs).arg("--selected").arg(&selected))?;
-        let planet = &pin.dumps.iter().find(|dump| dump.key == "osm").expect("the dumps have a planet").sha256;
-        commons::rounds(job, &step, self.wait, planet)?;
+        let failed = commons::rounds(job, &step, self.wait, &pin)?;
+        let counts = state.join("counts.json");
+        write_atomic(&counts, json!({"photo_compile_failures": failed}).to_string().as_bytes())?;
         // The shards that the target has are not written again.
         let done: BTreeMap<&str, Value> =
             job.files().map(|file| (file.path.as_str(), json!({"sha256": file.sha256, "bytes": file.size}))).collect();
         let done_file = state.join("done.json");
         write_atomic(&done_file, &serde_json::to_vec(&done).expect("done serializes"))?;
         let mut command = step("shards")?;
-        command.arg("--out").arg(&job.work).arg("--done").arg(&done_file);
+        command.arg("--out").arg(&job.work).arg("--done").arg(&done_file).arg("--counts").arg(&counts);
         if !pin.publish_text {
             command.arg("--no-text");
         }
@@ -263,9 +267,11 @@ fn dumps(dir: &Path) -> Result<Vec<Dump>, String> {
 }
 
 /// The subjects of the compilers, whose articles and photos the version holds: each subject that
-/// the landmark rule of the compilers selects, and each peak, with the Commons categories of each.
-/// The classes come first in `candidates`.
-fn select(candidates: &Path) -> Result<commons::Selection, String> {
+/// the landmark rule of the compilers selects, and each peak that a link of one of `summits`
+/// names, with the Commons categories of each. The classes come first in `candidates`.
+fn select(candidates: &Path, summits: &[Summit]) -> Result<commons::Selection, String> {
+    let tags = summits.iter().flat_map(|summit| ["wikidata", "wikipedia"].map(|kind| (kind, summit.tags.get(kind))));
+    let links: BTreeSet<String> = tags.filter_map(|(kind, tag)| Some(format!("{kind}:{}", tag?))).collect();
     let file = fs::File::open(candidates).map_err(|e| format!("{}: {e}", candidates.display()))?;
     let (mut landmarks, mut selection) = (Landmarks::new(), commons::Selection::default());
     for line in std::io::BufReader::new(file).lines() {
@@ -276,7 +282,9 @@ fn select(candidates: &Path) -> Result<commons::Selection, String> {
             let Some(id) = subject["key"].as_str() else { continue };
             selection.landmarks.insert(id.into());
             selection.categories(id, &subject["entity"]);
-        } else if let Some(id) = value["peak"].as_str() {
+        } else if let Some(id) = value["peak"].as_str().filter(|_| {
+            value["links"].as_array().into_iter().flatten().filter_map(Value::as_str).any(|link| links.contains(link))
+        }) {
             selection.peaks.insert(id.into());
             selection.categories(id, &value["entity"]["entity"]);
         }
@@ -311,7 +319,7 @@ mod tests {
     use obc_data::target::Target;
 
     #[test]
-    fn the_selection_is_each_subject_of_a_landmark_category_and_each_peak_with_its_categories() {
+    fn the_selection_is_each_subject_of_a_landmark_category_and_each_summit_with_its_categories() {
         let temp = temp("wiki-select");
         fs::create_dir_all(&temp.0).unwrap();
         let fact = |key: &str, claims: &[(&str, Value)]| {
@@ -328,11 +336,21 @@ mod tests {
             json!({"class": fact("Q5", &[])}),
             json!({"subject": fact("Q1", &[("P31", json!({"id": "Q23413"})), ("P373", json!("Castles"))])}),
             json!({"subject": fact("Q2", &[("P31", json!({"id": "Q5"})), ("P373", json!("Other"))])}),
-            json!({"peak": "Q7", "entity": fact("Q7", &[("P373", json!("Summits"))])}),
+            json!({"peak": "Q7", "links": ["wikidata:Q7"], "entity": fact("Q7", &[("P373", json!("Summits"))])}),
+            json!({"peak": "Q8", "links": ["wikidata:Q8"], "entity": fact("Q8", &[("P373", json!("Hills"))])}),
         ];
         let candidates = temp.0.join("candidates.jsonl");
         fs::write(&candidates, lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
-        let selection = select(&candidates).unwrap();
+        // The map takes a named peak as a summit, and an unnamed one not: no round asks for it.
+        let subjects = temp.0.join("subjects.ndjson");
+        let peak =
+            |osm: &str, tags: Value| json!({"osm": osm, "peak": true, "box": [8.3, 46.5, 8.3, 46.5], "tags": tags});
+        let named = peak("n7", json!({"natural": "peak", "name": "Testhorn", "wikidata": "Q7"}));
+        let unnamed = peak("n8", json!({"natural": "peak", "wikidata": "Q8"}));
+        fs::write(&subjects, format!("{named}\n{unnamed}\n")).unwrap();
+        let summits = commons::summits(&subjects).unwrap();
+        assert_eq!(summits.iter().map(|summit| summit.node_id).collect::<Vec<_>>(), [7]);
+        let selection = select(&candidates, &summits).unwrap();
         assert_eq!((selection.landmarks, selection.peaks), (["Q1".into()].into(), ["Q7".into()].into()));
         let categories: Vec<(&String, &BTreeSet<String>)> =
             selection.requests.iter().map(|(id, request)| (id, &request.categories)).collect();
@@ -354,10 +372,10 @@ mod tests {
 
     /// `tools.wiki` as a script that logs each step to `calls`: `fail-<step>` fails a step, `import`
     /// keeps its inputs, `candidates` writes one castle, `commons` is busy once after `busy-once`,
-    /// `facts` gives no fact, and `shards` writes two shards that `done.json` does not name, and
-    /// the index.
+    /// `facts` gives no fact, so the compile of the castle fails, and `shards` writes two shards
+    /// that `done.json` does not name, and the index.
     const TOOLS: &str = r#"step=$1; shift; echo "$step" >> calls
-while [ $# -gt 1 ]; do case "$1" in --out) out=$2;; --done) done=$2;; --selected) selected=$2;; --inputs) inputs=$2;; --work) work=$2;; esac; shift; done
+while [ $# -gt 1 ]; do case "$1" in --out) out=$2;; --done) done=$2;; --counts) counts=$2;; --selected) selected=$2;; --inputs) inputs=$2;; --work) work=$2;; esac; shift; done
 [ -e "fail-$step" ] && exit 1
 case "$step" in
 facts) mkdir -p "$out" ;;
@@ -368,7 +386,7 @@ candidates) printf '%s\n' '{"class":{"kind":"entity","key":"Q23413","status":"pr
     '{"subject":{"kind":"entity","key":"Q1","status":"present","entity":{"claims":{"P31":[{"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}]}}}}' > "$out" ;;
 articles) cp "$selected" selected.seen ;;
 shards)
-    cp "$done" done.seen; echo "$*" > shards.args; mkdir -p "$out/cells"
+    cp "$done" done.seen; cp "$counts" counts.seen; echo "$*" > shards.args; mkdir -p "$out/cells"
     for shard in common.tar.zst cells/0300-0262.tar.zst; do grep -q "$shard" "$done" || echo "$shard" > "$out/$shard"; done
     echo '{"shards":[{"path":"common.tar.zst"},{"path":"cells/0300-0262.tar.zst"}],"counts":{}}' > "$out/index.json" ;;
 esac
@@ -437,6 +455,8 @@ esac
         assert_eq!(inputs["wikidata"]["sha256"], json!(hash_file(&wikidata).unwrap().0));
         assert_eq!(fs::read_to_string(root.join("selected.seen")).unwrap(), r#"["Q1"]"#);
         assert!(fs::read_to_string(root.join("shards.args")).unwrap().contains("--no-text"));
+        let counts: Value = read_json(&root.join("counts.seen")).unwrap();
+        assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no photo");
         let Target::Dir(dir) = &target else { unreachable!() };
         let version = dir.join("sources/wiki/2026-10-01");
         for path in ["common.tar.zst", "cells/0300-0262.tar.zst", "index.json"] {

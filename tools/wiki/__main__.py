@@ -8,7 +8,7 @@ Each step resumes in its work directory. The producer runs them in this order:
     python -m tools.wiki articles   --work W --inputs inputs.json --selected selected.json
     python -m tools.wiki facts      --work W --selected ids.json --requests links.json --out DIR
     python -m tools.wiki commons    --work W --requests requests.json
-    python -m tools.wiki shards     --work W --out OUT [--done done.json] [--no-text]
+    python -m tools.wiki shards     --work W --out OUT [--done done.json] [--counts counts.json] [--no-text]
 
 `inputs.json` gives each dump that the producer reads in place, as `{"path": PATH, "sha256": HEX}`:
 `{"wikidata": DUMP, "wikidata_pages": DUMP, "wikidata_redirects": DUMP, "wikipedia": {LANG: DUMP},
@@ -16,11 +16,11 @@ Each step resumes in its work directory. The producer runs them in this order:
 others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
 `candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
 QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
-that is published already. `requests.json` maps each
-subject that the compilers select to its Commons `categories`, `commons` and `files`; see
-`commons.acquire`. When Wikimedia is busy, `commons` stops and leaves the file `busy` in the work
-directory: the next call resumes. `facts` writes the facts that the compilers read of the
-subjects `ids.json` and of the peaks with the tags of `links.json`.
+that is published already, and `counts.json` the counts of the producer for the index.
+`requests.json` maps each subject that the compilers select to its Commons `categories`,
+`commons` and `files`; see `commons.acquire`. When Wikimedia is busy, `commons` stops and leaves
+the file `busy` in the work directory: the next call resumes. `facts` writes the facts that the
+compilers read of the subjects `ids.json` and of the peaks with the tags of `links.json`.
 
 The steps need Osmium (or `OBC_OSMIUM`) and zstd; lbzip2 and pigz decompress in parallel when
 present.
@@ -39,7 +39,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("step", choices=["subjects", "import", "candidates", "articles", "facts", "commons", "shards"])
     parser.add_argument("--work", type=Path, required=True)
-    for name in ("osm", "out", "inputs", "subjects", "selected", "requests", "done"):
+    for name in ("osm", "out", "inputs", "subjects", "selected", "requests", "done", "counts"):
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--bbox", type=lambda text: [float(value) for value in text.split(",")])
     parser.add_argument("--no-text", action="store_true")
@@ -81,8 +81,8 @@ def main() -> int:
                 (args.work / "busy").touch()
             raise
     else:
-        done = json.loads(args.done.read_bytes()) if args.done else None
-        shards.write(db, args.work, args.out, done, text=not args.no_text)
+        done, counts = (json.loads(path.read_bytes()) if path else None for path in (args.done, args.counts))
+        shards.write(db, args.work, args.out, done, text=not args.no_text, counts=counts)
     db.close()
     return 0
 

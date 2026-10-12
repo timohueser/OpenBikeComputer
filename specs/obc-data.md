@@ -1516,15 +1516,15 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   the version. A step whose output the run has does not run again, and `tools.wiki` does not
   repeat an import that finished with the same input.
 - The selection is the rule of the compilers: each subject of a landmark category, and each peak
-  with a resolved link. Only their articles are read, and only the photos that the compilers
+  with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
   choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
 - A version of a region keeps the subjects whose box meets the box of the region; a region
   without a box refuses.
 - The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
   target to `shards`, which does not write them again.
-- With `publish_text = false`, the shards hold no article. The review says "text published" or
-  "text kept local".
+- With `publish_text = false`, the shards hold no article, and no lead image is a photo. The
+  review says "text published" or "text kept local".
 
 ### Serve
 

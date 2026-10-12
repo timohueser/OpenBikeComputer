@@ -84,9 +84,10 @@ def archive(path: Path, members):
     partial.replace(path)
 
 
-def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True):
+def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True, counts: dict | None = None):
     """`done` gives the SHA-256 and the size of each shard that is published already: it is not
-    written again, and the index lists it. Without `text`, the shards hold no article."""
+    written again, and the index lists it. Without `text`, the shards hold no article. `counts`
+    are the counts of the producer, which the index adds to its own."""
     if not catalog.complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     targets = catalog.graph(db)
@@ -97,8 +98,9 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     rows = db.execute("SELECT cell, wikidata, wikipedia FROM subjects WHERE cell!='' ORDER BY cell")
     for cell, subjects in groupby(rows, key=lambda row: row[0]):
         shards.append(shard(db, work, (out, done or {}, text), f"cells/{cell}.tar.zst", targets, [], (row[1:] for row in subjects)))
-    counts = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
-    counts.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
+    found = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
+    found.update(counts or {})
+    found.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
                   subjects_in_common=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects WHERE cell=''").fetchone()[0],
                   subjects_without_link=db.execute("""SELECT COUNT(DISTINCT osm) FROM subjects WHERE
                       (wikidata IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikidata:'||wikidata)) OR
@@ -107,7 +109,7 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     for stale in out.glob("**/*.tar.zst"):
         if stale.relative_to(out).as_posix() not in paths:
             stale.unlink()
-    write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(counts.items()))))
+    write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(found.items()))))
 
 
 def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[str, str]], subjects) -> dict:

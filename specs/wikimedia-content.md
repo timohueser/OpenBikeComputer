@@ -185,7 +185,7 @@ subject: an object with a `wikidata` or `wikipedia` tag. Its version has these f
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
 | `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
-| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, and the unresolved work of each kind |
+| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
 A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
 content of a step names them. A fact that two shards need is in both, with the same bytes. A
@@ -194,14 +194,18 @@ the compilers read. A fact that the version lacks is no content. A member
 `content/assets/<sha256>` is the 500 px thumbnail of a photo that the compilers choose for a
 subject; the device cell steps convert it to the device format.
 
-The producer asks Commons in three rounds, as a region asks: the categories of the subjects that
-the compilers select, then the metadata of their photo candidates (P18, the lead images of their
+The producer asks Commons in rounds, as a region asks: the categories of the subjects that the
+compilers select, then the metadata of their photo candidates (P18, the lead images of their
 articles and the members of their categories), then the thumbnails of the files that the
-compilers choose. Each round asks only for what the rounds before have not answered, with the
+compilers choose. A thumbnail that fails the checks of a compiler makes it choose another file,
+so the last round repeats for the subjects with new files until it asks no new file. Without
+published text, the compilers see no article and choose no lead image. Each round asks only for
+what the rounds before have not answered, with the
 limits of the acquisition adapter: one request at a time, at most four a second, `maxlag` 5,
 `Retry-After`, three backoffs on 429 and 503, and media at 3 MB/s. When Wikimedia is busy, the
 producer waits ten minutes, then twice as long each time up to two hours, and asks again. A
-subject whose compile fails has no photo in the version.
+subject whose compile fails alone has no photo in the version: the producer logs it and
+`index.json` counts it. When each subject of a chunk fails, or on an I/O error, the run stops.
 
 ## Photo fallback and reachability
 

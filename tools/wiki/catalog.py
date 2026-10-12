@@ -187,7 +187,8 @@ def subject_items(db) -> set[str]:
 def candidates(db, out: Path):
     """What the landmark rule of the compilers reads, for the producer: `{"class": fact}` for the
     entity of each class, then `{"subject": fact}` for the entity of each OSM `wikidata` tag, and
-    `{"peak": identity, "entity": fact}` for each resolved link of a peak."""
+    `{"peak": identity, "links": [key], "entity": fact}` for each identity that the links of peaks
+    resolve to, with those link keys."""
     if not complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     partial = out.with_suffix(".partial")
@@ -199,13 +200,13 @@ def candidates(db, out: Path):
         for qid in sorted({canonical(db, tag) for (tag,) in tags} - {None}):
             if value := fact(db, "entity", qid):
                 output.write(json.dumps({"subject": value}, ensure_ascii=False) + "\n")
-        peaks = set()
+        peaks = {}
         for wikidata, wikipedia in db.execute("SELECT DISTINCT wikidata, wikipedia FROM subjects WHERE peak=1"):
             for key in (f"wikidata:{wikidata}" if wikidata else None, f"wikipedia:{wikipedia}" if wikipedia else None):
                 if key and (link := fact(db, "link", key)) and link["status"] == "present":
-                    peaks.add(link["identity"])
-        output.writelines(json.dumps({"peak": identity, "entity": fact(db, "entity", identity)}, ensure_ascii=False) + "\n"
-                          for identity in sorted(peaks))
+                    peaks.setdefault(link["identity"], set()).add(key)
+        output.writelines(json.dumps({"peak": identity, "links": sorted(links), "entity": fact(db, "entity", identity)},
+                                     ensure_ascii=False) + "\n" for identity, links in sorted(peaks.items()))
     partial.replace(out)
 
 

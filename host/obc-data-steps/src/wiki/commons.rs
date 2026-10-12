@@ -1,8 +1,10 @@
 //! The Commons rounds of `wiki`: the metadata and the 500 px thumbnails of the photos that the
 //! compilers choose for the selected subjects, asked as `device/shared_content.rs` asks a region.
 //! Round 0 names the categories of the subjects, round 1 the metadata of their photo candidates,
-//! and round 2 the files that the compilers choose. `tools.wiki commons` gets the requests of all
-//! rounds so far, and asks Commons only for what it has not answered.
+//! and round 2 the files that the compilers choose. A thumbnail that fails the checks of the
+//! compilers makes them choose another file, so round 2 repeats for the subjects with new files
+//! until a round asks no new file. `tools.wiki commons` gets the requests of all rounds so far,
+//! and asks Commons only for what it has not answered.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -11,11 +13,13 @@ use std::process::Command;
 use std::time::Duration;
 
 use obc_data::prepared::Job;
-use obc_data::store::write_atomic;
-use obc_pack::landmarks::peaks::{Summit, SummitSource};
+use obc_data::store::{sha256_hex, write_atomic};
+use obc_pack::landmarks::peaks::{self, Summit, SummitSource};
 use obc_pack::landmarks::shared;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use super::{read_json, Pin};
 
 /// The subjects or peaks of one `facts` call.
 const CHUNK: usize = 500;
@@ -23,7 +27,7 @@ const CHUNK: usize = 500;
 const LONGEST: Duration = Duration::from_secs(2 * 3600);
 
 /// What `tools.wiki commons` asks for one subject.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(super) struct Request {
     pub categories: BTreeSet<String>,
     pub commons: BTreeSet<String>,
@@ -50,26 +54,55 @@ impl Selection {
 /// A command of a step of `tools.wiki`.
 pub(super) type Step<'a> = dyn Fn(&str) -> Result<Command, String> + 'a;
 
-/// Run the rounds after round 0, each once: `state/requests-<round>.json` keeps what it asked.
-/// `wait` is the first wait after "Wikimedia is busy"; it doubles up to two hours.
-pub(super) fn rounds(job: &Job, step: &Step, wait: Duration, planet: &str) -> Result<(), String> {
-    let state = job.state.clone();
-    let selection: Selection = super::read_json(&state.join("selection.json"))?;
+/// The facts of one `facts` call, by name.
+type Files = BTreeMap<String, PathBuf>;
+
+/// The files that a compile chooses, as `(subject, file)`. `Err` is an I/O error, which ends the
+/// run; `Ok(Err)` is a compile that refuses its subjects.
+type Compiled = Result<Result<Vec<(String, String)>, String>, String>;
+
+/// Run the rounds: `state/requests-<round>.json` keeps what each round asked, and
+/// `state/failed.json` the subjects whose compile failed in it. `wait` is the first wait after
+/// "Wikimedia is busy"; it doubles up to two hours. Gives the number of failed compiles.
+pub(super) fn rounds(job: &Job, step: &Step, wait: Duration, pin: &Pin) -> Result<usize, String> {
+    let state = &job.state;
+    let selection: Selection = read_json(&state.join("selection.json"))?;
+    let failed_file = state.join("failed.json");
+    let mut failed: BTreeMap<u32, Vec<String>> =
+        if failed_file.exists() { read_json(&failed_file)? } else { BTreeMap::new() };
     let peaks = summits(&state.join("subjects.ndjson"))?;
-    let mut requests = selection.requests;
-    for round in 0..3 {
+    let asking = Asking { job, step, pin, landmarks: &selection.landmarks, peaks: &peaks };
+    let (mut before, mut requests) = (Requests::new(), selection.requests);
+    for round in 0u32.. {
         let file = state.join(format!("requests-{round}.json"));
         if file.exists() {
-            requests = super::read_json(&file)?;
+            (before, requests) = (requests, read_json(&file)?);
         } else {
+            let mut asked = requests.clone();
             if round > 0 {
-                ask(job, step, (&selection.landmarks, &peaks), planet, round, &mut requests)?;
+                // A repeat of round 2 compiles only the subjects with new files.
+                let none = BTreeSet::new();
+                let again: Option<BTreeSet<String>> = (round > 2).then(|| {
+                    let new = |(id, request): &(&String, &Request)| {
+                        request.files != *before.get(*id).map_or(&none, |request| &request.files)
+                    };
+                    requests.iter().filter(new).map(|(id, _)| id.clone()).collect()
+                });
+                if again.as_ref().is_some_and(BTreeSet::is_empty) {
+                    break;
+                }
+                failed.insert(round, asking.ask(round, again.as_ref(), &mut asked)?);
+                write_atomic(&failed_file, &serde_json::to_vec(&failed).expect("failures serialize"))?;
+                if round > 2 && asked == requests {
+                    break;
+                }
             }
-            write_atomic(&file, &serde_json::to_vec(&requests).expect("requests serialize"))?;
+            write_atomic(&file, &serde_json::to_vec(&asked).expect("requests serialize"))?;
+            (before, requests) = (requests, asked);
         }
         commons(job, step, &file, wait)?;
     }
-    Ok(())
+    Ok(failed.values().map(Vec::len).sum())
 }
 
 /// Call `commons` until it ends without "Wikimedia is busy".
@@ -91,78 +124,154 @@ fn commons(job: &Job, step: &Step, requests: &Path, mut wait: Duration) -> Resul
     }
 }
 
-/// Add the requests of `round` for the landmarks and the peaks, a chunk at a time.
-fn ask(
-    job: &Job,
-    step: &Step,
-    (landmarks, peaks): (&BTreeSet<String>, &[Summit]),
-    planet: &str,
-    round: u32,
-    requests: &mut Requests,
-) -> Result<(), String> {
-    let (view, out) = (job.state.join("view"), job.state.join("view-out"));
-    let world = job.state.join("world.geojson");
-    let corners = [[-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, -90.0]];
-    let square = json!({"type": "Polygon", "coordinates": [corners]});
-    write_atomic(&world, square.to_string().as_bytes())?;
-    let landmarks: Vec<String> = landmarks.iter().cloned().collect();
-    for ids in landmarks.chunks(CHUNK) {
-        let files = facts(job, step, ids, &[])?;
-        match round {
-            1 => candidates(&files, ids, requests)?,
-            _ => chosen(ids, requests, |ids| {
-                fresh(&[&view, &out])?;
-                shared::view(&files, &view, ids)?;
-                let asked = obc_pack::landmarks::photo_requests(&view.join("manifest.json"), &world, &out, None)?;
-                Ok(asked.requests.into_iter().map(|request| (request.qid, request.filename)).collect())
-            })?,
-        }
-    }
-    for summits in peaks.chunks(CHUNK) {
-        let links: Vec<[Option<&String>; 2]> =
-            summits.iter().map(|summit| [summit.tags.get("wikidata"), summit.tags.get("wikipedia")]).collect();
-        let files = facts(job, step, &[], &links)?;
-        let present =
-            shared::facts(&files)?.into_values().filter(|fact| fact["kind"] == "link" && fact["status"] == "present");
-        let ids: Vec<String> = present.filter_map(|fact| fact["identity"].as_str().map(String::from)).collect();
-        match round {
-            1 => candidates(&files, &ids, requests)?,
-            _ => chosen(summits, requests, |summits| {
-                fresh(&[&view, &out])?;
-                fs::create_dir_all(&view).map_err(|e| e.to_string())?;
-                let source =
-                    SummitSource { schema: 1, osm_sha256: planet.into(), summits: summits.iter().map(copy).collect() };
-                fs::write(view.join("summits.json"), serde_json::to_vec(&source).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
-                shared::peak_view(&files, &view)?;
-                let content = obc_pack::landmarks::peaks::compile(&view.join("manifest.json"), &world, &out, true)?;
-                Ok(content.photo_requests.into_iter().map(|request| (request.qid, request.filename)).collect())
-            })?,
-        }
-    }
-    Ok(())
+/// What the rounds ask about: the selected landmarks and the summits of the planet.
+struct Asking<'a, 'j> {
+    job: &'a Job<'j>,
+    step: &'a Step<'a>,
+    pin: &'a Pin,
+    landmarks: &'a BTreeSet<String>,
+    peaks: &'a [Summit],
 }
 
-/// The files that the compilers choose in `items`; when the compile of the chunk fails, the
-/// compile of each item, and an item that fails alone has no photo in this version.
+impl Asking<'_, '_> {
+    /// Add the requests of `round` for the landmarks and the peaks, a chunk at a time; with
+    /// `again`, for those subjects only. Gives each subject whose compile failed, with its error.
+    fn ask(
+        &self,
+        round: u32,
+        again: Option<&BTreeSet<String>>,
+        requests: &mut Requests,
+    ) -> Result<Vec<String>, String> {
+        let state = &self.job.state;
+        let (view, out, world) = (state.join("view"), state.join("view-out"), state.join("world.geojson"));
+        let corners = [[-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, -90.0]];
+        write_atomic(&world, json!({"type": "Polygon", "coordinates": [corners]}).to_string().as_bytes())?;
+        let asked = |id: &String| again.is_none_or(|again| again.contains(id));
+        let mut failed = Vec::new();
+        let landmarks: Vec<String> = self.landmarks.iter().filter(|id| asked(id)).cloned().collect();
+        for ids in landmarks.chunks(CHUNK) {
+            let files = self.facts(ids, &[])?;
+            match round {
+                1 => candidates(&files, ids, requests)?,
+                _ => chosen(ids, requests, &mut failed, String::clone, |ids| {
+                    fresh(&[&view, &out])?;
+                    Ok(landmark_photos(&files, [&view, &out, &world], ids))
+                })?,
+            }
+        }
+        let planet = &self.pin.dumps.iter().find(|dump| dump.key == "osm").expect("the dumps have a planet").sha256;
+        for summits in self.peaks.chunks(CHUNK) {
+            let links: Vec<[Option<&String>; 2]> =
+                summits.iter().map(|summit| [summit.tags.get("wikidata"), summit.tags.get("wikipedia")]).collect();
+            let files = self.facts(&[], &links)?;
+            let facts = shared::facts(&files)?;
+            let linked: Vec<(Summit, Vec<String>)> = summits.iter().map(|summit| linked(summit, &facts)).collect();
+            if round == 1 {
+                let ids: Vec<String> = linked.into_iter().flat_map(|(_, ids)| ids).collect();
+                candidates(&files, &ids, requests)?;
+                continue;
+            }
+            let summits: Vec<Summit> =
+                linked.into_iter().filter(|(_, ids)| ids.iter().any(asked)).map(|(summit, _)| summit).collect();
+            if summits.is_empty() {
+                continue;
+            }
+            let name = |summit: &Summit| format!("OSM node {}", summit.node_id);
+            chosen(&summits, requests, &mut failed, name, |summits| {
+                fresh(&[&view, &out])?;
+                let source = SummitSource { schema: 1, osm_sha256: planet.clone(), summits: summits.to_vec() };
+                write_atomic(&view.join("summits.json"), &serde_json::to_vec(&source).expect("summits serialize"))?;
+                Ok(peak_photos(&files, [&view, &out, &world]))
+            })?;
+        }
+        Ok(failed)
+    }
+
+    /// The facts that the compilers read of the subjects `ids` and of the peaks with the tags
+    /// `links`, by name, from `tools.wiki facts`.
+    fn facts(&self, ids: &[String], links: &[[Option<&String>; 2]]) -> Result<Files, String> {
+        let state = &self.job.state;
+        let dir = state.join("facts");
+        fresh(&[&dir])?;
+        let (subjects, peaks) = (state.join("facts-ids.json"), state.join("facts-links.json"));
+        write_atomic(&subjects, &serde_json::to_vec(ids).expect("ids serialize"))?;
+        write_atomic(&peaks, &serde_json::to_vec(links).expect("links serialize"))?;
+        let mut command = (self.step)("facts")?;
+        self.job
+            .program(command.arg("--selected").arg(&subjects).arg("--requests").arg(&peaks).arg("--out").arg(&dir))?;
+        let mut files = BTreeMap::new();
+        for kind in fs::read_dir(dir.join("content")).into_iter().flatten().flatten() {
+            for file in fs::read_dir(kind.path()).map_err(|e| e.to_string())?.flatten() {
+                let name =
+                    format!("content/{}/{}", kind.file_name().to_string_lossy(), file.file_name().to_string_lossy());
+                files.insert(name, file.path());
+            }
+        }
+        if !self.pin.publish_text {
+            without_text(&mut files, &dir)?;
+        }
+        Ok(files)
+    }
+}
+
+/// The files that the compilers choose for `items`, in `requests`. When the compile of the chunk
+/// fails, each item compiles alone: an item that fails alone has no photo in this version, and
+/// `failed` gets its `name` and error. When each item of a chunk of more than one fails, the run
+/// stops, as for an I/O error.
 fn chosen<T>(
     items: &[T],
     requests: &mut Requests,
-    compile: impl Fn(&[T]) -> Result<Vec<(String, String)>, String>,
+    failed: &mut Vec<String>,
+    name: impl Fn(&T) -> String,
+    compile: impl Fn(&[T]) -> Compiled,
 ) -> Result<(), String> {
-    let asked = compile(items).or_else(|_| {
-        let each = items.chunks(1).filter_map(|item| compile(item).ok());
-        Ok::<_, String>(each.flatten().collect())
-    })?;
+    let asked = match compile(items)? {
+        Ok(asked) => asked,
+        Err(error) => {
+            let (mut asked, mut errors) = (Vec::new(), Vec::new());
+            for item in items {
+                match compile(std::slice::from_ref(item))? {
+                    Ok(more) => asked.extend(more),
+                    Err(error) => errors.push(format!("{}: {error}", name(item))),
+                }
+            }
+            if items.len() > 1 && errors.len() == items.len() {
+                return Err(format!("the compile of each subject of a chunk of {} fails: {error}", items.len()));
+            }
+            for error in &errors {
+                eprintln!("obc data: `wiki` chooses no photo for {error}");
+            }
+            failed.extend(errors);
+            asked
+        }
+    };
     for (id, filename) in asked {
         requests.entry(id).or_default().files.insert(filename);
     }
     Ok(())
 }
 
+/// The files that the landmark compiler chooses for `ids`, over `view` and `out`.
+fn landmark_photos(
+    files: &Files,
+    [view, out, world]: [&Path; 3],
+    ids: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    shared::view(files, view, ids)?;
+    let asked = obc_pack::landmarks::photo_requests(&view.join("manifest.json"), world, out, None)?;
+    Ok(asked.requests.into_iter().map(|request| (request.qid, request.filename)).collect())
+}
+
+/// The files that the peak compiler chooses for the summits in `view/summits.json`.
+fn peak_photos(files: &Files, [view, out, world]: [&Path; 3]) -> Result<Vec<(String, String)>, String> {
+    shared::peak_view(files, view)?;
+    let content = peaks::compile(&view.join("manifest.json"), world, out, true)?;
+    Ok(content.photo_requests.into_iter().map(|request| (request.qid, request.filename)).collect())
+}
+
 /// The metadata that round 1 asks for: the P18 files, the lead images of the articles and the
 /// members of the categories of each subject `ids`, as the compilers rank them.
-fn candidates(files: &BTreeMap<String, PathBuf>, ids: &[String], requests: &mut Requests) -> Result<(), String> {
+fn candidates(files: &Files, ids: &[String], requests: &mut Requests) -> Result<(), String> {
     let facts = shared::facts(files)?;
     let languages: Vec<(String, String)> =
         serde_json::from_slice(obc_pack::landmarks::LANGUAGE_BYTES).map_err(|e| e.to_string())?;
@@ -187,32 +296,9 @@ fn candidates(files: &BTreeMap<String, PathBuf>, ids: &[String], requests: &mut 
     Ok(())
 }
 
-/// The facts that the compilers read of the subjects `ids` and of the peaks with the tags
-/// `links`, by name, from `tools.wiki facts`.
-fn facts(
-    job: &Job,
-    step: &Step,
-    ids: &[String],
-    links: &[[Option<&String>; 2]],
-) -> Result<BTreeMap<String, PathBuf>, String> {
-    let dir = job.state.join("facts");
-    fresh(&[&dir])?;
-    let (subjects, peaks) = (job.state.join("facts-ids.json"), job.state.join("facts-links.json"));
-    write_atomic(&subjects, &serde_json::to_vec(ids).expect("ids serialize"))?;
-    write_atomic(&peaks, &serde_json::to_vec(links).expect("links serialize"))?;
-    job.program(step("facts")?.arg("--selected").arg(&subjects).arg("--requests").arg(&peaks).arg("--out").arg(&dir))?;
-    let mut files = BTreeMap::new();
-    for kind in fs::read_dir(dir.join("content")).into_iter().flatten().flatten() {
-        for file in fs::read_dir(kind.path()).map_err(|e| e.to_string())?.flatten() {
-            let name = format!("content/{}/{}", kind.file_name().to_string_lossy(), file.file_name().to_string_lossy());
-            files.insert(name, file.path());
-        }
-    }
-    Ok(files)
-}
-
-/// The peaks of `subjects.ndjson`: each node with `natural=peak` and its tags.
-fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
+/// The summits of `subjects.ndjson`: each node with `natural=peak`, a point and the tags that the
+/// map takes as a summit, as the regional discovery of the peak compiler finds them.
+pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
     let text = fs::read_to_string(subjects).map_err(|e| format!("{}: {e}", subjects.display()))?;
     let mut summits = Vec::new();
     for line in text.lines() {
@@ -221,16 +307,43 @@ fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
         let (Some(node_id), Some(true), Some(tags)) = (node, value["peak"].as_bool(), value.get("tags")) else {
             continue;
         };
-        let [longitude, latitude] =
-            [&value["box"][0], &value["box"][1]].map(|value| value.as_f64().unwrap_or(f64::NAN));
+        let (Some(longitude), Some(latitude)) = (value["box"][0].as_f64(), value["box"][1].as_f64()) else { continue };
         let tags = serde_json::from_value(tags.clone()).map_err(|e| e.to_string())?;
-        summits.push(Summit { node_id, latitude, longitude, tags });
+        if peaks::is_summit(&tags) {
+            summits.push(Summit { node_id, latitude, longitude, tags });
+        }
     }
     Ok(summits)
 }
 
-fn copy(summit: &Summit) -> Summit {
-    Summit { tags: summit.tags.clone(), ..*summit }
+/// `summit` with the link tags that have a fact only, and the identities that they link.
+fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> (Summit, Vec<String>) {
+    let mut tags = summit.tags.clone();
+    let mut ids = Vec::new();
+    for kind in ["wikidata", "wikipedia"] {
+        let Some(tag) = tags.get(kind) else { continue };
+        match facts.get(&("link".to_string(), format!("{kind}:{tag}"))) {
+            None => drop(tags.remove(kind)),
+            Some(fact) if fact["status"] == "present" => ids.extend(fact["identity"].as_str().map(String::from)),
+            Some(_) => {}
+        }
+    }
+    (Summit { tags, ..*summit }, ids)
+}
+
+/// Without published text, the compilers see each article as missing, as a version without text
+/// holds no article: they choose no lead image that a reader cannot check.
+fn without_text(files: &mut Files, dir: &Path) -> Result<(), String> {
+    let articles: Vec<String> = files.keys().filter(|name| name.starts_with("content/article/")).cloned().collect();
+    for name in articles {
+        let fact: Value = read_json(&files.remove(&name).expect("a listed file"))?;
+        let missing = json!({"kind": "article", "key": fact["key"], "status": "missing"});
+        let bytes = serde_json::to_vec(&missing).expect("a fact serializes");
+        let name = format!("content/article/{}.json", sha256_hex(&bytes));
+        write_atomic(&dir.join(&name), &bytes)?;
+        files.insert(name.clone(), dir.join(name));
+    }
+    Ok(())
 }
 
 /// Remove each folder, so that it is new and empty.
@@ -280,5 +393,33 @@ mod tests {
         assert_eq!(requests.keys().collect::<Vec<_>>(), ["Q1"]);
         let asked: Vec<&str> = requests["Q1"].commons.iter().map(String::as_str).collect();
         assert_eq!(asked, ["Hill.jpg", "Lead.jpg", "Member.jpg"]);
+
+        // Without published text, no lead image.
+        without_text(&mut files, &temp.0).unwrap();
+        let mut requests = Requests::new();
+        candidates(&files, &["Q1".into()], &mut requests).unwrap();
+        let asked: Vec<&str> = requests["Q1"].commons.iter().map(String::as_str).collect();
+        assert_eq!(asked, ["Hill.jpg", "Member.jpg"]);
+    }
+
+    #[test]
+    fn a_subject_whose_compile_fails_alone_is_counted_and_a_chunk_where_each_fails_stops_the_run() {
+        let compile = |ids: &[&str]| -> Compiled {
+            match ids {
+                ["Q2"] => Ok(Err("invalid source summit".into())),
+                [id] => Ok(Ok(vec![(id.to_string(), format!("{id}.jpg"))])),
+                _ => Ok(Err("the chunk fails".into())),
+            }
+        };
+        let (mut requests, mut failed) = (Requests::new(), Vec::new());
+        chosen(&["Q1", "Q2", "Q3"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
+        assert_eq!(requests.keys().collect::<Vec<_>>(), ["Q1", "Q3"]);
+        assert_eq!(failed, ["Q2: invalid source summit"]);
+
+        let stopped = chosen(&["Q2", "Q2"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap_err();
+        assert!(stopped.contains("each subject of a chunk of 2 fails"), "{stopped}");
+        let io = |_: &[&str]| -> Compiled { Err("No space left on device".into()) };
+        let stopped = chosen(&["Q1"], &mut requests, &mut failed, |id| id.to_string(), io).unwrap_err();
+        assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 1));
     }
 }
