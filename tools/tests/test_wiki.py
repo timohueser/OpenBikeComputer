@@ -300,7 +300,8 @@ class Wiki(unittest.TestCase):
         shards.write(self.db, self.work, plain, text=False)
         cell = json.loads((out / "index.json").read_text())["shards"][1]
         self.assertIn(("article", "en:Castle"), facts(members(out / cell["path"])))
-        self.assertNotIn(("article", "en:Castle"), facts(members(plain / cell["path"])))
+        articles = [json.loads(data) for name, data in members(plain / cell["path"]).items() if name.startswith("content/article/")]
+        self.assertEqual(articles, [{"kind": "article", "key": "en:Castle", "status": "missing"}], "no text, and readers see no article")
         (out / cell["path"]).unlink()
         shards.write(self.db, self.work, out, {cell["path"]: {"sha256": cell["sha256"], "bytes": cell["bytes"]}})
         self.assertFalse((out / cell["path"]).exists())

@@ -1523,8 +1523,9 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   without a box refuses.
 - The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
   target to `shards`, which does not write them again.
-- With `publish_text = false`, the shards hold no article, and no lead image is a photo. The
-  review says "text published" or "text kept local".
+- With `publish_text = false`, each article in the shards is a fact with its key and the status
+  `missing`, without text, and no lead image is a photo. The review says "text published" or
+  "text kept local".
 
 ### Serve
 

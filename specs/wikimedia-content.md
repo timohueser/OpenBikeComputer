@@ -199,13 +199,15 @@ compilers select, then the metadata of their photo candidates (P18, the lead ima
 articles and the members of their categories), then the thumbnails of the files that the
 compilers choose. A thumbnail that fails the checks of a compiler makes it choose another file,
 so the last round repeats for the subjects with new files until it asks no new file. Without
-published text, the compilers see no article and choose no lead image. Each round asks only for
+published text, each article of the version is a fact with its key and the status `missing`: the
+compilers of the producer and of the readers see no article, and choose no lead image. Each round asks only for
 what the rounds before have not answered, with the
 limits of the acquisition adapter: one request at a time, at most four a second, `maxlag` 5,
 `Retry-After`, three backoffs on 429 and 503, and media at 3 MB/s. When Wikimedia is busy, the
 producer waits ten minutes, then twice as long each time up to two hours, and asks again. A
 subject whose compile fails alone has no photo in the version: the producer logs it and
-`index.json` counts it. When each subject of a chunk fails, or on an I/O error, the run stops.
+`index.json` counts it. When more than half the subjects of a chunk fail, or on an I/O error, the
+run stops.
 
 ## Photo fallback and reachability
 

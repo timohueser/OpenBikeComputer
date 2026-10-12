@@ -378,7 +378,7 @@ mod tests {
 while [ $# -gt 1 ]; do case "$1" in --out) out=$2;; --done) done=$2;; --counts) counts=$2;; --selected) selected=$2;; --inputs) inputs=$2;; --work) work=$2;; esac; shift; done
 [ -e "fail-$step" ] && exit 1
 case "$step" in
-facts) mkdir -p "$out" ;;
+facts) mkdir -p "$out"; echo "$*" > facts.args ;;
 commons) if [ -e busy-once ]; then rm busy-once; mkdir -p "$work"; touch "$work/busy"; exit 1; fi ;;
 subjects) echo '{"osm":"n1","wikidata":"Q1"}' > "$out" ;;
 import) cp "$inputs" inputs.seen ;;
@@ -454,7 +454,9 @@ esac
         assert_eq!(inputs["wikidata"]["path"], json!(wikidata));
         assert_eq!(inputs["wikidata"]["sha256"], json!(hash_file(&wikidata).unwrap().0));
         assert_eq!(fs::read_to_string(root.join("selected.seen")).unwrap(), r#"["Q1"]"#);
-        assert!(fs::read_to_string(root.join("shards.args")).unwrap().contains("--no-text"));
+        for step in ["facts", "shards"] {
+            assert!(fs::read_to_string(root.join(format!("{step}.args"))).unwrap().contains("--no-text"), "{step}");
+        }
         let counts: Value = read_json(&root.join("counts.seen")).unwrap();
         assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no photo");
         let Target::Dir(dir) = &target else { unreachable!() };

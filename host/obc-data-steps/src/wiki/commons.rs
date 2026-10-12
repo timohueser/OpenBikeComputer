@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use obc_data::prepared::Job;
-use obc_data::store::{sha256_hex, write_atomic};
+use obc_data::store::write_atomic;
 use obc_pack::landmarks::peaks::{self, Summit, SummitSource};
 use obc_pack::landmarks::shared;
 use serde::{Deserialize, Serialize};
@@ -61,48 +61,66 @@ type Files = BTreeMap<String, PathBuf>;
 /// run; `Ok(Err)` is a compile that refuses its subjects.
 type Compiled = Result<Result<Vec<(String, String)>, String>, String>;
 
-/// Run the rounds: `state/requests-<round>.json` keeps what each round asked, and
-/// `state/failed.json` the subjects whose compile failed in it. `wait` is the first wait after
-/// "Wikimedia is busy"; it doubles up to two hours. Gives the number of failed compiles.
+/// A subject whose compile failed, and the error.
+type Failure = (String, String);
+
+/// What one round asks: the compile of `round`, for the subjects `again` only when it is given,
+/// adds to the requests, and gives each subject whose compile failed.
+type Ask<'a> = dyn FnMut(u32, Option<&BTreeSet<String>>, &mut Requests) -> Result<Vec<Failure>, String> + 'a;
+
+/// Run the rounds. `wait` is the first wait after "Wikimedia is busy"; it doubles up to two hours.
+/// Gives the number of subjects whose compile failed.
 pub(super) fn rounds(job: &Job, step: &Step, wait: Duration, pin: &Pin) -> Result<usize, String> {
-    let state = &job.state;
-    let selection: Selection = read_json(&state.join("selection.json"))?;
-    let failed_file = state.join("failed.json");
-    let mut failed: BTreeMap<u32, Vec<String>> =
-        if failed_file.exists() { read_json(&failed_file)? } else { BTreeMap::new() };
-    let peaks = summits(&state.join("subjects.ndjson"))?;
+    let selection: Selection = read_json(&job.state.join("selection.json"))?;
+    let peaks = summits(&job.state.join("subjects.ndjson"))?;
     let asking = Asking { job, step, pin, landmarks: &selection.landmarks, peaks: &peaks };
-    let (mut before, mut requests) = (Requests::new(), selection.requests);
+    let mut ask = |round, again: Option<&BTreeSet<String>>, requests: &mut Requests| asking.ask(round, again, requests);
+    repeat(&job.state, selection.requests, &mut ask, &mut |file| commons(job, step, file, wait))
+}
+
+/// Run the rounds in `state`, from the requests of round 0. `requests-<round>.json` keeps what
+/// each round asked, and `failed.json` the subjects whose compile failed in it: a resume compiles
+/// no round again. Gives the number of subjects whose compile failed.
+fn repeat(
+    state: &Path,
+    mut requests: Requests,
+    ask: &mut Ask,
+    commons: &mut dyn FnMut(&Path) -> Result<(), String>,
+) -> Result<usize, String> {
+    let failed_file = state.join("failed.json");
+    let mut failed: BTreeMap<u32, Vec<Failure>> =
+        if failed_file.exists() { read_json(&failed_file)? } else { BTreeMap::new() };
+    let mut before = Requests::new();
     for round in 0u32.. {
         let file = state.join(format!("requests-{round}.json"));
-        if file.exists() {
-            (before, requests) = (requests, read_json(&file)?);
+        let asked: Requests = if file.exists() {
+            read_json(&file)?
         } else {
             let mut asked = requests.clone();
-            if round > 0 {
-                // A repeat of round 2 compiles only the subjects with new files.
-                let none = BTreeSet::new();
-                let again: Option<BTreeSet<String>> = (round > 2).then(|| {
-                    let new = |(id, request): &(&String, &Request)| {
-                        request.files != *before.get(*id).map_or(&none, |request| &request.files)
-                    };
-                    requests.iter().filter(new).map(|(id, _)| id.clone()).collect()
-                });
-                if again.as_ref().is_some_and(BTreeSet::is_empty) {
-                    break;
-                }
-                failed.insert(round, asking.ask(round, again.as_ref(), &mut asked)?);
+            // A repeat of round 2 compiles only the subjects with new files.
+            let none = BTreeSet::new();
+            let again: Option<BTreeSet<String>> = (round > 2).then(|| {
+                let new = |(id, request): &(&String, &Request)| {
+                    request.files != *before.get(*id).map_or(&none, |request| &request.files)
+                };
+                requests.iter().filter(new).map(|(id, _)| id.clone()).collect()
+            });
+            if round > 0 && again.as_ref().is_none_or(|again| !again.is_empty()) {
+                failed.insert(round, ask(round, again.as_ref(), &mut asked)?);
                 write_atomic(&failed_file, &serde_json::to_vec(&failed).expect("failures serialize"))?;
-                if round > 2 && asked == requests {
-                    break;
-                }
             }
             write_atomic(&file, &serde_json::to_vec(&asked).expect("requests serialize"))?;
-            (before, requests) = (requests, asked);
+            asked
+        };
+        // A repeat that asks no new file ends the rounds; its file tells a resume so.
+        if round > 2 && asked == requests {
+            break;
         }
-        commons(job, step, &file, wait)?;
+        (before, requests) = (requests, asked);
+        commons(&file)?;
     }
-    Ok(failed.values().map(Vec::len).sum())
+    let names: BTreeSet<&String> = failed.values().flatten().map(|(name, _)| name).collect();
+    Ok(names.len())
 }
 
 /// Call `commons` until it ends without "Wikimedia is busy".
@@ -135,13 +153,13 @@ struct Asking<'a, 'j> {
 
 impl Asking<'_, '_> {
     /// Add the requests of `round` for the landmarks and the peaks, a chunk at a time; with
-    /// `again`, for those subjects only. Gives each subject whose compile failed, with its error.
+    /// `again`, for those subjects only. Gives each subject whose compile failed.
     fn ask(
         &self,
         round: u32,
         again: Option<&BTreeSet<String>>,
         requests: &mut Requests,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<Failure>, String> {
         let state = &self.job.state;
         let (view, out, world) = (state.join("view"), state.join("view-out"), state.join("world.geojson"));
         let corners = [[-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, -90.0]];
@@ -197,8 +215,12 @@ impl Asking<'_, '_> {
         write_atomic(&subjects, &serde_json::to_vec(ids).expect("ids serialize"))?;
         write_atomic(&peaks, &serde_json::to_vec(links).expect("links serialize"))?;
         let mut command = (self.step)("facts")?;
-        self.job
-            .program(command.arg("--selected").arg(&subjects).arg("--requests").arg(&peaks).arg("--out").arg(&dir))?;
+        command.arg("--selected").arg(&subjects).arg("--requests").arg(&peaks).arg("--out").arg(&dir);
+        // Without published text, the compilers get the facts that the readers get.
+        if !self.pin.publish_text {
+            command.arg("--no-text");
+        }
+        self.job.program(&mut command)?;
         let mut files = BTreeMap::new();
         for kind in fs::read_dir(dir.join("content")).into_iter().flatten().flatten() {
             for file in fs::read_dir(kind.path()).map_err(|e| e.to_string())?.flatten() {
@@ -207,21 +229,18 @@ impl Asking<'_, '_> {
                 files.insert(name, file.path());
             }
         }
-        if !self.pin.publish_text {
-            without_text(&mut files, &dir)?;
-        }
         Ok(files)
     }
 }
 
 /// The files that the compilers choose for `items`, in `requests`. When the compile of the chunk
 /// fails, each item compiles alone: an item that fails alone has no photo in this version, and
-/// `failed` gets its `name` and error. When each item of a chunk of more than one fails, the run
-/// stops, as for an I/O error.
+/// `failed` gets its `name` and error. When more than half the items of a chunk of more than one
+/// fail, the run stops, as for an I/O error: the cause is in the code or the data, not one subject.
 fn chosen<T>(
     items: &[T],
     requests: &mut Requests,
-    failed: &mut Vec<String>,
+    failed: &mut Vec<Failure>,
     name: impl Fn(&T) -> String,
     compile: impl Fn(&[T]) -> Compiled,
 ) -> Result<(), String> {
@@ -232,14 +251,15 @@ fn chosen<T>(
             for item in items {
                 match compile(std::slice::from_ref(item))? {
                     Ok(more) => asked.extend(more),
-                    Err(error) => errors.push(format!("{}: {error}", name(item))),
+                    Err(error) => errors.push((name(item), error)),
                 }
             }
-            if items.len() > 1 && errors.len() == items.len() {
-                return Err(format!("the compile of each subject of a chunk of {} fails: {error}", items.len()));
+            if items.len() > 1 && errors.len() * 2 > items.len() {
+                let (count, total) = (errors.len(), items.len());
+                return Err(format!("the compile of {count} of the {total} subjects of a chunk fails: {error}"));
             }
-            for error in &errors {
-                eprintln!("obc data: `wiki` chooses no photo for {error}");
+            for (name, error) in &errors {
+                eprintln!("obc data: `wiki` chooses no photo for {name}: {error}");
             }
             failed.extend(errors);
             asked
@@ -331,21 +351,6 @@ fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> (Summit
     (Summit { tags, ..*summit }, ids)
 }
 
-/// Without published text, the compilers see each article as missing, as a version without text
-/// holds no article: they choose no lead image that a reader cannot check.
-fn without_text(files: &mut Files, dir: &Path) -> Result<(), String> {
-    let articles: Vec<String> = files.keys().filter(|name| name.starts_with("content/article/")).cloned().collect();
-    for name in articles {
-        let fact: Value = read_json(&files.remove(&name).expect("a listed file"))?;
-        let missing = json!({"kind": "article", "key": fact["key"], "status": "missing"});
-        let bytes = serde_json::to_vec(&missing).expect("a fact serializes");
-        let name = format!("content/article/{}.json", sha256_hex(&bytes));
-        write_atomic(&dir.join(&name), &bytes)?;
-        files.insert(name.clone(), dir.join(name));
-    }
-    Ok(())
-}
-
 /// Remove each folder, so that it is new and empty.
 fn fresh(dirs: &[&Path]) -> Result<(), String> {
     for dir in dirs {
@@ -394,8 +399,13 @@ mod tests {
         let asked: Vec<&str> = requests["Q1"].commons.iter().map(String::as_str).collect();
         assert_eq!(asked, ["Hill.jpg", "Lead.jpg", "Member.jpg"]);
 
-        // Without published text, no lead image.
-        without_text(&mut files, &temp.0).unwrap();
+        // Without published text, `facts` gives each article as missing: no lead image.
+        files.retain(|name, _| !name.starts_with("content/article/"));
+        let missing = json!({"kind": "article", "key": "en:Castle", "status": "missing"});
+        let bytes = serde_json::to_vec(&missing).unwrap();
+        let name = format!("content/article/{}.json", obc_data::store::sha256_hex(&bytes));
+        fs::write(temp.0.join(&name), bytes).unwrap();
+        files.insert(name.clone(), temp.0.join(name));
         let mut requests = Requests::new();
         candidates(&files, &["Q1".into()], &mut requests).unwrap();
         let asked: Vec<&str> = requests["Q1"].commons.iter().map(String::as_str).collect();
@@ -403,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subject_whose_compile_fails_alone_is_counted_and_a_chunk_where_each_fails_stops_the_run() {
+    fn a_subject_whose_compile_fails_alone_is_counted_and_a_chunk_where_most_fail_stops_the_run() {
         let compile = |ids: &[&str]| -> Compiled {
             match ids {
                 ["Q2"] => Ok(Err("invalid source summit".into())),
@@ -414,12 +424,42 @@ mod tests {
         let (mut requests, mut failed) = (Requests::new(), Vec::new());
         chosen(&["Q1", "Q2", "Q3"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
         assert_eq!(requests.keys().collect::<Vec<_>>(), ["Q1", "Q3"]);
-        assert_eq!(failed, ["Q2: invalid source summit"]);
+        assert_eq!(failed, [("Q2".to_string(), "invalid source summit".to_string())]);
 
-        let stopped = chosen(&["Q2", "Q2"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap_err();
-        assert!(stopped.contains("each subject of a chunk of 2 fails"), "{stopped}");
+        let stopped = chosen(&["Q1", "Q2", "Q2"], &mut requests, &mut failed, |id| id.to_string(), compile);
+        assert!(stopped.unwrap_err().contains("2 of the 3 subjects of a chunk fails"));
         let io = |_: &[&str]| -> Compiled { Err("No space left on device".into()) };
         let stopped = chosen(&["Q1"], &mut requests, &mut failed, |id| id.to_string(), io).unwrap_err();
         assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 1));
+    }
+
+    #[test]
+    fn round_2_repeats_for_the_subjects_with_new_files_and_a_resume_compiles_no_round_again() {
+        let temp = temp("wiki-rounds");
+        fs::create_dir_all(&temp.0).unwrap();
+        let selection = Requests::from([("Q1".to_string(), Request::default()), ("Q2".into(), Request::default())]);
+        let run = || {
+            let (mut compiled, mut commons) = (Vec::new(), 0);
+            // Round 2 chooses a file for Q1, whose thumbnail passes in round 3; Q2 fails in each.
+            let mut ask = |round: u32, again: Option<&BTreeSet<String>>, requests: &mut Requests| {
+                compiled.push((round, again.cloned()));
+                if round == 2 {
+                    requests.get_mut("Q1").unwrap().files.insert("Q1.jpg".into());
+                }
+                Ok(if round > 1 { vec![("Q2".to_string(), "no photo".to_string())] } else { Vec::new() })
+            };
+            let failed = repeat(&temp.0, selection.clone(), &mut ask, &mut |_| {
+                commons += 1;
+                Ok(())
+            })
+            .unwrap();
+            (compiled, commons, failed)
+        };
+        let (compiled, commons, failed) = run();
+        assert_eq!(compiled, [(1, None), (2, None), (3, Some(BTreeSet::from(["Q1".to_string()])))]);
+        assert_eq!((commons, failed), (3, 1), "a subject that fails twice counts once");
+        let (compiled, commons, failed) = run();
+        assert_eq!(compiled, [], "a resume compiles no round again");
+        assert_eq!((commons, failed), (3, 1));
     }
 }

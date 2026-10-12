@@ -6,7 +6,7 @@ Each step resumes in its work directory. The producer runs them in this order:
     python -m tools.wiki import     --work W --inputs inputs.json --subjects subjects.ndjson
     python -m tools.wiki candidates --work W --out candidates.jsonl
     python -m tools.wiki articles   --work W --inputs inputs.json --selected selected.json
-    python -m tools.wiki facts      --work W --selected ids.json --requests links.json --out DIR
+    python -m tools.wiki facts      --work W --selected ids.json --requests links.json --out DIR [--no-text]
     python -m tools.wiki commons    --work W --requests requests.json
     python -m tools.wiki shards     --work W --out OUT [--done done.json] [--counts counts.json] [--no-text]
 
@@ -72,7 +72,8 @@ def main() -> int:
                 catalog.articles(db, args.work, language, *source("wikipedia:" + language, spec))
         catalog.links(db)
     elif args.step == "facts":
-        shards.export(db, args.out, json.loads(args.selected.read_bytes()), json.loads(args.requests.read_bytes()))
+        shards.export(db, args.out, json.loads(args.selected.read_bytes()), json.loads(args.requests.read_bytes()),
+                      text=not args.no_text)
     elif args.step == "commons":
         try:
             commons.acquire(db, args.work, json.loads(args.requests.read_bytes()))
