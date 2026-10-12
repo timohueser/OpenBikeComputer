@@ -1102,13 +1102,6 @@ fn place_cache() -> Box<obc_reader::reader::places::PlaceCache> {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--obc-build-identity") {
-        println!(
-            "{}",
-            serde_json::json!({"root": option_env!("OBC_ROUTE_BUILD_ROOT"), "code": option_env!("OBC_ROUTE_BUILD_CODE")})
-        );
-        return;
-    }
     if std::env::args().skip(1).any(|arg| arg == "--help" || arg == "-h") {
         print!("{HELP}");
         return;

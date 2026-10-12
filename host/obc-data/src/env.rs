@@ -82,7 +82,7 @@ impl Env {
         Env::parse(name, &text, regions).map_err(|e| format!("data/env/{name}.toml: {e}"))
     }
 
-    /// Local has a region only when a Local edit or preparation wrote `data/env/local.toml`. It
+    /// Local has a region only when a Local edit wrote `data/env/local.toml`. It
     /// never borrows the region of Live: that region is large. `region` replaces the file's region.
     pub fn local(root: &Path, regions: &Regions, region: Option<&str>) -> Result<(Env, String), String> {
         let mut text = match std::fs::read_to_string(Self::path(root, "local")) {
@@ -94,7 +94,7 @@ impl Env {
             text = set(&text, "region", toml::Value::String(region.into()));
         }
         if text.trim().is_empty() {
-            return Err("Local has no region: choose one with `obc data dev REGION`".into());
+            return Err("Local has no region: choose one with `obc data region local REGION`".into());
         }
         let env = Self::parse("local", &text, regions).map_err(|e| format!("data/env/local.toml: {e}"))?;
         regions.get(&env.region).expect("parse checks the region").selectable()?;

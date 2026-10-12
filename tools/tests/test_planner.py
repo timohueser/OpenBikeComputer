@@ -1,11 +1,8 @@
-"""The local launcher rejects incomplete coverage and cleans up a failed start."""
+"""Local planner data refuses incomplete coverage and another region."""
 
 import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -38,24 +35,6 @@ class PlannerTests(unittest.TestCase):
             with patch.dict(planner.COMMANDS, setup=lambda args: self.fail("setup ran")), patch("sys.stderr"):
                 with self.assertRaises(SystemExit):
                     planner.main(["setup", "--data-dir", str(root)])
-
-    def test_a_failed_start_stops_services_already_started(self):
-        children = []
-        real_popen = subprocess.Popen
-
-        def launch(*args, **kwargs):
-            if children:
-                raise FileNotFoundError("missing second service")
-            child = real_popen(*args, **kwargs)
-            children.append(child)
-            return child
-
-        commands = [([sys.executable, "-c", "import time; time.sleep(60)"], planner.ROOT)] * 2
-        with patch.object(maps.subprocess, "Popen", side_effect=launch):
-            with self.assertRaisesRegex(FileNotFoundError, "second service"):
-                maps.supervise(commands, os.environ.copy())
-        self.assertEqual(len(children), 1)
-        self.assertIsNotNone(children[0].poll())
 
 
 if __name__ == "__main__":

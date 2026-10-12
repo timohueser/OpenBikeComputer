@@ -128,8 +128,8 @@ Each part of the id is lowercase kebab-case.
 | `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE`. The first is the country of a place outside each country polygon |
 | `time_zone` | string | The IANA time zone of the region, such as `Europe/Berlin` |
 
-The planner needs `countries` and `time_zone`. An edit that selects a region without them, and
-`dev` with such a region, fail before a fetch.
+The planner needs `countries` and `time_zone`. An edit that selects a region without them fails
+before a fetch.
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -223,7 +223,6 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
-| `local/<product>.json` | One saved portable adoption: its original release and exact selected files. It remains a collection root while apps are stopped |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
@@ -268,7 +267,7 @@ also in the size of `partial/`, it deletes nothing. A receipt that the command c
 as one that a newer `obc data` wrote, stops the collection. For reuse, such a receipt is absent and
 its step builds again.
 
-The collection deletes what no live release, saved Local adoption or fixture reaches. Its roots are the live
+The collection deletes what no live release or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
 
 - A snapshot record is reached when a layer of a live release read its source and version. The
@@ -279,8 +278,6 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
   planner region recipe in `tools/planner-regions/`.
-- A saved Local adoption roots its selected file SHA-256 values and every source version in
-  their transitive original layer provenance. A malformed saved anchor stops collection.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a layer input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -1061,60 +1058,6 @@ The objects of a release are the selected client files, with one object per dist
 The manifest records every file of every layer, so a plan compares it with live and live names
 the versions that it read. Uploads and removals use the same selection.
 
-### Local portable data
-
-`local::plan` compares supplied producer declarations at the original Rust target/profile.
-It selects no original native compiler, library or Python interpreter. The owner must declare
-the layer portable. Native service archives are excluded. Options, commands, declared outputs,
-exact snapshot versions/parameters and selected dependency file digests must match. Dependency
-comparison uses original byte provenance, not the Local host's native producer key.
-
-A selection includes the original release's client files and the extra exact paths the caller
-needs. Current visibility does not infer new application file requirements. A file can come
-from its immutable client object key, an exact named release key, or verified local bytes.
-An unpublished missing intermediate blocks adoption; it needs a Local build or materializer.
-Planning performs no transfer. It reports each blocked selection with its reason.
-
-`local::adopt` requires the exact reviewed complete selection. It checks source/config before
-and after transfer, and checks every selected file's SHA-256 and size. It saves the original
-release and selection in a separate adoption record. It creates no Local receipt or replacement
-producer identity. A failure leaves verified cache bytes and keeps the previous anchor.
-Local rebuilds keep their full execution identity. These APIs do not start apps or services.
-
-### Local app services
-
-`dev` prepares current working-tree data. `data/env/local.toml` holds its region and
-optional layers. Local has no region until `dev REGION` or `region local REGION` writes the
-file; it never takes the region of Live. Each saved Local product release pins source versions. Only `--refresh-live` replaces those
-pins with the current published versions. A failed pointer observation is not absence.
-Current declarations derive region geometry, source requests, inputs and semantic options.
-Compatible portable layers retain original provenance through the shared verified reuse
-path. Only missing or changed layers execute with their full current native identity.
-Unused original execution tools are not required for reuse.
-Matching-host native routing and Simulator execution keep full compiler/profile identity and compiled
-root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires prepared
-Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
-
-Preparation is a retained finite `dev_prepare` operation in environment `local`. It shares
-normal Run fetch/build/verify events. `dev --prepare` returns its handle. Preparation never
-starts a stopped app owner. It replaces only affected children of an already running owner.
-Serving owns a distinct
-stable store lock; it does not retain the environment operation lock. The known supervisor
-admits only the selected app's children. Web planner uses routing, search, tiles and Vite;
-Map builder shares tiles and Vite; Simulator uses its retained executable and assembled map.
-A shared child stops only after its last app stops. A failed app stays failed until an explicit start.
-Each app admits only its own providers. Start rejects a saved view with changed Local region geometry or layers. It compares child-specific code/config/data
-fingerprints before replacement. A token-bound stop drains owned process groups. It does not
-signal an arbitrary PID or restart failed children.
-
-Views are immutable and contain verified objects, native execution and service metadata.
-Readiness binds the opened routing package, search region/grid and query model to that view.
-Frontend asset checks and HTTP availability are separate from browser workflow verification.
-`dev --status` and `dev --logs` are observations. Start, stop and open are explicit actions.
-After proven drain, stop removes obsolete known views and completed preparation scratch
-views. It retains the current prepared view and saved portable-data roots. Active or
-uncertain app and preparation ownership prevent cleanup.
-
 ### State of a layer
 
 The engine computes the state of each layer when it is asked, and stores nothing. It compares
@@ -1401,12 +1344,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region ENV ID`, `layer`, `undo` | `Edited` |
 | `status`, `obc data` | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
-| `plan`, `dev --check` | `EnvPlan` |
-| `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
-| `dev --start`, `dev --stop`, `dev --status` | `Observed` |
-| `dev --logs` | `Logs` |
-| `dev`, completed dev preparation | `Prepared` |
-| Completed prepare output, `dev --inputs` | `Prepared2` |
+| `plan` | `EnvPlan` |
+| `prepare`, `build`, `apply` | `Handle` |
+| Completed prepare output | `Prepared` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
 | `runs` | `RunList` |
@@ -1421,33 +1361,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
-    "App": {
-      "enum": [
-        "web-planner",
-        "map-builder",
-        "simulator"
-      ],
-      "type": "string"
-    },
-    "AppState": {
-      "additionalProperties": false,
-      "properties": {
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "status": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "status",
-        "message"
-      ],
-      "type": "object"
-    },
     "Applied": {
       "description": "What an apply did.",
       "properties": {
@@ -1576,25 +1489,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "south",
         "east",
         "north"
-      ],
-      "type": "object"
-    },
-    "Binding": {
-      "additionalProperties": false,
-      "properties": {
-        "code": {
-          "$ref": "#/$defs/Code"
-        },
-        "files": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "code",
-        "files"
       ],
       "type": "object"
     },
@@ -1755,81 +1649,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Code": {
-      "additionalProperties": false,
-      "description": "The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little\ngives stale data.",
-      "properties": {
-        "crates": {
-          "description": "Workspace crates and their resolved normal and build dependencies.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "libraries": {
-          "description": "Native library or executable files bound by the provider before its code runs.",
-          "items": {
-            "$ref": "#/$defs/Library"
-          },
-          "type": "array"
-        },
-        "paths": {
-          "description": "Files and directories, relative to the repository root.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "python": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Python"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The selected Python runtime and its locked package group."
-        },
-        "python_packages": {
-          "description": "A locked Python group packaged for another runtime, without selecting its interpreter.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "rust": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rust"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "None binds the native release build. Prepared builds bind their toolchain in step options."
-        },
-        "sources": {
-          "description": "The content settings of these sources. Freshness and access controls are excluded.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "target": {
-          "description": "Resolve Rust dependencies for this target; None selects the producer host.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "paths",
-        "crates"
-      ],
-      "type": "object"
-    },
-    "Code2": {
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
         {
@@ -2301,7 +2120,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "Why a command failed, and what to do about it.",
       "properties": {
         "code": {
-          "$ref": "#/$defs/Code2"
+          "$ref": "#/$defs/Code"
         },
         "fix": {
           "type": "string"
@@ -2918,7 +2737,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/InputKind"
         },
         "name": {
-          "description": "The source id or the layer name.",
+          "description": "The source id or the step name.",
           "type": "string"
         }
       },
@@ -3022,33 +2841,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Library": {
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "sha256": {
-          "type": "string"
-        },
-        "version": {
-          "description": "Tool version for code identity; absent for content-addressed artifacts.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "name",
-        "path",
-        "sha256"
-      ],
-      "type": "object"
-    },
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
@@ -3087,20 +2879,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "pointer",
         "observed",
         "key"
-      ],
-      "type": "object"
-    },
-    "Logs": {
-      "properties": {
-        "logs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "logs"
       ],
       "type": "object"
     },
@@ -3176,24 +2954,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "checked_at",
         "result",
         "last_success"
-      ],
-      "type": "object"
-    },
-    "Observed": {
-      "properties": {
-        "state": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/State2"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "state"
       ],
       "type": "object"
     },
@@ -3323,29 +3083,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "additionalProperties": false,
-          "description": "The code that the steps declare is not the code of their live layers, or it gives other\noptions or inputs. A layer that live has and the steps do not make has no code.",
+          "description": "The version of the layer of the steps is not the version of their live layers, or they\nhave other options or inputs. A live step that no step list makes now has no version.",
           "properties": {
-            "crates": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
             "kind": {
-              "const": "code",
+              "const": "version",
               "type": "string"
             },
-            "paths": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
+            "layer": {
+              "type": "string"
             }
           },
           "required": [
             "kind",
-            "paths",
-            "crates"
+            "layer"
           ],
           "type": "object"
         },
@@ -3507,41 +3257,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Prepared": {
-      "additionalProperties": false,
-      "properties": {
-        "apps": {
-          "items": {
-            "$ref": "#/$defs/App"
-          },
-          "type": "array",
-          "uniqueItems": true
-        },
-        "children": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Binding"
-          },
-          "type": "object"
-        },
-        "descriptor": {
-          "type": "string"
-        },
-        "supervisor": {
-          "$ref": "#/$defs/Binding"
-        },
-        "view": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "view",
-        "descriptor",
-        "supervisor",
-        "children",
-        "apps"
-      ],
-      "type": "object"
-    },
-    "Prepared2": {
       "description": "Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.",
       "properties": {
         "plan": {
@@ -3621,13 +3336,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Profile": {
-      "enum": [
-        "dev",
-        "release"
-      ],
-      "type": "string"
-    },
     "Publication": {
       "description": "A remote write that acknowledged success. Verification can still fail afterward.",
       "oneOf": [
@@ -3694,25 +3402,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
-    "Python": {
-      "additionalProperties": false,
-      "properties": {
-        "group": {
-          "description": "None selects the project's base packages, without default groups.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "group"
-      ],
-      "type": "object"
-    },
     "Receipt": {
       "additionalProperties": false,
-      "description": "The record of one layer: what made it, its files, and what building it cost.",
+      "description": "The record of what one step made: its key, its files, and what building it cost.",
       "properties": {
         "built": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
@@ -3727,18 +3419,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
-        },
-        "code": {
-          "type": "string"
-        },
-        "command": {
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
         },
         "cpu_ms": {
           "format": "uint64",
@@ -3758,6 +3438,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "format": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "inputs": {
           "items": {
             "$ref": "#/$defs/InputRecord"
@@ -3767,18 +3452,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "key": {
           "type": "string"
         },
+        "layer": {
+          "type": "string"
+        },
         "metrics": {
           "additionalProperties": true,
           "type": "object"
         },
         "options": true,
-        "outputs": {
-          "description": "The declared outputs, sorted.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "peak_rss_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -3786,6 +3467,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "integer",
             "null"
           ]
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "step": {
           "type": "string"
@@ -3797,13 +3483,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "layer",
         "step",
+        "format",
+        "revision",
         "key",
         "inputs",
         "options",
-        "code",
-        "command",
-        "outputs",
         "digest",
         "files",
         "built",
@@ -4316,44 +4002,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Rust": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "native",
-              "type": "string"
-            },
-            "profile": {
-              "$ref": "#/$defs/Profile"
-            }
-          },
-          "required": [
-            "kind",
-            "profile"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "prepared",
-              "type": "string"
-            },
-            "profile": {
-              "$ref": "#/$defs/Profile"
-            }
-          },
-          "required": [
-            "kind",
-            "profile"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "Settings": {
       "additionalProperties": false,
       "properties": {
@@ -4700,76 +4348,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
-    },
-    "State2": {
-      "additionalProperties": false,
-      "properties": {
-        "apps": {
-          "additionalProperties": false,
-          "properties": {
-            "map-builder": {
-              "$ref": "#/$defs/AppState"
-            },
-            "simulator": {
-              "$ref": "#/$defs/AppState"
-            },
-            "web-planner": {
-              "$ref": "#/$defs/AppState"
-            }
-          },
-          "type": "object"
-        },
-        "code": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "layers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "region": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "status": {
-          "type": "string"
-        },
-        "token": {
-          "type": "string"
-        },
-        "url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "view": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "token",
-        "status",
-        "apps",
-        "region",
-        "layers"
-      ],
-      "type": "object"
     },
     "Status": {
       "description": "What `status` writes.",

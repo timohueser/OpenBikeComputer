@@ -474,7 +474,7 @@ pub(super) fn build_env(
         }
         return Ok((built, None));
     };
-    let (mut next, missing) = next_reusing(root, store, products, &live, &steps, &plan, &run.originals)?;
+    let (mut next, missing) = next(root, store, products, &live, &steps, &plan)?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
@@ -739,7 +739,7 @@ fn planned_run(
     let all = changes::changes(store, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
-    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &BTreeMap::new())?;
+    let (mut next, _) = next(root, store, products, &live, &steps, &plan)?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
         let layered = plan.groups.iter().any(|group| {
@@ -948,17 +948,16 @@ impl Edit {
 /// Live after an apply of `plan`, as far as the store knows it: the release of each product that
 /// the plan changes, of its live layers and the layers of the groups that the store has; and the
 /// layers of the groups that the store lacks.
-fn next_reusing(
+fn next(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
     live: &Live,
     steps: &[Step],
     plan: &EnvPlan,
-    originals: &BTreeMap<String, release::Layer>,
 ) -> Result<(Live, Vec<String>), Error> {
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
-    let stored = release::stored_reusing(store, steps, &taken, originals)?;
+    let stored = release::stored(store, steps, &taken)?;
     let missing: Vec<String> =
         taken.into_iter().filter(|name| !stored.contains_key(*name)).map(str::to_string).collect();
     let mut next = Live::default();

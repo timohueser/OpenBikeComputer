@@ -1,6 +1,6 @@
 //! The plan: what a run would fetch and build, in groups that do not depend on each other.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -104,25 +104,11 @@ pub(super) struct Walked<'a> {
 
 /// Each step in dependency order, with its key and its stored layer. `plan` and
 /// `release::release` reuse the same layers.
-pub(super) fn walk_reusing<'a>(
-    store: &Store,
-    steps: &'a [Step],
-    originals: &BTreeMap<String, super::release::Layer>,
-) -> Result<Vec<Walked<'a>>, String> {
+pub(super) fn walk<'a>(store: &Store, steps: &'a [Step]) -> Result<Vec<Walked<'a>>, String> {
     let mut reused: HashMap<&str, super::release::Layer> = HashMap::new();
     let mut walked = Vec::new();
     for step in order(steps)? {
         let named = |e: String| format!("step `{}`: {e}", step.name);
-        if let Some(original) = originals.get(&step.name) {
-            reused.insert(&step.name, original.clone());
-            walked.push(Walked {
-                step,
-                fetches: Vec::new(),
-                key: Some(original.key.clone()),
-                stored: Some(original.clone()),
-            });
-            continue;
-        }
         let fetches = missing(store, step)?;
         let (mut key, mut stored) = (None, None);
         if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
@@ -145,17 +131,8 @@ pub(super) fn walk_reusing<'a>(
 /// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
 /// another build.
 pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-    plan_reusing(store, steps, &BTreeMap::new())
-}
-
-/// Plan current work with original layers returned by checked portable reuse.
-pub fn plan_reusing(
-    store: &Store,
-    steps: &[Step],
-    originals: &BTreeMap<String, super::release::Layer>,
-) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let walked = walk_reusing(store, steps, originals)?;
+    let walked = walk(store, steps)?;
     let builds: Vec<(&Step, Build, &Vec<Fetch>)> =
         walked.iter().filter_map(|walked| Some((walked.step, build(walked, &receipts)?, &walked.fetches))).collect();
 

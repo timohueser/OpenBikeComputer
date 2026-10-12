@@ -1,5 +1,5 @@
 //! The collection of `obc data clean`: delete the objects and the snapshot records that no live
-//! release, saved Local adoption or fixture reaches. Receipts stay: they are history.
+//! release or fixture reaches. Receipts stay: they are history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -18,8 +18,6 @@ use crate::live::Live;
 pub struct Roots {
     /// `(source, version)` that a layer of a live release read, with the products.
     pub live: BTreeMap<(String, String), Vec<String>>,
-    /// Exact source versions of saved Local data, including stopped experiments.
-    pub local: BTreeMap<(String, String), Vec<String>>,
     /// Each SHA-256 that a live layer, a fixture or a planner region recipe names, with which of
     /// them.
     pub sha256s: BTreeMap<String, &'static str>,
@@ -59,26 +57,6 @@ impl Roots {
                 }
             }
         }
-    }
-
-    fn add_local(&mut self, store: &Store) -> Result<(), String> {
-        for adoption in crate::local::saved(store)? {
-            self.name(
-                adoption.plan.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
-                "local release",
-            );
-            for name in adoption.inputs()? {
-                let layer =
-                    adoption.original.layers.iter().find(|layer| layer.step == name).expect("checked provenance");
-                for (source, read) in &layer.snapshots {
-                    let products = self.local.entry((source.clone(), read.version.clone())).or_default();
-                    if !products.contains(&adoption.plan.product) {
-                        products.push(adoption.plan.product.clone());
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Record `why` for each SHA-256 that no other root named first.
@@ -130,7 +108,6 @@ pub struct Kept {
 /// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut roots = roots.clone();
-    roots.add_local(store)?;
     for name in names(&store.root().join("partial"), "")? {
         let operation = store.partial(&name);
         if resumable(&operation) {
@@ -181,10 +158,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let (source, version) = (&snapshot.source, &snapshot.version);
         let key = (source.clone(), version.clone());
         let live = roots.live.get(&key).map(|products| format!("live {}", products.join(", ")));
-        let local = roots.local.get(&key).map(|products| format!("local {}", products.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> = [live, local, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let because: Vec<String> = [live, newest_of_source, newest_of_request].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;

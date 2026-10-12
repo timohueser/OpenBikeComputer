@@ -17,7 +17,6 @@ pub enum Kind {
     Prepare,
     Build,
     Apply,
-    DevPrepare,
 }
 
 /// The saved plan and worker live in the operation's private directory.
@@ -29,20 +28,12 @@ pub struct Request {
     pub only: Vec<String>,
     pub moves: Vec<String>,
     pub plan: Option<LayerFile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dev: Option<crate::dev::Request>,
 }
 
 impl Request {
     pub fn check(&self) -> Result<(), String> {
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
-        }
-        if (self.kind == Kind::DevPrepare) != self.dev.is_some()
-            || self.dev.is_some()
-                && (self.env != "local" || self.plan.is_some() || !self.only.is_empty() || !self.moves.is_empty())
-        {
-            return Err("Local preparation takes only its explicit region and source".into());
         }
         if self.kind == Kind::Apply
             && (self.env != "live" || self.plan.is_none() || !self.only.is_empty() || !self.moves.is_empty())
@@ -277,14 +268,8 @@ mod tests {
     use crate::store::tests::Scratch;
 
     fn control(run: &str) -> Control {
-        let request = Request {
-            kind: Kind::Build,
-            env: "local".into(),
-            only: Vec::new(),
-            moves: Vec::new(),
-            plan: None,
-            dev: None,
-        };
+        let request =
+            Request { kind: Kind::Build, env: "local".into(), only: Vec::new(), moves: Vec::new(), plan: None };
         Control {
             run: run.into(),
             request_sha256: request.digest().unwrap(),

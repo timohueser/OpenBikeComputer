@@ -9,8 +9,7 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 Prepare Rust, Python with `uv`, GEOS and Osmium before a build; `obc data` does not install them.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
-that changes its output; a reader that needs new data raises its `format`. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) for browser
-assets, search dependencies and matching-host apps.
+that changes its output; a reader that needs new data raises its `format`.
 
 A started run detaches from the terminal. Publication runs on the machine that applies: it
 needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
@@ -51,18 +50,11 @@ Publication also requires its own bucket credentials.
 | `obc data apply live --plan PLAN --yes` | Execute the exact owner-approved plan |
 | `obc data runs RUN --stop` | Drain admitted work; an apply stops before its next phase |
 | `obc data clean` | Review unused store bytes before `--apply` |
-| `obc data dev` | Prepare Local from working-tree code and saved source versions |
-| `obc data dev REGION --check --json` | Review pending Local work without source requests |
-| `obc data dev REGION --prepare --json` | Return a retained Local preparation handle |
-| `obc data dev --app map-builder --start` | Start the prepared Local Map builder |
-| `obc data dev --app simulator --start` | Start the prepared Local Simulator |
 
 Preparation acquires missing Wikimedia facts and checks stale identities by policy.
 Pinned content compilation makes no Wikimedia requests. Fetch results report current HTTP
 attempts and response body bytes; retained output bytes are separate. Historical transfers
-are unknown. `dev --refresh-live` selects published Live versions; it does not check Wikimedia freshness.
-Preparation leaves stopped apps stopped. Use the Local app commands to start one.
-An incomplete plan needs preparation and a new review. Apply does not commit configuration.
+are unknown. An incomplete plan needs preparation and a new review. Apply does not commit configuration.
 A failed or stopped apply leaves live as it was until its pointer switch. Apply the plan again:
 it uploads only what R2 lacks. `obc data status --check` compares R2 with live and lists the
 keys of earlier releases that the next apply removes.
@@ -75,5 +67,4 @@ region definitions stay.
 
 Use the plan and retained-operation commands above. Report the executing host,
 selected environment, exact source moves, build work, `plan.remove` by prefix and publication
-outcome. Keep original provenance when adopting portable data; do not create a foreign build
-receipt. See [portable Local data](../../specs/obc-data.md#local-portable-data).
+outcome.

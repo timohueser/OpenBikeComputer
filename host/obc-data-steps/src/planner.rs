@@ -99,7 +99,6 @@ struct Routing {
 }
 
 mod catalog;
-mod local;
 mod publish;
 
 pub struct Planner;
@@ -109,41 +108,8 @@ impl Product for Planner {
         "planner"
     }
 
-    fn portable(&self, step: &Step) -> bool {
-        step.name.starts_with("planner/") && !step.client.is_none()
-    }
-
     fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         self.steps_with_tool(root, env, regions, store, Ok(()))
-    }
-
-    fn dev_check(
-        &self,
-        root: &Path,
-        store: &Store,
-        request: &obc_data::dev::Request,
-    ) -> Result<obc_data::cli::EnvPlan, String> {
-        local::check(root, store, request)
-    }
-
-    fn dev_inputs(
-        &self,
-        root: &Path,
-        store: &Store,
-        request: &obc_data::dev::Request,
-        run: &mut obc_data::engine::runs::Run,
-    ) -> Result<obc_data::cli::EnvPlan, String> {
-        local::inputs(root, store, request, run)
-    }
-
-    fn dev_prepare(
-        &self,
-        root: &std::path::Path,
-        store: &Store,
-        request: &obc_data::dev::Request,
-        run: &mut obc_data::engine::runs::Run,
-    ) -> Result<obc_data::dev::Prepared, String> {
-        local::prepare(root, store, request, run)
     }
 
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
@@ -705,67 +671,6 @@ mod tests {
     fn tiles(input: &Input) -> Vec<&str> {
         let Input::Snapshot { params, .. } = input else { panic!("not a snapshot") };
         params.iter().map(|(_, tile)| &tile["Copernicus_DSM_COG_10_".len()..][..11]).collect()
-    }
-
-    #[test]
-    fn local_metadata_pins_selected_versions_and_derives_the_current_saved_box() {
-        let temp = temp("planner-local-metadata");
-        let store = store(&temp, &["2026-10-01", "2026-10-02"]);
-        let mut env = env("ride", &[]);
-        env.live.insert((EXTRACTS.into(), vec![("area".into(), AREA.into())]), ["2026-10-01".into()].into());
-        let region = |bbox: &str| {
-            Regions::new(vec![parse_region(
-                "ride",
-                &format!(
-            "name = \"Ride\"\nkind = \"box\"\nbox = [{bbox}]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"
-        ),
-            )
-            .unwrap()])
-            .unwrap()
-        };
-        std::fs::create_dir_all(temp.0.join("data/env")).unwrap();
-        std::fs::write(Env::path(&temp.0, "live"), "region = \"ride\"\nlayers = []\n").unwrap();
-        let definitions = region("7.79, 47.99, 7.82, 48.02");
-        let request = obc_data::dev::Request {
-            region: Some("ride".into()),
-            refresh_live: false,
-            app: obc_data::dev::App::WebPlanner,
-            inputs_only: false,
-            reviewed: None,
-        };
-        let configured = local::environment(&temp.0, &definitions, &request).unwrap();
-        assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
-        std::fs::write(Env::path(&temp.0, "local"), "region = \"ride\"\nlayers = [\"sun\"]\n").unwrap();
-        let configured = local::environment(
-            &temp.0,
-            &definitions,
-            &obc_data::dev::Request {
-                region: None,
-                refresh_live: true,
-                app: obc_data::dev::App::WebPlanner,
-                inputs_only: false,
-                reviewed: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(configured.layers, ["sun"]);
-        assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
-        assert!(!std::fs::read_to_string(Env::path(&temp.0, "local")).unwrap().contains("pins"));
-        let first =
-            Planner.steps_with_tool(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(())).unwrap().steps;
-        let changed =
-            Planner.steps_with_tool(&root(), &env, &region("7.79, 47.99, 7.81, 48.01"), &store, Ok(())).unwrap().steps;
-        for steps in [&first, &changed] {
-            assert!(steps.iter().all(|step| !step.name.starts_with("planner/runtime/")));
-            let extract = steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
-            assert!(
-                matches!(&extract.inputs[0], Input::Snapshot { source, version, .. } if source == EXTRACTS && version == "2026-10-01")
-            );
-        }
-        let routing = |steps: &[Step]| {
-            steps.iter().find(|step| step.name == "planner/routing").unwrap().options["bounds"].clone()
-        };
-        assert_ne!(routing(&first), routing(&changed), "the same saved ID does not hide a changed box");
     }
 
     #[test]

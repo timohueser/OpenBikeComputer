@@ -202,14 +202,6 @@ impl Store {
         read_records(&self.root.join("layers"), read_receipt)
     }
 
-    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
-        read_records(&self.root.join("local"), read_record)
-    }
-
-    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
-        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
-    }
-
     /// The manifest of a release.
     pub fn release(&self, product: &str, id: &str) -> PathBuf {
         self.root.join("releases").join(product).join(format!("{id}.json"))

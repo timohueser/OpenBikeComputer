@@ -147,7 +147,6 @@ pub struct Run {
     start: Instant,
     _lock: Lock,
     _using: Lock,
-    pub(crate) originals: BTreeMap<String, super::release::Layer>,
 }
 
 impl Run {
@@ -166,8 +165,7 @@ impl Run {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run =
-                Run { id, file, start: Instant::now(), _lock: lock, _using: using, originals: BTreeMap::new() };
+            let mut run = Run { id, file, start: Instant::now(), _lock: lock, _using: using };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
             File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
@@ -225,7 +223,7 @@ impl Run {
             _ => None,
         };
         let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
-        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using, originals: BTreeMap::new() };
+        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
                 run.record(event)?;
@@ -234,11 +232,6 @@ impl Run {
         run.sync()?;
         File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
         Ok(run)
-    }
-
-    /// Use only original layers returned by checked portable reuse for this operation.
-    pub fn reuse_layers(&mut self, layers: &BTreeMap<String, super::release::Layer>) {
-        self.originals = layers.clone();
     }
 
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
@@ -275,7 +268,7 @@ impl Run {
         // The planned steps and the layers that they read, in dependency order.
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
-            if needed.contains(step.name.as_str()) && !self.originals.contains_key(&step.name) {
+            if needed.contains(step.name.as_str()) {
                 needed.extend(step.layers());
             }
         }
@@ -299,11 +292,6 @@ impl Run {
                     break;
                 }
                 let step = pending[i];
-                if let Some(original) = self.originals.get(&step.name) {
-                    pending.remove(i);
-                    done.insert(&step.name, original.clone());
-                    continue;
-                }
                 if !step.layers().all(|name| done.contains_key(name)) {
                     i += 1;
                     continue;

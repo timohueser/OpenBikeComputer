@@ -17,7 +17,6 @@ use crate::store::{hash_file, Store};
 use super::{api::Error, build_cli::EnvPlan, Code};
 
 mod observe;
-pub(crate) use observe::tail;
 pub use observe::{view, View};
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -156,7 +155,6 @@ fn command(request: &Request) -> String {
         Kind::Prepare => "prepare",
         Kind::Build => "build",
         Kind::Apply => "apply",
-        Kind::DevPrepare => "dev",
     };
     format!("{kind} {}", request.env)
 }
@@ -275,9 +273,6 @@ pub(super) fn perform(
     let request = request()?;
     let root = super::root()?;
     let result = match request.kind {
-        Kind::DevPrepare => {
-            super::dev_cli::prepare(&root, store, products, run, request.dev.as_ref().expect("checked Local request"))
-        }
         Kind::Prepare => super::build_cli::prepare(
             &root,
             products,
@@ -338,15 +333,13 @@ pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
 }
 
 pub(super) fn prepare(root: &Path, args: super::build_cli::PlanArgs, json: bool) -> Result<(), Error> {
-    let request =
-        Request { kind: Kind::Prepare, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request { kind: Kind::Prepare, env: args.env, only: args.only, moves: args.moves, plan: None };
     print_handle(&start(root, &Store::open()?, request, None)?, json)
 }
 
 pub(super) fn build(root: &Path, args: super::build_cli::BuildArgs, json: bool) -> Result<(), Error> {
     let plan = args.plan.as_deref().map(super::build_cli::read_plan).transpose()?;
-    let request =
-        Request { kind: Kind::Build, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request { kind: Kind::Build, env: args.env, only: args.only, moves: args.moves, plan: None };
     print_handle(&start(root, &Store::open()?, request, plan.as_ref())?, json)
 }
 
@@ -378,7 +371,6 @@ pub(super) fn apply(
         super::build_cli::print_plan(&plan);
     }
     super::api::confirm(&super::apply_cli::question(&plan), consent)?;
-    let request =
-        Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
+    let request = Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None };
     print_handle(&start(root, &store, request, Some(&plan))?, json)
 }
