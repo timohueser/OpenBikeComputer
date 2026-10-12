@@ -73,7 +73,15 @@ impl From<Refused> for String {
 }
 
 /// Held while it lives; the operating system releases it when the process ends.
-pub struct Lock(#[allow(dead_code)] File);
+pub struct Lock(pub(crate) File);
+
+impl Drop for Lock {
+    /// Unlock before the file closes: a child that another thread forks holds a copy of the file
+    /// until it runs its program, and a close alone leaves the lock to that copy.
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
 
 impl Store {
     /// The store at `OBC_DATA_STORE`, or else at `~/.cache/openbikecomputer/store`.
@@ -197,7 +205,10 @@ impl Store {
             Err(e) => return Err(e.to_string()),
         };
         match file.try_lock() {
-            Ok(()) => Ok(false),
+            Ok(()) => {
+                drop(Lock(file));
+                Ok(false)
+            }
             Err(TryLockError::WouldBlock) => Ok(true),
             Err(TryLockError::Error(e)) => Err(e.to_string()),
         }
@@ -556,6 +567,18 @@ pub(crate) mod tests {
         write_atomic(&path, b"new").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new");
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_dropped_lock_is_free_while_a_copy_of_its_file_is_open() {
+        let scratch = Scratch::new("store-lock");
+        let store = Store::at(scratch.0.join("store"));
+        let held = store.lock("key").unwrap();
+        // The copy that a child forked on another thread holds until it runs its program.
+        let copy = held.0.try_clone().unwrap();
+        drop(held);
+        assert!(store.try_lock("key").unwrap().is_some());
+        drop(copy);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! crate reads and writes.
 
 pub mod cli;
+pub mod collection;
 pub mod date;
 pub mod engine;
 pub mod fetch;

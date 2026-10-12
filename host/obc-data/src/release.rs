@@ -236,7 +236,7 @@ pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
 }
 
-fn is_sha256(text: &str) -> bool {
+pub(crate) fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
@@ -284,7 +284,10 @@ pub fn switch(target: &Target, base: Option<&(Serving, Tag)>, id: &str) -> Resul
     let release = Release::read(target, id)?;
     let since = crate::date::timestamp(crate::date::now());
     let next = match base {
-        Some((now, _)) if now.serving.id == id => now.clone(),
+        // A pointer that drifted served other bytes until now: the grace of the collection starts now.
+        Some((now, _)) if now.serving.id == id => {
+            Serving { serving: Role { id: id.into(), since: since.clone() }, rollback: now.rollback.clone() }
+        }
         Some((now, _)) => {
             let serving = Release::read(target, &now.serving.id)?;
             for (now, next) in serving.pointers.iter().zip(&release.pointers) {
@@ -440,9 +443,14 @@ pub(crate) mod tests {
         target.put(POINTERS[0], b"another publisher", &Condition::Any).unwrap();
         let refused = switch(&target, Some(&back), &next).unwrap_err();
         assert!(refused.contains("of neither the serving release nor"), "{refused}");
-        assert!(switch(&target, Some(&back), &id).unwrap(), "a switch to the serving release repairs it");
-        assert!(drift(&target, &first).unwrap().is_empty());
-        assert_eq!(serving(&target).unwrap().unwrap().0, back.0);
+        let mut before = back.0.clone();
+        before.serving.since = "2026-01-01T00:00:00Z".into();
+        target.put(SERVING, &serde_json::to_vec_pretty(&before).unwrap(), &Condition::Any).unwrap();
+        assert!(switch(&target, serving(&target).unwrap().as_ref(), &id).unwrap(), "a switch to the serving release");
+        assert!(drift(&target, &first).unwrap().is_empty(), "repairs the pointer");
+        let repaired = serving(&target).unwrap().unwrap().0;
+        assert_eq!((&repaired.serving.id, &repaired.rollback), (&before.serving.id, &before.rollback));
+        assert_ne!(repaired.serving.since, before.serving.since, "the old pointer served until now");
 
         std::fs::write(fixture.scratch.0.join("count"), saved).unwrap();
         target.upload(&[(fixture.scratch.0.join("count"), format!("objects/{}", count.sha256))]).unwrap();
