@@ -1,0 +1,75 @@
+"""Prepare the `wiki` source: compact Wikimedia facts and photos for the OSM subjects.
+
+Each step resumes in its work directory. The producer runs them in this order:
+
+    python -m tools.wiki subjects --osm PLANET.osm.pbf --work W --out subjects.ndjson
+    python -m tools.wiki import   --work W --inputs inputs.json --subjects subjects.ndjson
+    python -m tools.wiki articles --work W --inputs inputs.json --selected selected.json
+    python -m tools.wiki commons  --work W --requests requests.json
+    python -m tools.wiki shards   --work W --out OUT
+
+`inputs.json` names each dump by `path`, or by `url` with an optional `sha256`, `bytes` and
+`suffix`: `wikidata` (the JSON dump), `wikidata_pages` and `wikidata_redirects` (SQL), and per
+language `wikipedia` (Enterprise HTML) and `langlinks` (SQL). `selected.json` lists the QIDs
+whose articles the compilers read. `requests.json` maps each subject that the compilers select
+to its Commons `categories`, `commons` and `files`.
+
+The steps need Osmium (or `OBC_OSMIUM`) and zstd; lbzip2 and pigz decompress in parallel when
+present. A `url` on the Enterprise API needs `OBC_WIKIMEDIA_ENTERPRISE_TOKEN`.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+from ..landmark_capture import LANGUAGES
+from . import catalog, commons, dumps, shards, subjects
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("step", choices=["subjects", "import", "articles", "commons", "shards"])
+    parser.add_argument("--work", type=Path, required=True)
+    for name in ("osm", "out", "inputs", "subjects", "selected", "requests"):
+        parser.add_argument(f"--{name}", type=Path)
+    args = parser.parse_args()
+    if args.step == "subjects":
+        subjects.extract(args.osm, args.out, args.work)
+        return 0
+    db = catalog.connect(args.work)
+    inputs = json.loads(args.inputs.read_bytes()) if args.inputs else {}
+
+    def source(name: str, spec: dict) -> tuple[Path, str]:
+        path, digest = dumps.download(spec, args.work / "inputs")
+        print(f"{name}: {path.name} sha256 {digest}", flush=True)
+        return path, digest
+
+    if args.step == "import":
+        subjects.load(db, args.work, args.subjects)
+        for name in ("wikidata_pages", "wikidata_redirects"):
+            if name in inputs:
+                catalog.sql(db, args.work, name, *source(name, inputs[name]))
+        catalog.wikidata(db, args.work, *source("wikidata", inputs["wikidata"]))
+    elif args.step == "articles":
+        selected = sorted(set(json.loads(args.selected.read_bytes())))
+        # The article imports keep only what this selection wants, so it never changes in one work directory.
+        catalog.scan(db, args.work, "selected", hashlib.sha256(json.dumps(selected).encode()).hexdigest(), (), lambda _: None)
+        catalog.want(db, selected)
+        for language, spec in inputs.get("langlinks", {}).items():
+            catalog.sql(db, args.work, "langlinks:" + language, *source("langlinks:" + language, spec))
+        for language in reversed(LANGUAGES):
+            if spec := inputs.get("wikipedia", {}).get(language):
+                catalog.articles(db, args.work, language, *source("wikipedia:" + language, spec))
+        catalog.links(db)
+    elif args.step == "commons":
+        commons.acquire(db, args.work, json.loads(args.requests.read_bytes()))
+    else:
+        shards.write(db, args.work, args.out)
+    db.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
