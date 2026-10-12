@@ -1664,7 +1664,7 @@ target signs with the secret key and never sends it.
 | `obc data r2 stat KEY... [--json]` | Lists the objects of the keys that the bucket holds; a missing key is not an error |
 | `obc data r2 get KEY FILE [--json]` | Downloads one object |
 | `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable] [--json]` | Uploads with `--checksum` and the headers given, then verifies |
-| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes] [--json]` | Deletes, see below |
+| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--legacy] [--yes] [--json]` | Deletes, see below |
 
 Rules:
 
@@ -1678,8 +1678,9 @@ Rules:
   replaced. The command passes only when the object has the size and the MD5 of the file. It
   fails when they differ, and when the bucket reports no MD5 for the object.
 - `delete --prefix P` resolves `P` to its keys first. Then explicit keys and a prefix have the
-  same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
-  then nothing is deleted.
+  same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, a key
+  under `cell-catalog/`, `planner/` or `reference/` is refused without `--legacy`, and then nothing
+  is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.

@@ -422,7 +422,7 @@ bake *args:
         rm -f "$pointer"
         if (( apply )); then
           _warn "deleting every object under the catalog prefix: $prefix"
-          _run "${client[@]}" delete --prefix "$prefix" --reason "obc bake clean-r2: purge the catalog prefix before a fresh publish"
+          _run "${client[@]}" delete --prefix "$prefix" --legacy --reason "obc bake clean-r2: purge the catalog prefix before a fresh publish"
           _ok "catalog prefix emptied; publish the verified bake tree immediately"
         else
           _say "dry run — review this list, then repeat with: obc bake clean-r2 --apply"

@@ -6,7 +6,9 @@ use clap::{Args, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::r2::{owned as release_key, refuse_older_publish, Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
+use crate::r2::{
+    legacy, owned as release_key, refuse_older_publish, Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG,
+};
 
 use super::api::confirm;
 use super::{cells, print_json, table, Code, Error};
@@ -56,6 +58,9 @@ enum Action {
         /// Do not ask. Required without a terminal.
         #[arg(long)]
         yes: bool,
+        /// Allow keys under `cell-catalog/`, `planner/` and `reference/`, of the legacy pipelines.
+        #[arg(long)]
+        legacy: bool,
     },
 }
 
@@ -114,7 +119,9 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
             }
             Ok(())
         }
-        Action::Delete { keys, prefix, reason, yes } => delete(&bucket, keys, prefix, &reason, yes, json),
+        Action::Delete { keys, prefix, reason, yes, legacy } => {
+            delete(&bucket, (keys, prefix, legacy), &reason, yes, json)
+        }
     }
 }
 
@@ -133,8 +140,7 @@ fn owned(message: String) -> Error {
 
 fn delete(
     bucket: &Bucket,
-    keys: Vec<String>,
-    prefix: Option<String>,
+    (keys, prefix, allow_legacy): (Vec<String>, Option<String>, bool),
     reason: &str,
     yes: bool,
     json: bool,
@@ -148,6 +154,11 @@ fn delete(
         None => keys,
     };
     refuse_owned(bucket, &keys).map_err(|e| owned(format!("{e}; nothing was deleted")))?;
+    if let Some(key) = keys.iter().find(|key| legacy(key)).filter(|_| !allow_legacy) {
+        return Err(Code::Usage
+            .error(format!("{key} is a key of the legacy pipelines; nothing was deleted"))
+            .fix("Legacy keys go only after the cutover, from the owner-approved list, with --legacy."));
+    }
     let objects = bucket.plan_delete(&keys).map_err(|e| failed(format!("{e}; nothing was deleted")))?;
     let bytes: u64 = objects.iter().map(|object| object.bytes).sum();
     let plan = format!("{} object(s), {bytes} bytes to delete\n{}", objects.len(), listing(bucket, &objects));
@@ -178,4 +189,22 @@ fn listing(bucket: &Bucket, objects: &[Object]) -> String {
     let mut rows = vec![cells(["KEY", "BYTES", "MODIFIED"])];
     rows.extend(objects.iter().map(|o| vec![o.key.clone(), o.bytes.to_string(), o.modified.clone()]));
     format!("{}\n{}", bucket.describe(), table(&rows))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_legacy_key_goes_only_with_legacy() {
+        let scratch = crate::store::tests::Scratch::new("r2-legacy");
+        let cell = scratch.0.join("cell-catalog/a.obcm");
+        crate::engine::tests::write(&cell, "a");
+        let bucket = Bucket::local(&scratch.0);
+        let keys = || (vec!["cell-catalog/a.obcm".to_string()], None, false);
+        let refused = delete(&bucket, keys(), "test", true, true).unwrap_err();
+        assert!(refused.message.starts_with("cell-catalog/a.obcm is a key of the legacy pipelines") && cell.exists());
+        delete(&bucket, (keys().0, None, true), "test", true, true).unwrap();
+        assert!(!cell.exists());
+    }
 }
