@@ -7,6 +7,7 @@ pub mod cli;
 pub mod date;
 pub mod engine;
 pub mod fetch;
+pub mod machines;
 pub mod product;
 pub mod r2;
 pub mod regions;

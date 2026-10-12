@@ -161,6 +161,17 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
 | `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
 
+### `data/machines.toml`
+
+One table per machine that runs `obc data ui`. The name of the table is the name of the machine:
+`OBC_DATA_MACHINE`, or else the short host name. A machine that the file does not name has the
+header `#262624`, and `obc data open` tunnels to the SSH host of its name.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `colour` | string | `#rrggbb`: the header of the page of the machine. White text on it has a contrast of at least 4.5:1, and it is not `#6e6c66`, the header of a page that loads |
+| `ssh` | string | Optional: the SSH host or alias that `obc data open` tunnels to |
+
 ## State of a source
 
 A fetch is a source id with its sorted `NAME=VALUE`s. `obc data sources` gives, for each target
@@ -1055,6 +1066,9 @@ command: `obc data update` writes only a `dir` target.
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
 | `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
+| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
+| `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
+| `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
@@ -1065,6 +1079,24 @@ addition:
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
   the error is the last line.
+
+### The page
+
+`obc data ui` listens on `127.0.0.1:8700` and answers:
+
+- `GET /` with `builder/web/dist/data/data.html`, and `GET /PATH` with the file PATH in that
+  folder. A part of PATH that is empty, `.` or `..`, or that holds `\`, names no file.
+- `POST /api/cli` with the body `{"args": [ARG, …]}`: it runs its own binary as
+  `obc data --json ARG…` in the repository root, with no standard input, and answers
+  `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
+  the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
+  A command runs to its end, and its output is read, also when the request ends first. The page
+  runs only `obc data` without a command and `obc data setup`.
+
+Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
+it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
+A request that does not, and a command that the page does not run, get HTTP 403 and
+`{"exit": 2, "output": {"error": …}}` with the code `usage`.
 
 ## R2 client
 
@@ -1173,6 +1205,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `fetch` | `Fetched` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
+| `setup` | `Setup` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -1455,6 +1488,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         }
       },
+      "type": "object"
+    },
+    "CredentialState": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state"
+      ],
       "type": "object"
     },
     "Details": {
@@ -2156,6 +2209,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Job": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Kept": {
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
@@ -2263,8 +2336,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Machine": {
+      "additionalProperties": false,
       "description": "The machine that runs the command.",
       "properties": {
+        "colour": {
+          "description": "The header colour of its page: `data/machines.toml`, or else the charcoal of a laptop.",
+          "type": "string"
+        },
         "cores": {
           "format": "uint",
           "minimum": 0,
@@ -2299,6 +2377,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "name",
+        "colour",
         "os",
         "cores",
         "memory_bytes",
@@ -2446,6 +2525,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "release"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "Readiness": {
+      "oneOf": [
+        {
+          "enum": [
+            "ready",
+            "missing"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "optional",
+          "description": "Missing, but no main job needs it.",
+          "type": "string"
         }
       ]
     },
@@ -2881,6 +2976,42 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Setup": {
+      "additionalProperties": false,
+      "description": "What `setup` writes.",
+      "properties": {
+        "credentials": {
+          "description": "Only whether each credential is set; never its value.",
+          "items": {
+            "$ref": "#/$defs/CredentialState"
+          },
+          "type": "array"
+        },
+        "jobs": {
+          "description": "What this machine can do, and the reason when it cannot.",
+          "items": {
+            "$ref": "#/$defs/Job"
+          },
+          "type": "array"
+        },
+        "store": {
+          "$ref": "#/$defs/StoreUse"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/Tool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "store",
+        "jobs",
+        "tools",
+        "credentials"
+      ],
+      "type": "object"
+    },
     "SourceRow": {
       "description": "A source of `data/sources.toml`, what each target reads of it, and its versions in the store.",
       "properties": {
@@ -3064,6 +3195,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "StoreUse": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "used_bytes": {
+          "description": "The size of every file in the store.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "used_bytes",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
     "Stored": {
       "description": "A version of a source in the local store.",
       "properties": {
@@ -3231,6 +3391,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "drift",
         "error",
         "next"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "description": "The version that the tool gives, or the command that installs it; both when the version is\ntoo old.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state",
+        "detail"
       ],
       "type": "object"
     },

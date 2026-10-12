@@ -5,14 +5,15 @@ export interface Status {
     machine: Machine;
 }
 
-/** `colour` is the header background, behind white text. */
+/** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
+ *  `null` where the system does not tell. */
 export interface Machine {
     name: string;
     colour: string;
     os: string;
     cores: number;
-    memory_bytes: number;
-    store_free_bytes: number;
+    memory_bytes: number | null;
+    store_free_bytes: number | null;
 }
 
 /** `optional` is a missing thing that no main job needs. */
@@ -22,7 +23,7 @@ export type Readiness = "ready" | "missing" | "optional";
  *  missing things are output, not an error. It walks the store for `used_bytes`, so it runs only
  *  when the Machine screen opens and on Check again. */
 export interface Setup {
-    store: { path: string; used_bytes: number; free_bytes: number };
+    store: { path: string; used_bytes: number; free_bytes: number | null };
     /** What this machine can do, and the reason when it cannot. */
     jobs: { name: string; state: Readiness; reason: string }[];
     /** `detail` is the version found, or the command that installs the tool. */
@@ -42,6 +43,13 @@ export function size(bytes: number): string {
     return `${bytes < 10 && unit > 0 ? bytes.toFixed(1) : Math.round(bytes)} ${UNITS[unit]}`;
 }
 
+export function free(bytes: number | null): string {
+    return bytes === null ? "free space unknown" : `${size(bytes)} free`;
+}
+
+const OS: Record<string, string> = { linux: "Linux", macos: "macOS" };
+
 export function hardware(machine: Machine): string {
-    return `${machine.os} · ${machine.cores} cores · ${size(machine.memory_bytes)} RAM`;
+    const memory = machine.memory_bytes === null ? [] : [`${size(machine.memory_bytes)} RAM`];
+    return [OS[machine.os] ?? machine.os, `${machine.cores} cores`, ...memory].join(" · ");
 }

@@ -1,0 +1,4 @@
+# The machines that run `obc data ui`. The name of a table is the name of the machine:
+# `OBC_DATA_MACHINE`, or else its short host name. specs/obc-data.md, "Machines", gives the format.
+# A machine that is not here has the charcoal header of a laptop, and `obc data open NAME` tunnels
+# to the SSH host NAME.
