@@ -36,7 +36,7 @@ release. Undo restores the applied region, layers and policies. Local has its ow
 An upstream check does not silently replace those pins.
 
 A plan separates required work from optional source moves. Changed geometry, product options
-or producer code can require work even when no source moves. Only source moves are optional.
+or producer code can require work even when no source moves.
 A source move is deliberate, and a source with several requests must expose each request's
 availability. This avoids claiming that one cached version covers every area.
 An incomplete preview needs input preparation before it can become an exact review.
@@ -48,7 +48,7 @@ Live apply verifies the selected data and asks for consent.
 ## Retained work and a direct apply
 
 The selected machine builds and verifies. Its admitted worker survives a closed terminal.
-Following a Run does not change it. Stop drains the current work.
+`obc data runs RUN --follow` does not change the Run. Stop drains the current work.
 
 The machine that applies also publishes. It uploads only what R2 lacks, so a repeated apply
 continues where a stopped one ended. Clients read only the pointer, and the apply writes the
