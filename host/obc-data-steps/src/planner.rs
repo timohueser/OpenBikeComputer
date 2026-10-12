@@ -935,10 +935,10 @@ mod tests {
         assert_eq!(named.len(), 14, "thirteen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a device step reads only those of a step of another
-        // layer that a program reads, so another machine can bake it without that step. Reads
-        // within one layer and reads of an internal layer are exempt: where a store lacks such a
-        // file, the unheld rule bakes its step again, and that bake stays small. Another operator
-        // layer would bake a whole layer of a program again.
+        // layer that a program reads, so another machine can bake it without that step. Two reads
+        // are exempt. The map leaves read `device/osm`, an internal layer: a machine without it
+        // splits the OSM of the region again. The landmark and peak leaves read the content of
+        // their own layer: that content bakes again only from the Wikimedia captures.
         for step in steps.iter().filter(|step| step.name.starts_with("device/")) {
             for input in &step.inputs {
                 let Input::Step { name, files } = input else { continue };
