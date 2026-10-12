@@ -1,16 +1,16 @@
 //! The OSM step of the device maps in `obc data`: the extract of the region, cut into its source
-//! leaves with native Osmium extraction.
+//! leaves with native Osmium extraction ([`crate::split`]).
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use obc_data::engine::Request;
-use obc_formats::grid::id_width;
 
-use crate::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
+use crate::{LeafId, OsmiumRunner};
 
 /// The path in the layer of the OSM of a leaf.
 pub fn leaf_pbf(leaf: LeafId) -> String {
-    format!("osm/{}", name(leaf))
+    format!("osm/{}", leaf.file_name())
 }
 
 /// A single area's raw inputs, kept together so repeated sources retain separate request receipts.
@@ -28,11 +28,6 @@ pub fn area(request: &Request) -> Result<(), String> {
     Ok(())
 }
 
-fn name(leaf: LeafId) -> String {
-    let width = id_width(SOURCE_LEAF_LOG2);
-    format!("{:0width$}-{:0width$}.osm.pbf", leaf.i, leaf.j)
-}
-
 /// The option `leaves` names each leaf as `[i, j]`. The step reads the one file of its snapshots,
 /// and writes [`leaf_pbf`] for each leaf. Its metrics name the Osmium version.
 pub fn osm(request: &Request) -> Result<(), String> {
@@ -42,24 +37,16 @@ pub fn osm(request: &Request) -> Result<(), String> {
         Some([i, j]) => Some(LeafId { i: i.as_i64()?, j: j.as_i64()? }),
         _ => None,
     });
-    let leaves = leaves.collect::<Option<Vec<_>>>().ok_or("a leaf is not [i, j]")?;
+    let leaves = leaves.collect::<Option<BTreeSet<_>>>().ok_or("a leaf is not [i, j]")?;
     let files: Vec<&PathBuf> =
         request.snapshots.values().chain(request.layers.values()).flat_map(|files| files.values()).collect();
     let [extract] = files[..] else {
         return Err(format!("the step reads {} files, not one", files.len()));
     };
-    let requests: Vec<ExtractRequest> =
-        leaves.iter().map(|&leaf| ExtractRequest { output: name(leaf), bbox: leaf.extract_bbox() }).collect();
-    // Osmium writes its config beside the extracts, which is not part of the layer.
-    let dir = request.output.with_file_name("extract");
     let metrics = serde_json::json!({"osmium": osmium.version()?});
     std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
-    osmium.split(extract, &dir, &requests)?;
     let osm = request.output.join("osm");
     std::fs::create_dir(&osm).map_err(|e| format!("{}: {e}", osm.display()))?;
-    for leaf in leaves {
-        let path = request.output.join(leaf_pbf(leaf));
-        std::fs::rename(dir.join(name(leaf)), &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    Ok(())
+    // The halves and the Osmium configs go beside the output: they are not part of the layer.
+    crate::split(&osmium, extract, &leaves, &request.output.with_file_name("extract"), &osm)
 }
