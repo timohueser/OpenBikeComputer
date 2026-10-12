@@ -10,7 +10,7 @@ import {fetch as tiles} from './worker.mjs';
 export class Files {
   constructor(root) { this.root = root; }
   async get(key, options = {}) {
-    if (!/^((?:planner|cell-catalog)\/objects\/[a-f0-9]{64}|cell-catalog\/releases\/[a-f0-9]{64}\/catalog\.json|planner\/releases\/[a-f0-9]{64}\/public\/[A-Za-z0-9 _.,@/-]+)$/.test(key)
+    if (!/^(objects\/[a-f0-9]{64}|cell-catalog\/catalog\.json|releases\/[a-f0-9]{64}\/public\/[A-Za-z0-9 _.,@/-]+)$/.test(key)
         || key.split('/').includes('..')) return null;
     let file;
     try {
@@ -79,7 +79,7 @@ export async function serve(root, port) {
       const url = new URL(request.url, `http://127.0.0.1:${server.address().port}`);
       const pending = [];
       let result;
-      if (url.pathname.startsWith('/cell-catalog/')) result = await catalog(bucket, request, url.pathname.slice(1));
+      if (/^\/(cell-catalog|objects)\//.test(url.pathname)) result = await catalog(bucket, request, url.pathname.slice(1));
       else result = await tiles(new Request(url, {method: request.method, headers: request.headers}), {BUCKET: bucket},
         {waitUntil(value) { pending.push(value); }}, null);
       response.writeHead(result.status, Object.fromEntries(result.headers));

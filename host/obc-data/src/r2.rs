@@ -378,6 +378,24 @@ impl Bucket {
     }
 }
 
+/// Refuse a write of an older publisher once the bucket has the `release.json` of `obc data`: from
+/// then on, only `obc data update` changes what the bucket serves.
+pub fn refuse_older_publish(bucket: &Bucket) -> Result<(), String> {
+    let serving = crate::release::SERVING;
+    if bucket.stat(&[serving.to_string()])?.contains_key(serving) {
+        return Err(format!("the bucket has `{serving}`: `obc data update` publishes to it, and nothing else"));
+    }
+    Ok(())
+}
+
+/// Whether a release of `obc data` writes `key`: `release.json`, `lock.json`, a pointer, or a key
+/// under `objects/`, `releases/` or `sources/`.
+pub fn owned(key: &str) -> bool {
+    ["release.json", "lock.json"].contains(&key)
+        || crate::release::POINTERS.contains(&key)
+        || ["objects/", "releases/", "sources/"].iter().any(|prefix| key.starts_with(prefix))
+}
+
 fn refuse_removal_log<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
     if keys.any(|key| key == REMOVAL_LOG) {
         return Err(format!("{REMOVAL_LOG} is the removal history; the client never deletes it"));

@@ -417,11 +417,11 @@ pub struct R2Store {
 
 impl R2Store {
     /// The bucket from the `OBC_R2_*` environment, or the name of the variable that is missing.
-    /// Refused once `obc data apply live` owns the catalog of the prefix.
+    /// Refused once the bucket has the `release.json` of `obc data`.
     pub fn from_env() -> Result<Self, String> {
         let bucket = obc_data::r2::Bucket::from_env(obc_data::r2::Credentials::Main)?;
         let prefix = std::env::var("OBC_R2_PREFIX").unwrap_or_default().trim_matches('/').to_string();
-        obc_data::live::refuse_older_publish(&bucket, &prefix)?;
+        obc_data::r2::refuse_older_publish(&bucket)?;
         Ok(Self { bucket, prefix })
     }
 

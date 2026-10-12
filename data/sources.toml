@@ -12,6 +12,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
 version = "date"
+refresh = 90
 # A planet is about 84 GB, so a new one is seldom worth its download.
 redistribute = true
 
@@ -25,6 +26,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "osm", url = "https://planet.openstreetmap.org/replication/day/", from = "osm-planet" }
 version = "date"
+refresh = 7
 redistribute = true
 
 [[source]]
@@ -36,6 +38,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmdd}.osm.pbf" }
 version = "date"
+refresh = 7
 redistribute = true
 r2_copy = true
 
@@ -48,6 +51,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://download.geofabrik.de/index-v1.json" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = true
 
@@ -60,6 +64,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = true
 
@@ -73,6 +78,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "capture", url = "https://overpass-api.de/api/interpreter" }
 version = "date"
+refresh = 365
 redistribute = true
 
 [[source]]
@@ -84,6 +90,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = true
 
@@ -96,6 +103,7 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = true
 
@@ -458,6 +466,7 @@ obligations = "none"
 fetch = { kind = "capture", url = "https://www.wikidata.org/w/api.php" }
 hosts = ["query.wikidata.org"]
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = false
 
@@ -470,6 +479,7 @@ attribution = "landmark text from Wikipedia, © the contributors"
 obligations = "Each record states the licence and the notices of its own text"
 fetch = { kind = "capture", url = "https://{language}.wikipedia.org/w/api.php" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = false
 
@@ -482,6 +492,7 @@ obligations = "Each record states the licence and the notices of its own photo"
 fetch = { kind = "capture", url = "https://commons.wikimedia.org/w/api.php" }
 hosts = ["upload.wikimedia.org"]
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = false
 
@@ -495,6 +506,7 @@ attribution = "Contains modified Copernicus Climate Change Service information {
 fetch = { kind = "capture", url = "https://arco.datastores.ecmwf.int/cadl-arco-geo-{bucket}/arco/reanalysis_era5_land/{group}/geoChunked.zarr" }
 hosts = ["confluence.ecmwf.int"]
 version = "date"
+refresh = 365
 redistribute = true
 credential = { file = "~/.cdsapirc" }
 
@@ -507,6 +519,7 @@ attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10
 obligations = "Cite the dataset"
 fetch = { kind = "capture", url = "https://planetarycomputer.microsoft.com/api/stac/v1/search" }
 version = "date"
+refresh = 365
 redistribute = true
 
 [[source]]
@@ -521,6 +534,7 @@ fetch = { kind = "capture", url = "https://catalogue.dataspace.copernicus.eu/oda
 extent = [-32, 26, 46, 72]
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
+refresh = 365
 redistribute = true
 credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
 
@@ -568,6 +582,7 @@ licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
 fetch = { kind = "http", url = "https://qrank.toolforge.org/download/qrank.csv.gz" }
 version = "date"
+refresh = 90
 redistribute = true
 r2_copy = true
 

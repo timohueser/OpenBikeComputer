@@ -46,10 +46,8 @@ its filtered records.
 
 One process serves the one region that `OBC_SEARCH_REGIONS` names.
 
-Live apply builds services on the VPS from the pushed commit. Configure the Python and
-Node `major.minor` versions in `data/planner-runtime.toml` and set `OBC_PLANNER_HOST`.
-The [runtime contract](../../specs/obc-data.md#service-runtimes) defines installation
-and readiness. Allow a short outage while the services stop and receive the new data.
+Configure the Python and Node `major.minor` versions in `data/planner-runtime.toml`. The
+[runtime contract](../../specs/obc-data.md#service-runtimes) defines them.
 
 ## Runtime and data limits
 

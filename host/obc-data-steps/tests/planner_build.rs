@@ -1,21 +1,22 @@
-//! The planner layers of `obc data build` over a road grid of nine junctions near Freiburg, with a
+//! The planner layers of `obc data update` over a road grid of nine junctions near Freiburg, with a
 //! village, two places and an address (`data/planner.osm`): the routing package verifies, the
-//! overlays derive from it, the search finds the places and the address, and a second plan builds
-//! nothing.
+//! overlays derive from it, the search finds the places and the address, a second plan builds
+//! nothing, and the pointer names the files that a client finds by name.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use obc_data::engine::plan::plan;
-use obc_data::engine::release::release;
+use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{Built, Input, Request, Run, Step};
-use obc_data::env::Env;
+use obc_data::engine::{digest, Built, Input, Request, Run, Step};
 use obc_data::fetch::http::Http;
-use obc_data::product::Product;
+use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
+use obc_data::release::Release;
+use obc_data::settings::Settings;
+use obc_data::sources::embedded;
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::device::TILE_LIST;
 use obc_data_steps::planner::Planner;
@@ -64,7 +65,16 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
     fetched(&store, TILE_LIST, "1", Vec::new(), "tileList.txt", b"");
 
-    fetched(&store, "nominatim-country-data", "1", Vec::new(), "nominatim_db-1-py3-none-any.whl", &country_data());
+    // At its `start`: a version older than the `start` is not the newest that the machine knows.
+    let nominatim = embedded("nominatim-country-data").start.clone().unwrap();
+    fetched(
+        &store,
+        "nominatim-country-data",
+        &nominatim,
+        Vec::new(),
+        "nominatim_db-1-py3-none-any.whl",
+        &country_data(),
+    );
 
     let text = r#"name = "Test"
 kind = "box"
@@ -89,17 +99,13 @@ time_zone = "Europe/Berlin"
         "qrank",
         "pgf-encoding",
     ];
-    let live = read.map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
-    let env = Env {
-        name: "test".into(),
-        region: AREA.into(),
-        layers: vec!["sun".into()],
-        live: BTreeMap::from(live),
-        ..Env::default()
-    };
+    let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
+    let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
+    let settings = Settings { region: AREA.into(), layers: vec!["sun".into()], ..Settings::default() };
+    let inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
-    let steps = |python: bool, env: &Env| {
-        let planned = Planner.steps(&root, env, &regions, &store).unwrap();
+    let steps = |python: bool, inputs: &Inputs| {
+        let planned = Planner.steps(&root, inputs, &regions, &store).unwrap();
         assert!(planned.blocked.is_empty());
         let mut steps = planned.steps;
         let rust = ["planner/source/europe/test", "planner/osm", "planner/terrain", "planner/routing"];
@@ -117,9 +123,9 @@ time_zone = "Europe/Berlin"
         }
         steps
     };
-    let http = Http::new();
+    let (http, kept) = (Http::new(), Kept::new());
     let context =
-        Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
+        Context { store: &store, root: &root, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
     let build = |steps: &[Step]| -> Vec<Built> {
         let mut run = RunLog::create(&store, "build test").unwrap();
         let built = run.build(&context, steps, &plan(&store, steps).unwrap()).unwrap();
@@ -127,7 +133,7 @@ time_zone = "Europe/Berlin"
         built
     };
 
-    let built = build(&steps(false, &env));
+    let built = build(&steps(false, &inputs));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
     assert_eq!(names.len(), 4);
     for name in ["planner/osm", "planner/terrain", "planner/routing"] {
@@ -172,7 +178,7 @@ time_zone = "Europe/Berlin"
         .current_dir(&root)
         .status();
     assert!(sync.unwrap().success(), "uv sync of the planner groups");
-    let built = build(&steps(true, &env));
+    let built = build(&steps(true, &inputs));
     let metrics = |step: &str| &built.iter().find(|built| built.receipt.step == step).unwrap().receipt.metrics;
     assert_eq!(
         (&metrics("planner/search/records")["pois"], &metrics("planner/search/records")["addresses"]),
@@ -296,61 +302,57 @@ for name, entry in catalog['files'].items():
         .unwrap();
     assert!(check.success(), "real grid objects and empty terrain form a verified offline selection");
 
-    let mut climate = env.clone();
-    climate.layers.push("climate".into());
-    climate.moves.insert("era5-land".into(), Some(DAY.into()));
+    let mut climate = inputs.clone();
+    climate.settings.layers.push("climate".into());
+    let Err(Unplanned::NeedsFetch(wanted)) = Planner.steps(&root, &climate, &regions, &store) else {
+        panic!("the store has no climate data")
+    };
+    wanted.iter().for_each(|wanted| climate.resolve(wanted, DAY.into()));
     let climate = plan(&store, &steps(true, &climate)).unwrap();
-    assert_eq!(
-        climate.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(),
-        ["planner/climate", "planner/climate/grid", "planner/index"],
-        "optional climate reuses every other layer"
-    );
+    let builds: std::collections::BTreeSet<&str> = climate.builds().map(|build| build.step.as_str()).collect();
+    let expected = ["planner/catalog", "planner/climate", "planner/climate/grid", "planner/index"];
+    assert_eq!(builds, expected.into(), "optional climate reuses every other layer");
 
-    assert_eq!(plan(&store, &steps(true, &env)).unwrap().groups.len(), 0);
-    let release = release(&store, "planner", AREA, &[], &steps(true, &env)).unwrap();
-    assert!(release.is_some(), "the store has every layer");
-    let mut release = release.unwrap();
-    release.name_files(Planner.named(&release).unwrap()).unwrap();
-    assert!(release.named.iter().any(|file| file.path == "indexes/planner/routing/grid/index.json"));
-    assert!(release.named.iter().all(|file| file.path == "release.json"
-        || file.path.starts_with("public/")
-        || file.path.starts_with("indexes/")));
-    let metadata_bytes: u64 = release.named.iter().map(|file| file.size).sum();
-    eprintln!("planner named verification metadata: {} files, {metadata_bytes} bytes", release.named.len());
-    let publication = temp.0.join("publication");
-    std::fs::create_dir_all(publication.join("data")).unwrap();
-    std::fs::write(publication.join("data/planner-runtime.toml"), "[publication]\nsite_origin='https://site.example'\napi_origin='https://api.example'\nobjects_origin='https://objects.example'\n").unwrap();
-    let pointer = Planner.pointer().unwrap()(&publication, &release, &store).unwrap();
-    assert_eq!(pointer.document["active"]["id"], release.id());
-    assert_eq!(pointer.document["active"]["name"], "Test");
-    assert_eq!(pointer.document["active"]["device_catalog"], "https://objects.example/cell-catalog/catalog.json");
-    assert_eq!(
-        pointer.document["active"]["routing"],
-        format!("https://api.example/planner-api/releases/{}/routing", release.id())
-    );
+    let steps = steps(true, &inputs);
+    assert_eq!(plan(&store, &steps).unwrap().builds().count(), 0);
+    let outputs = outputs(&store, &steps, &Kept::new()).unwrap().expect("the store has every layer");
+    let named = Planner.named(&outputs).unwrap();
+    assert!(named.iter().any(|(path, _)| path == "indexes/planner/routing/grid/index.json"));
+    assert!(named
+        .iter()
+        .all(|(path, _)| path == "release.json" || path.starts_with("public/") || path.starts_with("indexes/")));
+    let metadata_bytes: u64 = named.iter().map(|(_, file)| file.size).sum();
+    eprintln!("planner named verification metadata: {} files, {metadata_bytes} bytes", named.len());
+    let id = digest(named.iter().map(|(path, file)| (path.as_str(), file.sha256.as_str())));
+    let catalog = outputs.iter().find(|output| output.step == "planner/catalog").unwrap();
+    let pointer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.object(&catalog.files[0].sha256)).unwrap()).unwrap();
+    assert_eq!(pointer["active"]["id"], id, "the planner release is the folder of its named files");
+    assert_eq!(pointer["active"]["name"], "Test");
+    assert_eq!(pointer["active"]["device_catalog"], "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
+    assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
+    let release = Release {
+        settings: Settings { region: AREA.into(), ..Settings::default() },
+        outputs,
+        pointers: Vec::new(),
+        named: Vec::new(),
+        machine: "test".into(),
+        time: "2026-10-01T00:00:00Z".into(),
+    };
     Planner.verify(&root, None, &release, &store).unwrap();
-    // A fresh machine restores only published objects and named metadata, not producer bytes.
+    // A fresh machine restores only the client files, not producer bytes.
     let restored = Store::at(temp.0.join("restored"));
-    for (sha256, _) in
-        release.objects().into_iter().chain(release.named.iter().map(|file| (file.sha256.as_str(), file.size)))
-    {
+    for sha256 in release.objects().into_keys() {
         let path = restored.partial("restore");
         write_atomic(&path, &std::fs::read(store.object(sha256)).unwrap()).unwrap();
         restored.insert(&path, sha256).unwrap();
     }
     assert!(!restored.object(&osm.files[0].sha256).exists());
     Planner.verify(&root, None, &release, &restored).unwrap();
-    let private = release
-        .layers
-        .iter()
-        .find(|layer| layer.step == "planner/routing")
-        .unwrap()
-        .files
-        .iter()
-        .find(|file| file.path == "routing/manifest.json")
-        .unwrap();
+    let output = |step: &str| release.outputs.iter().find(|output| output.step == step).unwrap();
+    let private = output("planner/routing").files.iter().find(|file| file.path == "routing/manifest.json").unwrap();
     assert!(!restored.object(&private.sha256).exists());
-    let descriptor = release.named.iter().find(|file| file.path == "release.json").unwrap();
+    let descriptor = output("planner/index").files.iter().find(|file| file.path == "release.json").unwrap();
     let descriptor: serde_json::Value =
         serde_json::from_slice(&std::fs::read(store.object(&descriptor.sha256)).unwrap()).unwrap();
     let archive =
@@ -360,13 +362,9 @@ for name, entry in catalog['files'].items():
     Planner.verify(&root, Some(&release), &release, &restored).unwrap();
     assert!(Planner.verify(&root, None, &release, &restored).unwrap_err().contains(archive_sha));
     let mut invalid = release.clone();
-    invalid.layers.iter_mut().find(|layer| layer.step == "planner/routing/grid").unwrap().client =
+    invalid.outputs.iter_mut().find(|output| output.step == "planner/routing/grid").unwrap().client =
         obc_data::engine::Client::None;
     assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
-    for layer in release.layers.iter().filter(|layer| layer.step.ends_with("/grid")) {
-        assert!(layer.files.iter().any(|file| file.path == "index.json"));
-        assert!(layer.client_files().all(|file| file.path.starts_with("objects/")));
-    }
 }
 
 fn local_files(request: &Request) -> Result<(), String> {

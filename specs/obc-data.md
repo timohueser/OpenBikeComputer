@@ -1,7 +1,8 @@
 # obc data
 
 `obc data` reads the data registry: the external sources that a bake uses, the regions, and
-the environments. It fetches sources into the store. The crate is `host/obc-data`.
+the targets. It fetches sources into the store, bakes layers and updates the release that a
+target serves. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
 The shared acquisition boundary for landmarks and peaks is defined in
@@ -25,10 +26,10 @@ One `[[source]]` table per source.
 | `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose version is the base day. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
-| `start` | string | no | The version that a plan reads while no live release reads the source. It has the form of `version` |
-| `refresh` | integer or string | no, `"manual"` | Fallback policy; stored Live settings override it. `1` through `65535` whole days, or `"manual"` |
+| `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
+| `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
-| `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
+| `r2_copy` | boolean | no, `false` | Reserved: no command copies a source to R2 |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -87,36 +88,28 @@ planner release `attribution`. Text that no step can generate keeps a copy, and 
 compares the copy with this file: the device About page, and the footers of the site, the
 docs and the map builder.
 
-### Live settings
+### Settings of a target
 
-`settings/pending.json` in the store holds pending Live edits. `settings/applied.json` caches
-settings from the latest observed applied release. Pending settings take precedence.
-Both documents have these fields:
+The settings of a target are in the manifest of the release that it serves. `obc data update`
+reads them, applies its flags, and keeps them in the new release.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `region` | string | The selected region id. A plan requires a selection |
-| `definitions` | object | Complete region TOML text by id, including all union members |
-| `layers` | array of strings | Enabled optional layers, sorted without duplicates |
-| `refresh` | object | Source id to `1` through `65535` whole days, or `"manual"`. Days require a date version |
+| `region` | string | The id of the region; empty until an update names one |
+| `definitions` | object | The TOML text of the region and of the members of a union, by id |
+| `layers` | array of strings | The optional layers that are on, sorted, each once |
+| `refresh` | object | Source id to `1` through `65535` whole days, or `"manual"`. This policy replaces the `refresh` of `data/sources.toml` for the target. Days need a date version |
 
-An explicit region selection copies its definition. A layer or policy edit preserves that copy.
-Undo removes pending settings. Apply records the reviewed settings in each release, updates the
-applied cache and clears pending settings only if they still equal the reviewed settings.
-A policy-only change changes the release identity without rebuilding layers.
-
-### `data/env/<environment>.toml`
-
-Non-Live environments use TOML with `region` and `layers`. Local uses the ignored
-`data/env/local.toml`. The environment name is lowercase kebab-case. A `[pins]` table is refused;
-source versions belong to release manifests. See [Versions](#versions).
+`--region ID` copies the definition of a region of `data/regions/`. `--region PATH[,PATH…]`
+defines a `geofabrik` region of these Geofabrik paths: its id is the path, or `areas` for more
+paths. `--box W,S,E,N` defines a `box` region with the id `box`. Another flag keeps the copy, so a
+change of `data/regions/` does not change a target. A change of `refresh` alone changes the
+release, and bakes nothing.
 
 ### `data/regions/<id>.toml`
 
-Shipped presets use `data/regions/`. Created definitions use `regions/` in the store.
-One file holds one region. Its id is the relative file path without `.toml`.
-Stored definitions override presets of the same id. Live plans use the captured definitions.
-Each part of the id is lowercase kebab-case.
+The presets are in `data/regions/`. One file holds one region. Its id is the relative file path
+without `.toml`. Each part of the id is lowercase kebab-case.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -128,8 +121,7 @@ Each part of the id is lowercase kebab-case.
 | `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE`. The first is the country of a place outside each country polygon |
 | `time_zone` | string | The IANA time zone of the region, such as `Europe/Berlin` |
 
-The planner needs `countries` and `time_zone`. An edit that selects a region without them fails
-before a fetch.
+The planner reads `countries` and `time_zone` (see [`planner`](#planner)).
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -137,21 +129,13 @@ through these ranges: a latitude-first box is refused only when one of its longi
 outside −90…90.
 
 A `geofabrik` region selects source paths such as `europe/germany/baden-wuerttemberg`.
-Its saved id is independent of those paths. Creation writes one store definition and no child files.
-Source paths use the same id syntax. An empty selection is refused. Polygon-file regions are refused.
-A union resolves to the regions in it that are not unions. A union that contains itself,
-or names a region that does not exist, is refused. Unions can be read but not created through the API.
+Its id is independent of those paths. An empty selection is refused. A union resolves to the
+regions in it that are not unions. A union that contains itself, or names a region that does not
+exist, is refused.
 
-Creation requires countries and an explicit IANA time zone. Selected source areas derive country
-codes from the cached index or its parents. `--country` supplies missing metadata; boxes require
-it. The offline Python runtime validates the time zone with `ZoneInfo`. Listing does not need Python.
-Area search reads the newest cached public index and verifies its object hash and size. It does
-not fetch the index. Suggestions expose names, paths, countries and bounds, without polygon data.
-
-Deletion of a stored definition previews its SHA-256 and references. Shipped presets are read-only. An environment, fixture, planner
-recipe or another region that names it prevents deletion. `--apply --expected SHA` must match
-the preview. References and the definition are checked again after confirmation. Deletion removes
-only the definition; source snapshots, releases and baked files stay. Creation and deletion never commit.
+`obc data areas [QUERY]` searches the regions of `data/regions/` and the names and paths of the
+newest Geofabrik index in the store. It verifies the object of the index and fetches nothing.
+Its output gives names, paths, countries and bounds, without polygons.
 
 The bakes read this directory:
 
@@ -159,7 +143,7 @@ The bakes read this directory:
 | --- | --- |
 | `obc-bake` (device maps) | Single-area definitions whose saved id equals the source path. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
 | Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
-| `obc data`, product `planner` | A single-area definition, its `countries` and its `time_zone` |
+| `obc data`, product `planner` | A region, its `countries` and its `time_zone` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
@@ -179,37 +163,28 @@ The options of the [planner layers](#planner) that are the same for each region.
 
 ## State of a source
 
-`obc data sources` discovers the active acquisition requests from the current product step lists.
-Discovery can read small region metadata. It does not fetch bulk inputs. A held capture input is
-provenance, not an active acquisition request. Request identity is the source id and sorted
-`NAME=VALUE` pairs. The source row reports the least request state in the state order.
+A fetch is a source id with its sorted `NAME=VALUE`s. `obc data sources` gives, for each target
+that serves a release, the policy of each source and the state of each fetch that the release
+reads. The source has the least state of its fetches, in the order of this table. `obc data` and
+`obc data update` judge the fetches that the step lists read now in the same way.
 
 | State | When |
 | --- | --- |
-| `blocked` | A `data` or `asset` source has no `licence`, an active request has conflicting live versions, or a due request has no successful upstream result |
-| `stale` | An active date request is older than its maximum data age and upstream names a later version, or the request is an on-demand capture. Or its live version is before the live version of the source that `fetch.from` names |
-| `unused` | Live is known, and no live layer and no active request reads the source |
-| `ok` | Otherwise. A request without a live version is never stale. A `manual` source is never stale by age |
+| `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture. Or its version is before the serving version of the source that `fetch.from` names |
+| `unused` | The serving release reads no fetch of the source |
+| `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source is never stale by age |
 
-Data age is the number of days from the live version date to today (UTC). A request is due only
-when its age is greater than `refresh`. An unchanged successful check does not change data age:
-the request stays due, but its state is `ok` until a later check finds a newer version. Probe
-cache age is separate from data age.
+Data age is the number of days from the serving version to today (UTC). A fetch is due only when
+its age is greater than `refresh`. An unchanged successful check does not change data age: the
+fetch stays due, but its state is `ok` until a later check finds a newer version. Probe cache
+age is separate from data age.
 
-Each request reports its params, live version, due flag, state, age and upstream observation.
-The observation reports the result, the latest probe time and the last successful probe time
-and version. A failed probe keeps the last success. A capture result has no probe time: current
-capture policy is not evidence of a network check. The source row reports missing credentials,
-but credentials block only a selected new fetch. Verified local bytes or retained copies need
-no upstream credential. The live column also lists held versions for provenance.
-
-`versions SOURCE` reports the active request params, Live pin, stored request record versions
-and current upstream result. Its common versions are the intersection of these known versions
-across all active requests. Stored records do not prove that their object bytes remain present.
-The newest-per-request choice needs a successful current version observation for every request.
-Unavailable observations remain in the report. Held provenance is not an active move target.
-A `--move` keeps its source-wide intent until Plan resolves the exact reads; only the reviewed
-plan admits a build or apply.
+Each fetch gives its params, serving version, state, reason, age and upstream observation. The
+observation gives the result, the latest probe time and the last successful probe time and
+version. A failed probe keeps the last success. A capture result has no probe time: the capture
+policy is not evidence of a network check. The source row gives missing credentials, but a
+credential blocks only a new fetch.
 
 ## Store
 
@@ -217,13 +192,10 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 | Path | Holds |
 | --- | --- |
-| `layout` | The layout number of the store, `1`, and a line end |
-| `settings/pending.json`, `settings/applied.json` | Pending and last observed applied Live settings |
-| `regions/<id>.toml` | Saved region definitions |
+| `layout` | The layout number of the store, `2`, and a line end |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
-| `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
@@ -233,9 +205,10 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 Rules:
 
 - `obc data` refuses a store whose `layout` is missing or holds another number. An empty or new
-  store directory gets `layout`. For a store without it, the fix removes `layers/`, `releases/`,
-  `runs/`, `operations/`, `code/`, `producers/` and `local/`, which hold records of an older
-  format, and writes `layout`. Snapshot records and objects stay.
+  store directory gets `layout`. For a store without it or with `1`, the fix removes `layers/`,
+  `releases/`, `runs/`, `operations/`, `settings/`, `regions/`, `code/`, `producers/` and
+  `local/`, which hold records of an older format, and writes `layout`. A receipt of layout 1
+  names the input kind `layer`: a clean cannot read it. Snapshot records and objects stay.
 - An object is complete. A download goes to `partial/` and moves into `objects/` with one
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
@@ -272,16 +245,17 @@ also in the size of `partial/`, it deletes nothing. A receipt that the command c
 as one that a newer `obc data` wrote, stops the collection. For reuse, such a receipt is absent and
 its step builds again.
 
-The collection deletes what no live release or fixture reaches. Its roots are the live
-releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
+The collection deletes what no release of a target or fixture reaches. Its roots are the serving
+release and the rollback of each target (see [Targets](#targets)), the files of the checkout that
+it runs in, and the store:
 
-- A snapshot record is reached when a layer of a live release read its source and version. The
+- A snapshot record is reached when an output of a root release read its source and version. The
   newest record of each source, by the latest `retrieved` of its files, is also reached: a plan
-  reads it when nothing else names a version (see [Versions](#versions)), and a source whose
+  step list reads it when nothing else names a version (see [Versions](#versions)), and a source whose
   upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
   latest `retrieved` of its files, such as the extract of each Geofabrik area.
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
+  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
   planner region recipe in `tools/planner-regions/`.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a step input
@@ -289,15 +263,15 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   `files` of the input, or all files when it names none.
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
-reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
+reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
 and `newest of a request`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
-`live release`, `fixture` or `planner recipe`. The size of
+`release`, `fixture` or `planner recipe`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
-takes the store lock alone, or refuses to start while a mutating run or fetch holds it. A writer run holds it through verification and
-publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
-that is not reached, and empties `partial/`. Receipts, release manifests and upstream checks stay. A
-clean that cannot read live deletes nothing.
+takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
+until it finishes. A collection deletes each snapshot record and each object that is not reached,
+and empties `partial/`. Receipts and upstream checks stay. A clean that cannot read a target
+deletes nothing.
 
 ## Fetch
 
@@ -469,7 +443,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun` | The step of the same name and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
-| `planner/index` | `planner/fonts/grid`, `planner/index` |
+| `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
 
 A step declares:
 
@@ -599,22 +573,13 @@ looks at the steps in dependency order:
 
 A group is one change. Two builds are in the same group when one reads the layer of the other.
 Thus a run of one group never needs a build of another group. Two groups can need the same
-fetch. An `id` names a group only in the plan that it comes from. A plan of `live` has one group
-per layer that changes instead: see [Changes of live](#changes-of-live).
-
-`--only LAYER,…` names layers. The plan then has one group, with the cause `named`. Each step
-of the named layers builds again, also when the store has its key, and its receipt replaces the
-stored one. Each step that reads such a step, at any depth, builds when its key changes, and else
-reuses its layer. Each step has one build, and a step that reads a step that builds again has no
-`key` until the run. The group also builds the layers that they read and the store lacks.
-`--only` takes no `--move`, and a plan of `live` refuses it. A layer that no step makes is a usage
-error; a layer whose steps cannot be planned is `blocked`.
+fetch. An `id` names a group only in the plan that it comes from.
 
 | Key | Value |
 | --- | --- |
-| `id` | The step of the first build of the group, in dependency order; the layer for a group of `live`; the named layers, joined by `,`, for `--only` |
-| `cause` | `null`. A plan of `live` or `--only` gives the cause |
-| `layers`, `drops` | `[]`. A plan of `live` or `--only` gives the steps that the group changes, as `builds` gives them, and the live steps that the release no longer has |
+| `id` | The step of the first build of the group, in dependency order. For an update: the layer, or the layers that `--only` names, joined by `,` |
+| `cause` | `null`. For an update: `{"kind": "stale", "cause"}` with the [cause of the layer](#state-of-a-layer), `{"kind": "off"}` for a layer that no step makes now, or `{"kind": "named"}` for `--only` |
+| `layers`, `drops` | `[]`. For an update: the steps that the group changes, as `builds` gives them, and the steps of the serving release that the new release no longer has |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
 | `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, and `again`: whether the step builds also when the store has its key |
 
@@ -626,45 +591,13 @@ another version that lists them all, the last in byte order. Without `files`, th
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
 fetches a version with the same `params` once, with the files of every group that needs it.
 
-Ordinary `plan` and `status` may fetch Geofabrik polygons, the Geofabrik index and the GLO-30 tile
-list. They MUST NOT prepare bulk inputs, including with explicit `--move`. An unresolved graph
-sets `needs_prepare`. Explicit `prepare` owns downloads and returns a reviewable `.plan`. A build
-uses the normal fetcher.
-
-### Changes of live
-
-A plan of `live` judges each layer of the steps against the layers of the live releases (see
-[Live](#live)), as [State of a layer](#state-of-a-layer) says. It has one group per layer that
-changes:
-
-| `cause.kind` | `id` | The steps that it changes |
-| --- | --- | --- |
-| `stale` | The layer | The steps of the stale layer that differ from their live layers. `cause` is the cause of the layer |
-| `off` | The layer | None. `drops` are the live steps of a layer that no step makes now |
-| `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
-| `pointer` | `pointer:PRODUCT` | None. The desired client document or release id differs without a layer change. `release` is its desired id; `document` is the SHA-256 of its compact JSON with sorted keys |
-
-`layers` of a group are the steps that it changes, in dependency order, each with its `recipe` and
-`key` as in `builds`. A stale layer also drops its live steps that no step makes now. The
-`fetches` and `builds` of a group make its `layers` and the layers that they read, when the store
-lacks them. Those of `repair` make the unchanged layers of its keys that the store lacks. Groups
-come in dependency order of their layers, then the `off` groups, `repair` and `pointer`. Two
-groups can need the same build.
-
-A plan of `live` takes every group: git holds what live contains, so a change of a version cannot
-stay out. A stale source moves, as [Versions](#versions) says. A plan of `live` refuses `--only`:
-build `local` with it.
-
-The release of a product after a plan is its live release with the `layers` of the groups in place
-of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
-environment (`Release::compose`). A product that no group or edit changes keeps its release.
-
 ### Device-map publication
 
 The `device/catalog` step consumes selected layer paths and their receipt metadata. Map and terrain
 layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
-and `terrain/` payloads are client files. The catalog layer publishes pinned satellites from
-`objects/`. Named schema, terrain, licence and region files remain release metadata. The
+and `terrain/` payloads are client files. Every file of the catalog layer is a client file: the
+pinned satellites in `objects/`, which it names `/objects/<sha256>`, and the root `catalog.json`
+with the schema, terrain, licence and region files, which are the named files of the device. The
 option `credits` holds the OSM source entry and the credits of GLO-30 and of the landmark
 articles, from `data/sources.toml`, so that a credit edit changes the key.
 
@@ -672,22 +605,20 @@ The catalog selects only Geofabrik picks whose complete band and terrain coverag
 A saved Box or multi-area definition has its own complete catalog pick. Source polygons determine
 which edge cells are partial. Missing required map, terrain or article layers block the catalog;
 a terrain-only release cannot publish.
-Before apply, the product compares picks with the previous release and assembles changed picks
-with the real assembler. The production reader verifies each result. Missing inputs and invalid
-artifacts fail verification before upload. An unchanged pick can reuse prior verification.
+Before a target serves a release, the product compares picks with the serving release and
+assembles changed picks with the real assembler. The production reader verifies each result.
+Missing inputs and invalid artifacts fail verification before the target changes. An unchanged
+pick can reuse prior verification.
 
 ### Runs
 
-A mutating preparation, build or apply owns one run. It starts after argument and consent
-preconditions, before authorized input preparation. The caller finishes it once, after its
-last phase. An apply keeps the run through release verification, upload, pointer switches,
-the retention wait and cleanup. A repair with no layer builds still has a run. A read-only
-plan creates none. A failure after the run starts returns its id in `error.run`.
+An update owns one run. It starts after the arguments are checked, and finishes after the switch.
+A read-only command creates none. A failure after the run starts returns its id in `error.run`.
 
 A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
 Then it builds the builds of the plan. A layer that a planned step reads, and that the plan does
-not build, must be in the store. A planned key that is not the key of the step now fails the run
-with "the plan is outdated; plan again".
+not build, must be in the store or kept by reference. A planned key that is not the key of the
+step now fails the run.
 
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
@@ -696,22 +627,20 @@ with "the plan is outdated; plan again".
   same time is not more than the physical memory of the machine. A step without an estimated
   peak counts as the whole memory. A step whose estimate is more than the memory runs alone.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
-  that run finish. The layers that the run built stay in the store, so the next plan does not
-  list them: a new run continues after the failed step.
+  that run finish. The layers that the run built stay in the store, so the next update reuses
+  them: it continues after the failed step.
 
 The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
 another run has that id. The process that holds the lock `run-<id>` is the process that runs the
-run. A run without a `finished` event whose lock is free has failed. A command that gets
-`--detach` must start a child process that creates the run and gives its id back; no command has
-`--detach` yet.
+run. A run without a `finished` event whose lock is free has failed.
 
 `runs/<id>.jsonl` has one JSON object per line. The key `event` gives its kind:
 
 | `event` | Keys |
 | --- | --- |
 | `started` | `command`, and `at` (`YYYY-MM-DDTHH:MM:SSZ`) |
-| `phase` | `phase`: `prepare`, `build`, `verify`, `upload`, `switch`, `wait` or `cleanup` |
-| `published` | `mutation`: an acknowledged upload key, product and release switch, or removed key and size |
+| `phase` | `phase`: `prepare`, `build`, `verify`, `upload` or `switch` |
+| `published` | `mutation`: `{"kind": "switched", "release"}` after the switch of the target |
 | `fetch_started` | `source`, `version` and `params` |
 | `fetch_finished` | `source`, `version`, `params`, `resolved` (the acquired version), `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
 | `fetch_failed` | `source`, `version`, `params` and `error` |
@@ -720,146 +649,77 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 | `step_failed` | `step` and `error` |
 | `finished` | `ok`, `error` (`null` when `ok`) and `wall_ms` |
 
-A discovery fetch without a pin uses `newest` as its request version. Its finished event
-records the acquired version separately. `runs RUN` gives the last phase and acknowledged
-remote writes, also after a later phase fails. An acknowledged write is not proof that later
-verification passes. An interrupted write can have an unknown remote outcome; the next apply
-uploads what R2 still lacks.
+A fetch without a version uses `newest` as its request version. Its finished event records the
+acquired version separately. `runs RUN` gives the last phase, also after a later phase fails.
 
 ### Versions
 
-A step list gets the version of each fetch that it reads, a source with its `NAME=VALUE`s, from
-one function (`obc_data::product::version`), in this order:
+A step list gets the version of each fetch that it reads from one function
+(`obc_data::product::version`), by three rules:
 
-1. `--move SOURCE@VERSION` of the plan or the build. `--move SOURCE` without a version is the
-   newest version upstream. A `--move` of a source that no step list reads is refused.
-2. For the environment `live`, the version that the live releases read for the fetch. A fetch
-   without `NAME=VALUE`s of a source that live reads only with them, such as the GLO-30 tiles that
-   one version names, reads the version of all of them. A fetch with `NAME=VALUE`s that live does
-   not read, such as the extract of a new region, goes on to step 3. When the live layers read one
-   fetch at two versions, no order of versions chooses: a step list that reads it without a
-   `--move` fails the command with `blocked` and the fix `Plan with --move SOURCE@VERSION`, and
-   `status` shows the source as blocked. Another environment has no live release.
-3. The `start` of the source, when live reads no version of the fetch.
-4. The newest version of the fetch in the store.
-5. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
-   source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a
-   fetch of it without that value fails with `usage` and the fix `Plan with --move
-   SOURCE@VERSION`.
+1. A due fetch reads the newest version upstream, and the update uses that version until it ends.
+2. Otherwise the fetch reads the newest version that the machine knows: the newest of the serving
+   version, the versions of the fetch in the store and the `start` of the source. The serving
+   version of a fetch without `NAME=VALUE`s, or of any fetch of a source with a `start`, is the
+   newest serving version of the source: one version names all its fetches, such as the GLO-30
+   tiles of every region, or the extract of a new area.
+3. Otherwise it reads the newest version upstream: the product names the fetch, and the update
+   fetches it. A source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest
+   version: a fetch of it without that value fails with `failed`, and the fix names the code of the
+   product.
 
-A plan or a build of `live` without `--plan` first discovers active requests with metadata-only
-preparation. It selects each stale active request (see [State of a source](#state-of-a-source))
-using its own upstream observation of the last hour. Other requests keep their live versions.
-The layers that read it are stale with the cause `source`. A held input, an unused source and a `manual`
-source do not move this way. A stale capture requires an explicit move for its collection.
+A `date` or a `release` version is newer by its parts: a run of digits by its number, any other
+run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
+and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
+its `start`, so that a change of `data/sources.toml` moves it; else the serving version; else the
+one version in the store, when the store has exactly one. So an update after an update that
+changed nothing reads the same versions.
 
-A source with `refresh = "manual"` is never stale: after its first version it moves only with
-`--move`. Before the first apply, nothing is live, so a plan takes the `start` of each source, and
-else the versions of the store and of upstream. The fetch of a
-`--move SOURCE` resolves each normalized request independently. `--move SOURCE@VERSION` fixes
-that version for all requests of the source. Fetches never mutate source move intent. A saved
-plan records both the intent and each exact resolved request version. Upstream can
-stop serving an old version, such as a Geofabrik extract of an earlier day: when the fetch of a
-version that live reads fails, the fix names `--move SOURCE`.
+Before it lists the steps, an update finds the fetches that the step lists read, with only small
+metadata fetched (see [Products](#products)). It judges each of them, as
+[State of a source](#state-of-a-source) says, with the policies of the target. A stale fetch is
+due. A `manual` source is never due: a step list reads a newer version of it only when the store
+has one. In one update, a fetch of a `manual` source without a version takes the version of the
+first fetch of that source.
 
 ### Products
 
-A product is a set of steps that makes one release, such as `planner` or `device`. The
+A product is a set of steps that makes part of a release, such as `planner` or `device`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
-commands without products, for scripts that use R2. Each step name starts with `<product>/`,
-and the release of that product holds the step. A product can list a step of another product,
-such as the landmark content that the planner search reads; both products declare it the same.
+commands without products, for scripts that use R2. Each step name starts with `<product>/`. A
+product can list a step of another product, such as the landmark content that the planner search
+reads; both products declare it the same.
 
-A product gives its steps for an environment, its regions and the store. When the step list
-depends on a snapshot that the store does not have, such as the `.poly` of a region, the product
-names those fetches instead. `plan` and `build` fetch them and then ask the product again, as
-long as each round names only new fetches: a fetched file can name the next fetch, such as the
-`.poly` that gives the box of a capture. A fetch that fails, fails the command with its own code,
-`fetch_failed` or `blocked`. A product that names a fetch it named before, that still names
-fetches after 8 rounds, a step name without the name of a product, or a step that differs from
-the same step of another product, fails the command with `failed` and a fix that points at the
-code of the product. A product that has no steps for the
-environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
-`blocked` with the reason, and the other products plan without it. `build` builds the groups of
-the other products and writes no release of a blocked product. When no product suits the
-environment, `build` fails with `blocked`. An error of the store, a file or the data of a fetch
-in a step list fails the command with `failed`.
+A product gives its steps for the settings of a target, the versions of [Versions](#versions),
+its regions and the store. When the step list depends on a snapshot that the store does not have,
+such as the `.poly` of a region, the product names those fetches instead. The command fetches them
+and then asks the product again, as long as each round names only new fetches: a fetched file can
+name the next fetch. A fetch that fails, fails the command with its own code, `fetch_failed` or
+`blocked`. A product that names a fetch it named before, that still names fetches after 8 rounds,
+a step name without the name of a product, or a step that differs from the same step of another
+product, fails the command with `failed` and a fix that points at the code of the product. A
+product that has no steps for the settings, such as for a kind of region that it does not read, is
+blocked. An error of the store, a file or the data of a fetch in a step list fails the command with
+`failed`.
 
-A product returns usable steps and blocked layers together. Each blocked layer has `layer`
-and `reason`. A plan reports an incomplete product in `blocked`, with these rows in `layers`.
-An empty `layers` list means that the whole product is blocked. Independent steps still plan
-and build. A build with required blocked layers exits with `blocked` after usable work. It
-writes no complete release for that product. An apply with these blockers fails before it
-uploads, switches, or removes objects. A failed explicit capture fetch blocks its content and
-artifacts; other map layers keep their steps. Status shows these layers as `blocked`, with the
-reason in attention. Status fetches only small discovery files: Geofabrik outlines and the
-GLO-30 tile list. An absent bulk input gives a not-prepared reason and unknown product layers.
+A product returns usable steps and blocked layers together. Each blocked layer has `step`,
+`layer` and `reason`. An update with a blocked layer fails with `blocked` before it bakes. A
+failed capture fetch blocks its content and artifacts; other map layers keep their steps. `obc
+data` lists blocked layers with the reason. A read-only command fetches only small metadata: the
+Geofabrik polygons, the Geofabrik index and the GLO-30 tile list. Another fetch that it needs
+blocks the product with the fix `obc data update TARGET`.
 
-A product also gives what clients read of a release: its pointer document, and the files that a
-client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
-out a product without them: it is in `blocked` with the reason "no client document yet", and its
-live release stays. Maps gives a catalog and checks changed selections with the production
-assembler and reader. Planner verifies stored grid and runtime artifacts. Its service activation
-remains blocked. A product checks a release before an apply makes it live.
+A product also gives what clients read of a release: its pointer, which is one of the two pointer
+keys with the client file of a step that a client reads there, and its named files, the client
+files that a client finds by path. A product checks a release before a target serves it. The
+device checks changed selections with the production assembler and reader. The planner verifies
+stored grid and runtime artifacts.
 
 Each step selects the files that clients read: the device, the web planner or a service on the
-VPS. Other files are intermediate: only other layers read them. R2 holds only selected files
-(see [Releases](#releases)). The selection changes the recipe and the release, but not the layer
-key: a change in selection reuses the same bytes.
-
-`plan ENV` plans the steps of every product together. It prepares no bulk inputs, also with
-`--move`. Small discovery metadata uses the status allowlist. `needs_prepare` is true when
-input discovery cannot resolve the graph. Blocked readiness alone does not set it. The
-blocked reason names the unavailable input or credential.
-
-`prepare ENV` explicitly acquires inputs that discovery needs. It builds no layers and uploads
-nothing. Its JSON is `{run, plan}`. Review and save the nested `plan` object for replay.
-Missing credentials or an upstream failure keep their actionable error and the run id.
-
-`--json` writes the plan with `env`,
-`region` and `layers` of the environment, `settings` (the complete Live settings, or `null`), `moves`, the version of each source that the plan moves
-(a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
-the step lists read, and `only`, the layers that `--only` names. A plan
-of `live` also has:
-
-- `live`: per product, the id of its live release, or `null` when nothing is live, and `pointer`,
-  the SHA-256 of its actual client document with sorted keys. The comparison excludes only
-  `release` and `applied`. `observed` is the SHA-256 of the exact original pointer bytes,
-  including publication fields, or `null` after a successful absent read. Read failures give no plan.
-- `edits`: per product, `region` with `from` (the region of the live release, or `null` when
-  nothing is live) and `to`, and `layers` with the optional layers that the environment switches
-  `on` and `off`; `settings` marks a definition or policy change with no selection change.
-- `missing_credentials`: notices for credential files or variables that selected layers can
-  need for new acquisition. These appear even before bulk discovery. They do not block use of
-  verified cached inputs and do not enter replay identity.
-- `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: the
-  [leftovers](#live) once the releases after the plan are live, files first and manifests last.
-  A layer that the store lacks counts without its objects, because its new objects are not known
-  yet; an apply keeps an object that a new release uses.
-- `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
-  `repair` group and `remove` is empty.
-
-Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
-
-`build ENV --plan FILE` builds the groups of that file; it takes no `--only` and no `--move`. Its
-step lists read the `versions` of the file and no other version, and it moves the sources of
-`moves`. A version that the store lacks is fetched; when that
-fetch fails, the command fails with its code, and a fix that says to plan again when the fetch
-gives none. It refuses the file, with exit status 3, before it builds:
-
-- when `needs_prepare` is true, before any preparation fetch; prepare and review a new plan;
-- when `env`, `region`, `layers`, `settings`, `blocked`, `live` or `edits` differ from the environment, its
-  products and live now;
-- when a step list reads a fetch that `versions` does not name;
-- when the groups of the plan of now differ from the groups of the file, apart from `estimate`
-  and `bytes`. Against live, the groups must change the same layers, by
-  recipe, with the same causes and drops, whatever the store has: a second build of one plan does
-  the same work.
-
-When the store has the layer of every step of a product after the run, `build` writes the
-release of that product. A build of `live` writes the release of each product that its groups or
-edits change, as [Changes of live](#changes-of-live) composes it.
+VPS. Other files are intermediate: only other layers read them. A target holds only selected
+files (see [Targets](#targets)). A change of the selection makes the layer stale with the cause
+`input` `options`, and reuses the bytes of its key.
 
 #### `device`
 
@@ -886,8 +746,8 @@ this is a union of available snapshots, not a snapshot at one common date. Confl
 at the same object type, id and version are malformed OSM inputs.
 
 The merge and the map crop run the Osmium of `OBC_OSMIUM`, or else `osmium` on the `PATH`.
-Without it, a plan blocks their layers and asks to prepare Osmium or set `OBC_OSMIUM`.
-Plans probe local tooling only; they do not download or install it.
+Without it, an update blocks their layers and asks to install Osmium or set `OBC_OSMIUM`. It does
+not download or install a tool.
 
 The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
 reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -916,24 +776,12 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
-A capture keeps its params while no source of the capture moves: the step list reads the capture
-of the region that the saved plan or live reads, or else the newest capture of the region in the
-store. A new extract alone therefore asks for no new capture. Ordinary preparation fetches a
-missing capture. Policy refresh selects one new version for the stale capture bundle: Wikidata, Wikipedia and
-Commons keep matching manifest, article and image bytes. Other areas and collections keep
-their versions. The bundle retains its capture params. A saved plan replays those exact params. Status and ordinary plans do not
-start bulk captures. A capture that moves explicitly reads the extract and the `.poly` of now.
-Missing held capture inputs remain blocked; retained-copy failure never selects replacement data. `code=` is the revision of the code that makes the boundary and the
-candidates or the summits (`obc_pack::step::CAPTURE_REVISION`). A change that gives them other
-output increases it, so `--move wikidata` after that change asks for a new capture.
-A held request keeps its original `code=`. Its selection is
-provisional until the offline content step reconstructs the boundary and candidates or summits
-and checks their full SHA-256 pins. A mismatch fails before content output or a receipt.
+The content of a collection reads the [shared Wikimedia content](wikimedia-content.md) of the
+identities that the extract and the `.poly` of its area name, and that extract and `.poly`. The
+step makes the boundary and the candidates or the summits again from them, offline.
 
 A single-area definition keeps the unsuffixed content layer names. Other definitions have one
-content layer per collection and source area. A selection edit can retain a capture when its
-collection, exact area and pinned inputs match unambiguous live request metadata. It never
-chooses held inputs by a layer name suffix alone. Article inputs keep separate file views;
+content layer per collection and source area. Article inputs keep separate file views;
 canonical content merge rules deduplicate overlaps without losing unique articles.
 
 `device/source/<area>`, `device/region-osm`, `device/osm`, `device/reference/<i>-<j>` and all content
@@ -941,8 +789,9 @@ layers are private intermediates. Their complete records stay in release provena
 
 #### `planner`
 
-The planner accepts a definition that names its `countries` and `time_zone`. It uses the shared
-source selection above. Its bounds enclose the requested Box or union of selected outlines.
+The planner reads the `countries` of the region, or else the countries of its source areas in
+the Geofabrik index, sorted; a region without countries is blocked. It reads the `time_zone` of the
+region, or else `UTC`. It uses the shared source selection above. Its bounds enclose the requested Box or union of selected outlines.
 Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
 at its version (see [Versions](#versions)), as for `device`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
@@ -973,15 +822,15 @@ It converts terrain MBTiles with the pinned Python PMTiles library. Each tile go
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
 stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
 as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
-The step writes the packed bytes in `objects/<transport sha256>` and selects only `objects`
-for clients. Its local `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`, `source`
-and `metadata`. `files` maps logical names to source and transport hashes, sizes and encoding.
+The step writes the packed bytes in `objects/<transport sha256>`, and selects `objects` and
+`index.json` for clients. Its `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`,
+`source` and `metadata`. `files` maps logical names to source and transport hashes, sizes and encoding.
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
-names it. The search and the sun layer use the `time_zone` of the region. All producers are
-intermediate layers. Grid steps select only their `objects/`; their `index.json` stays local.
+`climate`, `snow` and `sun` are optional layers: a step only when `layers` of the settings
+names it. All producers are intermediate layers. Grid steps select their `objects/` and their
+`index.json`.
 
 | Layer | Reads | Files |
 | --- | --- | --- |
@@ -990,12 +839,15 @@ intermediate layers. Grid steps select only their `objects/`; their `index.json`
 | `planner/assets/grid`, `planner/model/grid` | `planner/assets` or `planner/model` | The input files, packed as `maps/assets/` or `search/model/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap`, `basemap.pmtiles`; `planner/places`, `places.pmtiles`; `planner/routing`, `routing/overlays.sqlite`; `planner/assets` | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
+| `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
 The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
 package and changes its TileJSON `routing_package` to the grid package hash. The final index
 checks the OSM source, region, coverage, search schema and time zone, routing cell bounds, terrain
 inputs and sun terrain identity. It reads no payload to compose metadata. A climate change builds
-only its producer, its grid and the final index. The engine release manifest holds source versions
+only its producer, its grid, the final index and the pointer. The named files of the planner are
+`release.json` and `public/` of `planner/index`, and the `index.json` of each grid step at
+`indexes/<step>/index.json`. The engine release manifest holds source versions
 and preparation provenance; the client manifest holds the [planner release](planner-release.md)
 data. It contains no deployment probe, device catalogue snapshot or source mirror.
 
@@ -1008,25 +860,14 @@ of a set out of the bytes. A credit that it writes comes in its options.
 
 `data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
 of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`
-and `objects_origin`. The shared pool is `<objects_origin>/planner/objects`.
-Tile URLs keep the tile Worker origin.
+and `objects_origin`. The shared pool is `<objects_origin>/objects`.
+Tile URLs keep the tile Worker origin, which reads `releases/<id>/public/` and `objects/` of
+the bucket.
 
 The pointer names routing, search and downloads under
-`<api_origin>/planner-api/releases/<release>/SERVICE`. Its `device_catalog` names
-`<objects_origin>/cell-catalog/catalog.json`.
-
-An apply sends an archive of the pushed commit and the release's service objects to the
-VPS. It builds the routing executable and installs the locked search dependencies there.
-It then stops the services, materializes routing, search and offline data, installs the
-units and routes, starts the services and probes them. Service files are world-readable
-for `DynamicUser`. A short outage is allowed. Old release routes are removed before the
-new services start. Both legacy routing and search slots and the legacy downloads unit
-are stopped during takeover. The old service directories stay on disk.
-
-Local and public probes must confirm the routing package hash, search region, grid and
-model hashes, and offline catalog hash before any product pointer switches. A failed
-installation or probe leaves the catalog pointers unchanged. Services can remain stopped
-or changed. The apply checks the reviewed pointers again after installation.
+`<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
+`<objects_origin>/releases/<id>/release.json`. Its `device_catalog` names
+`<objects_origin>/cell-catalog/catalog.json`. `obc data` does not install the services.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
@@ -1037,47 +878,15 @@ A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap,
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
 byte order.
 
-### Releases
-
-`releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers", "named", "settings"}`, as the compact output of `serde_json` with the keys of each object in byte order.
-`settings` holds the complete reviewed Live settings and is absent for a Local build.
-`region` is the region of the environment that it was built for, and `optional` the optional layers
-of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
-the same layers make the same release. `layers` is sorted by `step`, and each layer has:
-
-| Key | Meaning |
-| --- | --- |
-| `layer`, `step`, `format`, `revision`, `key`, `inputs`, `options`, `digest`, `files` | As in the [receipt](#receipt) |
-| `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE` of each snapshot that the layer read |
-| `client` | The selected client outputs, as in the step (see [Products](#products)) |
-
-`named` holds the exact files under `<prefix>/releases/<id>/`. Each entry has `path`, `size` and
-`sha256` from a layer receipt. Entries are sorted by path. Paths are relative, use `/`, and have
-no empty, `.` or `..` segment. Duplicate paths are refused. Named file identity is part of the
-release id. The root document is generated after these entries finalize the release.
-
-Drift checks, uploads and removals use these exact paths. A file in a release folder that the
-manifest does not declare is not a key of the release, and an apply never removes it. A missing named file with local receipt bytes needs no
-build or pointer switch. Missing local named objects are restored from their immutable remote
-keys with size and SHA-256 checks. If both copies are absent, the repair builds the owning layer
-and the inputs that it lacks. Existing named metadata with another digest is refused before any
-publication write. A root-only change is actionable without a layer build and still passes the
-product's verification.
-
-The objects of a release are the selected client files, with one object per distinct SHA-256.
-The manifest records every file of every layer, so a plan compares it with live and live names
-the versions that it read. Uploads and removals use the same selection.
-
 ### State of a layer
 
 The engine judges each layer when it is asked, and stores nothing. It compares each step with its
-layer in a release: for `status` and a plan of `live`, the live releases. A layer has one state:
+output in the serving release of the target. A layer has one state:
 
 | State | When |
 | --- | --- |
 | `ok` | The release has each step of the layer as the steps make it now |
-| `off` | No step makes the layer: an optional layer that the environment switches off, or a layer that only the release has |
+| `off` | No step makes the layer: an optional layer that the settings switch off, or a layer that only the release has |
 | `stale` | A build changes the layer |
 
 A stale layer has exactly one of three causes. A change of code, a commit or a compiler is no
@@ -1087,123 +896,14 @@ that is first in byte order:
 
 | `cause.kind` | Fields | `text` | When |
 | --- | --- | --- | --- |
-| `version` | `field` (`format` or `revision`), `from`, `to` | `format 19 → 20: readers need new data`, `revision 2 → 3: improved output`, or `new` | The format or the revision of the layer is not that of a release layer of its steps. `from` is `null`, and the text `new`, when the release has no step of the layer; `field` is then `format` |
-| `source` | `source`, `from`, `to` | `wiki 2026-06-01 → 2026-09-01` | A step reads another version of the source than its release layer. For `status`, also a stale request of the source (see [State of a source](#state-of-a-source)): `to` is the newer version upstream, or `null`, and the text says `newer` |
-| `input` | `name` | `follows device/map`, or `options changed` | A step reads a step of another operator layer that is stale, or whose files in the release are not the files that its release layer read; or the store has other files of a snapshot that it reads, at the same version and `params`. `name` is that layer or source. `name` is `options` when the release has other steps of the layer, or a step with other options, inputs (kind and name), snapshot `params` or `client` |
+| `version` | `field` (`format` or `revision`), `from`, `to` | `format 19 → 20: readers need new data`, `revision 2 → 3: improved output`, or `new` | The format or the revision of the layer is not that of a release output of its steps. `from` is `null`, and the text `new`, when the release has no step of the layer; `field` is then `format` |
+| `source` | `source`, `from`, `to` | `wiki 2026-06-01 → 2026-09-01` | A step reads another version of the source than its release output: a newer version that the store has, or a due fetch (see [Versions](#versions)). `to` is the newer version upstream, or `null` when it has no name, and the text then says `newer` |
+| `input` | `name` | `follows device/map`, or `options changed` | A step reads a step of another operator layer that is stale, or whose files in the release are not the files that its release output read; or the store has other files of a snapshot that it reads, at the same version and `params`. `name` is that layer or source. `name` is `options` when the release has other steps of the layer, or a step with other options, inputs (kind and name), snapshot `params` or `client` |
 
 A step that reads a step of its own layer, or of an internal layer, gets the cause of that step.
-`status` does not list an internal layer: the layers that read it show its cause. In JSON, a
+`obc data` does not list an internal layer: the layers that read it show its cause. In JSON, a
 layer is `{"layer", "state", "cause", "text"}`; `cause` and `text` are `null` unless it is stale.
-
-`status` lists, for each product, each operator layer that its steps make or that its release
-holds, then each optional layer of the product that is off. A step that cannot be planned is not
-judged: `attention` lists its layer as `blocked`, with the step and the reason.
-
-## Live
-
-Live is the release that the pointer of each product names on R2. Each product has one prefix:
-`cell-catalog` for `device`, `planner` for `planner`. The input copies are under `inputs`. Older
-publishers wrote other keys under these prefixes and under `reference/v1`. Only the keys that a
-manifest of `obc data` names belong to `obc data`.
-
-| Key | Holds |
-| --- | --- |
-| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"`, `"applied"`, the time of the switch, and `"commit"`, the pushed commit that the apply ran. A pointer without `release` names no release: nothing is live |
-| `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
-| `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
-| `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
-| `inputs/records/<source>/<version>/<digest>.json` | The immutable record of one exact snapshot read. `digest` is the input digest in the live layer receipt. `files` lists only its selected names, URLs, sizes and SHA-256 values, sorted by name. An empty read has an empty list. Retrieval time stays local. New copies require `redistribute` and `r2_copy`; an existing record of a live read stays without `r2_copy` |
-| `inputs/objects/<sha256>` | A file of an input copy. Immutable |
-
-When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
-reads the pointers, the manifests and the records at `https://maps.openbikecomputer.com/<key>`;
-a listing needs the bucket. A release id is 64 lowercase hex digits. The store keeps each manifest
-that it reads, and uses its copy only while the SHA-256 of the copy is the id and the copy is of
-the product.
-
-Planning reads only copy metadata named by the live manifests, once per immutable key. A build
-restores missing files only for matching source, version and request parameters, or the exact
-file names of its selected step inputs. It checks file digests and sizes before recording a
-snapshot or a request. A complete verified local selection serves even if R2 lacks its record.
-A missing or corrupt named retained copy never starts an upstream capture. Status keeps its
-small-source discovery allowlist: it does not download input objects for other sources.
-
-`status --check` lists the prefix of each product and `inputs`, and compares them with live:
-
-- drift: a key of a live release or of its input copies that R2 does not have, or has with
-  another size. Pointers have no expected size. An available input record gives its canonical size.
-- leftovers: a key that a manifest under `<prefix>/releases/` names, of a release that is not
-  live, and that no live release or input copy uses: the manifest, its named files, its objects,
-  and the records and objects of its input copies. A key that no manifest of `obc data` names is
-  never a leftover.
-
-Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
-first writes the status, and the second writes an error.
-
-### Apply
-
-`apply live` makes the plan of live live. It needs the bucket. One machine applies at a time:
-two machines must not apply at once. The machine that runs it writes R2 in this order:
-
-1. Live publishes from a pushed commit. It refuses unless the checkout has no change that git
-   lacks, and a branch on
-   `origin` holds `HEAD`. `status` lists a refusal as `not pushed`. Preparation and Local builds
-   accept working-tree code. Apply does not commit or push.
-2. It asks once in a terminal: "Apply M changes to live and remove N keys, X GB, from R2?", with
-   the groups of the plan and its `remove` keys by prefix. `--yes` does not ask. `--plan FILE`
-   applies that plan; the plan must be the plan of now, as for `build --plan`. Without a terminal,
-   `--yes` or `--plan` is the consent. An unresolved preview is refused before preparation. Use
-   `prepare live`, review the resulting plan and save it before applying. A no-op still returns a
-   finished run.
-3. It builds the plan, as `build live --plan` does.
-4. It verifies each complete release: the check of its product, and its pointer. Each file that
-   it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
-5. It uploads each key of the releases after the apply and of their input copies that R2 lacks, or
-   holds with another size, in one transfer per set of headers; a key with another size goes
-   first. Then it checks the size of each key.
-6. It reads the pointer of each product that changes again. When its SHA-256 is not the
-   `observed` of the plan, it switches nothing. It installs and probes planner services when
-   the planner changes, then checks the reviewed pointers again.
-7. It writes the pointer of each product whose full desired document changes: the document with
-   `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
-   `Cache-Control: public, max-age=60, must-revalidate`. Then it checks the pointer. Before
-   each write, it keeps the old pointer bytes at `runs/<run>/previous/<key>` in the store: a
-   rollback copies that file back to the key. The plan lists each pointer of an older publisher
-   that the apply replaces.
-8. A client that read an old pointer finishes its downloads first. So the apply waits 10 minutes
-   after its own switch, and 12 minutes after the newest `applied` of the pointers before it
-   (10 minutes, and 2 for a clock that differs).
-9. It reads live again. When a pointer is not the one that this apply wrote or reviewed, it removes
-   nothing. Otherwise it removes the [leftovers](#live) that the `remove` list of the plan holds,
-   in three passes: the files and objects, then the input-copy records, then the release
-   manifests. A pass starts only after the pass before it succeeded. Each pass deletes 1000 keys
-   per call, with one write of `removed.jsonl` per call.
-
-An apply never removes a key that its reviewed plan did not list. A record on R2 of a version that
-live reads stays, also when `r2_copy` of its source is off now.
-
-A failure before step 7 leaves the catalog pointers unchanged. Service installation can cause an outage. A new plan uploads only what R2 still lacks.
-A stop takes effect before the upload, before the switch and during the wait. A removal that
-stops or fails keeps every manifest and record that names a remaining key, so the next apply
-finds and removes the rest. The objects, manifests and named files are immutable,
-with `Cache-Control: public, max-age=31536000, immutable`.
-
-### Detached operations
-
-Manual `prepare`, `build` and `apply` return `{run, request}`. `request` is the SHA-256 of the
-immutable request. A retained copy of the `obc data` binary owns the run after the caller leaves.
-One environment on one host/store admits one operation, with no waiting queue. The copy runs in
-its own session with private logs. Credential values are not copied into arguments, events or control records.
-
-`operations/<run>/control.json` binds kind, environment, selection, moves, any saved plan's exact
-bytes, root and the SHA-256 of the retained copy. State is reserved, running, stopping, stopped or
-finished. Stop invalidates a reserved child. It drains admitted work and starts no next fetch,
-step or apply phase. Completion durably pins `result.json` by size and SHA before recording
-finished. A finished, drained operation removes its copy.
-
-`runs` reads computed observations. Result reads verify their sealed bytes. The shared run view
-includes `logs`, the bounded tail of the stderr of the copy. A missing log yields an empty list. A read
-failure appears in `observation_error` and preserves the run state.
+A step that cannot be planned is not judged: `blocked` lists it with its layer and the reason.
 
 ## Targets
 
@@ -1237,10 +937,8 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
-source that we may not give to others, and a bucket is public. A machine that needs such an output
-of a kept layer bakes it again from the sources at the versions of the release, with the same key.
-When that bake gives another digest, the output replaces the kept one in the next release, and the
-layers that read it are stale with the cause `input`.
+source that we may not give to others, and a bucket is public. A step that reads such an output
+of a kept layer reads it from the store of the machine.
 
 ### Release manifest
 
@@ -1249,7 +947,7 @@ SHA-256 of these bytes.
 
 | Key | Meaning |
 | --- | --- |
-| `settings` | The settings of the target: `region`, `definitions`, `layers` and `refresh`, as in [Live settings](#live-settings) |
+| `settings` | The [settings of the target](#settings-of-a-target) |
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
@@ -1257,10 +955,17 @@ SHA-256 of these bytes.
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
 An output has `layer`, `step`, `format`, `revision`, `key`, `inputs`, `options`, `digest` and
-`files` as in the [receipt](#receipt), `snapshots` and `client` as in [Releases](#releases), and
-`cost`: the `wall_ms`, `peak_rss_bytes` (`null` when the system does not report it) and
-`bytes_out` of the build that made the receipt. The objects of a release are the client files of
-its outputs, one object per SHA-256.
+`files` as in the [receipt](#receipt), and:
+
+| Key | Meaning |
+| --- | --- |
+| `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE`s of each snapshot that the step read |
+| `client` | The client outputs that the step selects (see [Layers](#layers)) |
+| `cost` | The `wall_ms`, `peak_rss_bytes` (`null` when the system does not report it) and `bytes_out` of the build that made the receipt |
+
+The objects of a release are the client files of its outputs, one object per SHA-256. A release
+names its files exactly: a file in a folder of `releases/` that the manifest does not name is not
+a file of the release.
 
 ### `release.json`
 
@@ -1302,41 +1007,60 @@ compares and writes, and writes through a rename. The tag that it compares is th
 bytes. A key can be a hard link to an object of the store: nothing writes a key or an object in
 place.
 
+Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
+`planner/releases/` and `reference/v1/`. An update never writes or deletes them.
+
+### Update
+
+`obc data update TARGET` makes a target serve its settings as the steps make them now. It writes
+only a `dir` target. One run does each phase in this order:
+
+1. Prepare. It reads the serving release, applies the flags to its settings, and refuses a target
+   without a region. It finds the fetches of the step lists, judges which are due (see
+   [Versions](#versions)), and lists the steps, with the fetches that the step lists need.
+2. Build. It judges each layer against the serving release, as
+   [State of a layer](#state-of-a-layer) says, and bakes one group per stale layer. Each other
+   step keeps its output of the serving release by reference: a step that reads it reads the files
+   of the release, never another layer of the same key in the store. `--only LAYER,…` bakes the
+   steps of the named layers again, also when they are not stale, with the stale steps that they
+   read at any depth and the steps that the release lacks. A step that reads one of them bakes when
+   its key changes. A stale step that the named layers do not need keeps its output.
+3. Verify. The new release has the output of each step, the pointer and the named files of each
+   product. When it serves as the serving release, with the same settings, outputs, pointers and
+   named files, the update changes nothing but a pointer that drifts. Else each product checks it,
+   and a failed check changes nothing.
+4. Upload and switch, as [Publish and switch](#publish-and-switch) says.
+
+An update that stops keeps what it baked in the store, and the next update reuses it.
+
+### Overview
+
+`obc data` gives the machine that runs it and, for each target, the release that it serves and
+its rollback, the region, the state of each layer against the steps of now, the blocked steps,
+the pointers that drift, an error that stopped the judgement, and the command to run next. It
+fetches only small metadata, and checks upstream with the checks of the last hour. A target that
+serves nothing has the next command `obc data update TARGET --region ID`. An R2 target has no next
+command: `obc data update` writes only a `dir` target.
+
 ## Commands
 
 | Command | Output |
 | --- | --- |
-| `obc data [--json]` | The output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, steps that cannot be planned, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
-| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
+| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. Writes the steps that it baked or reused, the release that the target serves, its rollback and the number of kept outputs |
+| `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
-| `obc data policy SOURCE DAYS\|manual [--json]` | Writes the source policy in pending Live settings. A policy in days for a source without `version = "date"` is refused. Writes the source |
-| `obc data region ENV ID [--json]` | Selects the region in pending Live settings or the Local file. Writes the environment |
-| `obc data layer ENV NAME on\|off [--json]` | Enables or disables an optional layer in the environment settings. A layer that no product has is refused. Writes the environment |
-| `obc data undo ENV [--json]` | Restores applied Live settings, including policies; for another environment, restores its committed file. Writes the environment |
+| `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
-| `obc data region [list] [--json]` | Every region with its name and definition |
-| `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
-| `obc data region areas [QUERY] [--json]` | Search cached Geofabrik names and paths. Does not fetch |
-| `obc data region create ID --name NAME (--area PATH… \| --box W,S,E,N) [--country CODE]… --time-zone ZONE [--json]` | Save one definition. Repeat `--area` for each path. Countries derive from the cached index where possible |
-| `obc data region delete ID [--apply --expected SHA [--yes]] [--json]` | Preview references and definition hash, or delete that reviewed, unused definition after confirmation |
-| `obc data plan ENV [--only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
-| `obc data prepare ENV [--only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | Starts durable input preparation. Returns `{run, request}`. Its completed result holds `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
-| `obc data build ENV [--plan FILE \| --only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
-| `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed result lists uploaded, switched and removed keys |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run and its computed operation state and result; fetches and steps retain time, peak RAM, outputs, inputs and layers. Reads change no local history |
-| `obc data runs RUN --follow [--json]` | For detached operations, changed observations until a final result. Other journals stream their events |
-| `obc data runs RUN --stop [--json]` | Drains current work; an apply stops before its next phase |
-| `obc data runs RUN --result` | One completed output. A running run has no result |
+| `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
+| `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
 addition:
 
 - `fetch` lists only the requested files.
-- `region ENV ID`, `layer` and `undo` never commit. Live edits write the store. Other
-  environments keep comments and line endings in their TOML file. A refused edit changes nothing.
 - `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
@@ -1348,12 +1072,12 @@ The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --targ
 `obc bake clean-r2`, `obc r2 rm`, `obc fixtures publish` and the firmware publish workflow.
 rclone moves the bytes. The planner publish, deploy and finalize, and the reference archive
 ingest, still use the remote of `tools/r2.py`. `obc data r2` is plumbing for scripts: those
-commands call it. It does not change the state of a release. `obc bake publish --target r2`, `obc
-bake clean-r2` and the planner publish, deploy and finalize refuse to run when the pointer of
-their prefix has `release`, or is not JSON: after an apply, only an apply changes live. The
-planner deploy reads the pointer from the bucket again just before it writes it. `obc data r2
-put` and `delete` refuse a key under `cell-catalog/` or `planner/` once the pointer of that
-prefix has `release`, and under `inputs/` once any pointer has. `obc data` never writes under
+commands call it. It does not change the state of a release. Once the bucket has the
+`release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
+and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under `objects/`,
+`releases/` or `sources/`. The planner publish, deploy and finalize, and `obc bake clean-r2`,
+refuse to run when the pointer of their prefix has `release`, or is not JSON. The planner deploy
+reads the pointer from the bucket again just before it writes it. `obc data` never writes under
 `reference/v1/`.
 
 ### Credentials
@@ -1392,7 +1116,7 @@ Rules:
 - `delete --prefix P` resolves `P` to its keys first. Then explicit keys and a prefix have the
   same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
   then nothing is deleted.
-- `delete` changes live. It prints the plan: the bucket, and each object with its size and
+- `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
 - `delete` appends one line per object to `removed.jsonl` at the bucket root before it deletes:
@@ -1410,33 +1134,29 @@ sets the exit status. The message tells what failed, and the fix tells what to d
 | --- | --- |
 | 0 | The command succeeded |
 | 1 | A check found problems, or the command failed: a file is not valid; a fetch, R2, a run or the store failed; or the person did not agree |
-| 2 | Usage: an argument is not valid, or a command that changes live did not get consent |
-| 3 | The plan is outdated: live, the steps or the store changed after the plan was made. Plan again |
-| 4 | Blocked: a credential is missing |
-| 5 | Verify failed: the bytes in a target are not the bytes that the command wrote |
+| 2 | Usage: an argument is not valid, or a command that deletes did not get consent |
+| 4 | Blocked: a credential is missing, a layer cannot be planned, or the target cannot take the command |
+| 5 | Verify failed: a release failed its check, or the bytes in a target are not the bytes that the command wrote |
 
-A command that changes live shows its plan and asks in a terminal. Without a terminal, it needs
-`--yes`, or `--plan FILE` when the command takes a plan file. Without them, it exits with 2 and
-changes nothing.
+A command that deletes, `clean --apply` and `r2 delete`, shows its plan and asks in a terminal.
+Without a terminal, it needs `--yes`. Without it, it exits with 2 and deletes nothing.
 
 ### Error codes
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
-| `busy` | 2 | Another admitted operation owns the environment. No work waits for it. | Observe the current run or retry after it drains. No work is queued. |
 | `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
 another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
-| `no_terminal` | 2 | A command that changes live has no terminal to ask in, and no `--yes`. | Show the plan to a person. When they agree, run the command again with `--yes`. |
+| `no_terminal` | 2 | A command that asks has no terminal to ask in, and no `--yes`. | Show the question to a person. When they agree, run the command again with `--yes`. |
 | `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
 | `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. Or `build` has no product that suits the environment. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
+variables are not set. Or a layer cannot be planned, or the target cannot take the command. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
-| `verify_failed` | 5 | A release failed its check before an apply, or after an upload the object in the bucket is
-not the file. | Upload the file again. |
+| `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the
+bucket is not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
-| `plan_outdated` | 3 | The plan file is not the plan of now: live, the steps or the store changed after it was made. | Make the plan again with `obc data plan ENV --json`, read it, and pass the new file. |
 | `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
 
 ## JSON schemas
@@ -1447,26 +1167,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 
 | Command | Schema |
 | --- | --- |
+| `obc data` | `Overview` |
+| `update` | `Updated` |
 | `sources` | `Sources` |
-| `versions SOURCE` | `Versions` |
 | `fetch` | `Fetched` |
-| `policy` | `Source` |
-| `region`, `region list` | `RegionList` |
-| `region show` | `RegionDetail` |
-| `region areas` | `Suggestions` |
-| `region create` | `Region` |
-| `region delete` | `Deletion` |
-| `region ENV ID`, `layer`, `undo` | `Edited` |
-| `status`, `obc data` | `Status` |
+| `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
-| `plan` | `EnvPlan` |
-| `prepare`, `build`, `apply` | `Handle` |
-| Completed prepare output | `Prepared` |
-| Completed build output | `Built` |
-| Completed apply output | `Applied` |
 | `runs` | `RunList` |
-| `runs RUN` for a detached operation | `View` |
-| `runs RUN` for other journals | `Details` |
+| `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
 | `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
 | `r2 get` | `Downloaded` |
@@ -1476,108 +1184,56 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
-    "Applied": {
-      "description": "What an apply did.",
+    "Areas": {
+      "description": "What `areas` writes.",
       "properties": {
-        "built": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Built"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The build of the plan; `null` when live had every change."
-        },
-        "removed": {
-          "description": "The keys of earlier releases that it removed.",
+        "areas": {
+          "description": "Its areas whose path or name holds the query.",
           "items": {
-            "$ref": "#/$defs/Object"
+            "$ref": "#/$defs/GeofabrikArea"
           },
           "type": "array"
         },
-        "run": {
-          "type": "string"
+        "index": {
+          "description": "The version of the cached Geofabrik index; `null` while the store has none.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "switched": {
-          "description": "The release of each product whose pointer it switched.",
+        "regions": {
+          "description": "The regions of `data/regions/` whose id or name holds the query.",
           "items": {
-            "$ref": "#/$defs/BuiltRelease"
-          },
-          "type": "array"
-        },
-        "uploaded": {
-          "description": "The keys that it uploaded.",
-          "items": {
-            "type": "string"
+            "$ref": "#/$defs/Region"
           },
           "type": "array"
         }
       },
       "required": [
-        "run",
-        "built",
-        "uploaded",
-        "switched",
-        "removed"
+        "regions",
+        "index",
+        "areas"
       ],
       "type": "object"
     },
-    "Attention": {
-      "description": "Something that needs a person.",
+    "Baked": {
       "properties": {
-        "about": {
-          "description": "The source, the directory, the product, or `R2`.",
+        "key": {
           "type": "string"
         },
-        "kind": {
-          "$ref": "#/$defs/AttentionKind"
+        "reused": {
+          "type": "boolean"
         },
-        "reason": {
+        "step": {
           "type": "string"
         }
       },
       "required": [
-        "kind",
-        "about",
-        "reason"
+        "step",
+        "key",
+        "reused"
       ],
       "type": "object"
-    },
-    "AttentionKind": {
-      "oneOf": [
-        {
-          "const": "stale",
-          "description": "A source that is stale.",
-          "type": "string"
-        },
-        {
-          "const": "blocked",
-          "description": "A source that is blocked, or a step that cannot be planned.",
-          "type": "string"
-        },
-        {
-          "const": "unpushed",
-          "description": "The checkout is not a pushed commit; an apply refuses it.",
-          "type": "string"
-        },
-        {
-          "const": "drift",
-          "description": "Keys that live uses and R2 lacks, or holds with another size.",
-          "type": "string"
-        },
-        {
-          "const": "leftovers",
-          "description": "Keys of earlier releases that no live release uses.",
-          "type": "string"
-        },
-        {
-          "const": "unreachable",
-          "description": "A fetch that the step list of a product needs failed, so its layer states are unknown.",
-          "type": "string"
-        }
-      ]
     },
     "Bbox": {
       "description": "Degrees, longitude first.",
@@ -1626,101 +1282,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "step",
         "layer",
         "reason"
-      ],
-      "type": "object"
-    },
-    "BlockedProduct": {
-      "additionalProperties": false,
-      "properties": {
-        "layers": {
-          "items": {
-            "$ref": "#/$defs/BlockedLayer"
-          },
-          "type": "array"
-        },
-        "product": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "product",
-        "reason",
-        "layers"
-      ],
-      "type": "object"
-    },
-    "Built": {
-      "description": "What a build did.",
-      "properties": {
-        "blocked": {
-          "description": "Incomplete products. Usable layers can build, but these products get no complete release.",
-          "items": {
-            "$ref": "#/$defs/BlockedProduct"
-          },
-          "type": "array"
-        },
-        "layers": {
-          "description": "The layers of the run, in dependency order.",
-          "items": {
-            "$ref": "#/$defs/BuiltLayer"
-          },
-          "type": "array"
-        },
-        "releases": {
-          "description": "The release of each product whose every layer is built. For `live`, the release of each\nproduct that the groups change: its live layers with the layers of the groups.",
-          "items": {
-            "$ref": "#/$defs/BuiltRelease"
-          },
-          "type": "array"
-        },
-        "run": {
-          "description": "The operation journal, including preparation and release creation.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "run",
-        "layers",
-        "releases",
-        "blocked"
-      ],
-      "type": "object"
-    },
-    "BuiltLayer": {
-      "properties": {
-        "key": {
-          "type": "string"
-        },
-        "reused": {
-          "type": "boolean"
-        },
-        "step": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "step",
-        "key",
-        "reused"
-      ],
-      "type": "object"
-    },
-    "BuiltRelease": {
-      "properties": {
-        "id": {
-          "description": "The SHA-256 of `releases/<product>/<id>.json` in the store.",
-          "type": "string"
-        },
-        "product": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "product",
-        "id"
       ],
       "type": "object"
     },
@@ -1809,38 +1370,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
-    "Check": {
-      "description": "R2 against live.",
-      "properties": {
-        "drift": {
-          "description": "The keys that live uses and that R2 lacks, or holds with another size.",
-          "items": {
-            "$ref": "#/$defs/Drift"
-          },
-          "type": "array"
-        },
-        "leftovers": {
-          "description": "The keys of earlier releases that no live release uses: what the next apply removes.",
-          "items": {
-            "$ref": "#/$defs/Object"
-          },
-          "type": "array"
-        },
-        "prefixes": {
-          "description": "The prefixes that were listed.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "prefixes",
-        "drift",
-        "leftovers"
-      ],
-      "type": "object"
-    },
     "CleanPlan": {
       "description": "What `clean` removes from the store, or removed.",
       "properties": {
@@ -1858,18 +1387,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
         {
-          "const": "busy",
-          "description": "Another admitted operation owns the environment. No work waits for it.",
-          "type": "string"
-        },
-        {
           "const": "usage",
           "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
           "type": "string"
         },
         {
           "const": "no_terminal",
-          "description": "A command that changes live has no terminal to ask in, and no `--yes`.",
+          "description": "A command that asks has no terminal to ask in, and no `--yes`.",
           "type": "string"
         },
         {
@@ -1889,7 +1413,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or `build` has no product that suits the environment.",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or a layer cannot be planned, or the target cannot take the command.",
           "type": "string"
         },
         {
@@ -1899,17 +1423,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "verify_failed",
-          "description": "A release failed its check before an apply, or after an upload the object in the bucket is\nnot the file.",
+          "description": "A release failed its check before a target serves it, or after an upload the object in the\nbucket is not the file.",
           "type": "string"
         },
         {
           "const": "run_failed",
           "description": "A run failed: the build, or the run that `runs RUN --follow` shows.",
-          "type": "string"
-        },
-        {
-          "const": "plan_outdated",
-          "description": "The plan file is not the plan of now: live, the steps or the store changed after it was made.",
           "type": "string"
         },
         {
@@ -1936,28 +1455,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         }
       },
-      "type": "object"
-    },
-    "Deletion": {
-      "properties": {
-        "region": {
-          "type": "string"
-        },
-        "sha256": {
-          "type": "string"
-        },
-        "used_by": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "region",
-        "sha256",
-        "used_by"
-      ],
       "type": "object"
     },
     "Details": {
@@ -2065,263 +1562,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Drift": {
-      "properties": {
-        "expected": {
-          "description": "The size that live needs, when it is known.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "found": {
-          "description": "The size on R2; `None` when R2 lacks the key.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "key": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "expected",
-        "found"
-      ],
-      "type": "object"
-    },
-    "Edit": {
-      "description": "What the pending settings change against the live release of a product.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "`from` is `None` when the product has nothing live.",
-          "properties": {
-            "from": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "kind": {
-              "const": "region",
-              "type": "string"
-            },
-            "product": {
-              "type": "string"
-            },
-            "to": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "product",
-            "from",
-            "to"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "The optional layers that the environment switches on and off.",
-          "properties": {
-            "kind": {
-              "const": "layers",
-              "type": "string"
-            },
-            "off": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "on": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "product": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "product",
-            "on",
-            "off"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Region definitions or refresh policy changed without a selection change.",
-          "properties": {
-            "kind": {
-              "const": "settings",
-              "type": "string"
-            },
-            "product": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "product"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "Edited": {
-      "description": "Environment settings after an edit.",
-      "properties": {
-        "env": {
-          "type": "string"
-        },
-        "layers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "region": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "env",
-        "region",
-        "layers"
-      ],
-      "type": "object"
-    },
-    "EnvPlan": {
-      "additionalProperties": false,
-      "description": "What a build of an environment would fetch and build.",
-      "properties": {
-        "blocked": {
-          "description": "Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.",
-          "items": {
-            "$ref": "#/$defs/BlockedProduct"
-          },
-          "type": "array"
-        },
-        "edits": {
-          "description": "For `live`: what the pending settings change against the live releases.",
-          "items": {
-            "$ref": "#/$defs/Edit"
-          },
-          "type": "array"
-        },
-        "env": {
-          "type": "string"
-        },
-        "groups": {
-          "items": {
-            "$ref": "#/$defs/PlanGroup"
-          },
-          "type": "array"
-        },
-        "layers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "listed": {
-          "description": "For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan\nhas no `repair` group and removes nothing.",
-          "type": "boolean"
-        },
-        "live": {
-          "description": "For `live`: the release that each product has live now. Empty for another environment.",
-          "items": {
-            "$ref": "#/$defs/LiveRelease"
-          },
-          "type": "array"
-        },
-        "missing_credentials": {
-          "description": "Missing credentials for possible new inputs. Cached inputs remain usable.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "moves": {
-          "additionalProperties": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "description": "Source move intent: an explicit version, or each request's newest version. Exact resolved\nversions are in `versions`; fetching never changes this intent.",
-          "type": "object"
-        },
-        "needs_prepare": {
-          "description": "Discovery could not resolve the step graph. Prepare and review a new plan before replay.",
-          "type": "boolean"
-        },
-        "only": {
-          "description": "The layers that `--only` names.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "region": {
-          "type": "string"
-        },
-        "remove": {
-          "description": "For `live`: the keys of earlier releases that an apply of the plan removes from R2. An\napply removes no other key.",
-          "items": {
-            "$ref": "#/$defs/Removal"
-          },
-          "type": "array"
-        },
-        "settings": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Settings"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "versions": {
-          "description": "The version of each fetch that the step lists read. `build --plan` reads exactly these.",
-          "items": {
-            "$ref": "#/$defs/FetchVersion"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "env",
-        "region",
-        "layers",
-        "settings",
-        "missing_credentials",
-        "moves",
-        "versions",
-        "live",
-        "edits",
-        "only",
-        "groups",
-        "blocked",
-        "remove",
-        "listed",
-        "needs_prepare"
-      ],
-      "type": "object"
-    },
     "Error": {
       "description": "Why a command failed, and what to do about it.",
       "properties": {
@@ -2345,35 +1585,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "code",
         "message",
         "fix"
-      ],
-      "type": "object"
-    },
-    "Estimate": {
-      "additionalProperties": false,
-      "properties": {
-        "bytes_out": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "peak_rss_bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "wall_ms": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "wall_ms",
-        "bytes_out",
-        "peak_rss_bytes"
       ],
       "type": "object"
     },
@@ -2731,40 +1942,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
-    "FetchVersion": {
-      "additionalProperties": false,
-      "properties": {
-        "params": {
-          "description": "The `NAME=VALUE`s of the fetch, sorted.",
-          "items": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "type": "array"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "params",
-        "version"
-      ],
-      "type": "object"
-    },
     "Fetched": {
       "description": "The requested files of a snapshot.",
       "properties": {
@@ -2909,19 +2086,36 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Handle": {
-      "additionalProperties": false,
+    "GeofabrikArea": {
       "properties": {
-        "request": {
+        "bounds": {
+          "$ref": "#/$defs/Bbox"
+        },
+        "countries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
           "type": "string"
         },
-        "run": {
+        "name": {
           "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "run",
-        "request"
+        "id",
+        "name",
+        "parent",
+        "countries",
+        "bounds"
       ],
       "type": "object"
     },
@@ -2966,7 +2160,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`live release`, `fixture` or `planner recipe`.",
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`release`, `fixture` or `planner recipe`.",
           "items": {
             "type": "string"
           },
@@ -3068,44 +2262,47 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "LiveRelease": {
-      "additionalProperties": false,
+    "Machine": {
+      "description": "The machine that runs the command.",
       "properties": {
-        "key": {
-          "description": "The key of the pointer on R2.",
-          "type": "string"
+        "cores": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
-        "observed": {
-          "description": "SHA-256 of the exact pointer bytes that consent observed; None means absent.",
+        "memory_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
           "type": [
-            "string",
+            "integer",
             "null"
           ]
         },
-        "pointer": {
-          "description": "SHA-256 of the actual client document, excluding only `release` and `applied`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "product": {
+        "name": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
           "type": "string"
         },
-        "release": {
-          "description": "`None` when nothing is live.",
+        "os": {
+          "description": "`linux` or `macos`.",
+          "type": "string"
+        },
+        "store_free_bytes": {
+          "description": "The free bytes of the disk of the store; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
           "type": [
-            "string",
+            "integer",
             "null"
           ]
         }
       },
       "required": [
-        "product",
-        "release",
-        "pointer",
-        "observed",
-        "key"
+        "name",
+        "os",
+        "cores",
+        "memory_bytes",
+        "store_free_bytes"
       ],
       "type": "object"
     },
@@ -3200,365 +2397,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Overview": {
+      "description": "What `obc data` writes.",
+      "properties": {
+        "machine": {
+          "$ref": "#/$defs/Machine"
+        },
+        "targets": {
+          "description": "One per target of `data/targets.toml`, by name.",
+          "items": {
+            "$ref": "#/$defs/TargetState"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "machine",
+        "targets"
+      ],
+      "type": "object"
+    },
     "Phase": {
       "enum": [
         "prepare",
         "build",
         "verify",
         "upload",
-        "switch",
-        "wait",
-        "cleanup"
+        "switch"
       ],
       "type": "string"
     },
-    "PlanBuild": {
-      "additionalProperties": false,
-      "properties": {
-        "again": {
-          "description": "Whether the step builds also when the store has the layer of its key.",
-          "type": "boolean"
-        },
-        "estimate": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Estimate"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "key": {
-          "description": "`None` until the layers and snapshots that it reads are in the store.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "recipe": {
-          "description": "The key of the step without the digests of its inputs.",
-          "type": "string"
-        },
-        "step": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "step",
-        "recipe",
-        "key",
-        "estimate",
-        "again"
-      ],
-      "type": "object"
-    },
-    "PlanCause": {
-      "description": "Why a group changes live.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "The layer is stale.",
-          "properties": {
-            "cause": {
-              "$ref": "#/$defs/Cause"
-            },
-            "kind": {
-              "const": "stale",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "cause"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "`--only` names the layer: its steps build again.",
-          "properties": {
-            "kind": {
-              "const": "named",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Live has the layer, and no step makes it now.",
-          "properties": {
-            "kind": {
-              "const": "off",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged\nlayers of those keys that the store lacks.",
-          "properties": {
-            "keys": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "repair",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "keys"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "The desired client document or release identity differs, without a layer change.",
-          "properties": {
-            "document": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "pointer",
-              "type": "string"
-            },
-            "product": {
-              "type": "string"
-            },
-            "release": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "product",
-            "release",
-            "document"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "PlanFetch": {
-      "additionalProperties": false,
-      "properties": {
-        "bytes": {
-          "description": "The size of these files in a snapshot record of the source, or `None`.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "files": {
-          "description": "The names of the files that the store lacks, or none when the store cannot name them: then\nthe fetch gets every file that it gives.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "params": {
-          "items": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "type": "array"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "version",
-        "params",
-        "files",
-        "bytes"
-      ],
-      "type": "object"
-    },
-    "PlanGroup": {
-      "additionalProperties": false,
-      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group. Against live, a group is one\nlayer, and two groups can need the same build. Two groups can need the same fetch. `--only`\ngives one group of the named layers.",
-      "properties": {
-        "builds": {
-          "description": "In dependency order.",
-          "items": {
-            "$ref": "#/$defs/PlanBuild"
-          },
-          "type": "array"
-        },
-        "cause": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PlanCause"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Why the group changes its layer; `None` without live and `--only`."
-        },
-        "drops": {
-          "description": "The live layers that the release no longer has.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "fetches": {
-          "items": {
-            "$ref": "#/$defs/PlanFetch"
-          },
-          "type": "array"
-        },
-        "id": {
-          "description": "It names the group only in the plan that it comes from.",
-          "type": "string"
-        },
-        "layers": {
-          "description": "The layers that the group changes, in dependency order, each with its recipe and key as in\n`builds`.",
-          "items": {
-            "$ref": "#/$defs/PlanBuild"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "cause",
-        "layers",
-        "drops",
-        "fetches",
-        "builds"
-      ],
-      "type": "object"
-    },
-    "Prepared": {
-      "description": "Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.",
-      "properties": {
-        "plan": {
-          "$ref": "#/$defs/EnvPlan"
-        },
-        "run": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "run",
-        "plan"
-      ],
-      "type": "object"
-    },
-    "ProductStatus": {
-      "properties": {
-        "applied": {
-          "description": "When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or\nthe pointer has no time.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "bytes": {
-          "description": "The size of the objects of the live release.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "commit": {
-          "description": "The commit that the apply of the release ran; `None` when nothing is live.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "layers": {
-          "description": "Each operator layer that the steps of the product make or that its release holds, in\ndependency order, then its optional layers that are off; `None` when a fetch that its step\nlist needs failed, and `attention` says why.",
-          "items": {
-            "$ref": "#/$defs/LayerState"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "optional": {
-          "description": "The optional layers of the product, which `layer live NAME on|off` switches.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "product": {
-          "type": "string"
-        },
-        "release": {
-          "description": "The id of the live release; `None` when nothing is live.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "product",
-        "release",
-        "applied",
-        "commit",
-        "bytes",
-        "optional",
-        "layers"
-      ],
-      "type": "object"
-    },
     "Publication": {
-      "description": "A remote write that acknowledged success. Verification can still fail afterward.",
+      "description": "A change of a target.",
       "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "key": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "uploaded",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "key"
-          ],
-          "type": "object"
-        },
         {
           "additionalProperties": false,
           "properties": {
@@ -3566,40 +2437,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               "const": "switched",
               "type": "string"
             },
-            "product": {
-              "type": "string"
-            },
             "release": {
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "product",
             "release"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "bytes": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "key": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "removed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "key",
-            "bytes"
           ],
           "type": "object"
         }
@@ -3716,7 +2560,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "const": "manual"
         }
       ],
-      "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale."
+      "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale."
     },
     "Region": {
       "oneOf": [
@@ -3806,213 +2650,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "RegionDetail": {
-      "oneOf": [
-        {
-          "description": "The selected Geofabrik source paths, independent of the saved region id.",
-          "properties": {
-            "areas": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "geofabrik",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "areas"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "box": {
-              "$ref": "#/$defs/Bbox"
-            },
-            "kind": {
-              "const": "box",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "box"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "kind": {
-              "const": "union",
-              "type": "string"
-            },
-            "union": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "kind",
-            "union"
-          ],
-          "type": "object"
-        }
-      ],
-      "properties": {
-        "bounds": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Bbox"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Its box, when every part is a box."
-        },
-        "countries": {
-          "description": "The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "id": {
-          "type": "string"
-        },
-        "leaves": {
-          "description": "The region ids that it resolves to.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "name": {
-          "type": "string"
-        },
-        "time_zone": {
-          "description": "The IANA time zone of the region, such as `Europe/Berlin`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "countries",
-        "time_zone",
-        "leaves",
-        "bounds"
-      ],
-      "type": "object"
-    },
-    "RegionList": {
-      "properties": {
-        "regions": {
-          "items": {
-            "$ref": "#/$defs/Region"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "regions"
-      ],
-      "type": "object"
-    },
-    "Removal": {
-      "additionalProperties": false,
-      "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "key": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "key",
-        "bytes"
-      ],
-      "type": "object"
-    },
-    "Request": {
-      "properties": {
-        "live": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "params": {
-          "items": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "type": "array"
-          },
-          "type": "array"
-        },
-        "stored": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "unavailable": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "upstream": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "params",
-        "live",
-        "stored",
-        "upstream",
-        "unavailable"
-      ],
-      "type": "object"
-    },
     "RequestStatus": {
       "properties": {
         "age_days": {
           "format": "int64",
           "type": [
             "integer",
-            "null"
-          ]
-        },
-        "due": {
-          "type": "boolean"
-        },
-        "live": {
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -4041,18 +2684,41 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "serving": {
+          "description": "The version that the serving release reads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "$ref": "#/$defs/State"
         }
       },
       "required": [
         "params",
-        "live",
+        "serving",
         "observation",
-        "due",
         "state",
         "reason",
         "age_days"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "additionalProperties": false,
+      "description": "A release and the time it took its role, `YYYY-MM-DDTHH:MM:SSZ`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "since"
       ],
       "type": "object"
     },
@@ -4126,18 +2792,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunList": {
       "description": "Every run in the store, newest first.",
       "properties": {
-        "observation_errors": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "operations": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Status2"
-          },
-          "type": "object"
-        },
         "runs": {
           "items": {
             "$ref": "#/$defs/Summary"
@@ -4146,9 +2800,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
-        "runs",
-        "operations",
-        "observation_errors"
+        "runs"
       ],
       "type": "object"
     },
@@ -4205,158 +2857,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Settings": {
+    "Serving": {
       "additionalProperties": false,
+      "description": "`release.json`: the release that a target serves, and the one that a rollback switches to.",
       "properties": {
-        "definitions": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Full TOML definitions of the selection and its union members, keyed by region id.",
-          "type": "object"
-        },
-        "layers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "refresh": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Refresh"
-          },
-          "type": "object"
-        },
-        "region": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "region",
-        "definitions",
-        "layers",
-        "refresh"
-      ],
-      "type": "object"
-    },
-    "Source": {
-      "additionalProperties": false,
-      "properties": {
-        "areas": {
-          "description": "The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None\nmeans all of `extent`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "attribution": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "credential": {
+        "rollback": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Credential"
+              "$ref": "#/$defs/Role"
             },
             {
               "type": "null"
             }
           ]
         },
-        "extent": {
-          "description": "The box outside which the source has no data: west, south, east and north in degrees.",
-          "items": {
-            "format": "double",
-            "type": "number"
-          },
-          "maxItems": 4,
-          "minItems": 4,
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "fetch": {
-          "$ref": "#/$defs/Fetch"
-        },
-        "hosts": {
-          "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "id": {
-          "type": "string"
-        },
-        "kind": {
-          "$ref": "#/$defs/Kind"
-        },
-        "licence": {
-          "description": "An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "licence_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "obligations": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "r2_copy": {
-          "default": false,
-          "description": "R2 keeps a copy, because upstream cannot give a version again.",
-          "type": "boolean"
-        },
-        "redistribute": {
-          "type": "boolean"
-        },
-        "refresh": {
-          "$ref": "#/$defs/Refresh",
-          "default": "manual"
-        },
-        "start": {
-          "description": "The version that a plan reads while no live release reads the source. `--move` overrides\nit. Without it, the first fetch takes the newest version upstream.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version": {
-          "$ref": "#/$defs/VersionScheme"
+        "serving": {
+          "$ref": "#/$defs/Role"
         }
       },
       "required": [
-        "id",
-        "kind",
-        "fetch",
-        "version",
-        "refresh",
-        "redistribute",
-        "r2_copy"
+        "serving",
+        "rollback"
       ],
       "type": "object"
     },
     "SourceRow": {
-      "description": "A source of `data/sources.toml` with its live version, its snapshots and its state.",
+      "description": "A source of `data/sources.toml`, what each target reads of it, and its versions in the store.",
       "properties": {
-        "age_days": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "areas": {
           "description": "The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None\nmeans all of `extent`.",
           "items": {
@@ -4425,16 +2952,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
-        "live": {
-          "description": "The versions that the live releases read, in order; `null` when R2 could not be read.",
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "obligations": {
           "type": [
             "string",
@@ -4446,24 +2963,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "R2 keeps a copy, because upstream cannot give a version again.",
           "type": "boolean"
         },
-        "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "redistribute": {
           "type": "boolean"
         },
         "refresh": {
           "$ref": "#/$defs/Refresh",
           "default": "manual"
-        },
-        "requests": {
-          "items": {
-            "$ref": "#/$defs/RequestStatus"
-          },
-          "type": "array"
         },
         "snapshots": {
           "description": "The versions in the local store, the one fetched last first.",
@@ -4473,21 +2978,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "start": {
-          "description": "The version that a plan reads while no live release reads the source. `--move` overrides\nit. Without it, the first fetch takes the newest version upstream.",
+          "description": "The version that a step list reads while no serving release reads the source. Without it,\nthe first fetch takes the newest version upstream.",
           "type": [
             "string",
             "null"
           ]
         },
-        "state": {
-          "$ref": "#/$defs/State"
-        },
-        "upstream": {
-          "description": "The newest upstream version.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "targets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SourceTarget"
+          },
+          "description": "By target: its policy, and the state of each request that its serving release reads.",
+          "type": "object"
         },
         "version": {
           "$ref": "#/$defs/VersionScheme"
@@ -4501,23 +3003,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh",
         "redistribute",
         "r2_copy",
-        "live",
-        "upstream",
-        "age_days",
-        "state",
-        "reason",
+        "targets",
         "snapshots",
-        "requests",
         "credential_missing"
+      ],
+      "type": "object"
+    },
+    "SourceTarget": {
+      "properties": {
+        "refresh": {
+          "$ref": "#/$defs/Refresh"
+        },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/RequestStatus"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/State",
+          "description": "The least state of its requests; `unused` when the serving release reads none."
+        }
+      },
+      "required": [
+        "refresh",
+        "state",
+        "requests"
       ],
       "type": "object"
     },
     "Sources": {
       "properties": {
-        "live_unknown": {
-          "description": "R2 could not be read: `live` of each source is `null`.",
-          "type": "boolean"
-        },
         "sources": {
           "items": {
             "$ref": "#/$defs/SourceRow"
@@ -4526,7 +3042,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
-        "live_unknown",
         "sources"
       ],
       "type": "object"
@@ -4544,127 +3059,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "unused",
-          "description": "No live layer and no active request reads the source.",
+          "description": "No step of the target reads the source.",
           "type": "string"
-        }
-      ]
-    },
-    "Status": {
-      "description": "What `status` writes.",
-      "properties": {
-        "attention": {
-          "items": {
-            "$ref": "#/$defs/Attention"
-          },
-          "type": "array"
-        },
-        "check": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Check"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Only with `--check`."
-        },
-        "from": {
-          "description": "Where live was read: the bucket, or its public URL.",
-          "type": "string"
-        },
-        "products": {
-          "items": {
-            "$ref": "#/$defs/ProductStatus"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "from",
-        "products",
-        "attention",
-        "check"
-      ],
-      "type": "object"
-    },
-    "Status2": {
-      "oneOf": [
-        {
-          "properties": {
-            "status": {
-              "const": "starting",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "running",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "stopping",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "stopped",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "interrupted",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "ok": {
-              "type": "boolean"
-            },
-            "status": {
-              "const": "finished",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "ok"
-          ],
-          "type": "object"
         }
       ]
     },
@@ -4701,57 +3097,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "checked_at",
         "version"
-      ],
-      "type": "object"
-    },
-    "Suggestion": {
-      "properties": {
-        "bounds": {
-          "$ref": "#/$defs/Bbox"
-        },
-        "countries": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "parent": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "parent",
-        "countries",
-        "bounds"
-      ],
-      "type": "object"
-    },
-    "Suggestions": {
-      "properties": {
-        "areas": {
-          "items": {
-            "$ref": "#/$defs/Suggestion"
-          },
-          "type": "array"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "version",
-        "areas"
       ],
       "type": "object"
     },
@@ -4802,6 +3147,134 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "bytes_fetched",
         "bytes_built"
+      ],
+      "type": "object"
+    },
+    "TargetState": {
+      "properties": {
+        "at": {
+          "description": "The folder of a dir target, or the public URL of an R2 bucket.",
+          "type": "string"
+        },
+        "blocked": {
+          "description": "The steps that cannot be planned.",
+          "items": {
+            "$ref": "#/$defs/BlockedLayer"
+          },
+          "type": "array"
+        },
+        "drift": {
+          "description": "The pointer keys whose bytes are not those of the serving release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "description": "Why the target or its steps could not be read; `null` when they could.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`dir` or `r2`, as `data/targets.toml` says.",
+          "type": "string"
+        },
+        "layers": {
+          "description": "Each layer of the steps and of the serving release; `null` while the target serves nothing\nor its steps cannot be listed.",
+          "items": {
+            "$ref": "#/$defs/LayerState"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "next": {
+          "description": "The command to run next; `null` when the target serves its settings as the steps make them\nnow, or when no command of this `obc data` writes the target: an R2 bucket.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "The region of the serving release.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Serving"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What `release.json` of the target says; `null` while it serves nothing."
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "kind",
+        "at",
+        "release",
+        "region",
+        "layers",
+        "blocked",
+        "drift",
+        "error",
+        "next"
+      ],
+      "type": "object"
+    },
+    "Updated": {
+      "description": "What an update did.",
+      "properties": {
+        "baked": {
+          "description": "The steps that the run baked or found in the store, in dependency order.",
+          "items": {
+            "$ref": "#/$defs/Baked"
+          },
+          "type": "array"
+        },
+        "kept": {
+          "description": "The number of outputs that the release keeps by reference.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rollback": {
+          "description": "The release that it served before; `null` when it served nothing or the update changed\nnothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "serving": {
+          "description": "The release that the target serves now.",
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "target",
+        "serving",
+        "rollback",
+        "baked",
+        "kept"
       ],
       "type": "object"
     },
@@ -4923,75 +3396,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
-    },
-    "Versions": {
-      "properties": {
-        "common": {
-          "description": "Exact versions known for every active request.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "newest": {
-          "type": "boolean"
-        },
-        "requests": {
-          "items": {
-            "$ref": "#/$defs/Request"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "requests",
-        "common",
-        "newest"
-      ],
-      "type": "object"
-    },
-    "View": {
-      "properties": {
-        "logs": {
-          "description": "Recent worker stderr. Reading it does not change the run.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "observation_error": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "operation": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Status2"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "result": true,
-        "run": {
-          "$ref": "#/$defs/Details"
-        }
-      },
-      "required": [
-        "run",
-        "operation",
-        "observation_error",
-        "result",
-        "logs"
-      ],
-      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema"

@@ -68,7 +68,7 @@ pub fn build(request: &Request) -> Result<(), String> {
     let publish = |body: String| -> Result<ArtifactRef, String> {
         let (bytes, sha256) = hash_str(&body);
         fs::write(pool.join(&sha256), body).map_err(|e| e.to_string())?;
-        Ok(ArtifactRef { bytes, url: format!("/cell-catalog/objects/{sha256}"), sha256 })
+        Ok(ArtifactRef { bytes, url: format!("/objects/{sha256}"), sha256 })
     };
     let mut bands: BTreeMap<String, Vec<CellEntry>> = BTreeMap::new();
     let mut empty: BTreeMap<String, BTreeSet<CellId>> = BTreeMap::new();
@@ -93,11 +93,8 @@ pub fn build(request: &Request) -> Result<(), String> {
             } else {
                 file.path.clone()
             };
-            let pin = ArtifactRef {
-                bytes: file.size,
-                sha256: file.sha256.clone(),
-                url: format!("/cell-catalog/objects/{}", file.sha256),
-            };
+            let pin =
+                ArtifactRef { bytes: file.size, sha256: file.sha256.clone(), url: format!("/objects/{}", file.sha256) };
             if let Some(tail) = logical.strip_prefix("cells/") {
                 let (band, tail) = tail.split_once('/').ok_or("invalid cell path")?;
                 let definition = schema.bands.iter().find(|b| b.id == band).ok_or("unknown cell band")?;

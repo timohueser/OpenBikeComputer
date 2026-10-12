@@ -59,14 +59,14 @@ function grid(prefix, packs) {
     ...Object.entries(packs).flatMap(([name, bytes]) => {
       const digest = createHash('sha256').update(bytes).digest('hex');
       return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))],
-        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`planner/objects/${digest}`, bytes]];
+        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`objects/${digest}`, bytes]];
     })];
 }
 
 test('range reads deliver decoded tiles, cache tiles and empty coverage, and do not cache missing releases', async () => {
-  const prefix = `planner/releases/${release}`, tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Test data"}');
+  const prefix = `releases/${release}`, tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Test data"}');
   const objects = new Map([...grid(prefix, { basemap: archive() }), [`${prefix}/public/maps/basemap.json.json`, pointer('e'.repeat(64), tilejson)],
-    [`planner/objects/${'e'.repeat(64)}`, tilejson]]);
+    [`objects/${'e'.repeat(64)}`, tilejson]]);
   const cached = new Map(), pending = [], reads = { count: 0 };
   globalThis.caches = { default: {
     async match(key) { return cached.get(key.url)?.clone(); },
@@ -103,7 +103,7 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   const sun = Buffer.from('{"tilejson":"3.0.0","sun_format":3,"minzoom":0,"maxzoom":12}');
   const digest = '8'.repeat(64);
   objects.set(`${prefix}/public/maps/sun.json.json`, pointer(digest, sun));
-  objects.set(`planner/objects/${digest}`, sun);
+  objects.set(`objects/${digest}`, sun);
   const sunMeta = await (await worker.fetch(new Request(`https://tiles.example${base}/sun.json`), env, ctx)).json();
   assert.equal(sunMeta.sun_format, 3);
   assert.equal((await worker.fetch(new Request(sunMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
@@ -111,17 +111,17 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
 });
 
 test('grid archives share download objects and assets stream from their pointers', async () => {
-  const id = 'c'.repeat(64), prefix = `planner/releases/${id}`, asset = new TextEncoder().encode('{"hello":"map"}');
+  const id = 'c'.repeat(64), prefix = `releases/${id}`, asset = new TextEncoder().encode('{"hello":"map"}');
   const glyphs = new Uint8Array([10, 2, 8, 0]), packed = gzipSync(glyphs);
   const routes = Buffer.from('{"format":1,"routes":[]}'), packedRoutes = gzipSync(routes);
   const objects = new Map([...grid(prefix, { basemap: archive(), places: archive() }),
     [`${prefix}/public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json`, pointer('f'.repeat(64), packed, 'gzip', glyphs.length)],
-    [`planner/objects/${'f'.repeat(64)}`, packed],
+    [`objects/${'f'.repeat(64)}`, packed],
     [`${prefix}/public/routes/tiles/9-268-178.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
-    [`planner/objects/${'b'.repeat(64)}`, packedRoutes],
+    [`objects/${'b'.repeat(64)}`, packedRoutes],
     [`${prefix}/public/device/catalog.json.json`, pointer('e'.repeat(64), asset)],
     [`${prefix}/public/maps/assets/sprites/v4/light@2x.json.json`, pointer('e'.repeat(64), asset)],
-    [`planner/objects/${'e'.repeat(64)}`, asset],
+    [`objects/${'e'.repeat(64)}`, asset],
   ]);
   globalThis.caches = {default:{async match(){return undefined},async put(){}}};
   const env = { BUCKET: bucket(objects) };
@@ -146,7 +146,7 @@ test('grid archives share download objects and assets stream from their pointers
 });
 
 test('gzip tile bytes and runtime encoding survive the edge cache for every tile type', async () => {
-  const id = 'd'.repeat(64), prefix = `planner/releases/${id}`;
+  const id = 'd'.repeat(64), prefix = `releases/${id}`;
   // Node ignores `encodeBody`; the Workers runtime compresses again without 'manual'.
   const NodeResponse = globalThis.Response;
   globalThis.Response = class extends NodeResponse { constructor(body, init) { super(body, init); this.encodeBody = init?.encodeBody; } };
@@ -188,7 +188,7 @@ test('gzip tile bytes and runtime encoding survive the edge cache for every tile
 });
 
 test('gzip negotiation separates cache entries and bypasses tile inflation', async () => {
-  const id = '1'.repeat(64), prefix = `planner/releases/${id}`, reads = { count: 0 };
+  const id = '1'.repeat(64), prefix = `releases/${id}`, reads = { count: 0 };
   const env = { BUCKET: bucket(new Map(grid(prefix, { basemap: archive(1, { attribution: 'Negotiation fixture' }) })), reads) };
   const cached = new Map(), pending = [], ctx = { waitUntil(promise) { pending.push(promise); } };
   const cache = { async match(key) { return cached.get(key.url)?.clone(); }, async put(key, value) { cached.set(key.url, value); } };
@@ -244,12 +244,11 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
   const {join, dirname} = await import('node:path');
   const {Files, serve} = await import('../src/local.mjs');
   const root = await mkdtemp(join(tmpdir(), 'obc-local-tiles-'));
-  const id = 'f'.repeat(64), prefix = `planner/releases/${id}`;
+  const id = 'f'.repeat(64), prefix = `releases/${id}`;
   const tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Local data"}');
   const hash = createHash('sha256').update(tilejson).digest('hex');
-  const objects = new Map([[`cell-catalog/releases/${id}/catalog.json`, '{"format":1}'],
-    [`cell-catalog/objects/${hash}`, tilejson], ...grid(prefix, {basemap: archive()}),
-    [`${prefix}/public/maps/basemap.json.json`, pointer(hash, tilejson)], [`planner/objects/${hash}`, tilejson]]);
+  const objects = new Map([['cell-catalog/catalog.json', '{"format":1}'], ...grid(prefix, {basemap: archive()}),
+    [`${prefix}/public/maps/basemap.json.json`, pointer(hash, tilejson)], [`objects/${hash}`, tilejson]]);
   let server;
   try {
     for (const [key, bytes] of objects) {
@@ -258,8 +257,8 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
       await writeFile(path, bytes);
     }
     const files = new Files(await realpath(root));
-    assert.equal(await files.get('planner/objects/../secret'), null);
-    const tail = await files.get(`planner/objects/${hash}`, {range:{offset:5, length:16384}});
+    assert.equal(await files.get('objects/../secret'), null);
+    const tail = await files.get(`objects/${hash}`, {range:{offset:5, length:16384}});
     assert.deepEqual(Buffer.from(await tail.arrayBuffer()), tilejson.subarray(5));
     server = await serve(root, 0);
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -282,9 +281,9 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
     assert.equal(info.attribution, 'Local data');
     assert.deepEqual(info.tiles, [`${origin}/releases/${id}/basemap/{z}/{x}/{y}`]);
     assert.equal((await fetch(`${origin}/releases/${'1'.repeat(64)}/basemap.json`)).status, 404);
-    const catalog = `${origin}/cell-catalog/releases/${id}/catalog.json`;
+    const catalog = `${origin}/cell-catalog/catalog.json`;
     assert.deepEqual(await (await fetch(catalog)).json(), {format:1});
-    const object = `${origin}/cell-catalog/objects/${hash}`;
+    const object = `${origin}/objects/${hash}`;
     const range = await fetch(object, {headers: {Range:'bytes=5-12'}});
     assert.equal(range.status, 206);
     assert.equal(range.headers.get('Content-Range'), `bytes 5-12/${tilejson.length}`);

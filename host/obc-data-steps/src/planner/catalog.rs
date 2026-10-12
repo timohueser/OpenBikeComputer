@@ -1,41 +1,81 @@
-//! Planner publication metadata and verification from stored receipts.
+//! The pointer of the planner, the files that its clients find by name, and the check of a
+//! release before a target serves it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use obc_data::engine::release::Release;
-use obc_data::engine::LayerFile;
-use obc_data::product::Pointer;
+use obc_data::engine::{LayerFile, Request};
+use obc_data::release::Release;
 use obc_data::store::{hash_file, Store};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const INDEX: &str = "planner/index";
+/// The step that writes the pointer.
+pub const STEP: &str = "planner/catalog";
 const TILES: &str = "https://tiles.openbikecomputer.com";
 
-pub fn named(release: &Release) -> Result<Vec<LayerFile>, String> {
-    let index = release.layers.iter().find(|layer| layer.step == INDEX).ok_or("release has no planner index")?;
-    let mut files: Vec<_> = index
-        .files
-        .iter()
-        .filter(|file| file.path == "release.json" || file.path.starts_with("public/"))
-        .cloned()
-        .collect();
-    for layer in release.layers.iter().filter(|layer| layer.step.ends_with("/grid") && !layer.client.is_none()) {
-        let mut file =
-            layer.files.iter().find(|file| file.path == "index.json").ok_or("planner grid has no index")?.clone();
-        file.path = format!("indexes/{}/index.json", layer.step);
-        files.push(file);
-    }
-    Ok(files)
+#[derive(Deserialize)]
+struct Config {
+    publication: Origins,
 }
 
-pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Result<Pointer, String> {
-    let origins = super::publish::publication(root)?;
-    let public = format!("{}/planner", origins.objects_origin);
-    let document: Value = serde_json::from_slice(&descriptor(release, store)?).map_err(|e| e.to_string())?;
-    let id = release.id();
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Origins {
+    pub site_origin: String,
+    pub api_origin: String,
+    pub objects_origin: String,
+}
+
+/// The origins of `data/planner-runtime.toml` that the pointer names.
+pub(super) fn publication(root: &Path) -> Result<Origins, String> {
+    let path = root.join("data/planner-runtime.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let config: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    for origin in [&config.publication.site_origin, &config.publication.api_origin, &config.publication.objects_origin]
+    {
+        let host = origin.strip_prefix("https://").ok_or("publication needs HTTPS origins")?;
+        if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte)) {
+            return Err(format!("publication origin `{origin}` has a path, credentials or unsafe characters"));
+        }
+    }
+    Ok(config.publication)
+}
+
+/// The files that a planner client finds by name, from the files of each step: the release
+/// document and the public files of `planner/index`, and the index of each grid at
+/// `indexes/<step>/index.json`. Their digest is the id of the planner release.
+pub fn named<'a>(
+    outputs: impl IntoIterator<Item = (&'a str, &'a [LayerFile])>,
+) -> Result<Vec<(String, LayerFile)>, String> {
+    let mut named = Vec::new();
+    for (step, files) in outputs {
+        if step == INDEX {
+            let public = files.iter().filter(|file| file.path == "release.json" || file.path.starts_with("public/"));
+            named.extend(public.map(|file| (file.path.clone(), file.clone())));
+        } else if step.starts_with("planner/") && step.ends_with("/grid") {
+            let file =
+                files.iter().find(|file| file.path == "index.json").ok_or(format!("{step} has no index.json"))?;
+            named.push((format!("indexes/{step}/index.json"), file.clone()));
+        }
+    }
+    if !named.iter().any(|(path, _)| path == "release.json") {
+        return Err(format!("{INDEX} has no release.json"));
+    }
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(named)
+}
+
+/// Write `catalog.json`: the URLs of the planner release whose id is the digest of the named files.
+pub fn pointer(request: &Request) -> Result<(), String> {
+    let named = named(request.layer_files.iter().map(|(step, files)| (step.as_str(), files.as_slice())))?;
+    let id = obc_data::engine::digest(named.iter().map(|(path, file)| (path.as_str(), file.sha256.as_str())));
+    let origins: Origins = serde_json::from_value(request.options["origins"].clone()).map_err(|e| e.to_string())?;
+    let path = request.layers.get(INDEX).and_then(|files| files.get("release.json")).ok_or("no release.json")?;
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("release.json: {e}"))?;
     let tiles = format!("{TILES}/releases/{id}");
     let files = document["files"].as_object().ok_or("planner index has no files")?;
     let layers: BTreeMap<_, _> = ["snow", "climate", "sun"]
@@ -48,7 +88,7 @@ pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Resu
         "routing": format!("{}/planner-api/releases/{id}/routing", origins.api_origin),
         "search": format!("{}/planner-api/releases/{id}/search", origins.api_origin),
         "downloads": format!("{}/planner-api/releases/{id}/downloads", origins.api_origin),
-        "id": id, "manifest": format!("{public}/releases/{id}/release.json"),
+        "id": id, "manifest": format!("{}/releases/{id}/release.json", origins.objects_origin),
         "region": document["region"], "name": document["name"], "bounds": document["bounds"],
         "basemap": format!("{tiles}/basemap.json"), "places": format!("{tiles}/places.json"),
         "overlays": format!("{tiles}/overlays.json"), "terrain": format!("{tiles}/terrain/{{z}}/{{x}}/{{y}}.webp"),
@@ -57,7 +97,9 @@ pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Resu
         "attribution": document["attribution"], "landcover_attribution": document["landcover_attribution"],
         "terrain_attribution": document["terrain_attribution"], "layers": layers,
     });
-    Ok(Pointer { document: json!({"format": 1, "origins": origins, "active": active}).as_object().unwrap().clone() })
+    let pointer = json!({"format": 1, "origins": origins, "active": active});
+    let body = serde_json::to_vec(&pointer).map_err(|e| e.to_string())?;
+    std::fs::write(request.output.join("catalog.json"), body).map_err(|e| e.to_string())
 }
 
 fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String> {
@@ -68,9 +110,9 @@ fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String
     Ok(path)
 }
 
-pub(super) fn descriptor(release: &Release, store: &Store) -> Result<Vec<u8>, String> {
-    let file =
-        release.named.iter().find(|file| file.path == "release.json").ok_or("planner has no named release.json")?;
+fn descriptor(release: &Release, store: &Store) -> Result<Vec<u8>, String> {
+    let index = release.outputs.iter().find(|output| output.step == INDEX).ok_or("release has no planner index")?;
+    let file = index.files.iter().find(|file| file.path == "release.json").ok_or("planner has no release.json")?;
     std::fs::read(checked(store, file)?).map_err(|e| e.to_string())
 }
 
@@ -86,11 +128,9 @@ struct File {
 }
 
 pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
-    release.check_named()?;
     let body = descriptor(release, store)?;
     let document: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    if release.product != "planner"
-        || document["region"] != release.region.rsplit('/').next().unwrap_or("")
+    if document["region"] != release.settings.region.rsplit('/').next().unwrap_or("")
         || document["format"] != 1
         || document["grid"] != json!({"format": 2, "zoom": 9, "map_zoom": 11})
     {
@@ -124,8 +164,8 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
             paths.insert(file.path.clone(), checked(store, &file)?);
         }
     }
-    for file in &release.named {
-        paths.insert(file.path.clone(), checked(store, file)?);
+    for (path, file) in named(release.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))? {
+        paths.insert(path, checked(store, &file)?);
     }
     let scratch = tempfile::tempdir_in(store.root()).map_err(|e| e.to_string())?;
     let source = scratch.path().join("source");

@@ -4,7 +4,7 @@ use super::*;
 use serde_json::Value;
 
 pub(super) fn captures(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     collection: &'static str,
     osm: &str,
@@ -42,7 +42,7 @@ pub(super) fn captures(
     }
     let mut query =
         serde_json::json!({"entities":qids,"links":links,"articles":[],"commons":[],"files":[],"categories":[]});
-    let mut inputs = Vec::new();
+    let mut reads = Vec::new();
     let mut phase = 0;
     let mut subjects = BTreeSet::new();
     loop {
@@ -50,23 +50,23 @@ pub(super) fn captures(
             break;
         }
         let params = vec![("content".into(), query.to_string())];
-        if let Some((_, error)) = env
+        if let Some((_, error)) = inputs
             .fetch_failures
             .iter()
             .find(|(request, _)| CAPTURES.contains(&request.source.as_str()) && request.params == params)
         {
             return Err(Unplanned::Invalid(format!("Wikimedia acquisition failed: {error}; prepare again to retry")));
         }
-        inputs.clear();
+        reads.clear();
         let mut missing = Vec::new();
         let mut files = BTreeMap::new();
         for source in CAPTURES {
-            if let Some(version) = snapshot_version(env, store, source, &params, &mut missing)? {
+            if let Some(version) = snapshot_version(inputs, store, source, &params, &mut missing)? {
                 if let Some(available) = snapshot_files(store, source, &version, &params, &[]).map_err(fail)? {
                     for (name, object) in available {
                         files.insert(name.trim_start_matches('#').to_owned(), object);
                     }
-                    inputs.push(Input::Snapshot {
+                    reads.push(Input::Snapshot {
                         source: source.into(),
                         version,
                         params: params.clone(),
@@ -187,18 +187,18 @@ pub(super) fn captures(
         }
         phase += 1;
     }
-    inputs.extend([
+    reads.extend([
         Input::Snapshot { source: EXTRACTS.into(), version: extract.into(), params: area.to_vec(), files: Vec::new() },
         Input::Snapshot {
             source: POLY.into(),
-            version: version(env, store, POLY, area)
+            version: version(inputs, store, POLY, area)
                 .map_err(fail)?
                 .map_err(|fetch| Unplanned::NeedsFetch(vec![fetch]))?,
             params: area.to_vec(),
             files: Vec::new(),
         },
     ]);
-    Ok(vec![(collection, inputs)])
+    Ok(vec![(collection, reads)])
 }
 
 #[cfg(test)]
@@ -217,8 +217,8 @@ mod tests {
         obc_data::store::write_atomic(&file, &bytes).unwrap();
         store.insert(&file, &digest).unwrap();
         let osm = format!("sha256:{digest}");
-        let wanted = |env: &Env, area: &str| match captures(
-            env,
+        let wanted = |inputs: &Inputs, area: &str| match captures(
+            inputs,
             &store,
             "landmarks",
             &osm,
@@ -229,18 +229,18 @@ mod tests {
             Err(Unplanned::NeedsFetch(wanted)) => wanted,
             _ => panic!("unprepared identities need source facts"),
         };
-        let mut env = Env::default();
-        let first = wanted(&env, "one");
-        let second = wanted(&env, "overlap");
+        let mut inputs = Inputs::default();
+        let first = wanted(&inputs, "one");
+        let second = wanted(&inputs, "overlap");
         assert_eq!(first, second);
         assert_eq!(first.len(), 3);
         let query: Value = serde_json::from_str(&first[0].params[0].1).unwrap();
         assert_eq!(query["entities"], serde_json::json!(["Q1"]));
         assert!(query.get("area").is_none());
         assert!(query.get("code").is_none());
-        env.fetch_failures.push((first[0].clone(), "server pressure".into()));
+        inputs.fetch_failures.push((first[0].clone(), "server pressure".into()));
         let failed = captures(
-            &env,
+            &inputs,
             &store,
             "landmarks",
             &osm,

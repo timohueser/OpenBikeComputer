@@ -91,6 +91,7 @@ enum Failure {
 }
 
 impl Http {
+    /// A client that sends each request for the HTTPS form of `actual` to `actual`, a test server.
     #[cfg(test)]
     pub(crate) fn loopback(actual: &str) -> Self {
         assert!(actual.starts_with("http://127.0.0.1:"));

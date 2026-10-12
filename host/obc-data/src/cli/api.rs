@@ -1,5 +1,5 @@
 //! What every command shares: the error with its code and exit status, the question before a
-//! change to live, and the JSON output whose schemas `specs/obc-data.md` holds.
+//! change, and the JSON output whose schemas `specs/obc-data.md` holds.
 
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -27,12 +27,10 @@ pub struct Failure<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
-    /// Another admitted operation owns the environment. No work waits for it.
-    Busy,
     /// An argument is not valid, an id names nothing, the command runs outside the repository, or
     /// another command must run first.
     Usage,
-    /// A command that changes live has no terminal to ask in, and no `--yes`.
+    /// A command that asks has no terminal to ask in, and no `--yes`.
     NoTerminal,
     /// The person did not answer yes.
     NotConfirmed,
@@ -41,17 +39,15 @@ pub enum Code {
     /// A fetch or an upstream check failed.
     FetchFailed,
     /// A credential is missing: a fetch failed without the credential of its source, or the R2
-    /// variables are not set. Or `build` has no product that suits the environment.
+    /// variables are not set. Or a layer cannot be planned, or the target cannot take the command.
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
-    /// A release failed its check before an apply, or after an upload the object in the bucket is
-    /// not the file.
+    /// A release failed its check before a target serves it, or after an upload the object in the
+    /// bucket is not the file.
     VerifyFailed,
     /// A run failed: the build, or the run that `runs RUN --follow` shows.
     RunFailed,
-    /// The plan file is not the plan of now: live, the steps or the store changed after it was made.
-    PlanOutdated,
     /// The store or the file system failed.
     Failed,
 }
@@ -59,8 +55,7 @@ pub enum Code {
 impl Code {
     pub fn exit(self) -> u8 {
         match self {
-            Code::Busy | Code::Usage | Code::NoTerminal => 2,
-            Code::PlanOutdated => 3,
+            Code::Usage | Code::NoTerminal => 2,
             Code::Blocked => 4,
             Code::VerifyFailed => 5,
             Code::NotConfirmed
@@ -75,9 +70,8 @@ impl Code {
     /// The fix of an error that gives no other.
     pub(super) fn fix(self) -> &'static str {
         match self {
-            Code::Busy => "Observe the current run or retry after it drains. No work is queued.",
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
-            Code::NoTerminal => "Show the plan to a person. When they agree, run the command again with `--yes`.",
+            Code::NoTerminal => "Show the question to a person. When they agree, run the command again with `--yes`.",
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
             Code::InvalidData => "Correct the file that the message names. `specs/obc-data.md` gives its format.",
             Code::FetchFailed => "Run the command again. A download continues where it stopped.",
@@ -88,9 +82,6 @@ impl Code {
             Code::R2Failed => "Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again.",
             Code::VerifyFailed => "Upload the file again.",
             Code::RunFailed => "`obc data runs RUN` shows the step that failed and its error.",
-            Code::PlanOutdated => {
-                "Make the plan again with `obc data plan ENV --json`, read it, and pass the new file."
-            }
             Code::Failed => "Correct the file or the directory that the message names, then run again.",
         }
     }
@@ -100,14 +91,7 @@ impl Code {
     }
 }
 
-impl Error {
-    pub(super) fn with_run(mut self, run: &str) -> Self {
-        self.run = Some(run.into());
-        self
-    }
-}
-
-/// Finish the caller's journal once, while retaining the original operation failure.
+/// Finish the journal of the run once, and keep the error of the command.
 pub(super) fn finish_run<T>(
     run: crate::engine::runs::Run,
     mut result: Result<T, Error>,
@@ -162,17 +146,13 @@ impl Error {
 }
 
 pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
-    let run = match super::operation_cli::resume(store, command)? {
-        Some(run) => run,
-        None => crate::engine::runs::Run::create(store, command)?,
-    };
+    let run = crate::engine::runs::Run::create(store, command)?;
     let id = run.id();
     eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
     Ok(run)
 }
 
-/// The rule of every command that changes live: it asks in a terminal. Without a terminal it
-/// needs `--yes`, or a plan file where the command takes one.
+/// The rule of every command that asks: it asks in a terminal. Without a terminal it needs `--yes`.
 pub fn confirm(question: &str, yes: bool) -> Result<(), Error> {
     if yes {
         return Ok(());
@@ -205,7 +185,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{apply_cli, build_cli, edit_cli, r2_cli, regions_cli, runs_cli, status_cli};
+    use crate::cli::{overview, r2_cli, runs_cli, update_cli};
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -214,26 +194,14 @@ mod tests {
     fn outputs(generator: &mut SchemaGenerator) -> Vec<(&'static str, Value)> {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
+            schema("`obc data`", generator.subschema_for::<overview::Overview>()),
+            schema("`update`", generator.subschema_for::<update_cli::Updated>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`versions SOURCE`", generator.subschema_for::<crate::cli::versions::Versions>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
-            schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
-            schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
-            schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
-            schema("`region areas`", generator.subschema_for::<regions_cli::Suggestions>()),
-            schema("`region create`", generator.subschema_for::<crate::regions::Region>()),
-            schema("`region delete`", generator.subschema_for::<regions_cli::delete::Deletion>()),
-            schema("`region ENV ID`, `layer`, `undo`", generator.subschema_for::<edit_cli::Edited>()),
-            schema("`status`, `obc data`", generator.subschema_for::<status_cli::Status>()),
+            schema("`areas`", generator.subschema_for::<crate::cli::Areas>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
-            schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
-            schema("`prepare`, `build`, `apply`", generator.subschema_for::<crate::cli::operation_cli::Handle>()),
-            schema("Completed prepare output", generator.subschema_for::<build_cli::Prepared>()),
-            schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
-            schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
-            schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
-            schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),
+            schema("`runs RUN`", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),

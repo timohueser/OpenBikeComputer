@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use obc_data::engine::release::Release;
+use obc_data::release::Release;
 use obc_data::store::{hash_file, sha256_hex, Store};
 use obc_file_source::FileSource;
 use obc_formats::io::ByteSource;
@@ -25,10 +25,11 @@ struct CatalogInputs {
 
 impl CatalogInputs {
     fn read(release: &Release, store: &Store) -> Result<Self, String> {
-        let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no device catalog")?;
+        let output =
+            release.outputs.iter().find(|output| output.step == LAYER).ok_or("release has no device catalog")?;
         let named = |name: &str| -> Result<Vec<u8>, String> {
             let file =
-                layer.files.iter().find(|file| file.path == name).ok_or_else(|| format!("catalog has no `{name}`"))?;
+                output.files.iter().find(|file| file.path == name).ok_or_else(|| format!("catalog has no `{name}`"))?;
             checked(store, &file.sha256, file.size)
         };
         let root: Catalog = serde_json::from_slice(&named("catalog.json")?).map_err(|e| e.to_string())?;
@@ -37,13 +38,13 @@ impl CatalogInputs {
         }
         let owned = release.objects();
         let pin = |sha256: &str, bytes: u64, url: &str| -> Result<Vec<u8>, String> {
-            if owned.get(sha256) != Some(&bytes) || url != format!("/cell-catalog/objects/{sha256}") {
+            if owned.get(sha256) != Some(&bytes) || url != format!("/objects/{sha256}") {
                 return Err(format!("catalog pin `{url}` is not a client object of this release"));
             }
             checked(store, sha256, bytes)
         };
         let artifact = |sha256: &str, bytes: u64, url: &str| -> Result<(), String> {
-            if owned.get(sha256) != Some(&bytes) || url != format!("/cell-catalog/objects/{sha256}") {
+            if owned.get(sha256) != Some(&bytes) || url != format!("/objects/{sha256}") {
                 return Err(format!("artifact pin `{url}` is not a client object of this release"));
             }
             Ok(())
@@ -110,7 +111,7 @@ impl CatalogInputs {
                 return Err("duplicate region selection".into());
             }
         }
-        if !picks.contains_key(&release.region) {
+        if !picks.contains_key(&release.settings.region) {
             return Err("device release omits its required region".into());
         }
         Ok(Self { root, bands, terrain, articles: article_cells, picks })

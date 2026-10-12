@@ -9,10 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
-use obc_data::engine::{snapshot_files, Client, Input, Layer, Run, Step};
-use obc_data::env::Env;
-use obc_data::product::{read, version, BlockedLayer, Product, Steps, Unplanned, Wanted};
+use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Step};
+use obc_data::product::{read, version, BlockedLayer, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Bbox, Regions};
+use obc_data::release::{Output, Release};
 use obc_data::sources::{self, attribution, Source};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
@@ -70,23 +70,19 @@ impl Product for Device {
         "device"
     }
 
-    fn prefix(&self) -> &'static str {
-        "cell-catalog"
+    fn pointer(&self) -> Pointer {
+        Pointer { key: "cell-catalog/catalog.json", step: catalog::LAYER, path: "catalog.json" }
     }
 
-    fn pointer(&self) -> Option<obc_data::product::PointerFn> {
-        Some(catalog::pointer())
-    }
-
-    fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-        catalog::named(release)
+    fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
+        catalog::named(outputs)
     }
 
     fn verify(
         &self,
         _root: &std::path::Path,
-        previous: Option<&obc_data::engine::release::Release>,
-        release: &obc_data::engine::release::Release,
+        previous: Option<&Release>,
+        release: &Release,
         store: &Store,
     ) -> Result<(), String> {
         catalog::verify(previous, release, store)
@@ -95,15 +91,22 @@ impl Product for Device {
     fn status_steps(
         &self,
         root: &std::path::Path,
-        env: &Env,
+        inputs: &Inputs,
         regions: &Regions,
         store: &Store,
     ) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, Ok(()))
+        self.steps_with_tool(root, inputs, regions, store, Ok(()))
     }
 
-    fn steps(&self, root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_osm::ShardRunner::check(&obc_osm::OsmiumRunner::default()))
+    fn steps(
+        &self,
+        root: &std::path::Path,
+        inputs: &Inputs,
+        regions: &Regions,
+        store: &Store,
+    ) -> Result<Steps, Unplanned> {
+        let osmium = obc_osm::ShardRunner::check(&obc_osm::OsmiumRunner::default());
+        self.steps_with_tool(root, inputs, regions, store, osmium)
     }
 }
 
@@ -112,21 +115,21 @@ impl Device {
     pub fn steps_with_tool(
         &self,
         _root: &std::path::Path,
-        env: &Env,
+        inputs: &Inputs,
         regions: &Regions,
         store: &Store,
         osmium: Result<(), String>,
     ) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
-        let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
-        let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let land_polygons = snapshot_version(env, store, LAND, &[], &mut wanted)?;
-        let body = text(env, store, catalog::INDEX, &[], &mut wanted)?;
+        let selection = crate::region_sources::resolve(inputs, regions, store, &mut wanted)?;
+        let tile_list = text(inputs, store, TILE_LIST, &[], &mut wanted)?;
+        let land_polygons = snapshot_version(inputs, store, LAND, &[], &mut wanted)?;
+        let body = text(inputs, store, catalog::INDEX, &[], &mut wanted)?;
         let index_version =
-            if body.is_some() { snapshot_version(env, store, catalog::INDEX, &[], &mut wanted)? } else { None };
+            if body.is_some() { snapshot_version(inputs, store, catalog::INDEX, &[], &mut wanted)? } else { None };
         let catalog_index = body.zip(index_version);
         // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
-        let glo30 = snapshot_version(env, store, GLO30, &[], &mut wanted)?;
+        let glo30 = snapshot_version(inputs, store, GLO30, &[], &mut wanted)?;
         let (Some(selection), Some(tile_list), Some(glo30), true) = (selection, tile_list, glo30, wanted.is_empty())
         else {
             return Err(Unplanned::NeedsFetch(wanted));
@@ -138,7 +141,7 @@ impl Device {
         let mut blocked = Vec::new();
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
             let mut leaf_wanted = Vec::new();
-            let reference = match reference(env, store, leaf, cells, &mut shapes, &mut leaf_wanted) {
+            let reference = match reference(inputs, store, leaf, cells, &mut shapes, &mut leaf_wanted) {
                 Ok(reference) => {
                     wanted.extend(leaf_wanted);
                     reference
@@ -162,7 +165,7 @@ impl Device {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let content = content_declarations(env, store, &selection)?;
+        let content = content_declarations(inputs, store, &selection)?;
         blocked.extend(content.blocked);
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for source in &selection.sources {
@@ -209,19 +212,19 @@ impl Device {
                 steps.push(step);
             }
         }
-        let inputs = crate::region_sources::inputs("device", &selection);
+        let source_steps = crate::region_sources::inputs("device", &selection);
         let extract = if selection.sources.len() == 1 {
-            Input::Step { name: inputs[0].name.clone(), files: vec!["source.osm.pbf".into()] }
+            Input::Step { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }
         } else {
             match &osmium {
-                Ok(()) => steps.push(crate::region_sources::combined("device/region-osm", &inputs)),
+                Ok(()) => steps.push(crate::region_sources::combined("device/region-osm", &source_steps)),
                 Err(reason) => {
                     blocked.push(BlockedLayer::new("device/region-osm", &crate::region_sources::OSM, reason.clone()))
                 }
             }
             Input::Step { name: "device/region-osm".into(), files: vec!["osm.pbf".into()] }
         };
-        steps.extend(inputs);
+        steps.extend(source_steps);
         match osmium {
             Ok(()) => steps.push(osm(extract, &osm_leaves)),
             Err(reason) => blocked.push(BlockedLayer::new("device/osm", &crate::region_sources::OSM, reason)),
@@ -230,8 +233,8 @@ impl Device {
             let (body, version) =
                 catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
             match catalog::step(
-                env,
-                regions.get(&env.region).expect("the environment names a region"),
+                inputs,
+                regions.get(&inputs.settings.region).expect("the settings name a region"),
                 store,
                 &selection,
                 &steps,
@@ -257,7 +260,7 @@ impl Device {
 }
 
 pub(crate) fn content_declarations(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     selection: &crate::region_sources::Selection,
 ) -> Result<Steps, Unplanned> {
@@ -272,7 +275,7 @@ pub(crate) fn content_declarations(
             } else {
                 format!("{}/{}", content_layer(collection), source.id)
             };
-            let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
+            let capture = match captures_at(inputs, store, &source.extract, &area, collection) {
                 Ok(capture) => capture,
                 Err(Unplanned::NeedsFetch(fetches)) => {
                     wanted.extend(fetches);
@@ -284,8 +287,8 @@ pub(crate) fn content_declarations(
                 }
                 Err(error) => return Err(error),
             };
-            for (_, inputs) in capture {
-                let mut step = content(collection, inputs);
+            for (_, reads) in capture {
+                let mut step = content(collection, reads);
                 step.name = name.clone();
                 content_steps.push(step);
             }
@@ -297,299 +300,37 @@ pub(crate) fn content_declarations(
     Ok(Steps { steps: content_steps, blocked })
 }
 
-/// The capture of one area's collection with its exact held extract and polygon inputs.
+/// The shared Wikimedia content of one collection of the region `area`, for its extract and its
+/// `.poly`.
 fn captures_at(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     extract: &str,
     area: &[(String, String)],
-    blocked: &mut Vec<BlockedLayer>,
-    selected: (&'static str, &str),
+    collection: &'static str,
 ) -> Result<Vec<(&'static str, Vec<Input>)>, Unplanned> {
-    let poly = version(env, store, POLY, area).map_err(Unplanned::Failed)?;
+    let poly = version(inputs, store, POLY, area).map_err(Unplanned::Failed)?;
     let poly = poly.map_err(|_| Unplanned::Failed(format!("the store has no {POLY} of {area:?}")))?;
-    let now =
-        [(EXTRACTS, extract), (POLY, poly.as_str())].map(|(source, version)| file(env, store, source, version, area));
+    let now = [(EXTRACTS, extract), (POLY, poly.as_str())].map(|(source, version)| file(store, source, version, area));
     let [osm, poly] = now.map(|file| file.map(|(_, sha256)| format!("sha256:{sha256}")));
-    let (osm, poly) = (osm?, poly?);
-    let (collection, layer) = selected;
-    let layer = layer.to_string();
-    let legacy = store.requests_of(CAPTURES[0]).map_err(Unplanned::Failed)?.iter().any(|request| {
-        request.params.iter().any(|(key, value)| key == "area" && value == &area[0].1)
-            && request.params.iter().any(|(key, value)| key == "collection" && value == collection)
-    });
-    if CAPTURES.iter().any(|source| env.moves.contains_key(*source))
-        || !legacy
-            && !env.live.keys().chain(env.planned.iter().flat_map(|planned| planned.keys())).any(|(source, params)| {
-                CAPTURES.contains(&source.as_str()) && params.iter().any(|(key, _)| key == "area")
-            })
-    {
-        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
-    }
-    let (params, read) = match capture_params_at(env, store, collection, area, (&osm, &poly), &layer) {
-        Ok(params) => params,
-        Err(Unplanned::Invalid(reason)) => {
-            blocked.push(BlockedLayer::new(layer.clone(), &DEVICE_LANDMARKS, reason));
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(error),
-    };
-    if let Some((_, error)) = env
-        .fetch_failures
-        .iter()
-        .find(|(wanted, _)| CAPTURES.contains(&wanted.source.as_str()) && wanted.params == params)
-    {
-        let reason = format!("capture fetch failed: {error}; prepare again to retry");
-        blocked.push(BlockedLayer::new(layer.clone(), &DEVICE_LANDMARKS, reason));
-        return Ok(Vec::new());
-    }
-    let bundle = capture_refresh(env, &params)?;
-    let mut inputs = Vec::new();
-    let mut missing = Vec::new();
-    for source in CAPTURES {
-        let version = match &bundle {
-            Some(version) => {
-                let key = (source.into(), obc_data::store::sorted(&params));
-                env.requests.borrow_mut().insert(key.clone());
-                if let Some(version) = version {
-                    env.read.borrow_mut().insert(key, version.clone());
-                } else {
-                    missing.push(Wanted { source: source.into(), version: None, params: params.clone() });
-                }
-                version.clone()
-            }
-            None => snapshot_version(env, store, source, &params, &mut missing)?,
-        };
-        if let Some(version) = version {
-            if snapshot_files(store, source, &version, &params, &[]).map_err(Unplanned::Failed)?.is_none() {
-                missing.push(Wanted { source: source.into(), version: Some(version), params: params.clone() });
-                continue;
-            }
-            let params = params.clone();
-            inputs.push(Input::Snapshot { source: source.into(), version, params, files: Vec::new() });
-        }
-    }
-    if !missing.is_empty() {
-        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
-    }
-    inputs.extend(read);
-    Ok(vec![(collection, inputs)])
-}
-
-/// A capture manifest pins its sibling article and image files from the same acquisition.
-fn capture_refresh(env: &Env, params: &[(String, String)]) -> Result<Option<Option<String>>, Unplanned> {
-    if env.planned.is_some() {
-        return Ok(None);
-    }
-    let key = |source: &str| (source.to_string(), obc_data::store::sorted(params));
-    let explicit = |source: &str| env.moves.contains_key(source) && !env.stale.contains(source);
-    let resolved = CAPTURES.iter().filter_map(|source| env.resolved.get(&key(source))).max().cloned();
-    let refreshing = resolved.is_some()
-        || CAPTURES.iter().any(|source| {
-            explicit(source) || (env.moves.contains_key(*source) && env.stale_requests.contains(&key(source)))
-        });
-    if !refreshing {
-        return Ok(None);
-    }
-    let named = CAPTURES
-        .iter()
-        .filter(|source| explicit(source))
-        .filter_map(|source| env.moves.get(*source)?.as_ref())
-        .collect::<BTreeSet<_>>();
-    if named.len() > 1 {
-        return Err(invalid("a Wikimedia capture needs one version for Wikidata, Wikipedia and Commons".into()));
-    }
-    Ok(Some(named.first().map(|version| (*version).clone()).or(resolved)))
-}
-
-/// The params of a fetch.
-type Params = Vec<(String, String)>;
-
-/// The params of the capture of `collection` for the region `area`, and the extract and the `.poly`
-/// that it reads: those of the capture that `env` reads (a saved plan, or live), or else of the
-/// newest capture in the store. Policy refreshes retain these params. A new extract alone asks
-/// for no new capture. An explicit moved capture reads
-/// the extract and the `.poly` of `now`, with the code of now.
-#[cfg(test)]
-fn capture_params(
-    env: &Env,
-    store: &Store,
-    collection: &str,
-    area: &[(String, String)],
-    now: (&str, &str),
-) -> Result<(Params, Vec<Input>), Unplanned> {
-    capture_params_at(env, store, collection, area, now, &content_layer(collection))
-}
-
-fn capture_params_at(
-    env: &Env,
-    store: &Store,
-    collection: &str,
-    area: &[(String, String)],
-    now: (&str, &str),
-    layer: &str,
-) -> Result<(Params, Vec<Input>), Unplanned> {
-    let value = |params: &[(String, String)], name: &str| {
-        params.iter().find(|(param, _)| param == name).map(|(_, value)| value.clone())
-    };
-    let ours = |params: &[(String, String)]| {
-        value(params, "collection").as_deref() == Some(collection)
-            && value(params, "area").as_deref() == Some(area[0].1.as_str())
-    };
-    let mut kept = None;
-    let moved = CAPTURES.iter().any(|source| env.moves.contains_key(*source) && !env.stale.contains(*source));
-    if !moved || env.planned.is_some() {
-        let named: Vec<&Vec<(String, String)>> = match &env.planned {
-            Some(planned) => planned.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
-            None => env.live.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
-        };
-        kept = named.into_iter().find(|params| ours(params)).cloned();
-        if kept.is_none() && env.planned.is_none() {
-            let stored = store.requests_of(CAPTURES[0]).map_err(Unplanned::Failed)?;
-            kept = stored
-                .into_iter()
-                .filter(|request| ours(&request.params))
-                .max_by(|a, b| a.version.cmp(&b.version))
-                .map(|request| request.params);
-        }
-    }
-    // The extract and the `.poly` that the capture read, which need not be those of now. Their
-    // input names the file, not the params: a fetch has one version in live.
-    let reads = |osm: &str, poly: &str, held: bool| -> Result<Option<Vec<Input>>, Unplanned> {
-        let mut inputs = Vec::new();
-        for (source, digest) in [(EXTRACTS, osm), (POLY, poly)] {
-            let Some((version, file)) =
-                by_digest(env, store, source, area, digest, held.then_some((layer, collection)))?
-            else {
-                return Ok(None);
-            };
-            inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
-        }
-        Ok(Some(inputs))
-    };
-    if let Some(params) = kept {
-        for source in CAPTURES {
-            let _ = version(env, store, source, &params).map_err(Unplanned::Failed)?;
-        }
-        let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
-        if let Some(read) = reads(&osm, &poly, true)? {
-            return Ok((params, read));
-        }
-        return Err(invalid(format!("{collection} capture inputs missing; plan with `--move wikidata`")));
-    }
-    let read = reads(now.0, now.1, false)?
-        .ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
-    let code = obc_pack::step::CAPTURE_REVISION;
-    let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", code)];
-    Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
+    shared_content::captures(inputs, store, collection, &osm?, &poly?, extract, area)
 }
 
 /// The name and the SHA-256 of the one file that the fetch of `source@version` with `params` gave.
 fn file(
-    env: &Env,
     store: &Store,
     source: &str,
     version: &str,
     params: &[(String, String)],
 ) -> Result<(String, String), Unplanned> {
     let missing = || Unplanned::Failed(format!("the store has no file of {source}@{version} {params:?}"));
-    let names = store.requested(source, version, params).map_err(Unplanned::Failed)?;
-    let snapshot = store.snapshot(source, version).map_err(Unplanned::Failed)?;
-    if let (Some(names), Some(snapshot)) = (names, snapshot) {
-        let file = match &names[..] {
-            [name] => snapshot.files.into_iter().find(|file| &file.name == name).ok_or_else(missing)?,
-            _ => {
-                return Err(Unplanned::Failed(format!(
-                    "a fetch of {source} with {params:?} gives {} files",
-                    names.len()
-                )));
-            }
-        };
-        return Ok((file.name, file.sha256));
-    }
-    let params = obc_data::store::sorted(params);
-    let files: BTreeSet<_> = env
-        .retained
-        .iter()
-        .filter(|read| read.key.source == source && read.key.version == version && read.params == params)
-        .flat_map(|read| &read.record.files)
-        .map(|file| (file.name.clone(), file.sha256.clone(), file.url.clone(), file.size))
-        .collect();
-    match files.into_iter().collect::<Vec<_>>().as_slice() {
-        [(name, digest, _, _)] => Ok((name.clone(), digest.clone())),
-        _ => Err(missing()),
-    }
-}
-
-/// The version and the name of the file of a fetch of `source` with `params` whose digest is
-/// `sha256:<hex>`, or `None` when the store has it no more: a clean keeps the request record of a
-/// version whose snapshot record it deletes.
-fn by_digest(
-    env: &Env,
-    store: &Store,
-    source: &str,
-    params: &[(String, String)],
-    digest: &str,
-    held_scope: Option<(&str, &str)>,
-) -> Result<Option<(String, String)>, Unplanned> {
-    let area = params.iter().find(|(name, _)| name == "area").map(|(_, value)| value.as_str());
-    let mut retained: Vec<_> = env
-        .retained
-        .iter()
-        .filter(|read| read.key.source == source && held_scope.is_some_and(|(step, _)| step == read.step))
-        .collect();
-    if retained.is_empty() {
-        if let Some((_, collection)) = held_scope {
-            fn param<'a>(params: &'a [(String, String)], name: &str) -> Option<&'a str> {
-                params.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
-            }
-            let pin = if source == POLY { "poly" } else { "osm" };
-            let consumers: BTreeSet<_> = env
-                .retained
-                .iter()
-                .filter(|read| {
-                    CAPTURES.contains(&read.key.source.as_str())
-                        && param(&read.params, "collection") == Some(collection)
-                        && param(&read.params, "area") == area
-                        && param(&read.params, pin) == Some(digest)
-                })
-                .map(|read| &read.step)
-                .collect();
-            retained = env
-                .retained
-                .iter()
-                .filter(|read| read.key.source == source && consumers.contains(&read.step))
-                .collect();
-        }
-    }
-    let held: BTreeSet<_> = retained
-        .iter()
-        .copied()
-        .flat_map(|read| read.record.files.iter().map(move |file| (read, file)))
-        .filter(|(_, file)| digest.strip_prefix("sha256:") == Some(file.sha256.as_str()))
-        .map(|(read, file)| (read.key.version.clone(), file.name.clone()))
-        .collect();
-    if held.len() > 1 {
-        return Err(Unplanned::Failed(format!("{source}: retained capture input {digest} has ambiguous versions")));
-    }
-    if let Some(held) = held.into_iter().next() {
-        return Ok(Some(held));
-    }
-    if !retained.is_empty() {
-        return Err(Unplanned::Failed(format!(
-            "{source}: retained capture input {digest} disagrees with its content layer"
-        )));
-    }
-    for request in store.requests(source, params).map_err(Unplanned::Failed)? {
-        if store.snapshot(source, &request.version).map_err(Unplanned::Failed)?.is_none() {
-            continue;
-        }
-        let (name, sha256) = file(env, store, source, &request.version, params)?;
-        if digest.strip_prefix("sha256:") == Some(sha256.as_str()) {
-            return Ok(Some((request.version, name)));
-        }
-    }
-    Ok(None)
+    let names = store.requested(source, version, params).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
+    let snapshot = store.snapshot(source, version).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
+    let [name] = &names[..] else {
+        return Err(Unplanned::Failed(format!("a fetch of {source} with {params:?} gives {} files", names.len())));
+    };
+    let file = snapshot.files.into_iter().find(|file| &file.name == name).ok_or_else(missing)?;
+    Ok((file.name, file.sha256))
 }
 
 /// The compiled landmarks or peaks of the region, from their capture, the `.poly` and the extract.
@@ -660,13 +401,13 @@ fn leaf_layer(prefix: &str, leaf: LeafId) -> String {
 /// The version of the fetch of `source` with `params` that the step list reads, or `None` while
 /// the store has no fetch of it; then `wanted` has its fetch.
 fn snapshot_version(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     source: &str,
     params: &[(String, String)],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<String>, Unplanned> {
-    Ok(match version(env, store, source, params).map_err(Unplanned::Failed)? {
+    Ok(match version(inputs, store, source, params).map_err(Unplanned::Failed)? {
         Ok(version) => Some(version),
         Err(fetch) => {
             wanted.push(fetch);
@@ -732,7 +473,7 @@ type Shape = (Coverage, BTreeSet<CellId>);
 /// The archive tiles of `tiles` where `source` can have a height: those that meet its `extent` and
 /// the polygon of one of its `areas`. `None` while the store lacks a polygon; then `wanted` has it.
 fn model_tiles(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     source: &Source,
     tiles: &BTreeSet<CellId>,
@@ -751,7 +492,7 @@ fn model_tiles(
         if shapes.contains_key(area) {
             continue;
         }
-        let Some(poly) = text(env, store, POLY, &[("area".into(), area.clone())], wanted)? else { continue };
+        let Some(poly) = text(inputs, store, POLY, &[("area".into(), area.clone())], wanted)? else { continue };
         let coverage = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
         let boundary = coverage.boundary_cells(TILE_LOG2.into());
         shapes.insert(area.clone(), (coverage, boundary));
@@ -778,7 +519,7 @@ fn model_tiles(
 /// lacks a fetch; then `wanted` has it. A missing fetch of a model behind a credential that this
 /// machine lacks blocks the reference layer and its dependents.
 fn reference(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     leaf: LeafId,
     cells: &[CellId],
@@ -793,27 +534,21 @@ fn reference(
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
     let name = leaf_layer("device/reference", leaf);
-    let (mut inputs, mut models, mut missing) = (Vec::new(), Vec::new(), false);
+    let (mut reads, mut models, mut missing) = (Vec::new(), Vec::new(), false);
     for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-")) {
-        let Some(read) = model_tiles(env, store, source, &tiles, shapes, wanted)? else {
+        let Some(read) = model_tiles(inputs, store, source, &tiles, shapes, wanted)? else {
             missing = true;
             continue;
         };
         if read.is_empty() {
             continue;
         }
-        let version = version(env, store, &source.id, &[]).map_err(Unplanned::Failed)?;
-        // The files of each tile at that version: in the store, or in the input copy of a live layer.
+        let version = version(inputs, store, &source.id, &[]).map_err(Unplanned::Failed)?;
+        // The files of each tile at that version in the store.
         let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         if let Ok(version) = &version {
             let stored = store.snapshot(&source.id, version).map_err(Unplanned::Failed)?;
-            let stored = stored.into_iter().flat_map(|snapshot| snapshot.files).map(|file| file.name);
-            let copied = env
-                .retained
-                .iter()
-                .filter(|read| read.key.source == source.id && &read.key.version == version && read.params.is_empty());
-            let copied = copied.flat_map(|read| read.record.files.iter().map(|file| file.name.clone()));
-            for file in stored.chain(copied) {
+            for file in stored.into_iter().flat_map(|snapshot| snapshot.files).map(|file| file.name) {
                 if let Some((tile, _)) = file.strip_prefix("#tile=").and_then(|rest| rest.split_once('/')) {
                     known.entry(tile.into()).or_default().insert(file);
                 }
@@ -841,7 +576,7 @@ fn reference(
             models
                 .push(serde_json::json!({"source": source.id, "version": version, "credit": attribution(&source.id)}));
             let files = files.into_iter().collect();
-            inputs.push(Input::Snapshot { source: source.id.clone(), version, params: Vec::new(), files });
+            reads.push(Input::Snapshot { source: source.id.clone(), version, params: Vec::new(), files });
         }
     }
     if models.is_empty() || missing {
@@ -853,7 +588,7 @@ fn reference(
         ..crate::python(
             &DEVICE_TERRAIN,
             &name,
-            inputs,
+            reads,
             serde_json::json!({"models": models, "tiles": tiles}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
             &["reference"],
@@ -893,13 +628,13 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
 /// The text of the one file that a fetch of `source` with `params` gives, or `None` while the
 /// store lacks it; then `wanted` has its fetch.
 pub(crate) fn text(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     source: &str,
     params: &[(String, String)],
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<String>, Unplanned> {
-    let files = match read(env, store, source, params).map_err(Unplanned::Failed)? {
+    let files = match read(inputs, store, source, params).map_err(Unplanned::Failed)? {
         Ok(files) => files,
         Err(fetch) => {
             wanted.push(fetch);
@@ -929,7 +664,7 @@ pub fn box_poly(bbox: &Bbox) -> String {
 pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
-    use obc_data::engine::plan::{plan, Plan};
+    use obc_data::engine::plan::{plan, Kept, Plan};
     use obc_data::engine::runs::{Context, Limits, Run as RunLog};
     use obc_data::engine::Request;
     use obc_data::fetch::http::Http;
@@ -939,8 +674,16 @@ pub(crate) mod tests {
     use super::*;
     use obc_data::regions::Area;
 
-    fn map_steps(root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        Device.steps_with_tool(root, env, regions, store, Ok(()))
+    fn map_steps(root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        Device.steps_with_tool(root, inputs, regions, store, Ok(()))
+    }
+
+    /// The inputs of `region` whose serving release reads the GLO-30 tiles at `glo30` and the tile
+    /// list at `1`.
+    pub(crate) fn serving(region: &str, glo30: &str) -> Inputs {
+        let settings = obc_data::settings::Settings { region: region.into(), ..Default::default() };
+        let read = |source: &str, version: &str| ((source.to_string(), Vec::new()), version.to_string());
+        Inputs { settings, serving: [read(GLO30, glo30), read(TILE_LIST, "1")].into(), ..Inputs::default() }
     }
 
     pub(crate) struct Temp(pub(crate) PathBuf);
@@ -960,12 +703,8 @@ pub(crate) mod tests {
     }
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
-    fn grimsel(store: &Store, glo30: &str) -> (Env, Regions) {
-        let live = BTreeMap::from([
-            ((GLO30.into(), Vec::new()), [glo30.to_string()].into()),
-            ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
-        ]);
-        let env = Env { name: "test".into(), region: "grimsel".into(), live, ..Env::default() };
+    fn grimsel(store: &Store, glo30: &str) -> (Inputs, Regions) {
+        let inputs = serving("grimsel", glo30);
         let regions = Regions::load(&root()).unwrap();
         let Area::Box { bbox } = &regions.get("grimsel").unwrap().area else { unreachable!() };
         let poly = box_poly(bbox);
@@ -974,11 +713,10 @@ pub(crate) mod tests {
             "geometry": serde_json::from_str::<serde_json::Value>(&Coverage::parse_poly(&poly).unwrap().geojson()).unwrap()}]});
         fetched(store, catalog::INDEX, "1", &[], &[("index.json".into(), index.to_string())]);
         let area = [("area".into(), "europe/grimsel".into())];
-        captured(store, "1", "europe/grimsel", "osm", &poly);
         fetched(store, POLY, "1", &area, &[("europe/grimsel.poly".into(), poly)]);
-        fetched(store, EXTRACTS, "1", &area, &[("europe/grimsel.osm.pbf".into(), "osm".into())]);
+        extracted(store, "1", &area, "europe/grimsel.osm.pbf");
         fetched(store, LAND, "1", &[], &[("land.zip".into(), "land".into())]);
-        (env, regions)
+        (inputs, regions)
     }
 
     const FREIBURG: &str =
@@ -986,7 +724,7 @@ pub(crate) mod tests {
 
     /// A Geofabrik region about Freiburg, in leaf `0037-0032`, whose `.poly` the store has, and the
     /// tile list.
-    fn freiburg(store: &Store) -> (Env, Regions) {
+    fn freiburg(store: &Store) -> (Inputs, Regions) {
         let area = [("area".to_string(), "europe/test".to_string())];
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
         with_index(store);
@@ -996,12 +734,7 @@ pub(crate) mod tests {
             "name = \"Test\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
         )
         .unwrap();
-        let live = BTreeMap::from([
-            ((GLO30.into(), Vec::new()), ["1".to_string()].into()),
-            ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
-        ]);
-        let env = Env { name: "test".into(), region: "europe/test".into(), live, ..Env::default() };
-        (env, Regions::new(vec![region]).unwrap())
+        (serving("europe/test", "1"), Regions::new(vec![region]).unwrap())
     }
 
     pub(crate) fn with_index(store: &Store) {
@@ -1014,37 +747,15 @@ pub(crate) mod tests {
     /// The extract of the Freiburg region and the land polygons.
     fn with_osm(store: &Store) {
         let area = [("area".to_string(), "europe/test".to_string())];
-        fetched(store, EXTRACTS, "1", &area, &[("europe/test.osm.pbf".into(), "osm".into())]);
+        extracted(store, "1", &area, "europe/test.osm.pbf");
         fetched(store, LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
     }
 
-    /// The params of the Wikimedia capture of `collection` of the extract and the `.poly` with
-    /// these texts.
-    fn capture_params(collection: &str, area: &str, osm: &str, poly: &str) -> Vec<(String, String)> {
-        vec![
-            ("collection".into(), collection.into()),
-            ("area".into(), area.into()),
-            ("osm".into(), format!("sha256:{}", sha256_hex(osm.as_bytes()))),
-            ("poly".into(), format!("sha256:{}", sha256_hex(poly.as_bytes()))),
-            ("code".into(), obc_pack::step::CAPTURE_REVISION.into()),
-        ]
-    }
-
-    /// The landmark and peak captures at `version` for the region `area`, of the extract and the
-    /// `.poly` with these texts.
-    pub(crate) fn captured(store: &Store, version: &str, area: &str, osm: &str, poly: &str) {
-        for collection in ["landmarks", "peaks"] {
-            let params = capture_params(collection, area, osm, poly);
-            let recipe = format!("#{collection}=0/recipe.json");
-            for source in CAPTURES {
-                fetched(store, source, version, &params, &[(recipe.clone(), version.into())]);
-            }
-        }
-    }
-
-    /// The landmark and peak captures of the Freiburg region at `version`.
-    fn with_captures(store: &Store, version: &str) {
-        captured(store, version, "europe/test", "osm", FREIBURG);
+    /// The extract `name` of the fetch with `params` at `version`: a real one without a Wikimedia
+    /// link, so its content steps fetch no shared content.
+    pub(crate) fn extracted(store: &Store, version: &str, params: &[(String, String)], name: &str) {
+        let pbf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/planner.osm.pbf")).unwrap();
+        stored(store, EXTRACTS, version, params, &[(name.into(), pbf)]);
     }
 
     /// Add the files `(name, text)` to the record of `source@version`, as a fetch with `params`
@@ -1056,16 +767,23 @@ pub(crate) mod tests {
         params: &[(String, String)],
         files: &[(String, String)],
     ) {
+        let files: Vec<(String, Vec<u8>)> =
+            files.iter().map(|(name, text)| (name.clone(), text.clone().into())).collect();
+        stored(store, source, version, params, &files);
+    }
+
+    /// [`fetched`] with the bytes of each file.
+    fn stored(store: &Store, source: &str, version: &str, params: &[(String, String)], files: &[(String, Vec<u8>)]) {
         let mut snapshot = store.snapshot(source, version).unwrap().unwrap_or_else(|| Snapshot {
             source: source.into(),
             version: version.into(),
             files: Vec::new(),
         });
-        for (name, text) in files {
-            let (sha256, file) = (sha256_hex(text.as_bytes()), store.partial("file"));
-            write_atomic(&file, text.as_bytes()).unwrap();
+        for (name, bytes) in files {
+            let (sha256, file) = (sha256_hex(bytes), store.partial("file"));
+            write_atomic(&file, bytes).unwrap();
             store.insert(&file, &sha256).unwrap();
-            let (url, size) = (format!("https://example.org/{name}"), text.len() as u64);
+            let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
             if snapshot.file(&url).is_none() {
                 snapshot.files.push(FileRecord { name: name.clone(), url, size, sha256, retrieved: String::new() });
             }
@@ -1097,9 +815,9 @@ pub(crate) mod tests {
     }
 
     /// Record that no national model has a height in a tile that the step list asks for.
-    pub(crate) fn without_models(store: &Store, env: &Env, regions: &Regions) {
+    pub(crate) fn without_models(store: &Store, inputs: &Inputs, regions: &Regions) {
         with_model_areas(store);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), env, regions, store) else { return };
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), inputs, regions, store) else { return };
         for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
             let tile = &fetch.params[0].1;
             fetched(store, &fetch.source, "1", &[], &[(format!("#tile={tile}/{tile}.none"), String::new())]);
@@ -1135,21 +853,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_saved_id_and_two_area_versions_keep_exact_current_and_held_capture_inputs() {
+    fn a_saved_id_and_two_areas_read_the_newest_version_of_each_area() {
         let temp = temp("saved-source-area");
         let store = Store::at(temp.0.join("store"));
-        let (mut env, _) = freiburg(&store);
+        let (mut inputs, _) = freiburg(&store);
         with_osm(&store);
-        with_captures(&store, "1");
-        env.region = "ride/freiburg".into();
+        inputs.settings.region = "ride/freiburg".into();
         let region = obc_data::regions::parse_region(
-            &env.region,
+            &inputs.settings.region,
             "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
-        without_models(&store, &env, &regions);
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
+        without_models(&store, &inputs, &regions);
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         let osm = listed.steps.iter().find(|step| step.name == "device/source/europe/test").unwrap();
         let Input::Snapshot { params, .. } = &osm.inputs[0] else {
@@ -1158,8 +875,12 @@ pub(crate) mod tests {
         assert_eq!(params, &[("area".into(), "europe/test".into())]);
         let catalog = listed.steps.iter().find(|step| step.name == catalog::LAYER).unwrap();
         assert_eq!(catalog.options["sources"][0]["extract_id"], "europe/test");
-        let primary =
-            catalog.options["picks"].as_array().unwrap().iter().find(|pick| pick["id"] == env.region).unwrap();
+        let primary = catalog.options["picks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pick| pick["id"] == inputs.settings.region)
+            .unwrap();
         assert_eq!(primary["name"], "My ride");
 
         fetched(
@@ -1170,26 +891,26 @@ pub(crate) mod tests {
             &[("europe/second.poly".into(), FREIBURG.into())],
         );
         let second = [("area".into(), "europe/second".into())];
-        fetched(&store, EXTRACTS, "1", &second, &[("europe/second.osm.pbf".into(), "old second osm".into())]);
-        captured(&store, "1", "europe/second", "old second osm", FREIBURG);
+        extracted(&store, "1", &second, "europe/second.osm.pbf");
         fetched(&store, POLY, "2", &second, &[("europe/second.poly".into(), FREIBURG.replace("47.99", "47.98"))]);
-        fetched(&store, EXTRACTS, "2", &second, &[("europe/second-2.osm.pbf".into(), "new second osm".into())]);
+        extracted(&store, "2", &second, "europe/second-2.osm.pbf");
         // Include the second source in the index without changing the requested ground.
         let mut index: serde_json::Value =
-            serde_json::from_str(&text(&env, &store, catalog::INDEX, &[], &mut Vec::new()).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&text(&inputs, &store, catalog::INDEX, &[], &mut Vec::new()).unwrap().unwrap())
+                .unwrap();
         let mut feature = index["features"][0].clone();
         feature["properties"]["id"] = "second".into();
         feature["properties"]["urls"]["pbf"] = "https://download.geofabrik.de/europe/second-latest.osm.pbf".into();
         index["features"].as_array_mut().unwrap().push(feature);
         fetched(&store, catalog::INDEX, "2", &[], &[("index-2.json".into(), index.to_string())]);
         let region = obc_data::regions::parse_region(
-            &env.region,
+            &inputs.settings.region,
             "name = \"Two areas\"\nkind = \"geofabrik\"\nareas = [\"europe/test\",\"europe/second\"]\n",
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
-        without_models(&store, &env, &regions);
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
+        without_models(&store, &inputs, &regions);
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         let raw = |name: &str| listed.steps.iter().find(|step| step.name == format!("device/source/{name}")).unwrap();
         assert!(
@@ -1205,8 +926,10 @@ pub(crate) mod tests {
                 .iter()
                 .find(|step| step.name == format!("device/{collection}-content/europe/second"))
                 .unwrap();
-            assert!(content.inputs.iter().any(|input| matches!(input, Input::Snapshot { source, version, params, files } if source == EXTRACTS && version == "1" && params.is_empty() && files == &["europe/second.osm.pbf"])));
-            assert!(content.inputs.iter().any(|input| matches!(input, Input::Snapshot { source, version, params, files } if source == POLY && version == "1" && params.is_empty() && files == &["europe/second.poly"])));
+            for source in [EXTRACTS, POLY] {
+                let read = |input: &Input| matches!(input, Input::Snapshot { source: read, version, params, .. } if read == source && version == "2" && params == &second);
+                assert!(content.inputs.iter().any(read), "{collection} content reads {source} 2 of the area");
+            }
         }
         let catalog = listed.steps.iter().find(|step| step.name == catalog::LAYER).unwrap();
         assert_eq!(
@@ -1214,55 +937,59 @@ pub(crate) mod tests {
             serde_json::json!([
             {"extract_id":"europe/second", "snapshot":"2"}, {"extract_id":"europe/test", "snapshot":"1"}])
         );
-        assert!(catalog.options["picks"].as_array().unwrap().iter().any(|pick| pick["id"] == env.region));
-        assert!(env.read.borrow().contains_key(&(EXTRACTS.into(), obc_data::store::sorted(&second))));
+        assert!(catalog.options["picks"].as_array().unwrap().iter().any(|pick| pick["id"] == inputs.settings.region));
+        assert!(inputs.requests.borrow().contains(&(EXTRACTS.into(), obc_data::store::sorted(&second))));
     }
 
     #[test]
     fn a_new_glo30_tile_in_one_leaf_rebuilds_that_leaf_only() {
         let temp = temp("leaves");
         let store = Store::at(temp.0.join("store"));
+        // Two versions after the `start` of GLO-30.
+        const OLD: &str = "2023-01-01";
+        const NEW: &str = "2024-01-01";
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E007", "N47_00_E008"]);
-        let (env, regions) = grimsel(&store, "1");
-        without_models(&store, &env, &regions);
+        let (inputs, regions) = grimsel(&store, OLD);
+        without_models(&store, &inputs, &regions);
         let steps = |version: &str| {
-            let (env, regions) = grimsel(&store, version);
-            let mut steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+            let (inputs, regions) = grimsel(&store, version);
+            let mut steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
             steps.retain(|step| step.name.starts_with("device/terrain/"));
             steps.iter_mut().for_each(|step| step.run = Run::Rust(fake));
             steps
         };
-        let names: Vec<String> = steps("1").iter().map(|step| step.name.clone()).collect();
+        let names: Vec<String> = steps(OLD).iter().map(|step| step.name.clone()).collect();
         assert_eq!(names, ["device/terrain/0037-0032", "device/terrain/0037-0033"], "no model has data there");
         let west = "Copernicus_DSM_COG_10_N46_00_E007_00_DEM";
-        glo30_fetched(&store, &steps("1"), "1", |tile| format!("{tile} 1"));
-        glo30_fetched(&store, &steps("2"), "2", |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
+        glo30_fetched(&store, &steps(OLD), OLD, |tile| format!("{tile} 1"));
 
         let (root, http) = (root(), Http::new());
+        let kept = Kept::new();
         let context =
-            Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
-        let first = plan(&store, &steps("1")).unwrap();
+            Context { store: &store, root: &root, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
+        let first = plan(&store, &steps(OLD)).unwrap();
         assert_eq!(builds(&first), names);
         let mut run = RunLog::create(&store, "build test").unwrap();
-        run.build(&context, &steps("1"), &first).unwrap();
+        run.build(&context, &steps(OLD), &first).unwrap();
         run.finish(None).unwrap();
-        assert_eq!(builds(&plan(&store, &steps("2")).unwrap()), [&names[0]], "the new tile is west of the edge");
+        glo30_fetched(&store, &steps(NEW), NEW, |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
+        assert_eq!(builds(&plan(&store, &steps(NEW)).unwrap()), [&names[0]], "the new tile is west of the edge");
     }
 
     #[test]
     fn a_leaf_reads_the_tiles_of_its_cells_that_the_tile_list_names() {
         let temp = temp("tile-list");
         let store = Store::at(temp.0.join("store"));
-        let (env, regions) = grimsel(&store, "1");
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
+        let (inputs, regions) = grimsel(&store, "1");
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
             panic!("no tile list")
         };
         assert_eq!(wanted, [Wanted { source: TILE_LIST.into(), version: Some("1".into()), params: Vec::new() }]);
 
         // As if N47_00_E007 were sea.
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
-        without_models(&store, &env, &regions);
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        without_models(&store, &inputs, &regions);
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let terrain: Vec<&Step> = terrain_steps(&steps).collect();
         assert_eq!(tiles(terrain[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         // The squares of the eastern cells reach no tile west of 8°.
@@ -1273,15 +1000,14 @@ pub(crate) mod tests {
     fn a_band_reads_the_osm_of_its_leaf_the_land_and_the_terrain_when_its_bytes_have_heights() {
         let temp = temp("bands");
         let store = Store::at(temp.0.join("store"));
-        let (env, regions) = freiburg(&store);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
+        let (inputs, regions) = freiburg(&store);
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
             panic!("no extract")
         };
         assert_eq!(wanted.iter().map(|fetch| fetch.source.as_str()).collect::<Vec<_>>(), [EXTRACTS, LAND]);
         with_osm(&store);
-        without_models(&store, &env, &regions);
-        with_captures(&store, "1");
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        without_models(&store, &inputs, &regions);
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -1313,76 +1039,16 @@ pub(crate) mod tests {
         assert_eq!(reads("device/network/0037-0032"), [osm, "device/terrain/0037-0032 []"]);
     }
 
+    /// An extract without a Wikimedia link asks for no shared content: the content reads only the
+    /// extract and the `.poly`.
     #[test]
-    fn failed_retained_capture_blocks_only_its_content_and_artifacts() {
-        let temp = temp("capture-blocked");
-        let store = Store::at(temp.0.join("store"));
-        let (mut env, regions) = freiburg(&store);
-        with_osm(&store);
-        without_models(&store, &env, &regions);
-        with_captures(&store, "1");
-        let failed = Wanted {
-            source: "wikidata".into(),
-            version: None,
-            params: capture_params("landmarks", "europe/test", "osm", FREIBURG),
-        };
-        env.fetch_failures.push((failed, "service unavailable".into()));
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(listed.blocked.iter().any(|b| b.reason.contains("service unavailable")));
-        assert!(listed.steps.iter().any(|step| step.name == "device/network/0037-0032"));
-    }
-
-    #[test]
-    fn retained_capture_keeps_exact_inputs_without_acquisition() {
-        let temp = temp("capture-code");
-        let store = Store::at(temp.0.join("store"));
-        let (mut env, regions) = freiburg(&store);
-        with_osm(&store);
-        without_models(&store, &env, &regions);
-        with_captures(&store, "1");
-        let current = capture_params("landmarks", "europe/test", "osm", FREIBURG);
-        let mut params = current.clone();
-        params.iter_mut().find(|(name, _)| name == "code").unwrap().1 = "old".into();
-        for source in CAPTURES {
-            let requested = Requested {
-                version: "1".into(),
-                params: params.clone(),
-                files: store.requested(source, "1", &current).unwrap().unwrap(),
-            };
-            store.put_requested(source, &requested).unwrap();
-            env.live.insert((source.into(), params.clone()), ["1".into()].into());
-        }
-        env.requests.borrow_mut().clear();
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(!listed.blocked.iter().any(|b| b.step == "device/landmark-content"));
-        let content = listed.steps.iter().find(|s| s.name == "device/landmark-content").unwrap();
-        for source in CAPTURES {
-            assert!(
-                content.inputs.iter().any(|input| matches!(input,
-                    Input::Snapshot { source: found, version, params: kept, .. }
-                        if found == source && version == "1" && kept == &params
-                )),
-                "{source} retains the exact held request until content checks its pins"
-            );
-            assert!(env.requests.borrow().contains(&(source.into(), obc_data::store::sorted(&params))));
-            assert!(
-                !env.requests.borrow().contains(&(source.into(), obc_data::store::sorted(&current))),
-                "no replacement capture request is selected"
-            );
-        }
-        assert!(listed.steps.iter().any(|step| step.name == "device/peak-content"));
-    }
-
-    #[test]
-    fn a_capture_names_the_extract_and_the_poly_by_digest_and_its_steps_read_it() {
+    fn content_reads_the_extract_and_the_poly_and_its_artifacts_read_it() {
         let temp = temp("captures");
         let store = Store::at(temp.0.join("store"));
-        let (mut env, regions) = freiburg(&store);
+        let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        without_models(&store, &env, &regions);
-        with_captures(&store, "1");
-        env.moves.clear();
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        without_models(&store, &inputs, &regions);
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -1391,7 +1057,7 @@ pub(crate) mod tests {
             };
             step.inputs.iter().map(read).collect()
         };
-        let content = ["wikidata", "wikipedia", "commons", EXTRACTS, POLY];
+        let content = [EXTRACTS, POLY];
         assert_eq!(reads("device/landmark-content"), content);
         assert_eq!(reads("device/peak-content"), content);
         assert_eq!(reads("device/landmarks/0037-0032"), ["device/osm", "device/landmark-content"]);
@@ -1401,141 +1067,10 @@ pub(crate) mod tests {
         assert_eq!(landmarks.options["cells"], network.options["cells"], "an artifact per network cell");
     }
 
-    /// A new extract asks for no new capture: the compile keeps reading the extract that its
-    /// capture read, and the map cells read the new one. An explicit move reads the new extract;
-    /// a deleted capture input blocks the content until that move.
-    #[test]
-    fn a_capture_keeps_its_extract_until_it_moves_or_a_clean_deletes_the_extract() {
-        let temp = temp("capture-extract");
-        let store = Store::at(temp.0.join("store"));
-        let (mut env, regions) = freiburg(&store);
-        with_osm(&store);
-        with_captures(&store, "1");
-        without_models(&store, &env, &regions);
-        let area = [("area".to_string(), "europe/test".to_string())];
-        for day in ["0", "2"] {
-            fetched(&store, EXTRACTS, day, &area, &[(format!("europe/test-{day}.osm.pbf"), format!("osm {day}"))]);
-        }
-        let clean = |day: &str| std::fs::remove_file(store.root().join(format!("snapshots/{EXTRACTS}/{day}.json")));
-        clean("0").unwrap();
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
-        let extract = |name: &str| {
-            let step = steps.iter().find(|step| step.name == name).unwrap();
-            let read = step.inputs.iter().find_map(|input| match input {
-                Input::Snapshot { source, version, files, .. } if source == EXTRACTS => Some((version, files)),
-                _ => None,
-            });
-            read.map(|(version, files)| (version.clone(), files.clone()))
-        };
-        assert_eq!(extract("device/source/europe/test"), Some(("2".into(), Vec::new())));
-        for content in ["device/landmark-content", "device/peak-content"] {
-            assert_eq!(extract(content), Some(("1".into(), vec!["europe/test.osm.pbf".into()])), "{content}");
-        }
-
-        clean("1").unwrap();
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
-        assert!(listed.steps.iter().any(|step| step.name == "device/network/0037-0032"));
-        // The live copy metadata identifies the held input without its local request or bytes.
-        for (source, name, text) in
-            [(EXTRACTS, "europe/test-260901.osm.pbf", "osm"), (POLY, "europe/test.poly", FREIBURG)]
-        {
-            let file = obc_data::input_copy::File {
-                name: name.into(),
-                url: format!("https://example.org/{name}"),
-                size: text.len() as u64,
-                sha256: sha256_hex(text.as_bytes()),
-            };
-            env.retained.push(obc_data::input_copy::Retained {
-                step: content_layer("landmarks"),
-                key: obc_data::input_copy::Key {
-                    source: source.into(),
-                    version: "1".into(),
-                    digest: obc_data::engine::digest([(file.name.as_str(), file.sha256.as_str())]),
-                },
-                params: Vec::new(),
-                record: obc_data::input_copy::Record { source: source.into(), version: "1".into(), files: vec![file] },
-            });
-        }
-        let params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
-        for source in CAPTURES {
-            env.live.insert((source.into(), params.clone()), ["1".into()].into());
-        }
-        let fresh = Store::at(temp.0.join("fresh"));
-        env.requests.borrow_mut().clear();
-        let (params, inputs) =
-            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
-        assert_eq!(params, capture_params("landmarks", "europe/test", "osm", FREIBURG));
-        assert_eq!(env.requests.borrow().len(), CAPTURES.len(), "fresh-store capture lookup remains active");
-        assert!(
-            env.requests.borrow().iter().all(|(source, _)| CAPTURES.contains(&source.as_str())),
-            "held extract and poly lookups are provenance only"
-        );
-        assert!(inputs.iter().all(|input| matches!(input, Input::Snapshot { version, params, files, .. } if version == "1" && params.is_empty() && files.len() == 1)));
-        assert!(!fresh.root().exists(), "metadata lookup downloads no old extract or poly");
-        // Request metadata identifies the collection's consumer across a region edit.
-        let file = store
-            .snapshot(CAPTURES[0], "1")
-            .unwrap()
-            .unwrap()
-            .files
-            .into_iter()
-            .find(|file| file.name.starts_with("#landmarks"))
-            .unwrap();
-        let file = obc_data::input_copy::File { name: file.name, url: file.url, size: file.size, sha256: file.sha256 };
-        env.retained.push(obc_data::input_copy::Retained {
-            step: content_layer("landmarks"),
-            params: params.clone(),
-            key: obc_data::input_copy::Key {
-                source: CAPTURES[0].into(),
-                version: "1".into(),
-                digest: obc_data::engine::digest([(file.name.as_str(), file.sha256.as_str())]),
-            },
-            record: obc_data::input_copy::Record { source: CAPTURES[0].into(), version: "1".into(), files: vec![file] },
-        });
-        let (kept, reads) = capture_params_at(
-            &env,
-            &fresh,
-            "landmarks",
-            &area,
-            ("new osm", "new poly"),
-            "device/landmark-content/europe/test",
-        )
-        .unwrap();
-        assert_eq!(kept, params);
-        assert!(reads.iter().any(|input| matches!(input, Input::Snapshot { source, files, .. } if source == EXTRACTS && files == &["europe/test-260901.osm.pbf"])));
-        assert!(reads.iter().all(|input| matches!(input, Input::Snapshot { version, .. } if version == "1")));
-        assert!(!fresh.root().exists(), "selection changes load no held payload");
-        let mut peak_poly = env.retained[1].clone();
-        peak_poly.step = content_layer("peaks");
-        peak_poly.key.version = "2".into();
-        peak_poly.record.version = "2".into();
-        let mut peak_osm = env.retained[0].clone();
-        peak_osm.step = content_layer("peaks");
-        env.retained.extend([peak_osm, peak_poly.clone()]);
-        let peak_params = capture_params("peaks", "europe/test", "osm", FREIBURG);
-        for source in CAPTURES {
-            env.live.insert((source.into(), peak_params.clone()), ["1".into()].into());
-        }
-        let (_, peak_inputs) = super::capture_params(&env, &fresh, "peaks", &area, ("new osm", "new poly")).unwrap();
-        assert!(peak_inputs
-            .iter()
-            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "2")));
-        let (_, landmark_inputs) =
-            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
-        assert!(landmark_inputs
-            .iter()
-            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "1")));
-        peak_poly.step = content_layer("landmarks");
-        env.retained.push(peak_poly);
-        assert!(
-            matches!(super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")), Err(Unplanned::Failed(message)) if message.contains("ambiguous versions"))
-        );
-    }
-
-    /// The release layer of `step` as it is declared, without files, at `format`.
-    fn declared(step: &Step, format: u32) -> obc_data::engine::release::Layer {
-        use obc_data::engine::{release::SnapshotRead, InputKind, InputRecord};
+    /// The release output of `step` as it is declared, without files, at `format`.
+    fn declared(step: &Step, format: u32) -> Output {
+        use obc_data::engine::{InputKind, InputRecord};
+        use obc_data::release::{Cost, SnapshotRead};
         let no_files = obc_data::engine::digest(std::iter::empty());
         let record = |kind, name: &String, digest: &str, files: &[String]| InputRecord {
             kind,
@@ -1554,7 +1089,7 @@ pub(crate) mod tests {
             }
             Input::Step { .. } => None,
         });
-        obc_data::engine::release::Layer {
+        Output {
             layer: step.layer.name.into(),
             step: step.name.clone(),
             format,
@@ -1566,6 +1101,7 @@ pub(crate) mod tests {
             files: Vec::new(),
             snapshots: snapshots.collect(),
             client: step.client.clone(),
+            cost: Cost { wall_ms: 0, peak_rss_bytes: None, bytes_out: 0 },
         }
     }
 
@@ -1574,11 +1110,10 @@ pub(crate) mod tests {
         use obc_data::engine::state::{state, Environment, Newer, Verdict};
         let temp = temp("format");
         let store = Store::at(temp.0.join("store"));
-        let (env, regions) = freiburg(&store);
+        let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        with_captures(&store, "1");
-        without_models(&store, &env, &regions);
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        without_models(&store, &inputs, &regions);
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         // The release of the firmware before: device/map one format older, the rest as declared.
         let older = obcm::VERSION as u32 - 1;
         let format = |step: &Step| if step.layer == &DEVICE_MAP { older } else { step.layer.format };
@@ -1596,44 +1131,48 @@ pub(crate) mod tests {
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
-    /// directly or through another layer, keeps its key.
+    /// directly or through another step, keeps its key.
     #[test]
-    fn a_capture_refresh_rebuilds_no_map_cell_and_an_osm_refresh_no_terrain_cell() {
+    fn a_content_refresh_rebuilds_no_map_cell_and_an_osm_refresh_no_terrain_cell() {
         let sources = obc_data::sources::parse_sources(include_str!("../../../data/sources.toml")).unwrap();
         let osm =
             |id: &str| sources.iter().any(|source| source.id == id && source.licence.as_deref() == Some("ODbL-1.0"));
         let temp = temp("refresh");
         let store = Store::at(temp.0.join("store"));
-        let (env, regions) = freiburg(&store);
+        let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        with_captures(&store, "1");
-        without_models(&store, &env, &regions);
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        without_models(&store, &inputs, &regions);
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
+        // The sources and the steps that a step reads at any depth.
         let reads = |step: &Step| {
             let (mut read, mut pending) = (BTreeSet::new(), vec![step]);
             while let Some(step) = pending.pop() {
                 for input in &step.inputs {
                     match input {
                         Input::Snapshot { source, .. } => drop(read.insert(source.clone())),
-                        Input::Step { name, .. } => pending.push(by_name[name.as_str()]),
+                        Input::Step { name, .. } => {
+                            read.insert(name.clone());
+                            pending.push(by_name[name.as_str()]);
+                        }
                     }
                 }
             }
             read
         };
+        let content = |read: &String| read.ends_with("-content") || CAPTURES.contains(&read.as_str());
         let named =
             |prefix: &str| -> Vec<&Step> { steps.iter().filter(|step| step.name.starts_with(prefix)).collect() };
         let cells = ["coarse", "mid", "fine", "network"].map(|band| format!("device/{band}/"));
         for step in cells.iter().flat_map(|prefix| named(prefix)) {
-            assert!(!reads(step).iter().any(|source| CAPTURES.contains(&source.as_str())), "{}", step.name);
+            assert!(!reads(step).iter().any(content), "{}", step.name);
         }
         assert!(!named("device/terrain/").is_empty());
         for step in named("device/terrain/") {
             assert!(!reads(step).iter().any(|source| osm(source)), "{}", step.name);
         }
         for step in named("device/landmarks/").into_iter().chain(named("device/peaks/")) {
-            assert!(CAPTURES.iter().all(|source| reads(step).contains(*source)), "{}", step.name);
+            assert!(reads(step).iter().any(content), "{}", step.name);
         }
     }
 
@@ -1642,13 +1181,15 @@ pub(crate) mod tests {
         let temp = temp("models");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
-        let (env, regions) = grimsel(&store, "1");
+        let (inputs, regions) = grimsel(&store, "1");
         with_model_areas(&store);
         // The box of `dtm-fr` reaches 9.6° east; its polygon stops west of the Grimsel.
         let france = [("area".to_string(), "europe/france".to_string())];
         let west = box_poly(&Bbox { west: -5.0, south: 42.0, east: 7.5, north: 51.0 });
         fetched(&store, POLY, "2", &france, &[("europe/france.poly".into(), west)]);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else { panic!("no model") };
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
+            panic!("no model")
+        };
         let mut tiles: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for fetch in &wanted {
             let [(name, tile)] = &fetch.params[..] else { panic!("{fetch:?}") };
@@ -1667,7 +1208,7 @@ pub(crate) mod tests {
                 fetched(&store, source, "1", &[], &[(format!("#tile={tile}/{name}"), name.clone())]);
             }
         }
-        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         assert!(!steps.iter().any(|step| step.name == "device/reference/0037-0033"), "no height, no reference");
         let reference = steps.iter().find(|step| step.name == "device/reference/0037-0032").unwrap();
         let models = serde_json::json!([{"source": "dtm-ch", "version": "1", "credit": "© swisstopo"}]);
@@ -1680,35 +1221,35 @@ pub(crate) mod tests {
         assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
     }
 
-    /// Fetch each model tile that the step list asks for, as the fetch rounds of a plan do. A
+    /// Fetch each model tile that the step list asks for, as the fetch rounds of an update do. A
     /// fetch without a version gives `day` when it is the first of its source in the run, and else
     /// the next day.
-    fn fetch_models(store: &Store, env: &mut Env, regions: &Regions, day: &str) {
+    fn fetch_models(store: &Store, inputs: &mut Inputs, regions: &Regions, day: &str) {
         let mut seen = BTreeSet::new();
         for _ in 0..3 {
-            let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), env, regions, store) else { return };
+            let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), inputs, regions, store) else { return };
             for wanted in &wanted {
-                let wanted = env.pinned(wanted);
+                let wanted = inputs.pinned(wanted);
                 let first = seen.insert(wanted.source.clone());
                 let version = wanted.version.clone().unwrap_or_else(|| if first { day } else { "2099-01-01" }.into());
                 let tile = &wanted.params[0].1;
                 fetched(store, &wanted.source, &version, &[], &[(format!("#tile={tile}/{tile}.tif"), tile.clone())]);
-                env.manual.insert(wanted.source.clone());
-                env.resolve(&wanted, version);
+                inputs.manual.insert(wanted.source.clone());
+                inputs.resolve(&wanted, version);
             }
         }
         panic!("the step list still asks for a model tile");
     }
 
     #[test]
-    fn a_model_fetched_tile_by_tile_has_one_version_also_when_a_plan_moves_it() {
+    fn a_model_fetched_tile_by_tile_has_one_version_also_when_it_is_due() {
         let temp = temp("model-version");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
-        let (mut env, regions) = grimsel(&store, "1");
+        let (mut inputs, regions) = grimsel(&store, "1");
         with_model_areas(&store);
-        let read = |env: &Env| -> BTreeSet<(String, String)> {
-            let steps = map_steps(&root(), env, &regions, &store).unwrap().steps;
+        let read = |inputs: &Inputs| -> BTreeSet<(String, String)> {
+            let steps = map_steps(&root(), inputs, &regions, &store).unwrap().steps;
             let inputs =
                 steps.into_iter().filter(|step| step.name.starts_with("device/reference/")).flat_map(|s| s.inputs);
             inputs
@@ -1718,19 +1259,19 @@ pub(crate) mod tests {
                 })
                 .collect()
         };
-        // No live version and none in the store: the first tile names the version of the model.
-        fetch_models(&store, &mut env, &regions, "2026-10-06");
+        // No serving version and none in the store: the first tile names the version of the model.
+        fetch_models(&store, &mut inputs, &regions, "2026-10-06");
         let versions = |ch: &str| -> BTreeSet<(String, String)> {
             let models = [("dtm-ch", ch), ("dtm-de-by", "2026-10-06"), ("dtm-fr", "2026-10-06")];
             models.iter().map(|(source, version)| (source.to_string(), version.to_string())).collect()
         };
-        assert_eq!(read(&env), versions("2026-10-06"));
+        assert_eq!(read(&inputs), versions("2026-10-06"));
 
-        // `--move dtm-ch` fetches every tile of the model again, at one new version.
-        let mut moved = Env { resolved: Default::default(), ..env.clone() };
-        moved.moves.insert("dtm-ch".into(), None);
-        fetch_models(&store, &mut moved, &regions, "2026-10-07");
-        assert_eq!(read(&moved), versions("2026-10-07"));
+        // A due refresh of `dtm-ch` fetches every tile of the model again, at one new version.
+        let mut due = Inputs { resolved: Default::default(), ..inputs.clone() };
+        due.due.insert(("dtm-ch".into(), Vec::new()));
+        fetch_models(&store, &mut due, &regions, "2026-10-07");
+        assert_eq!(read(&due), versions("2026-10-07"));
         let stored: BTreeSet<_> = store.snapshots("dtm-ch").unwrap().into_iter().map(|s| s.version).collect();
         assert_eq!(stored, ["2026-10-06".to_string(), "2026-10-07".into()].into());
     }
@@ -1744,8 +1285,8 @@ pub(crate) mod tests {
         // The leaf meets Niedersachsen first, then Denmark, whose credential is required.
         let region = "name = \"Jutland\"\nkind = \"box\"\nbox = [8.2, 53.8, 8.3, 56.1]\n";
         let regions = Regions::new(vec![obc_data::regions::parse_region("jutland", region).unwrap()]).unwrap();
-        let (env, _) = grimsel(&store, "1");
-        let env = Env { region: "jutland".into(), ..env };
+        let (mut inputs, _) = grimsel(&store, "1");
+        inputs.settings.region = "jutland".into();
         let bounds = Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 };
         let poly = box_poly(&bounds);
         let coverage = Coverage::parse_poly(&poly).unwrap();
@@ -1756,10 +1297,9 @@ pub(crate) mod tests {
         fetched(&store, catalog::INDEX, "2", &[], &[("index-2.json".into(), index.to_string())]);
         let area = [("area".into(), "europe/jutland".into())];
         fetched(&store, POLY, "1", &area, &[("europe/jutland.poly".into(), poly.clone())]);
-        fetched(&store, EXTRACTS, "1", &area, &[("europe/jutland.osm.pbf".into(), "osm".into())]);
-        captured(&store, "1", "europe/jutland", "osm", &poly);
+        extracted(&store, "1", &area, "europe/jutland.osm.pbf");
         let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
-        match map_steps(&root(), &env, &regions, &store) {
+        match map_steps(&root(), &inputs, &regions, &store) {
             Ok(listed) => {
                 assert!(!token.present());
                 for layer in ["device/reference/0038-0032", "device/terrain/0038-0032"] {
@@ -1777,50 +1317,6 @@ pub(crate) mod tests {
                     listed.steps.iter().any(|step| step.name == "device/coarse/0038-0032"),
                     "independent bands stay usable"
                 );
-                // The input copies of a live layer name a height in each tile of both models.
-                let mut restored_env = env.clone();
-                let (leaf, cells) = leaves(&[coverage], V1_CELL_LOG2.into()).into_iter().next().unwrap();
-                let windows = cells.iter().map(|c| cell_window(c.i as u32, c.j as u32, V1_POSTING_LOG2, V1_CELL_LOG2));
-                let tiles: BTreeSet<_> = windows.flat_map(|window| window.unwrap().tiles()).collect();
-                let files: Vec<_> = tiles
-                    .iter()
-                    .map(|(ti, tj)| {
-                        let name = format!("{ti:04}-{tj:04}");
-                        obc_data::input_copy::File {
-                            name: format!("#tile={name}/{name}.tif"),
-                            url: String::new(),
-                            size: 1,
-                            sha256: "0".repeat(64),
-                        }
-                    })
-                    .collect();
-                for source in ["dtm-de-ni", "dtm-dk"] {
-                    restored_env.live.insert((source.into(), Vec::new()), ["1".into()].into());
-                    restored_env.retained.push(obc_data::input_copy::Retained {
-                        step: leaf_layer("device/reference", leaf),
-                        key: obc_data::input_copy::Key {
-                            source: source.into(),
-                            version: "1".into(),
-                            digest: obc_data::engine::digest([]),
-                        },
-                        params: Vec::new(),
-                        record: obc_data::input_copy::Record {
-                            source: source.into(),
-                            version: "1".into(),
-                            files: files.clone(),
-                        },
-                    });
-                }
-                let mut wanted = Vec::new();
-                let restored =
-                    reference(&restored_env, &store, leaf, &cells, &mut BTreeMap::new(), &mut wanted).unwrap().unwrap();
-                assert!(wanted.is_empty());
-                assert_eq!(
-                    restored.inputs.len(),
-                    2,
-                    "verified retained reads defer the credential check until restoration"
-                );
-                assert_eq!(plan(&store, &[restored]).unwrap().fetches().len(), 2);
             }
             // A machine with the token fetches the model.
             Err(Unplanned::NeedsFetch(wanted)) => {

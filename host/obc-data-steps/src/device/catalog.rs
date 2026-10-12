@@ -1,7 +1,6 @@
 //! Receipt-based catalog step and its publication boundary.
 
 use super::*;
-use obc_data::product::{Pointer, PointerFn};
 use obc_pack::catalog::boundary::{simplified_rings, DEFAULT_TOLERANCE_UDEG};
 use obc_pack::catalog::engine::{Credits, Options, Pick};
 use obc_pack::catalog::{Boundary, CellSource};
@@ -14,13 +13,13 @@ pub static DEVICE_CATALOG: Layer = Layer {
     name: "device/catalog",
     shape: obc_data::engine::Shape::Whole,
     format: obc_pack::catalog::CATALOG_SCHEMA_VERSION,
-    revision: 1,
+    revision: 2,
     readers: &["map builder", "desktop app"],
 };
 
 #[allow(clippy::too_many_arguments)]
 pub fn step(
-    env: &Env,
+    inputs: &Inputs,
     region: &obc_data::regions::Region,
     store: &Store,
     selection: &crate::region_sources::Selection,
@@ -35,7 +34,7 @@ pub fn step(
         .iter()
         .map(|source| {
             let params = [("area".into(), source.id.clone())];
-            let (_, digest) = file(env, store, POLY, &source.poly, &params)?;
+            let (_, digest) = file(store, POLY, &source.poly, &params)?;
             let poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
             Ok((source.id.clone(), poly))
         })
@@ -101,7 +100,8 @@ pub fn step(
             terrain: terrain.into_iter().map(|id| id.to_string()).collect(),
         });
     }
-    if !selection.direct || selection.sources[0].id != env.region {
+    let id = &inputs.settings.region;
+    if !selection.direct || selection.sources[0].id != *id {
         let shape = requested.geojson();
         let parsed: serde_json::Value = serde_json::from_str(&shape).map_err(|e| Unplanned::Failed(e.to_string()))?;
         let mut outline = format!("{}\n", region.id);
@@ -136,8 +136,8 @@ pub fn step(
             terrain: terrain_available.iter().map(ToString::to_string).collect(),
         });
     }
-    if !picks.iter().any(|pick| pick.id == env.region) {
-        return Err(Unplanned::Invalid(format!("catalog has no complete selection for `{}`", env.region)));
+    if !picks.iter().any(|pick| pick.id == *id) {
+        return Err(Unplanned::Invalid(format!("catalog has no complete selection for `{id}`")));
     }
     let ids: BTreeSet<String> = picks.iter().map(|pick| pick.id.clone()).collect();
     for pick in &mut picks {
@@ -156,23 +156,23 @@ pub fn step(
         dataset_version: glo30.into(),
         credits: Credits::of_sources(),
     };
-    let mut inputs: Vec<Input> = listed
+    let mut reads: Vec<Input> = listed
         .iter()
         .filter(|step| !step.client.is_none())
         .filter(|step| !matches!(step.name.split('/').nth(1), Some("landmark-content" | "peak-content")))
         .map(|step| Input::step(&step.name))
         .collect();
-    inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
+    reads.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
         layer: &DEVICE_CATALOG,
         name: LAYER.into(),
-        inputs,
+        inputs: reads,
         options: serde_json::to_value(options).map_err(|e| Unplanned::Failed(e.to_string()))?,
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),
         run: Run::Rust(obc_pack::catalog::engine::build),
-        client: Client::Paths(vec!["objects".into()]),
+        client: Client::All,
     })
 }
 
@@ -191,19 +191,12 @@ pub(crate) fn poly(area: &obc_data::regions::geofabrik::Area) -> String {
     text
 }
 
-pub fn named(release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-    let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no device catalog")?;
-    Ok(layer.files.iter().filter(|file| !file.path.starts_with("objects/")).cloned().collect())
-}
-
-pub fn pointer() -> PointerFn {
-    |_, release, store| {
-        let file =
-            release.named.iter().find(|file| file.path == "catalog.json").ok_or("release has no catalog root")?;
-        let body = std::fs::read(store.object(&file.sha256)).map_err(|e| format!("{}: {e}", file.path))?;
-        let document = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-        Ok(Pointer { document })
-    }
+/// The documents of the catalog beside its root: the schema, the terrain, the licence and the
+/// regions.
+pub fn named(outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
+    let output = outputs.iter().find(|output| output.step == LAYER).ok_or("release has no device catalog")?;
+    let named = output.files.iter().filter(|file| !file.path.starts_with("objects/"));
+    Ok(named.map(|file| (file.path.clone(), file.clone())).collect())
 }
 
 mod verify;

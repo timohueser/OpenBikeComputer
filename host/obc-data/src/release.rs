@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine::release::SnapshotRead;
 use crate::engine::{digest, sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::settings::Settings;
 use crate::store::{hash_file, sha256_hex, Store};
@@ -69,6 +68,14 @@ pub struct Output {
     pub cost: Cost,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotRead {
+    pub version: String,
+    /// The `NAME=VALUE` of the fetch, sorted.
+    pub params: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cost {
@@ -78,7 +85,7 @@ pub struct Cost {
 }
 
 /// `release.json`: the release that a target serves, and the one that a rollback switches to.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Serving {
     pub serving: Role,
@@ -86,7 +93,7 @@ pub struct Serving {
 }
 
 /// A release and the time it took its role, `YYYY-MM-DDTHH:MM:SSZ`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Role {
     pub id: String,
@@ -114,7 +121,7 @@ impl Output {
             digest: receipt.digest.clone(),
             files: receipt.files.clone(),
             snapshots: snapshots.collect(),
-            client: step.client.clone(),
+            client: step.client.sorted(),
             cost: Cost {
                 wall_ms: receipt.wall_ms,
                 peak_rss_bytes: receipt.peak_rss_bytes,
@@ -139,15 +146,19 @@ impl Release {
         sha256_hex(&self.canonical())
     }
 
+    /// The SHA-256 and the size of each client file of an output: the target holds its bytes at
+    /// `objects/<sha256>`.
+    pub fn objects(&self) -> BTreeMap<&str, u64> {
+        self.outputs.iter().flat_map(Output::client_files).map(|file| (file.sha256.as_str(), file.size)).collect()
+    }
+
     /// The keys of the release but its manifest: the objects of the client files, then the named
     /// files.
     pub fn files(&self) -> Vec<File> {
-        let client = self.outputs.iter().flat_map(Output::client_files).map(|file| (&file.sha256, file.size));
-        let objects: BTreeMap<&String, u64> = client.collect();
-        let objects = objects.into_iter().map(|(sha256, size)| File {
+        let objects = self.objects().into_iter().map(|(sha256, size)| File {
             key: format!("objects/{sha256}"),
             size,
-            sha256: sha256.clone(),
+            sha256: sha256.into(),
         });
         objects.chain(self.named.iter().cloned()).collect()
     }
@@ -160,13 +171,12 @@ impl Release {
         if let Some(file) = files.find(|file| !is_sha256(&file.sha256)) {
             return Err(format!("the output file {} has no SHA-256", file.path));
         }
-        let served: BTreeSet<(&str, u64)> =
-            self.outputs.iter().flat_map(Output::client_files).map(|file| (file.sha256.as_str(), file.size)).collect();
+        let served = self.objects();
         for files in [&self.pointers, &self.named] {
             if files.windows(2).any(|pair| pair[0].key >= pair[1].key) {
                 return Err("the pointers or the named files are not sorted by key, or a key is there twice".into());
             }
-            if let Some(file) = files.iter().find(|file| !served.contains(&(file.sha256.as_str(), file.size))) {
+            if let Some(file) = files.iter().find(|file| served.get(file.sha256.as_str()) != Some(&file.size)) {
                 return Err(format!("{} is no client file of an output", file.key));
             }
         }
@@ -187,6 +197,26 @@ impl Release {
             return Err(format!("releases/{folder}/ is not the digest of its files"));
         }
         Ok(())
+    }
+
+    /// The version of each fetch that an output read. One update reads one version of a fetch.
+    pub fn versions(&self) -> crate::product::Versions {
+        let reads = self.outputs.iter().flat_map(|output| &output.snapshots);
+        let mut versions = crate::product::Versions::new();
+        for (source, read) in reads {
+            let version = versions.entry((source.clone(), read.params.clone())).or_default();
+            *version = version.clone().max(read.version.clone());
+        }
+        versions
+    }
+
+    /// Whether `other` has the same settings, outputs, pointers and named files: what a target
+    /// serves, whoever made it, when, and what its builds cost.
+    pub fn serves_as(&self, other: &Release) -> bool {
+        let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
+        (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
+            && self.outputs.len() == other.outputs.len()
+            && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }
 
     /// The release `id` of `target`.
@@ -300,9 +330,42 @@ pub fn drift(target: &Target, release: &Release) -> Result<Vec<String>, String> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, Fixture};
+
+    /// A release of one output with the file `bytes`, which read `source@version`.
+    pub(crate) fn reading(bytes: &[u8], source: &str, version: &str) -> Release {
+        let file = LayerFile { path: "out".into(), size: bytes.len() as u64, sha256: sha256_hex(bytes) };
+        let read = InputRecord {
+            kind: crate::engine::InputKind::Snapshot,
+            name: source.into(),
+            digest: digest([]),
+            files: Vec::new(),
+        };
+        let output = Output {
+            layer: "test".into(),
+            step: "test/one".into(),
+            format: 1,
+            revision: 1,
+            key: "key".into(),
+            inputs: vec![read],
+            options: serde_json::json!({}),
+            digest: String::new(),
+            files: vec![file],
+            snapshots: [(source.into(), SnapshotRead { version: version.into(), params: Vec::new() })].into(),
+            client: Client::All,
+            cost: Cost { wall_ms: 0, peak_rss_bytes: None, bytes_out: bytes.len() as u64 },
+        };
+        Release {
+            settings: Settings::default(),
+            outputs: vec![output],
+            pointers: Vec::new(),
+            named: Vec::new(),
+            machine: "test".into(),
+            time: "2026-10-12T00:00:00Z".into(),
+        }
+    }
 
     /// The release of the built pipeline: `test/join` gives the device pointer and `test/upper` the
     /// planner pointer; the files of `test/count` and `test/join` are named.
@@ -413,5 +476,11 @@ mod tests {
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");
         assert!(refused(&|r| drop(r.named.pop())).contains("not the digest"));
+
+        let mut rebuilt = Release { machine: "desktop".into(), ..valid.clone() };
+        rebuilt.outputs[0].cost.wall_ms += 1;
+        assert!(rebuilt.serves_as(&valid), "a rebuild of the same bytes serves as the release");
+        rebuilt.outputs[0].key = "other".into();
+        assert!(!rebuilt.serves_as(&valid));
     }
 }

@@ -1,13 +1,14 @@
-//! The terrain layer of `obc data build` over the captured GLO-30 tile of the Grimsel: the same
+//! The terrain layer of `obc data update` over the captured GLO-30 tile of the Grimsel: the same
 //! `.obcd` bytes that `obc-bake terrain` writes from the same tile, and they read as the Grimsel.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use obc_bake::terrain::{DemCutter, TerrainBakeOptions, TerrainBakery, TerrainCellStatus, TerrainDoc};
+use obc_data::engine::plan::{plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run};
-use obc_data::env::Env;
 use obc_data::fetch::http::Http;
+use obc_data::product::Inputs;
 use obc_data::product::Unplanned;
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
@@ -101,10 +102,10 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     store
 }
 
-fn steps(store: &Store, env: &Env, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {
+fn steps(store: &Store, inputs: &Inputs, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {
     Device.steps_with_tool(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        env,
+        inputs,
         regions,
         store,
         Err("this terrain fixture does not execute OSM preparation".into()),
@@ -112,21 +113,22 @@ fn steps(store: &Store, env: &Env, regions: &Regions) -> Result<obc_data::produc
 }
 
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
-fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
-    let mut env = env.clone();
-    if let Err(Unplanned::NeedsFetch(wanted)) = steps(store, &env, regions) {
+fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTreeMap<String, Vec<u8>> {
+    let mut inputs = inputs.clone();
+    if let Err(Unplanned::NeedsFetch(wanted)) = steps(store, &inputs, regions) {
         assert!(wanted.iter().all(|request| matches!(request.source.as_str(), "wikidata" | "wikipedia" | "commons")));
-        env.fetch_failures.extend(
+        inputs.fetch_failures.extend(
             wanted.into_iter().map(|request| (request, "this terrain fixture has no landmark or peak capture".into())),
         );
     }
-    let listed = steps(store, &env, regions).unwrap();
+    let listed = steps(store, &inputs, regions).unwrap();
     assert!(listed.blocked.iter().any(|blocked| blocked.step == "device/catalog"), "terrain alone cannot publish");
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("device/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
-    let plan = obc_data::engine::plan::plan(store, &steps).unwrap();
+    let plan = plan(store, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
-    let context = Context { store, root, sources: &[], http: &Http::new(), copies: None, limits: Limits::machine() };
+    let kept = Kept::new();
+    let context = Context { store, root, sources: &[], http: &Http::new(), kept: &kept, limits: Limits::machine() };
     let built = run.build(&context, &steps, &plan).unwrap();
     run.finish(None).unwrap();
     let files = built[0].receipt.files.iter();
@@ -142,12 +144,13 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
     let region = parse_region("grimsel-east", REGION).unwrap();
     let Area::Box { bbox } = region.area else { unreachable!() };
     let regions = Regions::new(vec![region]).unwrap();
-    let live = BTreeMap::from([
-        ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
-        ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
+    let serving = BTreeMap::from([
+        ((GLO30.into(), Vec::new()), VERSION.to_string()),
+        ((TILE_LIST.into(), Vec::new()), VERSION.to_string()),
     ]);
-    let env = Env { name: "test".into(), region: "grimsel-east".into(), live, ..Env::default() };
-    let built = layer(&store_with_tile(&temp.0, &tile), &root, &regions, &env);
+    let settings = obc_data::settings::Settings { region: "grimsel-east".into(), ..Default::default() };
+    let inputs = Inputs { settings, serving, ..Inputs::default() };
+    let built = layer(&store_with_tile(&temp.0, &tile), &root, &regions, &inputs);
 
     let (sources, extracts, out) = (temp.0.join("sources"), temp.0.join("extracts"), temp.0.join("tree"));
     std::fs::create_dir_all(&sources).unwrap();

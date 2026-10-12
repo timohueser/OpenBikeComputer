@@ -1,220 +1,102 @@
-//! Active acquisition requests and their upstream observations. Held inputs remain provenance.
+//! The fetches that the steps of a target read, and whether a newer upstream version is due.
+
+use std::collections::BTreeSet;
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{build_cli, status_cli, Code, Error};
-use crate::env::Env;
+use super::{listing, Code, Error};
+use crate::engine::state::Newer;
 use crate::fetch::{
     http::Http,
     upstream::{self, Observation},
 };
-use crate::product::Product;
+use crate::product::{Inputs, Product, RequestKey, Versions};
 use crate::regions::Regions;
-use crate::sources::{self, Source, State};
+use crate::sources::{self, Refresh, Source, State};
 use crate::store::Store;
 
 #[derive(Clone, Serialize, JsonSchema)]
 pub(super) struct RequestStatus {
     pub params: Vec<(String, String)>,
-    pub live: Option<String>,
+    /// The version that the serving release reads.
+    pub serving: Option<String>,
     pub observation: Observation,
-    pub due: bool,
     pub state: State,
     pub reason: Option<String>,
     pub age_days: Option<i64>,
 }
 
-/// Discover only the small metadata needed to enumerate requests, before applying stale moves.
-#[allow(clippy::too_many_arguments)]
+/// The fetches that the step lists of `inputs` ask for, with small metadata fetched and no bulk
+/// data. Nothing of `inputs` changes.
 pub(super) fn discover(
-    root: &std::path::Path,
+    root: &Path,
     products: &[&dyn Product],
-    env: &Env,
+    inputs: &Inputs,
     regions: &Regions,
     store: &Store,
     http: &Http,
     sources: &[Source],
-    copies: Option<&crate::input_copy::Restore<'_>>,
-    run: Option<&mut crate::engine::runs::Run>,
-) -> Result<Env, Error> {
-    let mut inventory = env.clone();
-    inventory.moves.clear();
-    inventory.stale.clear();
-    inventory.stale_requests.clear();
-    inventory.resolved.clear();
-    inventory.planned = None;
-    inventory.requests.borrow_mut().clear();
-    inventory.read.borrow_mut().clear();
-    inventory.fetch_failures.clear();
-    let mut fetch = status_cli::discovery_fetch(
-        build_cli::fetcher_recorded(root, store, http, sources, &inventory, copies, run),
-        false,
-    );
-    for product in products {
-        let listed = build_cli::status_steps(root, *product, &mut inventory, regions, store, &mut fetch);
-        match listed {
-            Ok(_) => (),
-            Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => (),
-            Err(error) => return Err(error),
-        }
+) -> Result<BTreeSet<RequestKey>, Error> {
+    let mut inventory =
+        Inputs { settings: inputs.settings.clone(), serving: inputs.serving.clone(), ..Inputs::default() };
+    let fetch = listing::fetcher(root, store, http, sources, None, false);
+    match listing::steps(root, products, &mut inventory, regions, store, true, fetch) {
+        Ok(_) => Ok(inventory.requests.into_inner()),
+        Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => Ok(inventory.requests.into_inner()),
+        Err(error) => Err(error),
     }
-    Ok(inventory)
 }
 
-pub(super) fn requests(store: &Store, http: &Http, source: &Source, env: &Env, check_now: bool) -> Vec<RequestStatus> {
-    let today = crate::date::today();
-    let now = crate::date::now();
+/// The state of each request of `source` among `requests`, against the version that `serving`
+/// reads. A request is stale when its policy is due and upstream has a newer version.
+pub(super) fn requests(
+    store: &Store,
+    http: &Http,
+    source: &Source,
+    requests: &BTreeSet<RequestKey>,
+    serving: &Versions,
+    check_now: bool,
+) -> Vec<RequestStatus> {
+    let (today, now) = (crate::date::today(), crate::date::now());
     let max_age = if check_now { 0 } else { upstream::CACHE };
-    env.requests
-        .borrow()
+    requests
         .iter()
         .filter(|(id, _)| id == &source.id)
         .map(|key| {
-            let live = env.live.get(key).filter(|versions| versions.len() == 1).and_then(|v| v.first()).cloned();
+            let read = serving.get(key).cloned();
             let observation = upstream::observe(store, http, source, &key.1, max_age, now);
-            let base = source
-                .fetch
-                .from
-                .as_ref()
-                .and_then(|id| env.live.get(&(id.clone(), key.1.clone())))
-                .filter(|versions| versions.len() == 1)
-                .and_then(|versions| versions.first());
-            let status = sources::status(source, live.as_deref(), base.map(String::as_str), &observation.result, today);
-            let conflict = env.live.get(key).filter(|versions| versions.len() > 1);
+            let base = source.fetch.from.as_ref().and_then(|id| serving.get(&(id.clone(), key.1.clone())));
+            let status = sources::status(source, read.as_deref(), base.map(String::as_str), &observation.result, today);
             RequestStatus {
                 params: key.1.clone(),
-                due: sources::due(source, live.as_deref(), today),
-                live,
+                serving: read,
                 observation,
-                state: if conflict.is_some() { State::Blocked } else { status.state },
-                reason: conflict
-                    .map(|versions| {
-                        format!(
-                            "active request has conflicting live versions: {}",
-                            versions.iter().cloned().collect::<Vec<_>>().join(", ")
-                        )
-                    })
-                    .or(status.reason),
+                state: status.state,
+                reason: status.reason,
                 age_days: status.age_days,
             }
         })
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::tests::fixture;
-    use crate::product::{version, Unplanned};
-
-    #[test]
-    fn mutating_discovery_records_its_first_metadata_fetch_but_keeps_the_bulk_guard() {
-        use crate::engine::runs::{Event, Run};
-        use crate::fetch::tests::{quick, serve, source, whole};
-        use crate::product::Wanted;
-        struct Metadata;
-        impl Product for Metadata {
-            fn name(&self) -> &'static str {
-                "test"
-            }
-            fn steps(
-                &self,
-                _: &std::path::Path,
-                _: &Env,
-                _: &Regions,
-                store: &Store,
-            ) -> Result<crate::product::Steps, Unplanned> {
-                for source in ["geofabrik-poly", "bulk"] {
-                    if crate::engine::snapshot_files(store, source, "1", &[], &[]).map_err(Unplanned::Failed)?.is_none()
-                    {
-                        return Err(Unplanned::NeedsFetch(vec![Wanted {
-                            source: source.into(),
-                            version: Some("1".into()),
-                            params: Vec::new(),
-                        }]));
-                    }
-                }
-                Ok(Vec::new().into())
+/// The stale requests of `requests`, each with the newer version upstream when it has a name.
+pub(super) fn newer(
+    store: &Store,
+    http: &Http,
+    sources: &[Source],
+    requests: &BTreeSet<RequestKey>,
+    serving: &Versions,
+) -> Newer {
+    let mut newer = Newer::new();
+    for source in sources.iter().filter(|source| source.refresh != Refresh::Manual) {
+        for request in self::requests(store, http, source, requests, serving, false) {
+            if request.state == State::Stale {
+                let upstream = request.observation.result.version().map(str::to_string);
+                newer.insert((source.id.clone(), request.params), upstream);
             }
         }
-        let (url, requests) = serve(|_, _| whole(b"metadata"));
-        let url = url.replacen("/data/", "/data/{version}/", 1);
-        let fixture = fixture("inventory-run-metadata");
-        let sources = [
-            Source { id: "geofabrik-poly".into(), ..source(&url, "release") },
-            Source { id: "bulk".into(), ..source(&url, "release") },
-        ];
-        fixture.with_sources(&sources);
-        let regions = Regions::new(Vec::new()).unwrap();
-        let mut run = Run::create(&fixture.store, "prepare live").unwrap();
-        let id = run.id().to_string();
-        let inventory = discover(
-            &fixture.root(),
-            &[&Metadata],
-            &Env::default(),
-            &regions,
-            &fixture.store,
-            &quick(),
-            &sources,
-            None,
-            Some(&mut run),
-        )
-        .unwrap();
-        assert_eq!(inventory.fetch_failures[0].0.source, "bulk");
-        assert_eq!(requests.lock().unwrap().len(), 1);
-        let events = crate::engine::runs::events(&fixture.store, &id).unwrap();
-        assert!(events.iter().any(|event| matches!(event, Event::FetchFinished { source, bytes: 8, resolved, .. } if source == "geofabrik-poly" && resolved == "1")));
-        assert!(!events.iter().any(|event| matches!(event, Event::FetchStarted { source, .. } if source == "bulk")));
-        discover(
-            &fixture.root(),
-            &[&Metadata],
-            &Env::default(),
-            &regions,
-            &fixture.store,
-            &quick(),
-            &sources,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(requests.lock().unwrap().len(), 1, "a later observational pass reuses this metadata");
-        assert_eq!(crate::engine::runs::events(&fixture.store, &id).unwrap(), events);
-        run.finish(None).unwrap();
     }
-
-    #[test]
-    fn discovery_keeps_unprepared_active_requests_and_excludes_held_inputs() {
-        struct Captures;
-        impl Product for Captures {
-            fn name(&self) -> &'static str {
-                "test"
-            }
-            fn steps(
-                &self,
-                _root: &std::path::Path,
-                env: &Env,
-                _: &Regions,
-                store: &Store,
-            ) -> Result<crate::product::Steps, Unplanned> {
-                for collection in ["landmarks", "peaks"] {
-                    let _ = version(env, store, "capture", &[("collection".into(), collection.into())])
-                        .map_err(Unplanned::Failed)?;
-                }
-                Err(Unplanned::Invalid("capture bytes not prepared".into()))
-            }
-        }
-        let fixture = fixture("active-request-inventory");
-        let mut env = Env::default();
-        env.live.insert(("extract".into(), Vec::new()), ["2020-01-01".into()].into());
-        env.live.insert(("capture".into(), vec![("collection".into(), "peaks".into())]), ["2026-10-01".into()].into());
-        let regions = Regions::new(Vec::new()).unwrap();
-        let inventory =
-            discover(&fixture.root(), &[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None, None)
-                .unwrap();
-        assert_eq!(inventory.requests.borrow().len(), 2);
-        assert!(inventory.requests.borrow().iter().all(|(source, _)| source == "capture"));
-        assert_eq!(inventory.read.borrow().len(), 1, "missing requests remain inventoried without an invented version");
-        assert!(env.requests.borrow().is_empty(), "discovery does not mutate source intent");
-    }
+    newer
 }

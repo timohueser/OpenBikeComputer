@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::release::Layer;
 use super::{digest, layer_digest, order, selection, Input, InputKind, Selection, Step};
-use crate::env::RequestKey;
+use crate::product::RequestKey;
+use crate::release::Output;
 use crate::store::{sorted, Store};
 
 /// The source requests that are due, each with the newer version upstream when it is known.
@@ -17,7 +17,7 @@ pub type Newer = BTreeMap<RequestKey, Option<String>>;
 /// What the steps are judged against.
 pub struct Environment {
     /// The layers of the releases, by step.
-    pub release: BTreeMap<String, Layer>,
+    pub release: BTreeMap<String, Output>,
     pub newer: Newer,
 }
 
@@ -140,7 +140,7 @@ pub fn state(store: &Store, steps: &[Step], environment: &Environment) -> Result
 pub(super) fn judge<'a>(
     store: &Store,
     steps: &'a [Step],
-    release: &BTreeMap<&str, &Layer>,
+    release: &BTreeMap<&str, &Output>,
     newer: &Newer,
 ) -> Result<Vec<Judged<'a>>, String> {
     let layer_of: HashMap<&str, &super::Layer> = steps.iter().map(|step| (step.name.as_str(), step.layer)).collect();
@@ -180,20 +180,20 @@ pub(super) fn judge<'a>(
 fn cause(
     store: &Store,
     step: &Step,
-    release: &BTreeMap<&str, &Layer>,
+    release: &BTreeMap<&str, &Output>,
     causes: &HashMap<&str, Option<Cause>>,
     layer_of: &HashMap<&str, &super::Layer>,
     newer: &Newer,
 ) -> Result<Option<Cause>, String> {
-    let Some(live) = release.get(step.name.as_str()).filter(|live| live.layer == step.layer.name) else {
+    let Some(served) = release.get(step.name.as_str()).filter(|served| served.layer == step.layer.name) else {
         return Ok(Some(Cause::options()));
     };
     let (layer, mut found) = (step.layer, Vec::new());
-    if live.format != layer.format {
-        found.push(Cause::Version { field: Field::Format, from: Some(live.format), to: layer.format });
+    if served.format != layer.format {
+        found.push(Cause::Version { field: Field::Format, from: Some(served.format), to: layer.format });
     }
-    if live.revision != layer.revision {
-        found.push(Cause::Version { field: Field::Revision, from: Some(live.revision), to: layer.revision });
+    if served.revision != layer.revision {
+        found.push(Cause::Version { field: Field::Revision, from: Some(served.revision), to: layer.revision });
     }
     let declared: BTreeSet<(InputKind, &str)> = step
         .inputs
@@ -204,20 +204,20 @@ fn cause(
         })
         .collect();
     let built: BTreeSet<(InputKind, &str)> =
-        live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
-    if declared != built || live.options != step.options || live.client != step.client.sorted() {
+        served.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
+    if declared != built || served.options != step.options || served.client != step.client.sorted() {
         found.push(Cause::options());
     }
     for input in &step.inputs {
         match input {
             Input::Snapshot { source, version, params, .. } => {
-                let Some(read) = live.snapshots.get(source) else { continue };
+                let Some(read) = served.snapshots.get(source) else { continue };
                 let from = read.version.clone();
                 if &read.version != version {
                     found.push(Cause::Source { source: source.clone(), from, to: Some(version.clone()) });
                 } else if read.params != sorted(params) {
                     found.push(Cause::options());
-                } else if other_files(store, live, input)? {
+                } else if other_files(store, served, input)? {
                     found.push(Cause::Input { name: source.clone() });
                 } else if let Some(to) = newer.get(&(source.clone(), sorted(params))) {
                     found.push(Cause::Source { source: source.clone(), from, to: to.clone() });
@@ -230,7 +230,7 @@ fn cause(
                     Some(_) => found.push(Cause::Input { name: owner.name.into() }),
                     None => {
                         let now = release.get(name.as_str()).map(|input| layer_digest(&input.files, files));
-                        let read = live.inputs.iter().find(|read| read.kind == InputKind::Step && &read.name == name);
+                        let read = served.inputs.iter().find(|read| read.kind == InputKind::Step && &read.name == name);
                         if now.as_ref() != read.map(|read| &read.digest) {
                             found.push(Cause::Input { name: owner.name.into() });
                         }
@@ -243,12 +243,12 @@ fn cause(
 }
 
 /// Whether the store has the files that the snapshot `input` reads, with another digest than the
-/// one that `live` read.
-fn other_files(store: &Store, live: &Layer, input: &Input) -> Result<bool, String> {
+/// one that `served` read.
+fn other_files(store: &Store, served: &Output, input: &Input) -> Result<bool, String> {
     let Input::Snapshot { source, version, params, files } = input else { return Ok(false) };
     let Selection::Present(files) = selection(store, source, version, params, files)? else { return Ok(false) };
     let digest = digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())));
-    let read = live.inputs.iter().find(|read| read.kind == InputKind::Snapshot && &read.name == source);
+    let read = served.inputs.iter().find(|read| read.kind == InputKind::Snapshot && &read.name == source);
     Ok(read.is_some_and(|read| read.digest != digest))
 }
 
@@ -258,24 +258,24 @@ mod tests {
     use crate::engine::tests::{fixture, layered, snapshot, write, Fixture, JOIN, TEST, UPPER};
 
     /// Build `steps`, and give the release their layers.
-    fn released(fixture: &Fixture, steps: &[Step]) -> BTreeMap<String, Layer> {
+    fn released(fixture: &Fixture, steps: &[Step]) -> BTreeMap<String, Output> {
         let built = fixture.build(steps).unwrap();
         let step = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
-        built.iter().map(|b| (b.receipt.step.clone(), Layer::new(&b.receipt, step(&b.receipt.step)))).collect()
+        built.iter().map(|b| (b.receipt.step.clone(), Output::new(&b.receipt, step(&b.receipt.step)))).collect()
     }
 
     /// Each layer with its state and the text of its cause.
     fn states(
         fixture: &Fixture,
         steps: &[Step],
-        release: &BTreeMap<String, Layer>,
+        release: &BTreeMap<String, Output>,
         newer: &Newer,
     ) -> Vec<(String, Verdict, Option<String>)> {
         let layers = judged(fixture, steps, release, newer);
         layers.into_iter().map(|layer| (layer.layer, layer.state, layer.text)).collect()
     }
 
-    fn judged(fixture: &Fixture, steps: &[Step], release: &BTreeMap<String, Layer>, newer: &Newer) -> Vec<LayerState> {
+    fn judged(fixture: &Fixture, steps: &[Step], release: &BTreeMap<String, Output>, newer: &Newer) -> Vec<LayerState> {
         let environment = Environment { release: release.clone(), newer: newer.clone() };
         state(&fixture.store, steps, &environment).unwrap()
     }
@@ -377,7 +377,7 @@ mod tests {
         let layers = judged(&fixture, &steps, &release, &Newer::new());
         assert_eq!((&layers[0].cause, layers[0].text.as_deref()), (&Some(Cause::options()), Some("options changed")));
 
-        let sun = Layer { layer: "sun".into(), step: "test/sun".into(), ..release["test/upper"].clone() };
+        let sun = Output { layer: "sun".into(), step: "test/sun".into(), ..release["test/upper"].clone() };
         release.insert("test/sun".into(), sun);
         release.retain(|step, _| step != "test/join" && step != "test/count");
         assert_eq!(

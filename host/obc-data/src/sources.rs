@@ -61,12 +61,52 @@ pub enum VersionScheme {
     Digest,
 }
 
-/// How old the live version may get before the source is stale.
+impl VersionScheme {
+    /// Whether a version of the scheme is newer than another by its name: a date or a release. A
+    /// commit and a digest have no order.
+    pub fn ordered(self) -> bool {
+        matches!(self, VersionScheme::Date | VersionScheme::Release)
+    }
+}
+
+/// The order of two versions by their parts: a run of digits by its number, any other run as
+/// text. So `v1.9` comes before `v1.11`, and a date is in the order of its days.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(text: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut start = 0;
+        for (at, char) in text.char_indices().skip(1) {
+            let before = text[..at].chars().next_back().expect("a char before `at`");
+            if before.is_ascii_digit() != char.is_ascii_digit() {
+                parts.push(&text[start..at]);
+                start = at;
+            }
+        }
+        parts.push(&text[start..]);
+        parts
+    }
+    fn number(part: &str) -> Option<&str> {
+        part.bytes().all(|byte| byte.is_ascii_digit()).then(|| part.trim_start_matches('0'))
+    }
+    for (x, y) in parts(a).into_iter().zip(parts(b)) {
+        let order = match (number(x), number(y)) {
+            (Some(x), Some(y)) => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
+            _ => x.cmp(y),
+        };
+        if order.is_ne() {
+            return order;
+        }
+    }
+    // Equal numbers with other zeros, such as `v1.0` and `v1.00`, still have one order.
+    parts(a).len().cmp(&parts(b).len()).then_with(|| a.cmp(b))
+}
+
+/// How old the serving version may get before the source is stale.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
 pub enum Refresh {
     Days(u16),
-    /// Never stale: only `--move` moves the source.
+    /// Never stale: a step list reads a newer version only when this machine's store has it.
     #[default]
     Manual,
 }
@@ -121,7 +161,7 @@ impl JsonSchema for Refresh {
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
-            "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
+            "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale.",
             "anyOf": [{"type":"integer", "minimum":1, "maximum":65535}, {"const":"manual"}]
         })
     }
@@ -192,8 +232,8 @@ pub struct Source {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
     pub version: VersionScheme,
-    /// The version that a plan reads while no live release reads the source. `--move` overrides
-    /// it. Without it, the first fetch takes the newest version upstream.
+    /// The version that a step list reads while no serving release reads the source. Without it,
+    /// the first fetch takes the newest version upstream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
     #[serde(default)]
@@ -347,21 +387,6 @@ impl Registry {
         let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
         Ok(Self { sources: parse_sources(&read(&root.join("data/sources.toml"))?)? })
     }
-
-    /// Source declarations with this store's effective refresh policies.
-    pub fn effective(root: &Path, store: &crate::store::Store) -> Result<Self, String> {
-        let mut registry = Self::load(root)?;
-        crate::settings::current(store)?.policies(&mut registry.sources)?;
-        Ok(registry)
-    }
-
-    /// The registry of the repository above the current directory, or else above the running
-    /// program.
-    pub fn live() -> Result<Self, String> {
-        let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
-        let root = starts.into_iter().flatten().find_map(|start| crate::find_root(&start));
-        Self::load(&root.ok_or("no data/sources.toml above the current directory or the program")?)
-    }
 }
 
 /// A source of the `data/sources.toml` that this build embeds. A product that carries a credit
@@ -391,7 +416,7 @@ pub enum State {
     Stale,
     Blocked,
     Ok,
-    /// No live layer and no active request reads the source.
+    /// No step of the target reads the source.
     Unused,
 }
 
@@ -410,40 +435,26 @@ impl std::fmt::Display for State {
 pub struct Status {
     pub state: State,
     pub reason: Option<String>,
-    /// Days since the date of the live version; only a date version has one.
+    /// Days since the date of the serving version; only a date version has one.
     pub age_days: Option<i64>,
 }
 
-/// `lines` with the line end of `text`.
-pub(crate) fn join(text: &str, lines: Vec<String>) -> String {
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    lines.join(newline) + newline
-}
-
-/// Whether the date of an active request exceeds its maximum data age.
-/// A successful check of unchanged upstream bytes does not change this age.
-pub fn due(source: &Source, version: Option<&str>, today: i64) -> bool {
-    match (source.refresh, version.and_then(date::parse)) {
-        (Refresh::Days(max), Some(day)) => today - day > i64::from(max),
-        _ => false,
-    }
-}
-
-/// The state of `source` at `today`, from `live`, the version that live reads, the newest upstream
-/// version, its policy and its licence. Credentials gate selected fetches. The live version is stale when upstream has
-/// a newer version, or when it is before `base`, the live version of the source that `fetch.from`
-/// names.
-pub fn status(source: &Source, live: Option<&str>, base: Option<&str>, upstream: &Upstream, today: i64) -> Status {
-    let age_days = live.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
+/// The state of `source` at `today`, from `serving`, the version that the serving release reads,
+/// the newest upstream version, its policy and its licence. Credentials gate selected fetches. The
+/// serving version is stale when its policy is due and upstream has a newer version, or when it is
+/// before `base`, the serving version of the source that `fetch.from` names.
+pub fn status(source: &Source, serving: Option<&str>, base: Option<&str>, upstream: &Upstream, today: i64) -> Status {
+    let age_days =
+        serving.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
-    } else if let Some(base) = base.filter(|&base| live.is_some_and(|live| live < base)) {
+    } else if let Some(base) = base.filter(|&base| serving.is_some_and(|serving| serving < base)) {
         let from = source.fetch.from.as_deref().unwrap_or_default();
-        (State::Stale, Some(format!("before `{from}` {base} of live")))
+        (State::Stale, Some(format!("before `{from}` {base} of the serving release")))
     } else {
         match (source.refresh, age_days) {
             (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
-                Upstream::Newest(newest) if Some(newest.as_str()) > live => {
+                Upstream::Newest(newest) if Some(newest.as_str()) > serving => {
                     (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))
                 }
                 Upstream::Newest(_) => (State::Ok, None),
@@ -484,6 +495,23 @@ mod tests {
     fn an_unknown_field_is_rejected() {
         let err = parse_sources(&format!("{OSM}licence_text = \"x\"\n")).unwrap_err();
         assert!(err.contains("licence_text"), "{err}");
+    }
+
+    #[test]
+    fn a_version_is_newer_by_the_numbers_of_its_parts() {
+        use std::cmp::Ordering::Less;
+        let pairs = [
+            ("v1.9", "v1.11"),
+            ("5.3.2", "5.10.0"),
+            ("2026-09-30", "2026-10-01"),
+            ("1", "1.1"),
+            ("v1.0", "v1.00"),
+            ("01", "1"),
+        ];
+        for (older, newer) in pairs {
+            assert_eq!(compare_versions(older, newer), Less, "{older} < {newer}");
+            assert_eq!(compare_versions(newer, older), Less.reverse(), "{newer} > {older}");
+        }
     }
 
     #[test]
@@ -540,18 +568,15 @@ mod tests {
         );
         let same = Upstream::Newest("2024-01-02".into());
         assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today).state, State::Ok);
-        assert!(!due(&osm(), Some("2024-01-03"), today));
-        assert!(due(&osm(), Some("2024-01-02"), today), "unchanged upstream keeps the data age due");
         assert_eq!(status(&osm(), Some("2024-01-02"), None, &Upstream::Capture, today).state, State::Stale);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert!(!due(&manual, Some("2020-01-01"), today));
         assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today).state, State::Ok);
         assert_eq!(status(&osm(), None, None, &newer, today).state, State::Ok);
         let replication = Source { fetch: Fetch { from: Some("osm-planet".into()), ..osm().fetch }, ..osm() };
         let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today);
         assert_eq!(
             (behind.state, behind.reason.as_deref()),
-            (State::Stale, Some("before `osm-planet` 2024-01-09 of live"))
+            (State::Stale, Some("before `osm-planet` 2024-01-09 of the serving release"))
         );
         assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today).state, State::Ok);
     }

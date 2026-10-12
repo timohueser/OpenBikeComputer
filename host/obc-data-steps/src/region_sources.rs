@@ -4,8 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use obc_bake::coverage::Coverage;
 use obc_data::engine::{Client, Input, Layer, Run, Shape, Step};
-use obc_data::env::Env;
-use obc_data::product::{version, Unplanned, Wanted};
+use obc_data::product::{version, Inputs, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Regions};
 use obc_data::store::Store;
 use serde_json::json;
@@ -45,14 +44,14 @@ pub struct Selection {
 }
 
 pub fn resolve(
-    env: &Env,
+    inputs: &Inputs,
     regions: &Regions,
     store: &Store,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Selection>, Unplanned> {
     let mut ids = BTreeSet::new();
     let mut boxes = Vec::new();
-    for id in regions.leaves(&env.region).map_err(Unplanned::Failed)? {
+    for id in regions.leaves(&inputs.settings.region).map_err(Unplanned::Failed)? {
         let region = regions.get(id).expect("region leaf exists");
         match &region.area {
             Area::Geofabrik { areas } => ids.extend(areas.iter().cloned()),
@@ -64,9 +63,9 @@ pub fn resolve(
     let index = if boxes.is_empty() {
         None
     } else {
-        let Some(body) = text(env, store, INDEX, &[], wanted)? else { return Ok(None) };
+        let Some(body) = text(inputs, store, INDEX, &[], wanted)? else { return Ok(None) };
         index_version = Some(
-            version(env, store, INDEX, &[])
+            version(inputs, store, INDEX, &[])
                 .map_err(Unplanned::Failed)?
                 .map_err(|fetch| Unplanned::NeedsFetch(vec![fetch]))?,
         );
@@ -92,11 +91,11 @@ pub fn resolve(
         let mut missing = false;
         for id in selected {
             let params = vec![("area".to_string(), id.clone())];
-            let Some(poly) = text(env, store, POLY, &params, wanted)? else {
+            let Some(poly) = text(inputs, store, POLY, &params, wanted)? else {
                 missing = true;
                 continue;
             };
-            let poly_version = version(env, store, POLY, &params)
+            let poly_version = version(inputs, store, POLY, &params)
                 .map_err(Unplanned::Failed)?
                 .map_err(|fetch| Unplanned::NeedsFetch(vec![fetch]))?;
             sources.push(Source {
@@ -134,7 +133,7 @@ pub fn resolve(
         }
         for source in &mut sources {
             let params = [("area".to_string(), source.id.clone())];
-            match version(env, store, EXTRACTS, &params).map_err(Unplanned::Failed)? {
+            match version(inputs, store, EXTRACTS, &params).map_err(Unplanned::Failed)? {
                 Ok(version) => source.extract = version,
                 Err(fetch) => {
                     wanted.push(fetch);
@@ -147,7 +146,7 @@ pub fn resolve(
         }
         let mut outlines = boxes;
         outlines.extend(sources.iter().filter(|source| ids.contains(&source.id)).map(|source| source.coverage.clone()));
-        let direct = regions.get(&env.region).is_some_and(|region| region.source_area().is_some());
+        let direct = regions.get(&inputs.settings.region).is_some_and(|region| region.source_area().is_some());
         return Ok(Some(Selection { sources, outlines, coverage, direct, index: index_version }));
     }
 }

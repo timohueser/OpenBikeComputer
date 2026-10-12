@@ -173,7 +173,7 @@ pub(super) fn capture(
     if store.requested(&source.id, &version, &request.params)?.is_some_and(|files| files.is_empty()) {
         return Ok(snapshot(Vec::new()));
     }
-    // A manual source moves only by `--move`, so a request that a started version lacks joins it:
+    // A manual source keeps one version, so a request that a started version lacks joins it:
     // a national model is fetched tile by tile over days. A version that the store never started
     // is a day the service cannot answer for.
     let joins = source.refresh == Refresh::Manual && store.snapshot(&source.id, &version)?.is_some();
