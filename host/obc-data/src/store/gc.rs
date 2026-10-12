@@ -480,13 +480,13 @@ mod tests {
             .collect();
         let digest = engine::digest(files.iter().map(|file| (file.path.as_str(), file.sha256.as_str())));
         let receipt = Receipt {
+            layer: "test".into(),
             step: key.into(),
+            format: 1,
+            revision: 1,
             key: key.into(),
             inputs,
             options: serde_json::json!({}),
-            code: String::new(),
-            command: None,
-            outputs: files.iter().map(|file| file.path.clone()).collect(),
             digest: digest.clone(),
             files,
             built: "2026-10-05T00:00:00Z".into(),

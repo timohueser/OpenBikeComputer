@@ -16,13 +16,7 @@ pub fn basemap_jar() -> String {
 }
 
 /// The basemaps source archive and its executable jar, including Planetiler and its dependencies.
-pub(super) fn basemap(
-    root: &Path,
-    store: &Store,
-    http: &Http,
-    request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
-) -> Result<Snapshot, String> {
+pub(super) fn basemap(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let version = request.version.as_deref().ok_or("protomaps-basemaps needs a commit: give SOURCE@VERSION")?;
     if version.len() != 40 || !version.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return Err("protomaps-basemaps needs a full commit SHA".into());
@@ -46,9 +40,6 @@ pub(super) fn basemap(
             return Ok(snapshot);
         }
     }
-    super::check_owner(root, request.source, checks)?;
-    let code = super::owner_code(request.source).code;
-    let before = code.files(root)?;
     let archive = files(store, http, request)?;
     let work = store.partial(&format!("{version}-{name}"));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
@@ -66,9 +57,6 @@ pub(super) fn basemap(
             .map_err(|e| format!("basemap tool preparation: {e}"))?;
         if !status.success() {
             return Err(format!("basemap tool preparation failed: {status}"));
-        }
-        if code.files(root)? != before {
-            return Err("tool preparation code or Python runtime changed; plan again".into());
         }
         let (sha256, size) = hash_file(&jar)?;
         store.insert(&jar, &sha256)?;
@@ -114,27 +102,13 @@ mod tests {
         let snapshot = Snapshot { source: source.id.clone(), version: version.into(), files };
         store.put_snapshot(&snapshot).unwrap();
         let request = Request { refresh: false, source, version: Some(version.into()), params: Vec::new() };
-        assert_eq!(
-            basemap(
-                &scratch.0.join("absent-checkout"),
-                &store,
-                &Http::new(),
-                &request,
-                Some(&mut crate::engine::code::Context::default())
-            )
-            .unwrap(),
-            snapshot
-        );
+        assert_eq!(basemap(&scratch.0.join("absent-checkout"), &store, &Http::new(), &request,).unwrap(), snapshot);
         assert!(!scratch.0.join("absent-checkout").exists());
         let request = Request { refresh: false, version: Some("main".into()), ..request };
-        assert!(basemap(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
-            &store,
-            &Http::new(),
-            &request,
-            None
-        )
-        .unwrap_err()
-        .contains("full commit SHA"));
+        assert!(
+            basemap(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(), &store, &Http::new(), &request,)
+                .unwrap_err()
+                .contains("full commit SHA")
+        );
     }
 }

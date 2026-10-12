@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use obc_bake::coverage::Coverage;
-use obc_data::engine::{Client, Code, Input, Run, Step};
+use obc_data::engine::{Client, Input, Layer, Run, Shape, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Area, Regions};
@@ -13,6 +13,9 @@ use serde_json::json;
 use crate::maps::{box_poly, text, EXTRACTS, POLY};
 
 const INDEX: &str = "geofabrik-index";
+
+/// The OSM of a region, from its source areas: the steps of the layers that read OSM read it.
+pub static OSM: Layer = Layer { name: "osm", shape: Shape::Whole, format: 1, revision: 1, readers: &[] };
 
 pub struct Source {
     pub id: String,
@@ -208,6 +211,7 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
         .sources
         .iter()
         .map(|source| Step {
+            layer: &OSM,
             name: format!("{prefix}/source/{}", source.id),
             inputs: [source.input(EXTRACTS), source.input(POLY)]
                 .into_iter()
@@ -219,7 +223,6 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
                 }))
                 .collect(),
             options: json!({}),
-            code: Code { crates: vec!["obc-osm".into()], ..Default::default() },
             outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
             run: Run::Rust(obc_osm::step::area),
             client: Client::None,
@@ -227,8 +230,9 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
         .collect()
 }
 
-pub fn combined(name: &str, inputs: &[Step], binding: Option<&obc_data::engine::Library>) -> Result<Step, Unplanned> {
+pub fn combined(name: &str, inputs: &[Step]) -> Step {
     let mut step = crate::python(
+        &OSM,
         name,
         inputs
             .iter()
@@ -236,12 +240,10 @@ pub fn combined(name: &str, inputs: &[Step], binding: Option<&obc_data::engine::
             .collect(),
         json!({}),
         ("tools.region_osm", None),
-        &["tools/region_osm.py"],
         &["osm.pbf"],
     );
     step.client = Client::None;
-    step.code.libraries.extend(binding.cloned());
-    Ok(step)
+    step
 }
 
 #[cfg(test)]

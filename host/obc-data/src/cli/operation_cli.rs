@@ -1,4 +1,4 @@
-//! The shared start API retains the checked worker before the viewing process can exit.
+//! The shared start API keeps a copy of this binary before the viewing process can exit.
 
 use std::fs::File;
 use std::io::IsTerminal;
@@ -47,7 +47,6 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     if request.kind == Kind::Apply {
         super::apply_cli::pushed_commit(root)?;
     }
-    let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let plan_bytes = plan
         .map(|plan| {
@@ -77,15 +76,8 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     let id = run.id().to_string();
     let directory = operation::directory(store, &id)?;
     let worker = directory.join("worker");
-    let control = Control {
-        run: id.clone(),
-        request_sha256,
-        request,
-        root,
-        worker: worker_identity,
-        code,
-        state: State::Reserved,
-    };
+    let control =
+        Control { run: id.clone(), request_sha256, request, root, worker: worker_identity, state: State::Reserved };
     let mut reserved = false;
     let initialized = (|| -> Result<(), Error> {
         if let operation::Reservation::Busy(reason) = operation::reserve(store, &control)? {
@@ -143,9 +135,6 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
             &handle.request,
         ])
         .current_dir(&control.root)
-        .env(crate::worker::ROOT, &control.root)
-        .env(crate::worker::CODE, &control.code)
-        .env(crate::worker::EXE, &control.worker.sha256)
         .env("OBC_DATA_STORE", store.root());
     if let Err(message) = operation::launch::detach(&mut child, &directory) {
         return Err(unlaunched(store, &id, Code::Failed.error(message)));
@@ -186,7 +175,7 @@ fn unlaunched(store: &Store, run: &str, mut error: Error) -> Error {
     error.with_run(run)
 }
 
-/// A private child can only execute its immutable request through the retained checked binary.
+/// A private child can only execute its immutable request through the retained copy of the binary.
 pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::store::Lock, Error> {
     let control = operation::read(store, run)?.ok_or_else(|| Code::Usage.error("run has no detached request"))?;
     if control.root != super::root()?.canonicalize().map_err(|e| e.to_string())?

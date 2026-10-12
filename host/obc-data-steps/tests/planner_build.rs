@@ -11,7 +11,7 @@ use std::process::Command;
 use obc_data::engine::plan::plan;
 use obc_data::engine::release::release;
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{Built, Code, Input, Request, Run, Step};
+use obc_data::engine::{Built, Input, Request, Run, Step};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
 use obc_data::product::Product;
@@ -108,12 +108,10 @@ time_zone = "Europe/Berlin"
             if step.name == "planner/basemap" {
                 step.inputs = vec![Input::layer("planner/places")];
                 step.options = serde_json::json!({"kind": "planner/basemap"});
-                step.code = Code { paths: Vec::new(), crates: vec!["obc-data".into()], ..Default::default() };
                 step.run = Run::Rust(local_files);
             } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {
                 step.inputs.clear();
                 step.options = serde_json::json!({"kind": step.name});
-                step.code = Code { paths: Vec::new(), crates: vec!["obc-data-steps".into()], ..Default::default() };
                 step.run = Run::Rust(local_files);
             }
         }
@@ -124,7 +122,7 @@ time_zone = "Europe/Berlin"
         Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
     let build = |steps: &[Step]| -> Vec<Built> {
         let mut run = RunLog::create(&store, "build test").unwrap();
-        let built = run.build(&context, steps, &plan(&store, &root, steps).unwrap()).unwrap();
+        let built = run.build(&context, steps, &plan(&store, steps).unwrap()).unwrap();
         run.finish(None).unwrap();
         built
     };
@@ -196,10 +194,6 @@ time_zone = "Europe/Berlin"
     // The bakery and the drinking water; the village is no rider place.
     assert_eq!(metrics("planner/places")["places"], 2);
     let overlays = &built.iter().find(|built| built.receipt.step == "planner/overlays").unwrap().receipt;
-    assert_eq!(
-        overlays.command.as_ref().unwrap()[..6],
-        ["env", "PYTHONHASHSEED=0", "uv", "run", "--locked", "--offline"]
-    );
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
@@ -305,15 +299,15 @@ for name, entry in catalog['files'].items():
     let mut climate = env.clone();
     climate.layers.push("climate".into());
     climate.moves.insert("era5-land".into(), Some(DAY.into()));
-    let climate = plan(&store, &root, &steps(true, &climate)).unwrap();
+    let climate = plan(&store, &steps(true, &climate)).unwrap();
     assert_eq!(
         climate.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(),
         ["planner/climate", "planner/climate/grid", "planner/index"],
         "optional climate reuses every other layer"
     );
 
-    assert_eq!(plan(&store, &root, &steps(true, &env)).unwrap().groups.len(), 0);
-    let release = release(&store, &root, "planner", AREA, &[], &steps(true, &env)).unwrap();
+    assert_eq!(plan(&store, &steps(true, &env)).unwrap().groups.len(), 0);
+    let release = release(&store, "planner", AREA, &[], &steps(true, &env)).unwrap();
     assert!(release.is_some(), "the store has every layer");
     let mut release = release.unwrap();
     release.name_files(Planner.named(&release).unwrap()).unwrap();

@@ -7,12 +7,12 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 ## Setup
 
-Prepare the selected Rust toolchain, native compiler and producer tools before a build.
-Discovery does not install them. Unsupported compiler settings or missing providers refuse
-new work. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) for browser
+Prepare Rust, Python with `uv`, GEOS and Osmium before a build; `obc data` does not install them.
+A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
+that changes its output; a reader that needs new data raises its `format`. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) for browser
 assets, search dependencies and matching-host apps.
 
-Retained workers detach from the terminal. Publication runs on the machine that applies: it
+A started run detaches from the terminal. Publication runs on the machine that applies: it
 needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
 settings stay in the store and need no commit. One machine applies at a time. An apply builds services on the VPS,
 stops them, installs the data and probes the new services. Allow a short outage. Before it replaces

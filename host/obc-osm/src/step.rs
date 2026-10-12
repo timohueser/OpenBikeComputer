@@ -36,7 +36,7 @@ fn name(leaf: LeafId) -> String {
 /// The option `leaves` names each leaf as `[i, j]`. The step reads the one file of its snapshots,
 /// and writes [`leaf_pbf`] for each leaf. Its metrics name the Osmium version.
 pub fn osm(request: &Request) -> Result<(), String> {
-    let (osmium, binding) = OsmiumRunner::bound(&request.libraries)?;
+    let osmium = OsmiumRunner::default();
     let leaves = request.options["leaves"].as_array().ok_or("option `leaves` is not a list")?;
     let leaves = leaves.iter().map(|leaf| match leaf.as_array().map(Vec::as_slice) {
         Some([i, j]) => Some(LeafId { i: i.as_i64()?, j: j.as_i64()? }),
@@ -61,6 +61,5 @@ pub fn osm(request: &Request) -> Result<(), String> {
         let path = request.output.join(leaf_pbf(leaf));
         std::fs::rename(dir.join(name(leaf)), &path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
-    osmium.check_binding(binding)?;
     Ok(())
 }

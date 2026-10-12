@@ -447,17 +447,17 @@ pub fn fetch(
     request: &Request,
     selected: &[String],
 ) -> Result<Snapshot, String> {
-    fetch_checked(root, store, http, copies, request, selected, None)
+    fetch_recorded(root, store, http, copies, request, selected, None)
 }
 
-pub(crate) fn fetch_checked(
+pub(crate) fn fetch_recorded(
     root: &std::path::Path,
     store: &Store,
     http: &Http,
     copies: Option<&Restore>,
     request: &Request,
     selected: &[String],
-    checks: Option<crate::fetch::Checks<'_>>,
+    acquisition: Option<crate::fetch::Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     if let Some(snapshot) = copies
         .map(|c| {
@@ -478,7 +478,7 @@ pub(crate) fn fetch_checked(
             crate::fetch::wikimedia::restore_published(store, copies)?;
         }
     }
-    fetch::fetch_checked(root, store, http, request, checks)
+    fetch::fetch_recorded(root, store, http, request, acquisition)
 }
 
 #[cfg(test)]

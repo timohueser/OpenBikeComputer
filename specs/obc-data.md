@@ -223,8 +223,6 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
-| `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
-| `producers/<hash>.json` | The full code fingerprints, source/config fingerprints and resolved Rust target/profile from the same traversal. The full fingerprints must hash to `<hash>` |
 | `local/<product>.json` | One saved portable adoption: its original release and exact selected files. It remains a collection root while apps are stopped |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
@@ -376,7 +374,6 @@ of `uv python find` selects its Python and honors `UV_PYTHON`. A standard-librar
 runs that interpreter directly. A package capture uses `uv run --locked --offline
 --no-default-groups --no-python-downloads --group GROUP python`, bound to that interpreter.
 It prepares the locked group when the capture runs. Cached captures need no Python runtime.
-The capture checks its code and interpreter before execution and before accepting output.
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp` files.
 A failed run keeps the directory and writes no record. A directory of a `manual` source, or one
@@ -442,27 +439,55 @@ the cached observation. Refresh policy changes do not invalidate acquisition evi
 
 ## Layers
 
-A step makes one layer from snapshots, the layers of other steps and options. A
+A layer is data of the store with a version. An operator names an operator layer, such as
+`device/map`. An internal layer, such as `osm`, has no readers: only the steps of other layers
+read it. One or more steps make a layer, and the version of the layer applies to each of them. A
 [plan](#plan) lists the steps to build, and a [run](#runs) builds them in dependency order. The
 engine builds a step only when the store has no receipt for the key of the step, or when an
 object of that receipt is missing.
+
+The `obc data` binary declares each layer beside the steps that make it:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Lowercase kebab-case segments joined by `/` |
+| `shape` | `tiled`: built per grid leaf. `whole`: built once over the full coverage. `whole` with named partitions |
+| `format` | The number that the readers of its files check. Where a reader has a constant, the layer uses it: `obct::VERSION`, `obcm::VERSION`, the router `FORMAT` and `CATALOG_SCHEMA_VERSION`. Another layer has the format that its spec states, or 1 |
+| `revision` | The number that a person changes in the change that improves the output. It starts at 1 |
+| `readers` | The programs or layers that read its files. An internal layer has none |
+
+| Layer | Steps |
+| --- | --- |
+| `osm` | `maps/source/<area>`, `maps/region-osm`, `maps/osm`, `planner/source/<area>`, `planner/osm` |
+| `device/terrain` | `maps/reference/<i>-<j>`, `maps/terrain/<i>-<j>` |
+| `device/map` | `maps/<band>/<i>-<j>` |
+| `device/landmarks` | `maps/landmark-content…`, `maps/peak-content…`, `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` |
+| `device/catalog` | `maps/catalog` |
+| `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
+| `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun` | The step of the same name and its grid |
+| `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
+| `planner/search` | `planner/search/…`, `planner/model` and their grids |
+| `planner/index` | `planner/fonts/grid`, `planner/index` |
 
 A step declares:
 
 | Field | Meaning |
 | --- | --- |
-| `name` | The layer name: lowercase kebab-case segments joined by `/` |
-| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
+| `layer` | The layer that it makes part of |
+| `name` | Lowercase kebab-case segments joined by `/`. A step that two products list has the same declaration in both |
+| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The files of other steps, as `name` and `files`: the paths that the step reads, or none for every file. A selected path that the other step does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native release. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. `libraries`: named native files with absolute paths, expected SHA-256 digests and optional tool versions. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
-| `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
+| `run` | A Rust function in the process, a command (a program and its arguments), or a Python command. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
 One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
 enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
 or sorted keys for JSON objects).
-A Rust function uses the native release worker. Prepared and dev declarations require a command.
+
+A Python command runs `uv run`. The engine sets `UV_PYTHON` to the interpreter that `uv python
+find --system --offline --no-python-downloads` selects for the project, with an explicit
+`UV_PYTHON` request when set, and sets `UV_NO_SYNC=0`.
 
 ### Keys
 
@@ -470,143 +495,33 @@ The digest of a list of files is the SHA-256 of the text that `sha256sum` writes
 line `<sha256>  <name>` with a final newline per file, in byte order of the names.
 
 - The digest of a snapshot input lists its selected files by `name`.
-- The digest of a layer lists its files by `path`. The digest of a layer input lists the files
-  that it selects.
-- The code hash lists file paths and named dependency fingerprints, each to its SHA-256.
-  A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
-  it: the files that git tracks or does not ignore. A path that lists no file fails the step,
-  and so does a repository root that is not a git checkout. Explicit paths hash the full file.
-- A crate adds its `Cargo.toml`, `build.rs` and `src/` the same way. Automatic manifest hashes
-  omit top-level and target-specific dev-dependency tables. The resolved normal and build
-  dependencies add local crate files, registry checksums or resolved Git revisions. Local
-  crates must be inside the checkout. Each selected package adds its name, version, edition,
-  resolved package settings and features under `cargo/<name>@<version>#<source>`. Cargo metadata runs locked,
-  offline and for `target`, or the native host when unset. The target enters
-  `rust/target`. Features use Cargo's workspace resolution. This
-  conservative union can rebuild a step when another producer enables a shared feature.
-  Dev-only and unrelated packages add no records. The walk stops at the engine crate
-  `obc-data`: its selected inputs enter the input digests.
-  A prepared compiler binding requires an explicit `target` and a checked builder in the step
-  options. It does not use the host compiler as the identity of a target executable.
-- Native Rust adds the selected compiler, Cargo and native link driver versions,
-  and ordered compiler flags. Tool and sysroot library bytes do not enter the code hash.
-  The C compiler enters the identity when the selected closure uses `cc`. Rustup proxies
-  resolve to the actual selected executables in the checkout. A native target must match the
-  selected compiler host. Both compiler bindings add the selected dev/release profile settings,
-  its build override and applicable package overrides. Named package overrides use the selected
-  closure; `*` applies only when that closure contains a non-workspace package. Unselected
-  profiles and package overrides add no records. Profile inheritance and package-ID overrides
-  are refused. Tool discovery is cached within a checking context. Each execution
-  boundary checks tool, library, environment and selection/config witnesses. A change runs
-  discovery again.
-- Acquisition and planning declare an owner crate and its source paths. The same resolver
-  selects its normal and build dependencies, profiles and execution tools. Owner source uses the
-  declared paths. Engine backend source is included.
-  Backend CLI edits can change owner identity. Its dependency metadata stays conservative:
-  an unused dependency edit can change owner identity.
-- Source/config evidence is separate from full execution identity. It uses the same traversal,
-  selected source and package projections, repository profile and toolchain configuration.
-  It resolves at the recorded producer target and profile without selecting native tools,
-  libraries or a Python interpreter. This evidence does not prove equal recomputation on another
-  host. Full execution identity includes a reserved `identity/source-config` digest of this
-  projection and the recorded Rust target/profile. A published witness must match that digest.
-  Real execution still requires its complete native identity.
-- A declared native tool enters code identity by its name and version. A built artifact without
-  a tool version uses its complete file digest. Its
-  installation path does not enter that identity. Each execution boundary checks the current
-  file against the declared digest. Osmium extraction and merge bind the exact canonical executable
-  in this identity, outside semantic options. Their requests carry the binding; both callbacks
-  check it before and after work. Missing bindings refuse execution. GEOS producers bind the loaded shared C and C++ libraries
-  at worker startup. A missing or changed file blocks these producers until a fresh worker
-  starts. Capture keys bind selection source code, without GEOS versions or bytes. Selector children check the requested capture
-  code before selection and check the provider again before success. Held captures retain their
-  original inputs and must pass their content checks before reconstruction writes output.
-- Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
-  refuses build overrides except jobs and target directories. Network, registry, terminal and
-  alias settings add no byte identity. The supported flags are ordered `--cfg` and explicit
-  codegen and lint settings from `CARGO_ENCODED_RUSTFLAGS`, or `RUSTFLAGS` when the former is absent.
-  An empty encoded value suppresses `RUSTFLAGS`. Host-dependent `target-cpu=native`, external
-  codegen inputs, compiler wrappers and undeclared native build overrides are refused.
-  Supported `CARGO_PROFILE_DEV_*` and `CARGO_PROFILE_RELEASE_*` settings, including build
-  overrides, enter only their selected profile identity. `CARGO_INCREMENTAL` also enters it.
-  Cargo validates these raw values and applies its override precedence.
-  Errors identify the setting, not its value. Discovery does not install a toolchain.
-- `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` stay in the worker runtime environment.
-  Compiler commands remove inherited `CARGO_PKG_*` and `CARGO_MANIFEST_*` package metadata.
-  They preserve the selected target directory and build configuration.
-  Native tool discovery, Cargo metadata and worker builds clear loader search paths in their
-  child environment, including the refused `DYLD_LIBRARY_PATH` priority override. A declared native Rust
-  `cargo` or `rustc` command uses the same policy. Ordinary runtime commands, Python commands
-  and prepared builders retain their environment. These search paths add no byte identity.
-  Preload, injection and link-time library search overrides are refused. A compiler installation
-  that needs custom runtime loader paths is unsupported.
-- A `.rs` file of a selected crate adds each file that it names in `include_str!`,
-  `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs` file adds its own.
-  The name is a string literal, normal or raw, relative to the file, or a `concat!` of string
-  literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`. These are not code
-  unless the step declares them: a name that a literal with an escape, a constant or another
-  macro gives; `#[path]` in an inline module; and a file that `build.rs` reads.
-- `sources` adds each named source's content settings under `data/sources.toml#<id>`.
-  Acquisition, coverage, version scheme and licence settings enter this projection.
-  Refresh policy, credentials, host permissions and input-copy controls do not. Unnamed
-  sources add no records.
-- `python` adds the locked base packages and selected group under `python/packages/<group>`.
-  A null group selects only the base packages. `uv export --locked --offline` selects the
-  dependency closure without default groups. The sorted requirement records retain package
-  sources, versions, hashes and markers. `python/runtime` holds the implementation, full
-  version and ABI of the interpreter that `uv python find --system --offline --no-python-downloads`
-  selects for the project, with an explicit `UV_PYTHON` request when set. Before execution, the
-  engine checks this code identity again and sets the child `UV_PYTHON` to that interpreter.
-  The project environment can change the environment location, but not the base interpreter.
-  A no-sync override cannot retain an incompatible interpreter. Discovery does not download,
-  install or sync. A missing interpreter
-  fails with a request to prepare the runtime.
-- `python_packages` adds the same locked package projection for a separately packaged group,
-  without selecting a host interpreter or preparing its environment.
+- The digest of the files of a step lists them by `path`. The digest of a layer input lists the
+  files that it selects.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
 of each object in byte order:
 
 | Key | Value |
 | --- | --- |
-| `step` | The layer name |
-| `command` | The program and its arguments, or `null` for a Rust step |
-| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the layer name |
-| `options` | The semantic options |
-| `code` | The code hash |
-| `outputs` | The declared outputs, sorted |
+| `layer` | The name of the layer of the step |
+| `step` | The name of the step |
+| `format`, `revision` | The version of the layer |
+| `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the step name |
+| `options` | The options |
+
+Code is not in the key. A change of code with the same version reuses the files of the key. A
+change that gives other output changes the `revision` of its layer; a change of the readers
+changes its `format`.
 
 An input layer enters a key with its digest, not with its key. A rebuild that gives the same
-files gives the same digest, so the keys of the layers that read it do not change, and the
+files gives the same digest, so the keys of the steps that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-`obc data` builds its private producer worker with locked, offline Cargo. Cargo's JSON artifact
-record selects the executable. The launcher checks the compiled Rust closure before and after
-the build. Cargo tracks the checkout and code hashes that `option_env!` embeds in the worker.
-The launcher copies the executable to a temporary directory, and gives the child its checkout,
-code and executable hashes. The worker checks the compiled stamps and these hashes before CLI
-or capture selection dispatch. An unstamped private worker refuses to run.
-It derives the plan from its fresh product code. Its compiled closure includes the engine and
-uses the source content projection. A source refresh policy change does not require a restart.
-Credential descriptors remain in the compiled guard because product preflight reads them.
-An action in a long-lived worker rejects a persistent Rust source change with a restart message.
-
-The engine checks the whole declared step code before execution and after execution, before it
-accepts output objects or a receipt. These checks detect persistent concurrent edits. They do
-not run Cargo again while its lock and workspace or local manifests remain unchanged. The
-manifest paths come from the resolved metadata. Each check reads current declared source files
-and Python identities. The compiled worker is checked around complete plan and run operations.
-They do not detect an edit that is restored between checks or provide an immutable source snapshot.
-The launcher removes the copied worker after normal child exit, including on Windows. Abrupt
-launcher termination does not cancel the worker and can leave its copy in the operating
-system's temporary directory. The launch hashes guard accidental stale invocation; they are
-not an authentication protocol. External prepared
-tools enter through their selected snapshot bytes.
-
-The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
-for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and
-`files` sorted, and the inputs sorted by their compact JSON. It holds no digest, so a plan has it
-also for a step whose key waits for a fetch or another build.
+The recipe of a step is the SHA-256 of the same object without digests and with `client`: each
+input as `{"kind", "name", "files"}` for a layer and `{"kind", "name", "version", "params",
+"files"}` for a snapshot, `params` and `files` sorted, and the inputs sorted by their compact
+JSON. It holds no digest, so a plan has it also for a step whose key waits for a fetch or
+another build.
 
 ### The step contract
 
@@ -615,12 +530,11 @@ same fields.
 
 | Key | Value |
 | --- | --- |
-| `step` | The layer name |
+| `step` | The name of the step |
 | `snapshots` | `{source: {file name: object path}}` |
-| `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
-| `layer_files` | `{layer name: [{path, size, sha256}, …]}`, from receipts for exactly the same selected files |
-| `options` | The semantic options |
-| `libraries` | Named native library or executable bindings: `{name, path, sha256}`. They come from the checked Code declaration |
+| `layers` | `{step name: {path: object path}}`, with the files that the input selects |
+| `layer_files` | `{step name: [{path, size, sha256}, …]}`, from receipts for exactly the same selected files |
+| `options` | The options |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
 
@@ -632,8 +546,7 @@ A declared output that does not exist is an error.
 
 ### Offline
 
-A step reads its data inputs and the checked native providers in its request. A step
-does not use the network; fetchers are the only network users. A step must not write to its
+A step reads the data inputs of its request. A step does not use the network; fetchers are the only network users. A step must not write to its
 inputs: their paths, and the links of a view, are objects of the store, and a step that runs as
 root can write to a read-only object. The engine does not enforce this.
 A step that needs a package or a tool finds it installed, or reads it as a snapshot.
@@ -654,11 +567,11 @@ ends.
 
 ### Receipt
 
-`layers/<key>.json` is the receipt of one layer, a JSON object:
+`layers/<key>.json` is the receipt of the files of one step, a JSON object:
 
 | Key | Meaning |
 | --- | --- |
-| `step`, `key`, `options`, `code`, `command`, `outputs` | As in the key |
+| `layer`, `step`, `format`, `revision`, `key`, `options` | As in the key |
 | `inputs` | As in the key, and `files` for a layer input that selects files: the selected paths, sorted |
 | `digest` | The digest of `files` |
 | `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
@@ -720,19 +633,19 @@ or when live does not have it. The plan has one group per cause. A layer can hav
 | `region` | `region` | `region` of the environment is not the `region` of the live release of a product, or the product has nothing live. Each layer of the product that live does not have, or whose options or snapshot reads differ |
 | `layers` | `layers` | `layers` of the environment are not the `optional` layers of the live release of a product. Each layer of the product that live does not have |
 | `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
-| `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs, `client` or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
+| `version` | `version:STEP` | The layer, the version of the layer, the inputs or `client` of the steps are not those of their live layers. Without an edit of the region, also other options or snapshot reads. `STEP` is the first step in dependency order, and `layer` is its layer. A live step that no step list makes, without an edit, has an empty `layer` |
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
 | `pointer` | `pointer:PRODUCT` | None. The desired client document or release id differs without a layer change. `release` is its desired id; `document` is the SHA-256 of its compact JSON with sorted keys |
 
 A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
 cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
 the live layers of a product that no step makes now. Their cause is the edit of the product, or
-else `code`. The `fetches` and `builds` of a group make its `layers` and the layers that they
+else `version`. The `fetches` and `builds` of a group make its `layers` and the layers that they
 read, when the store lacks them. Those of `repair` make the unchanged layers of its keys that the
 store lacks. Groups come in the order of the table. Two groups can need the same build.
 
-A plan of `live` takes every group: git holds what live contains, so an edit or a change of the
-code cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
+A plan of `live` takes every group: git holds what live contains, so an edit or a change of a
+version cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
 does not move, and the steps read the version of live. `--only none` selects no move. An explicit
 `--move` that `--only` leaves out gives a warning. Another `id` in `--only` is a usage error.
 
@@ -846,8 +759,9 @@ version that live reads fails, the fix names `--move SOURCE`.
 A product is a set of steps that makes one release, such as `planner` or `maps`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
-commands without products, for scripts that use R2. Each layer name of a product starts
-with `<product>/`.
+commands without products, for scripts that use R2. Each step name starts with `<product>/`,
+and the release of that product holds the step. A product can list a step of another product,
+such as the landmark content that the planner search reads; both products declare it the same.
 
 A product gives its steps for an environment, its regions and the store. When the step list
 depends on a snapshot that the store does not have, such as the `.poly` of a region, the product
@@ -855,8 +769,9 @@ names those fetches instead. `plan` and `build` fetch them and then ask the prod
 long as each round names only new fetches: a fetched file can name the next fetch, such as the
 `.poly` that gives the box of a capture. A fetch that fails, fails the command with its own code,
 `fetch_failed` or `blocked`. A product that names a fetch it named before, that still names
-fetches after 8 rounds, or a step name without `<product>/`, fails the command with
-`failed` and a fix that points at the code of the product. A product that has no steps for the
+fetches after 8 rounds, a step name without the name of a product, or a step that differs from
+the same step of another product, fails the command with `failed` and a fix that points at the
+code of the product. A product that has no steps for the
 environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
 `blocked` with the reason, and the other products plan without it. `build` builds the groups of
 the other products and writes no release of a blocked product. When no product suits the
@@ -963,9 +878,8 @@ wins. Unique supplied objects remain. An extract cannot reveal a deletion absent
 this is a union of available snapshots, not a snapshot at one common date. Conflicting payloads
 at the same object type, id and version are malformed OSM inputs.
 
-The merge and map crop code binds the prepared Osmium executable SHA-256. Their requests name
-its canonical path. They check the binding before and after execution, before accepting output. A persistent tool
-replacement refuses the step. A missing tool asks to prepare Osmium or set `OBC_OSMIUM`.
+The merge and the map crop run the Osmium of `OBC_OSMIUM`, or else `osmium` on the `PATH`.
+Without it, a plan blocks their layers and asks to prepare Osmium or set `OBC_OSMIUM`.
 Plans probe local tooling only; they do not download or install it.
 
 The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
@@ -1080,10 +994,7 @@ data. It contains no deployment probe, device catalogue snapshot or source mirro
 A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-groups
 --no-python-downloads --group <group> python <entry> --step` in the repository root.
 `uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
-of a set out of the bytes. Its code names the selected Python group, each Python file that it
-imports, each file that it reads from the repository and `tools/step_request.py`. The selected
-locked package closure and interpreter enter its code identity. A credit that it writes comes
-in its options, so it needs no source content projection.
+of a set out of the bytes. A credit that it writes comes in its options.
 
 ### Service runtimes
 
@@ -1092,9 +1003,7 @@ of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_or
 and `objects_origin`. The shared pool is `<objects_origin>/planner/objects`.
 Tile URLs keep the tile Worker origin.
 
-The final planner index binds the service source, the Rust release target, the locked
-search Python packages and the Node package lock. Service code changes thus change the
-release identity. The pointer names routing, search and downloads under
+The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<release>/SERVICE`. Its `device_catalog` names
 `<objects_origin>/cell-catalog/catalog.json`.
 
@@ -1123,7 +1032,7 @@ byte order.
 ### Releases
 
 `releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers", "named", "producers", "settings"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+"layers", "named", "settings"}`, as the compact output of `serde_json` with the keys of each object in byte order.
 `settings` holds the complete reviewed Live settings and is absent for a Local build.
 `region` is the region of the environment that it was built for, and `optional` the optional layers
 of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
@@ -1131,7 +1040,7 @@ the same layers make the same release. `layers` is sorted by `step`, and each la
 
 | Key | Meaning |
 | --- | --- |
-| `step`, `key`, `inputs`, `options`, `code`, `command`, `outputs`, `digest`, `files` | As in the [receipt](#receipt) |
+| `layer`, `step`, `format`, `revision`, `key`, `inputs`, `options`, `digest`, `files` | As in the [receipt](#receipt) |
 | `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE` of each snapshot that the layer read |
 | `client` | The selected client outputs, as in the step (see [Products](#products)) |
 
@@ -1151,13 +1060,6 @@ product's verification.
 The objects of a release are the selected client files, with one object per distinct SHA-256.
 The manifest records every file of every layer, so a plan compares it with live and live names
 the versions that it read. Uploads and removals use the same selection.
-
-`producers` deduplicates witnesses by the original full `code` digest. Each witness has `files`,
-`source_config` and resolved `rust` target/build profile (`null` without Rust). The full fingerprints must
-produce that digest and bind the exact source/config projection and recorded Rust metadata.
-The projection comes from the same resolver traversal.
-A missing witness does not permit portable adoption. Witness metadata changes the release id;
-it does not change an existing layer key or receipt.
 
 ### Local portable data
 
@@ -1224,8 +1126,8 @@ is as in [State of a source](#state-of-a-source).
 | `not applied` | Live has no layer of the step | `missing in live` |
 | `not applied` | The options are not the options of the live layer | `options` |
 | `not applied` | The step reads a source that the live layer read, with another version or other `params` (in any order), or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
-| `code changed` | The inputs (kind and name), the command, the outputs or whether a client reads the layer are not those of the live layer | `inputs`, `command`, `outputs` or `client` |
-| `code changed` | The code hash is not the one of the live layer | The first code file that changed, and `and N more`. The declared code when the store has no `code/<hash>.json` of the live layer |
+| `code changed` | The inputs (kind and name) or whether a client reads the layer are not those of the live layer | `inputs` or `client` |
+| `code changed` | The layer, its format or its revision is not that of the live layer | `layer A → B`, `format A → B` or `revision A → B` |
 | `input changed` | A layer that the step reads is `not applied`, `code changed` or `input changed`, or its live layer is not the one that the live layer of the step read | The name of that layer |
 | `stale` | A source that the step reads is `stale` | `SOURCE: ` and the reason of the source |
 | `blocked` | A source that the step reads is `blocked` | `SOURCE: ` and the reason of the source |
@@ -1233,8 +1135,8 @@ is as in [State of a source](#state-of-a-source).
 
 When more than one row applies, the first row gives the state. In JSON, a state is `ok`,
 `stale`, `code_changed`, `input_changed`, `not_applied` or `blocked`. Each layer also has `live`
-(the key of the live layer, or `null`), `reads` (`kind`, `name`, and `version` for a snapshot),
-`code` (`paths` and `crates`), `code_hash` and `users` (the layers that read it).
+(the key of the live layer, or `null`), `reads` (`kind`, `name`, and `version` for a snapshot)
+and `users` (the layers that read it).
 
 ## Live
 
@@ -1276,12 +1178,6 @@ small-source discovery allowlist: it does not download input objects for other s
 
 Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
 first writes the status, and the second writes an error.
-
-Layer status compares current semantic declarations with the published producer's source/config
-witness at its recorded target/profile. New execution retains the full native identity. The
-runtime owner excludes builder execution bindings only from this read comparison; current
-target, files, command, outputs and configuration remain exact. Missing witness evidence is
-blocked. Known option, producer and input changes retain their existing state causes.
 
 ### Apply
 
@@ -1334,18 +1230,18 @@ with `Cache-Control: public, max-age=31536000, immutable`.
 ### Detached operations
 
 Manual `prepare`, `build` and `apply` return `{run, request}`. `request` is the SHA-256 of the
-immutable request. A retained fresh worker owns the run after the caller leaves. One environment
-on one host/store admits one operation, with no waiting queue. The worker runs in its own session
-with private logs. Credential values are not copied into arguments, events or control records.
+immutable request. A retained copy of the `obc data` binary owns the run after the caller leaves.
+One environment on one host/store admits one operation, with no waiting queue. The copy runs in
+its own session with private logs. Credential values are not copied into arguments, events or control records.
 
 `operations/<run>/control.json` binds kind, environment, selection, moves, any saved plan's exact
-bytes, root and retained worker identity. State is reserved, running, stopping, stopped or
+bytes, root and the SHA-256 of the retained copy. State is reserved, running, stopping, stopped or
 finished. Stop invalidates a reserved child. It drains admitted work and starts no next fetch,
 step or apply phase. Completion durably pins `result.json` by size and SHA before recording
-finished. Finished, drained workers release their private executable.
+finished. A finished, drained operation removes its copy.
 
 `runs` reads computed observations. Result reads verify their sealed bytes. The shared run view
-includes `logs`, the bounded tail of its worker stderr. A missing log yields an empty list. A read
+includes `logs`, the bounded tail of the stderr of the copy. A missing log yields an empty list. A read
 failure appears in `observation_error` and preserves the run state.
 
 ## Commands
@@ -1371,7 +1267,7 @@ failure appears in `observation_error` and preserves the run state.
 | `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
 | `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed result lists uploaded, switched and removed keys |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run and its computed operation state and result; fetches and steps retain time, peak RAM, outputs, input and code identities. Reads change no local history |
+| `obc data runs RUN [--json]` | One run and its computed operation state and result; fetches and steps retain time, peak RAM, outputs, inputs and layers. Reads change no local history |
 | `obc data runs RUN --follow [--json]` | For detached operations, changed observations until a final result. Other journals stream their events |
 | `obc data runs RUN --stop [--json]` | Drains current work; an apply stops before its next phase |
 | `obc data runs RUN --result` | One completed output. A running run has no result |

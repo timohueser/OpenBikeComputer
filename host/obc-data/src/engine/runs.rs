@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
-use super::{build_step, order, prepare, reusable, Built, Codes, InputKind, Receipt, Step};
+use super::{build_step, order, prepare, reusable, Built, InputKind, Receipt, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::sources::Source;
@@ -50,7 +50,7 @@ fn memory() -> Option<u64> {
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub store: &'a Store,
-    /// The repository root: code paths are relative to it, and a command starts in it.
+    /// The repository root: a command starts in it.
     pub root: &'a Path,
     /// The sources of `data/sources.toml`: a fetch finds its source here.
     pub sources: &'a [Source],
@@ -147,7 +147,6 @@ pub struct Run {
     start: Instant,
     _lock: Lock,
     _using: Lock,
-    codes: super::code::Context,
     pub(crate) originals: BTreeMap<String, super::release::Layer>,
 }
 
@@ -167,15 +166,8 @@ impl Run {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run = Run {
-                id,
-                file,
-                start: Instant::now(),
-                _lock: lock,
-                _using: using,
-                codes: Default::default(),
-                originals: BTreeMap::new(),
-            };
+            let mut run =
+                Run { id, file, start: Instant::now(), _lock: lock, _using: using, originals: BTreeMap::new() };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
             File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
@@ -233,15 +225,7 @@ impl Run {
             _ => None,
         };
         let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
-        let mut run = Self {
-            id: id.into(),
-            file,
-            start,
-            _lock: lock,
-            _using: using,
-            codes: Default::default(),
-            originals: BTreeMap::new(),
-        };
+        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using, originals: BTreeMap::new() };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
                 run.record(event)?;
@@ -263,7 +247,6 @@ impl Run {
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
         self.check_stop(store)?;
-        crate::worker::check(root)?;
         let _using = store.using()?;
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
@@ -279,7 +262,6 @@ impl Run {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
         self.fetch(context, plan)?;
-        crate::worker::check(root)?;
 
         // A step whose peak is not known reserves the whole memory, so it runs alone.
         let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));
@@ -300,15 +282,6 @@ impl Run {
         let position: HashMap<&str, usize> =
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
-        let mut codes = Codes { context: std::mem::take(&mut self.codes), ..Default::default() };
-        for step in pending.iter().filter(|step| !self.originals.contains_key(&step.name)) {
-            let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-            store.put_code(hash, &files.files)?;
-            store.put_producer(hash, &super::release::Producer::from(files))?;
-        }
-        crate::worker::check(root)?;
-        let checks = std::sync::Mutex::new(std::mem::take(&mut codes.context));
-
         let outdated = "the plan is outdated; plan again";
         let mut done: HashMap<&str, super::release::Layer> = HashMap::new();
         let mut built = Vec::new();
@@ -335,11 +308,10 @@ impl Run {
                     i += 1;
                     continue;
                 }
-                let code = &codes.get(root, &step.code).expect("hashed above").0;
                 let Some(&(cost, key)) = planned.get(step.name.as_str()) else {
                     // A layer that a planned step reads: the store has it, unless the plan is old.
                     pending.remove(i);
-                    let reused = prepare(store, step, &done, code)
+                    let reused = prepare(store, step, &done)
                         .and_then(|(receipt, _)| {
                             reusable(store, &receipt.key).map(|stored| {
                                 stored.map(|mut stored| {
@@ -363,7 +335,7 @@ impl Run {
                     continue;
                 }
                 pending.remove(i);
-                let prepared = prepare(store, step, &done, code).and_then(|(receipt, request)| match key {
+                let prepared = prepare(store, step, &done).and_then(|(receipt, request)| match key {
                     Some(key) if key != receipt.key => Err(outdated.to_string()),
                     _ => Ok((receipt, request)),
                 });
@@ -371,11 +343,10 @@ impl Run {
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {
                     Ok((receipt, request)) => {
                         let sender = sender.clone();
-                        let checks = &checks;
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
                             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                build_step(store, root, step, receipt, request, checks)
+                                build_step(store, root, step, receipt, request)
                             }));
                             let _ = sender.send((step, cost, result.unwrap_or_else(|payload| Err(panicked(payload)))));
                         });
@@ -404,7 +375,6 @@ impl Run {
                 Err(e) => self.failed(step, e, &mut failure),
             }
         });
-        self.codes = checks.into_inner().unwrap_or_default();
         if let Some(failure) = failure {
             return Err(failure);
         }
@@ -412,7 +382,6 @@ impl Run {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
         }
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
-        crate::worker::check(root)?;
         Ok(built)
     }
 
@@ -454,12 +423,11 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        self.codes.acquisition = None;
-        match crate::input_copy::fetch_checked(root, store, http, copies, request, files, Some(&mut self.codes)) {
+        let mut acquisition = None;
+        match crate::input_copy::fetch_recorded(root, store, http, copies, request, files, Some(&mut acquisition)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
-                let acquisition = self.codes.acquisition.take();
                 self.record(&Event::FetchFinished {
                     source,
                     version,
@@ -473,7 +441,6 @@ impl Run {
             }
             Err(error) => {
                 let mut failed = format!("fetch {source}@{version}: {error}");
-                let acquisition = self.codes.acquisition.take();
                 if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error, acquisition }) {
                     failed += &format!("; the run journal could not record the failure: {journal}");
                 }
@@ -813,8 +780,8 @@ impl Reader {
 mod tests {
     use super::*;
     use crate::engine::plan::Estimate;
-    use crate::engine::tests::{fixture, pipeline, snapshot, step, steps_crate, summary, write, JOIN};
-    use crate::engine::{Code, Input, Request, Run as StepRun};
+    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary, write, JOIN};
+    use crate::engine::{Input, Request, Run as StepRun};
     use crate::store::Requested;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -868,8 +835,9 @@ mod tests {
         std::fs::write(&join, JOIN).unwrap();
         let built = fixture.build(&pipeline()).unwrap();
         assert_eq!(summary(&built), [("test/join", false), ("test/count", false)], "test/upper is in the store");
-        std::fs::write(&join, format!("# The same bytes.\n{JOIN}")).unwrap();
-        fixture.build(&pipeline()).unwrap();
+        let mut steps = pipeline();
+        steps[1].options = serde_json::json!({"note": "the same bytes"});
+        fixture.build(&steps).unwrap();
 
         let runs = list(&fixture.store).unwrap();
         let outcomes: Vec<_> = runs.iter().map(|run| (run.command.as_str(), run.outcome)).collect();
@@ -900,7 +868,6 @@ mod tests {
         let steps = [step(
             "test/upper",
             vec![snapshot("head", "1", &["head.txt"])],
-            steps_crate(),
             "upper.txt",
             StepRun::Rust(crate::engine::tests::upper),
         )];
@@ -964,8 +931,9 @@ mod tests {
     fn a_run_refuses_an_outdated_plan() {
         let fixture = fixture("runs-outdated");
         let plan = fixture.plan(&pipeline()).unwrap();
-        write(&fixture.root().join("steps/src/lib.rs"), "// A comment.\n");
-        let err = fixture.run(&pipeline(), &plan, Limits::machine()).unwrap_err();
+        let mut steps = pipeline();
+        steps[2].options = serde_json::json!({"case": "upper"});
+        let err = fixture.run(&steps, &plan, Limits::machine()).unwrap_err();
         assert_eq!(err, "step `test/upper`: the plan is outdated; plan again");
         let none = Limits { jobs: 0, memory_bytes: None };
         assert!(fixture.run(&pipeline(), &plan, none).unwrap_err().contains("the limit of jobs is 0"));
@@ -982,11 +950,9 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     fn together(name: &str, peaks: [Option<u64>; 2], memory_bytes: u64) -> bool {
         let fixture = fixture(name);
         write(&fixture.root().join("sleep.py"), SLEEP);
-        let sleep = || Code { paths: vec!["sleep.py".into()], crates: Vec::new(), ..Default::default() };
         let command = || StepRun::Command(vec!["python3".into(), "sleep.py".into()]);
-        let steps: Vec<Step> = ["test/a", "test/b"]
-            .map(|name| step(name, vec![snapshot("head", "1", &[])], sleep(), "out.txt", command()))
-            .into();
+        let steps: Vec<Step> =
+            ["test/a", "test/b"].map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", command())).into();
         let mut plan = fixture.plan(&steps).unwrap();
         for (build, peak) in plan.groups.iter_mut().flat_map(|group| &mut group.builds).zip(peaks) {
             build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, peak_rss_bytes: peak });
@@ -1026,7 +992,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     fn independent_rust_steps_run_in_parallel() {
         let fixture = fixture("runs-in-process");
         let steps: Vec<Step> = ["test/a", "test/b"]
-            .map(|name| step(name, vec![snapshot("head", "1", &[])], steps_crate(), "out.txt", StepRun::Rust(tracked)))
+            .map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(tracked)))
             .into();
         let plan = fixture.plan(&steps).unwrap();
         fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: None }).unwrap();
@@ -1043,7 +1009,6 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let (url, log) = crate::fetch::tests::serve(|_, _| crate::fetch::tests::whole(b"tile a"));
         let land = crate::fetch::tests::source(&url.replace("file.bin", "{tile}-{version}.bin"), "release");
         let fixture = fixture("runs-fetch");
-        fixture.with_acquisition();
         fixture.with_sources(std::slice::from_ref(&land));
         let tile = Input::Snapshot {
             source: "land".into(),
@@ -1051,7 +1016,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             params: vec![("tile".into(), "a".into())],
             files: Vec::new(),
         };
-        let mut steps = [step("test/copy", vec![tile], steps_crate(), "copy.bin", StepRun::Rust(first_file))];
+        let mut steps = [step("test/copy", vec![tile], "copy.bin", StepRun::Rust(first_file))];
         let plan = fixture.plan(&steps).unwrap();
         let fetch = &plan.groups[0].fetches[0];
         assert_eq!(

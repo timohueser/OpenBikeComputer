@@ -1,12 +1,11 @@
 //! The plan: what a run would fetch and build, in groups that do not depend on each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{order, prepare, recipe, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
+use super::{order, prepare, recipe, reusable, select, selection, Input, Receipt, Selection, Step};
 use crate::store::{sorted, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -48,9 +47,9 @@ pub enum Cause {
     Layers,
     /// A `--move`, or a stale source: the layers read `to`, not the versions that live reads.
     Move { source: String, from: Vec<String>, to: String },
-    /// The code that the steps declare is not the code of their live layers, or it gives other
-    /// options or inputs. A layer that live has and the steps do not make has no code.
-    Code { paths: Vec<String>, crates: Vec<String> },
+    /// The version of the layer of the steps is not the version of their live layers, or they
+    /// have other options or inputs. A live step that no step list makes now has no version.
+    Version { layer: String },
     /// The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged
     /// layers of those keys that the store lacks.
     Repair { keys: Vec<String> },
@@ -95,8 +94,6 @@ pub struct Estimate {
 /// A step in dependency order, with what the store has for it.
 pub(super) struct Walked<'a> {
     pub step: &'a Step,
-    /// The code hash.
-    pub code: String,
     /// The snapshot inputs whose files the store lacks.
     pub fetches: Vec<Fetch>,
     /// `None` until the store has every snapshot and layer that the step reads.
@@ -109,11 +106,9 @@ pub(super) struct Walked<'a> {
 /// `release::release` reuse the same layers.
 pub(super) fn walk_reusing<'a>(
     store: &Store,
-    root: &Path,
     steps: &'a [Step],
     originals: &BTreeMap<String, super::release::Layer>,
 ) -> Result<Vec<Walked<'a>>, String> {
-    let mut codes = Codes::default();
     let mut reused: HashMap<&str, super::release::Layer> = HashMap::new();
     let mut walked = Vec::new();
     for step in order(steps)? {
@@ -122,18 +117,16 @@ pub(super) fn walk_reusing<'a>(
             reused.insert(&step.name, original.clone());
             walked.push(Walked {
                 step,
-                code: original.code.clone(),
                 fetches: Vec::new(),
                 key: Some(original.key.clone()),
                 stored: Some(original.clone()),
             });
             continue;
         }
-        let code = codes.get(root, &step.code).map_err(named)?.0.clone();
         let fetches = missing(store, step)?;
         let (mut key, mut stored) = (None, None);
         if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
-            let (receipt, _) = prepare(store, step, &reused, &code).map_err(named)?;
+            let (receipt, _) = prepare(store, step, &reused).map_err(named)?;
             stored = reusable(store, &receipt.key)?.map(|mut stored| {
                 stored.inputs = receipt.inputs;
                 super::release::Layer::new(&stored, step)
@@ -143,7 +136,7 @@ pub(super) fn walk_reusing<'a>(
             }
             key = Some(receipt.key);
         }
-        walked.push(Walked { step, code, fetches, key, stored });
+        walked.push(Walked { step, fetches, key, stored });
     }
     Ok(walked)
 }
@@ -151,19 +144,18 @@ pub(super) fn walk_reusing<'a>(
 /// What building `steps` needs: a fetch for each snapshot input whose files the store lacks, and a
 /// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
 /// another build.
-pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
-    plan_reusing(store, root, steps, &BTreeMap::new())
+pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
+    plan_reusing(store, steps, &BTreeMap::new())
 }
 
 /// Plan current work with original layers returned by checked portable reuse.
 pub fn plan_reusing(
     store: &Store,
-    root: &Path,
     steps: &[Step],
     originals: &BTreeMap<String, super::release::Layer>,
 ) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let walked = walk_reusing(store, root, steps, originals)?;
+    let walked = walk_reusing(store, steps, originals)?;
     let builds: Vec<(&Step, Build, &Vec<Fetch>)> =
         walked.iter().filter_map(|walked| Some((walked.step, build(walked, &receipts)?, &walked.fetches))).collect();
 
@@ -193,10 +185,10 @@ pub fn plan_reusing(
 
 /// The build of a walked step, when the store lacks its layer.
 pub(super) fn build(walked: &Walked, receipts: &[Receipt]) -> Option<Build> {
-    let Walked { step, code, key, stored, .. } = walked;
+    let Walked { step, key, stored, .. } = walked;
     stored.is_none().then(|| Build {
         step: step.name.clone(),
-        recipe: recipe(step, code),
+        recipe: recipe(step),
         key: key.clone(),
         estimate: estimate(receipts, step),
     })
@@ -351,7 +343,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 mod tests {
     use super::*;
     use crate::engine::runs::Limits;
-    use crate::engine::tests::{fixture, pipeline, snapshot, step, steps_crate, summary};
+    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary};
     use crate::engine::{Request, Run};
 
     fn lower(request: &Request) -> Result<(), String> {
@@ -363,7 +355,7 @@ mod tests {
     fn steps(version: &str) -> Vec<Step> {
         let mut steps = pipeline();
         let head = vec![snapshot("head", version, &["head.txt"])];
-        steps.push(step("test/lower", head, steps_crate(), "lower.txt", Run::Rust(lower)));
+        steps.push(step("test/lower", head, "lower.txt", Run::Rust(lower)));
         steps
     }
 

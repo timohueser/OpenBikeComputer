@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
-use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
+use obc_data::engine::{snapshot_files, Client, Input, Layer, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{read, version, BlockedLayer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Bbox, Regions};
@@ -20,6 +20,7 @@ use obc_dem::crest::cell_window;
 use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
 use obc_draw::step::LAND;
+use obc_formats::{obcm, obct};
 use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
@@ -33,6 +34,34 @@ pub(crate) const POLY: &str = "geofabrik-poly";
 pub const EXTRACTS: &str = "geofabrik-extracts";
 /// The names of the GLO-30 tiles: a square that it does not name is sea.
 pub const TILE_LIST: &str = "copernicus-glo-30-tiles";
+
+/// The terrain cells of each leaf, and the national terrain models that they read.
+pub static DEVICE_TERRAIN: Layer = Layer {
+    name: "device/terrain",
+    shape: obc_data::engine::Shape::Tiled,
+    format: obct::VERSION as u32,
+    revision: 1,
+    readers: &["device", "map builder"],
+};
+
+/// The map cells of each band in each leaf.
+pub static DEVICE_MAP: Layer = Layer {
+    name: "device/map",
+    shape: obc_data::engine::Shape::Tiled,
+    format: obcm::VERSION as u32,
+    revision: 1,
+    readers: &["device", "map builder"],
+};
+
+/// The landmark and peak artifacts of each leaf, and the content that they are compiled from.
+pub static DEVICE_LANDMARKS: Layer = Layer {
+    name: "device/landmarks",
+    shape: obc_data::engine::Shape::Tiled,
+    // The artifacts are OBCM landmark and peak sections, which the assembler copies into a map.
+    format: obcm::VERSION as u32,
+    revision: 1,
+    readers: &["device"],
+};
 
 pub struct Maps;
 
@@ -69,50 +98,28 @@ impl Product for Maps {
 
     fn status_steps(
         &self,
-        _root: &std::path::Path,
+        root: &std::path::Path,
         env: &Env,
         regions: &Regions,
         store: &Store,
     ) -> Result<Steps, Unplanned> {
-        self.steps_with_bindings(env, regions, store, Ok(None), Ok(Vec::new()))
+        self.steps_with_tool(root, env, regions, store, Ok(()))
     }
 
     fn steps(&self, root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().binding())
+        self.steps_with_tool(root, env, regions, store, obc_osm::ShardRunner::check(&obc_osm::OsmiumRunner::default()))
     }
 }
 
 impl Maps {
-    /// Plan with an explicit prepared-tool observation. A failed observation blocks OSM layers.
-    /// This also lets a copy-based fixture declare its authored tool without changing the process environment.
+    /// Its steps. `osmium` says whether Osmium runs here: without it, the OSM steps are blocked.
     pub fn steps_with_tool(
         &self,
         _root: &std::path::Path,
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<obc_data::engine::Library, String>,
-    ) -> Result<Steps, Unplanned> {
-        self.steps_with_bindings(env, regions, store, tool.map(Some), obc_pack::step::geos_libraries())
-    }
-
-    pub(crate) fn declarations(
-        &self,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-        tool: Result<Option<obc_data::engine::Library>, String>,
-    ) -> Result<Steps, Unplanned> {
-        self.steps_with_bindings(env, regions, store, tool, obc_pack::step::geos_libraries())
-    }
-
-    fn steps_with_bindings(
-        &self,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-        tool: Result<Option<obc_data::engine::Library>, String>,
-        libraries: Result<Vec<obc_data::engine::Library>, String>,
+        osmium: Result<(), String>,
     ) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
@@ -155,7 +162,7 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let content = content_declarations(env, store, &selection, &libraries)?;
+        let content = content_declarations(env, store, &selection)?;
         blocked.extend(content.blocked);
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for source in &selection.sources {
@@ -183,12 +190,7 @@ impl Maps {
                     .filter(|cell| !source_coverage.covers(**cell, &boundary))
                     .map(ToString::to_string)
                     .collect::<Vec<_>>();
-                add_geos(
-                    map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain),
-                    &libraries,
-                    &mut steps,
-                    &mut blocked,
-                );
+                steps.push(map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain));
                 if band.has_nav() {
                     network.insert(leaf, cells);
                 }
@@ -204,33 +206,22 @@ impl Maps {
                     );
                     step.inputs.extend(content_names[collection].iter().map(Input::layer));
                 }
-                if collection == "landmarks" {
-                    add_geos(step, &libraries, &mut steps, &mut blocked);
-                } else {
-                    steps.push(step);
-                }
+                steps.push(step);
             }
         }
         let inputs = crate::region_sources::inputs("maps", &selection);
         let extract = if selection.sources.len() == 1 {
             Input::Layer { name: inputs[0].name.clone(), files: vec!["source.osm.pbf".into()] }
         } else {
-            match tool
-                .as_ref()
-                .map_err(|reason| Unplanned::Invalid(reason.clone()))
-                .and_then(|tool| crate::region_sources::combined("maps/region-osm", &inputs, tool.as_ref()))
-            {
-                Ok(combined) => steps.push(combined),
-                Err(Unplanned::Invalid(reason)) => {
-                    blocked.push(BlockedLayer { layer: "maps/region-osm".into(), reason })
-                }
-                Err(error) => return Err(error),
+            match &osmium {
+                Ok(()) => steps.push(crate::region_sources::combined("maps/region-osm", &inputs)),
+                Err(reason) => blocked.push(BlockedLayer { layer: "maps/region-osm".into(), reason: reason.clone() }),
             }
             Input::Layer { name: "maps/region-osm".into(), files: vec!["osm.pbf".into()] }
         };
         steps.extend(inputs);
-        match tool {
-            Ok(tool) => steps.push(osm(extract, &osm_leaves, tool)),
+        match osmium {
+            Ok(()) => steps.push(osm(extract, &osm_leaves)),
             Err(reason) => blocked.push(BlockedLayer { layer: "maps/osm".into(), reason }),
         }
         if blocked.is_empty() {
@@ -269,7 +260,6 @@ pub(crate) fn content_declarations(
     env: &Env,
     store: &Store,
     selection: &crate::region_sources::Selection,
-    libraries: &Result<Vec<obc_data::engine::Library>, String>,
 ) -> Result<Steps, Unplanned> {
     let mut content_steps = Vec::new();
     let mut wanted = Vec::new();
@@ -282,11 +272,6 @@ pub(crate) fn content_declarations(
             } else {
                 format!("{}/{}", content_layer(collection), source.id)
             };
-
-            if let Err(reason) = libraries {
-                blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
-                continue;
-            }
             let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
                 Ok(capture) => capture,
                 Err(Unplanned::NeedsFetch(fetches)) => {
@@ -302,7 +287,7 @@ pub(crate) fn content_declarations(
             for (_, inputs) in capture {
                 let mut step = content(collection, inputs);
                 step.name = name.clone();
-                add_geos(step, libraries, &mut content_steps, &mut blocked);
+                content_steps.push(step);
             }
         }
     }
@@ -310,21 +295,6 @@ pub(crate) fn content_declarations(
         return Err(Unplanned::NeedsFetch(wanted));
     }
     Ok(Steps { steps: content_steps, blocked })
-}
-
-fn add_geos(
-    mut step: Step,
-    libraries: &Result<Vec<obc_data::engine::Library>, String>,
-    steps: &mut Vec<Step>,
-    blocked: &mut Vec<BlockedLayer>,
-) {
-    match libraries {
-        Ok(libraries) => {
-            step.code.libraries = libraries.clone();
-            steps.push(step);
-        }
-        Err(reason) => blocked.push(BlockedLayer { layer: step.name, reason: reason.clone() }),
-    }
 }
 
 /// The capture of one area's collection with its exact held extract and polygon inputs.
@@ -631,10 +601,10 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
         _ => obc_pack::step::peak_content,
     };
     Step {
+        layer: &DEVICE_LANDMARKS,
         name: content_layer(collection),
         inputs,
         options: serde_json::json!({}),
-        code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()], ..Default::default() },
         outputs: vec![collection.into(), "shared-content".into()],
         run: Run::Rust(run),
         client: Client::Paths(vec!["shared-content".into()]),
@@ -659,13 +629,13 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
     };
     inputs.push(Input::layer(content_layer(collection)));
     Step {
+        layer: &DEVICE_LANDMARKS,
         name: leaf_layer(&format!("maps/{collection}"), leaf),
         inputs,
         options: serde_json::json!({
             "cell_log2": cells[0].log2,
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
-        code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()], ..Default::default() },
         outputs: vec![collection.into()],
         run: Run::Rust(run),
         client: Client::All,
@@ -709,12 +679,12 @@ fn snapshot_version(
 
 /// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo. Only
 /// the map cells read it.
-fn osm(extract: Input, leaves: &BTreeSet<LeafId>, binding: Option<obc_data::engine::Library>) -> Step {
+fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
     Step {
+        layer: &crate::region_sources::OSM,
         name: "maps/osm".into(),
         inputs: vec![extract],
         options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
-        code: Code { crates: vec!["obc-osm".into()], libraries: binding.into_iter().collect(), ..Default::default() },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_osm::step::osm),
         client: Client::None,
@@ -742,6 +712,7 @@ fn map_cells(
         inputs.push(Input::layer(leaf_layer("maps/terrain", leaf)));
     }
     Step {
+        layer: &DEVICE_MAP,
         name: leaf_layer(&format!("maps/{}", band.id), leaf),
         inputs,
         options: serde_json::json!({
@@ -750,11 +721,6 @@ fn map_cells(
             "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
-        code: Code {
-            paths: Vec::new(),
-            crates: vec![if band.has_nav() || band.has_poi() { "obc-network".into() } else { "obc-draw".into() }],
-            ..Default::default()
-        },
         outputs: vec!["cells".into(), "metadata".into()],
         run: Run::Rust(if band.has_nav() || band.has_poi() { obc_network::step::cells } else { obc_draw::step::cells }),
         client: Client::Paths(vec!["cells".into()]),
@@ -887,20 +853,15 @@ fn reference(
     Ok(Some(Step {
         client: Client::None,
         ..crate::python(
+            &DEVICE_TERRAIN,
             &name,
             inputs,
             serde_json::json!({"models": models, "tiles": tiles}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
-            &REFERENCE_CODE,
             &["reference"],
         )
     }))
 }
-
-/// The code of a reference step besides the uv environment: the merge, the ingest tool that it
-/// loads, and the modules of `tools/` that the tool imports.
-const REFERENCE_CODE: [&str; 4] =
-    ["host/obc-dem/reference/merge.py", "host/obc-dem/reference/ingest", "tools/data_registry.py", "tools/r2.py"];
 
 /// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches and
 /// the reference archive of the leaf. A square that the tile list does not name is sea, and has no
@@ -917,6 +878,7 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
     };
     inputs.extend(reference.map(|reference| Input::layer(reference.name.clone())));
     Step {
+        layer: &DEVICE_TERRAIN,
         name: leaf_layer("maps/terrain", leaf),
         inputs,
         options: serde_json::json!({
@@ -924,7 +886,6 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
             "cell_log2": V1_CELL_LOG2,
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
-        code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()], ..Default::default() },
         outputs: vec!["terrain".into(), "metadata".into()],
         run: Run::Rust(obc_dem::step::terrain),
         client: Client::Paths(vec!["terrain".into()]),
@@ -968,7 +929,6 @@ pub fn box_poly(bbox: &Bbox) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    mod code;
     use std::path::{Path, PathBuf};
 
     use obc_data::engine::plan::{plan, Plan};
@@ -982,30 +942,7 @@ pub(crate) mod tests {
     use obc_data::regions::Area;
 
     fn map_steps(root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        Maps.steps_with_tool(
-            root,
-            env,
-            regions,
-            store,
-            Ok(obc_data::engine::Library {
-                version: None,
-                name: "osmium".into(),
-                path: std::path::PathBuf::from("/authored-copy-osmium"),
-                sha256: "0".repeat(64),
-            }),
-        )
-    }
-
-    pub(crate) fn authored_tool(directory: &Path) -> obc_data::engine::Library {
-        std::fs::create_dir_all(directory).unwrap();
-        let path = directory.join("authored-osmium");
-        std::fs::write(&path, "authored fixture provider").unwrap();
-        obc_data::engine::Library {
-            version: None,
-            name: "osmium".into(),
-            path: path.canonicalize().unwrap(),
-            sha256: obc_data::store::hash_file(&path).unwrap().0,
-        }
+        Maps.steps_with_tool(root, env, regions, store, Ok(()))
     }
 
     pub(crate) struct Temp(pub(crate) PathBuf);
@@ -1306,12 +1243,12 @@ pub(crate) mod tests {
         let (root, http) = (root(), Http::new());
         let context =
             Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
-        let first = plan(&store, &root, &steps("1")).unwrap();
+        let first = plan(&store, &steps("1")).unwrap();
         assert_eq!(builds(&first), names);
         let mut run = RunLog::create(&store, "build test").unwrap();
         run.build(&context, &steps("1"), &first).unwrap();
         run.finish(None).unwrap();
-        assert_eq!(builds(&plan(&store, &root, &steps("2")).unwrap()), [&names[0]], "the new tile is west of the edge");
+        assert_eq!(builds(&plan(&store, &steps("2")).unwrap()), [&names[0]], "the new tile is west of the edge");
     }
 
     #[test]
@@ -1372,49 +1309,6 @@ pub(crate) mod tests {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
         }
         assert_eq!(reads("maps/network/0037-0032"), [osm, "maps/terrain/0037-0032 []"]);
-        assert!(steps.iter().all(|step| !step.code.paths.iter().any(|path| path == "Cargo.lock")));
-    }
-
-    #[test]
-    fn unavailable_geos_blocks_its_producers_and_keeps_independent_terrain() {
-        for held in [false, true] {
-            let temp = temp("geos-blocked");
-            let store = Store::at(temp.0.join("store"));
-            let (env, regions) = freiburg(&store);
-            with_osm(&store);
-            without_models(&store, &env, &regions);
-            if held {
-                with_captures(&store, "1");
-            }
-            let listed = Maps
-                .steps_with_bindings(
-                    &env,
-                    &regions,
-                    &store,
-                    Ok(Some(obc_data::engine::Library {
-                        version: None,
-                        name: "osmium".into(),
-                        path: std::path::PathBuf::from("/authored-copy-osmium"),
-                        sha256: "0".repeat(64),
-                    })),
-                    Err("GEOS library missing; start a fresh worker".into()),
-                )
-                .unwrap();
-            for name in ["maps/network/0037-0032", "maps/landmark-content", "maps/peak-content", "maps/catalog"] {
-                assert!(
-                    listed.blocked.iter().any(|layer| layer.layer == name && layer.reason.contains("GEOS")),
-                    "{name}"
-                );
-                assert!(!listed.steps.iter().any(|step| step.name == name), "{name}");
-            }
-            let terrain = listed.steps.iter().find(|step| step.name == "maps/terrain/0037-0032").unwrap();
-            assert!(terrain.code.libraries.is_empty());
-            assert!(listed.steps.iter().any(|step| step.name == "maps/osm"));
-            assert!(
-                !env.requests.borrow().iter().any(|(source, _)| CAPTURES.contains(&source.as_str())),
-                "unavailable GEOS starts no capture discovery"
-            );
-        }
     }
 
     #[test]
@@ -1862,7 +1756,7 @@ pub(crate) mod tests {
                     2,
                     "verified retained reads defer the credential check until restoration"
                 );
-                assert_eq!(plan(&store, &root(), &[restored]).unwrap().fetches().len(), 2);
+                assert_eq!(plan(&store, &[restored]).unwrap().fetches().len(), 2);
             }
             // A machine with the token fetches the model.
             Err(Unplanned::NeedsFetch(wanted)) => {
@@ -1871,52 +1765,6 @@ pub(crate) mod tests {
                 assert!(wanted.iter().any(|fetch| fetch.source == "dtm-de-ni"));
             }
             other => panic!("{:?}", other.map(|steps| steps.steps.len())),
-        }
-    }
-
-    /// Each module that a Python file of the reference step imports from the repository: a
-    /// module of `tools/`, or the ingest package.
-    fn reference_imports(file: &Path) -> Vec<String> {
-        let text = std::fs::read_to_string(file).unwrap();
-        let mut found = Vec::new();
-        for line in text.lines().map(|line| line.split('#').next().unwrap_or_default().trim()) {
-            let (module, names) = match line.strip_prefix("from ").and_then(|rest| rest.split_once(" import ")) {
-                Some((module, names)) => (module, names),
-                None => match line.strip_prefix("import ") {
-                    Some(module) => (module, ""),
-                    None => continue,
-                },
-            };
-            let top = module.split('.').next().unwrap_or_default();
-            if top == "tools" {
-                found.extend(names.split(',').map(|name| format!("tools/{}.py", name.trim())));
-            } else if top == "ingest" {
-                found.push("host/obc-dem/reference/ingest".into());
-            } else if !top.is_empty() && root().join(format!("tools/{top}.py")).is_file() {
-                found.push(format!("tools/{top}.py"));
-            }
-        }
-        found
-    }
-
-    #[test]
-    fn the_reference_step_declares_each_module_that_it_imports() {
-        let mut files = vec![root().join("host/obc-dem/reference/merge.py")];
-        let mut pending = vec![root().join("host/obc-dem/reference/ingest")];
-        while let Some(dir) = pending.pop() {
-            for path in std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()) {
-                match (path.is_dir(), path.extension().is_some_and(|ext| ext == "py")) {
-                    (true, _) => pending.push(path),
-                    (false, true) => files.push(path),
-                    _ => {}
-                }
-            }
-        }
-        let declared: Vec<&str> = crate::PYTHON.iter().chain(&REFERENCE_CODE).copied().collect();
-        for file in &files {
-            for module in reference_imports(file) {
-                assert!(declared.contains(&module.as_str()), "{} imports {module}", file.display());
-            }
         }
     }
 }

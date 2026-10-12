@@ -1,12 +1,11 @@
 //! The state of each layer, computed when asked and never stored.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use super::release::Layer;
-use super::{digest, layer_digest, order, selection, Code, Codes, Input, InputKind, Selection, Step};
+use super::{digest, layer_digest, order, selection, Input, InputKind, Selection, Step};
 use crate::sources::{State, Status};
 use crate::store::{sorted, Store};
 
@@ -18,7 +17,7 @@ pub struct Environment {
     pub live: BTreeMap<String, Layer>,
 }
 
-/// A layer with its state, what it reads, its code and the layers that read it.
+/// A layer with its state, what it reads and the layers that read it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayerState {
@@ -28,8 +27,6 @@ pub struct LayerState {
     /// The key of the layer that live has.
     pub live: Option<String>,
     pub reads: Vec<Read>,
-    pub code: Code,
-    pub code_hash: String,
     pub users: Vec<String>,
 }
 
@@ -45,52 +42,7 @@ pub struct Read {
 
 /// The state of each layer of `steps`, in dependency order. When more than one state applies, the
 /// first in the order of `State` is the state.
-pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
-    let mut codes = Codes::default();
-    resolved(
-        store,
-        steps,
-        environment,
-        |step| {
-            let (hash, identity) = codes.get(root, &step.code)?;
-            Ok((hash.clone(), identity.files.clone(), false))
-        },
-        false,
-    )
-}
-
-/// Compare published source/config at its recorded target. Execution providers are not admitted.
-pub fn published(
-    store: &Store,
-    root: &Path,
-    steps: &[Step],
-    environment: &Environment,
-    producers: &BTreeMap<String, super::release::Producer>,
-) -> Result<Vec<LayerState>, String> {
-    let mut witnesses = crate::local::Witnesses::default();
-    resolved(
-        store,
-        steps,
-        environment,
-        |step| {
-            let Some(layer) = environment.live.get(&step.name) else {
-                return Ok((String::new(), BTreeMap::new(), false));
-            };
-            let producer = producers.get(&layer.code).ok_or("published producer witness is unavailable")?;
-            let same = witnesses.matches(root, &step.code, &layer.code, producer)?;
-            Ok((layer.code.clone(), producer.files.clone(), !same))
-        },
-        true,
-    )
-}
-
-fn resolved<'a>(
-    store: &Store,
-    steps: &'a [Step],
-    environment: &Environment,
-    mut code: impl FnMut(&'a Step) -> Result<(String, BTreeMap<String, String>, bool), String>,
-    observation: bool,
-) -> Result<Vec<LayerState>, String> {
+pub fn state(store: &Store, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
     let mut users: HashMap<&str, Vec<String>> = HashMap::new();
     for step in steps {
         for name in step.layers() {
@@ -100,29 +52,7 @@ fn resolved<'a>(
     let mut states: HashMap<&str, State> = HashMap::new();
     let mut layers = Vec::new();
     for step in order(steps)? {
-        let (code_hash, files, changed, unavailable) = match code(step) {
-            Ok((hash, files, changed)) => (hash, files, changed, None),
-            Err(error) if observation => (
-                environment.live.get(&step.name).map(|layer| layer.code.clone()).unwrap_or_default(),
-                BTreeMap::new(),
-                false,
-                Some(error),
-            ),
-            Err(error) => return Err(format!("step `{}`: {error}", step.name)),
-        };
-        let (mut state, mut reason) = judge(store, step, &code_hash, &files, environment, &states, changed)?;
-        if state == State::CodeChanged
-            && changed
-            && code_differs(step, &code_hash, &environment.live[&step.name]).is_none()
-        {
-            reason = Some("source/config differs at the published target and profile".into());
-        }
-        if let Some(error) = unavailable {
-            if !matches!(state, State::NotApplied | State::CodeChanged | State::InputChanged) {
-                state = State::Blocked;
-                reason = Some(error);
-            }
-        }
+        let (state, reason) = judge(store, step, environment, &states)?;
         states.insert(&step.name, state);
         let reads = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, version, .. } => {
@@ -136,8 +66,6 @@ fn resolved<'a>(
             reason,
             live: environment.live.get(&step.name).map(|live| live.key.clone()),
             reads: reads.collect(),
-            code: step.code.clone(),
-            code_hash: code_hash.clone(),
             users: users.remove(step.name.as_str()).unwrap_or_default(),
         });
     }
@@ -147,11 +75,8 @@ fn resolved<'a>(
 fn judge(
     store: &Store,
     step: &Step,
-    code_hash: &str,
-    files: &BTreeMap<String, String>,
     environment: &Environment,
     states: &HashMap<&str, State>,
-    source_changed: bool,
 ) -> Result<(State, Option<String>), String> {
     let found = |state, reason: String| Ok((state, Some(reason)));
     let Some(live) = environment.live.get(&step.name) else {
@@ -170,10 +95,8 @@ fn judge(
             return found(State::NotApplied, format!("{source}@{version} not in live{fetched}"));
         }
     }
-    match code_differs(step, code_hash, live).or(source_changed.then_some("code")) {
-        Some("code") => return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?),
-        Some(what) => return found(State::CodeChanged, what.into()),
-        None => {}
+    if let Some(what) = version_differs(step, live) {
+        return found(State::CodeChanged, what);
     }
 
     for input in &step.inputs {
@@ -216,9 +139,9 @@ pub(super) fn other_read(store: &Store, live: &Layer, input: &Input) -> Result<O
     Ok(Some((other || other_files, digest.is_some())))
 }
 
-/// What of the code of `step` is not that of its live layer: `inputs` (kind and name), `command`,
-/// `outputs`, `client` (whether a client reads the layer) or `code` (the code hash).
-pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option<&'static str> {
+/// What of the declaration of `step` is not that of its live layer: `inputs` (kind and name),
+/// `client` (whether a client reads it), or the layer and its version.
+pub(super) fn version_differs(step: &Step, live: &Layer) -> Option<String> {
     let declared: BTreeSet<(InputKind, &str)> = step
         .inputs
         .iter()
@@ -229,37 +152,20 @@ pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option
         .collect();
     let built: BTreeSet<(InputKind, &str)> =
         live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
+    let layer = step.layer;
     if declared != built {
-        Some("inputs")
-    } else if live.command != step.command() {
-        Some("command")
-    } else if live.outputs != step.sorted_outputs() {
-        Some("outputs")
+        Some("inputs".into())
     } else if live.client != step.client.sorted() {
-        Some("client")
-    } else if live.code != code_hash {
-        Some("code")
+        Some("client".into())
+    } else if live.layer != layer.name {
+        Some(format!("layer {} → {}", live.layer, layer.name))
+    } else if live.format != layer.format {
+        Some(format!("format {} → {}", live.format, layer.format))
+    } else if live.revision != layer.revision {
+        Some(format!("revision {} → {}", live.revision, layer.revision))
     } else {
         None
     }
-}
-
-/// The code files that differ from the code that built the live layer: the first, and how many
-/// more. Without a record of that code, the declared code.
-fn changed_code(store: &Store, before: &str, now: &BTreeMap<String, String>, code: &Code) -> Result<String, String> {
-    let Some(before) = store.code(before)? else {
-        return Ok(code.paths.iter().chain(&code.crates).cloned().collect::<Vec<_>>().join(", "));
-    };
-    let paths: BTreeSet<&String> = before.keys().chain(now.keys()).collect();
-    let binding = super::code::SOURCE_BINDING;
-    let changed: Vec<&String> =
-        paths.into_iter().filter(|path| path.as_str() != binding && before.get(*path) != now.get(*path)).collect();
-    Ok(match changed.as_slice() {
-        [] if before.get(binding) != now.get(binding) => "source/config".into(),
-        [] => "the code hash".into(),
-        [one] => one.to_string(),
-        [first, rest @ ..] => format!("{first} and {} more", rest.len()),
-    })
 }
 
 #[cfg(test)]
@@ -279,7 +185,7 @@ mod tests {
     }
 
     fn states(fixture: &Fixture, steps: &[Step], environment: &Environment) -> Vec<(String, State, Option<String>)> {
-        let layers = state(&fixture.store, &fixture.root(), steps, environment).unwrap();
+        let layers = state(&fixture.store, steps, environment).unwrap();
         layers.into_iter().map(|layer| (layer.layer, layer.state, layer.reason)).collect()
     }
 
@@ -288,36 +194,21 @@ mod tests {
     }
 
     #[test]
-    fn a_change_in_a_declared_code_file_marks_exactly_the_layers_that_declare_it_code_changed() {
-        let fixture = fixture("state-code");
+    fn a_code_change_leaves_every_layer_ok_and_a_revision_change_marks_its_steps() {
+        let fixture = fixture("state-version");
         let environment = live(&fixture);
+        write(&fixture.root().join("join.py"), &format!("# A comment.\n{JOIN}"));
         let ok = [("test/upper", State::Ok, None), ("test/join", State::Ok, None), ("test/count", State::Ok, None)];
         assert_eq!(states(&fixture, &pipeline(), &environment), expect(&ok));
 
-        let binding = super::super::code::SOURCE_BINDING;
-        let before = BTreeMap::from([(binding.into(), "old witness".into())]);
-        fixture.store.put_code("binding-only", &before).unwrap();
-        let now = BTreeMap::from([(binding.into(), "new witness".into())]);
-        assert_eq!(changed_code(&fixture.store, "binding-only", &now, &Code::default()).unwrap(), "source/config");
-
-        write(&fixture.root().join("join.py"), &format!("# A comment.\n{JOIN}"));
+        let mut steps = pipeline();
+        steps[1].layer = &crate::engine::tests::REVISED;
         assert_eq!(
-            states(&fixture, &pipeline(), &environment),
+            states(&fixture, &steps, &environment),
             expect(&[
                 ("test/upper", State::Ok, None),
-                ("test/join", State::CodeChanged, Some("join.py")),
+                ("test/join", State::CodeChanged, Some("revision 1 → 2")),
                 ("test/count", State::InputChanged, Some("test/join")),
-            ])
-        );
-
-        write(&fixture.root().join("join.py"), JOIN);
-        write(&fixture.root().join("steps/src/lib.rs"), "// A comment.\n");
-        assert_eq!(
-            states(&fixture, &pipeline(), &environment),
-            expect(&[
-                ("test/upper", State::CodeChanged, Some("steps/src/lib.rs")),
-                ("test/join", State::InputChanged, Some("test/upper")),
-                ("test/count", State::CodeChanged, Some("steps/src/lib.rs")),
             ])
         );
     }
@@ -368,7 +259,7 @@ mod tests {
         for (input, reason) in cases {
             let mut steps = pipeline();
             steps[2].inputs = vec![input];
-            let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
+            let layers = state(&fixture.store, &steps, &environment).unwrap();
             assert_eq!((layers[0].state, layers[0].reason.as_deref()), (State::NotApplied, Some(reason)));
             assert_eq!((layers[1].state, layers[1].reason.as_deref()), (State::InputChanged, Some("test/upper")));
         }
@@ -376,16 +267,15 @@ mod tests {
         // A snapshot that live did not read is a new input.
         let mut steps = pipeline();
         steps[2].inputs.push(snapshot("tail", "1", &[]));
-        let layers = state(&fixture.store, &fixture.root(), &steps, &environment).unwrap();
+        let layers = state(&fixture.store, &steps, &environment).unwrap();
         assert_eq!((layers[0].state, layers[0].reason.as_deref()), (State::CodeChanged, Some("inputs")));
 
-        let layers = state(&fixture.store, &fixture.root(), &pipeline(), &environment).unwrap();
+        let layers = state(&fixture.store, &pipeline(), &environment).unwrap();
         let (upper, join) = (&layers[0], &layers[1]);
         assert_eq!(upper.users, ["test/join"]);
         assert_eq!(upper.live, Some(environment.live["test/upper"].key.clone()));
         let reads: Vec<(InputKind, &str, Option<&str>)> =
             join.reads.iter().map(|read| (read.kind, read.name.as_str(), read.version.as_deref())).collect();
         assert_eq!(reads, [(InputKind::Layer, "test/upper", None), (InputKind::Snapshot, "tail", Some("1"))]);
-        assert_eq!(join.code.paths, ["join.py"]);
     }
 }

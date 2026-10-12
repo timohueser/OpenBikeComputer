@@ -138,13 +138,12 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
     }
 }
 
-/// Report a launcher or worker startup failure with the command's existing error format.
+/// Report a startup failure with the command's existing error format.
 pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
 fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
-    crate::worker::check(&root()?)?;
     let json = cli.json;
     let Some(command) = cli.command else {
         return status_cli::status(&root()?, products, false, json);

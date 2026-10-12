@@ -148,7 +148,6 @@ mod tests {
             request,
             root: "/checkout".into(),
             worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
-            code: "b".repeat(64),
             state: State::Reserved,
         };
         operation::reserve(&store, &control).unwrap();
@@ -186,7 +185,6 @@ mod tests {
                 request: request.clone(),
                 root: "/checkout".into(),
                 worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
-                code: "b".repeat(64),
                 state: State::Reserved,
             };
             operation::reserve(&store, &control).unwrap();

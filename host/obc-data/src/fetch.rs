@@ -2,7 +2,6 @@
 //! the store and records them in the snapshot of that version.
 
 pub mod capture;
-mod code;
 pub mod http;
 pub mod osm;
 mod tools;
@@ -11,11 +10,8 @@ pub mod wikimedia;
 
 pub use tools::basemap_jar;
 
-pub(crate) type Checks<'a> = &'a mut crate::engine::code::Context;
-
-pub fn owner_code(source: &Source) -> crate::engine::OwnerCode {
-    code::owner(source)
-}
+/// Where a fetch writes what it requested upstream, for the run journal.
+pub(crate) type Acquisition<'a> = &'a mut Option<serde_json::Value>;
 
 use std::path::{Path, PathBuf};
 
@@ -40,30 +36,18 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
-    fetch_checked(root, store, http, request, None)
+    fetch_recorded(root, store, http, request, None)
 }
 
-pub(crate) fn check_owner(
-    root: &Path,
-    source: &Source,
-    checks: Option<crate::fetch::Checks<'_>>,
-) -> Result<(), String> {
-    if let Some(checks) = checks {
-        checks.refresh_python();
-        checks.owner_identity(root, &owner_code(source))?;
-    }
-    Ok(())
-}
-
-pub(crate) fn fetch_checked(
+pub(crate) fn fetch_recorded(
     root: &Path,
     store: &Store,
     http: &Http,
     request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
+    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let _using = store.using()?;
-    let snapshot = fetch_files(root, store, http, request, checks)?;
+    let snapshot = fetch_files(root, store, http, request, acquisition)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
         let record = Requested { version: snapshot.version.clone(), params: request.params.clone(), files };
@@ -77,27 +61,18 @@ fn fetch_files(
     store: &Store,
     http: &Http,
     request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
+    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
-        FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request, checks),
-        FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => {
-            check_owner(root, source, checks)?;
-            files(store, http, request)
-        }
-        FetchKind::Geofabrik => {
-            check_owner(root, source, checks)?;
-            osm::extract(store, http, request)
-        }
-        FetchKind::Osm => {
-            check_owner(root, source, checks)?;
-            osm::replication(store, http, request)
-        }
-        FetchKind::Dtm => capture::dtm(root, store, request, checks),
+        FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
+        FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
+        FetchKind::Geofabrik => osm::extract(store, http, request),
+        FetchKind::Osm => osm::replication(store, http, request),
+        FetchKind::Dtm => capture::dtm(root, store, request),
         // A national model that a person orders: the ingest reads the delivery.
-        FetchKind::ByHand if source.id.starts_with("dtm-") => capture::dtm(root, store, request, checks),
-        FetchKind::Capture => capture::run(root, store, request, checks),
+        FetchKind::ByHand if source.id.starts_with("dtm-") => capture::dtm(root, store, request),
+        FetchKind::Capture => capture::run(root, store, request, acquisition),
         FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -446,19 +421,6 @@ pub(crate) mod tests {
 
     fn tooling_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-    }
-
-    fn capture_fixture(name: &str, sources: &[Source]) -> crate::engine::tests::Fixture {
-        let fixture = crate::engine::tests::fixture(name);
-        fixture.with_acquisition();
-        fixture.with_sources(sources);
-        for path in [".python-version", "pyproject.toml", "uv.lock"] {
-            crate::engine::tests::write(
-                &fixture.root().join(path),
-                &std::fs::read_to_string(tooling_root().join(path)).unwrap(),
-            );
-        }
-        fixture
     }
 
     use crate::fetch::upstream::Upstream;
@@ -1060,13 +1022,10 @@ pub(crate) mod tests {
         };
         let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
         store.put_snapshot(&held).unwrap();
-        let tooling = capture_fixture("capture-conflict-owner", &[land.clone(), sea.clone()]);
         let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let err = capture::capture(
-            &tooling.root(),
             &store,
             &today,
-            None,
             "q=1",
             &[&land, &sea],
             |_| &[0, 1],
@@ -1091,7 +1050,6 @@ pub(crate) mod tests {
         let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
-        let tooling = capture_fixture("capture-record-owner", &[land.clone(), sea.clone()]);
         let sources = [&land, &sea];
         let owner = |path: &str| -> &'static [usize] {
             match path {
@@ -1102,7 +1060,7 @@ pub(crate) mod tests {
         };
         let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&tooling.root(), &store, request, None, "q=1", &sources, owner, false, move |work, out| {
+            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 Ok(command)
@@ -1140,7 +1098,7 @@ pub(crate) mod tests {
         let boxed =
             Request { refresh: false, source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
-            capture::capture(&tooling.root(), &store, request, None, "q=2", &sources, owner, empty, |_, _| {
+            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| {
                 Ok(std::process::Command::new("true"))
             })
         };
@@ -1158,14 +1116,11 @@ pub(crate) mod tests {
         let scratch = Scratch::new("manual-capture");
         let store = Store::at(&scratch.0);
         let model = located(FetchKind::Dtm, "https://example.org/model");
-        let tooling = capture_fixture("capture-manual-owner", std::slice::from_ref(&model));
         let run = |query: &str, version: Option<&str>, script: &'static str| {
             let request = Request { refresh: false, source: &model, version: version.map(Into::into), params: vec![] };
             capture::capture(
-                &tooling.root(),
                 &store,
                 &request,
-                None,
                 query,
                 &[&model],
                 |_| &[0],

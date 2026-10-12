@@ -4,7 +4,6 @@
 
 pub mod gc;
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -201,35 +200,6 @@ impl Store {
     /// Every receipt in the store.
     pub fn layers(&self) -> Result<Vec<Receipt>, String> {
         read_records(&self.root.join("layers"), read_receipt)
-    }
-
-    fn code_path(&self, hash: &str) -> PathBuf {
-        self.root.join("code").join(format!("{hash}.json"))
-    }
-
-    /// The code files of a code hash: path to SHA-256.
-    pub fn code(&self, hash: &str) -> Result<Option<BTreeMap<String, String>>, String> {
-        read_record(&self.code_path(hash))
-    }
-
-    pub fn put_code(&self, hash: &str, files: &BTreeMap<String, String>) -> Result<(), String> {
-        let path = self.code_path(hash);
-        if path.is_file() {
-            return Ok(());
-        }
-        write_record(&path, files)
-    }
-
-    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
-        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            return Ok(None);
-        }
-        read_record(&self.root.join("producers").join(format!("{code}.json")))
-    }
-
-    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
-        producer.check(code)?;
-        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
     }
 
     pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {

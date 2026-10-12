@@ -9,6 +9,15 @@ use obc_pack::catalog::{Boundary, CellSource};
 pub const INDEX: &str = "geofabrik-index";
 pub const LAYER: &str = "maps/catalog";
 
+/// The catalog that lists every map, terrain and landmark file of the device layers.
+pub static DEVICE_CATALOG: Layer = Layer {
+    name: "device/catalog",
+    shape: obc_data::engine::Shape::Whole,
+    format: obc_pack::catalog::CATALOG_SCHEMA_VERSION,
+    revision: 1,
+    readers: &["map builder", "desktop app"],
+};
+
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     env: &Env,
@@ -154,15 +163,10 @@ pub fn step(
         .collect();
     inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
+        layer: &DEVICE_CATALOG,
         name: LAYER.into(),
         inputs,
         options: serde_json::to_value(options).map_err(|e| Unplanned::Failed(e.to_string()))?,
-        code: Code {
-            paths: vec!["builder/presets".into()],
-            crates: vec!["obc-pack".into()],
-            sources: vec!["osm-planet".into(), "copernicus-glo-30".into()],
-            ..Default::default()
-        },
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),

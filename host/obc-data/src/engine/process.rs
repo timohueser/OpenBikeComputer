@@ -1,11 +1,11 @@
 //! Running a step and measuring what it cost.
 
 use std::io::{ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Instant;
 
-use super::{Code, Request};
+use super::Request;
 
 pub struct Usage {
     pub wall_ms: u64,
@@ -27,29 +27,38 @@ pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, St
     })
 }
 
-pub(super) fn command(root: &Path, argv: &[String], code: Option<(&Code, &str)>) -> Result<Command, String> {
-    let (program, args) = argv.split_first().ok_or("the command is empty")?;
-    let mut command = Command::new(program);
-    command.args(args).current_dir(root);
-    if let Some((code, expected)) = code {
-        if code.python.is_some() {
-            super::code::python_command(root, code, expected, &mut command)?;
-        } else if !code.crates.is_empty()
-            && !matches!(code.rust, Some(super::Rust::Prepared { .. }))
-            && matches!(Path::new(program).file_stem().and_then(|name| name.to_str()), Some("cargo" | "rustc"))
-        {
-            crate::worker::compiler_command(&mut command);
-        }
+/// The interpreter of a Python step: the system Python that `uv python find` selects for the
+/// project, offline, with an explicit `UV_PYTHON` request when set.
+pub fn python_executable(root: &Path) -> Result<PathBuf, String> {
+    let mut find = Command::new("uv");
+    find.current_dir(root).args(["python", "find", "--system", "--offline", "--no-python-downloads"]);
+    if let Some(request) = std::env::var_os("UV_PYTHON") {
+        find.arg(request);
     }
-    Ok(command)
+    let output = find.output().map_err(|e| format!("uv offline interpreter: {e}; prepare the Python runtime first"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "uv offline interpreter: {}; prepare the selected offline Python runtime first",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let path = String::from_utf8(output.stdout).map_err(|e| format!("uv offline interpreter: {e}"))?;
+    Ok(PathBuf::from(path.trim()))
 }
 
 /// Run `argv` in `root` with the request as JSON on standard input. Its standard output goes to
-/// standard error. The usage is that of the process and the children it waited for.
-pub fn run(root: &Path, argv: &[String], request: &Request, code: Option<(&Code, &str)>) -> Result<Usage, String> {
-    let mut command = command(root, argv, code)?;
+/// standard error. The usage is that of the process and the children it waited for. A `python`
+/// command runs under `uv run` with the interpreter of [`python_executable`].
+pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {
+    let (program, args) = argv.split_first().ok_or("the command is empty")?;
+    let mut command = Command::new(program);
+    command.args(args).current_dir(root);
+    if python {
+        command.env("UV_PYTHON", python_executable(root)?);
+        // A no-sync override can make uv keep a project interpreter of another version.
+        command.env("UV_NO_SYNC", "0");
+    }
     command.stdin(Stdio::piped()).stdout(std::io::stderr());
-    let program = &argv[0];
     let start = Instant::now();
     let mut child = command.spawn().map_err(|e| format!("cannot start `{program}`: {e}"))?;
     let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;

@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_data::engine::release::Release;
-use obc_data::engine::{Profile, Rust, Step};
 use obc_data::store::Store;
 use serde::Deserialize;
 
@@ -33,25 +32,6 @@ pub(super) fn publication(root: &Path) -> Result<Origins, String> {
         }
     }
     Ok(config.publication)
-}
-
-/// Service source and dependency changes give the release a new identity.
-pub(super) fn bind(index: &mut Step) {
-    index.code.paths.extend(
-        [
-            "data/planner-runtime.toml",
-            "tools/planner_publish.py",
-            "tools/planner_downloads.py",
-            "tools/planner_maps.py",
-            "tools/planner_map_archive.py",
-            "planner/search",
-        ]
-        .map(str::to_string),
-    );
-    index.code.crates = vec!["planner-service".into()];
-    index.code.target = Some("x86_64-unknown-linux-gnu".into());
-    index.code.rust = Some(Rust::Prepared { profile: Profile::Release });
-    index.code.python_packages = Some("search-runtime".into());
 }
 
 pub(super) fn activate(root: &Path, release: &Release, store: &Store, commit: &str) -> Result<(), String> {
