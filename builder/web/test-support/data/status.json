@@ -1,7 +1,124 @@
 {
     "machine": {"name": "laptop", "colour": "#262624", "os": "macos", "cores": 10, "memory_bytes": 34359738368, "store_free_bytes": 442381631488},
     "targets": [
-        {"target": "local", "kind": "dir", "at": "/Users/rider/.cache/openbikecomputer/local", "release": null, "lock": null, "lock_error": null, "region": null, "layers": null, "blocked": [], "drift": [], "error": null, "fix": null, "next": "obc data update local --region freiburg"},
-        {"target": "prod", "kind": "r2", "at": "https://maps.openbikecomputer.com", "release": {"serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-05T08:00:00Z"}, "rollback": null}, "lock": {"machine": "hetzner-bake-1", "run": "2026-10-12-093112", "review": "4c1e0d2a00000000000000000000000000000000000000000000000000000000", "phase": "build", "heartbeat": "2026-10-12T10:14:04Z", "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 812, "total": 1284}, {"layer": "planner/search", "done": 2, "total": 5}, {"layer": "planner/index", "done": 0, "total": 1}], "stale": false}, "lock_error": null, "region": "dach", "layers": null, "blocked": [], "drift": [], "error": null, "fix": null, "next": null}
+        {
+            "target": "local",
+            "kind": "dir",
+            "at": "/Users/rider/.cache/openbikecomputer/local",
+            "release": {"serving": {"id": "0d9e444444444444444444444444444444444444444444444444444444444444", "since": "2026-10-11T18:17:22Z"}, "rollback": null},
+            "lock": null,
+            "lock_error": null,
+            "region": "freiburg",
+            "layers": [
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"]},
+                {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "land-polygons", "osm"]},
+                {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"]}
+            ],
+            "blocked": [],
+            "drift": [],
+            "error": null,
+            "fix": null,
+            "next": null
+        },
+        {
+            "target": "prod",
+            "kind": "r2",
+            "at": "https://maps.openbikecomputer.com",
+            "release": {
+                "serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-09T08:00:00Z"},
+                "rollback": {"id": "2c91555555555555555555555555555555555555555555555555555555555555", "since": "2026-10-09T08:00:00Z"}
+            },
+            "lock": {
+                "machine": "hetzner-bake-1",
+                "run": "2026-10-12-093112",
+                "review": "4c1e0d2a00000000000000000000000000000000000000000000000000000000",
+                "phase": "build",
+                "heartbeat": "2026-10-12T10:14:04Z",
+                "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 812, "total": 1284}, {"layer": "planner/search", "done": 2, "total": 5}, {"layer": "planner/index", "done": 0, "total": 1}],
+                "stale": false
+            },
+            "lock_error": null,
+            "region": "dach",
+            "layers": [
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"]},
+                {
+                    "layer": "device/map",
+                    "state": "stale",
+                    "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3},
+                    "text": "revision 2 → 3: improved output",
+                    "shape": "tiled",
+                    "format": 19,
+                    "revision": 3,
+                    "readers": ["device", "map builder"],
+                    "reads": ["device/terrain", "land-polygons", "osm"]
+                },
+                {
+                    "layer": "device/landmarks",
+                    "state": "stale",
+                    "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"},
+                    "text": "wiki 2026-06-01 → 2026-09-01",
+                    "shape": "tiled",
+                    "format": 19,
+                    "revision": 1,
+                    "readers": ["device"],
+                    "reads": ["osm", "wiki"]
+                },
+                {
+                    "layer": "device/catalog",
+                    "state": "stale",
+                    "cause": {"kind": "input", "name": "device/map"},
+                    "text": "follows device/map",
+                    "shape": "whole",
+                    "format": 3,
+                    "revision": 1,
+                    "readers": ["map builder", "desktop app"],
+                    "reads": ["device/landmarks", "device/map"]
+                },
+                {"layer": "planner/routing", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 8, "revision": 2, "readers": ["router service", "iOS offline router"], "reads": ["osm"]},
+                {"layer": "planner/basemap", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner", "iOS"], "reads": ["land-polygons", "natural-earth", "osm"]},
+                {
+                    "layer": "planner/search",
+                    "state": "stale",
+                    "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"},
+                    "text": "wiki 2026-06-01 → 2026-09-01",
+                    "shape": "whole",
+                    "format": 6,
+                    "revision": 1,
+                    "readers": ["search service"],
+                    "reads": ["osm", "wiki"]
+                },
+                {
+                    "layer": "planner/places",
+                    "state": "stale",
+                    "cause": {"kind": "input", "name": "planner/search"},
+                    "text": "follows planner/search",
+                    "shape": "whole",
+                    "format": 1,
+                    "revision": 1,
+                    "readers": ["web planner"],
+                    "reads": ["planner/search"]
+                },
+                {"layer": "planner/terrain", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 2, "readers": ["web planner", "planner/sun"], "reads": ["copernicus-glo30"]},
+                {"layer": "planner/sun", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner"], "reads": ["planner/terrain"]},
+                {"layer": "planner/climate", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner"], "reads": ["era5"]},
+                {"layer": "planner/snow", "state": "off", "cause": null, "text": null, "shape": null, "format": null, "revision": null, "readers": [], "reads": []},
+                {
+                    "layer": "planner/index",
+                    "state": "stale",
+                    "cause": {"kind": "input", "name": "planner/search"},
+                    "text": "follows planner/search",
+                    "shape": "whole",
+                    "format": 3,
+                    "revision": 1,
+                    "readers": ["web planner", "iOS", "search service", "downloads service"],
+                    "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"]
+                }
+            ],
+            "blocked": [],
+            "drift": [],
+            "error": null,
+            "fix": null,
+            "next": null
+        }
     ]
 }

@@ -1,0 +1,53 @@
+{
+    "id": "4c1e0d2a91b7",
+    "target": "local",
+    "base": "6a77777777777777777777777777777777777777777777777777777777777777",
+    "settings": {"region": "freiburg", "definitions": {"freiburg": "name = \"Freiburg\"\nkind = \"box\"\nbox = [7.7, 47.9, 8.0, 48.1]\ncountries = [\"DE\"]\n"}, "layers": ["sun"], "refresh": {"wiki": 30}},
+    "layers": [
+        {
+            "layer": "device/map",
+            "cause": {"kind": "stale", "cause": {"kind": "version", "field": "format", "from": 19, "to": 20}},
+            "text": "format 19 → 20: readers need new data",
+            "steps": ["device/map/9-268-178", "device/map/9-268-179"],
+            "leaves": ["268-178", "268-179"],
+            "drops": [],
+            "readers": ["device", "map builder"],
+            "format": {"from": 19, "to": 20}
+        },
+        {
+            "layer": "device/catalog",
+            "cause": {"kind": "stale", "cause": {"kind": "input", "name": "device/map"}},
+            "text": "follows device/map",
+            "steps": ["device/catalog"],
+            "leaves": [],
+            "drops": [],
+            "readers": ["map builder", "desktop app"],
+            "format": null
+        }
+    ],
+    "sources": [{"source": "osm", "params": [["area", "europe/germany/baden-wuerttemberg"]], "from": "2026-10-05", "to": "2026-10-11"}],
+    "kept": 41,
+    "fetches": [{"source": "osm", "version": "2026-10-11", "params": [["area", "europe/germany/baden-wuerttemberg"]], "files": ["baden-wuerttemberg-latest.osm.pbf"], "bytes": 412316860}],
+    "bakes": [
+        {
+            "step": "device/map/9-268-178",
+            "recipe": "device-map",
+            "key": "a100000000000000000000000000000000000000000000000000000000000000",
+            "estimate": {"wall_ms": 312000, "bytes_out": 52428800, "client_bytes": 52428800, "peak_rss_bytes": 2147483648},
+            "again": false
+        },
+        {
+            "step": "device/map/9-268-179",
+            "recipe": "device-map",
+            "key": "a200000000000000000000000000000000000000000000000000000000000000",
+            "estimate": {"wall_ms": 298000, "bytes_out": 50331648, "client_bytes": 50331648, "peak_rss_bytes": 2013265920},
+            "again": false
+        },
+        {"step": "device/catalog", "recipe": "device-catalog", "key": null, "estimate": null, "again": false}
+    ],
+    "downloads": {"files": 12, "bytes": 734003200},
+    "cost": {"wall_ms": 610000, "peak_rss_bytes": 2147483648, "process_peak_rss_bytes": null, "store_bytes": 1258291200, "upload_bytes": 102760448, "unknown": {"estimate": ["device/catalog"], "peak": [], "size": []}},
+    "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
+    "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
+    "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"]
+}
