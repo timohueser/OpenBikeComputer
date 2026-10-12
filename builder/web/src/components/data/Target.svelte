@@ -3,16 +3,17 @@
     import { flagsOf, reviewArgs, type Flags } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { targetAt } from "../../lib/data/screens";
-    import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type RunView, type Status } from "../../lib/data/shapes";
+    import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type Router, type RunList, type RunView, type Status } from "../../lib/data/shapes";
     import { corners } from "../../lib/data/areas";
     import { leafSquare } from "../../lib/data/leaf";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
     import Review from "./Review.svelte";
+    import Serve from "./Serve.svelte";
 
     // A target: what it serves, its lock, its layers and its releases; or the review of its update.
-    let { name, hash, status }: { name: string; hash: string; status: CliQuery<Status> } = $props();
+    let { name, hash, status, runs }: { name: string; hash: string; status: CliQuery<Status>; runs: CliQuery<RunList> } = $props();
 
     const target = $derived(status.output?.targets.find((at) => at.target === name) ?? null);
     const machine = $derived(status.output?.machine.name ?? "this machine");
@@ -27,6 +28,17 @@
     const stale = $derived(target?.layers?.filter((layer) => layer.state === "stale") ?? []);
     // The page asks before it runs a command that changes an R2 target, so it sends `--yes`.
     const yes = $derived(target?.kind === "r2" ? ["--yes"] : []);
+    const r2 = $derived(target?.kind === "r2");
+    // A string, so only a status poll with other releases asks the follower of an R2 target again.
+    const releases = $derived(r2 ? `${target?.release?.serving.id}|${target?.release?.rollback?.id}` : null);
+    const router = $derived(releases ? new CliQuery<Router>(["router", name]) : null);
+    $effect(() => void router?.refresh());
+    // Why the follower does not serve `id`; `null` when it does, `undefined` while the page asks.
+    const notServed = (id: string) => {
+        const answer = router?.output && [router.output.serving, router.output.rollback].find((answer) => answer?.release === id);
+        return router?.error ? router.error.message : answer ? answer.reason : undefined;
+    };
+    const osm = $derived(target?.sources.find(({ source }) => source === "geofabrik-extracts" || source === "osm-planet")?.version);
     // A ticked layer bakes again, also when it is up to date: `--only`.
     let ticked = $state<string[]>([]);
     // The flags that a link to the review sets: `--only` from ticks, `--refresh` from a source.
@@ -62,12 +74,12 @@
     }
 </script>
 
-{#snippet confirm(title: string, lines: string[], label: string, args: string[], ondone: () => void)}
+{#snippet confirm(title: string, lines: string[], label: string, args: string[], ondone: () => void, disabled = false)}
     <div class="confirm">
         <b>{title}</b>
         {#each lines as line (line)}<p>{line}</p>{/each}
         <div class="title">
-            <Action {label} {args} {ondone} />
+            <Action {label} {args} {ondone} {disabled} />
             <button type="button" onclick={() => (asking = null)}>Cancel</button>
         </div>
     </div>
@@ -90,11 +102,20 @@
     {#if resumed?.error}<Failure error={resumed.error} />{/if}
     {#if !route.resume}
         {#key `${route.only}|${route.refresh}`}
-            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} area={target.area} />
+            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} area={target.area} router={router?.output ?? null} />
         {/key}
     {:else if resumed?.output}
         <p class="soft">This review resumes run <a href="#/runs/{route.resume}">{route.resume}</a> with its settings.</p>
-        <Review {name} kind={target.kind} flags={flagsOf(resumed.output.args)} {machine} {locked} layers={target.layers ?? []} area={target.area} />
+        <Review
+            {name}
+            kind={target.kind}
+            flags={flagsOf(resumed.output.args)}
+            {machine}
+            {locked}
+            layers={target.layers ?? []}
+            area={target.area}
+            router={router?.output ?? null}
+        />
     {/if}
 {:else}
     {@const error = failure(target)}
@@ -203,31 +224,59 @@
                 {@const { serving, rollback } = target.release}
                 <section class="card" aria-labelledby="releases">
                     <h2 id="releases">Releases on {name}</h2>
-                    <div class="release"><b>{short(serving.id)}</b><span>since {when(serving.since)}</span><span class="pill">serving</span></div>
+                    <div class="release">
+                        <b>{short(serving.id)}</b>
+                        <span>since {when(serving.since)}{target.made ? ` · made on ${target.made.machine}, ${when(target.made.time)}` : ""}{osm ? ` · OSM ${osm}` : ""}</span>
+                        <span class="pill">serving</span>
+                    </div>
                     {#if rollback}
                         <div class="release">
                             <b>{short(rollback.id)}</b><span>since {when(rollback.since)}</span>
                             {#if asking !== "rollback"}
-                                <button type="button" disabled={!!locked} onclick={() => (asking = "rollback")}>Roll back to {short(rollback.id)}…</button>
+                                <button
+                                    type="button"
+                                    disabled={!!locked}
+                                    onclick={() => {
+                                        asking = "rollback";
+                                        // The answer of the router can be older than the confirm.
+                                        void router?.refresh();
+                                    }}>Roll back to {short(rollback.id)}…</button
+                                >
                             {/if}
                         </div>
                         {#if asking === "rollback"}
+                            {@const reason = r2 ? notServed(rollback.id) : null}
                             {@render confirm(
                                 `Roll back ${name} to ${short(rollback.id)}?`,
                                 [
                                     `${name} serves ${short(rollback.id)} instead of ${short(serving.id)}.`,
-                                    `The router still runs ${short(rollback.id)}, so the switch is instant. Clients switch within a minute.`,
+                                    reason === undefined
+                                        ? "Asking the router…"
+                                        : reason
+                                          ? `✗ The router does not serve ${short(rollback.id)}: ${reason}. The rollback refuses until it does.`
+                                          : `${r2 ? `The router still runs ${short(rollback.id)}, so the switch is instant. ` : ""}Clients switch within a minute.`,
                                     `Nothing is deleted: ${short(serving.id)} becomes the rollback.`,
                                 ],
                                 "Roll back now",
                                 ["rollback", name, "--expect", rollback.id, ...yes],
                                 () => changed(`${name} serves ${short(rollback.id)} again.`, `${rollback.id}|`, serving.id),
+                                reason !== null,
                             )}
                         {/if}
+                    {/if}
+                    {#if router}
+                        {@const reason = notServed(serving.id)}
+                        {@const next = router.output?.next}
+                        <p class={reason ? "missing" : "soft"}>
+                            Router · {reason === undefined ? "asking…" : reason ? `✗ does not serve ${short(serving.id)}: ${reason}` : `serves ${short(serving.id)}`}{next
+                                ? ` · loads ${short(next.id)} since ${clock(next.since)}`
+                                : ""}
+                        </p>
                     {/if}
                     <p class="soft">{name} keeps the serving release and one rollback. Layers that did not change share their files.</p>
                 </section>
             {/if}
+            {#if target.serve}<Serve {name} serve={target.serve} {runs} />{/if}
         </div>
     </div>
 {/if}

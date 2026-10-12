@@ -54,7 +54,7 @@ it("lists the sources by group, worst first, and folds a group that needs nothin
             ["Basemap, land, assets and tools", false],
         ]);
         const first = [...document.querySelectorAll("details")[0].querySelectorAll("tbody td:first-child")].map((cell) => cell.textContent);
-        expect(first).toEqual(["geofabrik-extracts", "osm-planet", "land-polygons"]);
+        expect(first).toEqual(["geofabrik-extracts", "osm-planet", "geofabrik-poly", "land-polygons"]);
         const family = [...document.querySelectorAll("tr")].find((row) => row.textContent?.startsWith("terrain-reference"))!;
         const cells = [...family.querySelectorAll("td")].map((cell) => cell.textContent);
         expect(cells, "a family counts the reads of its members").toEqual(["terrain-reference", "2 prepared", "local manual, prod manual", "1 layer", "ok"]);

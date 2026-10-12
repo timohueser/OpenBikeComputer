@@ -295,7 +295,7 @@ Then one entry for each kind of root that names objects that no reached record o
 `release`, `fixture` or `planner recipe`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
 takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
-until it finishes. A collection deletes each snapshot record and each object that is not reached,
+until it finishes; a run of `serve` does not hold it. A collection deletes each snapshot record and each object that is not reached,
 and empties `partial/`. Receipts and upstream checks stay. A clean that cannot read a target
 deletes nothing.
 
@@ -677,8 +677,9 @@ process never started.
   A leaf is baked when one of its steps baked, and unchanged when all of its steps are.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
-  run, once. A run that stops frees the lock of its target, keeps what it baked, and ends as
-  `stopped`.
+  run, once. A detached run whose process finds it at its start does nothing more. A run that
+  stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
+  detached `serve`.
 
 `obc data update` runs detached. It makes the review in its own process, refuses as the review
 says, and then starts its own program in a new session, without a terminal, with the arguments of
@@ -1598,8 +1599,9 @@ panic, serve ends with a `failed` error, so that a supervisor starts it again.
 
 ### Overview
 
-`obc data` gives the machine that runs it and, for each target, the release that it serves and its
-rollback, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
+`obc data` gives the machine that runs it and, for each target, the release that it serves, the
+machine that made it and when, its rollback, for a `dir` target how [serve](#serve) gives it to
+each app, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
@@ -1615,6 +1617,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
+| `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
 | `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
@@ -1626,7 +1629,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
-| `obc data serve [TARGET] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target on its network |
+| `obc data serve [TARGET] [--detach] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target its origin on the network and how each app opens it. With `--detach`, it serves in a detached [run](#runs) and writes `{run}`; `runs RUN --stop` stops it. That run does not hold the store for [Clean](#clean) |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -1653,7 +1656,7 @@ addition:
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
   runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data sources`, `obc data runs`, `obc data runs RUN`,
-  `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
+  `obc data runs RUN --stop`, `obc data router TARGET`, `obc data serve TARGET --detach`, `obc data update TARGET` with settings flags and then `--dry-run`
   or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
@@ -1770,9 +1773,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `update` | `Started` |
 | `update --dry-run` | `Review` |
 | `rollback` | `RolledBack` |
+| `router` | `Router` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
-| `source refresh` | `Refreshing` |
+| `source refresh`, `serve --detach` | `Detached` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
@@ -1815,6 +1819,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "rollback",
         "collects"
+      ],
+      "type": "object"
+    },
+    "Answer": {
+      "description": "What the follower says about the planner release of a release.",
+      "properties": {
+        "reason": {
+          "description": "Why the follower does not serve it; `null` when it does.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "release",
+        "reason"
       ],
       "type": "object"
     },
@@ -2141,6 +2165,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "needed_for",
         "state"
+      ],
+      "type": "object"
+    },
+    "Detached": {
+      "description": "What a command that starts a detached run writes: the run.",
+      "properties": {
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run"
       ],
       "type": "object"
     },
@@ -2893,9 +2929,32 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Link": {
+      "properties": {
+        "app": {
+          "type": "string"
+        },
+        "how": {
+          "description": "The command, or what to do, with absolute paths.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "how"
+      ],
+      "type": "object"
+    },
     "Listening": {
       "description": "What `serve` writes when it listens.",
       "properties": {
+        "links": {
+          "description": "How each app of this machine and of its network opens a dir target; empty for an R2 target.",
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "type": "array"
+        },
         "network": {
           "description": "Its origin on the network, for a phone; `null` without a network and for an R2 target.",
           "type": [
@@ -2914,7 +2973,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "target",
         "url",
-        "network"
+        "network",
+        "links"
       ],
       "type": "object"
     },
@@ -3056,6 +3116,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "memory_bytes",
         "store_free_bytes",
         "refusals"
+      ],
+      "type": "object"
+    },
+    "Made": {
+      "properties": {
+        "machine": {
+          "type": "string"
+        },
+        "time": {
+          "description": "`YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "machine",
+        "time"
       ],
       "type": "object"
     },
@@ -3668,18 +3744,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale."
     },
-    "Refreshing": {
-      "description": "What `source refresh --json` writes: the run that fetches.",
-      "properties": {
-        "run": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "run"
-      ],
-      "type": "object"
-    },
     "Region": {
       "oneOf": [
         {
@@ -4025,6 +4089,54 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "target",
         "serving",
         "rollback"
+      ],
+      "type": "object"
+    },
+    "Router": {
+      "description": "What `router` writes.",
+      "properties": {
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The release that `planner/next.json` names while a run waits for it; `null` without one."
+        },
+        "rollback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` without a rollback."
+        },
+        "serving": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` while the target serves nothing."
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "serving",
+        "rollback",
+        "next"
       ],
       "type": "object"
     },
@@ -5020,6 +5132,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "made": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Made"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The machine that made the serving release, and when; `null` while it serves nothing."
+        },
         "next": {
           "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now. For an R2 target, the command is the\nreview: its update needs the id that the owner approved.",
           "type": [
@@ -5052,6 +5175,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "What `release.json` of the target says; `null` while it serves nothing."
         },
+        "serve": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Listening"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where `obc data serve` serves a dir target, and how each app opens it; `null` for an R2\ntarget."
+        },
         "sources": {
           "description": "Each source version that the serving release read.",
           "items": {
@@ -5068,6 +5202,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kind",
         "at",
         "release",
+        "made",
+        "serve",
         "lock",
         "lock_error",
         "region",

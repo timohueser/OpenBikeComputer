@@ -151,6 +151,12 @@ impl Error {
     }
 }
 
+/// What a command that starts a detached run writes: the run.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Detached {
+    pub run: String,
+}
+
 /// In the process that [`runs::detach`] started: do `work` in its run, write what it did with
 /// `print`, or exit with the status of its error, which the status and the log of the run have.
 /// `None` in another process.
@@ -163,15 +169,29 @@ pub(super) fn detached<T>(
     // A program that a step starts is not this run.
     std::env::remove_var(runs::RUN);
     runs::stop_on_signals();
-    let mut run = match runs::Run::attach(store, &id) {
+    let run = match runs::Run::attach(store, &id) {
         Ok(run) => run,
         Err(e) => return Some(Err(e.into())),
     };
-    let result = work(&mut run);
-    Some(match finish_run(run, result) {
+    Some(match work_in(run, work) {
         Ok(done) => print(&done),
         Err(error) => std::process::exit(error.code.exit().into()),
     })
+}
+
+/// Do `work` in `run`, and finish the run. A stop that came while the run started wrote only its
+/// file: the run then ends `stopped` before its work.
+fn work_in<T>(mut run: runs::Run, work: impl FnOnce(&mut runs::Run) -> Result<T, Error>) -> Result<T, Error> {
+    let result = match run.stopping() {
+        true => Err(stopped()),
+        false => work(&mut run),
+    };
+    finish_run(run, result)
+}
+
+/// The error of a run that `obc data runs RUN --stop` or a signal stopped.
+pub(super) fn stopped() -> Error {
+    Code::Failed.error("the run stopped on `obc data runs RUN --stop` or a signal").fix("Start it again.")
 }
 
 /// Refuse `what`, a run that changes the R2 `target`, which serves riders, without `--expect`, the
@@ -268,7 +288,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        overview, prepare_cli, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
+        overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli, unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
 
@@ -282,9 +302,10 @@ mod tests {
             schema("`update`", generator.subschema_for::<update_cli::Started>()),
             schema("`update --dry-run`", generator.subschema_for::<update_cli::Review>()),
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
+            schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`source refresh`", generator.subschema_for::<source_cli::Refreshing>()),
+            schema("`source refresh`, `serve --detach`", generator.subschema_for::<Detached>()),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
@@ -364,6 +385,21 @@ mod tests {
     }
 
     #[test]
+    fn a_run_stopped_while_it_starts_ends_stopped_without_its_work() {
+        let fixture = crate::engine::tests::fixture("api-stopped");
+        let id = runs::reserve(&fixture.store, &["source".into(), "refresh".into(), "earth".into()]).unwrap();
+        runs::stop(&fixture.store, &id).unwrap();
+        let run = runs::Run::attach(&fixture.store, &id).unwrap();
+        let worked = std::cell::Cell::new(false);
+        let ended = work_in(run, |_| {
+            worked.set(true);
+            Ok(())
+        });
+        assert_eq!((ended.unwrap_err().run, worked.get()), (Some(id.clone()), false));
+        assert_eq!(runs::status(&fixture.store, &id).unwrap().state, runs::State::Stopped);
+    }
+
+    #[test]
     fn the_spec_has_the_current_error_codes_and_schemas() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/obc-data.md");
         let spec = std::fs::read_to_string(&path).unwrap();
@@ -379,10 +415,11 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 9] = [
+        const EXAMPLES: [(&str, &str); 10] = [
             ("areas.json", "Areas"),
             ("prepare-review.json", "PrepareReview"),
             ("review.json", "Review"),
+            ("router.json", "Router"),
             ("run-failed.json", "View"),
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
