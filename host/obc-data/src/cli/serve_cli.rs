@@ -100,7 +100,7 @@ fn print_links(listening: &Listening) {
     if let Some(network) = network {
         println!("  on this network  {network}/{PLANNER}");
     }
-    println!("Ctrl-C stops it.");
+    println!("Other machines on the local network can reach port {PORT} while it runs. Ctrl-C stops it.");
 }
 
 /// Follow `target` until `stop`: a change of its `release.json` starts the services of the

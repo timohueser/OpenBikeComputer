@@ -1060,6 +1060,9 @@ Serve reads `release.json` each second. When it changes:
 4. The services of a planner release that neither the serving release, the rollback nor the
    current release names stop.
 
+Nothing starts a service again that stops after its planner release answers: its API answers 502
+until serve starts again.
+
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
 `identity` object, or the decoded bytes of a `gzip` object. It must have the SHA-256 and the size

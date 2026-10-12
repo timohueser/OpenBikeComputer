@@ -64,4 +64,6 @@ npm ci --prefix planner/tiles
 
 Leave it running while `obc data update local` runs in another terminal. Clients get the new
 release when its services answer. A failed release leaves clients on the current release; the
-services write the cause to the terminal.
+services write the cause to the terminal. A service that stops later does not start again: stop
+`obc data serve` with Ctrl-C and start it again. Other machines on the local network reach port
+8710 while it runs.
