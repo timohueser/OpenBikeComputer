@@ -860,10 +860,10 @@ of a set out of the bytes. A credit that it writes comes in its options.
 ### Service runtimes
 
 `data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
-of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`
-and `objects_origin`. The shared pool is `<objects_origin>/objects`.
-Tile URLs keep the tile Worker origin, which reads `releases/<id>/public/` and `objects/` of
-the bucket.
+of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`,
+`objects_origin` and `tiles_origin`. The shared pool is `<objects_origin>/objects`. Tile URLs
+are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/public/` and
+`objects/` of the bucket.
 
 The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
@@ -1037,14 +1037,14 @@ An update that stops keeps what it baked in the store, and the next update reuse
 
 ### Serve
 
-`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of each address
-of the machine. It refuses an R2 target. The current release is the release whose pointers clients
-get. Every answer allows each origin.
+`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of every IPv4
+address of the machine. It refuses an R2 target. The current release is the release whose
+pointers clients get. Every answer allows each origin.
 
 | Path | Answer |
 | --- | --- |
 | `/cell-catalog/catalog.json` | The device pointer of the current release |
-| `/planner/catalog.json` | The planner pointer of the current release. Each string that is an `https://` URL gets the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner/catalog.json` | The planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
 | Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
@@ -1055,19 +1055,25 @@ Serve reads `release.json` each second. When it changes:
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release.
-3. Services that stop, or do not answer within 120 seconds, fail. Clients keep the current release.
-   The planner release starts again at the next change of `release.json`.
+3. A planner release fails when one of its services stops, or when its services do not answer
+   within 120 seconds after they start. Its other services stop, and its API answers 404. Clients
+   keep the current release, also when the failed planner release is the one of the current
+   release. A planner release that failed starts again at the next change of `release.json`, and
+   at no other time.
 4. The services of a planner release that neither the serving release, the rollback nor the
    current release names stop.
 
-Nothing starts a service again that stops after its planner release answers: its API answers 502
-until serve starts again.
+When the serving release and the rollback fail one after the other, clients keep a release that
+`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
+release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
-`identity` object, or the decoded bytes of a `gzip` object. It must have the SHA-256 and the size
-that the planner release gives. Serve starts with an empty `<store>/serve/<target>/`. Download
-bundles name the origin of the machine on its network, else `http://127.0.0.1:8710`.
+`identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write opens
+an existing file. Each file must have the SHA-256 and the size that the planner release gives.
+Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
+touch it. Download bundles name the origin of the machine on its network when serve starts, else
+`http://127.0.0.1:8710`.
 
 ### Overview
 

@@ -56,10 +56,10 @@ class PlannerDownloads(unittest.TestCase):
         self.public = "https://releases.test/planner-api/services/" + "f" * 64 + "/downloads"
         self.service = downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=self.public)
 
-    def test_only_an_address_of_this_machine_or_its_network_serves_over_http(self):
-        for url in ("http://192.168.1.5:8710/downloads", "http://127.0.0.1:8710/downloads"):
-            downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=url)
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
+    def test_only_an_ip_address_serves_over_http(self):
+        for host in ("192.168.1.5", "127.0.0.1", "100.64.1.2", "203.0.113.5", "[::1]"):
+            downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=f"http://{host}:8710/downloads")
+        with self.assertRaisesRegex(ValueError, "HTTP at an IP address"):
             downloads.Downloads(self.source, self.root / "cache", 1000000, public_url="http://releases.test/downloads")
 
     def request(self, bounds=None):

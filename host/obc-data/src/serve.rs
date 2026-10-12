@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::release::{Release, Serving, SERVING};
+use crate::release::{Release, Serving, POINTERS};
 use crate::store::sha256_hex;
 use crate::target::Target;
 
 /// The pointer that names the planner release of a release.
-pub const PLANNER: &str = "planner/catalog.json";
+pub const PLANNER: &str = POINTERS[1];
 
 /// How long the services of a planner release may take to answer after they start.
 pub const READY: Duration = Duration::from_secs(120);
@@ -32,10 +32,8 @@ pub struct Served {
     pub pointers: BTreeMap<String, Vec<u8>>,
 }
 
-/// The release that `target` serves, then its rollback; none before the first switch.
-pub fn wanted(target: &Target) -> Result<Vec<Served>, String> {
-    let Some(bytes) = target.get(SERVING)? else { return Ok(Vec::new()) };
-    let roles: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
+/// The release that `roles` of `target` serves, then its rollback.
+pub fn wanted(target: &Target, roles: &Serving) -> Result<Vec<Served>, String> {
     std::iter::once(&roles.serving).chain(&roles.rollback).map(|role| served(target, &role.id)).collect()
 }
 
@@ -57,6 +55,8 @@ fn served(target: &Target, id: &str) -> Result<Served, String> {
 pub trait Services {
     /// Whether each service answers; an error when one stopped.
     fn ready(&mut self) -> Result<bool, String>;
+    /// Why a service stopped; `None` while each runs.
+    fn stopped(&mut self) -> Option<String>;
 }
 
 enum State<S> {
@@ -65,8 +65,8 @@ enum State<S> {
         since: Instant,
     },
     Ready(S),
-    /// Its services stopped. It starts again at the next [`Follower::want`].
-    Failed,
+    /// Its services stopped, for this reason. It starts again at the next [`Follower::want`].
+    Failed(String),
 }
 
 /// The planner releases whose services run, and the release that clients get.
@@ -86,38 +86,60 @@ impl<S: Services> Default for Follower<S> {
 
 impl<S: Services> Follower<S> {
     /// Follow `wanted`, the serving release of the target and its rollback: `start` the services
-    /// of each planner release that does not run, then [`Self::poll`].
-    pub fn want(&mut self, wanted: Vec<Served>, start: &mut dyn FnMut(&Served) -> Result<S, String>, now: Instant) {
-        self.planners.retain(|_, state| !matches!(state, State::Failed));
+    /// of each planner release that does not run, then [`Self::poll`]. `start` installs the files
+    /// of the release, and the follower waits for it: the time to answer counts from its return.
+    pub fn want(
+        &mut self,
+        wanted: Vec<Served>,
+        start: &mut dyn FnMut(&Served) -> Result<S, String>,
+        now: &dyn Fn() -> Instant,
+    ) {
+        self.planners.retain(|_, state| !matches!(state, State::Failed(_)));
         for served in &wanted {
             if !self.planners.contains_key(&served.planner) {
                 let state = match start(served) {
-                    Ok(services) => State::Starting { services, since: now },
-                    Err(e) => failed(&served.planner, &e),
+                    Ok(services) => State::Starting { services, since: now() },
+                    Err(e) => failed(&served.planner, e),
                 };
                 self.planners.insert(served.planner.clone(), state);
             }
         }
         self.wanted = wanted;
-        self.poll(now);
+        if let Some(current) = self.current.as_ref().filter(|current| !self.wanted.contains(current)) {
+            eprintln!(
+                "obc data serve: WARNING: clients get release {}, which release.json no longer names. An update \
+                 can delete its files. Fix: run `obc data update` until a release loads.",
+                short(&current.id)
+            );
+        }
+        self.poll(now());
     }
 
-    /// Check the services that start. Clients get the serving release of the target once its
-    /// services answer; until then they keep the current release. Stop the services that neither
-    /// the wanted releases nor the current one need.
+    /// Check the services that start, and fail a planner release whose service stopped. Clients
+    /// get the serving release of the target once its services answer; until then they keep the
+    /// current release. Stop the services that neither the wanted releases nor the current one
+    /// need.
     pub fn poll(&mut self, now: Instant) {
         for (id, state) in &mut self.planners {
-            let State::Starting { services, since } = state else { continue };
-            match services.ready() {
-                Ok(false) if now.duration_since(*since) < READY => {}
-                Ok(false) => *state = failed(id, &format!("its services do not answer after {} s", READY.as_secs())),
-                Err(e) => *state = failed(id, &e),
-                Ok(true) => {
-                    let State::Starting { services, .. } = std::mem::replace(state, State::Failed) else {
-                        unreachable!("the state starts")
-                    };
-                    *state = State::Ready(services);
+            match state {
+                State::Starting { services, since } => match services.ready() {
+                    Ok(false) if now.duration_since(*since) < READY => {}
+                    Ok(false) => *state = failed(id, format!("its services do not answer after {} s", READY.as_secs())),
+                    Err(e) => *state = failed(id, e),
+                    Ok(true) => {
+                        let State::Starting { services, .. } = std::mem::replace(state, State::Failed(String::new()))
+                        else {
+                            unreachable!("the state starts")
+                        };
+                        *state = State::Ready(services);
+                    }
+                },
+                State::Ready(services) => {
+                    if let Some(e) = services.stopped() {
+                        *state = failed(id, e);
+                    }
                 }
+                State::Failed(_) => {}
             }
         }
         if let Some(next) = self.wanted.first().filter(|next| self.current.as_ref() != Some(*next)) {
@@ -142,11 +164,19 @@ impl<S: Services> Follower<S> {
             _ => None,
         })
     }
+
+    /// Why the services of the planner release `planner` stopped, while it fails.
+    pub fn failure(&self, planner: &str) -> Option<&str> {
+        match self.planners.get(planner) {
+            Some(State::Failed(reason)) => Some(reason),
+            _ => None,
+        }
+    }
 }
 
-fn failed<S>(planner: &str, error: &str) -> State<S> {
-    eprintln!("obc data serve: planner release {} failed: {error}", short(planner));
-    State::Failed
+fn failed<S>(planner: &str, reason: String) -> State<S> {
+    eprintln!("obc data serve: planner release {} failed: {reason}", short(planner));
+    State::Failed(reason)
 }
 
 fn short(id: &str) -> &str {
@@ -160,7 +190,7 @@ mod tests {
 
     use super::*;
     use crate::engine::LayerFile;
-    use crate::release::{manifest_key, serving, switch, File, POINTERS};
+    use crate::release::{manifest_key, serving, switch, File};
     use crate::store::tests::Scratch;
     use crate::target::Condition;
 
@@ -169,6 +199,7 @@ mod tests {
     struct Log {
         ready: BTreeSet<String>,
         broken: BTreeSet<String>,
+        exited: BTreeSet<String>,
         started: Vec<String>,
         stopped: Vec<String>,
     }
@@ -182,6 +213,10 @@ mod tests {
                 true => Err("the routing service stopped".into()),
                 false => Ok(log.ready.contains(&self.0)),
             }
+        }
+
+        fn stopped(&mut self) -> Option<String> {
+            self.1.borrow().exited.contains(&self.0).then(|| "the search service stopped: exit status 1".into())
         }
     }
 
@@ -236,12 +271,18 @@ mod tests {
 
         /// Follow the release that the target serves now.
         fn follow(&mut self) {
-            let log = self.log.clone();
+            let (log, now) = (self.log.clone(), self.now);
             let mut start = |served: &Served| {
                 log.borrow_mut().started.push(served.planner.clone());
                 Ok(Fake(served.planner.clone(), log.clone()))
             };
-            self.follower.want(wanted(&self.target).unwrap(), &mut start, self.now);
+            let (roles, _) = serving(&self.target).unwrap().unwrap();
+            self.follower.want(wanted(&self.target, &roles).unwrap(), &mut start, &|| now);
+        }
+
+        fn switch(&mut self, id: &str) {
+            assert!(switch(&self.target, serving(&self.target).unwrap().as_ref(), id).unwrap());
+            self.follow();
         }
 
         fn answers(&mut self, planner: &str) {
@@ -281,17 +322,17 @@ mod tests {
         assert_eq!(case.log.borrow().started, [P1, P2]);
         assert_eq!(case.log.borrow().stopped, [P1], "no release of the target needs the oldest services");
 
-        assert!(switch(&case.target, serving(&case.target).unwrap().as_ref(), &b).unwrap());
-        case.follow();
+        case.switch(&b);
         assert_eq!(case.current(), b, "a rollback starts nothing");
 
         let d = publish(&case.target, "device d", P3);
         case.follow();
         case.answers(P3);
         assert_eq!(case.current(), d);
+        assert_eq!(case.follower.current().unwrap().pointers[POINTERS[0]], b"device d");
+        case.switch(&c);
+        assert_eq!(case.current(), c, "a rollback to another planner release that runs");
         assert_eq!(case.log.borrow().started, [P1, P2, P3]);
-        let pointers = &case.follower.current().unwrap().pointers;
-        assert_eq!(pointers[POINTERS[0]], b"device d");
     }
 
     #[test]
@@ -321,6 +362,12 @@ mod tests {
         case.now += READY;
         case.follower.poll(case.now);
         assert_eq!(case.current(), c, "services that do not answer in time fail");
-        assert!(case.follower.ready().all(|(id, _)| id != P3));
+        assert!(case.follower.failure(P3).unwrap().contains("do not answer"));
+
+        case.log.borrow_mut().exited.insert(P2.into());
+        case.follower.poll(case.now);
+        assert_eq!(case.follower.failure(P2), Some("the search service stopped: exit status 1"));
+        assert!(case.follower.ready().next().is_none(), "the API of a planner release whose service stopped ends");
+        assert_eq!(case.current(), c);
     }
 }

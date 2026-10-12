@@ -52,10 +52,10 @@ rollback of the target.
 
 ## Serve
 
-`obc data serve` serves `local` on port 8710 of each address of the machine, also on its network.
-It prints the URLs of the pointers. It runs the routing, search and downloads services of each
-planner release and the tile server of `planner/tiles`. At start it builds `planner-service`
-with cargo. Prepare Node and the other services once:
+`obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
+URLs of the pointers. It runs the routing, search and downloads services of each planner release
+and the tile server of `planner/tiles`. At start it builds `planner-service` with cargo. Prepare
+Node and the other services once:
 
 ```sh
 python3 planner/search/setup.py
@@ -65,5 +65,11 @@ npm ci --prefix planner/tiles
 Leave it running while `obc data update local` runs in another terminal. Clients get the new
 release when its services answer. A failed release leaves clients on the current release; the
 services write the cause to the terminal. A service that stops later does not start again: stop
-`obc data serve` with Ctrl-C and start it again. Other machines on the local network reach port
-8710 while it runs.
+`obc data serve` with Ctrl-C and start it again.
+
+- Every machine on the local network reaches every file of the target, also `release.json`, and
+  the three services. Any web page can read them (CORS `*`).
+- The download bundles name the network address that the machine has at start. After a change
+  of network, start `obc data serve` again.
+- The services read their files from `<store>/serve/local/`. Serve removes it when it starts and
+  when it stops; `obc data clean` does not touch it.

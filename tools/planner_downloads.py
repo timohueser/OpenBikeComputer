@@ -29,9 +29,11 @@ def bounds(value):
     return value
 
 
-def private(host):
+def address(host):
+    """Whether `host` is an IP address: `obc data serve` serves the address of a machine over HTTP."""
     try:
-        return ipaddress.ip_address(host or "").is_private
+        ipaddress.ip_address(host or "")
+        return True
     except ValueError:
         return False
 
@@ -46,10 +48,9 @@ class Downloads:
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None
         origin = urlsplit(public_url or "")
-        # `obc data serve` serves an address of this machine or of its network over HTTP.
-        secure = origin.scheme == "https" or origin.scheme == "http" and private(origin.hostname)
-        if not secure or not origin.netloc or origin.query or origin.fragment or origin.username or origin.password:
-            raise ValueError("Configure the pinned HTTPS download service URL")
+        pinned = origin.scheme == "https" or origin.scheme == "http" and address(origin.hostname)
+        if not pinned or not origin.netloc or origin.query or origin.fragment or origin.username or origin.password:
+            raise ValueError("Configure the pinned download service URL: HTTPS, or HTTP at an IP address")
         self.public_url = public_url.rstrip("/")
         self.max_cache_bytes = max_cache_bytes
         self.cache.mkdir(parents=True, exist_ok=True)
