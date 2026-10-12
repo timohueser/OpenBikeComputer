@@ -206,6 +206,7 @@ struct PlannerServiceTests {
         }
         let release = try await service(local + "/planner/catalog.json").release()
         #expect(release.routing.absoluteString == local + "/a/routing")
+        #expect(release.downloads?.absoluteString == local + "/a/downloads")
         await #expect(throws: PlannerFailure.invalidData) { try await service("https://planner.test/catalog.json").release() }
         #expect(PlannerService.launchCatalog(arguments: ["app", "-OBCPlannerCatalog", local + "/planner/catalog.json"], environment: [:])
                 == URL(string: local + "/planner/catalog.json"))
@@ -262,7 +263,7 @@ private func catalogRelease(_ id: Character) -> [String: Any] {
     return ["id": String(repeating: id, count: 64), "region": "test", "bounds": [7, 47, 9, 49], "basemap": host + "/basemap.json", "places": host + "/places.json",
             "glyphs": host + "/fonts/{fontstack}/{range}.pbf", "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp",
             "terrain_attribution": "Terrain", "search": host + "/search", "routing": host + "/routing",
-            "manifest": host + "/manifest.json", "overlays": host + "/overlays.json"]
+            "manifest": host + "/manifest.json", "overlays": host + "/overlays.json", "downloads": host + "/downloads"]
 }
 
 private actor Bodies {

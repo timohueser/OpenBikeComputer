@@ -14,12 +14,13 @@ bash companion-ios/PlannerNative/test-tiles.sh
 
 ## Companion download service
 
-Use a canonical grid release from `obc planner grid`. `obc planner deploy`
-installs the download service with the online services and switches it to each
-new release before the catalogue activates that release.
+Use a canonical grid release from `obc planner grid`. Each planner release has
+its own download service beside its routing and search services: `obc data serve`
+starts them. The app calls `downloads` of the active release in the planner pointer.
+A pointer without it names the legacy service at `/planner-offline/`: the unit
+`obc-planner-downloads` on port 8790.
 
-The service uses port 8790 on loopback and the existing Caddy planner import.
-The VPS holds selection metadata; published payloads stream from R2. Inspect
-`journalctl -u obc-planner-downloads` for failures. The service evicts old
+The VPS holds selection metadata; published payloads stream from R2. On the VPS,
+`journalctl -u obc-data-serve` shows failures. The service evicts old
 selection metadata within its cache budget. A phone can select an expired
 area again. Installed maps remain usable.

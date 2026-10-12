@@ -17,6 +17,8 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let landcover_attribution: String?
     public let search: URL
     public let routing: URL
+    /// The downloads service of the release. Nil in a catalogue without one.
+    public let downloads: URL?
     public let manifest: URL
     /// The route network TileJSON.
     public let overlays: URL
@@ -28,12 +30,12 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public init(id: String, region: String, bounds: [Double], basemap: URL, places: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
                 overlays: URL, routes: String? = nil, offlineCells: [String]? = nil, attribution: String? = nil,
-                landcover_attribution: String? = nil) {
+                landcover_attribution: String? = nil, downloads: URL? = nil) {
         self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap; self.places = places
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
         self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells; self.attribution = attribution
-        self.landcover_attribution = landcover_attribution
+        self.landcover_attribution = landcover_attribution; self.downloads = downloads
     }
 
     public var isLocal: Bool { manifest.isFileURL }
@@ -266,7 +268,7 @@ public actor PlannerService: PlannerDataSource {
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
                   r.basemap.scheme == scheme, r.places.scheme == scheme, r.routing.scheme == scheme, r.manifest.scheme == scheme, r.search.scheme == scheme,
-                  r.overlays.scheme == scheme,
+                  r.overlays.scheme == scheme, r.downloads.map({ $0.scheme == scheme }) ?? true,
                   r.routes.map({ $0.hasPrefix(scheme + "://") && $0.contains("{cell}") }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix(scheme + "://") })
             else { throw PlannerFailure.invalidData }

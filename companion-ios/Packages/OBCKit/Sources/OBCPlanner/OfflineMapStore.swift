@@ -5,14 +5,19 @@ import zlib
 
 public actor OfflineMapStore {
     public let root: URL
-    private let api: URL
+    private let planner: PlannerService
     private let metadataSession: URLSession
     private let capacity: (@Sendable (URL) throws -> Int64)?
     private var installing = false
 
-    public init(root: URL, api: URL = URL(string: "https://releases.openbikecomputer.com/planner-offline/")!,
+    public init(root: URL, planner: PlannerService = .shared,
                 session: URLSession = .shared, capacity: (@Sendable (URL) throws -> Int64)? = nil) {
-        self.root = root; self.api = api; self.metadataSession = session; self.capacity = capacity
+        self.root = root; self.planner = planner; self.metadataSession = session; self.capacity = capacity
+    }
+
+    /// The downloads service of the active planner release, or the shared one when the catalogue names none.
+    private func service() async throws -> URL {
+        try await planner.release().downloads ?? URL(string: "https://releases.openbikecomputer.com/planner-offline/")!
     }
 
     public func maps() throws -> [OfflineMap] {
@@ -58,7 +63,7 @@ public actor OfflineMapStore {
     }
 
     public func coverage() async throws -> OfflineCoverage {
-        let coverage = try JSONDecoder().decode(OfflineCoverage.self, from: await get(api.appending(path: "catalog")))
+        let coverage = try JSONDecoder().decode(OfflineCoverage.self, from: await get(service().appending(path: "catalog")))
         guard coverage.format == 1, coverage.zoom == 9, OfflineMap.valid(coverage.bounds) else { throw PlannerFailure.invalidData }
         return coverage
     }
@@ -66,7 +71,8 @@ public actor OfflineMapStore {
     public func prepare(bounds: [Double], name: String,
                         status: @escaping @Sendable (Double, String) -> Void) async throws -> OfflineDownloadQuote {
         guard OfflineMap.valid(bounds) else { throw PlannerFailure.invalidData }
-        var request = URLRequest(url: api.appending(path: "jobs"))
+        let entry = try await service()
+        var request = URLRequest(url: entry.appending(path: "jobs"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["bounds": bounds])
@@ -74,7 +80,7 @@ public actor OfflineMapStore {
         struct Job: Decodable { let id: String; let state: String; let message: String?; let source: URL }
         let job = try JSONDecoder().decode(Job.self, from: await send(request))
         guard OfflineFile.validHash(job.id), job.state == "ready",
-              job.source.scheme == "https", job.source.host != nil,
+              job.source.scheme == entry.scheme, job.source.host != nil,
               job.source.user == nil, job.source.password == nil,
               job.source.query == nil, job.source.fragment == nil,
               Array(job.source.pathComponents.suffix(2)) == ["bundles", job.id] else {

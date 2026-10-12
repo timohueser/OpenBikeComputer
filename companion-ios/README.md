@@ -76,7 +76,7 @@ asynchronously rendered element instead of assuming a delay.**
 `-OBCPlannerCatalog URL` (in `OBCPlanner/PlannerService.swift`) gives a Debug build another planner
 catalogue, such as the one that `obc data serve` prints.
 
-- It changes only the online source. Installed offline maps come first (`LocalFirstPlanner`), and
-  offline downloads stay on the published service.
+- It changes only the online source. Installed offline maps come first (`LocalFirstPlanner`).
+  Offline downloads use the downloads service of the active release in that catalogue.
 - On a device, accept the Local Network alert. To answer it again, use Settings › Privacy &
   Security › Local Network.

@@ -22,7 +22,12 @@ struct OfflineMapsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [OfflineQuoteHTTP.self]
-        let store = OfflineMapStore(root: root, api: URL(string: "https://stable.test/entry")!,
+        let url = URL(string: "https://planner.test/")!
+        let release = PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: [7,47,9,49], basemap: url,
+            places: url, glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url,
+            overlays: url, downloads: URL(string: "https://stable.test/entry")!)
+        let planner = PlannerService(release: release) { _ in throw URLError(.notConnectedToInternet) }
+        let store = OfflineMapStore(root: root, planner: planner,
                                     session: URLSession(configuration: configuration), capacity: { _ in 1 << 30 })
         let quote = try await store.prepare(bounds: [7,47,9,49], name: "Pinned area") { _, _ in }
         #expect(quote.source == OfflineQuoteHTTP.source)
