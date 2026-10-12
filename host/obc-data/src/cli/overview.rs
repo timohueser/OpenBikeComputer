@@ -10,6 +10,7 @@ use super::{cells, freshness, listing, print_json, print_table, Code, Error};
 use crate::engine::runs::Limits;
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
+use crate::lock::{self, Holder};
 use crate::product::{BlockedLayer, Inputs, Product};
 use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
@@ -50,6 +51,10 @@ pub struct TargetState {
     pub at: String,
     /// What `release.json` of the target says; `null` while it serves nothing.
     pub release: Option<Serving>,
+    /// The run that holds the lock of the target; `null` while it is free.
+    pub lock: Option<Holder>,
+    /// Why `lock.json` of the target cannot be read; `null` when it can.
+    pub lock_error: Option<String>,
     /// The region of the serving release.
     pub region: Option<String>,
     /// Each layer of the steps and of the serving release; `null` while the target serves nothing
@@ -63,8 +68,9 @@ pub struct TargetState {
     pub error: Option<String>,
     /// What to do about `error`.
     pub fix: Option<String>,
-    /// The command to run next; `null` when the target serves its settings as the steps make them
-    /// now, or when no command of this `obc data` writes the target: an R2 bucket.
+    /// The command to run next, or the run to wait for while it holds the lock; `null` when the
+    /// target serves its settings as the steps make them now, or when no command of this `obc data`
+    /// writes the target: an R2 bucket.
     pub next: Option<String>,
 }
 
@@ -100,6 +106,14 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
                     rows.push(vec!["  rollback".into(), role(rollback)]);
                 }
             }
+        }
+        if let Some(holder) = &target.lock {
+            let held =
+                format!("run {} of `{}`, {}, heartbeat {}", holder.run, holder.machine, holder.phase, holder.heartbeat);
+            rows.push(vec!["  lock".into(), held]);
+        }
+        if let Some(error) = &target.lock_error {
+            rows.push(vec!["  lock".into(), format!("unreadable: {error}")]);
         }
         if let Some(region) = &target.region {
             rows.push(vec!["  region".into(), region.clone()]);
@@ -148,6 +162,8 @@ fn state(
         kind: kind.into(),
         at,
         release: None,
+        lock: None,
+        lock_error: None,
         region: None,
         layers: None,
         blocked: Vec::new(),
@@ -157,6 +173,10 @@ fn state(
         next: None,
     };
     let writes = kind == "dir";
+    match lock::holder(target) {
+        Ok(holder) => state.lock = holder,
+        Err(error) => state.lock_error = Some(error),
+    }
     let judged = (|| -> Result<(), Error> {
         let Some(bytes) = target.get(SERVING)? else {
             state.next = writes.then(|| format!("obc data update {name} --region ID"));
@@ -184,6 +204,9 @@ fn state(
     })();
     if let Err(error) = judged {
         (state.error, state.fix) = (Some(error.message), Some(error.fix));
+    }
+    if let Some(holder) = state.lock.as_ref().filter(|_| writes) {
+        state.next = Some(format!("wait for run {} of `{}` to end", holder.run, holder.machine));
     }
     state
 }

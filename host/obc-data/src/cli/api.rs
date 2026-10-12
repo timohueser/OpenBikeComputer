@@ -186,7 +186,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{overview, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, update_cli};
+    use crate::cli::{
+        overview, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
+    };
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -199,6 +201,7 @@ mod tests {
             schema("`update`", generator.subschema_for::<update_cli::Updated>()),
             schema("`update --dry-run`", generator.subschema_for::<update_cli::Review>()),
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
+            schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
             schema("`source refresh`", generator.subschema_for::<source_cli::Refreshed>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),

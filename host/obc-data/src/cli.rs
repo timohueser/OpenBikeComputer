@@ -12,6 +12,7 @@ mod runs_cli;
 mod serve_cli;
 mod setup_cli;
 mod source_cli;
+mod unlock_cli;
 mod update_cli;
 
 use std::collections::BTreeMap;
@@ -55,6 +56,16 @@ enum Command {
     /// Switch a target back to its rollback release. The release that served becomes the rollback,
     /// so a second rollback undoes the first.
     Rollback(rollback_cli::RollbackArgs),
+    /// Free the lock of a target that a stopped run of MACHINE holds: its heartbeat is older than
+    /// 10 minutes. Asks first.
+    Unlock {
+        target: String,
+        #[arg(long, value_name = "MACHINE")]
+        from: String,
+        /// Do not ask. Required without a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Every source with licence, target copy, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
@@ -137,6 +148,7 @@ fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error>
     match command {
         Command::Update(args) => update_cli::command(&root()?, products, args, json),
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
+        Command::Unlock { target, from, yes } => unlock_cli::command(&root()?, &target, &from, yes, json),
         Command::Sources { check_now } => print_sources(&root()?, check_now, json),
         Command::Source { command } => source_cli::run(&root()?, command, json),
         Command::Fetch { target, params } => {

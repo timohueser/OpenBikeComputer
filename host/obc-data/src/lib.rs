@@ -8,6 +8,7 @@ pub mod collection;
 pub mod date;
 pub mod engine;
 pub mod fetch;
+pub mod lock;
 pub mod machines;
 pub mod product;
 pub mod r2;
