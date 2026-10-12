@@ -29,6 +29,8 @@ pub struct Overview {
 pub struct Machine {
     /// `OBC_DATA_MACHINE`, or else the short host name.
     pub name: String,
+    /// The header colour of its page: `data/machines.toml`, or else the charcoal of a laptop.
+    pub colour: String,
     /// `linux` or `macos`.
     pub os: String,
     pub cores: usize,
@@ -70,8 +72,10 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
     let targets = targets.iter().map(|(name, target)| state(root, &store, &http, products, &sources, name, target));
     let limits = Limits::machine();
     let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
+    let name = crate::machine();
     let machine = Machine {
-        name: crate::machine(),
+        colour: crate::machines::colour(root, &name).map_err(|e| Code::InvalidData.error(e))?,
+        name,
         os: std::env::consts::OS.into(),
         cores: limits.jobs,
         memory_bytes: limits.memory_bytes,
