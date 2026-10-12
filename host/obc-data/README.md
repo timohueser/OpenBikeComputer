@@ -66,8 +66,8 @@ time: the run holds `lock.json` of the target, and another run refuses to start.
 or stops frees the lock. A crash or an out-of-memory kill keeps it:
 `obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
 
-`cargo test -p obc-data --test r2_live` writes `prod` in a throwaway folder `test/<time>-<pid>/`
-with the `OBC_R2_*` variables, for example from `tools/obc.local`; it skips without them.
+`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
+in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
 
 On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
 `loginctl enable-linger USER` is set for the user.

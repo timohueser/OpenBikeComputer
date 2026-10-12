@@ -1,10 +1,9 @@
 //! An R2 target against the bucket of `OBC_R2_*`, in a throwaway folder `test/<time>-<pid>/` of
-//! it: it never writes another key. Without `OBC_R2_BUCKET` it skips. On a machine that publishes,
-//! with rclone on PATH:
+//! it: it never writes another key. It writes a live bucket, so it runs only when asked, and
+//! without `OBC_R2_BUCKET` it skips. On a machine that publishes, with rclone on PATH:
 //!
 //! ```sh
-//! set -a; . tools/obc.local; set +a
-//! cargo test -p obc-data --test r2_live -- --nocapture
+//! (set -a; . tools/obc.local; set +a; cargo test -p obc-data --test r2_live -- --ignored --nocapture)
 //! ```
 //!
 //! `OBC_R2_PUBLIC` names the origin that serves the bucket; the default is the one of `prod`.
@@ -25,16 +24,17 @@ impl Drop for Throwaway {
 }
 
 fn target() -> Option<Target> {
-    if std::env::var("OBC_R2_BUCKET").map_or(true, |bucket| bucket.is_empty()) {
+    let Some(bucket) = std::env::var("OBC_R2_BUCKET").ok().filter(|bucket| !bucket.is_empty()) else {
         eprintln!("skipped: OBC_R2_BUCKET is not set");
         return None;
-    }
+    };
     let public = std::env::var("OBC_R2_PUBLIC").unwrap_or_else(|_| "https://maps.openbikecomputer.com".into());
     let prefix = format!("test/{}-{}", obc_data::date::now(), std::process::id());
-    Some(Target::R2(Remote { public, prefix }))
+    Some(Target::R2(Remote { public, bucket, prefix }))
 }
 
 #[test]
+#[ignore = "writes the R2 bucket of OBC_R2_*: run it with --ignored"]
 fn an_r2_target_writes_on_its_conditions_and_serves_a_key_with_a_hash() {
     let Some(target) = target() else { return };
     let key = "sources/test/1/a#b.txt";

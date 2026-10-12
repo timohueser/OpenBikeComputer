@@ -1226,7 +1226,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_collection_deletes_nothing_while_a_pointer_drifts_or_a_manifest_cannot_be_read() {
+    fn a_collection_deletes_nothing_while_a_pointer_drifts_a_manifest_cannot_be_read_or_the_lock_is_lost() {
         let fixture = fixture("update-collect-guards");
         let dir = fixture.scratch.0.join("local");
         let target = Target::Dir(dir.clone());
@@ -1245,6 +1245,14 @@ pub(super) mod tests {
         let unknown = late(&target);
         assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
         assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
+
+        target.remove(&unreadable).unwrap();
+        let now = crate::date::now();
+        let lost = || Err("another run took the lock".to_string());
+        let lost =
+            collection::collect(&target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &lost);
+        assert_eq!(lost.stopped.as_deref(), Some("another run took the lock"));
+        assert_eq!((lost.keys, keys(&target)), (0, before));
     }
 
     #[test]

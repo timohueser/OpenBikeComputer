@@ -49,7 +49,7 @@ pub enum Condition {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum Entry {
-    R2 { public: String, prefix: Option<String> },
+    R2 { public: String, bucket: String, prefix: Option<String> },
     Dir { dir: Option<String> },
 }
 
@@ -77,16 +77,22 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
             return Err(format!("`{name}` is not a target name: lowercase kebab-case"));
         }
         let target = match entry {
-            Entry::R2 { public, prefix } => {
+            Entry::R2 { public, bucket, prefix } => {
                 let host = public.strip_prefix("https://").unwrap_or_default();
                 if host.is_empty() || host.contains(['/', '?', '#', '@']) {
                     return Err(format!("target `{name}`: `public` is an https:// origin without a path"));
                 }
-                let prefix = prefix.unwrap_or_default();
-                if !prefix.is_empty() {
-                    crate::r2::check_key(&prefix).map_err(|e| format!("target `{name}`: `prefix`: {e}"))?;
+                if bucket.is_empty()
+                    || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                {
+                    return Err(format!("target `{name}`: `bucket` is the name of an R2 bucket"));
                 }
-                Target::R2(r2::Remote { public, prefix })
+                // A collection deletes keys of the target: a folder outside `test/` can hold live keys.
+                let prefix = prefix.unwrap_or_default();
+                if !prefix.is_empty() && (!prefix.starts_with("test/") || crate::r2::check_key(&prefix).is_err()) {
+                    return Err(format!("target `{name}`: `prefix` is a folder under `test/`"));
+                }
+                Target::R2(r2::Remote { public, bucket, prefix })
             }
             Entry::Dir { dir } => {
                 let dir = match dir {
@@ -444,24 +450,36 @@ mod tests {
     fn the_committed_targets_parse_and_a_wrong_entry_is_refused() {
         let beside = Path::new("/stores");
         let targets = parse(include_str!("../../../data/targets.toml"), Some(beside)).unwrap();
-        let prod = r2::Remote { public: "https://maps.openbikecomputer.com".into(), prefix: String::new() };
+        let prod = r2::Remote {
+            public: "https://maps.openbikecomputer.com".into(),
+            bucket: "obc-maps".into(),
+            prefix: String::new(),
+        };
         assert_eq!(targets["prod"], Target::R2(prod));
         assert_eq!(targets["local"], Target::Dir(beside.join("local")), "beside the store");
-        let folder = parse("[t]\nkind = \"r2\"\npublic = \"https://maps.example\"\nprefix = \"test/run-1\"\n", None);
-        let test = r2::Remote { public: "https://maps.example".into(), prefix: "test/run-1".into() };
+        let r2 = "kind = \"r2\"\npublic = \"https://maps.example\"\nbucket = \"maps\"\n";
+        let folder = parse(&format!("[t]\n{r2}prefix = \"test/run-1\"\n"), None);
+        let test =
+            r2::Remote { public: "https://maps.example".into(), bucket: "maps".into(), prefix: "test/run-1".into() };
         assert_eq!(folder.unwrap()["t"], Target::R2(test));
 
         for (text, error) in [
-            ("[a]\nkind = \"r2\"\npublic = \"http://maps.example\"\n", "https://"),
-            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example/x\"\n", "without a path"),
-            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\nprefix = \"test/\"\n", "`prefix`"),
-            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\nprefix = \"../x\"\n", "`prefix`"),
-            ("[a]\nkind = \"dir\"\ndir = \"/x\"\nbucket = \"b\"\n", "unknown field"),
-            ("[A]\nkind = \"dir\"\ndir = \"/x\"\n", "kebab-case"),
-            ("[a]\nkind = \"dir\"\ndir = \"x\"\n", "absolute"),
-            ("[a]\nkind = \"dir\"\ndir = \"/x\"\n[b]\nkind = \"dir\"\ndir = \"/x/b\"\n", "in the folder of target `a`"),
+            ("[a]\nkind = \"r2\"\npublic = \"http://maps.example\"\nbucket = \"maps\"\n".into(), "https://"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example/x\"\nbucket = \"maps\"\n".into(), "without a path"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\n".into(), "missing field `bucket`"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\nbucket = \"Maps/x\"\n".into(), "`bucket`"),
+            (format!("[a]\n{r2}prefix = \"test/\"\n"), "`prefix`"),
+            (format!("[a]\n{r2}prefix = \"test/../x\"\n"), "`prefix`"),
+            (format!("[a]\n{r2}prefix = \"planner\"\n"), "`prefix` is a folder under `test/`"),
+            ("[a]\nkind = \"dir\"\ndir = \"/x\"\nbucket = \"b\"\n".into(), "unknown field"),
+            ("[A]\nkind = \"dir\"\ndir = \"/x\"\n".into(), "kebab-case"),
+            ("[a]\nkind = \"dir\"\ndir = \"x\"\n".into(), "absolute"),
+            (
+                "[a]\nkind = \"dir\"\ndir = \"/x\"\n[b]\nkind = \"dir\"\ndir = \"/x/b\"\n".into(),
+                "in the folder of target `a`",
+            ),
         ] {
-            let refused = parse(text, Some(beside)).unwrap_err();
+            let refused = parse(&text, Some(beside)).unwrap_err();
             assert!(refused.contains(error), "{refused}");
         }
     }
@@ -516,14 +534,16 @@ mod tests {
         let public = format!("http://{}", listener.local_addr().unwrap());
         let router = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(&bucket));
         runtime.spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let (target, store) =
-            (Target::R2(r2::Remote { public, prefix: String::new() }), Store::at(scratch.0.join("store")));
+        let (target, store) = (
+            Target::R2(r2::Remote { public, bucket: "test".into(), prefix: String::new() }),
+            Store::at(scratch.0.join("store")),
+        );
 
         let object = target.download(key, &sha256_hex(b"pbf"), &store).unwrap().unwrap();
         assert_eq!(fs::read(object).unwrap(), b"pbf");
         assert!(target.download(key, &"0".repeat(64), &store).unwrap_err().contains("the SHA-256 is"));
         assert_eq!(target.download("objects/none", &"0".repeat(64), &store).unwrap(), None);
-        let remote = r2::Remote { public: "https://maps.example".into(), prefix: String::new() };
+        let remote = r2::Remote { public: "https://maps.example".into(), bucket: "test".into(), prefix: String::new() };
         assert_eq!(remote.url("sources/a#b/c?d"), "https://maps.example/sources/a%23b/c%3Fd");
     }
 

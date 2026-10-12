@@ -1,8 +1,8 @@
 //! `lock.json` of a target: one run at a time changes a target. A run takes the lock with a
 //! conditional write, writes a heartbeat each minute, checks that it still holds the lock just
 //! before its switch, and frees the lock at its end, also when it fails, stops or panics. A write
-//! whose condition fails means that another run took the lock: this run stops and changes nothing
-//! more.
+//! whose condition fails, while `lock.json` names another run, means that another run took the
+//! lock: this run stops and changes nothing more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -110,7 +110,7 @@ impl Held {
             heartbeat: crate::date::timestamp(now),
             progress: Vec::new(),
         };
-        match target.put(LOCK, &bytes(&LockFile::Held(holder.clone())), &condition).map_err(Refused::Failed)? {
+        match write(target, &LockFile::Held(holder.clone()), condition, run).map_err(Refused::Failed)? {
             Some(tag) => Ok(Held {
                 target: target.clone(),
                 state: Mutex::new((holder, tag)),
@@ -135,7 +135,7 @@ impl Held {
         holder.review = review.map(str::to_string).or(holder.review);
         holder.phase = phase.unwrap_or(holder.phase);
         holder.heartbeat = crate::date::timestamp(now);
-        match self.target.put(LOCK, &bytes(&LockFile::Held(holder.clone())), &Condition::Match(state.1.clone()))? {
+        match write(&self.target, &LockFile::Held(holder.clone()), Condition::Match(state.1.clone()), &holder.run)? {
             Some(tag) => *state = (holder, tag),
             None => self.lost.store(true, Ordering::Relaxed),
         }
@@ -162,9 +162,29 @@ impl Held {
         if self.lost() {
             return Ok(());
         }
-        let (_, tag) = self.state.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.target.put(LOCK, &bytes(&LockFile::Free), &Condition::Match(tag.clone()))?;
-        Ok(())
+        let (holder, tag) = self.state.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match write(&self.target, &LockFile::Free, Condition::Match(tag.clone()), &holder.run)? {
+            Some(_) => Ok(()),
+            None => Err(format!("another run changed {LOCK} before this run freed it")),
+        }
+    }
+}
+
+/// Write `lock` on `condition` for the run `run`, and give its tag; `None` when another run changed
+/// `lock.json`. The server can apply a write whose answer does not come: then a later write on the
+/// tag that the run knows fails. So after a write that failed or got no answer, `lock.json` decides.
+/// When it is `lock`, the write is done. When it names this run, the write is done again on its tag.
+fn write(target: &Target, lock: &LockFile, condition: Condition, run: &str) -> Result<Option<Tag>, String> {
+    let written = target.put(LOCK, &bytes(lock), &condition);
+    if let Ok(Some(tag)) = written {
+        return Ok(Some(tag));
+    }
+    match read(target)? {
+        Some((now, tag)) if now == *lock => Ok(Some(tag)),
+        Some((LockFile::Held(holder), tag)) if holder.machine == crate::machine() && holder.run == run => {
+            target.put(LOCK, &bytes(lock), &Condition::Match(tag))
+        }
+        _ => written,
     }
 }
 
@@ -187,9 +207,9 @@ pub fn stale_at(holder: &Holder) -> u64 {
 /// when the server got the last heartbeat on an R2 target.
 pub fn stale_since(target: &Target, holder: &Holder) -> Result<(u64, u64), String> {
     let Target::R2(remote) = target else { return Ok((stale_at(holder), crate::date::now())) };
-    let (head, now) = remote.writer()?.head(LOCK)?;
-    let head = head.ok_or_else(|| format!("{LOCK} is gone"))?;
-    Ok((head.modified.saturating_add(STALE), now))
+    let (modified, now) = remote.writer()?.head(LOCK)?;
+    let modified = modified.ok_or_else(|| format!("{LOCK} is gone"))?;
+    Ok((modified.saturating_add(STALE), now))
 }
 
 /// Free the lock of `target` that has the tag `tag`.
@@ -211,6 +231,34 @@ pub fn held_by(holder: &Holder) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Give `lock.json` the holder of `holder` with `edit`, as a write whose answer did not come.
+    fn applied(target: &Target, edit: impl FnOnce(&mut Holder)) {
+        let Some((LockFile::Held(mut holder), _)) = read(target).unwrap() else { panic!("free") };
+        edit(&mut holder);
+        target.put(LOCK, &bytes(&LockFile::Held(holder)), &Condition::Any).unwrap();
+    }
+
+    #[test]
+    fn a_write_that_the_server_applied_without_an_answer_keeps_the_lock_and_another_run_does_not() {
+        let fixture = crate::engine::tests::fixture("lock-applied");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let held = Held::take(&target, "one", 0).unwrap();
+        applied(&target, |holder| holder.heartbeat = crate::date::timestamp(60));
+        assert!(held.beat(None, None, 120).unwrap(), "lock.json names this run");
+        let Some((LockFile::Held(holder), _)) = read(&target).unwrap() else { panic!("free") };
+        assert_eq!(holder.heartbeat, crate::date::timestamp(120));
+        applied(&target, |holder| holder.heartbeat = crate::date::timestamp(180));
+        held.release().unwrap();
+        assert_eq!(read(&target).unwrap().unwrap().0, LockFile::Free);
+
+        let held = Held::take(&target, "two", 0).unwrap();
+        applied(&target, |holder| holder.run = "three".into());
+        let refused = held.release().unwrap_err();
+        assert_eq!(refused, "another run changed lock.json before this run freed it");
+        let Some((LockFile::Held(holder), _)) = read(&target).unwrap() else { panic!("free") };
+        assert_eq!(holder.run, "three");
+    }
 
     #[test]
     fn a_lock_that_a_run_drops_without_release_is_free() {

@@ -3,6 +3,7 @@
 //! Signature Version 4 and with a conditional write, and the files of a release with rclone
 //! ([`crate::r2::Bucket`]). A target can be a folder of its bucket, such as a test.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -10,23 +11,17 @@ use sha2::{Digest, Sha256};
 use super::{Account, Bucket, Credentials};
 use crate::target::{Condition, Tag};
 
-/// An R2 target: the origin that serves the keys of its bucket, and the folder of the target.
+/// An R2 target: the origin that serves the keys of its bucket, the bucket, and the folder of the
+/// target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Remote {
     /// `https://` and a host, without a path.
     pub public: String,
+    /// The bucket, which `OBC_R2_BUCKET` must name to write it.
+    pub bucket: String,
     /// The folder of the bucket that holds the target, without `/` at either end; empty for the
     /// root of the bucket.
     pub prefix: String,
-}
-
-/// The size, tag and time of an object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Head {
-    pub size: u64,
-    pub tag: Tag,
-    /// `Last-Modified`, in seconds since 1970: the time of the server.
-    pub modified: u64,
 }
 
 impl Remote {
@@ -40,19 +35,23 @@ impl Remote {
 
     /// The public URL of `key`: each part of the key percent-encoded, so `#` is no fragment.
     pub fn url(&self, key: &str) -> String {
-        format!("{}/{}", self.public, encode(&self.key(key), false))
+        format!("{}/{}", self.public, encode(&self.key(key)))
     }
 
-    /// The writer of the target, with the credentials of `OBC_R2_*`.
+    /// The writer of the target, with the credentials of `OBC_R2_*`. Credentials of another bucket
+    /// are refused: they would write the release of another target.
     pub fn writer(&self) -> Result<Writer, String> {
-        let account = Account::from_env(Credentials::Main)?;
-        let agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .user_agent(concat!("OpenBikeComputer obc-data/", env!("CARGO_PKG_VERSION")))
-            .timeout_global(Some(Duration::from_secs(60)))
-            .build()
-            .into();
-        Ok(Writer { remote: self.clone(), account, agent })
+        self.writing(Account::from_env(Credentials::Main)?)
+    }
+
+    fn writing(&self, account: Account) -> Result<Writer, String> {
+        if account.bucket != self.bucket {
+            return Err(format!(
+                "OBC_R2_BUCKET is `{}`, and the target is the bucket `{}`",
+                account.bucket, self.bucket
+            ));
+        }
+        Ok(Writer { remote: self.clone(), account })
     }
 }
 
@@ -60,7 +59,19 @@ impl Remote {
 pub struct Writer {
     remote: Remote,
     account: Account,
-    agent: ureq::Agent,
+}
+
+/// The client of the S3 API: one for the process, so that its connections stay open.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .user_agent(concat!("OpenBikeComputer obc-data/", env!("CARGO_PKG_VERSION")))
+            .timeout_global(Some(Duration::from_secs(60)))
+            .build()
+            .into()
+    })
 }
 
 impl Writer {
@@ -78,22 +89,18 @@ impl Writer {
         }
     }
 
-    /// The object at `key`, or `None`, and the time of the server.
-    pub fn head(&self, key: &str) -> Result<(Option<Head>, u64), String> {
+    /// When the server last wrote `key`, or `None` when the bucket has no such key, and the time of
+    /// the server: seconds since 1970 by the clock of the server.
+    pub fn head(&self, key: &str) -> Result<(Option<u64>, u64), String> {
         let response = self.send("HEAD", key, Vec::new(), &[])?;
-        let date = header(&response, "date").and_then(|date| crate::date::http_seconds(&date));
-        let date = date.ok_or_else(|| format!("R2 HEAD {key}: no Date"))?;
+        let seconds = |name: &str| header(&response, name).and_then(|value| crate::date::http_seconds(&value));
+        let date = seconds("date").ok_or_else(|| format!("R2 HEAD {key}: no Date"))?;
         match response.status().as_u16() {
             404 => Ok((None, date)),
-            200 => {
-                let size = header(&response, "content-length").and_then(|size| size.parse().ok());
-                let modified = header(&response, "last-modified").and_then(|time| crate::date::http_seconds(&time));
-                let tag = tag(&response);
-                let (Some(size), Some(modified), Some(tag)) = (size, modified, tag) else {
-                    return Err(format!("R2 HEAD {key}: no Content-Length, Last-Modified or ETag"));
-                };
-                Ok((Some(Head { size, tag, modified }), date))
-            }
+            200 => match seconds("last-modified") {
+                Some(modified) => Ok((Some(modified), date)),
+                None => Err(format!("R2 HEAD {key}: no Last-Modified")),
+            },
             _ => Err(failed("HEAD", key, response)),
         }
     }
@@ -101,13 +108,16 @@ impl Writer {
     /// Write `bytes` at `key` when `condition` holds, and give their tag. `None` when it does not
     /// hold: nothing changed.
     pub fn put(&self, key: &str, bytes: &[u8], condition: &Condition) -> Result<Option<Tag>, String> {
-        let mut headers = vec![("cache-control".to_string(), cache_control(key).to_string())];
+        let mut headers = vec![
+            ("cache-control".to_string(), cache_control(key).to_string()),
+            ("content-type".to_string(), content_type(key).to_string()),
+        ];
         headers.extend(precondition(condition));
         let response = self.send("PUT", key, headers, bytes)?;
         match response.status().as_u16() {
-            // A key that holds bytes for `Absent` can also answer 409 while another write runs.
-            412 | 409 => Ok(None),
-            200 => tag(&response).map(Some).ok_or_else(|| format!("R2 PUT {key}: no ETag")),
+            200..=299 => tag(&response).map(Some).ok_or_else(|| format!("R2 PUT {key}: no ETag")),
+            // Only a failed condition answers 412; any other answer is an error.
+            412 if *condition != Condition::Any => Ok(None),
             _ => Err(failed("PUT", key, response)),
         }
     }
@@ -140,7 +150,7 @@ impl Writer {
             builder = builder.header(name, value);
         }
         let request = builder.body(body.to_vec()).map_err(|e| format!("R2 {method} {key}: {e}"))?;
-        self.agent.run(request).map_err(|e| format!("R2 {method} {key}: {e}"))
+        agent().run(request).map_err(|e| format!("R2 {method} {key}: {e}"))
     }
 }
 
@@ -162,7 +172,7 @@ fn request(
     now: u64,
 ) -> Signed {
     let host = account.endpoint.trim_start_matches("https://").trim_end_matches('/');
-    let path = format!("/{}/{}", encode(&account.bucket, false), encode(key, false));
+    let path = format!("/{}/{}", encode(&account.bucket), encode(key));
     let time = crate::date::timestamp(now).replace(['-', ':'], "");
     let payload = hex(&Sha256::digest(payload));
     headers.extend([
@@ -232,14 +242,13 @@ fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
     Sha256::new().chain_update(padded(0x5c)).chain_update(inner).finalize().into()
 }
 
-/// `text` with each byte but `A-Z a-z 0-9 - _ . ~` percent-encoded, as S3 and a URL need it: also
-/// `/` when `slash`.
-fn encode(text: &str, slash: bool) -> String {
+/// The path `text` with each byte but `A-Z a-z 0-9 - _ . ~ /` percent-encoded, as S3 and a URL
+/// need it.
+fn encode(text: &str) -> String {
     let mut encoded = String::new();
     for byte in text.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => encoded.push(byte as char),
-            b'/' if !slash => encoded.push('/'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => encoded.push(byte as char),
             _ => encoded += &format!("%{byte:02X}"),
         }
     }
@@ -269,6 +278,14 @@ fn cache_control(key: &str) -> &'static str {
         crate::release::SERVING | crate::release::NEXT | crate::lock::LOCK => "no-store",
         key if crate::release::POINTERS.contains(&key) => "public, max-age=60, must-revalidate",
         _ => IMMUTABLE,
+    }
+}
+
+/// The media type of a key: each document that `put` writes is JSON.
+fn content_type(key: &str) -> &'static str {
+    match key.ends_with(".json") {
+        true => "application/json",
+        false => "application/octet-stream",
     }
 }
 
@@ -351,7 +368,7 @@ mod tests {
             ),
             (
                 "get-utf8",
-                signature("GET", &format!("/{}", encode("ሴ", false)), "", &headers(&[]), &empty),
+                signature("GET", &format!("/{}", encode("ሴ")), "", &headers(&[]), &empty),
                 "8318018e0b0f223aa2bbf98705b62bb787dc9c0e678f255a891fd03141be5d85",
             ),
             (
@@ -406,7 +423,12 @@ mod tests {
             access_key_id: "AKID".into(),
             secret_access_key: "secret".into(),
         };
-        let remote = Remote { public: "https://maps.example".into(), prefix: "test/run-1".into() };
+        let remote =
+            Remote { public: "https://maps.example".into(), bucket: "maps".into(), prefix: "test/run-1".into() };
+        let other = Remote { bucket: "maps-live".into(), ..remote.clone() };
+        let refused = other.writing(account.clone()).err().unwrap();
+        assert_eq!(refused, "OBC_R2_BUCKET is `maps`, and the target is the bucket `maps-live`");
+        assert!(remote.writing(account.clone()).is_ok());
         let key = remote.key("sources/head/1/a#b c.txt");
         assert_eq!(key, "test/run-1/sources/head/1/a#b c.txt");
         assert_eq!(
@@ -427,5 +449,6 @@ mod tests {
         assert_eq!(cache_control("lock.json"), "no-store");
         assert_eq!(cache_control("planner/next.json"), "no-store");
         assert_eq!(cache_control("objects/ab"), IMMUTABLE);
+        assert_eq!(content_type("releases/ab.json"), "application/json");
     }
 }

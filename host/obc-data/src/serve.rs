@@ -700,8 +700,11 @@ mod tests {
             let (runtime, gets) = (tokio::runtime::Runtime::new().unwrap(), Arc::<Mutex<Vec<String>>>::default());
             let Target::Dir(dir) = &case.target else { unreachable!("a dir target") };
             std::fs::create_dir_all(dir).unwrap();
-            case.reader =
-                Target::R2(crate::r2::Remote { public: bucket(&runtime, dir, gets.clone()), prefix: String::new() });
+            case.reader = Target::R2(crate::r2::Remote {
+                public: bucket(&runtime, dir, gets.clone()),
+                bucket: "test".into(),
+                prefix: String::new(),
+            });
             let programs = services::Programs::reading(vec![("routing", "test".into(), 1)]);
             case.install = Some((case.scratch.0.join("store"), Arc::new(programs)));
             let view = http::Shared::default();

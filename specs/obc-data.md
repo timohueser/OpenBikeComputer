@@ -955,7 +955,8 @@ One table per target. The name of the table is the name of the target, in lowerc
 | --- | --- | --- |
 | `kind` | string | `r2` or `dir` |
 | `public` | string | `r2` only: the `https://` origin that serves the keys of the bucket, without a path |
-| `prefix` | string | `r2` only, optional: the folder of the bucket that holds the target, such as `test/run-1`, without `/` at either end. Without it, the root of the bucket |
+| `bucket` | string | `r2` only: the name of the bucket. `OBC_R2_BUCKET` must name it to write the target |
+| `prefix` | string | `r2` only, optional: the folder under `test/` of the bucket that holds the target, such as `test/run-1`, without `/` at the end. Without it, the root of the bucket. A collection deletes keys of the target, and a folder outside `test/` can hold live keys |
 | `dir` | string | `dir` only, optional: an absolute path, or a path that starts with `~/` for the home directory. Without it, the folder with the name of the target beside the store |
 
 The file has `prod`, the public bucket, and `local`, a folder on each machine. A `dir` target and
@@ -964,11 +965,15 @@ target.
 
 `obc data` reads an R2 target through the S3 API when it has the credentials, because the public
 origin can serve a cached pointer. Else, and always in [serve](#serve), it reads through the public
-URL, with each part of a key percent-encoded, so a `#` in a key under `sources/` is no fragment. It writes an R2 target with
-the credentials of `OBC_R2_*` (see [Credentials](#credentials)), which a tagged read and a review
-also need: a small document through the S3 API, signed with AWS Signature Version 4, and the
-files of a release with rclone. A command that writes an R2 target without these variables
-refuses (`blocked`).
+URL, with each part of a key percent-encoded, so a `#` in a key under `sources/` is no fragment.
+
+`obc data` writes an R2 target with the credentials of `OBC_R2_*` (see [Credentials](#credentials)):
+a small document through the S3 API, signed with AWS Signature Version 4, and the files of a
+release with rclone. `OBC_R2_BUCKET` must be the `bucket` of the target. A command that writes an
+R2 target without these variables or without rclone refuses (`blocked`). A tagged read and a
+review need the credentials too: the review id holds the tag of `release.json`, which is the ETag
+of the S3 API, and the public origin can give another form of it, such as the weak ETag of a
+compressed answer.
 
 ### Target layout
 
@@ -1064,10 +1069,12 @@ bytes. A key can be a hard link to an object of the store: nothing writes a key 
 place.
 
 On an R2 target the tag is the ETag. A conditional write is a PUT with `If-None-Match: *` for an
-absent key, or `If-Match: <tag>`, and HTTP 412 says that the condition fails. `release.json`,
-`planner/next.json` and `lock.json` get `Cache-Control: no-store`, a pointer `public, max-age=60,
-must-revalidate`, and every other key `public, max-age=31536000, immutable`. After the upload and before the switch,
-each key of the release must be on the target with its size, else nothing switches.
+absent key, or `If-Match: <tag>`. Only HTTP 412 says that the condition fails; another answer
+that is not 2xx is an error. `release.json`, `planner/next.json` and `lock.json` get
+`Cache-Control: no-store`, a pointer `public, max-age=60, must-revalidate`, and every other key
+`public, max-age=31536000, immutable`. A document is `application/json`. After the upload and
+before the switch, each key of the release must be on the target with its size, else nothing
+switches.
 
 Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
 `planner/releases/` and `reference/v1/`. An update and a rollback never write or delete them.
@@ -1097,11 +1104,13 @@ it.
   of each phase, on the condition of the tag of its last write. `review` is `null` until the run
   has its review. The run makes its review after it takes the lock, so `--expect` compares the
   id of the target that the lock keeps.
-- When a write fails its condition, another run took the lock. Then the run stops and changes
-  nothing more. The write at the start of the phase `switch` checks this immediately before the
+- The server can apply a write whose answer does not come, so a later write on the old tag fails.
+  After a write that fails or gets no answer, the run reads `lock.json`: when it is what the run
+  wrote, the write is done; when it names this run on this machine, the run writes again on its
+  tag. Else another run took the lock: the run stops and changes nothing more. The write at the start of the phase `switch` checks this immediately before the
   switch. After the switch, a lost lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
+  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
   frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps

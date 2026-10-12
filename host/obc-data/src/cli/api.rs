@@ -156,14 +156,23 @@ pub(super) fn start_run(store: &crate::store::Store, args: &[&str]) -> Result<cr
     Ok(run)
 }
 
-/// Refuse a command that writes the R2 target `name` without the credentials of `OBC_R2_*`.
+/// Refuse a command that writes the R2 target `name` without the credentials of its bucket in
+/// `OBC_R2_*`, or without rclone, which writes the files of a release.
 pub(super) fn writable(name: &str, target: &crate::target::Target) -> Result<(), Error> {
     let crate::target::Target::R2(remote) = target else { return Ok(()) };
-    remote.writer().map(drop).map_err(|e| {
+    remote.writer().map_err(|e| {
         Code::Blocked.error(format!("target `{name}` is an R2 bucket: {e}")).fix(
             "Set the `OBC_R2_*` variables of the bucket: `tools/obc.local` holds them on a machine that publishes.",
         )
-    })
+    })?;
+    let quiet = std::process::Stdio::null;
+    let rclone = std::process::Command::new("rclone").arg("version").stdout(quiet()).stderr(quiet()).status();
+    if !rclone.is_ok_and(|status| status.success()) {
+        return Err(Code::Blocked
+            .error(format!("target `{name}` is an R2 bucket, and rclone is not on PATH"))
+            .fix("Install rclone: `obc data setup` shows how."));
+    }
+    Ok(())
 }
 
 /// The rule of every command that asks: it asks in a terminal. Without a terminal it needs `--yes`.
