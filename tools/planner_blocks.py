@@ -10,7 +10,7 @@ from . import planner_runtime
 from .planner_grid_maps import MAP_ZOOM, map_kinds, map_tiles
 from .planner_grid import ZOOM, tile, intersects, cells
 from .planner_grid_search import search_lookup, search_shard
-from .planner_grid_fonts import LABEL_KEYS, label_texts, glyph_ranges, offline_fonts
+from .planner_grid_fonts import LABEL_KEYS, label_texts, archive_texts, glyph_ranges, offline_fonts
 
 
 def stage_sqlite(path, build):

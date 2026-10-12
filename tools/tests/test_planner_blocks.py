@@ -2,11 +2,10 @@
 
 import json
 from pathlib import Path
-import sqlite3
 import tempfile
 import unittest
 
-from tools import planner_blocks as blocks
+from tools import planner_blocks as blocks, planner_grid_fonts as fonts
 
 
 def varint(value):
@@ -20,33 +19,37 @@ def field(number, payload):
     return varint(number << 3 | 2) + varint(len(payload)) + payload
 
 
-def release(source, name, kind="", ref="", poi=""):
-    """Write a one-tile basemap with one feature and an overlay database with one route."""
+def tile(layer, tags):
+    """A vector tile with one layer `layer` and one feature with `tags`."""
+    packed = bytes(index for number in range(len(tags)) for index in (number, number))
+    return field(3, field(1, layer) + field(2, field(2, packed)) + b"".join(field(3, key.encode()) for key in tags)
+                 + b"".join(field(4, field(1, value.encode())) for value in tags.values()))
+
+
+def archives(source, name, kind="", ref="", route="", poi=""):
+    """Write one-tile basemap, places and overlay grid archives with one feature each, and return
+    their directory."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
-    layer = (field(1, b"places") + field(2, field(2, bytes([0, 0, 1, 1]))) + field(3, b"name") + field(3, b"kind")
-             + field(4, field(1, name.encode())) + field(4, field(1, kind.encode())))
-    (source / "maps").mkdir()
-    for archive in ("basemap", "places"):
-        with write(source / f"maps/{archive}.pmtiles") as writer:
-            writer.write_tile(zxy_to_tileid(0, 0, 0), field(3, layer if archive == "basemap" else field(1, b"pois") + field(2, field(2, bytes([0, 0]))) + field(3, b"name") + field(4, field(1, poi.encode()))))
+    tiles = {"basemap": tile(b"places", {"name": name, "kind": kind}), "places": tile(b"pois", {"name": poi}),
+             "overlays": tile(b"cycling", {"ref": ref, "name": route})}
+    for archive, data in tiles.items():
+        (source / "maps/tiles" / archive).mkdir(parents=True)
+        with write(source / f"maps/tiles/{archive}/0-0-0.pmtiles") as writer:
+            writer.write_tile(zxy_to_tileid(0, 0, 0), data)
             writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
                              "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
                              "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
-    (source / "routing").mkdir()
-    db = sqlite3.connect(source / "routing/overlays.sqlite")
-    db.executescript("CREATE TABLE attributes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);"
-                     "CREATE TABLE routes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);")
-    db.execute("INSERT INTO routes VALUES (1, ?)", (json.dumps({"ref": ref}),))
-    db.commit(); db.close()
+    return source / "maps/tiles"
 
 
 class OfflineFonts(unittest.TestCase):
     def test_joined_stack_keeps_only_the_ranges_of_label_text(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
-            # `kind` is no label field, so its Cyrillic value adds no range.
-            release(source, "Zähringen–Nord", kind="город", ref="Westweg →")
+            # `kind` is no label field and the network labels draw no route name, so their Cyrillic
+            # values add no range.
+            tiles = archives(source, "Zähringen–Nord", kind="город", ref="Westweg →", route="Маршрут")
             files = {}
             for name, data in {"0-255": b"A", "256-511": b"B", "1024-1279": b"C", "8192-8447": b"D", "8448-8703": b"E"}.items():
                 path = source / f"maps/assets/fonts/Noto Sans Regular/{name}.pbf"
@@ -54,7 +57,8 @@ class OfflineFonts(unittest.TestCase):
                 path.write_bytes(data)
                 files[path.relative_to(source).as_posix()] = {}
             files["maps/assets/fonts/OFL.txt"] = {}
-            joined = blocks.offline_fonts(source, {"files": files}, source / "work")
+            ranges = fonts.glyph_ranges(fonts.map_texts(tiles))
+            joined = fonts.offline_fonts(ranges, source, files, source / "work")
             path, names = next(iter(joined.items()))
             self.assertEqual(len(joined), 1)
             self.assertEqual(path.read_bytes(), b"ADE")
@@ -62,10 +66,9 @@ class OfflineFonts(unittest.TestCase):
 
     def test_ranges_cover_uppercase_and_arabic_presentation_forms(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary)
             # µ and ÿ upper-case to U+039C and U+0178; Persian letters shape into U+FB50-U+FEFF.
-            release(source, "µÿ", poi="چای")
-            self.assertEqual(blocks.glyph_ranges(source), {0, 1, 3, 6, 251, 252, 253, 254})
+            tiles = archives(Path(temporary), "µÿ", poi="چای")
+            self.assertEqual(fonts.glyph_ranges(fonts.map_texts(tiles)), {0, 1, 3, 6, 251, 252, 253, 254})
 
 
 class RouteTiles(unittest.TestCase):
