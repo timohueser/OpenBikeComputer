@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Prepare wiki</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #4a2a6a; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #b9a4cf; border-radius: 999px">This page runs on <b>hetzner-bake-1</b></span>
+<span style="color: #e6dcf0">Linux · 32 cores · 128 GB RAM · store 3.1 TB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #ffffff; font-weight: 600">{{runsHere}}</span>
+<span style="color: #e6dcf0">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProd.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Sources</a>
+<a href="Run.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<a href="Sources.dc.html" style="color: #1d4ed8">Sources</a><span aria-hidden="true">›</span>
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">Prepare a new wiki version</h1>
+</div>
+<span style="color: #4a4a46; margin-top: -8px">One long job builds a version from the Wikimedia dumps and publishes it to R2. Every bake after that reads the version and makes no Wikimedia requests.</span>
+
+<sc-if value="{{isForm}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Inputs" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Inputs</h2>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px; border-bottom: 1px solid #ececea"><b style="flex: 1 1 260px">Wikidata JSON dump</b><span>2026-11-25</span><span>142 GB</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px; border-bottom: 1px solid #ececea"><b style="flex: 1 1 260px">Wikipedia Enterprise HTML</b><span>2026-11-20</span><span>61 GB</span><span style="color: #2e6b4a">✓ token</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px; border-bottom: 1px solid #ececea"><b style="flex: 1 1 260px">Wikipedia SQL tables</b><span>2026-11-20</span><span>9 GB</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; min-height: 40px"><b style="flex: 1 1 260px">Commons photos</b><span>API, only for selected subjects, 4 requests/s</span></div>
+<fieldset style="margin: 8px 0 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 4px 16px">
+<legend style="padding: 0 0 6px; font-weight: 600">Article languages</legend>
+<label style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px"><input type="checkbox" checked="{{yes}}"> de</label>
+<label style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px"><input type="checkbox" checked="{{yes}}"> en</label>
+<label style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px"><input type="checkbox" checked="{{yes}}"> fr</label>
+<label style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px"><input type="checkbox" checked="{{yes}}"> it</label>
+<label style="display: inline-flex; align-items: center; gap: 6px; min-height: 40px"><input type="checkbox"> rm</label>
+</fieldset>
+<span><b>Subjects</b> · every OSM object with a wikidata tag, on the whole planet: about 2.9 million. One version serves every target.</span>
+</section>
+
+<section aria-label="Review" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Review</h2>
+<span><b>Makes</b> · wiki 2026-11-25 in R2, about 38 GB (index 6 GB, bundles 9 GB, photos 23 GB)</span>
+<span><b>Cost</b> · about 14 h here · 212 GB download</span>
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: #edf6f0; border: 1px solid #2e6b4a; border-radius: 8px"><b>Machine check</b><span>✓ Fits: peak disk about 480 GB of 3.1 TB · RAM about 24 of 128 GB</span></div>
+<span><b>After</b> · prod and local still use their versions. They become stale, and you choose when to update them.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">obc data source prepare wiki --languages de,en,fr,it</code>
+<button type="button" onClick="{{start}}" style="align-self: flex-start; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Start on hetzner-bake-1</button>
+</section>
+
+</div>
+</sc-if>
+
+<sc-if value="{{isRunning}}" hint-placeholder-val="{{false}}">
+<ol aria-label="Phases" style="list-style: none; margin: 0; padding: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px"><b>✓ Download dumps</b><br><span style="font-size: 13px; color: #2e6b4a">2 h 10 min · 212 GB</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #e8efff; border: 2px solid #1d4ed8; border-radius: 8px"><b>◐ Build index</b><br><span style="font-size: 13px; color: #1d3a9c">40% · 1.2 M of 2.9 M subjects</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Fetch photos</b><br><span style="font-size: 13px; color: #5f5f5a">about 6 h at 4 requests/s</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Publish to R2</b><br><span style="font-size: 13px; color: #5f5f5a">about 38 GB</span></span></li>
+</ol>
+<section aria-label="When it finishes" style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">When it finishes</h2>
+<span>wiki 2026-11-25 shows in Sources. In every target that uses an older version, these layers become stale: <b>device/landmarks</b>, <b>planner/search</b>, and what follows them (device/catalog, planner/places, planner/index).</span>
+<span style="color: #4a4a46">Closing this page does not stop the job. A stopped job keeps its downloads and resumes.</span>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<button type="button" onClick="{{back}}" style="min-height: 44px; padding: 0 16px; background: #ffffff; color: #8a1c12; border: 1px solid #8a1c12; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Stop…</button>
+</div>
+</section>
+</sc-if>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1200}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { running: false };
+  }
+  renderVals() {
+    const running = this.state.running;
+    return {
+      yes: true,
+      isForm: !running,
+      isRunning: running,
+      runsHere: running ? 'Runs here: prepare wiki · Build index 40%' : 'Runs here: none',
+      start: () => this.setState({ running: true }),
+      back: () => this.setState({ running: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

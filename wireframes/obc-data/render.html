@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBC data wireframe</title>
+</head>
+<body>
+<script>
+// Renders one screens/*.dc.html wireframe: {{holes}}, <sc-for>, <sc-if>, on* handlers and
+// a `class Component extends DCLogic` script. It supports only what these screens use.
+const HOLE = /\{\{\s*([^}]+?)\s*\}\}/g;
+const WHOLE = /^\{\{\s*([^}]+?)\s*\}\}$/;
+const BOOLEAN_PROPS = new Set(['checked', 'disabled', 'selected']);
+let template = null;
+let instance = null;
+
+class DCLogic {
+  constructor(props) { this.props = props || {}; this.state = {}; }
+  setState(patch) { this.state = Object.assign({}, this.state, patch); render(); }
+  forceUpdate() { render(); }
+}
+
+function lookup(path, scope) {
+  if (path === 'true') return true;
+  if (path === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(path)) return Number(path);
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), scope);
+}
+
+function fill(text, scope) {
+  return text.replace(HOLE, (_, p) => { const v = lookup(p, scope); return v == null ? '' : String(v); });
+}
+
+function renderChildren(node, scope) {
+  const out = [];
+  node.childNodes.forEach((c) => out.push(...renderNode(c, scope)));
+  return out;
+}
+
+function renderNode(node, scope) {
+  if (node.nodeType === Node.TEXT_NODE) return [document.createTextNode(fill(node.textContent, scope))];
+  if (node.nodeType !== Node.ELEMENT_NODE) return [];
+  const tag = node.localName;
+  if (tag === 'sc-for') {
+    const list = lookup(node.getAttribute('list').match(WHOLE)[1], scope) || [];
+    const as = node.getAttribute('as') || 'item';
+    const out = [];
+    list.forEach((item, i) => {
+      const s = Object.create(scope);
+      s[as] = item;
+      s.$index = i;
+      out.push(...renderChildren(node, s));
+    });
+    return out;
+  }
+  if (tag === 'sc-if') {
+    return lookup(node.getAttribute('value').match(WHOLE)[1], scope) ? renderChildren(node, scope) : [];
+  }
+  const el = document.createElementNS(node.namespaceURI, tag);
+  for (const { name, value } of Array.from(node.attributes)) {
+    if (name.startsWith('hint-')) continue;
+    const whole = value.match(WHOLE);
+    if (name.startsWith('on') && whole) {
+      const fn = lookup(whole[1], scope);
+      if (typeof fn === 'function') el.addEventListener(name.slice(2), fn);
+    } else if (whole) {
+      const v = lookup(whole[1], scope);
+      if (BOOLEAN_PROPS.has(name)) { el[name] = !!v; if (v) el.setAttribute(name, ''); }
+      else el.setAttribute(name, v == null ? '' : String(v));
+    } else {
+      el.setAttribute(name, fill(value, scope));
+    }
+  }
+  renderChildren(node, scope).forEach((c) => el.appendChild(c));
+  return [el];
+}
+
+function render() {
+  document.body.replaceChildren(...renderChildren(template, instance.renderVals()));
+}
+
+async function load(screen) {
+  const text = await (await fetch('screens/' + screen)).text();
+  const doc = new DOMParser().parseFromString(text, 'text/html');
+  const root = doc.querySelector('x-dc');
+  const helmet = root.querySelector('helmet');
+  if (helmet) {
+    Array.from(helmet.children).forEach((c) => document.head.appendChild(document.importNode(c, true)));
+    helmet.remove();
+  }
+  document.title = doc.title;
+  const code = doc.querySelector('script[data-dc-script]').textContent;
+  const Component = new Function('DCLogic', code + '\nreturn Component;')(DCLogic);
+  template = root;
+  instance = new Component({});
+  render();
+}
+
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href$=".dc.html"]');
+  if (!a) return;
+  e.preventDefault();
+  location.search = '?screen=' + encodeURIComponent(a.getAttribute('href'));
+});
+
+load(new URLSearchParams(location.search).get('screen') || 'Main.dc.html');
+</script>
+</body>
+</html>

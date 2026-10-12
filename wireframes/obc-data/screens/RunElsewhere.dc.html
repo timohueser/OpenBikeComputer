@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Run seen from laptop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<a href="RunElsewhere.dc.html" style="color: #ffffff; font-weight: 600">Elsewhere: hetzner-bake-1 · update prod · Bake 62%</a>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">update prod</h1>
+<span style="padding: 2px 12px; background: #4a2a6a; color: #ffffff; border-radius: 999px">on hetzner-bake-1</span>
+<span style="color: #4a4a46">started 09:31 · last heartbeat 40 s ago</span>
+</div>
+
+<section aria-label="Read only" style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 16px 20px; background: #ffffff; border: 2px solid #4a2a6a; border-radius: 12px">
+<span style="flex: 1 1 420px; min-width: 0">You can watch this run here. To stop it or read its log, open the page of <b>hetzner-bake-1</b>.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px">obc data open hetzner-bake-1</code>
+<span style="color: #4a4a46; font-size: 14px">= ssh -L 8701:localhost:8700 hetzner-bake-1, then http://localhost:8701</span>
+</section>
+
+<ol aria-label="Phases" style="list-style: none; margin: 0; padding: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px"><b>✓ Fetch</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #e8efff; border: 2px solid #1d4ed8; border-radius: 8px"><b>◐ Bake 62%</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Verify</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Upload</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Router ready</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Switch</b></span></li>
+</ol>
+
+<section aria-label="Layers" style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Layers in this run</h2>
+<sc-for list="{{layers}}" as="l" hint-placeholder-count="6">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><b style="flex: 1 1 auto">{{l.name}}</b><span style="color: {{l.tone}}">{{l.status}}</span></div>
+<div style="height: 10px; background: #ececea; border-radius: 5px; overflow: hidden"><div style="height: 10px; width: {{l.pct}}; background: {{l.bar}}"></div></div>
+</div>
+</sc-for>
+<span style="color: #4a4a46; font-size: 14px">From prod/lock.json in R2. It updates each minute. prod does not change until Switch.</span>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const L = [
+      ['device/landmarks', 'done', '100%', '#2e6b4a', '#2e6b4a'],
+      ['device/map', '812 of 1 284 cells', '63%', '#1d3a9c', '#3b63c9'],
+      ['planner/search', '40%', '40%', '#1d3a9c', '#3b63c9'],
+      ['device/catalog', 'waits', '0%', '#5f5f5a', '#b4b4ae'],
+      ['planner/places', 'waits', '0%', '#5f5f5a', '#b4b4ae'],
+      ['planner/index', 'waits', '0%', '#5f5f5a', '#b4b4ae']
+    ];
+    return { layers: L.map((l) => ({ name: l[0], status: l[1], pct: l[2], tone: l[3], bar: l[4] })) };
+  }
+}
+</script>
+</body>
+</html>

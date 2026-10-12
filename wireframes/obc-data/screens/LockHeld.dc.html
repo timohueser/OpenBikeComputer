@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · prod is locked</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<a href="RunElsewhere.dc.html" style="color: #ffffff; font-weight: 600">Elsewhere: hetzner-bake-1 · update prod · Bake 62%</a>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · release 7f3a, 3 days ago</span>
+</div>
+
+<section aria-label="Update" style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Update prod</h2>
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: #f1ecf6; border: 2px solid #4a2a6a; border-radius: 8px">
+<b>hetzner-bake-1 is updating prod</b>
+<span>update prod · started 09:31 · Bake 62% · last heartbeat 40 s ago</span>
+</div>
+<span>One machine updates a target at a time. You can update prod when this run ends, or watch it now. Updates of local are not affected.</span>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+<span style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #d9d9d4; color: #4a4a46; border-radius: 8px; font-weight: 600">Review update: locked</span>
+<a href="RunElsewhere.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border: 1px solid #1d1d1b; border-radius: 8px; color: #1d1d1b; text-decoration: none; font-weight: 600">Watch the run</a>
+</div>
+<span style="color: #4a4a46; font-size: 14px">The CLI says the same:</span>
+<pre style="margin: 0; padding: 12px; background: #1d1d1b; color: #e9e9e4; border-radius: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 20px; white-space: pre-wrap">$ obc data update prod
+prod is locked by hetzner-bake-1: update prod, Bake 62%, heartbeat 40 s ago.
+Watch it: obc data runs --target prod</pre>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

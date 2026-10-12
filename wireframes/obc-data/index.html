@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBC data wireframes</title>
+<style>
+body { margin: 0; display: flex; height: 100vh; font-family: system-ui, sans-serif; font-size: 14px; color: #1d1d1b; background: #ebebe7; }
+nav { width: 280px; flex: none; overflow-y: auto; padding: 16px; box-sizing: border-box; background: #ffffff; border-right: 1px solid #d0d0ca; }
+h1 { margin: 0 0 12px; font-size: 16px; }
+h2 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: #4a4a46; }
+a { display: block; padding: 6px 8px; border-radius: 6px; color: #1d1d1b; text-decoration: none; }
+a[aria-current="page"] { background: #1d1d1b; color: #ffffff; }
+iframe { flex: 1; border: 0; height: 100vh; background: #ffffff; }
+</style>
+</head>
+<body>
+<nav aria-label="Screens"><h1>OBC data wireframes</h1><div id="list"></div></nav>
+<iframe id="view" title="Wireframe" src="render.html?screen=Main.dc.html"></iframe>
+<script>
+(async () => {
+  const canvas = await (await fetch('screens/canvas.json')).json();
+  const notes = Object.values(canvas.notes).sort((a, b) => a.y - b.y);
+  const list = document.getElementById('list');
+  const view = document.getElementById('view');
+  let group = null;
+  canvas.order
+    .map((file) => ({ file, board: canvas.boards[file] }))
+    .sort((a, b) => a.board.y - b.board.y || a.board.x - b.board.x)
+    .forEach(({ file, board }) => {
+      const note = notes.filter((n) => n.y < board.y).pop();
+      if (note && note !== group) {
+        group = note;
+        const h = document.createElement('h2');
+        h.textContent = note.text;
+        list.appendChild(h);
+      }
+      const a = document.createElement('a');
+      a.href = 'render.html?screen=' + file;
+      a.target = 'view';
+      a.textContent = board.title || file;
+      a.addEventListener('click', () => {
+        list.querySelectorAll('a').forEach((x) => x.removeAttribute('aria-current'));
+        a.setAttribute('aria-current', 'page');
+      });
+      if (file === 'Main.dc.html') a.setAttribute('aria-current', 'page');
+      list.appendChild(a);
+    });
+  view.name = 'view';
+})();
+</script>
+</body>
+</html>

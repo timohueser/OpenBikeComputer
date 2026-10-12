@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Machine setup</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">This machine: laptop</h1>
+<span style="color: #4a4a46">macOS 15 · 10 cores · 32 GB RAM · checked {{checked}}</span>
+<span style="flex-grow: 1"></span>
+<button type="button" onClick="{{recheck}}" style="min-height: 44px; padding: 0 20px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Check again</button>
+</div>
+
+<section aria-label="What this machine can do" style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">What this machine can do</h2>
+<sc-for list="{{can}}" as="c" hint-placeholder-count="6">
+<div style="display: flex; flex-wrap: wrap; gap: 4px 12px; min-height: 32px; align-items: baseline"><span style="width: 18px; font-weight: 600; color: {{c.tone}}">{{c.mark}}</span><b style="flex: 0 1 300px">{{c.job}}</b><span style="flex: 1 1 320px; color: {{c.tone}}">{{c.why}}</span></div>
+</sc-for>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Tools" style="flex: 1 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0 0 6px; font-size: 18px; line-height: 26px; font-weight: 600">Tools</h2>
+<sc-for list="{{tools}}" as="t" hint-placeholder-count="7">
+<div style="display: flex; flex-wrap: wrap; gap: 4px 12px; min-height: 40px; align-items: center; border-bottom: 1px solid #ececea"><span style="width: 18px; font-weight: 600; color: {{t.tone}}">{{t.mark}}</span><b style="flex: 0 1 160px">{{t.name}}</b><span style="flex: 1 1 180px; color: #4a4a46">{{t.for}}</span><code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: {{t.tone}}">{{t.state}}</code></div>
+</sc-for>
+</section>
+
+<section aria-label="Credentials" style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0 0 6px; font-size: 18px; line-height: 26px; font-weight: 600">Credentials</h2>
+<span style="color: #4a4a46; font-size: 14px; margin-bottom: 6px">Only whether each is set. Values stay in tools/obc.local or your home folder and never show here.</span>
+<sc-for list="{{creds}}" as="k" hint-placeholder-count="4">
+<div style="display: flex; flex-wrap: wrap; gap: 4px 12px; min-height: 40px; align-items: center; border-bottom: 1px solid #ececea"><span style="width: 18px; font-weight: 600; color: {{k.tone}}">{{k.mark}}</span><b style="flex: 0 1 200px">{{k.name}}</b><span style="flex: 1 1 200px; color: #4a4a46">{{k.for}}</span></div>
+</sc-for>
+</section>
+
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Store" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Store</h2>
+<span>~/.cache/openbikecomputer/store · 0 B used · 412 GB free</span>
+<span style="color: #4a4a46">Nothing to clean. Cleaning removes files that no kept release and no running job uses.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px">obc data clean</code>
+</section>
+
+<section aria-label="First steps" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">First steps</h2>
+<ol style="margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px">
+<li>{{step1}}</li>
+<li>Open <a href="TargetLocal.dc.html">local</a>, choose a small area (the Freiburg preset is quick), and start <b>Update local</b>. It takes a few minutes.</li>
+<li>Start <b>Serve</b> and open the web planner or the map builder from there.</li>
+<li>Read the <a href="Main.dc.html">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
+</ol>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px">obc data setup</code>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1300}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { fixed: false };
+  }
+  renderVals() {
+    const fixed = this.state.fixed;
+    const T = { ok: '#2e6b4a', no: '#8a1c12', opt: '#5f5f5a' };
+    const M = { ok: '✓', no: '✗', opt: '○' };
+    const it = (kind, a, b, c) => ({ tone: T[kind], mark: M[kind], job: a, name: a, why: b, for: b, state: c });
+    const can = [
+      it('ok', 'Bake device layers here', 'All tools are present.'),
+      fixed ? it('ok', 'Bake planner layers here', 'All tools are present.') : it('no', 'Bake planner layers here', 'Needs GEOS and Java 21. Install them, then check again.'),
+      it('ok', 'Serve the local test instance', 'Node 24 and Python are present.'),
+      it('no', 'Publish to prod', 'Needs an R2 key. Ask the owner, then put it in tools/obc.local.'),
+      it('opt', 'Fetch new climate or snow data', 'Optional: needs CDS and CDSE accounts. Bakes use the R2 copies.'),
+      it('opt', 'Prepare a new wiki', 'Optional: needs a Wikimedia Enterprise token. Usually done on the bake machine.')
+    ];
+    const tools = [
+      it('ok', 'Rust', 'every Rust baker', 'from rust-toolchain.toml'),
+      it('ok', 'C compiler', 'native bakers', 'clang 17'),
+      it('ok', 'osmium-tool', 'cutting OSM into cells', '1.17'),
+      fixed ? it('ok', 'GEOS', 'planner layers', '3.13') : it('no', 'GEOS', 'planner layers', 'brew install geos'),
+      it('ok', 'Python 3.12+ and uv', 'Python bakers', '3.13 · uv 0.8'),
+      it('ok', 'Node 24+', 'search service, web apps', '24.21'),
+      fixed ? it('ok', 'Java 21', 'planner/basemap', '21.0.5') : it('no', 'Java 21', 'planner/basemap', 'brew install openjdk@21')
+    ];
+    const creds = [
+      it('no', 'R2 key (OBC_R2_*)', 'publish to prod'),
+      it('opt', '~/.cdsapirc', 'fetch new ERA5-Land'),
+      it('opt', 'cdse-s3.env', 'fetch new HR-WSI'),
+      it('opt', 'OBC_WIKIMEDIA_ENTERPRISE_TOKEN', 'prepare wiki')
+    ];
+    return {
+      can: can, tools: tools, creds: creds,
+      checked: fixed ? 'just now' : '2 minutes ago',
+      step1: fixed ? 'Tools are ready. Ask the owner for an R2 key only if you will publish to prod.' : 'Install GEOS and Java 21 (the commands are under Tools), then press Check again.',
+      recheck: () => this.setState({ fixed: true })
+    };
+  }
+}
+</script>
+</body>
+</html>

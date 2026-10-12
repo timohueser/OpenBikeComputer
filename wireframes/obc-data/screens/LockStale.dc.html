@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · prod lock looks abandoned</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #ffd9a8; font-weight: 600">{{elsewhere}}</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · release 7f3a, 3 days ago</span>
+</div>
+
+<section aria-label="Update" style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Update prod</h2>
+
+<sc-if value="{{held}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; background: #fff3e6; border: 2px solid #b85c00; border-radius: 8px">
+<b>hetzner-bake-1 holds the prod lock, but its last heartbeat was 3 h 12 min ago</b>
+<span>update prod · started 09:31 · last seen in Bake 62%. The run probably stopped: the machine restarted, or the process was killed.</span>
+</div>
+<span><b>Best:</b> open hetzner-bake-1 and look. If the run is gone, resume it there; that also frees the lock.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; align-self: flex-start">obc data open hetzner-bake-1</code>
+<span><b>If you cannot reach it:</b> take over the lock from here.</span>
+<button type="button" onClick="{{ask}}" style="align-self: flex-start; min-height: 44px; padding: 0 16px; background: #ffffff; color: #8a4500; border: 1px solid #8a4500; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Take over the lock…</button>
+</sc-if>
+
+<sc-if value="{{confirm}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: #fff3e6; border: 2px solid #b85c00; border-radius: 8px">
+<b>Take over the prod lock from hetzner-bake-1?</b>
+<span>If that run is still alive, it checks the lock before it switches prod, sees that it lost it, and stops. prod never gets two updates at once.</span>
+<span>Its finished layers stay on hetzner-bake-1. This laptop bakes what it needs itself.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #ffffff; border-radius: 6px; align-self: flex-start">obc data unlock prod --from hetzner-bake-1</code>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<button type="button" onClick="{{take}}" style="min-height: 44px; padding: 0 20px; background: #8a4500; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Take over the lock</button>
+<button type="button" onClick="{{cancel}}" style="min-height: 44px; padding: 0 20px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Cancel</button>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{free}}" hint-placeholder-val="{{false}}">
+<span style="color: #2e6b4a; font-weight: 600">✓ The lock is free. You can review an update of prod from this laptop.</span>
+<a href="TargetProdLaptop.dc.html" style="align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border-radius: 8px; text-decoration: none; font-weight: 600">Review update</a>
+</sc-if>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { step: 'held' };
+  }
+  renderVals() {
+    const step = this.state.step;
+    return {
+      held: step === 'held',
+      confirm: step === 'confirm',
+      free: step === 'free',
+      elsewhere: step === 'free' ? 'Elsewhere: none' : 'Elsewhere: hetzner-bake-1 · silent for 3 h',
+      ask: () => this.setState({ step: 'confirm' }),
+      take: () => this.setState({ step: 'free' }),
+      cancel: () => this.setState({ step: 'held' })
+    };
+  }
+}
+</script>
+</body>
+</html>

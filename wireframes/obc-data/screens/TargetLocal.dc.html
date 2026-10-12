@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Target local</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">local</h1>
+<span style="color: #4a4a46">~/.cache/openbikecomputer/local · release 91bd, 2 days ago, on this laptop</span>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Area" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Area</h2>
+<span style="padding: 4px 12px; background: #f4f4f1; border: 1px solid #c9c9c4; border-radius: 999px">Now: Freiburg (preset)</span>
+<span style="color: #8a4500; font-weight: 600">{{pendingArea}}</span>
+</div>
+<div role="tablist" aria-label="Choose the area by" style="display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid #d0d0ca">
+<button type="button" role="tab" aria-selected="{{tabPreset}}" onClick="{{toPreset}}" style="min-height: 44px; padding: 0 16px; background: transparent; border: 0; font: inherit; cursor: pointer; {{tabPresetStyle}}">Preset</button>
+<button type="button" role="tab" aria-selected="{{tabArea}}" onClick="{{toArea}}" style="min-height: 44px; padding: 0 16px; background: transparent; border: 0; font: inherit; cursor: pointer; {{tabAreaStyle}}">Geofabrik area</button>
+<button type="button" role="tab" aria-selected="{{tabBox}}" onClick="{{toBox}}" style="min-height: 44px; padding: 0 16px; background: transparent; border: 0; font: inherit; cursor: pointer; {{tabBoxStyle}}">Draw a box</button>
+</div>
+
+<sc-if value="{{tabPreset}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; cursor: pointer">Freiburg</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px; font: inherit; cursor: pointer">Grimsel</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px; font: inherit; cursor: pointer">Monaco</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px; font: inherit; cursor: pointer">Engadin</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px; font: inherit; cursor: pointer">Colorado Front Range</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px; font: inherit; cursor: pointer">DACH</button>
+</div>
+<span style="color: #4a4a46; font-size: 14px">Presets are the files in data/regions/.</span>
+</sc-if>
+
+<sc-if value="{{tabArea}}" hint-placeholder-val="{{false}}">
+<label for="areasearch" style="font-weight: 600">Search Geofabrik areas</label>
+<input id="areasearch" type="search" value="baden" style="min-height: 44px; padding: 0 12px; font: inherit; border: 1px solid #1d1d1b; border-radius: 8px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<label style="display: flex; align-items: center; gap: 8px; min-height: 40px"><input type="checkbox" checked="{{true}}"> europe/germany/baden-wuerttemberg <span style="color: #4a4a46">· 4.1 GB extract</span></label>
+<label style="display: flex; align-items: center; gap: 8px; min-height: 40px"><input type="checkbox"> europe/germany/baden-wuerttemberg/freiburg-regbez <span style="color: #4a4a46">· 0.9 GB</span></label>
+<label style="display: flex; align-items: center; gap: 8px; min-height: 40px"><input type="checkbox"> europe/germany/baden-wuerttemberg/karlsruhe-regbez <span style="color: #4a4a46">· 1.0 GB</span></label>
+</div>
+<span style="color: #4a4a46; font-size: 14px">Tick several areas to bake them together. Clicking an area on the map ticks it too.</span>
+</sc-if>
+
+<sc-if value="{{tabBox}}" hint-placeholder-val="{{true}}">
+<span style="color: #4a4a46; font-size: 14px">Drag on the map to draw a box. The bake reads the smallest Geofabrik extract that covers it.</span>
+</sc-if>
+
+<div role="img" aria-label="Map of south-west Germany with a drawn box over Freiburg" style="position: relative; height: 380px; background: #eef2f4; border: 1px solid #c9c9c4; border-radius: 8px; overflow: hidden">
+<div style="position: absolute; left: 18%; top: 10%; width: 40%; height: 78%; border: 2px dashed #8a8a84; border-radius: 18px"></div>
+<span style="position: absolute; left: 20%; top: 12%; font-size: 13px; color: #4a4a46">baden-wuerttemberg</span>
+<sc-if value="{{tabBox}}" hint-placeholder-val="{{true}}">
+<div style="position: absolute; left: 24%; top: 46%; width: 14%; height: 26%; background: #1d4ed833; border: 2px solid #1d4ed8"></div>
+<span style="position: absolute; left: 24%; top: 74%; padding: 2px 6px; background: #ffffff; border-radius: 4px; font-size: 13px">7.65, 47.85, 8.15, 48.15 · 18 cells</span>
+</sc-if>
+<span style="position: absolute; left: 16px; bottom: 12px; padding: 2px 8px; background: #ffffff; border-radius: 4px; font-size: 13px; color: #4a4a46">[Map: MapLibre, reusing the builder's map]</span>
+</div>
+
+<sc-if value="{{tabBox}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 2px; font-size: 14px">West<input value="7.65" style="width: 90px; min-height: 40px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+<label style="display: flex; flex-direction: column; gap: 2px; font-size: 14px">South<input value="47.85" style="width: 90px; min-height: 40px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+<label style="display: flex; flex-direction: column; gap: 2px; font-size: 14px">East<input value="8.15" style="width: 90px; min-height: 40px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+<label style="display: flex; flex-direction: column; gap: 2px; font-size: 14px">North<input value="48.15" style="width: 90px; min-height: 40px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+<span style="color: #4a4a46; font-size: 14px">reads europe/germany/baden-wuerttemberg/freiburg-regbez</span>
+</div>
+</sc-if>
+</section>
+
+<section aria-label="Layers" style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Layers</h2>
+<span style="color: #4a4a46; font-size: 14px">Tick a layer to rebuild it now, even if it is up to date. Use this after a code change.</span>
+<sc-for list="{{layers}}" as="l" hint-placeholder-count="13">
+<label style="display: flex; align-items: center; gap: 10px; min-height: 36px; border-bottom: 1px solid #ececea">
+<input type="checkbox" checked="{{l.picked}}" onChange="{{l.toggle}}">
+<span style="width: 16px; text-align: center; font-weight: 600; color: {{l.tone}}">{{l.mark}}</span>
+<span style="flex: 1 1 auto; min-width: 0"><b>{{l.name}}</b><br><span style="font-size: 13px; color: {{l.tone}}">{{l.why}}</span></span>
+</label>
+</sc-for>
+</section>
+
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Update" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Update local</h2>
+<span>{{plan}}</span>
+<span style="color: #4a4a46">{{cost}}</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">{{cli}}</code>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<button type="button" style="min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Start on laptop</button>
+<span style="align-self: center; color: #4a4a46; font-size: 14px">Local updates need no review: nothing leaves this machine.</span>
+</div>
+</section>
+
+<section aria-label="Serve" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Serve</h2>
+<span style="font-weight: 600; color: {{serveTone}}">{{serveState}}</span>
+<span style="flex-grow: 1"></span>
+<button type="button" onClick="{{toggleServe}}" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">{{serveButton}}</button>
+</div>
+<sc-if value="{{serving}}" hint-placeholder-val="{{true}}">
+<span style="color: #4a4a46; font-size: 14px">Router, search, downloads and files from the local folder. The apps below open against them.</span>
+<a href="https://example.invalid/planner" style="min-height: 32px">Web planner · http://127.0.0.1:5173/planner.html</a>
+<a href="https://example.invalid/builder" style="min-height: 32px">Map builder · http://127.0.0.1:5173/</a>
+<span>Desktop app · <code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">OBC_CATALOG_URL=http://127.0.0.1:8700/cell-catalog/catalog.json</code></span>
+<span>Simulator · <code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">obc sim --map local</code></span>
+<span>iPhone on this Wi-Fi · http://192.168.1.20:8700</span>
+</sc-if>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px">obc data serve</code>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1400}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { tab: 'box', picked: { dmap: true }, serving: true };
+  }
+  renderVals() {
+    const tab = this.state.tab;
+    const picked = this.state.picked;
+    const on = 'font-weight: 600; border-bottom: 3px solid #1d1d1b';
+    const off = 'border-bottom: 3px solid transparent';
+    const rows = [
+      ['dterrain', 'device/terrain', 'ok', 'up to date', ['dmap', 'dcat']],
+      ['dmap', 'device/map', 'stale', 'revision 2→3', ['dcat']],
+      ['dland', 'device/landmarks', 'ok', 'up to date', ['dcat']],
+      ['dcat', 'device/catalog', 'stale', 'follows map', []],
+      ['prout', 'planner/routing', 'ok', 'up to date', ['pindex']],
+      ['pbase', 'planner/basemap', 'ok', 'up to date', ['pindex']],
+      ['psearch', 'planner/search', 'ok', 'up to date', ['pplaces', 'pindex']],
+      ['pplaces', 'planner/places', 'ok', 'up to date', ['pindex']],
+      ['pterrain', 'planner/terrain', 'ok', 'up to date', ['pindex']],
+      ['psun', 'planner/sun', 'off', 'off', []],
+      ['pclim', 'planner/climate', 'off', 'off', []],
+      ['psnow', 'planner/snow', 'off', 'off', []],
+      ['pindex', 'planner/index', 'ok', 'up to date', []]
+    ];
+    const TONE = { ok: '#2e6b4a', stale: '#8a4500', off: '#5f5f5a' };
+    const MARK = { ok: '✓', stale: '●', off: '○' };
+    const names = {};
+    rows.forEach((r) => { names[r[0]] = r[1]; });
+    const layers = rows.map((r) => ({
+      name: r[1], mark: MARK[r[2]], tone: TONE[r[2]], why: r[3], picked: !!picked[r[0]],
+      toggle: () => this.setState({ picked: Object.assign({}, picked, { [r[0]]: !picked[r[0]] }) })
+    }));
+    const chosen = rows.filter((r) => picked[r[0]]);
+    const follow = [];
+    chosen.forEach((r) => r[4].forEach((f) => { if (!picked[f] && follow.indexOf(names[f]) < 0) follow.push(names[f]); }));
+    const stale = rows.filter((r) => r[2] === 'stale' && !picked[r[0]] && follow.indexOf(r[1]) < 0).map((r) => r[1]);
+    const bake = chosen.map((r) => r[1]).concat(follow, stale);
+    const area = tab === 'box' ? 'box 7.65,47.85,8.15,48.15' : tab === 'area' ? 'europe/germany/baden-wuerttemberg' : 'freiburg';
+    const flag = tab === 'box' ? '--box 7.65,47.85,8.15,48.15' : tab === 'area' ? '--region europe/germany/baden-wuerttemberg' : '--region freiburg';
+    const only = chosen.length ? ' --only ' + chosen.map((r) => r[1]).join(' ') : '';
+    return {
+      tabPreset: tab === 'preset', tabArea: tab === 'area', tabBox: tab === 'box',
+      tabPresetStyle: tab === 'preset' ? on : off, tabAreaStyle: tab === 'area' ? on : off, tabBoxStyle: tab === 'box' ? on : off,
+      toPreset: () => this.setState({ tab: 'preset' }), toArea: () => this.setState({ tab: 'area' }), toBox: () => this.setState({ tab: 'box' }),
+      pendingArea: tab === 'preset' ? '' : 'Next update: ' + area,
+      layers: layers,
+      plan: bake.length ? 'Bake: ' + bake.join(' · ') : 'Nothing to bake.',
+      cost: tab === 'area' ? 'About 25 min here · fetch 4.1 GB' : 'About 3 min here · fetch 0.9 GB (once)',
+      cli: 'obc data update local ' + (tab === 'preset' ? '' : flag) + only,
+      serving: this.state.serving,
+      serveState: this.state.serving ? '● Serving since 10:02' : '○ Not serving',
+      serveTone: this.state.serving ? '#2e6b4a' : '#5f5f5a',
+      serveButton: this.state.serving ? 'Stop' : 'Start serving',
+      toggleServe: () => this.setState({ serving: !this.state.serving })
+    };
+  }
+}
+</script>
+</body>
+</html>

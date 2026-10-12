@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Roll back prod</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · {{serving}}</span>
+</div>
+
+<sc-if value="{{done}}" hint-placeholder-val="{{false}}">
+<section aria-label="Rolled back" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 16px 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<b>prod serves 2c91 again since 14:02, rolled back from laptop.</b>
+<span>Clients switch within about a minute. 4bd0 is now the rollback, so you can go forward again.</span>
+<span style="color: #4a4a46">The Overview shows what 2c91 lacks as stale layers. The next update starts from 2c91.</span>
+</section>
+</sc-if>
+
+<section aria-label="Releases" style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Releases on prod</h2>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 52px; border-bottom: 1px solid #ececea">
+<b style="font-family: 'IBM Plex Mono', monospace">{{top.id}}</b><span>{{top.text}}</span><span style="flex-grow: 1"></span><span style="padding: 2px 10px; background: #1d1d1b; color: #ffffff; border-radius: 999px; font-size: 13px">serving</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 52px">
+<b style="font-family: 'IBM Plex Mono', monospace">{{low.id}}</b><span>{{low.text}}</span><span style="flex-grow: 1"></span>
+<sc-if value="{{idle}}" hint-placeholder-val="{{true}}">
+<button type="button" onClick="{{ask}}" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">{{low.action}}</button>
+</sc-if>
+</div>
+</section>
+
+<sc-if value="{{confirm}}" hint-placeholder-val="{{false}}">
+<section aria-label="Confirm rollback" style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Roll back prod to 2c91?</h2>
+<span><b>What changes</b> · prod serves 2c91 (3 days old, OSM 10-08) instead of 4bd0 (2 hours old).</span>
+<span><b>Router</b> · <span style="color: #2e6b4a">✓ still runs 2c91 (checked just now)</span>, so the switch is instant.</span>
+<span><b>Clients</b> · switch within about a minute. Maps already on devices and phones stay as they are.</span>
+<span><b>Nothing is deleted</b> · 4bd0 becomes the rollback.</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">obc data rollback prod</code>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<button type="button" onClick="{{go}}" style="min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Roll back now</button>
+<button type="button" onClick="{{cancel}}" style="min-height: 44px; padding: 0 20px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Cancel</button>
+</div>
+</section>
+</sc-if>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { step: 'idle' };
+  }
+  renderVals() {
+    const step = this.state.step;
+    const done = step === 'done';
+    const a = { id: '4bd0', text: '2 hours ago · hetzner-bake-1 · OSM 10-11 · device/map revision 3' };
+    const b = { id: '2c91', text: '3 days ago · hetzner-bake-1 · OSM 10-08' };
+    return {
+      idle: step === 'idle' || done,
+      confirm: step === 'confirm',
+      done: done,
+      serving: done ? 'serving 2c91 (rolled back)' : 'serving 4bd0, 2 hours ago',
+      top: done ? b : a,
+      low: done ? Object.assign({ action: 'Go forward to 4bd0' }, a) : Object.assign({ action: 'Roll back to 2c91' }, b),
+      ask: () => this.setState({ step: done ? 'idle' : 'confirm' }),
+      go: () => this.setState({ step: 'done' }),
+      cancel: () => this.setState({ step: 'idle' })
+    };
+  }
+}
+</script>
+</body>
+</html>

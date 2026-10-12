@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Sources</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">Sources</h1>
+<span style="color: #4a4a46">55 declared in data/sources.toml · 1 has a newer version for prod · 1 needs a credential on this machine</span>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+
+<section aria-label="All sources" style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px; overflow-x: auto">
+
+<div style="display: grid; grid-template-columns: 2.4fr 1.1fr 1.4fr 1.4fr 1.6fr; gap: 8px; padding: 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: #4a4a46; min-width: 640px">
+<span>SOURCE</span><span>VERSION</span><span>REFRESH</span><span>USED BY</span><span>STATE</span>
+</div>
+
+<h2 style="margin: 12px 0 0; font-size: 14px; font-weight: 600; color: #4a4a46">OpenStreetMap</h2>
+<sc-for list="{{osm}}" as="s" hint-placeholder-count="5">
+<button type="button" onClick="{{s.pick}}" style="display: grid; grid-template-columns: 2.4fr 1.1fr 1.4fr 1.4fr 1.6fr; gap: 8px; align-items: center; min-height: 44px; min-width: 640px; padding: 4px 8px; text-align: left; font: inherit; color: #1d1d1b; border-radius: 6px; cursor: pointer; {{s.paint}}"><span><b>{{s.name}}</b></span><span>{{s.ver}}</span><span>{{s.policy}}</span><span>{{s.used}}</span><span style="color: {{s.tone}}">{{s.state}}</span></button>
+</sc-for>
+
+<h2 style="margin: 12px 0 0; font-size: 14px; font-weight: 600; color: #4a4a46">Elevation, Wikimedia, climate and snow</h2>
+<sc-for list="{{rest}}" as="s" hint-placeholder-count="6">
+<button type="button" onClick="{{s.pick}}" style="display: grid; grid-template-columns: 2.4fr 1.1fr 1.4fr 1.4fr 1.6fr; gap: 8px; align-items: center; min-height: 44px; min-width: 640px; padding: 4px 8px; text-align: left; font: inherit; color: #1d1d1b; border-radius: 6px; cursor: pointer; {{s.paint}}"><span><b>{{s.name}}</b></span><span>{{s.ver}}</span><span>{{s.policy}}</span><span>{{s.used}}</span><span style="color: {{s.tone}}">{{s.state}}</span></button>
+</sc-for>
+
+<h2 style="margin: 12px 0 0; font-size: 14px; font-weight: 600; color: #4a4a46">Basemap, land, assets and tools</h2>
+<button type="button" onClick="{{toggleMore}}" aria-expanded="{{moreOpen}}" style="display: flex; align-items: center; gap: 8px; min-height: 44px; min-width: 640px; padding: 4px 8px; text-align: left; font: inherit; color: #1d1d1b; background: #f4f4f1; border: 0; border-radius: 6px; cursor: pointer"><span style="color: #2e6b4a; font-weight: 600">✓</span> 12 sources, all up to date · land-polygons, water-polygons, natural-earth, planetiler, protomaps-assets … <span style="flex-grow: 1"></span>{{moreLabel}}</button>
+<sc-if value="{{moreOpen}}" hint-placeholder-val="{{false}}">
+<span style="padding: 4px 8px; color: #4a4a46">land-polygons · water-polygons · natural-earth · daylight-landcover · qrank · pgf-encoding · protomaps-assets · tangrams-icons · query-model · planetiler · protomaps-basemaps · nominatim-country-data</span>
+</sc-if>
+</section>
+
+<section aria-label="Selected source" style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600">{{d.name}}</h2>
+<span style="color: #4a4a46">{{d.what}}</span>
+<span><b>Versions</b><br>{{d.versions}}</span>
+<span><b>Upstream</b><br>{{d.upstream}}</span>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<b>Refresh policy</b>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px">
+<label style="display: inline-flex; align-items: center; gap: 6px">prod <input value="{{d.prodPolicy}}" aria-label="prod refresh policy" style="width: 96px; min-height: 36px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+<label style="display: inline-flex; align-items: center; gap: 6px">local <input value="{{d.localPolicy}}" aria-label="local refresh policy" style="width: 96px; min-height: 36px; padding: 0 8px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px"></label>
+</div>
+<span style="font-size: 13px; color: #4a4a46">Days, or manual. Each target keeps its own policy, like its area.</span>
+</div>
+<span><b>Licence</b><br>{{d.licence}}</span>
+<span><b>Credential on this machine</b><br><span style="color: {{d.credTone}}">{{d.cred}}</span></span>
+<span style="color: #8a4500; font-weight: 600">{{d.effect}}</span>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">{{d.action}}</button>
+</div>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">{{d.cli}}</code>
+</section>
+
+</div>
+
+<h2 style="margin: 8px 0 0; font-size: 20px; line-height: 28px; font-weight: 600">Prepared sources</h2>
+<span style="color: #4a4a46; margin-top: -8px">We build these ourselves from large downloads, once, and publish them to R2. Bakes read them like any other source.</span>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="wiki" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px"><h3 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">wiki</h3><span style="color: #4a4a46">Wikidata, Wikipedia and Commons content for landmarks, peaks and search</span></div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px; border-bottom: 1px solid #ececea"><b style="font-family: 'IBM Plex Mono', monospace">2026-09-01</b><span>38 GB · prepared on hetzner-bake-1</span><span style="flex-grow: 1"></span><span>used by local</span></div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px"><b style="font-family: 'IBM Plex Mono', monospace">2026-06-01</b><span>35 GB</span><span style="flex-grow: 1"></span><span>used by prod and its rollback</span></div>
+<span style="color: #8a4500; font-weight: 600">● prod uses an older version: 5 layers stale. <a href="Main.dc.html" style="color: #8a4500">See them</a></span>
+<span style="color: #4a4a46; font-size: 14px">A version that no kept release uses is deleted from R2.</span>
+<a href="PrepareWiki.dc.html" style="align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border: 1px solid #1d1d1b; border-radius: 8px; color: #1d1d1b; text-decoration: none; font-weight: 600">Prepare a new version…</a>
+</section>
+
+<section aria-label="terrain-reference" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px"><h3 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">terrain-reference</h3><span style="color: #4a4a46">National lidar and DTM models, merged into one archive per country</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 14px">
+<span><span style="color: #2e6b4a; font-weight: 600">✓</span> prepared 7</span>
+<span><span style="color: #1d3a9c; font-weight: 600">◐</span> preparing 1</span>
+<span><span style="color: #5f5f5a; font-weight: 600">○</span> not prepared 16</span>
+</div>
+<div role="img" aria-label="Map of countries with a national terrain model" style="position: relative; height: 150px; background: #eef2f4; border: 1px solid #c9c9c4; border-radius: 8px">
+<span style="position: absolute; left: 12px; bottom: 8px; padding: 2px 8px; background: #ffffff; border-radius: 4px; font-size: 13px; color: #4a4a46">[Map: each country coloured by state]</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{countries}}" as="c" hint-placeholder-count="24">
+<span style="padding: 2px 10px; border-radius: 999px; font-size: 13px; {{c.paint}}">{{c.label}}</span>
+</sc-for>
+</div>
+<span style="color: #4a4a46; font-size: 14px">fr is preparing on hetzner-bake-1: day 2 of about 4. A country model takes days and hundreds of GB.</span>
+<button type="button" style="align-self: flex-start; min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Prepare a country…</button>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1500}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sel: 'de', more: false };
+  }
+  renderVals() {
+    const sel = this.state.sel;
+    const TONE = { ok: '#2e6b4a', stale: '#8a4500', off: '#5f5f5a', bad: '#8a1c12' };
+    const row = (id, name, ver, policy, used, kind, state) => ({
+      name: name, ver: ver, policy: policy, used: used, tone: TONE[kind], state: state,
+      paint: id === sel ? 'background: #f4f4f1; border: 2px solid #1d1d1b' : 'background: #ffffff; border: 2px solid transparent',
+      pick: () => this.setState({ sel: id })
+    });
+    const osm = [
+      row('de', 'geofabrik · europe/germany', '2026-10-08', 'prod 7 d · local manual', 'prod', 'stale', '● newer upstream: 10-11'),
+      row('at', 'geofabrik · europe/austria', '2026-10-08', 'prod 7 d · local manual', 'prod', 'ok', '✓ up to date'),
+      row('ch', 'geofabrik · europe/switzerland', '2026-10-08', 'prod 7 d · local manual', 'prod', 'ok', '✓ up to date'),
+      row('fr', 'geofabrik · …/freiburg-regbez', '2026-10-10', 'local manual', 'local', 'ok', '✓ up to date'),
+      row('planet', 'osm-planet + replication', 'not fetched', '—', '—', 'off', '○ for planet coverage')
+    ];
+    const rest = [
+      row('cop', 'copernicus-glo-30', '2021', 'manual', 'prod, local', 'ok', '✓ up to date'),
+      row('tref', 'terrain-reference (prepared)', '7 countries', 'manual', 'prod, local', 'ok', '✓ see below'),
+      row('wiki', 'wiki (prepared)', '2026-09-01', 'manual', 'local; prod: 06-01', 'stale', '● newer than prod uses'),
+      row('era5', 'era5-land', '2016–2025', 'manual', 'prod', 'ok', '✓ up to date'),
+      row('modis', 'modis-snow · hansen-gfc', '2016–2024', 'manual', 'prod (snow off)', 'off', '○ not used now'),
+      row('hrwsi', 'hr-wsi', '2016–2024', 'manual', 'prod (snow off)', 'bad', '✗ no credential here')
+    ];
+    const D = {
+      de: { name: 'geofabrik · europe/germany', what: 'OpenStreetMap extract of one area. A copy is kept in R2, so every machine bakes from the same bytes.',
+        versions: '2026-10-08: used by prod and its rollback · 2026-09-24: no longer used', upstream: '2026-10-11 is out (checked 10:05)', prodPolicy: '7 days', localPolicy: 'manual',
+        licence: 'ODbL-1.0 · credit OpenStreetMap; offer a derived database under the ODbL', cred: 'none needed', credTone: '#2e6b4a',
+        effect: 'prod uses 10-08, which is 4 days old; its policy allows 7. After 3 more days, OSM makes prod stale.', action: 'Fetch 2026-10-11 now', cli: 'obc data source refresh geofabrik-extracts --area europe/germany' },
+      wiki: { name: 'wiki (prepared)', what: 'Built by us from the Wikimedia dumps. Bakes read it and make no Wikimedia requests.',
+        versions: '2026-09-01: used by local · 2026-06-01: used by prod and its rollback', upstream: 'We make it: prepare a new version when you want new facts.', prodPolicy: 'manual', localPolicy: 'manual',
+        licence: 'Wikidata CC0-1.0 · Wikipedia CC-BY-SA-4.0 · Commons per file', cred: '✓ OBC_WIKIMEDIA_ENTERPRISE_TOKEN set', credTone: '#2e6b4a',
+        effect: 'A newer version exists, so the 5 layers that read wiki are stale in prod.', action: 'Prepare a new version…', cli: 'obc data source prepare wiki' },
+      hrwsi: { name: 'hr-wsi', what: 'Copernicus HR-WSI snow phenology. planner/snow reads it.',
+        versions: '2016–2024: in the R2 copy', upstream: 'No check: manual', prodPolicy: 'manual', localPolicy: 'manual',
+        licence: 'Copernicus CLMS', cred: '✗ Missing: ~/.config/openbikecomputer/cdse-s3.env. Needed only to fetch a new version; bakes read the R2 copy.', credTone: '#8a1c12',
+        effect: '', action: 'Check upstream', cli: 'obc data source refresh hr-wsi' }
+    };
+    const d = D[sel] || D.de;
+    const P = { ok: 'background: #edf6f0; color: #1f4f35; border: 1px solid #2e6b4a', run: 'background: #e8efff; color: #1d3a9c; border: 1px solid #1d4ed8', no: 'background: #f3f3f1; color: #4a4a46; border: 1px dashed #a3a39e' };
+    const cs = [
+      ['de-bw v3', 'ok'], ['de-by v2', 'ok'], ['de-he v1', 'ok'], ['at v1', 'ok'], ['ch v2', 'ok'], ['it-bz v1', 'ok'], ['it-tn v1', 'ok'], ['fr ◐ day 2', 'run'],
+      ['de-mv', 'no'], ['de-ni', 'no'], ['de-nw', 'no'], ['de-sn', 'no'], ['de-st', 'no'], ['de-th', 'no'], ['dk', 'no'], ['es', 'no'],
+      ['fi', 'no'], ['nl', 'no'], ['no', 'no'], ['se', 'no'], ['uk', 'no'], ['us', 'no'], ['ca', 'no'], ['nz', 'no']
+    ];
+    return {
+      osm: osm, rest: rest, d: d,
+      countries: cs.map((c) => ({ label: c[0], paint: P[c[1]] })),
+      moreOpen: this.state.more,
+      moreLabel: this.state.more ? 'Hide' : 'Show',
+      toggleMore: () => this.setState({ more: !this.state.more })
+    };
+  }
+}
+</script>
+</body>
+</html>

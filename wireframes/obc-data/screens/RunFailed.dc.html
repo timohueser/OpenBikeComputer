@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Failed run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #4a2a6a; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #b9a4cf; border-radius: 999px">This page runs on <b>hetzner-bake-1</b></span>
+<span style="color: #e6dcf0">Linux · 32 cores · 128 GB RAM · store 0 B free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #ffffff; font-weight: 600">Runs here: update prod failed</span>
+<span style="color: #e6dcf0">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProd.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunFailed.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">update prod</h1>
+<span style="color: #4a4a46">started 09:31 · failed 10:41 in Bake · prod did not change · the prod lock is free</span>
+</div>
+
+<section aria-label="Error" style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #8a1c12; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600; color: #8a1c12">✗ planner/search failed: the store disk is full</h2>
+<span><b>Error</b> · sqlite3.OperationalError: database or disk is full, while writing pois/dach.sqlite (/srv/obc/store/partial: 0 B free)</span>
+<span><b>Fix</b> · Free space with <code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">obc data clean --apply</code> (38 GB can go), or move the store to a larger disk. Then resume.</span>
+<span><b>Kept</b> · device/map, device/landmarks and device/catalog finished. Resume does not bake them again.</span>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+<button type="button" onClick="{{resume}}" style="min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Resume…</button>
+<a href="Machine.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border: 1px solid #1d1d1b; border-radius: 8px; color: #1d1d1b; text-decoration: none">Clean the store</a>
+<span style="color: #4a4a46">{{resumeNote}}</span>
+</div>
+</section>
+
+<ol aria-label="Phases" style="list-style: none; margin: 0; padding: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px"><b>✓ Fetch</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #fdeceb; border: 2px solid #8a1c12; border-radius: 8px"><b>✗ Bake</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Verify</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Upload</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Router ready</b></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Switch</b></span></li>
+</ol>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+<section aria-label="Layers" style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Layers in this run</h2>
+<sc-for list="{{layers}}" as="l" hint-placeholder-count="6">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 32px; align-items: center; border-bottom: 1px solid #ececea"><span style="width: 18px; font-weight: 600; color: {{l.tone}}">{{l.mark}}</span><b style="flex: 1 1 auto">{{l.name}}</b><span style="color: {{l.tone}}">{{l.status}}</span></div>
+</sc-for>
+</section>
+<section aria-label="Log" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Log around the error</h2>
+<pre style="margin: 0; padding: 12px; overflow: auto; background: #1d1d1b; color: #e9e9e4; border-radius: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 20px; white-space: pre-wrap">10:40:57  planner/search  records 10.1 M of 10.5 M
+10:41:02  planner/search  writing pois/dach.sqlite
+10:41:09  planner/search  sqlite3.OperationalError: database or disk is full
+10:41:09  run             planner/search failed; stopping admitted work
+10:41:11  run             prod lock released · prod unchanged (7f3a)</pre>
+</section>
+</div>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1200}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { asked: false };
+  }
+  renderVals() {
+    const L = [
+      ['✓', 'device/landmarks', 'done', '#2e6b4a'],
+      ['✓', 'device/map', 'done · 1 284 cells', '#2e6b4a'],
+      ['✓', 'device/catalog', 'done', '#2e6b4a'],
+      ['✗', 'planner/search', 'failed at 96%', '#8a1c12'],
+      ['○', 'planner/places', 'not started', '#5f5f5a'],
+      ['○', 'planner/index', 'not started', '#5f5f5a']
+    ];
+    return {
+      layers: L.map((l) => ({ mark: l[0], name: l[1], status: l[2], tone: l[3] })),
+      resume: () => this.setState({ asked: true }),
+      resumeNote: this.state.asked ? 'Resume runs the same update again. If nothing changed since the review, it starts at once; otherwise you see the new review.' : 'Same as: obc data update prod'
+    };
+  }
+}
+</script>
+</body>
+</html>

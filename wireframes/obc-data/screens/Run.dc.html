@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Run on hetzner-bake-1</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #4a2a6a; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #b9a4cf; border-radius: 999px">This page runs on <b>hetzner-bake-1</b></span>
+<span style="color: #e6dcf0">Linux · 32 cores · 128 GB RAM · store 3.1 TB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #ffffff; font-weight: 600">Runs here: update prod · Bake 62%</span>
+<span style="color: #e6dcf0">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProd.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="Run.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">update prod</h1>
+<span style="color: #4a4a46">started 09:31 on hetzner-bake-1 · 44 min so far · about 26 min left</span>
+<span style="flex-grow: 1"></span>
+<sc-if value="{{idle}}" hint-placeholder-val="{{true}}">
+<button type="button" onClick="{{ask}}" style="min-height: 44px; padding: 0 20px; background: #ffffff; color: #8a1c12; border: 1px solid #8a1c12; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Stop…</button>
+</sc-if>
+<sc-if value="{{asking}}" hint-placeholder-val="{{false}}">
+<span style="font-weight: 600">Stop after the cells in progress? Finished work is kept; prod does not change.</span>
+<button type="button" onClick="{{cancel}}" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Keep running</button>
+<button type="button" onClick="{{cancel}}" style="min-height: 44px; padding: 0 16px; background: #8a1c12; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Stop</button>
+</sc-if>
+</div>
+
+<ol aria-label="Phases" style="list-style: none; margin: 0; padding: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #ffffff; border: 1px solid #c9c9c4; border-radius: 8px"><b>✓ Fetch</b><br><span style="font-size: 13px; color: #2e6b4a">6 min · 2.3 GB</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #e8efff; border: 2px solid #1d4ed8; border-radius: 8px"><b>◐ Bake</b><br><span style="font-size: 13px; color: #1d3a9c">62% · 38 min so far</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Verify</b><br><span style="font-size: 13px; color: #5f5f5a">real reader and assembler</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Upload</b><br><span style="font-size: 13px; color: #5f5f5a">about 6.4 GB to R2</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Router ready</b><br><span style="font-size: 13px; color: #5f5f5a">VPS loads the new release</span></span><span aria-hidden="true" style="color: #8a8a84">›</span></li>
+<li style="display: flex; align-items: center; gap: 8px"><span style="padding: 8px 14px; background: #f3f3f1; border: 1px solid #c9c9c4; border-radius: 8px"><b>Switch</b><br><span style="font-size: 13px; color: #5f5f5a">clients see it now</span></span></li>
+</ol>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Layers" style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Layers in this run</h2>
+<sc-for list="{{layers}}" as="l" hint-placeholder-count="6">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><b style="flex: 1 1 auto">{{l.name}}</b><span style="color: {{l.tone}}">{{l.status}}</span></div>
+<div style="height: 10px; background: #ececea; border-radius: 5px; overflow: hidden"><div style="height: 10px; width: {{l.pct}}; background: {{l.bar}}"></div></div>
+</div>
+</sc-for>
+<span style="color: #4a4a46; font-size: 14px">Machine: CPU 32 of 32 · RAM 41 of 128 GB · scratch disk 210 GB</span>
+</section>
+
+<section aria-label="Cells" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">device/map cells</h2>
+<span><span style="color: #1d3a9c; font-weight: 600">■</span> done 812</span>
+<span><span style="color: #1d3a9c; font-weight: 600">□</span> baking 32</span>
+<span><span style="color: #8a8a84; font-weight: 600">■</span> waiting 440</span>
+</div>
+<div role="img" aria-label="Map of the coverage. 812 cells are done, 32 are baking, 440 wait." style="position: relative; height: 360px; background: #eef2f4; border: 1px solid #c9c9c4; border-radius: 8px; overflow: hidden">
+<div style="position: absolute; left: 6%; top: 8%; width: 88%; height: 84%; display: grid; grid-template-columns: repeat(22, minmax(0, 1fr)); gap: 3px">
+<sc-for list="{{cells}}" as="c" hint-placeholder-count="264">
+<div style="border-radius: 2px; {{c.paint}}"></div>
+</sc-for>
+</div>
+</div>
+</section>
+
+</div>
+
+<section aria-label="Log" style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Log</h2>
+<span style="color: #4a4a46; font-size: 14px">~/.cache/openbikecomputer/runs/2026-10-12-0931/log</span>
+<span style="flex-grow: 1"></span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 4px 8px; background: #f4f4f1; border-radius: 6px">obc data update prod --yes --expect 4c1e</code>
+</div>
+<pre style="margin: 0; padding: 12px; max-height: 220px; overflow: auto; background: #1d1d1b; color: #e9e9e4; border-radius: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 20px; white-space: pre-wrap">10:14:02  device/map      cell 18-41 done   (2.1 s, 312 MB)
+10:14:02  device/map      cell 18-42 done   (1.8 s, 288 MB)
+10:14:03  planner/search  records 4.2 M of 10.5 M
+10:14:03  device/map      cell 19-40 done   (2.4 s, 301 MB)
+10:14:04  device/map      cell 19-41 baking
+10:14:04  lock            prod/lock.json heartbeat: Bake 62%</pre>
+<span style="color: #4a4a46; font-size: 14px">Closing this page, the tunnel or the laptop does not stop the run.</span>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1200}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { asking: false };
+  }
+  renderVals() {
+    const shape = [
+      '0000000011111100000000',
+      '0000001111111111000000',
+      '0000011111111111110000',
+      '0000111111111111111000',
+      '0001111111111111111000',
+      '0001111111111111111100',
+      '0011111111111111111110',
+      '0011111111111111111110',
+      '0001111111111111111111',
+      '0001111111111111111111',
+      '0000111111111111111110',
+      '0000011111111111111100'
+    ];
+    const cells = [];
+    let n = 0;
+    shape.forEach((row) => row.split('').forEach((ch) => {
+      if (ch !== '1') { cells.push({ paint: 'background: transparent' }); return; }
+      n += 1;
+      const paint = n <= 120 ? 'background: #3b63c9; border: 1px solid #1d3a9c'
+        : n <= 128 ? 'background: #ffffff; border: 2px solid #1d4ed8'
+        : 'background: #d9d9d4; border: 1px solid #b4b4ae';
+      cells.push({ paint: paint });
+    }));
+    const L = [
+      ['device/landmarks', 'done · 14 min', '100%', '#2e6b4a', '#2e6b4a'],
+      ['device/map', '812 of 1 284 cells · about 22 min left', '63%', '#1d3a9c', '#3b63c9'],
+      ['planner/search', '40% · about 18 min left', '40%', '#1d3a9c', '#3b63c9'],
+      ['device/catalog', 'waits for device/map', '0%', '#5f5f5a', '#b4b4ae'],
+      ['planner/places', 'waits for planner/search', '0%', '#5f5f5a', '#b4b4ae'],
+      ['planner/index', 'waits for planner/places', '0%', '#5f5f5a', '#b4b4ae']
+    ];
+    return {
+      cells: cells,
+      layers: L.map((l) => ({ name: l[0], status: l[1], pct: l[2], tone: l[3], bar: l[4] })),
+      idle: !this.state.asking,
+      asking: this.state.asking,
+      ask: () => this.setState({ asking: true }),
+      cancel: () => this.setState({ asking: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

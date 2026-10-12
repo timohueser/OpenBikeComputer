@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Format change review</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #4a2a6a; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #b9a4cf; border-radius: 999px">This page runs on <b>hetzner-bake-1</b></span>
+<span style="color: #e6dcf0">Linux · 32 cores · 128 GB RAM · store 3.1 TB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #e6dcf0">Runs here: none</span>
+<span style="color: #e6dcf0">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProd.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="Run.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · release 7f3a, 3 days ago</span>
+</div>
+
+<section aria-label="Format changes" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 16px 20px; background: #fff3e6; border: 2px solid #b85c00; border-radius: 12px">
+<b style="font-size: 17px">2 format changes: some readers need new code before they can read the new data</b>
+<span>device/map <b>19.3 → 20.0</b> (OBCM 19 → 20)</span>
+<span>planner/routing <b>8.2 → 9.0</b> (routing package 8 → 9)</span>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Clients" style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px; overflow-x: auto">
+<h2 style="margin: 0 0 8px; font-size: 18px; line-height: 26px; font-weight: 600">Who reads this data</h2>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: #4a4a46; border-bottom: 1px solid #d0d0ca">
+<span>READER</span><span>READS NOW</span><span>NEEDS</span><span>WHAT HAPPENS</span>
+</div>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 10px 0; border-bottom: 1px solid #ececea">
+<b>Router service<br><span style="font-weight: 400; font-size: 13px; color: #4a4a46">releases.openbikecomputer.com</span></b><span>routing 8</span><span>9</span>
+<span style="color: #8a1c12"><b>✗ Not ready.</b> Deploy planner-service that reads format 9. The run bakes and uploads, then waits at <i>Router ready</i> for up to 24 h. prod does not change until the router is ready.</span>
+</div>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 10px 0; border-bottom: 1px solid #ececea">
+<b>iOS app<br><span style="font-weight: 400; font-size: 13px; color: #4a4a46">offline router</span></b><span>routing 8</span><span>9</span>
+<span style="color: #8a4500"><b>⚠ Old apps:</b> offline areas already on the phone keep working. New offline downloads need an app that reads format 9.</span>
+</div>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 10px 0; border-bottom: 1px solid #ececea">
+<b>Devices<br><span style="font-weight: 400; font-size: 13px; color: #4a4a46">through the map builder</span></b><span>OBCM 19</span><span>20</span>
+<span style="color: #8a4500"><b>⚠ Old firmware:</b> maps already on a device keep working. The map builder offers new maps only to devices whose firmware reads OBCM 20.</span>
+</div>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 10px 0; border-bottom: 1px solid #ececea">
+<b>Map builder, desktop app</b><span>catalog 3</span><span>3</span><span style="color: #2e6b4a">✓ No change</span>
+</div>
+<div style="display: grid; grid-template-columns: 1.6fr 1fr 0.7fr 2.6fr; gap: 8px; min-width: 640px; padding: 10px 0">
+<b>Web planner</b><span>index 1</span><span>1</span><span style="color: #2e6b4a">✓ No change</span>
+</div>
+</section>
+
+<section aria-label="Review" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Review: update prod on hetzner-bake-1</h2>
+<span><b>Bake</b> · device/map (1 284 cells) · device/catalog · planner/routing · planner/overlays · planner/index</span>
+<span><b>Cost</b> · about 2 h 30 min here · upload about 11 GB</span>
+<span><b>After</b> · 7f3a becomes the rollback. A rollback returns clients to formats 19 and 8.</span>
+<label style="display: flex; align-items: flex-start; gap: 10px; padding: 12px; background: #fff3e6; border: 1px solid #b85c00; border-radius: 8px">
+<input type="checkbox" checked="{{ack}}" onChange="{{toggleAck}}" style="margin-top: 4px">
+<span>I understand that devices and iOS apps that read only the old formats get no new data from prod until they update.</span>
+</label>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">obc data update prod --accept-format-change --yes --expect 71de</code>
+<sc-if value="{{ack}}" hint-placeholder-val="{{false}}">
+<a href="Run.dc.html" style="align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border-radius: 8px; text-decoration: none; font-weight: 600">Start on hetzner-bake-1</a>
+</sc-if>
+<sc-if value="{{noAck}}" hint-placeholder-val="{{true}}">
+<span style="align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #d9d9d4; color: #4a4a46; border-radius: 8px; font-weight: 600">Start: tick the box first</span>
+</sc-if>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1300}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { ack: false };
+  }
+  renderVals() {
+    return {
+      ack: this.state.ack,
+      noAck: !this.state.ack,
+      toggleAck: () => this.setState({ ack: !this.state.ack })
+    };
+  }
+}
+</script>
+</body>
+</html>

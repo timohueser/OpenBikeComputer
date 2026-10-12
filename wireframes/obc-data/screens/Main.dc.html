@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">Overview</h1>
+<div role="group" aria-label="Target" style="display: flex; border: 1px solid #1d1d1b; border-radius: 8px; overflow: hidden">
+<button type="button" aria-pressed="{{isProd}}" onClick="{{showProd}}" style="min-height: 44px; padding: 0 20px; border: 0; font: inherit; font-weight: 600; cursor: pointer; {{prodTab}}">prod</button>
+<button type="button" aria-pressed="{{isLocal}}" onClick="{{showLocal}}" style="min-height: 44px; padding: 0 20px; border: 0; border-left: 1px solid #1d1d1b; font: inherit; font-weight: 600; cursor: pointer; {{localTab}}">local</button>
+</div>
+<span style="flex-grow: 1"></span>
+<a href="{{tgt.href}}" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border-radius: 8px; text-decoration: none; font-weight: 600">{{tgt.action}}</a>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; padding: 12px 16px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<b>{{tgt.title}}</b>
+<span>{{tgt.where}} · {{tgt.region}} · {{tgt.release}}, {{tgt.age}}</span>
+<span style="color: #8a4500; font-weight: 600">{{staleCount}} of 13 layers stale</span>
+<span style="color: #4a4a46">Causes: {{tgt.causes}}</span>
+</div>
+
+<div style="overflow-x: auto; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="position: relative; width: 1296px; height: 1008px; font-size: 13px; line-height: 18px">
+
+<div style="position: absolute; left: 24px; top: 40px; width: 232px; height: 928px; background: #f4f4f1; border-radius: 10px"></div>
+<div style="position: absolute; left: 296px; top: 40px; width: 720px; height: 240px; background: #f4f4f1; border-radius: 10px"></div>
+<div style="position: absolute; left: 296px; top: 312px; width: 720px; height: 656px; background: #f4f4f1; border-radius: 10px"></div>
+
+<svg aria-hidden="true" width="39" height="8" viewBox="0 0 39 8" preserveAspectRatio="none" style="position: absolute; left: 256px; top: 156px; width: 39px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-1" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 35 4" marker-end="url(#dc-arrow-head-filled-1)"></path></svg>
+<svg aria-hidden="true" width="39" height="8" viewBox="0 0 39 8" preserveAspectRatio="none" style="position: absolute; left: 256px; top: 636px; width: 39px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-2" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 35 4" marker-end="url(#dc-arrow-head-filled-2)"></path></svg>
+<svg aria-hidden="true" width="63" height="8" viewBox="0 0 63 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 112px; width: 63px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-3" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 59 4" marker-end="url(#dc-arrow-head-filled-3)"></path></svg>
+<svg aria-hidden="true" width="32" height="8" viewBox="0 0 32 8" preserveAspectRatio="none" style="position: absolute; left: 752px; top: 112px; width: 32px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 32 4"></path></svg>
+<svg aria-hidden="true" width="272" height="8" viewBox="0 0 272 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 216px; width: 272px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 272 4"></path></svg>
+<svg aria-hidden="true" width="8" height="104" viewBox="0 0 8 104" preserveAspectRatio="none" style="position: absolute; left: 780px; top: 116px; width: 8px; height: 104px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 4 0 L 4 104"></path></svg>
+<svg aria-hidden="true" width="31" height="8" viewBox="0 0 31 8" preserveAspectRatio="none" style="position: absolute; left: 784px; top: 164px; width: 31px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-4" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 27 4" marker-end="url(#dc-arrow-head-filled-4)"></path></svg>
+<svg aria-hidden="true" width="79" height="8" viewBox="0 0 79 8" preserveAspectRatio="none" style="position: absolute; left: 992px; top: 164px; width: 79px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-5" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 75 4" marker-end="url(#dc-arrow-head-filled-5)"></path></svg>
+<svg aria-hidden="true" width="272" height="8" viewBox="0 0 272 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 384px; width: 272px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 272 4"></path></svg>
+<svg aria-hidden="true" width="272" height="8" viewBox="0 0 272 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 488px; width: 272px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 272 4"></path></svg>
+<svg aria-hidden="true" width="63" height="8" viewBox="0 0 63 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 592px; width: 63px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-6" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 59 4" marker-end="url(#dc-arrow-head-filled-6)"></path></svg>
+<svg aria-hidden="true" width="32" height="8" viewBox="0 0 32 8" preserveAspectRatio="none" style="position: absolute; left: 752px; top: 592px; width: 32px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 32 4"></path></svg>
+<svg aria-hidden="true" width="63" height="8" viewBox="0 0 63 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 696px; width: 63px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-7" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 59 4" marker-end="url(#dc-arrow-head-filled-7)"></path></svg>
+<svg aria-hidden="true" width="32" height="8" viewBox="0 0 32 8" preserveAspectRatio="none" style="position: absolute; left: 752px; top: 696px; width: 32px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 32 4"></path></svg>
+<svg aria-hidden="true" width="272" height="8" viewBox="0 0 272 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 800px; width: 272px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 0 4 L 272 4"></path></svg>
+<svg aria-hidden="true" width="272" height="8" viewBox="0 0 272 8" preserveAspectRatio="none" style="position: absolute; left: 512px; top: 904px; width: 272px; height: 8px; overflow: visible; fill: none; stroke: #b4b4ae; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 6 6"><path d="M 0 4 L 272 4"></path></svg>
+<svg aria-hidden="true" width="8" height="520" viewBox="0 0 8 520" preserveAspectRatio="none" style="position: absolute; left: 780px; top: 388px; width: 8px; height: 520px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><path d="M 4 0 L 4 520"></path></svg>
+<svg aria-hidden="true" width="31" height="8" viewBox="0 0 31 8" preserveAspectRatio="none" style="position: absolute; left: 784px; top: 644px; width: 31px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-8" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 27 4" marker-end="url(#dc-arrow-head-filled-8)"></path></svg>
+<svg aria-hidden="true" width="79" height="8" viewBox="0 0 79 8" preserveAspectRatio="none" style="position: absolute; left: 992px; top: 644px; width: 79px; height: 8px; overflow: visible; fill: none; stroke: #8a8a84; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round"><defs><marker id="dc-arrow-head-filled-9" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" fill="#8a8a84" stroke="none" style="stroke: none; fill: #8a8a84; fill: context-stroke"/></marker></defs><path d="M 0 4 L 75 4" marker-end="url(#dc-arrow-head-filled-9)"></path></svg>
+
+<div style="position: absolute; left: 40px; top: 88px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.osm}}"><span><b>OSM · Geofabrik</b><br><span style="color: {{stone.osm}}">{{stext.osm}}</span></span></div>
+<div style="position: absolute; left: 40px; top: 192px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.copernicus}}"><span><b>Copernicus GLO-30</b><br><span style="color: {{stone.copernicus}}">{{stext.copernicus}}</span></span></div>
+<div style="position: absolute; left: 40px; top: 296px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.tref}}"><span><b>terrain-reference</b><br><span style="color: {{stone.tref}}">{{stext.tref}}</span></span></div>
+<div style="position: absolute; left: 40px; top: 400px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.wiki}}"><span><b>wiki (prepared)</b><br><span style="color: {{stone.wiki}}">{{stext.wiki}}</span></span></div>
+<div style="position: absolute; left: 40px; top: 504px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.climate}}"><span><b>ERA5 · MODIS · HR-WSI</b><br><span style="color: {{stone.climate}}">{{stext.climate}}</span></span></div>
+<div style="position: absolute; left: 40px; top: 608px; width: 200px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; border-radius: 8px; {{sp.assets}}"><span><b>Land &amp; basemap assets</b><br><span style="color: {{stone.assets}}">{{stext.assets}}</span></span></div>
+
+<button type="button" onClick="{{pick.dterrain}}" style="position: absolute; left: 336px; top: 88px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.dterrain}}"><span><b>device/terrain</b><br><span style="color: {{tone.dterrain}}">{{text.dterrain}}</span></span></button>
+<button type="button" onClick="{{pick.dmap}}" style="position: absolute; left: 576px; top: 88px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.dmap}}"><span><b>device/map</b><br><span style="color: {{tone.dmap}}">{{text.dmap}}</span></span></button>
+<button type="button" onClick="{{pick.dland}}" style="position: absolute; left: 336px; top: 192px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.dland}}"><span><b>device/landmarks</b><br><span style="color: {{tone.dland}}">{{text.dland}}</span></span></button>
+<button type="button" onClick="{{pick.dcat}}" style="position: absolute; left: 816px; top: 140px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.dcat}}"><span><b>device/catalog</b><br><span style="color: {{tone.dcat}}">{{text.dcat}}</span></span></button>
+<button type="button" onClick="{{pick.prout}}" style="position: absolute; left: 336px; top: 360px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.prout}}"><span><b>planner/routing</b><br><span style="color: {{tone.prout}}">{{text.prout}}</span></span></button>
+<button type="button" onClick="{{pick.pbase}}" style="position: absolute; left: 336px; top: 464px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.pbase}}"><span><b>planner/basemap</b><br><span style="color: {{tone.pbase}}">{{text.pbase}}</span></span></button>
+<button type="button" onClick="{{pick.psearch}}" style="position: absolute; left: 336px; top: 568px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.psearch}}"><span><b>planner/search</b><br><span style="color: {{tone.psearch}}">{{text.psearch}}</span></span></button>
+<button type="button" onClick="{{pick.pplaces}}" style="position: absolute; left: 576px; top: 568px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.pplaces}}"><span><b>planner/places</b><br><span style="color: {{tone.pplaces}}">{{text.pplaces}}</span></span></button>
+<button type="button" onClick="{{pick.pterrain}}" style="position: absolute; left: 336px; top: 672px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.pterrain}}"><span><b>planner/terrain</b><br><span style="color: {{tone.pterrain}}">{{text.pterrain}}</span></span></button>
+<button type="button" onClick="{{pick.psun}}" style="position: absolute; left: 576px; top: 672px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.psun}}"><span><b>planner/sun</b><br><span style="color: {{tone.psun}}">{{text.psun}}</span></span></button>
+<button type="button" onClick="{{pick.pclim}}" style="position: absolute; left: 336px; top: 776px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.pclim}}"><span><b>planner/climate</b><br><span style="color: {{tone.pclim}}">{{text.pclim}}</span></span></button>
+<button type="button" onClick="{{pick.psnow}}" style="position: absolute; left: 336px; top: 880px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.psnow}}"><span><b>planner/snow</b><br><span style="color: {{tone.psnow}}">{{text.psnow}}</span></span></button>
+<button type="button" onClick="{{pick.pindex}}" style="position: absolute; left: 816px; top: 620px; width: 176px; height: 56px; box-sizing: border-box; padding: 6px 10px; display: flex; align-items: center; text-align: left; font: inherit; color: #1d1d1b; border-radius: 8px; cursor: pointer; {{paint.pindex}}"><span><b>planner/index</b><br><span style="color: {{tone.pindex}}">{{text.pindex}}</span></span></button>
+
+<a href="{{tgt.href}}" style="position: absolute; left: 1072px; top: 120px; width: 184px; height: 576px; box-sizing: border-box; padding: 20px 16px; display: flex; align-items: flex-start; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px; color: #1d1d1b; text-decoration: none; font-size: 14px; line-height: 21px"><span><b style="font-size: 22px; line-height: 30px">{{tgt.title}}</b><br>{{tgt.where}}<br><br><b>Coverage</b><br>{{tgt.region}}<br><br><b>Serves</b><br>{{tgt.release}}<br>{{tgt.age}}<br><br><b>Clients</b><br>{{tgt.clients}}<br><br><span style="color: #8a4500; font-weight: 600">● {{staleCount}} layers stale</span><br><br>Open target →</span></a>
+
+<div style="position: absolute; left: 40px; top: 52px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #4a4a46">SOURCES</div>
+<div style="position: absolute; left: 312px; top: 52px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #4a4a46">DEVICE · baked per grid cell, then one catalog</div>
+<div style="position: absolute; left: 312px; top: 324px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #4a4a46">PLANNER · baked once over the coverage</div>
+<div style="position: absolute; left: 1072px; top: 52px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: #4a4a46">TARGET</div>
+<div style="position: absolute; left: 40px; top: 688px; width: 200px; color: #4a4a46">+ 14 more sources in Sources</div>
+</div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 8px 20px; color: #4a4a46; font-size: 14px">
+<span><span style="color: #2e6b4a; font-weight: 600">✓</span> up to date</span>
+<span><span style="color: #8a4500; font-weight: 600">●</span> stale: the reason is on the box</span>
+<span><span style="color: #1d3a9c; font-weight: 600">◐</span> baking</span>
+<span><span style="color: #5f5f5a; font-weight: 600">○</span> off for this target</span>
+<span>Click a layer to see why, what it reads and what follows it.</span>
+</div>
+
+<section aria-label="Selected layer" style="display: flex; flex-wrap: wrap; gap: 16px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 22px; line-height: 30px; font-weight: 600">{{d.name}}</h2>
+<span style="color: #4a4a46">{{d.shape}}</span>
+<span>Version in code <b>{{d.ver}}</b> · in {{tgt.title}} <b>{{d.inTarget}}</b></span>
+<span style="font-weight: 600; color: {{d.tone}}">{{d.state}}</span>
+<span>{{d.why}}</span>
+</div>
+<div style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<span><b>Reads</b><br>{{d.reads}}</span>
+<span><b>Rebakes after it</b><br>{{d.follows}}</span>
+<span><b>Used by</b><br>{{d.used}}</span>
+</div>
+<div style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+<a href="{{tgt.href}}" style="display: inline-flex; align-items: center; align-self: flex-start; min-height: 44px; padding: 0 16px; border: 1px solid #1d1d1b; border-radius: 8px; color: #1d1d1b; text-decoration: none; font-weight: 600">Update only this layer…</a>
+<span style="color: #4a4a46">Same as</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">{{d.cli}}</code>
+</div>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1640}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { target: 'prod', sel: 'dmap' };
+  }
+  renderVals() {
+    const t = this.state.target;
+    const sel = this.state.sel;
+    const L = {
+      dterrain: { name: 'device/terrain', shape: 'Tiled: baked per grid cell', ver: '1.4', reads: 'Copernicus GLO-30, terrain-reference', feeds: ['dmap'], used: 'Device (inside each map), map builder', src: ['copernicus', 'tref'] },
+      dmap: { name: 'device/map', shape: 'Tiled: baked per grid cell', ver: '19.3', reads: 'OSM, land polygons, device/terrain', feeds: ['dcat'], used: 'Device (.obcm map), map builder', src: ['osm', 'assets'] },
+      dland: { name: 'device/landmarks', shape: 'Tiled: baked per grid cell', ver: '19.1', reads: 'OSM, wiki', feeds: ['dcat'], used: 'Device', src: ['osm', 'wiki'] },
+      dcat: { name: 'device/catalog', shape: 'Whole: one file over the coverage', ver: '3.1', reads: 'device/terrain, device/map, device/landmarks', feeds: [], used: 'Map builder, desktop app', src: [] },
+      prout: { name: 'planner/routing', shape: 'Whole: baked once over the coverage', ver: '8.2', reads: 'OSM, Copernicus GLO-30', feeds: ['pindex'], used: 'Router service, iOS router', src: ['osm', 'copernicus'] },
+      pbase: { name: 'planner/basemap', shape: 'Whole: baked once over the coverage', ver: '1.1', reads: 'OSM, land polygons, Natural Earth', feeds: ['pindex'], used: 'Web planner, iOS', src: ['osm', 'assets'] },
+      psearch: { name: 'planner/search', shape: 'Whole: baked once over the coverage', ver: '6.1', reads: 'OSM, wiki', feeds: ['pplaces', 'pindex'], used: 'Search service', src: ['osm', 'wiki'] },
+      pplaces: { name: 'planner/places', shape: 'Whole: baked once over the coverage', ver: '1.0', reads: 'planner/search', feeds: ['pindex'], used: 'Web planner', src: [] },
+      pterrain: { name: 'planner/terrain', shape: 'Whole: baked once over the coverage', ver: '1.2', reads: 'Copernicus GLO-30', feeds: ['psun', 'pindex'], used: 'Web planner', src: ['copernicus'] },
+      psun: { name: 'planner/sun', shape: 'Whole, optional', ver: '1.0', reads: 'planner/terrain', feeds: ['pindex'], used: 'Web planner', src: [] },
+      pclim: { name: 'planner/climate', shape: 'Whole, optional', ver: '1.0', reads: 'ERA5-Land', feeds: ['pindex'], used: 'Web planner', src: ['climate'] },
+      psnow: { name: 'planner/snow', shape: 'Whole, optional', ver: '2.0', reads: 'MODIS, HR-WSI, Hansen', feeds: ['pindex'], used: 'Web planner', src: ['climate'] },
+      pindex: { name: 'planner/index', shape: 'Whole: the planner release index', ver: '1.3', reads: 'Every planner layer', feeds: [], used: 'Web planner, iOS, router, search', src: [] }
+    };
+    const wikiWhy = 'A source changed: wiki 2026-09-01 is prepared; this target still uses 2026-06-01.';
+    const S = {
+      prod: {
+        dterrain: ['ok', '1.4'], dmap: ['stale', '19.2', 'revision 2→3', 'Version changed: revision 2 → 3. The baker makes better output; readers need nothing new.'],
+        dland: ['stale', '19.1', 'wiki 06-01 → 09-01', wikiWhy], dcat: ['stale', '3.1', 'follows map, landmarks', 'An input changes: device/map and device/landmarks get new bytes.'],
+        prout: ['ok', '8.2'], pbase: ['ok', '1.1'], psearch: ['stale', '6.1', 'wiki 06-01 → 09-01', wikiWhy],
+        pplaces: ['stale', '1.0', 'follows search', 'An input changes: planner/search gets new bytes.'], pterrain: ['ok', '1.2'], psun: ['ok', '1.0'],
+        pclim: ['ok', '1.0'], psnow: ['off'], pindex: ['stale', '1.3', 'follows search, places', 'An input changes: planner/search and planner/places get new bytes.']
+      },
+      local: {
+        dterrain: ['ok', '1.4'], dmap: ['stale', '19.2', 'revision 2→3', 'Version changed: revision 2 → 3. The baker makes better output; readers need nothing new.'],
+        dland: ['ok', '19.1'], dcat: ['stale', '3.1', 'follows map', 'An input changes: device/map gets new bytes.'],
+        prout: ['ok', '8.2'], pbase: ['ok', '1.1'], psearch: ['ok', '6.1'], pplaces: ['ok', '1.0'], pterrain: ['ok', '1.2'],
+        psun: ['off'], pclim: ['off'], psnow: ['off'], pindex: ['ok', '1.3']
+      }
+    };
+    const T = {
+      prod: { title: 'prod', where: 'R2 obc-maps', region: 'DACH + Baden-Württemberg', release: 'release 7f3a', age: '3 days ago, from hetzner-bake-1', causes: 'device/map revision 2→3 · wiki 2026-09-01 prepared', clients: 'Devices, map builder, web planner, iOS, router', href: 'TargetProdLaptop.dc.html', action: 'Review update of prod' },
+      local: { title: 'local', where: 'a folder on this laptop', region: 'Freiburg', release: 'release 91bd', age: '2 days ago, on this laptop', causes: 'device/map revision 2→3', clients: 'Served here: off', href: 'TargetLocal.dc.html', action: 'Review update of local' }
+    };
+    const SRC = {
+      osm: { prod: ['ok', 'DACH · 4 d · policy 7 d'], local: ['ok', 'Freiburg · 2 d old'] },
+      copernicus: { prod: ['ok', '2021 · manual'], local: ['ok', '2021 · manual'] },
+      tref: { prod: ['ok', 'de at ch · v3 · manual'], local: ['ok', 'de · v3 · manual'] },
+      wiki: { prod: ['stale', '09-01 new · prod 06-01'], local: ['ok', '2026-09-01 · manual'] },
+      climate: { prod: ['ok', 'climate, snow · manual'], local: ['off', 'not used here'] },
+      assets: { prod: ['ok', 'polygons, Natural Earth'], local: ['ok', 'polygons, Natural Earth'] }
+    };
+    const PAINT = {
+      ok: 'background: #ffffff; border: 1px solid #c9c9c4',
+      stale: 'background: #fff3e6; border: 2px solid #b85c00',
+      off: 'background: #f3f3f1; border: 1px dashed #a3a39e'
+    };
+    const TONE = { ok: '#2e6b4a', stale: '#8a4500', off: '#5f5f5a' };
+    const MARK = { ok: '✓ ', stale: '● ', off: '○ ' };
+    const ring = '; outline: 3px solid #1d1d1b; outline-offset: 2px';
+    const st = S[t];
+    const paint = {}, text = {}, tone = {}, pick = {};
+    let staleCount = 0;
+    Object.keys(L).forEach((k) => {
+      const s = st[k];
+      if (s[0] === 'stale') staleCount += 1;
+      paint[k] = PAINT[s[0]] + (k === sel ? ring : '');
+      tone[k] = TONE[s[0]];
+      text[k] = MARK[s[0]] + (s[0] === 'off' ? 'off' : s[0] === 'ok' ? L[k].ver + ' · up to date' : L[k].ver + ' · ' + s[2]);
+      pick[k] = () => this.setState({ sel: k });
+    });
+    const sp = {}, stext = {}, stone = {};
+    Object.keys(SRC).forEach((k) => {
+      const s = SRC[k][t];
+      const read = L[sel].src.indexOf(k) >= 0;
+      sp[k] = PAINT[s[0]] + (read ? ring : '');
+      stext[k] = MARK[s[0]] + s[1];
+      stone[k] = TONE[s[0]];
+    });
+    const follows = [];
+    const walk = (k) => L[k].feeds.forEach((f) => { if (follows.indexOf(f) < 0) { follows.push(f); walk(f); } });
+    walk(sel);
+    const s = st[sel];
+    const label = { ok: '✓ Up to date', stale: '● Stale', off: '○ Off for this target' };
+    const d = {
+      name: L[sel].name,
+      shape: L[sel].shape,
+      ver: L[sel].ver,
+      inTarget: s[0] === 'off' ? '—' : (s[1] === L[sel].ver ? s[1] : s[1]),
+      state: label[s[0]],
+      tone: TONE[s[0]],
+      why: s[0] === 'stale' ? s[3] : s[0] === 'ok' ? 'Same version and same inputs as the target serves.' : 'This optional layer is off. Switch it on in the target.',
+      reads: L[sel].reads,
+      follows: follows.length ? follows.map((f) => L[f].name).join(', ') : 'Nothing',
+      used: L[sel].used,
+      cli: 'obc data update ' + t + ' --only ' + L[sel].name
+    };
+    return {
+      isProd: t === 'prod',
+      isLocal: t === 'local',
+      prodTab: t === 'prod' ? 'background: #1d1d1b; color: #ffffff' : 'background: #ffffff; color: #1d1d1b',
+      localTab: t === 'local' ? 'background: #1d1d1b; color: #ffffff' : 'background: #ffffff; color: #1d1d1b',
+      showProd: () => this.setState({ target: 'prod' }),
+      showLocal: () => this.setState({ target: 'local' }),
+      tgt: T[t],
+      staleCount: staleCount,
+      paint: paint, text: text, tone: tone, pick: pick,
+      sp: sp, stext: stext, stone: stone,
+      d: d
+    };
+  }
+}
+</script>
+</body>
+</html>

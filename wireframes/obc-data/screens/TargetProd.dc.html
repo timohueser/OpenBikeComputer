@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Target prod</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #4a2a6a; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #b9a4cf; border-radius: 999px">This page runs on <b>hetzner-bake-1</b></span>
+<span style="color: #e6dcf0">Linux · 32 cores · 128 GB RAM · store 3.1 TB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #e6dcf0">Runs here: none</span>
+<span style="color: #e6dcf0">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProd.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="Run.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · https://maps.openbikecomputer.com · release 7f3a, 3 days ago, from hetzner-bake-1</span>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Coverage" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Coverage</h2>
+<span style="padding: 4px 12px; background: #f4f4f1; border: 1px solid #c9c9c4; border-radius: 999px">DACH + Baden-Württemberg</span>
+<span style="color: #4a4a46">3 Geofabrik areas · 1 284 grid cells</span>
+<span style="flex-grow: 1"></span>
+<button type="button" style="min-height: 44px; padding: 0 16px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Change area…</button>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; color: #4a4a46; font-size: 14px">
+<label for="colourby">Colour cells by</label>
+<select id="colourby" style="min-height: 36px; font: inherit; padding: 0 8px">
+<option>device/map</option>
+<option>device/terrain</option>
+<option>device/landmarks</option>
+</select>
+<span><span style="color: #8a4500; font-weight: 600">●</span> stale 1 284</span>
+<span><span style="color: #2e6b4a; font-weight: 600">✓</span> up to date 0</span>
+</div>
+<div role="img" aria-label="Map of the coverage. Every grid cell of device/map is stale." style="position: relative; height: 420px; background: #eef2f4; border: 1px solid #c9c9c4; border-radius: 8px; overflow: hidden">
+<div style="position: absolute; left: 6%; top: 8%; width: 88%; height: 84%; display: grid; grid-template-columns: repeat(22, minmax(0, 1fr)); gap: 3px">
+<sc-for list="{{cells}}" as="c" hint-placeholder-count="264">
+<div style="border-radius: 2px; {{c.paint}}"></div>
+</sc-for>
+</div>
+<span style="position: absolute; left: 16px; bottom: 12px; padding: 2px 8px; background: #ffffff; border-radius: 4px; font-size: 13px; color: #4a4a46">[Map: MapLibre with Geofabrik outlines and grid cells]</span>
+</div>
+</section>
+
+<section aria-label="Layers" style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Layers</h2>
+<sc-for list="{{layers}}" as="l" hint-placeholder-count="13">
+<div style="display: flex; align-items: center; gap: 10px; min-height: 36px; border-bottom: 1px solid #ececea">
+<span style="width: 20px; text-align: center; font-weight: 600; color: {{l.tone}}">{{l.mark}}</span>
+<span style="flex: 1 1 auto; min-width: 0"><b>{{l.name}}</b><br><span style="font-size: 13px; color: {{l.tone}}">{{l.why}}</span></span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #4a4a46">{{l.ver}}</span>
+<sc-if value="{{l.optional}}" hint-placeholder-val="{{false}}">
+<label style="display: inline-flex; align-items: center; gap: 4px; font-size: 13px"><input type="checkbox" checked="{{l.on}}" onChange="{{l.toggle}}"> on</label>
+</sc-if>
+</div>
+</sc-for>
+</section>
+
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Releases" style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Releases on prod</h2>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px; border-bottom: 1px solid #ececea">
+<b style="font-family: 'IBM Plex Mono', monospace">7f3a</b><span>3 days ago · hetzner-bake-1 · OSM 10-08</span><span style="flex-grow: 1"></span><span style="padding: 2px 10px; background: #1d1d1b; color: #ffffff; border-radius: 999px; font-size: 13px">serving</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px">
+<b style="font-family: 'IBM Plex Mono', monospace">2c91</b><span>17 days ago · hetzner-bake-1 · OSM 09-24</span><span style="flex-grow: 1"></span><button type="button" style="min-height: 36px; padding: 0 12px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Roll back to 2c91</button>
+</div>
+<span style="color: #4a4a46; font-size: 14px">prod keeps the serving release and one rollback. Layers that did not change share their files, so the rollback costs only what changed (7.8 GB here). The router still runs 2c91, so a rollback is instant.</span>
+</section>
+
+<section aria-label="Update" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<sc-if value="{{closed}}" hint-placeholder-val="{{true}}">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Update prod</h2>
+<span><span style="color: #8a4500; font-weight: 600">● 6 layers stale.</span> Causes: device/map revision 2→3 · wiki 2026-09-01 prepared.</span>
+<button type="button" onClick="{{open}}" style="align-self: flex-start; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer">Review update</button>
+</sc-if>
+<sc-if value="{{opened}}" hint-placeholder-val="{{false}}">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Review: update prod on hetzner-bake-1</h2>
+<div style="display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 8px">
+<span><b>Fetch</b> · wiki 2026-09-01 from R2 (2.3 GB). OSM is current.</span>
+<span><b>Bake</b> · device/map (1 284 cells) · device/landmarks (1 284 cells) · device/catalog · planner/search · planner/places · planner/index</span>
+<span><b>Keep</b> · device/terrain · planner/routing · planner/basemap · planner/terrain · planner/sun · planner/climate</span>
+<span><b>Cost</b> · about 1 h 10 min here · peak RAM 38 GB · upload about 6.4 GB</span>
+<span><b>Clients</b> · same formats. No app, firmware or service update needed.</span>
+<span><b>After</b> · 7f3a becomes the rollback. 2c91 is deleted from R2 (7.8 GB).</span>
+</div>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">obc data update prod --yes --expect 4c1e</code>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<a href="Run.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border-radius: 8px; text-decoration: none; font-weight: 600">Start on hetzner-bake-1</a>
+<button type="button" onClick="{{close}}" style="min-height: 44px; padding: 0 20px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Cancel</button>
+</div>
+<span style="color: #4a4a46; font-size: 14px">The run keeps going if you close this page or the SSH tunnel.</span>
+</sc-if>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1400}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { review: false, opt: { pclim: true, psnow: false, psun: true } };
+  }
+  renderVals() {
+    const shape = [
+      '0000000011111100000000',
+      '0000001111111111000000',
+      '0000011111111111110000',
+      '0000111111111111111000',
+      '0001111111111111111000',
+      '0001111111111111111100',
+      '0011111111111111111110',
+      '0011111111111111111110',
+      '0001111111111111111111',
+      '0001111111111111111111',
+      '0000111111111111111110',
+      '0000011111111111111100'
+    ];
+    const cells = [];
+    shape.forEach((row) => row.split('').forEach((ch) => {
+      cells.push({ paint: ch === '1' ? 'background: #f0b679; border: 1px solid #b85c00' : 'background: transparent' });
+    }));
+    const opt = this.state.opt;
+    const rows = [
+      ['dterrain', 'device/terrain', 'ok', '1.4', 'up to date'],
+      ['dmap', 'device/map', 'stale', '19.2 → 19.3', 'revision 2→3: improved output'],
+      ['dland', 'device/landmarks', 'stale', '19.1', 'wiki 06-01 → 09-01'],
+      ['dcat', 'device/catalog', 'stale', '3.1', 'follows map, landmarks'],
+      ['prout', 'planner/routing', 'ok', '8.2', 'up to date'],
+      ['pbase', 'planner/basemap', 'ok', '1.1', 'up to date'],
+      ['psearch', 'planner/search', 'stale', '6.1', 'wiki 06-01 → 09-01'],
+      ['pplaces', 'planner/places', 'stale', '1.0', 'follows search'],
+      ['pterrain', 'planner/terrain', 'ok', '1.2', 'up to date'],
+      ['psun', 'planner/sun', 'ok', '1.0', 'up to date'],
+      ['pclim', 'planner/climate', 'ok', '1.0', 'up to date'],
+      ['psnow', 'planner/snow', 'off', '2.0', 'off'],
+      ['pindex', 'planner/index', 'stale', '1.3', 'follows search, places']
+    ];
+    const TONE = { ok: '#2e6b4a', stale: '#8a4500', off: '#5f5f5a' };
+    const MARK = { ok: '✓', stale: '●', off: '○' };
+    const layers = rows.map((r) => {
+      const optional = Object.prototype.hasOwnProperty.call(opt, r[0]);
+      const on = optional ? opt[r[0]] : true;
+      const state = optional && !on ? 'off' : r[2];
+      const why = optional && on && r[2] === 'off' ? 'switched on: bakes on next update' : optional && !on ? 'off: dropped on next update' : r[4];
+      return {
+        name: r[1], ver: r[3], optional: optional, on: on,
+        mark: MARK[state], tone: optional && on && r[2] === 'off' ? '#8a4500' : TONE[state], why: why,
+        toggle: () => this.setState({ opt: Object.assign({}, opt, { [r[0]]: !on }) })
+      };
+    });
+    return {
+      cells: cells,
+      layers: layers,
+      closed: !this.state.review,
+      opened: this.state.review,
+      open: () => this.setState({ review: true }),
+      close: () => this.setState({ review: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

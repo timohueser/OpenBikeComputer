@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OBC data · Update prod from laptop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #ebebe7; color: #1d1d1b; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 22px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 24px; background: #262624; color: #ffffff">
+<b style="font-size: 16px; letter-spacing: 0.02em">OBC data</b>
+<span style="padding: 2px 12px; border: 1px solid #8f8f88; border-radius: 999px">This page runs on <b>laptop</b></span>
+<span style="color: #dcdcd6">macOS · 10 cores · 32 GB RAM · store 412 GB free</span>
+<span style="flex-grow: 1"></span>
+<span style="color: #dcdcd6">Runs here: none</span>
+<span style="color: #dcdcd6">Elsewhere: none</span>
+</header>
+
+<nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px; background: #ffffff; border-bottom: 1px solid #d0d0ca">
+<a href="Main.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Overview</a>
+<a href="TargetProdLaptop.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; font-weight: 600; border-bottom: 3px solid #1d1d1b">prod</a>
+<a href="TargetLocal.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">local</a>
+<a href="Sources.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Sources</a>
+<a href="RunElsewhere.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Runs</a>
+<a href="Machine.dc.html" style="padding: 12px 12px; color: #1d1d1b; text-decoration: none; border-bottom: 3px solid transparent">Machine</a>
+</nav>
+
+<main style="max-width: 1392px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px">
+<h1 style="margin: 0; font-size: 28px; line-height: 36px; font-weight: 600">prod</h1>
+<span style="color: #4a4a46">R2 bucket obc-maps · release 7f3a, 3 days ago, from hetzner-bake-1 · 6 layers stale</span>
+</div>
+
+<section aria-label="Update" style="display: flex; flex-direction: column; gap: 14px; padding: 20px; background: #ffffff; border: 2px solid #1d1d1b; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Review: update prod on this laptop</h2>
+
+<fieldset style="margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 8px 24px">
+<legend style="padding: 0 0 6px; font-weight: 600">What to update</legend>
+<label style="display: inline-flex; align-items: center; gap: 8px; min-height: 40px"><input type="radio" name="scope" checked="{{isAll}}" onChange="{{pickAll}}"> Everything stale (6 layers)</label>
+<label style="display: inline-flex; align-items: center; gap: 8px; min-height: 40px"><input type="radio" name="scope" checked="{{isOne}}" onChange="{{pickOne}}"> Only device/map, and device/catalog that follows it</label>
+</fieldset>
+
+<div style="display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 8px">
+<span><b>Fetch</b> · {{r.fetch}}</span>
+<span><b>Download from prod</b> · {{r.download}}</span>
+<span><b>Bake here</b> · {{r.bake}}</span>
+<span><b>Keep by reference</b> · {{r.keep}}</span>
+<span><b>Cost</b> · {{r.cost}}</span>
+<span><b>Clients</b> · same formats. No app, firmware or service update needed.</span>
+<span><b>After</b> · 7f3a becomes the rollback. 2c91 is deleted from R2 (7.8 GB).</span>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 8px; {{r.checkPaint}}">
+<b>Machine check</b>
+<span>{{r.check}}</span>
+</div>
+
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px; overflow-wrap: anywhere">{{r.cli}}</code>
+
+<sc-if value="{{isOne}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<a href="Run.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #1d1d1b; color: #ffffff; border-radius: 8px; text-decoration: none; font-weight: 600">Start on laptop</a>
+<a href="Main.dc.html" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; color: #1d1d1b; text-decoration: none">Cancel</a>
+</div>
+<span style="color: #4a4a46; font-size: 14px">Keep the laptop awake until Switch. If it sleeps, the run pauses and prod stays as it is; other machines see that the laptop holds the prod lock.</span>
+</sc-if>
+<sc-if value="{{isAll}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+<span style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #d9d9d4; color: #4a4a46; border-radius: 8px; font-weight: 600">Start on laptop: does not fit</span>
+<span>Run it on hetzner-bake-1:</span>
+<code style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 8px 10px; background: #f4f4f1; border-radius: 6px">obc data open hetzner-bake-1</code>
+</div>
+</sc-if>
+</section>
+
+<section aria-label="Releases" style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #ffffff; border: 1px solid #d0d0ca; border-radius: 12px">
+<h2 style="margin: 0; font-size: 18px; line-height: 26px; font-weight: 600">Releases on prod</h2>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px; border-bottom: 1px solid #ececea">
+<b style="font-family: 'IBM Plex Mono', monospace">7f3a</b><span>3 days ago · hetzner-bake-1 · OSM 10-08</span><span style="flex-grow: 1"></span><span style="padding: 2px 10px; background: #1d1d1b; color: #ffffff; border-radius: 999px; font-size: 13px">serving</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 44px">
+<b style="font-family: 'IBM Plex Mono', monospace">2c91</b><span>17 days ago · hetzner-bake-1 · OSM 09-24</span><span style="flex-grow: 1"></span><button type="button" style="min-height: 36px; padding: 0 12px; background: #ffffff; border: 1px solid #1d1d1b; border-radius: 8px; font: inherit; cursor: pointer">Roll back to 2c91</button>
+</div>
+<span style="color: #4a4a46; font-size: 14px">prod keeps the serving release and one rollback. Layers that did not change share their files, so the rollback costs only what changed.</span>
+</section>
+
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { scope: 'one' };
+  }
+  renderVals() {
+    const one = this.state.scope === 'one';
+    const r = one ? {
+      fetch: 'OSM DACH 2026-10-08, the version prod uses, from its R2 copy (5.2 GB)',
+      download: 'device/terrain cells that device/map reads (3.1 GB)',
+      bake: 'device/map (1 284 cells) · device/catalog',
+      keep: '11 other layers stay as they are in prod. Nothing to download.',
+      cost: 'about 2 h 40 min on this laptop (hetzner-bake-1: about 35 min) · upload about 4.1 GB',
+      check: '✓ Fits: peak RAM about 9 of 32 GB · disk about 52 of 412 GB',
+      checkPaint: 'background: #edf6f0; border: 1px solid #2e6b4a',
+      cli: 'obc data update prod --only device/map --yes --expect 9b07'
+    } : {
+      fetch: 'OSM DACH 2026-10-08 from its R2 copy (5.2 GB) · wiki 2026-09-01 from R2 (2.3 GB)',
+      download: 'device/terrain cells (3.1 GB) · planner/search inputs (none: it reads only sources)',
+      bake: 'device/map · device/landmarks · device/catalog · planner/search · planner/places · planner/index',
+      keep: '7 other layers stay as they are in prod. Nothing to download.',
+      cost: 'about 6 h 50 min on this laptop (hetzner-bake-1: about 1 h 10 min) · upload about 6.4 GB',
+      check: '✗ Does not fit: planner/search needs about 38 GB RAM; this laptop has 32 GB.',
+      checkPaint: 'background: #fff3e6; border: 2px solid #b85c00',
+      cli: 'obc data update prod --yes --expect 4c1e'
+    };
+    return {
+      isOne: one,
+      isAll: !one,
+      pickOne: () => this.setState({ scope: 'one' }),
+      pickAll: () => this.setState({ scope: 'all' }),
+      r: r
+    };
+  }
+}
+</script>
+</body>
+</html>
