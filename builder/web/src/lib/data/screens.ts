@@ -23,9 +23,11 @@ export function runAt(hash: string): string | null {
     return first === "runs" && id ? id : null;
 }
 
-/** What a target screen shows: `#/TARGET`, its review `#/TARGET/review`, or the review that
- *  resumes a run, `#/TARGET/resume/RUN`. */
-export function targetAt(hash: string): { review: boolean; resume: string | null } {
-    const [, second, run] = hash.replace(/^#\/?/, "").split("/");
-    return { review: second === "review" || (second === "resume" && !!run), resume: second === "resume" && run ? run : null };
+/** What a target screen shows: `#/TARGET`; its review `#/TARGET/review`, which `?only=LAYER,…`
+ *  narrows; or the review that resumes a run, `#/TARGET/resume/RUN`. */
+export function targetAt(hash: string): { review: boolean; resume: string | null; only: string | null } {
+    const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
+    const [, second, run] = path.split("/");
+    const resume = second === "resume" && run ? run : null;
+    return { review: second === "review" || !!resume, resume, only: new URLSearchParams(query).get("only") };
 }

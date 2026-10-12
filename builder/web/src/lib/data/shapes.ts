@@ -1,3 +1,5 @@
+import type { CliError } from "./cli";
+
 // The JSON of the commands that the page reads. `test-support/data/` has an example of each.
 
 /** What `obc data --json` writes about this machine and each target. The header shows it and
@@ -18,6 +20,9 @@ export interface Target {
     lock: Holder | null;
     lock_error: string | null;
     region: string | null;
+    /** Each source version that the serving release read; `retrieved` is when a machine first
+     *  fetched it. */
+    sources: { source: string; version: string; retrieved: string | null }[];
     /** `null` while the target serves nothing or its steps cannot be listed. */
     layers: Layer[] | null;
     blocked: { layer: string; step: string; reason: string }[];
@@ -43,13 +48,42 @@ export interface Layer {
     /** Why a stale layer is stale, in a few words. */
     text: string | null;
     shape: "tiled" | "whole" | null;
+    /** The version of its steps, in the code. */
     format: number | null;
     revision: number | null;
+    /** The version in the serving release. */
+    served_format: number | null;
+    served_revision: number | null;
     readers: string[];
     reads: string[];
 }
 
 export const LAYER_MARK: Record<Layer["state"], string> = { ok: "✓", stale: "●", off: "○" };
+
+/** Why a layer is in its state, in a few words. */
+export function layerText(layer: Layer): string {
+    return layer.text ?? (layer.state === "off" ? "off" : "up to date");
+}
+
+/** The causes of the stale layers of a target, each once. */
+export function causes(layers: Layer[]): string {
+    return [...new Set(layers.flatMap((layer) => (layer.state === "stale" && layer.text ? [layer.text] : [])))].join(" · ");
+}
+
+/** `19.3`, or `null` without a version. */
+export function version(format: number | null, revision: number | null): string | null {
+    return format === null ? null : `${format}.${revision}`;
+}
+
+/** The error of a target that cannot be read, as the CLI writes an error. */
+export function failure(target: Target): CliError | null {
+    return target.error === null ? null : { code: "failed", message: target.error, fix: target.fix ?? "" };
+}
+
+/** `a, b, and c`, or `nothing`. */
+export function list(items: string[]): string {
+    return items.length ? new Intl.ListFormat("en").format(items) : "nothing";
+}
 
 /** What `obc data update TARGET --dry-run --json` writes. */
 export interface Review {
@@ -220,6 +254,13 @@ export function clock(time: string): string {
 /** `YYYY-MM-DDTHH:MM:SSZ` as the local day and time, `12 Oct, 09:31`. */
 export function when(time: string): string {
     return `${new Date(time).toLocaleDateString([], { day: "numeric", month: "short" })}, ${clock(time)}`;
+}
+
+/** How long ago `time` was, coarsely: `40 min`, `5 h`, `12 d`. */
+export function age(time: string, now = Date.now()): string {
+    const minutes = Math.max(0, Math.round((now - Date.parse(time)) / 60_000));
+    if (minutes < 60) return `${minutes} min`;
+    return minutes < 48 * 60 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} d`;
 }
 
 /** `2 h 5 min`, `44 min`, `40 s`. */

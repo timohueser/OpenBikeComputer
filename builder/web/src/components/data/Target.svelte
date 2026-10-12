@@ -1,8 +1,9 @@
 <script lang="ts">
-    import { flagsOf } from "../../lib/data/flags";
+    import { command } from "../../lib/data/cli";
+    import { flagsOf, reviewArgs, type Flags } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { targetAt } from "../../lib/data/screens";
-    import { clock, LAYER_MARK, short, when, type RunView, type Status } from "../../lib/data/shapes";
+    import { causes, clock, failure, LAYER_MARK, layerText, short, version, when, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
     import Review from "./Review.svelte";
@@ -17,18 +18,40 @@
     const resumed = $derived(route.resume ? new CliQuery<RunView>(["runs", route.resume]) : null);
     $effect(() => void resumed?.refresh());
 
+    const lock = $derived(target?.lock ?? null);
+    // A live run holds the lock: an update or a rollback is refused until it ends.
+    const locked = $derived(lock && !lock.stale ? `run ${lock.run} on ${lock.machine}` : null);
     const stale = $derived(target?.layers?.filter((layer) => layer.state === "stale") ?? []);
-    const causes = $derived([...new Set(stale.map((layer) => layer.text))].join(" · "));
     // The page asks before it runs a command that changes an R2 target, so it sends `--yes`.
     const yes = $derived(target?.kind === "r2" ? ["--yes"] : []);
-    let asking = $state<"rollback" | "unlock" | null>(null);
-    let done = $state("");
-    function changed(text: string) {
+    // A ticked layer bakes again, also when it is up to date: `--only`.
+    let ticked = $state<string[]>([]);
+    const only = $derived(route.only ? ([["--only", route.only]] as Flags) : []);
+
+    let asking = $state<"rollback" | "forward" | "unlock" | null>(null);
+    // The banner after a change stays while the target is as before the change or as after it.
+    const now = $derived(target ? `${target.release?.serving.id ?? ""}|${lock?.run ?? ""}` : "");
+    let done = $state<{ text: string; before: string; after: string; forward: string | null } | null>(null);
+    $effect(() => {
+        if (done && now !== done.before && now !== done.after) done = null;
+    });
+    function changed(text: string, after: string, forward: string | null = null) {
+        done = { text, before: now, after, forward };
         asking = null;
-        done = text;
         void status.refresh();
     }
 </script>
+
+{#snippet confirm(title: string, lines: string[], label: string, args: string[], ondone: () => void)}
+    <div class="confirm">
+        <b>{title}</b>
+        {#each lines as line (line)}<p>{line}</p>{/each}
+        <div class="title">
+            <Action {label} {args} {ondone} />
+            <button type="button" onclick={() => (asking = null)}>Cancel</button>
+        </div>
+    </div>
+{/snippet}
 
 <div class="title">
     <h1>{name}</h1>
@@ -46,39 +69,55 @@
     <a href="#/{name}">Back to {name}</a>
     {#if resumed?.error}<Failure error={resumed.error} />{/if}
     {#if !route.resume}
-        <Review {target} flags={[]} {machine} />
+        {#key route.only}
+            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} />
+        {/key}
     {:else if resumed?.output}
         <p class="soft">This review resumes run <a href="#/runs/{route.resume}">{route.resume}</a> with its settings.</p>
-        <Review {target} flags={flagsOf(resumed.output.args)} {machine} />
+        <Review {name} kind={target.kind} flags={flagsOf(resumed.output.args)} {machine} {locked} layers={target.layers ?? []} />
     {/if}
 {:else}
-    {#if target.error}<Failure error={{ code: "failed", message: target.error, fix: target.fix ?? "" }} />{/if}
+    {@const error = failure(target)}
+    {#if error}<Failure {error} />{/if}
     {#if target.lock_error}<p class="missing">The lock of {name} cannot be read: {target.lock_error}</p>{/if}
-    {#if done}<p class="ok" role="status">{done}</p>{/if}
+    {#if done}
+        {@const forward = done.forward}
+        <section class="card done" role="status">
+            <p><b>{done.text}</b></p>
+            {#if forward && asking === "forward"}
+                {@render confirm(
+                    `Go forward to ${short(forward)}?`,
+                    [`${name} serves ${short(forward)} again. Nothing is deleted.`],
+                    "Go forward now",
+                    ["rollback", name, "--expect", forward, ...yes],
+                    () => changed(`${name} serves ${short(forward)} again.`, `${forward}|`),
+                )}
+            {:else if forward}
+                <button type="button" onclick={() => (asking = "forward")}>Go forward to {short(forward)}…</button>
+            {/if}
+        </section>
+    {/if}
 
-    {#if target.lock}
-        {@const lock = target.lock}
+    {#if lock}
         <section class="card lock" aria-labelledby="lock">
-            <h2 id="lock">Locked by run <a href="#/runs/{lock.run}">{lock.run}</a></h2>
-            <p>On {lock.machine} · phase {lock.phase} · last heartbeat {clock(lock.heartbeat)}</p>
+            <h2 id="lock">{lock.machine} is updating {name}</h2>
+            <p>Run {lock.run} · phase {lock.phase} · last heartbeat {clock(lock.heartbeat)}</p>
             {#if !lock.stale}
-                <p class="soft">An update of {name} waits until this run ends.</p>
+                <p>One machine updates a target at a time. You can update or roll back {name} when this run ends, or watch it now.</p>
+                <a class="primary" href="#/runs/{lock.run}">Watch the run</a>
             {:else if asking === "unlock"}
-                <div class="confirm">
-                    <b>Take over the {name} lock from {lock.machine}?</b>
-                    <p>If that run still runs, it sees that it lost the lock before it switches {name}, and stops. {name} never gets two updates at once.</p>
-                    <p>Its finished layers stay on {lock.machine}.</p>
-                    <div class="title">
-                        <Action
-                            label="Take over the lock"
-                            args={["unlock", name, "--from", lock.machine, "--yes"]}
-                            ondone={() => changed(`The ${name} lock is free.`)}
-                        />
-                        <button type="button" onclick={() => (asking = null)}>Cancel</button>
-                    </div>
-                </div>
+                {@render confirm(
+                    `Take over the ${name} lock from ${lock.machine}?`,
+                    [
+                        `If that run still runs, it sees that it lost the lock before it switches ${name}, and stops. ${name} never gets two updates at once.`,
+                        `Its finished layers stay on ${lock.machine}.`,
+                    ],
+                    "Take over the lock",
+                    ["unlock", name, "--from", lock.machine, "--yes"],
+                    () => changed(`The ${name} lock is free.`, `${target.release?.serving.id ?? ""}|`),
+                )}
             {:else}
-                <p class="missing">No heartbeat since {when(lock.heartbeat)}: the run likely ended without freeing the lock.</p>
+                <p class="missing">No heartbeat since {when(lock.heartbeat)}: the run likely ended without freeing the lock. Open {lock.machine} first.</p>
                 <button type="button" onclick={() => (asking = "unlock")}>Take over the lock…</button>
             {/if}
         </section>
@@ -87,12 +126,14 @@
     <div class="grid">
         <section class="card" aria-labelledby="layers">
             <h2 id="layers">Layers{target.region ? ` of ${target.region}` : ""}</h2>
+            <p class="soft">Tick a layer to bake it again, also when it is up to date.</p>
             {#each target.layers ?? [] as layer (layer.layer)}
-                <div class="layer">
+                <label class="layer">
+                    <input type="checkbox" bind:group={ticked} value={layer.layer} disabled={layer.state === "off"} />
                     <span class={layer.state} aria-hidden="true">{LAYER_MARK[layer.state]}</span>
-                    <span class="name"><b>{layer.layer}</b><span class={layer.state === "ok" ? "soft" : layer.state}>{layer.text ?? (layer.state === "off" ? "off" : "up to date")}</span></span>
-                    {#if layer.format !== null}<code>{layer.format}.{layer.revision}</code>{/if}
-                </div>
+                    <span class="name"><b>{layer.layer}</b><span class={layer.state === "ok" ? "soft" : layer.state}>{layerText(layer)}</span></span>
+                    {#if layer.format !== null}<code>{version(layer.format, layer.revision)}</code>{/if}
+                </label>
             {:else}
                 <p class="soft">{target.release ? "The steps of this target cannot be listed." : `${name} serves nothing yet.`}</p>
             {/each}
@@ -105,13 +146,17 @@
             <section class="card" aria-labelledby="update">
                 <h2 id="update">Update {name}</h2>
                 {#if stale.length}
-                    <p><b class="stale">{stale.length} layers stale.</b> Causes: {causes}.</p>
+                    <p><b class="stale">{stale.length} layers stale.</b> Causes: {causes(stale)}.</p>
                 {:else if target.layers}
                     <p>Each layer is up to date.</p>
                 {/if}
                 {#if target.drift.length}<p class="missing">These keys differ from the serving release: {target.drift.join(", ")}</p>{/if}
-                {#if target.next}<p class="soft">Next: <code>{target.next}</code></p>{/if}
-                <a class="primary" href="#/{name}/review">Review update</a>
+                {#if locked}
+                    <span class="primary locked" aria-disabled="true">Review update: locked</span>
+                {:else}
+                    <a class="primary" href="#/{name}/review{ticked.length ? `?only=${encodeURIComponent(ticked.join(','))}` : ''}">Review update</a>
+                    {#if ticked.length}<code>{command(reviewArgs(name, [["--only", ticked.join(",")]]))}</code>{/if}
+                {/if}
             </section>
 
             {#if target.release}
@@ -123,22 +168,21 @@
                         <div class="release">
                             <b>{short(rollback.id)}</b><span>since {when(rollback.since)}</span>
                             {#if asking !== "rollback"}
-                                <button type="button" onclick={() => (asking = "rollback")}>Roll back to {short(rollback.id)}…</button>
+                                <button type="button" disabled={!!locked} onclick={() => (asking = "rollback")}>Roll back to {short(rollback.id)}…</button>
                             {/if}
                         </div>
-                        {#if asking === "rollback"}
-                            <div class="confirm">
-                                <b>Roll back {name} to {short(rollback.id)}?</b>
-                                <p>{name} serves {short(rollback.id)} instead of {short(serving.id)}. Nothing is deleted: {short(serving.id)} becomes the rollback.</p>
-                                <div class="title">
-                                    <Action
-                                        label="Roll back now"
-                                        args={["rollback", name, ...yes]}
-                                        ondone={() => changed(`${name} serves ${short(rollback.id)} now.`)}
-                                    />
-                                    <button type="button" onclick={() => (asking = null)}>Cancel</button>
-                                </div>
-                            </div>
+                        {#if asking === "rollback" && !locked}
+                            {@render confirm(
+                                `Roll back ${name} to ${short(rollback.id)}?`,
+                                [
+                                    `${name} serves ${short(rollback.id)} instead of ${short(serving.id)}.`,
+                                    `The router still runs ${short(rollback.id)}, so the switch is instant. Clients switch within a minute.`,
+                                    `Nothing is deleted: ${short(serving.id)} becomes the rollback.`,
+                                ],
+                                "Roll back now",
+                                ["rollback", name, "--expect", rollback.id, ...yes],
+                                () => changed(`${name} serves ${short(rollback.id)} again.`, `${rollback.id}|`, serving.id),
+                            )}
                         {/if}
                     {/if}
                     <p class="soft">{name} keeps the serving release and one rollback. Layers that did not change share their files.</p>
@@ -160,7 +204,8 @@
         flex-direction: column;
         gap: 16px;
     }
-    .lock {
+    .lock,
+    .done {
         border: 2px solid var(--ink);
     }
     .confirm {
@@ -202,5 +247,15 @@
         color: var(--panel);
         border-radius: 999px;
         font-size: 13px;
+    }
+    .locked {
+        display: inline-flex;
+        align-items: center;
+        align-self: flex-start;
+        min-height: 44px;
+        padding: 0 20px;
+        border-radius: 8px;
+        font-weight: 600;
+        opacity: 0.5;
     }
 </style>

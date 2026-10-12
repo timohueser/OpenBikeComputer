@@ -14,9 +14,9 @@ export function flagsOf(args: readonly string[]): Flags {
     return flags;
 }
 
-/** `flags` without the flags that `old` matches, and with `flag` last. */
-export function edit(flags: Flags, old: (flag: string, value: string) => boolean, flag: [string, string]): Flags {
-    return [...flags.filter(([name, value]) => !old(name, value)), flag];
+/** `flags` without the flags that `old` matches, and with `flag` last when there is one. */
+export function edit(flags: Flags, old: (flag: string, value: string) => boolean, flag?: [string, string]): Flags {
+    return [...flags.filter(([name, value]) => !old(name, value)), ...(flag ? [flag] : [])];
 }
 
 /** The review of an update of `target` with `flags`. */
