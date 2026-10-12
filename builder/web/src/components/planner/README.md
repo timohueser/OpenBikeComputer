@@ -20,8 +20,9 @@ obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-refer
 obc planner grid --input-release /srv/planner/bw-source --data-dir /srv/planner/bw
 ```
 
-These commands publish nothing. `obc data update` publishes a target, and the VPS
-follows the bucket: [`tools/vps/README.md`](../../../../../tools/vps/README.md).
+These commands publish nothing. `obc data update` publishes a target. The VPS follower of
+[`tools/vps/README.md`](../../../../../tools/vps/README.md) is installed once `obc data serve prod`
+serves an R2 target.
 The [release contract](../../../../../specs/planner-release.md) defines the files.
 
 `grid` builds reusable cells in a fresh directory.

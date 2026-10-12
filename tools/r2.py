@@ -17,12 +17,11 @@ upload, and it asks nothing before it acts. Every guard below answers that.
 A key is the object's full key inside the bucket, the way a listing prints it. A published
 cell, preview or index carries the digest of its bytes in its name.
 `rm` reads, uploads and deletes through the R2 client, `obc data r2`, which also writes
-`removed.jsonl`. `r2_client` is the one seam its tests replace. The planner and the reference
-ingest reach the bucket through `bucket_remote` and `run_rclone`, the seam their tests replace.
+`removed.jsonl`. `r2_client` is the one seam its tests replace. The reference ingest reaches
+the bucket through `bucket_remote` and `run_rclone`, the seam their tests replace.
 """
 
 import argparse
-import getpass
 import hashlib
 import json
 import os
@@ -31,7 +30,6 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -173,21 +171,6 @@ def fetch_present(key: str, into: Path) -> Path | None:
     if not listing(["stat", key])["objects"]:
         return None
     r2_client(["get", key, str(into)])
-    return into
-
-
-def fetch_optional(remote: Remote, key: str, into: Path) -> Path | None:
-    """One named object out of the bucket, or None when the bucket does not hold it.
-
-    The `lsf` asks the object's own folder and not the bucket, so nothing here ever walks
-    a prefix with millions of tiles under it just to find out whether one file exists.
-    """
-
-    folder, _, name = key.rpartition("/")
-    place = f"{remote.path}/{folder}" if folder else remote.path
-    if not run_rclone(["lsf", place, "--include", f"/{name}"], remote.env, capture=True).strip():
-        return None
-    run_rclone(["copyto", f"{remote.path}/{key}", str(into)], remote.env)
     return into
 
 
@@ -366,14 +349,6 @@ def confirmation(keys: list[str]) -> str:
     return f"{len(keys)}-{digest[:10]}"
 
 
-def removal_lines(targets: list[Target], reason: str, who: str, when: str) -> str:
-    """The log a removal appends: who took each object out, when, how big it was, and why."""
-
-    return "".join(json.dumps({
-        "removed": when, "by": who, "key": target.key, "bytes": target.bytes, "reason": reason,
-    }, sort_keys=True) + "\n" for target in targets)
-
-
 def resolve(args) -> list[str]:
     """The keys a removal names. Exact keys, or one prefix listed; never both, never wider."""
 
@@ -408,22 +383,6 @@ def unname_tiles(staging: Path, tiles: list[str]) -> None:
     path.write_text(json.dumps(prune_index(index, tiles), indent=2, sort_keys=True,
                                ensure_ascii=False) + "\n", encoding="utf-8")
     r2_client(["put", str(path), key])
-
-
-def append_log(remote: Remote, staging: Path, targets: list[Target], reason: str) -> None:
-    """Append this removal to the bucket's history, before anything is deleted.
-
-    The planner's finalize writes its removals here; `rm` goes through the R2 client, which
-    writes the same lines. Once an object is deleted its size is gone, and a line for a
-    removal that then failed is a smaller loss than no line at all.
-    """
-
-    log = staging / REMOVAL_LOG
-    fetch_optional(remote, REMOVAL_LOG, log)
-    when = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    with log.open("a", encoding="utf-8") as handle:
-        handle.write(removal_lines(targets, reason, getpass.getuser(), when))
-    run_rclone(["copyto", str(log), f"{remote.path}/{REMOVAL_LOG}"], remote.env)
 
 
 def command_rm(args) -> int:

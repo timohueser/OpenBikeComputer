@@ -36,6 +36,30 @@ struct OfflineMapsTests {
         #expect(quote.map.id == quote.bundle.release.sha256)
     }
 
+    /// The live catalogue names no `downloads`: the store uses the shared service of the legacy planner.
+    @Test func aCatalogueWithoutDownloadsUsesTheSharedOfflineService() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OfflineQuoteHTTP.self]
+        let host = "https://planner.test"
+        let active: [String: Any] = ["id": String(repeating: "a", count: 64), "region": "test", "bounds": [7, 47, 9, 49],
+            "basemap": host + "/basemap.json", "places": host + "/places.json", "glyphs": host + "/fonts/{fontstack}/{range}.pbf",
+            "sprites": host + "/sprites", "terrain": host + "/{z}/{x}/{y}.webp", "terrain_attribution": "Terrain",
+            "search": host + "/search", "routing": host + "/routing", "manifest": host + "/manifest.json",
+            "overlays": host + "/overlays.json"]
+        let catalog = try JSONSerialization.data(withJSONObject: ["format": 1, "active": active])
+        let planner = PlannerService(catalogURL: URL(string: host + "/planner/catalog.json")!) { request in
+            (catalog, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let release = try await planner.release()
+        #expect(release.downloads == nil)
+        let store = OfflineMapStore(root: root, planner: planner,
+                                    session: URLSession(configuration: configuration), capacity: { _ in 1 << 30 })
+        let quote = try await store.prepare(bounds: [7,47,9,49], name: "Shared service") { _, _ in }
+        #expect(quote.source == OfflineQuoteHTTP.source)
+    }
+
     @Test func installationVerifiesAndLinksFilesBeforeMakingThemAvailable() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -283,7 +307,8 @@ private final class OfflineQuoteHTTP: URLProtocol, @unchecked Sendable {
         let url = request.url!
         let data: Data
         let code: Int
-        if url.absoluteString == "https://stable.test/entry/jobs" && request.httpMethod == "POST" {
+        let entries = ["https://stable.test/entry/jobs", "https://releases.openbikecomputer.com/planner-offline/jobs"]
+        if entries.contains(url.absoluteString) && request.httpMethod == "POST" {
             data = try! JSONSerialization.data(withJSONObject: ["id": Self.jobID, "state": "ready", "source": Self.source.absoluteString])
             code = 200
         } else if url == Self.source.appending(path: "bundle.json") {

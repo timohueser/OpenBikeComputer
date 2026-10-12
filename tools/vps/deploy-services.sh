@@ -26,7 +26,9 @@ cd $base
 test \"\$(rustc -vV | sed -n 's/^host: //p')\" = $triple || { echo 'The VPS is not $triple.' >&2; exit 1; }
 test \"\$(python3 -c 'import sys; print(*sys.version_info[:2], sep=\".\")')\" = $python || { echo 'The VPS needs Python $python.' >&2; exit 1; }
 test \"\$(node -p 'process.versions.node.split(\".\").slice(0, 2).join(\".\")')\" = $node || { echo 'The VPS needs Node $node.' >&2; exit 1; }
-cargo build --locked --release --bin obc-data-plumbing --bin planner-service
+# planner-service alone, as serve builds it: one call with obc-data unifies their features.
+cargo build --release --locked -p planner-service
+cargo build --release --locked -p obc-data --bin obc-data-plumbing
 npm ci --prefix planner/search
 UV_PROJECT_ENVIRONMENT=planner/search/.venv uv sync --locked --python $python --group search-runtime"
 switch="set -euo pipefail

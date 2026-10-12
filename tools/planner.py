@@ -144,7 +144,7 @@ def main(argv=None):
             COMMANDS[args.command](args)
     except KeyboardInterrupt:
         if args.command not in LOCAL:
-            parser.exit(130, "Planner command interrupted. Check the active catalogue before retrying.\n")
+            parser.exit(130, "Planner command interrupted. Run it again: completed parts resume.\n")
     except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as error:
         hint = "\nUse obc planner setup to prepare local data and dependencies." if args.command in LOCAL else ""
         parser.exit(1, f"planner: {error}{hint}\n")

@@ -8,16 +8,24 @@ Wants=network-online.target
 [Service]
 User=obc-data
 WorkingDirectory=/opt/obc-data/current
-# At start, serve builds planner-service with cargo; the deploy already built it.
+# At start, serve builds planner-service with cargo. The deploy ran the same build, so it does nothing.
 Environment=PATH=/var/lib/obc-data/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=OBC_DATA_STORE=/var/lib/obc-data/store
 ExecStart=/opt/obc-data/current/target/release/obc-data-plumbing serve prod
 Restart=on-failure
 RestartSec=10
+# Twice the sum of the limits of the legacy planner units for routing (2048M), search (768M) and
+# downloads (256M), each with CPUQuota=200% and TasksMax=64: serve runs these three services for the
+# serving and the rollback release.
+MemoryMax=6144M
+CPUQuota=1200%
+TasksMax=384
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+ProtectHome=yes
 ReadWritePaths=/var/lib/obc-data /opt/obc-data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

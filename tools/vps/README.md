@@ -1,9 +1,11 @@
 # VPS services
 
-The VPS runs the follower: `obc data serve prod` as the systemd unit `obc-data-serve`. It reads
-the bucket and runs the routing, search and downloads services of each planner release that prod
-names. Caddy sends `/planner-api/*` of `releases.openbikecomputer.com` to it. Data never comes
-from this folder: `obc data update prod` publishes it.
+The follower is `obc data serve prod` as the systemd unit `obc-data-serve`. It reads the bucket
+and runs the routing, search and downloads services of each planner release that prod names.
+Caddy sends `/planner-api/*` of `releases.openbikecomputer.com` to it. Data never comes from this
+folder: `obc data update prod` publishes it.
+
+The owner installs the follower once `obc data serve prod` serves an R2 target.
 
 | File | Use |
 | --- | --- |

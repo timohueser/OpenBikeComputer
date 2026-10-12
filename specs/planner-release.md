@@ -160,7 +160,7 @@ indexes and client objects without the producer files. Verification does not
 install tools, download data or build runtimes.
 
 The planner release binds service source and locked dependencies in its final index.
-The VPS builds services from a pushed commit.
+The VPS builds services from a commit.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, route catalog cell, and device catalog has a small pointer at
@@ -178,14 +178,14 @@ cell selection and download manifests.
 
 ## Catalogue
 
-`planner/catalog.json` has `format: 1`, `active`, and `previous`.
+`planner/catalog.json` has `format: 1`, `origins` and `active`. `origins` is the `[publication]`
+table of `data/planner-runtime.toml`.
 `active` contains the release `id`, manifest URL, region, bounds, attribution,
-land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing
-and search API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
+land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing,
+search and downloads API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
 the name of each data layer of the release to its TileJSON URL.
 `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
-Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 
 The publisher uploads and verifies all release files before the manifest. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
