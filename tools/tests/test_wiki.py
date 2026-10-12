@@ -111,6 +111,22 @@ class Wiki(unittest.TestCase):
         self.assertEqual(link["proof"]["aliases"], [{"from": "Old Castle", "to": "Castle"}])
         self.assertIsNone(catalog.fact(self.db, "article", "en:Old Castle"))
 
+    def test_store_objects_without_a_suffix_are_read_by_their_first_bytes(self):
+        self.subjects(dict(osm="n1", wikidata="Q1"))
+        objects = self.root / "objects"
+        objects.mkdir()
+        dump, wiki = objects / "ab", objects / "cd"
+        self.dump().rename(dump)
+        archive(wiki, [page()])
+        self.wikidata(dump)
+        self.articles(["Q1"], {"en": wiki})
+        self.assertEqual(catalog.fact(self.db, "entity", "Q1")["status"], "present")
+        self.assertEqual(catalog.fact(self.db, "article", "en:Castle")["status"], "present")
+        unknown = objects / "ef"
+        unknown.write_text("[\n" + json.dumps(entity("Q1")) + "\n]\n")
+        with self.assertRaisesRegex(ValueError, "not a bz2, gzip or tar file"):
+            next(dumps.lines(unknown))
+
     def test_sql_redirects_item_sitelinks_and_language_links_resolve_without_api(self):
         self.subjects(dict(osm="n1", wikidata="Q90"), dict(osm="n2", wikipedia="ja:CastleJA"), dict(osm="n3", wikidata="Q999"),
                       dict(osm="n4", wikipedia="de:Burg"), dict(osm="n5", wikipedia="en:Unlinked"))

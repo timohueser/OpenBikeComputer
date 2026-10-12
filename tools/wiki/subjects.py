@@ -19,7 +19,8 @@ LINK = re.compile(r"[a-z][a-z0-9-]{1,14}:.+")
 # zero-padded like `obc_formats::grid::id_width`.
 ORIGIN, CELL = 1 << 28, 20
 WIDTH = max(4, len(str(((2 * ORIGIN) >> CELL) - 1)))
-# A subject whose box touches more cells than this belongs to the common shard.
+# A subject whose box touches more cells than this belongs to the common shard. Chosen by the
+# orchestrator: it bounds the duplicate copies, and a box up to about 4° × 4° stays in cells.
 MAX_CELLS = 16
 
 

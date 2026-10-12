@@ -8,11 +8,13 @@ Each step resumes in its work directory. The producer runs them in this order:
     python -m tools.wiki commons  --work W --requests requests.json
     python -m tools.wiki shards   --work W --out OUT
 
-`inputs.json` gives the local path of each dump: `wikidata` (the JSON dump), `wikidata_pages`
-and `wikidata_redirects` (SQL), and per language `wikipedia` (Enterprise HTML) and `langlinks`
-(SQL). The producer downloads them. `selected.json` lists the QIDs whose articles the compilers
-read. `requests.json` maps each subject that the compilers select to its Commons `categories`,
-`commons` and `files`; see `commons.acquire`.
+`inputs.json` gives the local path of each dump that the producer downloaded:
+`{"wikidata": PATH, "wikidata_pages": PATH, "wikidata_redirects": PATH, "wikipedia": {LANG: PATH},
+"langlinks": {LANG: PATH}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
+others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
+`selected.json` lists the QIDs whose articles the compilers read. `requests.json` maps each
+subject that the compilers select to its Commons `categories`, `commons` and `files`; see
+`commons.acquire`.
 
 The steps need Osmium (or `OBC_OSMIUM`) and zstd; lbzip2 and pigz decompress in parallel when
 present.
@@ -47,9 +49,10 @@ def main() -> int:
 
     if args.step == "import":
         subjects.load(db, args.work, args.subjects)
+        if missing := {"wikidata", "wikidata_pages", "wikidata_redirects"} - set(inputs):
+            raise ValueError(f"inputs.json names no {', '.join(sorted(missing))}")
         for name in ("wikidata_pages", "wikidata_redirects"):
-            if name in inputs:
-                catalog.sql(db, args.work, name, *source(name, inputs[name]))
+            catalog.sql(db, args.work, name, *source(name, inputs[name]))
         catalog.wikidata(db, args.work, *source("wikidata", inputs["wikidata"]))
     elif args.step == "articles":
         catalog.want(db, args.work, json.loads(args.selected.read_bytes()))

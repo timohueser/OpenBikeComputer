@@ -95,8 +95,12 @@ def photos(db, capture: Capture, work: Path, titles: list[str]):
     pending = {}
     for key in titles:
         pinned, kept = catalog.fact(db, "commons", key), catalog.fact(db, "file", key)
-        if pinned and pinned["status"] == "present" and not (kept and kept["identity"] == pinned["identity"] and kept["revision"] == pinned["file_revision"]):
+        if not pinned or pinned["status"] != "present" or (kept and kept["identity"] == pinned["identity"] and kept["revision"] == pinned["file_revision"]):
+            continue
+        if thumbnail(pinned):
             pending[key] = pinned
+        else:
+            catalog.fail(db, "file", key, "Commons file has no standard 500 px thumbnail")
     for chunk in batches(sorted(pending)):
         prefix = "photos/" + digest(encoded([(key, pending[key]["revision"]) for key in chunk]))
 
@@ -111,6 +115,13 @@ def photos(db, capture: Capture, work: Path, titles: list[str]):
             current, outcome = before.get(key), thumbnails.get(key)
             if not same(current, after.get(key)):
                 catalog.fail(db, "file", key, "Commons metadata changed or was unavailable while acquiring thumbnail")
+            elif current["status"] == "missing":
+                db.execute("DELETE FROM facts WHERE kind='commons' AND key=?", (key,))
+                catalog.put(db, current)
+                catalog.fail(db, "file", key, "Commons file was deleted")
+            elif current["revision"] < pending[key]["revision"]:
+                # A lagging replica: the newer stored fact stays, and the older checks are no witness.
+                catalog.fail(db, "file", key, "Commons answered an older revision than the stored metadata")
             elif outcome is None:
                 catalog.fail(db, "file", key, "Commons file has no standard 500 px thumbnail")
             elif outcome["status"] != "ok":

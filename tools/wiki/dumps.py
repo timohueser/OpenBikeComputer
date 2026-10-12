@@ -13,7 +13,8 @@ import tarfile
 
 RESERVE = 4 * 1024**3
 RECORD = 128 * 1024 * 1024
-DECOMPRESSORS = {".bz2": ("lbzip2", bz2.open), ".gz": ("pigz", gzip.open), ".tgz": ("pigz", gzip.open)}
+# Inputs are store objects without a suffix, so the first bytes name their format.
+COMPRESSIONS = ((b"BZh", "lbzip2", bz2.open), (b"\x1f\x8b", "pigz", gzip.open))
 TOKEN = re.compile(r"\s*('(?:[^'\\]|\\.)*'|NULL|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[(),;])")
 ESCAPES = {"0": "\0", "n": "\n", "r": "\r", "t": "\t", "b": "\b", "Z": "\x1a"}
 
@@ -26,10 +27,26 @@ def sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def tar(head: bytes) -> bool:
+    return head[257:262] == b"ustar"
+
+
+def compression(path: Path):
+    """The parallel tool and the Python module that decompress a bz2, gzip or plain tar file."""
+    with path.open("rb") as stream:
+        head = stream.read(262)
+    for magic, tool, module in COMPRESSIONS:
+        if head.startswith(magic):
+            return tool, module
+    if tar(head):
+        return None, open
+    raise ValueError(f"{path.name} is not a bz2, gzip or tar file")
+
+
 @contextmanager
 def opened(path: Path):
     """The decompressed bytes of `path`. lbzip2 and pigz decompress in parallel where present."""
-    tool, module = DECOMPRESSORS.get(path.suffix, (None, open))
+    tool, module = compression(path)
     if tool and shutil.which(tool):
         process = subprocess.Popen([tool, "-dc", str(path)], stdout=subprocess.PIPE)
         try:
@@ -46,8 +63,10 @@ def opened(path: Path):
 
 def lines(path: Path):
     """Each record line of a JSON array dump, an NDJSON file or the NDJSON members of a tar."""
+    with compression(path)[1](path, "rb") as stream:
+        archive = tar(stream.read(262))
     with opened(path) as stream:
-        if ".tar" in path.suffixes or path.suffix == ".tgz":
+        if archive:
             with tarfile.open(fileobj=stream, mode="r|") as archive:
                 for member in archive:
                     if not member.isfile() or not member.name.endswith((".ndjson", ".json")):
