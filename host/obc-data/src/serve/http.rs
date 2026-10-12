@@ -19,6 +19,7 @@ use tower_http::services::ServeDir;
 
 use super::services::SERVICES;
 use super::{Served, PLANNER};
+use crate::release::POINTERS;
 
 /// What the follower gives the HTTP side.
 #[derive(Default)]
@@ -38,7 +39,7 @@ pub fn router(shared: Shared, dir: &Path, tiles: u16) -> Router {
     let files = ServeDir::new(dir).append_index_html_on_directories(false).fallback(forward_all.with_state(tiles));
     Router::new()
         .route("/planner-api/releases/{id}/{service}/{*path}", any(api))
-        .route("/cell-catalog/catalog.json", get(pointer))
+        .route(&format!("/{}", POINTERS[0]), get(pointer))
         .route(&format!("/{PLANNER}"), get(pointer))
         .fallback_service(files)
         .with_state(shared)
@@ -86,23 +87,28 @@ async fn pointer(State(shared): State<Shared>, uri: Uri, headers: HeaderMap) -> 
     ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], bytes).into_response()
 }
 
-/// The planner pointer `bytes` with the origin of each `https://` URL replaced by `origin`: the
-/// origin at which the client reached `obc data serve`.
+/// The planner pointer `bytes` with each string that starts with one of its `origins` starting
+/// with `origin` instead: the origin at which the client reached `obc data serve`.
 fn local(bytes: &[u8], origin: &str) -> Result<Vec<u8>, String> {
-    fn replace(value: &mut Value, origin: &str) {
+    fn replace(value: &mut Value, origins: &[String], origin: &str) {
         match value {
             Value::String(text) => {
-                if let Some(rest) = text.strip_prefix("https://") {
-                    *text = format!("{origin}{}", rest.find('/').map_or("", |at| &rest[at..]));
+                let rest = origins.iter().find_map(|from| {
+                    text.strip_prefix(from.as_str()).filter(|rest| rest.is_empty() || rest.starts_with('/'))
+                });
+                if let Some(rest) = rest {
+                    *text = format!("{origin}{rest}");
                 }
             }
-            Value::Array(values) => values.iter_mut().for_each(|value| replace(value, origin)),
-            Value::Object(values) => values.values_mut().for_each(|value| replace(value, origin)),
+            Value::Array(values) => values.iter_mut().for_each(|value| replace(value, origins, origin)),
+            Value::Object(values) => values.values_mut().for_each(|value| replace(value, origins, origin)),
             _ => {}
         }
     }
     let mut pointer: Value = serde_json::from_slice(bytes).map_err(|e| format!("{PLANNER}: {e}"))?;
-    replace(&mut pointer, origin);
+    let origins = pointer["origins"].as_object().ok_or(format!("{PLANNER} has no origins"))?;
+    let origins: Vec<String> = origins.values().filter_map(|from| from.as_str().map(String::from)).collect();
+    replace(&mut pointer, &origins, origin);
     serde_json::to_vec(&pointer).map_err(|e| e.to_string())
 }
 
@@ -161,16 +167,15 @@ mod tests {
         let upstream = listen(&runtime, Router::new().fallback(echo));
         let planner = "a".repeat(64);
         let pointer = format!(
-            r#"{{"format":1,"origins":{{"api_origin":"https://releases.example"}},"active":{{"id":"{planner}",
-            "routing":"https://releases.example/planner-api/releases/{planner}/routing",
-            "basemap":"https://tiles.example/releases/{planner}/basemap.json","attribution":"© OpenStreetMap",
-            "layers":{{"snow":"https://tiles.example/releases/{planner}/snow.json"}}}}}}"#
+            r#"{{"format":1,"origins":{{"api_origin":"https://releases.example","tiles_origin":"https://tiles.example"}},
+            "active":{{"id":"{planner}","routing":"https://releases.example/planner-api/releases/{planner}/routing",
+            "basemap":"https://tiles.example/releases/{planner}/basemap.json","attribution":"https://osm.example/copyright",
+            "layers":{{"snow":"https://tiles.example/releases/{planner}/snow.json"}},"other":"https://tiles.example.net/x"}}}}"#
         );
         let current = Served {
             id: "b".repeat(64),
             planner: planner.clone(),
-            pointers: [("cell-catalog/catalog.json".into(), b"{}".to_vec()), (PLANNER.into(), pointer.clone().into())]
-                .into(),
+            pointers: [(POINTERS[0].into(), b"{}".to_vec()), (PLANNER.into(), pointer.clone().into())].into(),
         };
         let view = View { current: Some(current), ports: [(planner.clone(), [upstream; 3])].into() };
         let port = listen(&runtime, router(Arc::new(RwLock::new(view)), &scratch.0, upstream));
@@ -183,7 +188,8 @@ mod tests {
         assert_eq!(catalog["origins"]["api_origin"], origin);
         assert_eq!(catalog["active"]["routing"], format!("{origin}/planner-api/releases/{planner}/routing"));
         assert_eq!(catalog["active"]["layers"]["snow"], format!("{origin}/releases/{planner}/snow.json"));
-        assert_eq!(catalog["active"]["attribution"], "© OpenStreetMap");
+        assert_eq!(catalog["active"]["attribution"], "https://osm.example/copyright", "no origin of the pointer");
+        assert_eq!(catalog["active"]["other"], "https://tiles.example.net/x", "another host");
         let phone = local(pointer.as_bytes(), "http://phone.test:8710").unwrap();
         let phone: Value = serde_json::from_slice(&phone).unwrap();
         assert_eq!(phone["active"]["basemap"], format!("http://phone.test:8710/releases/{planner}/basemap.json"));

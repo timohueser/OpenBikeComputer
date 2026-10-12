@@ -3410,6 +3410,7 @@ dependencies = [
 name = "obc-data-steps"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "flate2",
  "obc-bake",
  "obc-data",
@@ -3431,6 +3432,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml",
  "zip",
 ]

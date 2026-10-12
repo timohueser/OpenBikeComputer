@@ -161,6 +161,17 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
 | `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
 
+### `data/machines.toml`
+
+One table per machine that runs `obc data ui`. The name of the table is the name of the machine:
+`OBC_DATA_MACHINE`, or else the short host name. A machine that the file does not name has the
+header `#262624`, and `obc data open` tunnels to the SSH host of its name.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `colour` | string | `#rrggbb`: the header of the page of the machine. White text on it has a contrast of at least 4.5:1, and it is not `#6e6c66`, the header of a page that loads |
+| `ssh` | string | Optional: the SSH host or alias that `obc data open` tunnels to |
+
 ## State of a source
 
 A fetch is a source id with its sorted `NAME=VALUE`s. `obc data sources` gives, for each target
@@ -860,10 +871,10 @@ of a set out of the bytes. A credit that it writes comes in its options.
 ### Service runtimes
 
 `data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
-of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`
-and `objects_origin`. The shared pool is `<objects_origin>/objects`.
-Tile URLs keep the tile Worker origin, which reads `releases/<id>/public/` and `objects/` of
-the bucket.
+of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`,
+`objects_origin` and `tiles_origin`. The shared pool is `<objects_origin>/objects`. Tile URLs
+are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/public/` and
+`objects/` of the bucket.
 
 The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
@@ -1037,14 +1048,14 @@ An update that stops keeps what it baked in the store, and the next update reuse
 
 ### Serve
 
-`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of each address
-of the machine. It refuses an R2 target. The current release is the release whose pointers clients
-get. Every answer allows each origin.
+`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of every IPv4
+address of the machine. It refuses an R2 target. The current release is the release whose
+pointers clients get. Every answer allows each origin.
 
 | Path | Answer |
 | --- | --- |
 | `/cell-catalog/catalog.json` | The device pointer of the current release |
-| `/planner/catalog.json` | The planner pointer of the current release. Each string that is an `https://` URL gets the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner/catalog.json` | The planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
 | Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
@@ -1055,19 +1066,25 @@ Serve reads `release.json` each second. When it changes:
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release.
-3. Services that stop, or do not answer within 120 seconds, fail. Clients keep the current release.
-   The planner release starts again at the next change of `release.json`.
+3. A planner release fails when one of its services stops, or when its services do not answer
+   within 120 seconds after they start. Its other services stop, and its API answers 404. Clients
+   keep the current release, also when the failed planner release is the one of the current
+   release. A planner release that failed starts again at the next change of `release.json`, and
+   at no other time.
 4. The services of a planner release that neither the serving release, the rollback nor the
    current release names stop.
 
-Nothing starts a service again that stops after its planner release answers: its API answers 502
-until serve starts again.
+When the serving release and the rollback fail one after the other, clients keep a release that
+`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
+release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
-`identity` object, or the decoded bytes of a `gzip` object. It must have the SHA-256 and the size
-that the planner release gives. Serve starts with an empty `<store>/serve/<target>/`. Download
-bundles name the origin of the machine on its network, else `http://127.0.0.1:8710`.
+`identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write opens
+an existing file. Each file must have the SHA-256 and the size that the planner release gives.
+Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
+touch it. Download bundles name the origin of the machine on its network when serve starts, else
+`http://127.0.0.1:8710`.
 
 ### Overview
 
@@ -1092,6 +1109,9 @@ command: `obc data update` writes only a `dir` target.
 | `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
 | `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
 | `obc data serve [TARGET] [--json]` | [Serves](#serve) a `dir` target until Ctrl-C. Writes its origin on the machine and on its network |
+| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
+| `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
+| `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
@@ -1102,6 +1122,24 @@ addition:
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
   the error is the last line.
+
+### The page
+
+`obc data ui` listens on `127.0.0.1:8700` and answers:
+
+- `GET /` with `builder/web/dist/data/data.html`, and `GET /PATH` with the file PATH in that
+  folder. A part of PATH that is empty, `.` or `..`, or that holds `\`, names no file.
+- `POST /api/cli` with the body `{"args": [ARG, …]}`: it runs its own binary as
+  `obc data --json ARG…` in the repository root, with no standard input, and answers
+  `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
+  the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
+  A command runs to its end, and its output is read, also when the request ends first. The page
+  runs only `obc data` without a command and `obc data setup`.
+
+Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
+it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
+A request that does not, and a command that the page does not run, get HTTP 403 and
+`{"exit": 2, "output": {"error": …}}` with the code `usage`.
 
 ## R2 client
 
@@ -1211,6 +1249,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `serve`, when it listens | `Listening` |
+| `setup` | `Setup` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -1493,6 +1532,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         }
       },
+      "type": "object"
+    },
+    "CredentialState": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state"
+      ],
       "type": "object"
     },
     "Details": {
@@ -2194,6 +2253,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Job": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Kept": {
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
@@ -2326,8 +2405,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Machine": {
+      "additionalProperties": false,
       "description": "The machine that runs the command.",
       "properties": {
+        "colour": {
+          "description": "The header colour of its page: `data/machines.toml`, or else the charcoal of a laptop.",
+          "type": "string"
+        },
         "cores": {
           "format": "uint",
           "minimum": 0,
@@ -2362,6 +2446,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "name",
+        "colour",
         "os",
         "cores",
         "memory_bytes",
@@ -2509,6 +2594,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "release"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "Readiness": {
+      "oneOf": [
+        {
+          "enum": [
+            "ready",
+            "missing"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "optional",
+          "description": "Missing, but no main job needs it.",
+          "type": "string"
         }
       ]
     },
@@ -2944,6 +3045,42 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Setup": {
+      "additionalProperties": false,
+      "description": "What `setup` writes.",
+      "properties": {
+        "credentials": {
+          "description": "Only whether each credential is set; never its value.",
+          "items": {
+            "$ref": "#/$defs/CredentialState"
+          },
+          "type": "array"
+        },
+        "jobs": {
+          "description": "What this machine can do, and the reason when it cannot.",
+          "items": {
+            "$ref": "#/$defs/Job"
+          },
+          "type": "array"
+        },
+        "store": {
+          "$ref": "#/$defs/StoreUse"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/Tool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "store",
+        "jobs",
+        "tools",
+        "credentials"
+      ],
+      "type": "object"
+    },
     "SourceRow": {
       "description": "A source of `data/sources.toml`, what each target reads of it, and its versions in the store.",
       "properties": {
@@ -3127,6 +3264,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "StoreUse": {
+      "additionalProperties": false,
+      "properties": {
+        "free_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "used_bytes": {
+          "description": "The size of every file in the store.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "used_bytes",
+        "free_bytes"
+      ],
+      "type": "object"
+    },
     "Stored": {
       "description": "A version of a source in the local store.",
       "properties": {
@@ -3294,6 +3460,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "drift",
         "error",
         "next"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "description": "The version that the tool gives, or the command that installs it; both when the version is\ntoo old.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "needed_for": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "name",
+        "needed_for",
+        "state",
+        "detail"
       ],
       "type": "object"
     },

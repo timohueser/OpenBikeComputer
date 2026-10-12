@@ -1,26 +1,28 @@
 {
-    "store": { "path": "~/.cache/openbikecomputer/store", "used_bytes": 0, "free_bytes": 442381631488 },
+    "store": { "path": "/Users/rider/.cache/openbikecomputer/store", "used_bytes": 0, "free_bytes": 442381631488 },
     "jobs": [
         { "name": "Bake device layers here", "state": "ready", "reason": "All tools are present." },
-        { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java 21. Install them, then check again." },
-        { "name": "Serve the local test instance", "state": "ready", "reason": "Node 24 and Python are present." },
-        { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner, then put it in tools/obc.local." },
-        { "name": "Fetch new climate or snow data", "state": "optional", "reason": "Optional: needs CDS and CDSE accounts. Bakes use the R2 copies." },
-        { "name": "Prepare a new wiki", "state": "optional", "reason": "Optional: needs a Wikimedia Enterprise token. Usually done on the bake machine." }
+        { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java 21+. Install them, then check again." },
+        { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner for the key, then put it in tools/obc.local." },
+        { "name": "Fetch sources that need an account", "state": "optional", "reason": "Optional: 6 of 6 credentials are not set. Credentials names the sources of each." }
     ],
     "tools": [
-        { "name": "Rust", "needed_for": "every Rust baker", "state": "ready", "detail": "from rust-toolchain.toml" },
-        { "name": "C compiler", "needed_for": "native bakers", "state": "ready", "detail": "clang 17" },
-        { "name": "osmium-tool", "needed_for": "cutting OSM into cells", "state": "ready", "detail": "1.17" },
-        { "name": "GEOS", "needed_for": "planner layers", "state": "missing", "detail": "brew install geos" },
-        { "name": "Python 3.12+ and uv", "needed_for": "Python bakers", "state": "ready", "detail": "3.13 · uv 0.8" },
-        { "name": "Node 24+", "needed_for": "search service, web apps", "state": "ready", "detail": "24.21" },
-        { "name": "Java 21", "needed_for": "planner/basemap", "state": "missing", "detail": "brew install openjdk@21" }
+        { "name": "Rust", "needed_for": "every Rust baker", "state": "ready", "detail": "cargo 1.99.0 (5f94df478 2026-08-27)" },
+        { "name": "C compiler", "needed_for": "native bakers", "state": "ready", "detail": "Apple clang version 17.0.0 (clang-1700.0.13.5)" },
+        { "name": "osmium-tool", "needed_for": "cutting OSM into cells", "state": "ready", "detail": "osmium version 1.17.0" },
+        { "name": "GEOS", "needed_for": "planner layers", "state": "missing", "detail": "obc doctor --install" },
+        { "name": "uv", "needed_for": "Python bakers", "state": "ready", "detail": "uv 0.8.17 (Homebrew 2025-09-10)" },
+        { "name": "Java 21+", "needed_for": "planner/basemap", "state": "missing", "detail": "brew install openjdk@21" },
+        { "name": "Node 22+", "needed_for": "this page, the web apps", "state": "ready", "detail": "v24.21.0" },
+        { "name": "rclone", "needed_for": "publish to prod", "state": "ready", "detail": "rclone v1.71.0" }
     ],
     "credentials": [
         { "name": "R2 key (OBC_R2_*)", "needed_for": "publish to prod", "state": "missing" },
-        { "name": "~/.cdsapirc", "needed_for": "fetch new ERA5-Land", "state": "optional" },
-        { "name": "cdse-s3.env", "needed_for": "fetch new HR-WSI", "state": "optional" },
-        { "name": "OBC_WIKIMEDIA_ENTERPRISE_TOKEN", "needed_for": "prepare wiki", "state": "optional" }
+        { "name": "OBC_REFERENCE_AU_INPUT and OBC_REFERENCE_AU_DATUM", "needed_for": "fetch dtm-au", "state": "optional" },
+        { "name": "OBC_REFERENCE_DK_TOKEN", "needed_for": "fetch dtm-dk", "state": "optional" },
+        { "name": "OBC_REFERENCE_FI_TOKEN", "needed_for": "fetch dtm-fi", "state": "optional" },
+        { "name": "OBC_REFERENCE_SE_USER and OBC_REFERENCE_SE_PASSWORD", "needed_for": "fetch dtm-se", "state": "optional" },
+        { "name": "~/.cdsapirc", "needed_for": "fetch era5-land", "state": "optional" },
+        { "name": "~/.config/openbikecomputer/cdse-s3.env", "needed_for": "fetch hr-wsi", "state": "optional" }
     ]
 }

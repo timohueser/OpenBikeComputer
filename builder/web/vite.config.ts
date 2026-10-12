@@ -43,6 +43,12 @@ export default defineConfig(({ mode }) => {
     // A preview config that the planner cannot use fails the build. Without one, the planner reads the live catalogue.
     const preview = loadEnv(mode, process.cwd(), "VITE_PLANNER_CONFIG").VITE_PLANNER_CONFIG;
     if (mode === "planner" && preview) plannerConfig(JSON.parse(preview));
+    // Dev mode: `python -m builder.server --no-browser` on :8000 serves
+    // the API; Vite proxies it (plain http-proxy streams SSE fine).
+    // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead.
+    const proxy: Record<string, string> = mode === "data" ? { "/api": "http://127.0.0.1:8700" } : {
+        "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
+    };
     return {
         // base "./" keeps every asset URL relative, so the built app works mounted at
         // "/" (local FastAPI) or under a sub-path (a future single-server deployment
@@ -81,11 +87,7 @@ export default defineConfig(({ mode }) => {
             // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
             // dev server expose files only as far as this repository root.
             fs: { allow: ["../.."] },
-            // Dev mode: `python -m builder.server --no-browser` on :8000 serves
-            // the API; Vite proxies it (plain http-proxy streams SSE fine).
-            proxy: {
-                "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
-            },
+            proxy,
         },
         test: {
             environment: "node",

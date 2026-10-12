@@ -1,6 +1,7 @@
 //! `obc data serve [TARGET]`: serve a dir target to the apps of this machine and of its network,
 //! and follow the release that the target serves.
 
+use std::future::IntoFuture;
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,15 +15,18 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{print_json, Code, Error};
-use crate::release::SERVING;
+use crate::release;
 use crate::serve::http::{self, Shared, View};
 use crate::serve::services::{self, Processes, Programs};
 use crate::serve::{wanted, Follower, Served, PLANNER};
 use crate::store::Store;
 use crate::target::Target;
 
-/// The port of `obc data serve` on each address of this machine.
+/// The port of `obc data serve` on every IPv4 address of this machine.
 const PORT: u16 = 8710;
+
+/// How long the open requests may take after a signal stops `obc data serve`.
+const GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -80,15 +84,39 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let (shared, stop) = (Shared::default(), Arc::new(AtomicBool::new(false)));
     let public = listening.network.clone().unwrap_or(listening.url.clone());
     let follower = {
-        let (target, shared, stop, dir) = (target.clone(), shared.clone(), stop.clone(), dir.clone());
+        let (target, shared, stop, dir, work) =
+            (target.clone(), shared.clone(), stop.clone(), dir.clone(), work.clone());
         let start = move |served: &Served| services::start(&programs, &dir, &work, served, &public);
         std::thread::spawn(move || follow(&target, start, &shared, &stop))
     };
     let router = http::router(shared, &dir, tiles);
-    let served = runtime.block_on(async { axum::serve(listener, router).with_graceful_shutdown(signal()).await });
+    let served = runtime.block_on(async {
+        let signalled = Arc::new(tokio::sync::Notify::new());
+        let shutdown = {
+            let signalled = signalled.clone();
+            async move {
+                signal().await;
+                signalled.notify_one();
+            }
+        };
+        let server = axum::serve(listener, router).with_graceful_shutdown(shutdown);
+        tokio::select! {
+            served = server.into_future() => served,
+            () = async { signalled.notified().await; tokio::time::sleep(GRACE).await } => Ok(()),
+        }
+    });
+    runtime.shutdown_background();
     stop.store(true, Ordering::Relaxed);
-    let _ = follower.join();
+    // The follower waits while a start installs files: past the grace, the process ends without it.
+    let deadline = Instant::now() + GRACE;
+    while !follower.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if follower.is_finished() {
+        let _ = follower.join();
+    }
     services::stop(&mut tile_server);
+    let _ = std::fs::remove_dir_all(&work);
     served.map_err(|e| Code::Failed.error(format!("port {PORT}: {e}")))
 }
 
@@ -119,18 +147,17 @@ fn follow(
     let mut follower = Follower::default();
     let mut seen = None;
     while !stop.load(Ordering::Relaxed) {
-        let (read, now) = (target.get(SERVING), Instant::now());
-        if seen.as_ref() != Some(&read) {
-            match read.clone().and_then(|_| wanted(target)) {
-                Ok(wanted) if wanted.is_empty() => {
-                    eprintln!("obc data serve: the target serves no release yet; `obc data update` makes one")
-                }
-                Ok(wanted) => follower.want(wanted, &mut start, now),
+        let read = release::serving(target);
+        let tag = read.as_ref().map(|roles| roles.as_ref().map(|(_, tag)| tag.clone())).map_err(Clone::clone);
+        if seen.as_ref() == Some(&tag) {
+            follower.poll(Instant::now());
+        } else {
+            match read.and_then(|roles| roles.map(|(roles, _)| wanted(target, &roles)).transpose()) {
+                Ok(None) => eprintln!("obc data serve: the target serves no release yet; `obc data update` makes one"),
+                Ok(Some(wanted)) => follower.want(wanted, &mut start, &Instant::now),
                 Err(e) => eprintln!("obc data serve: {e}; the current release stays"),
             }
-            seen = Some(read);
-        } else {
-            follower.poll(now);
+            seen = Some(tag);
         }
         let ports = follower.ready().map(|(id, processes)| (id.to_string(), processes.ports)).collect();
         *shared.write().unwrap() = View { current: follower.current().cloned(), ports };
@@ -182,14 +209,16 @@ fn network_address() -> Option<IpAddr> {
     Some(socket.local_addr().ok()?.ip()).filter(|address| !address.is_loopback() && !address.is_unspecified())
 }
 
-/// Ctrl-C or SIGTERM.
+/// Ctrl-C, SIGTERM, or SIGHUP when the terminal closes.
 async fn signal() {
     #[cfg(unix)]
     {
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        use tokio::signal::unix::{signal as unix, SignalKind};
+        let (mut terminate, mut hangup) = (unix(SignalKind::terminate()).unwrap(), unix(SignalKind::hangup()).unwrap());
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = terminate.recv() => {}
+            _ = hangup.recv() => {}
         }
     }
     #[cfg(not(unix))]

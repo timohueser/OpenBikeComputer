@@ -185,34 +185,44 @@ impl Target {
     /// to the file when both are on one file system, so nothing ever writes a key in place.
     pub fn upload(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
         let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         for (file, key) in files {
             crate::r2::check_key(key)?;
             let path = dir.join(key);
             let parent = path.parent().expect("a key has a parent folder");
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-            let linked = match fs::hard_link(file, &path) {
-                Err(e) if e.kind() == ErrorKind::CrossesDevices => {
-                    let part =
-                        parent.join(format!(".{}.{}.part", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-                    let _ = fs::remove_file(&part);
-                    let copied = OpenOptions::new().write(true).create_new(true).open(&part).and_then(|mut part| {
-                        std::io::copy(&mut File::open(file)?, &mut part)?;
-                        part.sync_all()
-                    });
-                    let linked = copied.and_then(|()| fs::hard_link(&part, &path));
-                    let _ = fs::remove_file(&part);
-                    linked
-                }
-                linked => linked,
-            };
-            match linked {
+            match link(file, &path) {
                 Err(e) if e.kind() != ErrorKind::AlreadyExists => return Err(format!("{}: {e}", path.display())),
                 _ => {}
             }
         }
         Ok(())
     }
+}
+
+/// Give `path`, which must not exist, the bytes of `file`: a hard link, or on another file system
+/// a copy under a [`part`] name that is then linked. Nothing opens an existing file for writing:
+/// it can be a link to an object of the store.
+pub(crate) fn link(file: &Path, path: &Path) -> std::io::Result<()> {
+    match fs::hard_link(file, path) {
+        Err(e) if e.kind() == ErrorKind::CrossesDevices => {
+            let part = part(path);
+            let _ = fs::remove_file(&part);
+            let copied = OpenOptions::new().write(true).create_new(true).open(&part).and_then(|mut part| {
+                std::io::copy(&mut File::open(file)?, &mut part)?;
+                part.sync_all()
+            });
+            let linked = copied.and_then(|()| fs::hard_link(&part, path));
+            let _ = fs::remove_file(&part);
+            linked
+        }
+        linked => linked,
+    }
+}
+
+/// A temporary name beside `path` that no other write of this process uses.
+pub(crate) fn part(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    path.with_file_name(format!(".{}.{}.part", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {

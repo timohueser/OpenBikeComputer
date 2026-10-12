@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { SCREENS, screenAt } from "../../lib/data/screens";
-    import { hardware, size, type Status } from "../../lib/data/shapes";
+    import { free, hardware, type Status } from "../../lib/data/shapes";
     import Failure from "./Failure.svelte";
     import Later from "./Later.svelte";
     import Machine from "./Machine.svelte";
@@ -28,7 +28,7 @@
     <b>OBC data</b>
     {#if machine}
         <span class="pill">This page runs on <b>{machine.name}</b></span>
-        <span class="facts">{hardware(machine)} · store {size(machine.store_free_bytes)} free</span>
+        <span class="facts">{hardware(machine)} · store {free(machine.store_free_bytes)}</span>
     {/if}
 </header>
 

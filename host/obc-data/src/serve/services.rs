@@ -92,15 +92,23 @@ pub fn start(
 pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(command, 0);
+    // A child stops when `obc data serve` ends without stopping it, such as on SIGKILL. The signal
+    // comes when the thread that spawned the child ends, and the threads that spawn live until then.
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl is async-signal-safe, and the closure allocates nothing.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(command, || {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     command.stdout(std::io::stderr()).spawn()
 }
 
 impl super::Services for Processes {
     fn ready(&mut self) -> Result<bool, String> {
-        for (child, service) in self.children.iter_mut().zip(&SERVICES) {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                return Err(format!("the {} service stopped: {status}", service.name));
-            }
+        if let Some(stopped) = self.stopped() {
+            return Err(stopped);
         }
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .proxy(None)
@@ -120,6 +128,14 @@ impl super::Services for Processes {
             }
         }
         Ok(true)
+    }
+
+    fn stopped(&mut self) -> Option<String> {
+        self.children.iter_mut().zip(&SERVICES).find_map(|(child, service)| match child.try_wait() {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(format!("the {} service stopped: {status}", service.name)),
+            Err(e) => Some(format!("the {} service: {e}", service.name)),
+        })
     }
 }
 
@@ -198,12 +214,8 @@ fn materialize(target: &Path, planner: &str, dir: &Path) -> Result<String, Strin
         let (object, path) = (target.join("objects").join(&entry.transport.sha256), dir.join(name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
-            "identity" => fs::hard_link(&object, &path).or_else(|_| fs::copy(&object, &path).map(drop)),
-            "gzip" => File::open(&object).and_then(|object| {
-                // A larger output is not the file of the release.
-                let mut decoded = std::io::Read::take(flate2::read::GzDecoder::new(object), entry.bytes + 1);
-                std::io::copy(&mut decoded, &mut File::create(&path)?).map(drop)
-            }),
+            "identity" => crate::target::link(&object, &path),
+            "gzip" => decode(&object, &path, entry.bytes),
             other => return Err(format!("{name} has the encoding `{other}`")),
         };
         written.map_err(|e| format!("{name} from {}: {e}", object.display()))?;
@@ -212,6 +224,22 @@ fn materialize(target: &Path, planner: &str, dir: &Path) -> Result<String, Strin
         }
     }
     document["region"].as_str().map(String::from).ok_or_else(|| "the planner release has no region".into())
+}
+
+/// Decode the gzip object `object` to a new file under a [`crate::target::part`] name, then
+/// rename it to `path`: nothing opens an existing file for writing.
+fn decode(object: &Path, path: &Path, bytes: u64) -> std::io::Result<()> {
+    let part = crate::target::part(path);
+    let written = File::open(object).and_then(|object| {
+        let mut file = File::options().write(true).create_new(true).open(&part)?;
+        // A larger output is not the file of the release.
+        std::io::copy(&mut std::io::Read::take(flate2::read::GzDecoder::new(object), bytes + 1), &mut file).map(drop)
+    });
+    let renamed = written.and_then(|()| fs::rename(&part, path));
+    if renamed.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    renamed
 }
 
 #[cfg(test)]
@@ -257,6 +285,19 @@ mod tests {
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
+
+        // An existing file is never opened for writing: it can be a link to an object of the store.
+        let (object, again) = (scratch.0.join("object"), scratch.0.join("again"));
+        fs::write(&object, b"store object").unwrap();
+        for name in ["routing/pages.bin", "search/tiles/pois/9-1-1.sqlite"] {
+            fs::create_dir_all(again.join(name).parent().unwrap()).unwrap();
+            fs::hard_link(&object, again.join(name)).unwrap();
+        }
+        assert!(materialize(&target, &"a".repeat(64), &again).unwrap_err().contains("exists"));
+        fs::remove_file(again.join("routing/pages.bin")).unwrap();
+        materialize(&target, &"a".repeat(64), &again).unwrap();
+        assert_eq!(fs::read(again.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
+        assert_eq!(fs::read(&object).unwrap(), b"store object");
 
         document["files"]["routing/pages.bin"]["sha256"] = json!("b".repeat(64));
         release(&document);

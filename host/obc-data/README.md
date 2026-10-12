@@ -8,6 +8,7 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 ## Setup
 
 Prepare Rust, Python with `uv`, GEOS and Osmium before an update; `obc data` does not install them.
+`obc data setup` shows what this machine can do and the tools and credentials that it has.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
@@ -18,6 +19,7 @@ policies) are in the release that it serves, so they need no commit.
 | Configuration or credential | Purpose |
 | --- | --- |
 | `data/targets.toml` | Targets and where they are |
+| `data/machines.toml` | The header colour and the SSH host of each machine for the page |
 | `data/regions/` | Region presets |
 | `data/sources.toml` | Source declarations and their refresh policies |
 | `data/planner.toml` | Planner producer options |
@@ -46,17 +48,22 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
+| `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
+| `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
 rollback of the target.
 
+The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
+the page.
+
 ## Serve
 
-`obc data serve` serves `local` on port 8710 of each address of the machine, also on its network.
-It prints the command that opens each app on `local`: the web planner, the map builder, the
-desktop app, the simulator and the Debug iOS app. It runs the routing, search and downloads
-services of each planner release and the tile server of `planner/tiles`. At start it builds
-`planner-service` with cargo. Prepare Node and the other services once:
+`obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
+command that opens each app on `local`: the web planner, the map builder, the desktop app, the
+simulator and the Debug iOS app. It runs the routing, search and downloads services of each
+planner release and the tile server of `planner/tiles`. At start it builds `planner-service` with
+cargo. Prepare Node and the other services once:
 
 ```sh
 python3 planner/search/setup.py
@@ -66,5 +73,11 @@ npm ci --prefix planner/tiles
 Leave it running while `obc data update local` runs in another terminal. Clients get the new
 release when its services answer. A failed release leaves clients on the current release; the
 services write the cause to the terminal. A service that stops later does not start again: stop
-`obc data serve` with Ctrl-C and start it again. Other machines on the local network reach port
-8710 while it runs.
+`obc data serve` with Ctrl-C and start it again.
+
+- Every machine on the local network reaches every file of the target, also `release.json`, and
+  the three services. Any web page can read them (CORS `*`).
+- The download bundles name the network address that the machine has at start. After a change
+  of network, start `obc data serve` again.
+- The services read their files from `<store>/serve/local/`. Serve removes it when it starts and
+  when it stops; `obc data clean` does not touch it.
