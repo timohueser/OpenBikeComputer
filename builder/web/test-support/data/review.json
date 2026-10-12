@@ -50,5 +50,6 @@
     "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
     "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],
-    "optional": ["climate", "snow", "sun"]
+    "optional": ["climate", "snow", "sun"],
+    "notes": []
 }

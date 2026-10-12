@@ -73,11 +73,12 @@ fn fetch_files(
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
         FetchKind::Osm => osm::replication(store, http, request),
-        FetchKind::Dtm => capture::dtm(root, store, request),
-        // A national model that a person orders: the ingest reads the delivery.
-        FetchKind::ByHand if source.id.starts_with("dtm-") => capture::dtm(root, store, request),
+        // Only the producer of `terrain-reference/<key>` reads a national model, through its adapter.
+        FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => {
+            Err(format!("source `{}` is read through `terrain-reference/{}`", source.id, &source.id["dtm-".len()..]))
+        }
         FetchKind::Capture => capture::run(root, store, request, acquisition),
-        FetchKind::ByHand => Err(format!(
+        FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
             source.fetch.url.as_deref().unwrap_or_default()

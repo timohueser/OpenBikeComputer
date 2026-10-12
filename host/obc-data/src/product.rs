@@ -67,6 +67,7 @@ pub struct Pointer {
 pub struct Steps {
     pub steps: Vec<Step>,
     pub blocked: Vec<BlockedLayer>,
+    pub notes: Vec<Note>,
 }
 
 impl Steps {
@@ -84,7 +85,7 @@ impl Steps {
 
 impl From<Vec<Step>> for Steps {
     fn from(steps: Vec<Step>) -> Self {
-        Self { steps, blocked: Vec::new() }
+        Self { steps, ..Self::default() }
     }
 }
 
@@ -102,6 +103,16 @@ impl BlockedLayer {
     pub fn new(step: impl Into<String>, layer: &crate::engine::Layer, reason: impl Into<String>) -> Self {
         BlockedLayer { step: step.into(), layer: layer.name.into(), reason: reason.into() }
     }
+}
+
+/// A layer that bakes without a source that it reads where the source has a version, such as a
+/// prepared source that no target lists yet. It does not prevent an update.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Note {
+    pub layer: String,
+    /// What the layer bakes without, and the command that gives it.
+    pub text: String,
 }
 
 /// Why a product gives no steps.
@@ -152,8 +163,8 @@ pub struct Inputs {
 
 impl Inputs {
     /// The fetch to run for `wanted`. A `manual` source moves as a whole: a request without a
-    /// version takes the version that the first fetch of the source gave, so a model fetched tile
-    /// by tile over midnight keeps one version.
+    /// version takes the version that the first fetch of the source gave, so the requests of a
+    /// source fetched over midnight keep one version.
     pub fn pinned(&self, wanted: &Wanted) -> Wanted {
         let version =
             wanted.version.clone().or_else(|| self.resolved.get(&(wanted.source.clone(), Vec::new())).cloned());

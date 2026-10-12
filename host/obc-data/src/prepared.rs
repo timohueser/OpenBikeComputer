@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -36,11 +37,19 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
-    /// The fetches that a prepare of `id` reads, for its review.
-    fn inputs(&self, id: &str, scope: Option<&Scope>) -> Result<Vec<Wanted>, String>;
+    /// What a prepare of `source` for `scope` reads and makes, for its review. It fetches nothing.
+    fn plan(&self, source: &Source, scope: Option<&Scope>) -> Result<Plan, String>;
     /// Make the files of the version of `job`: write each into `job.work`, then give it to
     /// [`Job::finish`]. A run that resumes calls it again; [`Job::done`] names what is done.
     fn prepare(&self, job: &mut Job) -> Result<(), String>;
+}
+
+/// What a prepare reads and makes, as its review shows it.
+pub struct Plan {
+    /// The sources that it reads: the fetches, and a source that a program of the producer reads.
+    pub inputs: Vec<Wanted>,
+    /// The files of the version, at most.
+    pub files: u64,
 }
 
 /// The producer of the source `id`.
@@ -200,9 +209,7 @@ pub(crate) fn unpin(pinned: &str) -> Option<(&str, &str)> {
 pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
     let (id, version) = (&manifest.source, &manifest.version);
     let (folder, key) = (folder(target, id), format!("{version}/{MANIFEST}"));
-    let sizes: Vec<(String, u64)> =
-        manifest.files.iter().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
-    if let Some(missing) = folder.missing(&sizes)?.first() {
+    if let Some(missing) = absent(&folder, version, &manifest.files)?.first() {
         return Err(format!("sources/{id}/{missing} is not on the target; no manifest is written"));
     }
     if folder.put(&key, &manifest.canonical(), &Condition::Absent)?.is_none() {
@@ -212,6 +219,13 @@ pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, 
         }
     }
     list(target, id, version)
+}
+
+/// The keys `<version>/<path>` of `files` that the source folder `folder` lacks or holds with
+/// another size.
+pub(crate) fn absent(folder: &Target, version: &str, files: &[LayerFile]) -> Result<Vec<String>, String> {
+    let sizes: Vec<(String, u64)> = files.iter().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
+    folder.missing(&sizes)
 }
 
 /// Add the complete version `id@version` of `target` to its `versions.json`, from its manifest.
@@ -236,8 +250,8 @@ pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, 
 }
 
 /// What a resume needs on this machine: `STORE/prepared/<target>/<id>/<version>/` holds the scope
-/// of the run, its journal and `work/`.
-fn job_dir(store: &Store, target: &str, id: &str, version: &str) -> PathBuf {
+/// of the run, its journal, `work/` and `state/`.
+pub(crate) fn job_dir(store: &Store, target: &str, id: &str, version: &str) -> PathBuf {
     store.root().join("prepared").join(target).join(id).join(version)
 }
 
@@ -269,8 +283,13 @@ pub struct Job<'a> {
     pub id: String,
     pub version: String,
     pub scope: Option<Scope>,
+    /// The row of the source in `data/sources.toml`.
+    pub source: &'a Source,
     /// Where the producer writes a file before [`Job::finish`]. It stays when the run stops.
     pub work: PathBuf,
+    /// What the producer keeps for the runs of the version that follow, such as what it learnt of
+    /// a file. It stays until the version is complete.
+    pub state: PathBuf,
     /// The repository root, where a producer starts a program.
     pub root: &'a Path,
     store: &'a Store,
@@ -286,7 +305,7 @@ pub struct Job<'a> {
 }
 
 /// What [`Job::open`] needs besides the run.
-pub(crate) struct Opening<'a> {
+pub struct Opening<'a> {
     pub root: &'a Path,
     pub store: &'a Store,
     pub http: &'a Http,
@@ -298,15 +317,19 @@ pub(crate) struct Opening<'a> {
 impl<'a> Job<'a> {
     /// The job of `id@version` with `scope`, with what earlier runs of it did. A run of the version
     /// for another scope refuses.
-    pub(crate) fn open(
+    pub fn open(
         opening: Opening<'a>,
         (id, version): (&str, &str),
         scope: Option<Scope>,
         run: &'a mut Run,
     ) -> Result<Job<'a>, String> {
         let Opening { root, store, http, sources, target: (name, target) } = opening;
+        let source = sources.iter().find(|source| source.id == id);
+        let source = source.ok_or_else(|| format!("no source `{id}` in data/sources.toml"))?;
         let dir = job_dir(store, name, id, version);
-        fs::create_dir_all(dir.join("work")).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for folder in ["work", "state"] {
+            fs::create_dir_all(dir.join(folder)).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
         let scope_file = dir.join("scope.json");
         let bytes = serde_json::to_vec(&scope).expect("a scope serializes");
         match fs::read(&scope_file) {
@@ -323,7 +346,9 @@ impl<'a> Job<'a> {
             id: id.into(),
             version: version.into(),
             scope,
+            source,
             work: dir.join("work"),
+            state: dir.join("state"),
             root,
             store,
             http,
@@ -341,9 +366,8 @@ impl<'a> Job<'a> {
             job.apply(entry);
         }
         // The cleanup of a newer version can delete the keys of the journal: the run makes them again.
-        let sizes: Vec<(String, u64)> =
-            job.files.values().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
-        for key in job.folder.missing(&sizes)? {
+        let files: Vec<LayerFile> = job.files.values().cloned().collect();
+        for key in absent(&job.folder, version, &files)? {
             job.files.remove(&key[version.len() + 1..]);
         }
         Ok(job)
@@ -394,30 +418,56 @@ impl<'a> Job<'a> {
         };
         let snapshot = self.run.fetch_request(self.root, self.store, self.http, &request, &[])?;
         let files = snapshot.files.iter().map(|file| (file.name.clone(), file.sha256.clone())).collect();
-        self.record(Entry::Input { source: snapshot.source.clone(), version: snapshot.version.clone(), files })?;
+        self.input(&snapshot.source, &snapshot.version, files)?;
         Ok(snapshot.files.into_iter().map(|file| (file.name, self.store.object(&file.sha256))).collect())
     }
 
-    /// Upload the file `path` of `work` to the target, record it, and delete it from `work`.
-    pub fn finish(&mut self, path: &str) -> Result<(), String> {
+    /// Record that the prepare read `files`, name to SHA-256, of `source@version` without a fetch:
+    /// a program of the producer read them. The manifest names the version.
+    pub fn input(&mut self, source: &str, version: &str, files: BTreeMap<String, String>) -> Result<(), String> {
+        self.record(Entry::Input { source: source.into(), version: version.into(), files })
+    }
+
+    /// Run `command`, a program of the producer, in the repository root, and wait for it.
+    pub fn program(&self, command: &mut Command) -> Result<(), String> {
         self.run.check_stop(self.store)?;
-        let relative = path.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
-        if !relative || path == MANIFEST || path.contains('\\') {
-            return Err(format!("{path} is not the path of a file of a version"));
-        }
-        let file = self.work.join(path);
-        let (sha256, size) = hash_file(&file)?;
-        if let Some(done) = self.files.get(path).filter(|done| done.sha256 != sha256) {
-            return Err(format!("{path} has other bytes than the {} bytes that a run uploaded", done.size));
+        // The program stops when this process does, so no orphan writes into a later run.
+        command.current_dir(self.root).env("OBC_PARENT_PID", std::process::id().to_string());
+        let program = command.get_program().to_string_lossy().into_owned();
+        let status = command.status().map_err(|e| format!("cannot start `{program}`: {e}"))?;
+        status.success().then_some(()).ok_or_else(|| format!("`{program}` failed: {status}"))
+    }
+
+    /// Upload the files `paths` of `work` to the target in one call, record each, and delete them
+    /// from `work`.
+    pub fn finish(&mut self, paths: &[String]) -> Result<(), String> {
+        self.run.check_stop(self.store)?;
+        let mut files = Vec::new();
+        for path in paths {
+            let relative = path.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+            if !relative || path == MANIFEST || path.contains('\\') {
+                return Err(format!("{path} is not the path of a file of a version"));
+            }
+            let file = self.work.join(path);
+            let (sha256, size) = hash_file(&file)?;
+            if let Some(done) = self.files.get(path).filter(|done| done.sha256 != sha256) {
+                return Err(format!("{path} has other bytes than the {} bytes that a run uploaded", done.size));
+            }
+            files.push((file, LayerFile { path: path.clone(), size, sha256 }));
         }
         // No reader reads the version before its manifest: a key of a stopped run can hold other
         // bytes, and they go.
-        self.folder.replace(&file, &format!("{}/{path}", self.version))?;
-        if !self.done(path) {
-            self.record(Entry::File(LayerFile { path: path.into(), size, sha256 }))?;
-            self.uploaded += 1;
+        let keys: Vec<(PathBuf, String)> =
+            files.iter().map(|(file, done)| (file.clone(), format!("{}/{}", self.version, done.path))).collect();
+        self.folder.replace(&keys)?;
+        for (file, done) in files {
+            if !self.done(&done.path) {
+                self.record(Entry::File(done))?;
+                self.uploaded += 1;
+            }
+            fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
         }
-        fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))
+        Ok(())
     }
 
     /// The source versions that the prepare read, sorted.

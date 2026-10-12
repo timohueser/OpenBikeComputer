@@ -8,7 +8,7 @@ use super::{fetched, Code, Error};
 use crate::engine::runs::Run;
 use crate::engine::Step;
 use crate::fetch::{self, http::Http, Request};
-use crate::product::{BlockedLayer, Inputs, Product, Unplanned, Wanted};
+use crate::product::{BlockedLayer, Inputs, Note, Product, Unplanned, Wanted};
 use crate::regions::Regions;
 use crate::sources::{FetchKind, Source};
 use crate::store::Store;
@@ -19,10 +19,11 @@ const ROUNDS: usize = 8;
 /// The sources that a read-only command fetches to list the steps: small metadata, never bulk data.
 const METADATA: [&str; 3] = ["geofabrik-poly", "geofabrik-index", "copernicus-glo-30-tiles"];
 
-/// The steps of every product, and the steps that cannot be planned.
+/// The steps of every product, the steps that cannot be planned, and the notes of the layers.
 pub(super) struct Listed {
     pub steps: Vec<Step>,
     pub blocked: Vec<BlockedLayer>,
+    pub notes: Vec<Note>,
 }
 
 /// Fetch what a product names, and give the version fetched; with the code of a failed fetch:
@@ -43,7 +44,8 @@ pub(super) fn fetcher<'a>(
                 .error(format!("no target lists a version of `{}` in the format of this `obc data`", wanted.source))
                 .fix(format!("Run `obc data source prepare {}`.", wanted.source)));
         }
-        if !bulk && !METADATA.contains(&wanted.source.as_str()) {
+        // A prepared fetch without names gives only the manifest of its version.
+        if !bulk && !prepared && !METADATA.contains(&wanted.source.as_str()) {
             return Err(Code::Blocked
                 .error(format!("source `{}` is not in the store, and only an update fetches data", wanted.source))
                 .fix("Run `obc data update TARGET`: it fetches what the steps read."));
@@ -88,7 +90,7 @@ pub(super) fn steps(
         return Err(Code::Usage.error(format!("no product has the optional layer `{layer}`")));
     }
     inputs.fetch_failures.clear();
-    let mut listed = Listed { steps: Vec::new(), blocked: Vec::new() };
+    let mut listed = Listed { steps: Vec::new(), blocked: Vec::new(), notes: Vec::new() };
     for product in products {
         let blocked =
             |reason: String| BlockedLayer { step: product.name().into(), layer: product.name().into(), reason };
@@ -96,6 +98,7 @@ pub(super) fn steps(
         match product_steps(root, *product, inputs, regions, store, &mut fetch, observe) {
             Ok(Ok(steps)) => {
                 listed.blocked.extend(steps.blocked);
+                listed.notes.extend(steps.notes);
                 add_steps(products, *product, &mut listed.steps, steps.steps)?;
             }
             Ok(Err(reason)) => listed.blocked.push(blocked(reason)),
@@ -164,7 +167,7 @@ fn product_steps(
         Ok(steps) => Ok(Ok(steps)),
         Err(Unplanned::NeedsFetch(fetches)) => {
             if let Some(mut error) = failure {
-                // A national terrain model is a fetch per tile: the count of each source, not a line each.
+                // A source can be many fetches, such as one per area: the count of each source, not a line each.
                 let failures = &inputs.fetch_failures[earlier..];
                 if failures.len() > 1 {
                     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();

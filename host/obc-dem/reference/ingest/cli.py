@@ -105,9 +105,9 @@ def ingest_today(rasters, source, root: Path) -> None:
 
 
 def command_fetch(args) -> int:
-    """One archive tile of a model into `--out`, for `obc data fetch`: `<ti>-<tj>.tif`, the
-    rasters of the tile pooled onto the lattice, or the empty file `<ti>-<tj>.none` where the
-    model has no height in the tile.
+    """One archive tile of a model into `--out`, for `obc data source prepare`: `16/<ti>/<tj>.tif`,
+    the rasters of the tile pooled onto the lattice, then `<ti>-<tj>.sha256`, the digest of its
+    pixels; or the empty file `<ti>-<tj>.none` where the model has no height in the tile.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
     one tile's rasters at a time and the store never sees them.
@@ -145,11 +145,31 @@ def command_fetch(args) -> int:
         ingest_rasters(rasters, source, pooled, "", "", {tile_id(ti, tj)})
         out.mkdir(parents=True, exist_ok=True)
         if tile_path(pooled, ti, tj).is_file():
-            os.replace(tile_path(pooled, ti, tj), out / f"{ti:04}-{tj:04}.tif")
+            tile_path(out, ti, tj).parent.mkdir(parents=True, exist_ok=True)
+            os.replace(tile_path(pooled, ti, tj), tile_path(out, ti, tj))
+            # Last: a digest names a whole tile.
+            (out / f"{ti:04}-{tj:04}.sha256").write_text(tile_digest(tile_path(out, ti, tj)), encoding="utf-8")
         else:
             (out / f"{ti:04}-{tj:04}.none").touch()
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
+def command_index_tiles(args) -> int:
+    """`index.json` of a version of `terrain-reference/<key>`: each tile of `--digests`, a
+    directory of the `<ti>-<tj>.sha256` files that `fetch` wrote, with that digest."""
+
+    source = registered(args.source)
+    digests = {path.stem.replace("-", "/"): path.read_text(encoding="utf-8").strip()
+               for path in sorted(Path(args.digests).glob("*.sha256"))}
+    facts = {"product": source.product, "attribution": source.credit(args.fetched), "licence": source.licence,
+             "vertical_datum": source.vertical_datum, "fetched": args.fetched}
+    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "sources": {source.key: facts},
+             "tiles": {tile: source.key for tile in digests},
+             "contributors": {tile: [source.key] for tile in digests}, "sha256": digests}
+    Path(args.out).write_text(json.dumps(index, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                              encoding="utf-8")
     return 0
 
 
@@ -393,6 +413,13 @@ def main(argv=None) -> int:
     fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
     fetch.add_argument("--out", required=True, help="where the pooled tile goes")
     fetch.set_defaults(run=command_fetch)
+
+    tiles = commands.add_parser("index-tiles", help="index.json of the tiles that fetch wrote, for obc data")
+    tiles.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+    tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
+    tiles.add_argument("--digests", required=True, help="the directory of the <ti>-<tj>.sha256 files")
+    tiles.add_argument("--out", required=True, help="the index.json to write")
+    tiles.set_defaults(run=command_index_tiles)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

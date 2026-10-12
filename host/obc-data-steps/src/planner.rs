@@ -903,7 +903,6 @@ mod tests {
         let temp = temp("planner-layers");
         let store = store(&temp, &["2026-10-01"]);
         let inputs = resolved(inputs(AREA, &["climate", "snow", "sun"]), &regions(), &store);
-        crate::device::tests::without_models(&store, &inputs, &regions());
         let mut steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         steps.extend(Device.steps_with_tool(&root(), &inputs, &regions(), &store, Ok(())).unwrap().steps);
         let layer = |name: &str| {

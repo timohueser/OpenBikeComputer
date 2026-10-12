@@ -30,8 +30,8 @@ account and download steps of a source behind a login, then runs the ingest. `ch
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
 
-`ingest.py fetch <key> --tile <ti>-<tj>` is the `obc data` fetch: one tile, pooled, its raw
-rasters removed. `merge.py --step` is the step `device/reference/<leaf>`: those tiles of each
+`obc data source prepare terrain-reference/<key>` runs `ingest.py fetch <key> --tile <ti>-<tj>`
+per tile: the pooled tile and its pixel SHA-256, then `index-tiles`. `merge.py --step` is the step `device/reference/<leaf>`: those tiles of each
 model, best first, into an empty archive (`specs/obc-data.md`, `device`).
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
@@ -135,7 +135,7 @@ Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `at`, `ca`, `nz
 
 Behind a free account: `dk`, `se`, `fi`, `au`. Set the credential and `ingest <key>` fetches
 live; without it, `ingest <key> --input <dir>` takes what the portal delivered. `wizard <key>`
-holds the account and download steps. For `obc data`, `OBC_REFERENCE_AU_INPUT` names the `au`
+holds the account and download steps. For a prepare, `OBC_REFERENCE_AU_INPUT` names the `au`
 delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
 
 `de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:

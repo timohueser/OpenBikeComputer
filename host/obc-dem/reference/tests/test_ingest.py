@@ -464,14 +464,23 @@ class Fetch(ArchiveCase):
                                       "--work", str(self.root / "ingest"), "--per-tile"]), 0)
         tiles = self.index()["sha256"]
         self.assertEqual(len(tiles), 2)
+        (self.root / "digests").mkdir()
         for tile, digest in tiles.items():
             ti, tj = (int(part) for part in tile.split("/"))
-            name = f"{ti:04}-{tj:04}"
-            self.assertEqual(self.fetch("ch", name), (0, [f"{name}.tif"]))
+            name, path = f"{ti:04}-{tj:04}", f"16/{tile}.tif"
+            self.assertEqual(self.fetch("ch", name), (0, [path, f"{name}.sha256"]))
             self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
-            self.assertEqual(ingest.tile_digest(self.root / "out" / f"{name}.tif"), digest)
-            self.assertEqual(ingest.tile_problems(self.root / "out" / f"{name}.tif", ti, tj), [])
+            self.assertEqual((self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8"), digest)
+            self.assertEqual(ingest.tile_problems(self.root / "out" / path, ti, tj), [])
             self.assertFalse((self.root / "work").exists())
+            shutil.copy(self.root / "out" / f"{name}.sha256", self.root / "digests")
+
+        index = self.root / "index.json"
+        self.assertEqual(ingest.main(["index-tiles", "ch", "--fetched", "2026-10-01", "--digests",
+                                      str(self.root / "digests"), "--out", str(index)]), 0)
+        index = json.loads(index.read_text(encoding="utf-8"))
+        self.assertEqual((index["sha256"], index["sources"]["ch"]["fetched"]), (tiles, "2026-10-01"))
+        self.assertEqual(index["contributors"], {tile: ["ch"] for tile in tiles})
 
     def test_a_tile_without_a_height_is_a_none_file_and_a_failure_keeps_no_raw_raster(self):
         class Service(ingest.Source):
@@ -507,7 +516,7 @@ class Fetch(ArchiveCase):
         with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
             self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
-            self.assertEqual(self.fetch("au", name), (0, [f"{name}.tif"]))
+            self.assertEqual(self.fetch("au", name), (0, [f"16/{ti:04}/{tj:04}.tif", f"{name}.sha256"]))
             os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
             self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")
         self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
@@ -521,7 +530,7 @@ class MergeStep(ArchiveCase):
         directory of its own, as the engine gives it."""
 
         output.mkdir(parents=True)
-        snapshots = {source: {f"#tile={path.stem}/{path.name}": str(path) for path in paths}
+        snapshots = {source: {f"16/{path.stem.replace('-', '/')}.tif": str(path) for path in paths}
                      for source, _, paths in models}
         options = {"models": [{"source": source, "version": version, "credit": f"credit of {source}"}
                               for source, version, _ in models],
@@ -540,7 +549,7 @@ class MergeStep(ArchiveCase):
         with rasterio.open(path) as src:
             expected = src.read(1)
 
-        # The pooled tile of each model, as `ingest.py fetch` stores it.
+        # The tile of each model, as a version of `terrain-reference/<key>` holds it.
         name = tile.replace("/", "-")
         pooled = []
         for key, raster in (("es", coarse), ("nl", corner)):
@@ -549,12 +558,10 @@ class MergeStep(ArchiveCase):
                                           "--input", str(raster.parent)]), 0)
             pooled.append(alone / f"{name}.tif")
             ingest.tile_path(alone, *map(int, tile.split("/"))).rename(pooled[-1])
-        none = self.root / f"{name}.none"
-        none.touch()
 
-        # The request names the worse model first, and a model without a height in the tile.
-        models = [("dtm-es", "2026-01-02", [pooled[0]]), ("dtm-nl", "2026-02-03", [pooled[1]]),
-                  ("dtm-dk", "2026-05-06", [none])]
+        # The request names the worse model first.
+        models = [("terrain-reference/es", "2026-01-02", [pooled[0]]),
+                  ("terrain-reference/nl", "2026-02-03", [pooled[1]])]
         output = self.root / "step" / "output"
         metrics = merge.merge(self.request(output, models, [tile, "0000/0000"]))
         layer = output / "reference"
@@ -564,9 +571,7 @@ class MergeStep(ArchiveCase):
         with rasterio.open(ingest.tile_path(layer, *map(int, tile.split("/")))) as src:
             self.assertTrue((src.read(1) == expected).all())
         self.assertEqual((index["sources"]["nl"]["fetched"], index["sources"]["nl"]["attribution"]),
-                         ("2026-02-03", "credit of dtm-nl"))
-        dk = json.loads((layer / "sources" / "dk.json").read_text(encoding="utf-8"))
-        self.assertEqual((dk["fetched"], dk["tiles"]), ("2026-05-06", []))
+                         ("2026-02-03", "credit of terrain-reference/nl"))
 
         # A tile that no terrain cell of the leaf reads stays out.
         output = self.root / "other" / "output"

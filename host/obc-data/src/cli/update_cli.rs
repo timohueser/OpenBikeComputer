@@ -432,7 +432,7 @@ pub(super) fn prepare(
         None => MachineCheck::this(store)?,
     };
     let uploads = new_copies(store, &listed.steps, &update, serving.as_ref(), &sources)?;
-    let review = review::review(review::Parts {
+    let mut review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
         serving: serving.as_ref(),
@@ -448,6 +448,7 @@ pub(super) fn prepare(
         copies: uploads,
         machine: &machine,
     });
+    review.notes = listed.notes;
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
 }
 
@@ -498,7 +499,7 @@ fn same_bytes<'a>(
 /// so the params do not count.
 fn refetchable(store: &Store, fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> Result<(), Error> {
     let Some(source) = sources.iter().find(|source| source.id == fetch.source) else { return Ok(()) };
-    let newest_only = matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Dtm | FetchKind::ByHand);
+    let newest_only = source.fetch.kind == FetchKind::Capture;
     let read = |serving: &&Release| {
         let version = |read: &&Fetched| (&read.source, &read.version) == (&fetch.source, &fetch.version);
         serving.sources.iter().filter(version).any(|read| !read.copy)

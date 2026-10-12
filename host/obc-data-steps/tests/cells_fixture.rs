@@ -16,7 +16,7 @@ use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
 use obc_data::product::{Inputs, Product, Unplanned, Wanted};
-use obc_data::regions::{parse_region, Area, Bbox, Regions};
+use obc_data::regions::{parse_region, Area, Regions};
 use obc_data::release::Release;
 use obc_data::settings::Settings;
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
@@ -105,16 +105,6 @@ fn missing_facts(store: &Store, wanted: &Wanted) {
     store.put_requested(&wanted.source, &requested).unwrap();
 }
 
-/// Record the polygon of each area of a national model as a speck at 0° 0°: the store has no
-/// national data of the Grimsel, so the terrain reads GLO-30 alone.
-fn without_models(store: &Store, dir: &Path) {
-    let speck = dir.join("speck.poly");
-    std::fs::write(&speck, box_poly(&Bbox { west: 0.0, south: 0.0, east: 0.001, north: 0.001 })).unwrap();
-    for area in obc_data::sources::all().iter().flat_map(|source| &source.areas) {
-        fetched(store, "geofabrik-poly", &[("area", area)], &format!("{area}.poly"), &speck);
-    }
-}
-
 /// A zip of `land-polygons-split-3857` whose one polygon is land over the whole of N46 E008.
 fn land_zip(path: &Path) {
     let merc = |lon: f64, lat: f64| {
@@ -198,7 +188,6 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let settings = Settings { region: "grimsel-box".into(), ..Settings::default() };
     let inputs = Inputs { settings, serving, ..Inputs::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
-    without_models(&store, &temp.0);
     // The shared Wikimedia facts, which only the stand-in compiles read: every identity is missing.
     let list = || Device.steps_with_tool(&root, &inputs, &regions, &store, Ok(()));
     for _ in 0..3 {

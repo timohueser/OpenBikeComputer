@@ -1,7 +1,7 @@
 //! `obc data`: what each target serves, how its layers stand against the steps of now, and the
 //! command to run next.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -13,7 +13,7 @@ use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::lock::{self, Holder};
 use crate::prepared::Prepared;
-use crate::product::{BlockedLayer, Inputs, Product};
+use crate::product::{BlockedLayer, Inputs, Note, Product};
 use crate::regions::{geofabrik, Area, Bbox, Regions};
 use crate::release::{self, Serving, SERVING};
 use crate::sources::{Registry, Source};
@@ -69,6 +69,8 @@ pub struct TargetState {
     pub layers: Option<Vec<LayerState>>,
     /// The steps that cannot be planned.
     pub blocked: Vec<BlockedLayer>,
+    /// What layers bake without, such as a prepared source that no target lists yet.
+    pub notes: Vec<Note>,
     /// The pointer keys whose bytes are not those of the serving release.
     pub drift: Vec<String>,
     /// Why the target or its steps could not be read; `null` when they could.
@@ -184,6 +186,9 @@ pub fn overview(
         for blocked in &target.blocked {
             rows.push(vec![format!("  blocked {}", blocked.layer), blocked.reason.clone()]);
         }
+        for note in &target.notes {
+            rows.push(vec![format!("  note {}", note.layer), note.text.clone()]);
+        }
         for key in &target.drift {
             rows.push(vec!["  drift".into(), key.clone()]);
         }
@@ -225,6 +230,7 @@ fn state(
         sources: Vec::new(),
         layers: None,
         blocked: Vec::new(),
+        notes: Vec::new(),
         drift: Vec::new(),
         error: None,
         fix: None,
@@ -272,9 +278,21 @@ fn state(
             Inputs { settings: release.settings.clone(), serving: release.versions(), ..Inputs::default() };
         let read = inputs.serving.keys().cloned().collect();
         crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
-        let fetch = listing::fetcher(root, store, http, &sources, None, false);
-        let listed = listing::steps(root, products, &mut inputs, &regions, store, true, fetch)?;
+        let list = |inputs: &mut Inputs| {
+            let fetch = listing::fetcher(root, store, http, &sources, None, false);
+            listing::steps(root, products, inputs, &regions, store, true, fetch)
+        };
+        let mut listed = list(&mut inputs)?;
+        // The steps can read a prepared source that the serving release does not, such as one that
+        // got its first version.
+        let asked: BTreeSet<_> = inputs.requests.borrow().difference(&read).cloned().collect();
+        let known = inputs.resolved.len() + inputs.due.len();
+        crate::prepared::resolve(root, store, (name, target), (&sources, &asked, producers), &mut inputs)?;
+        if inputs.resolved.len() + inputs.due.len() > known {
+            listed = list(&mut inputs)?;
+        }
         state.blocked = listed.blocked;
+        state.notes = listed.notes;
         let newer = freshness::newer(store, http, &sources, &inputs.requests.borrow(), &inputs.serving);
         let outputs = release.outputs.into_iter().map(|output| (output.step.clone(), output)).collect();
         let layers = crate::engine::state::state(store, &listed.steps, &Environment { release: outputs, newer })?;
