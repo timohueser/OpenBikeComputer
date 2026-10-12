@@ -58,13 +58,15 @@ export async function releaseFetch(url: string, init?: RequestInit): Promise<Res
 }
 
 const SCHEME = "release://";
+// Release objects have the scheme of the catalogue: `https://` when it is published.
+const OBJECTS = new URL(PLANNER_CATALOG).protocol + "//";
 
 /** `url` on the release protocol when the page has a release, so MapLibre loads it through `releaseFetch`. */
-export const releaseUrl = (url: string) => (loaded && url.startsWith("https://") ? SCHEME + url.slice(8) : url);
+export const releaseUrl = (url: string) => (loaded && url.startsWith(OBJECTS) ? SCHEME + url.slice(OBJECTS.length) : url);
 
 /** MapLibre treats a tile 404 as an empty tile, so its release objects load here; a TileJSON keeps its tiles on this protocol. */
 export async function releaseProtocol({ url, type }: RequestParameters, abort: AbortController) {
-    const response = await releaseFetch("https://" + url.slice(SCHEME.length), { signal: abort.signal });
+    const response = await releaseFetch(OBJECTS + url.slice(SCHEME.length), { signal: abort.signal });
     if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
     if (type !== "json") return { data: await response.arrayBuffer() };
     const json = await response.json();

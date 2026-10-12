@@ -68,6 +68,8 @@ cargo. Prepare Node and the other services once:
 ```sh
 python3 planner/search/setup.py
 npm ci --prefix planner/tiles
+npm ci --prefix builder/web
+npm run build:wasm --prefix builder/web
 ```
 
 Leave it running while `obc data update local` runs in another terminal. Clients get the new

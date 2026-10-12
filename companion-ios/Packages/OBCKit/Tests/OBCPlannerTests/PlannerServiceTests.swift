@@ -191,7 +191,8 @@ struct PlannerServiceTests {
                          "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
     }
     /// A catalogue of `obc data serve` names HTTP URLs. The published catalogue names only HTTPS URLs.
-    @Test func aCatalogueNamesItsURLsWithItsOwnScheme() async throws {
+    /// A Debug build reads the catalogue of `-OBCPlannerCatalog`.
+    @Test func aLaunchArgumentSelectsACatalogueWhoseURLsHaveItsScheme() async throws {
         let local = "http://serve.test:8710"
         func service(_ catalog: String) -> PlannerService {
             PlannerService(catalogURL: URL(string: catalog)!) { request in

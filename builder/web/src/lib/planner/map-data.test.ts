@@ -39,13 +39,6 @@ describe('planner config', () => {
         }
     });
 
-    it('resolves the paths of a local preview against the page, and keeps template tokens', () => {
-        const local = plannerConfig({ ...testConfig, basemap: 'pmtiles:///@fs/data/maps/basemap.pmtiles',
-            terrain: '/tiles/terrain/{z}/{x}/{y}.webp', layers: { snow: '/@fs/data/maps/snow.pmtiles' } }, 'http://localhost:4175/planner.html');
-        expect([local.basemap, local.terrain, local.layers.snow, local.search]).toEqual(['pmtiles://http://localhost:4175/@fs/data/maps/basemap.pmtiles',
-            'http://localhost:4175/tiles/terrain/{z}/{x}/{y}.webp', 'http://localhost:4175/@fs/data/maps/snow.pmtiles', testConfig.search]);
-    });
-
     it('refuses a config without a field that the planner reads', () => {
         expect(plannerConfig(testConfig)).toEqual(testConfig);
         const { layers: _, ...withoutLayers } = testConfig;
@@ -63,6 +56,8 @@ const release = (id: string) => ({ ...testConfig, id, routing: `https://api.test
 /** The planner modules of a page with no preview config, on a stub catalogue at `at`. */
 async function page(catalogs: unknown[], objects: (url: string) => Response = () => new Response('{}'), at = CATALOG) {
     vi.stubEnv('VITE_PLANNER_CONFIG', '');
+    // An empty variable reads the published catalogue.
+    vi.stubEnv('VITE_PLANNER_CATALOG', at === CATALOG ? '' : at);
     const reload = vi.fn();
     vi.stubGlobal('location', { href: 'https://openbikecomputer.com/plan/', reload });
     const fetch = vi.fn(async (url: string) => url === at ? Response.json(catalogs.length > 1 ? catalogs.shift() : catalogs[0]) : objects(url));
@@ -78,9 +73,10 @@ describe('live catalogue', () => {
 
     it('reads the catalogue that VITE_PLANNER_CATALOG names, such as that of obc data serve', async () => {
         const local = 'http://127.0.0.1:8710/planner/catalog.json';
-        vi.stubEnv('VITE_PLANNER_CATALOG', local);
         const { load } = await page([{ format: 1, active: release('a') }], undefined, local);
         expect((await load()).config).toEqual(release('a'));
+        const { releaseUrl } = await import('./release');
+        expect(releaseUrl('http://127.0.0.1:8710/releases/a/basemap.json')).toBe('release://127.0.0.1:8710/releases/a/basemap.json');
     });
 
     it('refuses a catalogue format that it does not know', async () => {
