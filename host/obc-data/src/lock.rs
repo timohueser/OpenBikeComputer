@@ -25,15 +25,15 @@ pub const STALE: u64 = 600;
 
 /// `lock.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum LockFile {
     Free,
     Held(Holder),
 }
 
-/// The run that holds the lock of a target.
+/// The run that holds the lock of a target. A reader ignores keys that it does not know, so builds
+/// of `obc data` read each other's lock.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Holder {
     /// `OBC_DATA_MACHINE`, or else the short host name.
     pub machine: String,
@@ -45,12 +45,12 @@ pub struct Holder {
     pub heartbeat: String,
     /// Each layer that the run bakes, at the last heartbeat. The status of the run on its machine
     /// has the detail.
+    #[serde(default)]
     pub progress: Vec<Progress>,
 }
 
 /// The steps of a layer that a run bakes, and those that finished.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Progress {
     pub layer: String,
     pub done: usize,

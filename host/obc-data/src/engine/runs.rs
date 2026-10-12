@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
 use super::{build_step, order, prepare, reusable, Built, Receipt, Shape, Step};
-use crate::cli::Code;
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::release::Output;
@@ -167,7 +166,8 @@ pub fn reserve(store: &Store, args: &[String]) -> Result<String, String> {
         let dir = store.run(&id);
         match fs::create_dir(&dir) {
             Ok(()) => {
-                let status = Status { id: id.clone(), args: args.to_vec(), started, ..Status::default() };
+                let pid = std::process::id();
+                let status = Status { id: id.clone(), args: args.to_vec(), pid, started, ..Status::default() };
                 write_status(&dir, &status)?;
                 return Ok(id);
             }
@@ -772,7 +772,7 @@ pub struct LayerProgress {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct RunError {
     /// The code of the [error](#errors).
-    pub code: Code,
+    pub code: String,
     pub message: String,
     pub fix: String,
     /// The steps whose layers the run built: the store keeps them, and the next update reuses
@@ -782,10 +782,13 @@ pub struct RunError {
 }
 
 impl RunError {
-    pub fn new(code: Code, message: impl Into<String>, fix: impl Into<String>) -> Self {
-        RunError { code, message: message.into(), fix: fix.into(), kept: Vec::new() }
+    pub fn new(code: impl Into<String>, message: impl Into<String>, fix: impl Into<String>) -> Self {
+        RunError { code: code.into(), message: message.into(), fix: fix.into(), kept: Vec::new() }
     }
 }
+
+/// The code of a run that failed without an error of its command.
+const RUN_FAILED: &str = "run_failed";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
@@ -900,17 +903,32 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
             return Ok(Status {
                 id: id.into(),
                 state: if running { State::Running } else { State::Failed },
-                error: (!running).then(|| RunError::new(Code::RunFailed, message, fix)),
+                error: (!running).then(|| RunError::new(RUN_FAILED, message, fix)),
                 ..Status::default()
             });
         }
     };
-    if status.state == State::Running && !running {
+    let died = match status.state {
+        State::Running => Some("its process ended before it finished"),
+        State::Starting if !alive(status.pid) => Some("its process never started"),
+        _ => None,
+    };
+    if let Some(message) = died.filter(|_| !running) {
         status.state = State::Failed;
-        let message = "its process ended before it finished";
-        status.error.get_or_insert_with(|| RunError::new(Code::RunFailed, message, "Run its command again."));
+        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
     }
     Ok(status)
+}
+
+/// Whether the process `pid` runs.
+fn alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    if let Ok(pid @ 1..) = libc::pid_t::try_from(pid) {
+        // SAFETY: signal 0 only checks that the process exists.
+        let found = unsafe { libc::kill(pid, 0) } == 0;
+        return found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    false
 }
 
 /// Every run in the store, newest first.
@@ -1005,7 +1023,7 @@ pub fn follow(
         if complete > 0 || last.as_ref() != Some(&status) {
             each(&String::from_utf8_lossy(&bytes[..complete]), &status)?;
         }
-        if !running {
+        if !running && status.state != State::Starting {
             return Ok(Some(status));
         }
         last = Some(status);
@@ -1027,6 +1045,11 @@ pub fn detach(store: &Store, args: &[String]) -> Result<String, String> {
     let dir = store.run(&id);
     let log = OpenOptions::new().create(true).append(true).open(dir.join(LOG));
     let log = log.map_err(|e| format!("{}: {e}", dir.join(LOG).display()))?;
+    // On Linux, the image of this process, also when its file was replaced since: the run does the
+    // review that this process made.
+    #[cfg(target_os = "linux")]
+    let program = PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
     let program = std::env::current_exe().map_err(|e| format!("the program of `obc data`: {e}"))?;
     let mut command = std::process::Command::new(program);
     command.args(args).env(RUN, &id).stdin(std::process::Stdio::null());
@@ -1039,39 +1062,53 @@ pub fn detach(store: &Store, args: &[String]) -> Result<String, String> {
             _ => Ok(()),
         });
     }
-    let failed = |message: String| {
-        let fix = format!("Read its log: {}", dir.join(LOG).display());
-        let status = Status {
-            state: State::Failed,
-            error: Some(RunError::new(Code::RunFailed, &message, fix)),
-            ..status(store, &id)?
-        };
-        write_status(&dir, &status)?;
-        Err(message)
+    // The lock of the run keeps its process waiting until its status names it.
+    let lock = store.lock(&format!("run-{id}"))?;
+    let starting = |pid: u32, error: Option<String>| -> Result<(), String> {
+        let reserved = status(store, &id)?;
+        // A status that left `starting` is the one of the run.
+        if reserved.state != State::Starting {
+            return Ok(());
+        }
+        let failed =
+            error.map(|message| RunError::new(RUN_FAILED, message, format!("Read its log: `obc data runs {id}`.")));
+        let state = if failed.is_some() { State::Failed } else { State::Starting };
+        write_status(&dir, &Status { pid, state, error: failed, ..reserved })
     };
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(e) => return failed(format!("run {id} did not start: {e}")),
+        Err(e) => {
+            starting(0, Some(format!("its process did not start: {e}")))?;
+            return Err(format!("run {id} did not start: {e}"));
+        }
     };
+    starting(child.id(), None)?;
+    drop(lock);
     loop {
         if status(store, &id)?.state != State::Starting {
             return Ok(id);
         }
         if let Some(exit) = child.try_wait().map_err(|e| format!("run {id}: {e}"))? {
-            return failed(format!("run {id} did not start ({exit})"));
+            if status(store, &id)?.state != State::Starting {
+                return Ok(id);
+            }
+            starting(child.id(), Some(format!("its process ended before it started the run ({exit})")))?;
+            return Err(format!("run {id} did not start ({exit}); `obc data runs {id}` shows its log"));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 /// Stop run `id`: write its stop file, and send SIGTERM to the process group of its process, once.
-/// It frees what it holds, and keeps what it baked. A run whose process is not known, such as one
-/// that starts or whose status cannot be read, gets only the stop file.
+/// It frees what it holds, and keeps what it baked. A run that starts, or whose process is not
+/// known because its status cannot be read, gets only the stop file.
 pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
     let status = status(store, id)?;
     if !matches!(status.state, State::Starting | State::Running) {
         return Err(format!("run {id} does not run"));
     }
+    // The process of a run that starts can be the one that reserved it.
+    let signal = status.state == State::Running;
     let path = store.run(id).join(STOP);
     // A second signal would end the process at once, and leave its lock held.
     if path.exists() {
@@ -1079,7 +1116,7 @@ pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
     }
     fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
     #[cfg(unix)]
-    if let Ok(pid @ 1..) = libc::pid_t::try_from(status.pid) {
+    if let Some(pid @ 1..) = libc::pid_t::try_from(status.pid).ok().filter(|_| signal) {
         // SAFETY: kill sends a signal. The lock of the run says that its process still runs. A
         // detached run leads its process group; a run in a terminal may not.
         unsafe {
@@ -1214,7 +1251,7 @@ mod tests {
         std::fs::write(fixture.store.run(&id).join(STOP), "").unwrap();
         let stopped = run.check_stop(&fixture.store).unwrap_err();
         assert!(stopped.contains("--stop"), "{stopped}");
-        run.finish(Some(RunError::new(Code::RunFailed, stopped, "Run it again."))).unwrap();
+        run.finish(Some(RunError::new(RUN_FAILED, stopped, "Run it again."))).unwrap();
         let status = status(&fixture.store, &id).unwrap();
         assert_eq!(status.state, State::Stopped);
         assert!(stop(&fixture.store, &id).unwrap_err().contains("does not run"));
@@ -1225,11 +1262,19 @@ mod tests {
         let fixture = fixture("runs-reserved");
         let id = reserve(&fixture.store, &["update".into(), "local".into()]).unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Starting);
-        // Its process is not known: only the stop file stops it.
+        // Its process is the one that reserved it, this test: only the stop file stops the run.
         stop(&fixture.store, &id).unwrap();
         let run = Run::attach(&fixture.store, &id).unwrap();
         assert_eq!(status(&fixture.store, &id).unwrap().args, ["update", "local"]);
         assert!(run.check_stop(&fixture.store).is_err());
+
+        let gone = reserve(&fixture.store, &[]).unwrap();
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        exited.wait().unwrap();
+        let status = Status { pid: exited.id(), ..status(&fixture.store, &gone).unwrap() };
+        write_status(&fixture.store.run(&gone), &status).unwrap();
+        let never = super::status(&fixture.store, &gone).unwrap();
+        assert_eq!((never.state, never.error.unwrap().message.as_str()), (State::Failed, "its process never started"));
     }
 
     #[cfg(unix)]

@@ -659,8 +659,8 @@ process that holds the lock `run-<id>` is the process of the run. A run whose st
   for a tiled layer the leaves done and the leaves that bake now), its fetches and steps, the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
-  events come, at each phase and at the start of each fetch. A reader takes keys that it does not
-  know, and the default of a missing key.
+  events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
+  know.
 - `log` has one line per event, with the time, and the output of the process of a detached run:
   any bytes, which a reader reads as UTF-8 with replacements.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
@@ -2132,8 +2132,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Holder": {
-      "additionalProperties": false,
-      "description": "The run that holds the lock of a target.",
+      "description": "The run that holds the lock of a target. A reader ignores keys that it does not know, so builds\nof `obc data` read each other's lock.",
       "properties": {
         "heartbeat": {
           "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
@@ -2147,6 +2146,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/Phase"
         },
         "progress": {
+          "default": [],
           "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
           "items": {
             "$ref": "#/$defs/Progress"
@@ -2782,7 +2782,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Progress": {
-      "additionalProperties": false,
       "description": "The steps of a layer that a run bakes, and those that finished.",
       "properties": {
         "done": {
@@ -3202,8 +3201,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunError": {
       "properties": {
         "code": {
-          "$ref": "#/$defs/Code",
-          "description": "The code of the [error](#errors)."
+          "description": "The code of the [error](#errors).",
+          "type": "string"
         },
         "fix": {
           "type": "string"

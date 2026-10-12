@@ -138,7 +138,7 @@ fn show(view: &View, json: bool) -> Result<(), Error> {
 /// ends only the following.
 pub(super) fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
     runs::stop_on_signals();
-    let mut written: Option<Status> = None;
+    let (mut written, mut last_line): (Option<Status>, String) = (None, String::new());
     let ended = runs::follow(store, id, |lines, status| {
         match json {
             true if written.as_ref() != Some(status) => {
@@ -146,7 +146,10 @@ pub(super) fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                 written = Some(status.clone());
             }
             true => {}
-            false => print!("{lines}"),
+            false => {
+                print!("{lines}");
+                last_line = lines.lines().last().map_or(last_line.clone(), str::to_string);
+            }
         }
         Ok(())
     })?;
@@ -155,12 +158,16 @@ pub(super) fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
         return Ok(());
     };
     let Some(error) = status.error.filter(|_| status.state != State::Ok) else { return Ok(()) };
+    let code = serde_json::from_value(serde_json::Value::String(error.code)).unwrap_or(Code::RunFailed);
     if !json {
-        // The last line of the log gave the error.
+        // A run that died, such as on an out-of-memory kill, wrote no line of its error.
+        if !last_line.contains(&error.message) {
+            eprintln!("obc data: {}", error.message);
+        }
         eprintln!("{}", error.fix);
-        std::process::exit(error.code.exit().into());
+        std::process::exit(code.exit().into());
     }
-    let mut failed = error.code.error(error.message).fix(error.fix);
+    let mut failed = code.error(error.message).fix(error.fix);
     failed.run = Some(id.into());
     Err(failed)
 }

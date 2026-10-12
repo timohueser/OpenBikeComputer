@@ -803,7 +803,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
             let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, kept, limits };
             let built = run.build(&context, steps, plan);
-            run.finish(built.as_ref().err().map(|e| runs::RunError::new(crate::cli::Code::RunFailed, e, "")))?;
+            run.finish(built.as_ref().err().map(|e| runs::RunError::new("run_failed", e, "")))?;
             built
         }
 

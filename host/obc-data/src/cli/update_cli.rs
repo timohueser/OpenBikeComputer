@@ -144,13 +144,8 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
         let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
         return match super::api::finish_run(run, result) {
             Ok(updated) => print(&updated),
-            Err(error) => {
-                // The status has the error of a run that finished; else the log gets it.
-                if runs::status(&store, &id).map_or(true, |status| status.error.is_none()) {
-                    eprintln!("obc data: {}\n{}", error.message, error.fix);
-                }
-                std::process::exit(error.code.exit().into())
-            }
+            // The status and the log of the run have its error.
+            Err(error) => std::process::exit(error.code.exit().into()),
         };
     }
     let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
@@ -255,7 +250,7 @@ pub(super) fn locked<T>(
         }
         lock::Refused::Failed(e) => Code::Failed
             .error(format!("target `{name}`: {e}"))
-            .fix(format!("Correct {} of the target, or move it aside: a target without it is free.", lock::LOCK)),
+            .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK)),
     })?;
     let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
     let result = std::thread::scope(|scope| {
