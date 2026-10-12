@@ -255,6 +255,27 @@ triggers = [
   "planner/search/query/contract.json",
 ]
 
+[[suite]]
+id = "web.data-page"
+route = "ordinary"
+command = "npm run test:data --prefix builder/web/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = [
+  "docs/assets/theme.css", "docs/assets/fonts/**",
+  "builder/web/src/components/data/**",
+  "builder/web/src/lib/data/**",
+  "builder/web/src/styles/tokens.css",
+  "builder/web/src/data.ts",
+  "builder/web/data.html",
+  "builder/web/test-support/data/**",
+  "builder/web/tests/browser/data/**",
+  "builder/web/tests/browser/playwright.data.config.js",
+  "builder/web/tests/browser/package.json",
+  "builder/web/package.json",
+  "builder/web/vite.config.ts",
+]
+
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.
 # The `guards` job is unconditional, so they also run on every pull request regardless.

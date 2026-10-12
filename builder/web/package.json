@@ -7,6 +7,7 @@
         "dev": "vite",
         "build": "vite build",
         "build:planner": "vite build --mode planner",
+        "build:data": "vite build --mode data",
         "build:web": "vite build --mode web",
         "build:desktop": "vite build --mode desktop",
         "build:all": "npm run build && npm run build:web && npm run build:desktop",

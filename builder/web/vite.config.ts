@@ -20,16 +20,20 @@ const HOSTS = {
 
 type HostName = keyof typeof HOSTS;
 
+// Modes that build one page of their own, into `dist/MODE`: the route planner and the
+// operator page of `obc data ui`.
+const PAGES: Record<string, string> = { planner: "planner.html", data: "data.html" };
+
 // `vite`/`vite build` default to development/production, and vitest to test — all
 // three are the dev host. `--mode web|desktop` opts into the others. Anything else is
 // a typo, and quietly building the dev host for a mistyped deploy target is the one
 // outcome worth failing over.
 function hostFor(mode: string): HostName {
-    if (mode === "planner") return "web";
+    if (mode in PAGES) return "web";
     if (mode in HOSTS) return mode as HostName;
     if (mode === "development" || mode === "production" || mode === "test") return "dev";
     throw new Error(
-        `unknown --mode "${mode}": expected one of ${Object.keys(HOSTS).join(", ")} ` +
+        `unknown --mode "${mode}": expected one of ${[...Object.keys(HOSTS), ...Object.keys(PAGES)].join(", ")} ` +
             "(or development/production/test, which build the dev host)",
     );
 }
@@ -57,8 +61,8 @@ export default defineConfig(({ mode }) => {
             ...(mode === "test" ? { conditions: ["browser"] } : {}),
         },
         build: {
-            outDir: mode === "planner" ? "dist/planner" : host.outDir,
-            ...(mode === "planner" ? { copyPublicDir: false, rollupOptions: { input: "planner.html" } } : {}),
+            outDir: mode in PAGES ? `dist/${mode}` : host.outDir,
+            ...(mode in PAGES ? { copyPublicDir: false, rollupOptions: { input: PAGES[mode] } } : {}),
             emptyOutDir: true,
         },
         worker: {
