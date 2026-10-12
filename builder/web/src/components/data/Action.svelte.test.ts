@@ -17,10 +17,10 @@ function serverAnswers(body: unknown) {
 it("posts exactly the args that it shows, and never shows --json", async () => {
     const fetch = serverAnswers({ exit: 0, output: { run: "r1" } });
     const ondone = vi.fn();
-    const args = ["update", "local", "--region", "Black Forest", "--yes"];
+    const args = ["update", "local", "--region", "Black Forest", "it's", "--yes"];
     const action = mount(Action, { target: document.body, props: { args, label: "Update local", ondone } });
     try {
-        expect(document.querySelector("code")?.textContent).toBe("obc data update local --region 'Black Forest' --yes");
+        expect(document.querySelector("code")?.textContent).toBe("obc data update local --region 'Black Forest' 'it'\\''s' --yes");
         document.querySelector("button")?.click();
         await vi.waitFor(() => expect(ondone).toHaveBeenCalledWith({ run: "r1" }));
         expect(fetch).toHaveBeenCalledOnce();

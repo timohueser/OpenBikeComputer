@@ -1,19 +1,27 @@
-// What `obc data setup --json` writes. `test-support/data/setup.json` is an example of it.
+// The JSON of the commands that the page reads. `test-support/data/` has an example of each.
 
-/** This machine. `colour` is the header background, so it is dark enough for white text. */
+/** What `obc data --json` writes about this machine. The header shows it and polls it. */
+export interface Status {
+    machine: Machine;
+}
+
+/** `colour` is the header background, behind white text. */
 export interface Machine {
     name: string;
     colour: string;
     os: string;
     cores: number;
     memory_bytes: number;
+    store_free_bytes: number;
 }
 
 /** `optional` is a missing thing that no main job needs. */
 export type Readiness = "ready" | "missing" | "optional";
 
+/** What `obc data setup --json` writes. It exits 0 also when tools or credentials are missing, so
+ *  missing things are output, not an error. It walks the store for `used_bytes`, so it runs only
+ *  when the Machine screen opens and on Check again. */
 export interface Setup {
-    machine: Machine;
     store: { path: string; used_bytes: number; free_bytes: number };
     /** What this machine can do, and the reason when it cannot. */
     jobs: { name: string; state: Readiness; reason: string }[];

@@ -33,7 +33,7 @@ function hostFor(mode: string): HostName {
     if (mode in HOSTS) return mode as HostName;
     if (mode === "development" || mode === "production" || mode === "test") return "dev";
     throw new Error(
-        `unknown --mode "${mode}": expected one of ${Object.keys(HOSTS).join(", ")} ` +
+        `unknown --mode "${mode}": expected one of ${[...Object.keys(HOSTS), ...Object.keys(PAGES)].join(", ")} ` +
             "(or development/production/test, which build the dev host)",
     );
 }

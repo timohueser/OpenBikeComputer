@@ -1,5 +1,4 @@
 {
-    "machine": { "name": "laptop", "colour": "#262624", "os": "macOS 15", "cores": 10, "memory_bytes": 34359738368 },
     "store": { "path": "~/.cache/openbikecomputer/store", "used_bytes": 0, "free_bytes": 442381631488 },
     "jobs": [
         { "name": "Bake device layers here", "state": "ready", "reason": "All tools are present." },

@@ -1,4 +1,4 @@
-// The page acts only through `POST /api/cli {"args": [...]}`. The server runs `obc data ARGS --json`
+// The page acts only through `POST /api/cli {"args": [...]}`. The server runs `obc data --json ARGS`
 // and answers every request, a refusal too, with `{exit, output}`: `output` is the JSON that the
 // command wrote, and a failed command writes `{"error": {code, message, fix, run?}}`.
 

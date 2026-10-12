@@ -1,30 +1,43 @@
 <script lang="ts">
-    import type { CliQuery } from "../../lib/data/query.svelte";
-    import { hardware, size, type Readiness, type Setup } from "../../lib/data/setup";
+    import { onMount } from "svelte";
+    import { CliQuery } from "../../lib/data/query.svelte";
+    import { hardware, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
+    import Failure from "./Failure.svelte";
 
-    let { setup }: { setup: CliQuery<Setup> } = $props();
+    let { machine }: { machine: Machine | null } = $props();
+
+    const setup = new CliQuery<Setup>(["setup"]);
+    onMount(() => void setup.refresh());
 
     const MARK: Record<Readiness, string> = { ready: "✓", missing: "✗", optional: "○" };
     const report = $derived(setup.output);
     const missing = $derived(report?.tools.filter((tool) => tool.state === "missing").map((tool) => tool.name) ?? []);
     const checked = $derived(setup.at?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }));
+    const facts = $derived([machine && hardware(machine), checked && `checked at ${checked}`].filter(Boolean).join(" · "));
 </script>
 
-{#snippet mark(state: Readiness)}<span class="mark {state}" role="img" aria-label={state}>{MARK[state]}</span>{/snippet}
+<!-- A name breaks only at a space or after `_`, never inside a word. -->
+{#snippet head(state: Readiness, name: string)}
+    <span class="head">
+        <span class="mark {state}" role="img" aria-label={state}>{MARK[state]}</span>
+        <b class="name">{#each name.split("_") as part, i}{#if i}_<wbr />{/if}{part}{/each}</b>
+    </span>
+{/snippet}
 
 <div class="title">
-    <h1>This machine{report ? `: ${report.machine.name}` : ""}</h1>
-    {#if report}<span class="soft">{hardware(report.machine)} · checked at {checked}</span>{/if}
+    <h1>This machine{machine ? `: ${machine.name}` : ""}</h1>
+    <span class="soft">{facts}</span>
     <span class="grow"></span>
-    <Action args={["setup"]} label="Check again" ondone={(output: Setup) => setup.accept({ ok: true, output })} />
+    <Action args={setup.args} label="Check again" query={setup} />
 </div>
+{#if setup.error}<Failure error={setup.error} />{/if}
 
 {#if report}
     <section class="card can" aria-labelledby="can">
         <h2 id="can">What this machine can do</h2>
         {#each report.jobs as job (job.name)}
-            <div class="row">{@render mark(job.state)}<b class="name">{job.name}</b><span class="wide {job.state}">{job.reason}</span></div>
+            <div class="row">{@render head(job.state, job.name)}<span class="wide {job.state}">{job.reason}</span></div>
         {/each}
     </section>
 
@@ -33,7 +46,7 @@
             <h2 id="tools">Tools</h2>
             {#each report.tools as tool (tool.name)}
                 <div class="row line">
-                    {@render mark(tool.state)}<b class="name">{tool.name}</b><span class="wide soft">{tool.needed_for}</span>
+                    {@render head(tool.state, tool.name)}<span class="wide soft">{tool.needed_for}</span>
                     <code class={tool.state}>{tool.detail}</code>
                 </div>
             {/each}
@@ -43,7 +56,7 @@
             <h2 id="credentials">Credentials</h2>
             <p class="soft">Only whether each is set. Values stay in tools/obc.local or your home folder and never show here.</p>
             {#each report.credentials as credential (credential.name)}
-                <div class="row line">{@render mark(credential.state)}<b class="name">{credential.name}</b><span class="wide soft">{credential.needed_for}</span></div>
+                <div class="row line">{@render head(credential.state, credential.name)}<span class="wide soft">{credential.needed_for}</span></div>
             {/each}
         </section>
     </div>
@@ -54,14 +67,14 @@
             <p><code>{report.store.path}</code> · {size(report.store.used_bytes)} used · {size(report.store.free_bytes)} free</p>
         </section>
 
-        <section class="card" aria-labelledby="first">
+        <section class="card first" aria-labelledby="first">
             <h2 id="first">First steps</h2>
             <ol>
                 <li>
                     {#if missing.length}
                         Install {new Intl.ListFormat("en").format(missing)} (the commands are under Tools), then press Check again.
                     {:else}
-                        The tools are ready.
+                        Tools are ready. Ask the owner for an R2 key only if you will publish to prod.
                     {/if}
                 </li>
                 <li>Open <a href="#/local">local</a>, choose a small area (the Freiburg preset is quick), and start <b>Update local</b>. It takes a few minutes.</li>
@@ -70,7 +83,7 @@
             </ol>
         </section>
     </div>
-{:else if !setup.result}
+{:else if !setup.error}
     <p class="soft">Checking this machine…</p>
 {/if}
 
@@ -114,6 +127,9 @@
         flex: 1 1 420px;
         min-width: 0;
     }
+    .pair > .first {
+        flex: 999 1 560px;
+    }
     .row {
         display: flex;
         flex-wrap: wrap;
@@ -125,17 +141,20 @@
     .line {
         border-bottom: 1px solid var(--line);
     }
+    .head {
+        flex: 0 1 230px;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+    }
+    .can .head {
+        flex-basis: 330px;
+    }
     .mark {
+        flex: none;
         width: 18px;
         font-weight: 600;
-    }
-    .name {
-        flex: 0 1 200px;
-        min-width: 0;
-        overflow-wrap: anywhere;
-    }
-    .can .name {
-        flex-basis: 300px;
     }
     .wide {
         flex: 1 1 140px;

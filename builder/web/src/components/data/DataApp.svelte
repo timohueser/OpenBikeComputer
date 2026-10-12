@@ -2,12 +2,13 @@
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { SCREENS, screenAt } from "../../lib/data/screens";
-    import { hardware, size, type Setup } from "../../lib/data/setup";
+    import { hardware, size, type Status } from "../../lib/data/shapes";
     import Failure from "./Failure.svelte";
     import Later from "./Later.svelte";
     import Machine from "./Machine.svelte";
 
-    const setup = new CliQuery<Setup>(["setup"]);
+    const status = new CliQuery<Status>([]);
+    const machine = $derived(status.output?.machine ?? null);
     let hash = $state(location.hash);
     const screen = $derived(screenAt(hash));
 
@@ -15,7 +16,7 @@
         const follow = () => (hash = location.hash);
         window.addEventListener("hashchange", follow);
         // A run fills the store, so the free space in the header is read again each minute.
-        const stop = setup.poll(60_000);
+        const stop = status.poll(60_000);
         return () => {
             stop();
             window.removeEventListener("hashchange", follow);
@@ -23,11 +24,11 @@
     });
 </script>
 
-<header style:background={setup.output?.machine.colour}>
+<header style:background={machine?.colour}>
     <b>OBC data</b>
-    {#if setup.output}
-        <span class="pill">This page runs on <b>{setup.output.machine.name}</b></span>
-        <span class="facts">{hardware(setup.output.machine)} · store {size(setup.output.store.free_bytes)} free</span>
+    {#if machine}
+        <span class="pill">This page runs on <b>{machine.name}</b></span>
+        <span class="facts">{hardware(machine)} · store {size(machine.store_free_bytes)} free</span>
     {/if}
 </header>
 
@@ -38,9 +39,9 @@
 </nav>
 
 <main>
-    {#if setup.result && !setup.result.ok}<Failure error={setup.result.error} />{/if}
+    {#if status.error}<Failure error={status.error} />{/if}
     {#if screen.id === "machine"}
-        <Machine {setup} />
+        <Machine {machine} />
     {:else}
         <Later {screen} />
     {/if}
@@ -73,7 +74,8 @@
         align-items: center;
         gap: 12px 20px;
         padding: 12px 24px;
-        background: #262624;
+        /* No machine has this grey: the header has it only until the first answer. */
+        background: #6e6c66;
         color: #fff;
     }
     .pill {

@@ -1,35 +1,47 @@
-import { runCli, type CliResult } from "./cli";
+import { runCli, type CliError, type CliResult } from "./cli";
 
-/** The latest result of one read-only command, shared by every view that shows it. */
+/** The answers to one read-only command, shared by every view that shows them. */
 export class CliQuery<T> {
-    result = $state<CliResult<T> | null>(null);
-    /** The output of the latest result, or null while there is none or it is an error. */
-    output = $derived(this.result?.ok ? this.result.output : null);
+    /** The output of the latest answer that succeeded. A failed answer keeps it. */
+    output = $state<T | null>(null);
+    /** When `output` came. */
     at = $state<Date | null>(null);
+    /** The error of the latest answer, or null when it succeeded. */
+    error = $state<CliError | null>(null);
     #asked = 0;
 
     constructor(readonly args: readonly string[]) {}
 
-    /** Takes a newer result, such as the one an `<Action>` with the same args returned. A refresh
-     *  that is still in flight then does not overwrite it. */
-    accept(result: CliResult<T>) {
-        this.#asked++;
-        this.result = result;
-        this.at = new Date();
+    /** Starts an ask and returns the function that takes its answer. An answer is dropped when a
+     *  later ask started before it came, so an older answer never overwrites a newer one. */
+    ask(): (result: CliResult<T>) => void {
+        const asked = ++this.#asked;
+        return (result) => {
+            if (asked !== this.#asked) return;
+            this.error = result.ok ? null : result.error;
+            if (!result.ok) return;
+            this.output = result.output;
+            this.at = new Date();
+        };
     }
 
     async refresh() {
-        const asked = ++this.#asked;
-        const result = await runCli<T>(this.args);
-        if (asked !== this.#asked) return;
-        this.result = result;
-        this.at = new Date();
+        const take = this.ask();
+        take(await runCli<T>(this.args));
     }
 
-    /** Refreshes now and then every `ms` until the returned function is called. */
+    /** Refreshes now, and again `ms` after each answer, until the returned function is called. */
     poll(ms: number): () => void {
-        void this.refresh();
-        const timer = setInterval(() => void this.refresh(), ms);
-        return () => clearInterval(timer);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let stopped = false;
+        const next = async () => {
+            await this.refresh();
+            if (!stopped) timer = setTimeout(next, ms);
+        };
+        void next();
+        return () => {
+            stopped = true;
+            clearTimeout(timer);
+        };
     }
 }
