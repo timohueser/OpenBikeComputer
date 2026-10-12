@@ -1529,6 +1529,67 @@ pub(crate) mod tests {
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
     /// directly or through another layer, keeps its key.
+    /// The release layer of `step` as it is declared, without files, at `format`.
+    fn declared(step: &Step, format: u32) -> obc_data::engine::release::Layer {
+        use obc_data::engine::{release::SnapshotRead, InputKind, InputRecord};
+        let no_files = obc_data::engine::digest(std::iter::empty());
+        let record = |kind, name: &String, digest: &str, files: &[String]| InputRecord {
+            kind,
+            name: name.clone(),
+            digest: digest.into(),
+            files: files.to_vec(),
+        };
+        let inputs = step.inputs.iter().map(|input| match input {
+            Input::Snapshot { source, .. } => record(InputKind::Snapshot, source, "", &[]),
+            Input::Layer { name, files } => record(InputKind::Layer, name, &no_files, files),
+        });
+        let snapshots = step.inputs.iter().filter_map(|input| match input {
+            Input::Snapshot { source, version, params, .. } => {
+                let read = SnapshotRead { version: version.clone(), params: obc_data::store::sorted(params) };
+                Some((source.clone(), read))
+            }
+            Input::Layer { .. } => None,
+        });
+        obc_data::engine::release::Layer {
+            layer: step.layer.name.into(),
+            step: step.name.clone(),
+            format,
+            revision: step.layer.revision,
+            key: String::new(),
+            inputs: inputs.collect(),
+            options: step.options.clone(),
+            digest: String::new(),
+            files: Vec::new(),
+            snapshots: snapshots.collect(),
+            client: step.client.clone(),
+        }
+    }
+
+    #[test]
+    fn a_new_map_format_makes_device_map_stale_and_the_layers_that_read_it_follow() {
+        use obc_data::engine::state::{state, Newer, Verdict};
+        let temp = temp("format");
+        let store = Store::at(temp.0.join("store"));
+        let (env, regions) = freiburg(&store);
+        with_osm(&store);
+        with_captures(&store, "1");
+        without_models(&store, &env, &regions);
+        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        // The release of the firmware before: device/map one format older, the rest as declared.
+        let older = obcm::VERSION as u32 - 1;
+        let format = |step: &Step| if step.layer == &DEVICE_MAP { older } else { step.layer.format };
+        let release = steps.iter().map(|step| (step.name.clone(), declared(step, format(step)))).collect();
+        // The judge compares no stored file: the release has none.
+        let states = state(&Store::at(temp.0.join("empty")), &steps, &release, &Newer::new()).unwrap();
+        let stale: Vec<(&str, &str)> = states
+            .iter()
+            .filter(|layer| layer.state != Verdict::Ok)
+            .map(|layer| (layer.layer.as_str(), layer.text.as_deref().unwrap()))
+            .collect();
+        let text = format!("format {older} → {}: readers need new data", obcm::VERSION);
+        assert_eq!(stale, [("device/map", text.as_str()), ("device/catalog", "follows device/map")]);
+    }
+
     #[test]
     fn a_capture_refresh_rebuilds_no_map_cell_and_an_osm_refresh_no_terrain_cell() {
         let sources = obc_data::sources::parse_sources(include_str!("../../../data/sources.toml")).unwrap();

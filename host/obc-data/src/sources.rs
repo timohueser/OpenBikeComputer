@@ -382,19 +382,15 @@ pub fn attribution(id: &str) -> &'static str {
     embedded(id).attribution.as_deref().unwrap_or_else(|| panic!("source `{id}` has no attribution"))
 }
 
-/// The state of a source or a layer. A source is only ok, stale or blocked. When more than one
-/// state applies to a layer, the first in this order is its state, so the least of several states
-/// is the one to show for all of them.
+/// The state of a source. The least of the states of its requests is the one to show for all of
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
-    NotApplied,
-    CodeChanged,
-    InputChanged,
     Stale,
     Blocked,
     Ok,
-    /// A source that no live layer and no active request reads. Only sources have it.
+    /// No live layer and no active request reads the source.
     Unused,
 }
 
@@ -404,9 +400,6 @@ impl std::fmt::Display for State {
             State::Ok => "ok",
             State::Unused => "unused",
             State::Stale => "stale",
-            State::CodeChanged => "code changed",
-            State::InputChanged => "input changed",
-            State::NotApplied => "not applied",
             State::Blocked => "blocked",
         })
     }
