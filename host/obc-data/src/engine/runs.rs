@@ -202,12 +202,6 @@ impl Run {
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
-        let estimated = plan
-            .builds()
-            .filter_map(|build| build.estimate)
-            .fold(0u64, |total, estimate| total.saturating_add(estimate.bytes_out));
-        let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
-        crate::store::check_free(store.root(), estimated)?;
         let ordered = order(steps)?;
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
@@ -904,7 +898,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             ["test/a", "test/b"].map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", command())).into();
         let mut plan = fixture.plan(&steps).unwrap();
         for (build, peak) in plan.groups.iter_mut().flat_map(|group| &mut group.builds).zip(peaks) {
-            build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, peak_rss_bytes: peak });
+            build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, client_bytes: 0, peak_rss_bytes: peak });
         }
         let built = fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: Some(memory_bytes) }).unwrap();
         let spans: Vec<(f64, f64)> = built

@@ -14,7 +14,8 @@ pub struct Usage {
 }
 
 /// Run a step in this process. Its CPU time is the time of the whole process, so it is exact only
-/// while no other step runs. Its peak is the peak of the whole process so far.
+/// while no other step runs. Its peak is the peak of the whole process so far, not the peak of the
+/// step: an upper bound, as the scheduler needs.
 pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
     let start = Instant::now();
     let before = own_usage();

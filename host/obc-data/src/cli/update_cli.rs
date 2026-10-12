@@ -1,5 +1,8 @@
-//! `obc data update TARGET`: make a target serve its settings. It bakes what is stale, keeps the
-//! rest of the serving release by reference, publishes the new release and switches to it.
+//! `obc data update TARGET`: make a target serve its settings. It reviews what is stale, bakes it,
+//! keeps the rest of the serving release by reference, publishes the new release and switches to
+//! it.
+
+mod review;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,18 +13,20 @@ use serde::Serialize;
 
 use super::{freshness, listing, print_json, Code, Error};
 use crate::collection::{self, Collected};
-use crate::engine::changes;
+use crate::engine::changes::{self, Update};
 use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
+use crate::engine::Step;
 use crate::fetch::http::Http;
 use crate::product::{Inputs, Product};
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::release::{self, File, Output, Release};
+use crate::release::{self, File, Output, Release, Serving};
 use crate::settings::Settings;
-use crate::sources::{Refresh, Registry};
+use crate::sources::{Refresh, Registry, Source};
 use crate::store::Store;
-use crate::target::Target;
+use crate::target::{Tag, Target};
+pub use review::{MachineCheck, Review};
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -45,6 +50,44 @@ pub struct UpdateArgs {
     /// Bake these layers again, also when they are not stale, with the stale layers that they read.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
+    /// Show the review, and change nothing.
+    #[arg(long)]
+    dry_run: bool,
+    /// Start only when the review has this id, as `--dry-run` showed it.
+    #[arg(long, value_name = "ID", conflicts_with = "dry_run")]
+    expect: Option<String>,
+    /// Start also when the format of a layer changes: its readers need new data.
+    #[arg(long)]
+    accept_format_change: bool,
+}
+
+impl UpdateArgs {
+    /// The arguments after `obc data` that start the update of `review`.
+    fn args(&self, review: &Review) -> Vec<String> {
+        let mut args: Vec<String> = ["update", &self.target].map(String::from).into();
+        let mut flag = |name: &str, value: &str| args.extend([format!("--{name}"), value.to_string()]);
+        self.region.iter().for_each(|region| flag("region", region));
+        self.bbox.iter().for_each(|bbox| flag("box", bbox));
+        self.add.iter().for_each(|layer| flag("add", layer));
+        self.remove.iter().for_each(|layer| flag("remove", layer));
+        self.refresh.iter().for_each(|policy| flag("refresh", policy));
+        if !self.only.is_empty() {
+            flag("only", &self.only.join(","));
+        }
+        flag("expect", &review.id);
+        if review.layers.iter().any(|layer| layer.format.is_some()) {
+            args.push("--accept-format-change".into());
+        }
+        args
+    }
+}
+
+/// What the person asks of an update besides its settings.
+#[derive(Debug, Default)]
+pub(super) struct Asked {
+    pub only: Vec<String>,
+    pub expect: Option<String>,
+    pub accept_format_change: bool,
 }
 
 /// What an update did.
@@ -52,6 +95,8 @@ pub struct UpdateArgs {
 pub struct Updated {
     pub run: String,
     pub target: String,
+    /// The id of the review that the update did.
+    pub review: String,
     /// The release that the target serves now.
     pub serving: String,
     /// The release that it served before; `null` when it served nothing or the update changed
@@ -80,9 +125,18 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
             .error(format!("`obc data update` writes only a dir target, and `{}` is an R2 bucket", args.target))
             .fix("Update a dir target, such as `obc data update local`."));
     }
-    let mut run = super::api::start_run(&store, &format!("update {}", args.target))?;
+    let http = Http::new();
     let edit = |settings: &mut Settings| edit(root, products, &args, settings);
-    let result = update(root, &store, &Http::new(), (&args.target, &target), products, edit, &args.only, &mut run);
+    let target = (args.target.as_str(), &target);
+    if args.dry_run {
+        let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
+        prepared.review.args = args.args(&prepared.review);
+        return review::print(&prepared.review, json);
+    }
+    let asked =
+        Asked { only: args.only.clone(), expect: args.expect.clone(), accept_format_change: args.accept_format_change };
+    let mut run = super::api::start_run(&store, &format!("update {}", args.target))?;
+    let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
     let updated = super::api::finish_run(run, result, None)?;
     if json {
         return print_json(&updated);
@@ -106,9 +160,41 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
     Ok(())
 }
 
-/// Update `target` with the settings of its serving release after `edit`.
+/// What an update reads and decides before it changes anything.
+pub(super) struct Prepared {
+    pub review: Review,
+    base: Option<(Serving, Tag)>,
+    serving: Option<Release>,
+    settings: Settings,
+    sources: Vec<Source>,
+    steps: Vec<Step>,
+    update: Update,
+}
+
+/// Update `target` with the settings of its serving release after `edit`, when the review passes
+/// [`review::check`].
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    target: (&str, &Target),
+    products: &[&dyn Product],
+    edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
+    asked: &Asked,
+    machine: Option<&MachineCheck>,
+    run: &mut Run,
+) -> Result<Updated, Error> {
+    let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
+    review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
+    apply(root, store, http, target, products, prepared, run)
+}
+
+/// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
+/// them. Only the fetches that a step list needs to be listed run, into the store; `run` records
+/// them. The review checks `machine`, or else this machine after the listing.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare(
     root: &Path,
     store: &Store,
     http: &Http,
@@ -116,10 +202,13 @@ pub(super) fn update(
     products: &[&dyn Product],
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     only: &[String],
-    run: &mut Run,
-) -> Result<Updated, Error> {
+    machine: Option<&MachineCheck>,
+    mut run: Option<&mut Run>,
+) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
     let serving = base.as_ref().map(|(serving, _)| Release::read(target, &serving.serving.id)).transpose()?;
+    let rollback = base.as_ref().and_then(|(serving, _)| serving.rollback.as_ref());
+    let rollback = rollback.map(|rollback| Release::read(target, &rollback.id)).transpose()?;
     let mut settings = serving.as_ref().map(|release| release.settings.clone()).unwrap_or_default();
     edit(&mut settings)?;
     if settings.region.is_empty() {
@@ -134,7 +223,9 @@ pub(super) fn update(
     let serving_versions = serving.as_ref().map(Release::versions).unwrap_or_default();
     let mut inputs = Inputs { settings: settings.clone(), serving: serving_versions, manual, ..Inputs::default() };
 
-    run.record(&Event::Phase { phase: Phase::Prepare })?;
+    if let Some(run) = run.as_deref_mut() {
+        run.record(&Event::Phase { phase: Phase::Prepare })?;
+    }
     let requests = freshness::discover(root, products, &inputs, &regions, store, http, &sources)?;
     for (key, newer) in freshness::newer(store, http, &sources, &requests, &inputs.serving) {
         match newer {
@@ -147,7 +238,7 @@ pub(super) fn update(
         }
     }
     let listed = {
-        let fetch = listing::fetcher(root, store, http, &sources, Some(&mut *run), true);
+        let fetch = listing::fetcher(root, store, http, &sources, run, true);
         listing::steps(root, products, &mut inputs, &regions, store, false, fetch)?
     };
     if !listed.blocked.is_empty() {
@@ -158,19 +249,50 @@ pub(super) fn update(
     let release: BTreeMap<&str, &Output> =
         serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
     let update = changes::update(store, &listed.steps, &release, &Newer::new(), only)?;
+    let machine = match machine {
+        Some(machine) => machine.clone(),
+        None => MachineCheck::this(store)?,
+    };
+    let review = review::review(review::Parts {
+        target: name,
+        base: base.as_ref(),
+        serving: serving.as_ref(),
+        rollback: rollback.as_ref(),
+        settings: &settings,
+        steps: &listed.steps,
+        only,
+        plan: &update.plan,
+        kept: &update.kept,
+        layers: &update.layers,
+        machine: &machine,
+    });
+    Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
+}
 
+/// Bake, publish and switch as `prepared` says, then collect.
+fn apply(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    (name, target): (&str, &Target),
+    products: &[&dyn Product],
+    prepared: Prepared,
+    run: &mut Run,
+) -> Result<Updated, Error> {
+    let Prepared { review, base, serving, settings, sources, steps, update } = prepared;
     run.record(&Event::Phase { phase: Phase::Build })?;
     let context = Context { store, root, sources: &sources, http, kept: &update.kept, limits: Limits::machine() };
-    let built = run.build(&context, &listed.steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
+    let built = run.build(&context, &steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
     let baked =
         built.into_iter().map(|built| Baked { step: built.receipt.step, key: built.receipt.key, reused: built.reused });
-    let mut outputs = outputs(store, &listed.steps, &update.kept)?
+    let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
     let next = compose(products, settings, outputs)?;
     let mut updated = Updated {
         run: run.id().into(),
         target: name.into(),
+        review: review.id,
         serving: String::new(),
         rollback: None,
         baked: baked.collect(),
@@ -341,6 +463,11 @@ pub(super) mod tests {
             let mut steps = pipeline();
             steps[2].inputs = vec![snapshot("head", &head, &["head.txt"])];
             crate::engine::tests::revise(root, &mut steps);
+            // The file `format-2` gives the layer `test` a new format.
+            static FORMAT_2: crate::engine::Layer = crate::engine::Layer { format: 2, ..crate::engine::tests::TEST };
+            if root.join("format-2").exists() {
+                steps.iter_mut().filter(|step| step.layer.name == "test").for_each(|step| step.layer = &FORMAT_2);
+            }
             Ok(steps.into())
         }
 
@@ -380,12 +507,54 @@ pub(super) mod tests {
         http: &Http,
         edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     ) -> Result<Updated, Error> {
+        asked(fixture, target, http, (&Asked::default(), &MachineCheck::default()), edit)
+    }
+
+    /// An update with `asked` on `machine`.
+    fn asked(
+        fixture: &Fixture,
+        target: &Target,
+        http: &Http,
+        (asked, machine): (&Asked, &MachineCheck),
+        edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
+    ) -> Result<Updated, Error> {
         let mut run = Run::create(&fixture.store, "update local").unwrap();
-        let root = fixture.root();
-        let updated =
-            super::update(&root, &fixture.store, http, ("local", target), &[&Pipeline, &Counter], edit, &[], &mut run);
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let updated = super::update(
+            &root,
+            &fixture.store,
+            http,
+            ("local", target),
+            &products,
+            edit,
+            asked,
+            Some(machine),
+            &mut run,
+        );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
         updated
+    }
+
+    fn asked_update(fixture: &Fixture, target: &Target, asked: &Asked) -> Result<Updated, Error> {
+        self::asked(fixture, target, &Http::new(), (asked, &MachineCheck::default()), |_| Ok(()))
+    }
+
+    /// The review of an update without flags, as `--dry-run` gives it.
+    fn review(fixture: &Fixture, target: &Target) -> Review {
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let machine = MachineCheck::default();
+        let prepared = prepare(
+            &root,
+            &fixture.store,
+            &Http::new(),
+            ("local", target),
+            &products,
+            |_| Ok(()),
+            &[],
+            Some(&machine),
+            None,
+        );
+        prepared.unwrap().review
     }
 
     pub(in crate::cli) fn region(settings: &mut Settings) -> Result<(), Error> {
@@ -560,5 +729,95 @@ pub(super) mod tests {
         let unknown = late(&target);
         assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
         assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
+    }
+
+    #[test]
+    fn an_update_starts_only_when_its_review_is_the_one_that_was_read() {
+        let fixture = fixture("update-review");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let first = update(&fixture, &target, region).unwrap();
+        let read = review(&fixture, &target);
+        assert!(read.layers.is_empty(), "nothing is stale");
+
+        // A newer version of `head` comes after the review was read.
+        fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        let expect = |id: &str| Asked { expect: Some(id.into()), ..Asked::default() };
+        let refused = asked_update(&fixture, &target, &expect(&read.id)).unwrap_err();
+        assert_eq!(refused.code, Code::Usage, "{}", refused.message);
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving, "nothing changed");
+
+        let review = review(&fixture, &target);
+        let moved = &review.sources[0];
+        assert_eq!((moved.source.as_str(), moved.from.as_deref(), moved.to.as_str()), ("head", Some("1"), "2"));
+        assert_eq!((review.layers.len(), review.layers[0].text.as_str()), (1, "head 1 → 2"));
+        let updated = asked_update(&fixture, &target, &expect(&review.id)).unwrap();
+        assert_eq!((&updated.review, updated.rollback.as_ref()), (&review.id, Some(&first.serving)));
+    }
+
+    #[test]
+    fn a_format_change_starts_only_with_its_acknowledgement() {
+        let fixture = fixture("update-format");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let first = update(&fixture, &target, region).unwrap();
+        write(&fixture.root().join("format-2"), "");
+        let format = review(&fixture, &target).layers[0].format.map(|format| (format.from, format.to));
+        assert_eq!(format, Some((1, 2)));
+        let refused = asked_update(&fixture, &target, &Asked::default()).unwrap_err();
+        assert_eq!(refused.code, Code::Usage);
+        assert!(refused.message.contains("test 1 → 2 (read by tests)"), "{}", refused.message);
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving, "nothing changed");
+        let accepted = Asked { accept_format_change: true, ..Asked::default() };
+        assert_eq!(asked_update(&fixture, &target, &accepted).unwrap().rollback, Some(first.serving));
+    }
+
+    #[test]
+    fn a_machine_with_less_memory_or_disk_than_the_estimates_refuses_the_update() {
+        let fixture = fixture("update-machine");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let checked = |edit: fn(&mut Settings) -> Result<(), Error>, machine: &MachineCheck| {
+            let prepared = prepare(
+                &root,
+                &fixture.store,
+                &Http::new(),
+                ("local", &target),
+                &products,
+                edit,
+                &[],
+                Some(machine),
+                None,
+            );
+            prepared.unwrap().review
+        };
+        let roomy = MachineCheck { memory_bytes: None, store_free_bytes: Some(u64::MAX / 2), refusals: Vec::new() };
+        let unknown = checked(region, &roomy).cost.unknown;
+        assert_eq!(unknown.estimate, ["test/upper", "test/join", "test/count"]);
+        let first = update(&fixture, &target, region).unwrap();
+
+        // `test/join` runs Python: its receipt has a peak.
+        write(&fixture.root().join("revised"), "test/join");
+        let estimated = checked(|_| Ok(()), &roomy);
+        let peak =
+            estimated.bakes.iter().find(|bake| bake.step == "test/join").unwrap().estimate.unwrap().peak_rss_bytes;
+        let (bytes, peak) = (estimated.cost.store_bytes, peak.unwrap());
+        let disk = |free: u64| MachineCheck { store_free_bytes: Some(crate::store::RESERVE + free), ..roomy.clone() };
+        assert!(checked(|_| Ok(()), &disk(bytes)).machine.refusals.is_empty(), "room for the estimate");
+        let memory = MachineCheck { memory_bytes: Some(peak - 1), ..roomy.clone() };
+        assert!(checked(|_| Ok(()), &memory).machine.refusals[0].starts_with("step `test/join` needs about"));
+
+        let layers = fixture.store.layers().unwrap().len();
+        let refused = asked(&fixture, &target, &Http::new(), (&Asked::default(), &disk(bytes - 1)), |_| Ok(()));
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code, Code::Blocked);
+        assert!(
+            refused.message.starts_with("this machine cannot do the update: the store gets"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving);
+        assert_eq!(fixture.store.layers().unwrap().len(), layers, "nothing baked");
     }
 }

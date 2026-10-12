@@ -39,7 +39,8 @@ pub enum Code {
     /// A fetch or an upstream check failed.
     FetchFailed,
     /// A credential is missing: a fetch failed without the credential of its source, or the R2
-    /// variables are not set. Or a layer cannot be planned, or the target cannot take the command.
+    /// variables are not set. Or a layer cannot be planned, the target cannot take the command, or
+    /// this machine cannot do the work.
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
@@ -196,6 +197,7 @@ mod tests {
         vec![
             schema("`obc data`", generator.subschema_for::<overview::Overview>()),
             schema("`update`", generator.subschema_for::<update_cli::Updated>()),
+            schema("`update --dry-run`", generator.subschema_for::<update_cli::Review>()),
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),

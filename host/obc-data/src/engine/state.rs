@@ -116,14 +116,14 @@ pub(super) struct Judged<'a> {
 }
 
 impl Judged<'_> {
-    fn state(self) -> LayerState {
+    pub(super) fn state(&self) -> LayerState {
         let state = match (&self.cause, self.steps.is_empty()) {
             (_, true) => Verdict::Off,
             (None, false) => Verdict::Ok,
             (Some(_), false) => Verdict::Stale,
         };
         let text = self.cause.as_ref().map(Cause::text);
-        LayerState { layer: self.name, state, cause: self.cause, text }
+        LayerState { layer: self.name.clone(), state, cause: self.cause.clone(), text }
     }
 }
 
@@ -133,7 +133,7 @@ impl Judged<'_> {
 pub fn state(store: &Store, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
     let release = environment.release.iter().map(|(step, layer)| (step.as_str(), layer)).collect();
     let judged = judge(store, steps, &release, &environment.newer)?.into_iter().filter(|layer| !layer.internal);
-    Ok(judged.map(Judged::state).collect())
+    Ok(judged.map(|layer| layer.state()).collect())
 }
 
 /// Each layer of `steps` and of `release`, in the order of [`state`].
