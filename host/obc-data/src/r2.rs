@@ -392,7 +392,7 @@ fn absolute(file: &Path) -> Result<PathBuf, String> {
 
 /// A key or a prefix inside the bucket: never the root, no empty, `.` or `..` part, and no
 /// control character, because rclone reads key lists one line per key.
-fn check_key(key: &str) -> Result<(), String> {
+pub(crate) fn check_key(key: &str) -> Result<(), String> {
     if key.chars().any(char::is_control) || key.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
         return Err(format!("{key:?} does not name an object or folder inside the bucket"));
     }

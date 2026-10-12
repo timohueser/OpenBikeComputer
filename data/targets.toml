@@ -1,0 +1,13 @@
+# Where each target of `obc data` is. What a target holds is in the release that it serves.
+# specs/obc-data.md, "Targets", gives the format.
+
+# The public bucket that clients read.
+[prod]
+kind = "r2"
+bucket = "obc-maps"
+public = "https://maps.openbikecomputer.com"
+
+# A folder on the machine that runs `obc data`. Each machine has its own.
+[local]
+kind = "dir"
+dir = "~/.local/share/openbikecomputer/local"
