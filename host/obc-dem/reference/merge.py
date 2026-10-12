@@ -4,11 +4,11 @@ leaf, merged into one reference archive.
 
     uv run --locked --offline --group terrain-reference python host/obc-dem/reference/merge.py --step
 
-The request reads, per model, the pooled tiles that `ingest.py fetch` wrote for the archive
-tiles of the leaf. The options name each model with its version and credit, and the archive
-tiles that the terrain cells of the leaf read. The models go into an empty archive best first,
-by `PRIORITY`: the archive that `ingest.py ingest` of each model in that order writes, cut to
-those tiles. The layer is the archive below `reference/`.
+The request reads, per model, the tiles of the leaf in a version of `terrain-reference/<key>`.
+The options name each model with the day of its version and its credit, and the archive tiles
+that the terrain cells of the leaf read. The models go into an empty archive best first, by
+`PRIORITY`: the archive that `ingest.py ingest` of each model in that order writes, cut to those
+tiles. The layer is the archive below `reference/`.
 """
 
 import sys
@@ -25,9 +25,9 @@ from tools import step_request  # noqa: E402
 
 
 def key(source: str) -> str:
-    """The ingest key of a source of data/sources.toml: `dtm-ch` is `ch`."""
+    """The ingest key of a source of data/sources.toml: `terrain-reference/ch` is `ch`."""
 
-    return source.removeprefix("dtm-")
+    return source.removeprefix("terrain-reference/")
 
 
 def merge(request) -> dict:
@@ -40,8 +40,7 @@ def merge(request) -> dict:
     keep = set(options["tiles"])
     for model in sorted(options["models"], key=lambda model: priority_rank(key(model["source"]))):
         row = SOURCES[key(model["source"])]
-        view = step_request.view(step_request.files(request, model["source"]), views / model["source"])
-        # A `.none` file is a tile where the model has no height: it is no raster.
+        view = step_request.view(step_request.files(request, model["source"]), views / key(model["source"]))
         rasters = sorted(path for path in view.rglob("*") if path.suffix.lower() in READABLE)
         # The day of the data is the version of its fetch, never the day of the build.
         fetched = model["version"]

@@ -13,7 +13,7 @@ use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
 use crate::engine::{leaf, Input, Run, Shape, Step};
-use crate::product::{RequestKey, Versions};
+use crate::product::{Note, RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
 use crate::store::{sha256_hex, sorted, Store, RESERVE};
@@ -53,6 +53,8 @@ pub struct Review {
     /// The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those
     /// that are on.
     pub optional: Vec<String>,
+    /// What layers bake without, such as a prepared source that no target lists yet.
+    pub notes: Vec<Note>,
 }
 
 /// A layer that the update changes.
@@ -375,6 +377,7 @@ pub fn review(parts: Parts) -> Review {
         after,
         args: Vec::new(),
         optional: Vec::new(),
+        notes: Vec::new(),
     }
 }
 
@@ -478,6 +481,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
             format!("{} {}", source.source, params.join(" ")).trim().into(),
             format!("{from} → {}", crate::prepared::show(&source.to)),
         ]);
+    }
+    for note in &review.notes {
+        rows.push(vec!["  note".into(), note.layer.clone(), note.text.clone()]);
     }
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;

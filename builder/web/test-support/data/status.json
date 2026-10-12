@@ -22,6 +22,7 @@
                 {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
             "blocked": [],
+            "notes": [],
             "drift": [],
             "error": null,
             "fix": null,
@@ -61,6 +62,7 @@
                 {"layer": "planner/index", "state": "stale", "cause": {"kind": "input", "name": "planner/search"}, "text": "follows planner/search", "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner", "iOS", "search service", "downloads service"], "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
             "blocked": [],
+            "notes": [],
             "drift": [],
             "error": null,
             "fix": null,

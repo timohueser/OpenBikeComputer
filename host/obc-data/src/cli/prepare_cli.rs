@@ -85,6 +85,8 @@ pub struct PrepareReview {
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     pub inputs: Vec<PreparedInput>,
+    /// The files of the version, at most.
+    pub files: u64,
     /// The files that earlier runs of the version uploaded: this run does not upload them again.
     pub done: Downloads,
     pub cost: PreparedCost,
@@ -248,9 +250,9 @@ fn plan<'a>(
             .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
             .fix("The next version starts on the next day, by UTC."));
     }
-    let wanted = producer.inputs(id, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
+    let made = producer.plan(&source, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
     let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
-    for wanted in wanted {
+    for wanted in made.inputs {
         let bytes = match &wanted.version {
             Some(version) => {
                 let (source, params) = (wanted.source.clone(), wanted.params.clone());
@@ -294,6 +296,16 @@ fn plan<'a>(
         ));
     }
     machine.refusals.extend(update_cli::disk_refusal(&machine, cost.store_bytes));
+    for input in &inputs {
+        let credential = sources.iter().find(|source| source.id == input.source).and_then(|s| s.credential.as_ref());
+        if let Some(credential) = credential.filter(|credential| !credential.present()) {
+            machine.refusals.push(format!(
+                "`{}` needs {}, which this machine lacks",
+                input.source,
+                credential.describe()
+            ));
+        }
+    }
     let stale = stale(root, store, (name, target), id, &version)?;
     let decisions = serde_json::json!({
         "source": id,
@@ -316,6 +328,7 @@ fn plan<'a>(
         revision: producer.revision(),
         scope: scope.clone(),
         inputs,
+        files: made.files,
         done,
         cost,
         machine,
@@ -368,7 +381,7 @@ fn check(review: &PrepareReview, expect: Option<&str>) -> Result<(), Error> {
                 "this machine cannot do the prepare: {}; nothing changed",
                 review.machine.refusals.join("; ")
             ))
-            .fix("Run it on a machine with more memory or disk, or release space with `obc data clean`."));
+            .fix("Run it on a machine with the memory, the disk and the credentials that it needs, or release space with `obc data clean`."));
     }
     Ok(())
 }
@@ -417,6 +430,15 @@ fn make(
     };
     if review.listing {
         update_cli::enter_as((run, held), lock, Phase::Upload)?;
+        let journaled = prepared::journaled(context.store, name, id, version);
+        if let Some(missing) = prepared::absent(&prepared::folder(target, id), version, &journaled)?.first() {
+            return Err(Code::Failed
+                .error(format!("sources/{id}/{missing} is not on `{name}`; the version is not listed"))
+                .fix(format!(
+                    "Delete {}: the next run makes a new version.",
+                    prepared::job_dir(context.store, name, id, version).display()
+                )));
+        }
         let listed = prepared::list(target, id, version)?;
         prepared::forget(context.store, name, id, version)?;
         return Ok(done(listed, 0));
@@ -479,6 +501,7 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
     rows.push(vec!["  version".into(), format!("format {}, revision {}", review.format, review.revision)]);
+    rows.push(vec!["  files".into(), format!("up to {}", review.files)]);
     if let Some(abandoned) = &review.abandoned {
         let text = format!("{abandoned} stays incomplete: the target has a newer complete version");
         rows.push(vec!["  abandon".into(), text]);
@@ -584,12 +607,12 @@ mod tests {
             1
         }
 
-        fn inputs(&self, _: &str, _: Option<&Scope>) -> Result<Vec<Wanted>, String> {
-            Ok(vec![head()])
+        fn plan(&self, _: &Source, _: Option<&Scope>) -> Result<prepared::Plan, String> {
+            Ok(prepared::Plan { inputs: vec![head()], files: 3 })
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {
-            let head = fs::read_to_string(&job.fetch(&head())?["head.txt"]).map_err(|e| e.to_string())?;
+            let head = fs::read_to_string(&job.fetch(&head())?.1["head.txt"]).map_err(|e| e.to_string())?;
             for path in ["a.txt", "b.txt", "c.txt"] {
                 if job.done(path) {
                     continue;
@@ -606,7 +629,7 @@ mod tests {
                 std::io::Write::write_all(&mut made, format!("{path}\n").as_bytes()).unwrap();
                 let region = job.scope.as_ref().map_or("all", |scope| scope.region.as_str());
                 write(&job.work.join(path), &format!("{path} of {} for {region}: {head}", job.version));
-                job.finish(path)?;
+                job.finish(&[path.to_string()])?;
             }
             Ok(())
         }

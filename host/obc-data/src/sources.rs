@@ -253,13 +253,26 @@ const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
-    /// give the bytes to others. The national terrain models (`dtm-*`) have no copy: `obc data`
-    /// reads them through a capture per archive tile. A prepared version is on a target already.
+    /// give the bytes to others. A prepared version is on a target already.
     pub fn copied(&self) -> bool {
-        self.redistribute
-            && self.fetch.kind != FetchKind::Prepared
-            && !NOT_COPIED.contains(&self.id.as_str())
-            && !self.id.starts_with("dtm-")
+        self.redistribute && self.fetch.kind != FetchKind::Prepared && !NOT_COPIED.contains(&self.id.as_str())
+    }
+
+    /// The prepared source `terrain-reference/<key>` of the national terrain model `dtm-<key>`, with
+    /// its licence, credit and box: the archive tiles that `obc data source prepare` makes of it.
+    fn terrain_reference(&self) -> Option<Source> {
+        let key = self.id.strip_prefix("dtm-").filter(|_| self.redistribute)?;
+        Some(Source {
+            id: format!("terrain-reference/{key}"),
+            fetch: Fetch { kind: FetchKind::Prepared, url: None, from: None },
+            hosts: Vec::new(),
+            version: VersionScheme::Date,
+            start: None,
+            // Not `manual`: a target reads a new version once a target lists it.
+            refresh: Refresh::Days(365),
+            credential: None,
+            ..self.clone()
+        })
     }
 
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
@@ -379,9 +392,12 @@ struct SourcesFile {
     source: Vec<Source>,
 }
 
-/// Parse and validate `data/sources.toml`.
+/// Parse and validate `data/sources.toml`, with the source `terrain-reference/<key>` of each
+/// `dtm-<key>` that we may give to others.
 pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
-    let file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
+    let mut file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
+    let derived: Vec<Source> = file.source.iter().filter_map(Source::terrain_reference).collect();
+    file.source.extend(derived);
     let mut seen = BTreeSet::new();
     for source in &file.source {
         source.validate()?;
@@ -658,5 +674,15 @@ mod tests {
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
         assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
+    }
+
+    #[test]
+    fn each_national_model_has_a_prepared_source_with_its_licence_credit_and_box() {
+        let (model, prepared) = (embedded("dtm-dk"), embedded("terrain-reference/dk"));
+        let terms = |s: &'static Source| (&s.licence, &s.attribution, &s.obligations, s.extent, &s.areas);
+        assert_eq!(terms(prepared), terms(model));
+        assert_eq!((prepared.fetch.kind, &prepared.credential), (FetchKind::Prepared, &None), "{prepared:?}");
+        let count = |prefix: &str| all().iter().filter(|source| source.id.starts_with(prefix)).count();
+        assert_eq!(count("terrain-reference/"), count("dtm-"));
     }
 }

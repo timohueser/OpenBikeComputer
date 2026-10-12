@@ -3,14 +3,15 @@
 //! its map cells of one band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
 //! and peak artifacts per network cell. No client reads the files of the intermediate steps:
 //! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
-//! that the terrain cells of the leaf read, and `device/landmark-content` and `device/peak-content`
-//! the compiled Wikimedia captures of the region.
+//! (`terrain-reference/<key>`) that the terrain cells of the leaf read, and
+//! `device/landmark-content` and `device/peak-content` the compiled Wikimedia captures of the region.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Step};
-use obc_data::product::{read, version, BlockedLayer, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
+use obc_data::prepared::{Manifest, MANIFEST};
+use obc_data::product::{read, version, BlockedLayer, Inputs, Note, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{self, attribution, Source};
@@ -136,27 +137,9 @@ impl Device {
         };
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let mut shapes = BTreeMap::new();
-        let mut steps = Vec::new();
-        let mut blocked = Vec::new();
+        let (mut steps, mut blocked, mut notes, mut shapes) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
-            let mut leaf_wanted = Vec::new();
-            let reference = match reference(inputs, store, leaf, cells, &mut shapes, &mut leaf_wanted) {
-                Ok(reference) => {
-                    wanted.extend(leaf_wanted);
-                    reference
-                }
-                Err(Unplanned::Invalid(reason)) => {
-                    blocked.push(BlockedLayer::new(
-                        leaf_layer("device/reference", leaf),
-                        &DEVICE_TERRAIN,
-                        reason.clone(),
-                    ));
-                    blocked.push(BlockedLayer::new(leaf_layer("device/terrain", leaf), &DEVICE_TERRAIN, reason));
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+            let reference = reference(inputs, store, (leaf, cells), &mut shapes, &mut wanted, &mut notes)?;
             let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
             steps.extend(reference);
             steps.push(terrain);
@@ -253,7 +236,7 @@ impl Device {
             let reason = format!("catalog requires all map, terrain and article layers: {reasons}");
             blocked.push(BlockedLayer::new(catalog::LAYER, &catalog::DEVICE_CATALOG, reason));
         }
-        let mut listed = Steps { steps, blocked };
+        let mut listed = Steps { steps, blocked, notes };
         listed.block_dependents();
         Ok(listed)
     }
@@ -297,7 +280,7 @@ pub(crate) fn content_declarations(
     if !wanted.is_empty() {
         return Err(Unplanned::NeedsFetch(wanted));
     }
-    Ok(Steps { steps: content_steps, blocked })
+    Ok(Steps { steps: content_steps, blocked, notes: Vec::new() })
 }
 
 /// The shared Wikimedia content of one collection of the region `area`, for its extract and its
@@ -471,24 +454,16 @@ fn map_cells(
 /// boundary crosses. A step list reads each area once.
 type Shape = (Coverage, BTreeSet<CellId>);
 
-/// The archive tiles of `tiles` where `source` can have a height: those that meet its `extent` and
-/// the polygon of one of its `areas`. `None` while the store lacks a polygon; then `wanted` has it.
-fn model_tiles(
+/// Whether one of `tiles` is in the polygon of one of the `areas` of `source`: the boundary of the
+/// polygon crosses the tile, or the polygon holds the centre of the tile. `None` while the store
+/// lacks a polygon; then `wanted` has it.
+fn in_areas(
     inputs: &Inputs,
     store: &Store,
-    source: &Source,
-    tiles: &BTreeSet<CellId>,
+    (source, tiles): (&Source, &[CellId]),
     shapes: &mut BTreeMap<String, Shape>,
     wanted: &mut Vec<Wanted>,
-) -> Result<Option<Vec<CellId>>, Unplanned> {
-    let meets = |tile: &&CellId| {
-        let (west, south, east, north) = tile.square();
-        source.meets([west, south, east, north].map(|udeg| udeg as f64 / 1e6))
-    };
-    let mut read: Vec<CellId> = tiles.iter().filter(meets).copied().collect();
-    if read.is_empty() || source.areas.is_empty() {
-        return Ok(Some(read));
-    }
+) -> Result<Option<bool>, Unplanned> {
     for area in &source.areas {
         if shapes.contains_key(area) {
             continue;
@@ -501,31 +476,27 @@ fn model_tiles(
     if source.areas.iter().any(|area| !shapes.contains_key(area)) {
         return Ok(None);
     }
-    read.retain(|tile| {
+    let inside = |tile: &CellId, (coverage, boundary): &Shape| {
         let (west, south, _, _) = tile.square();
-        let half = tile.size() / 2;
-        source
-            .areas
-            .iter()
-            .map(|area| &shapes[area])
-            .any(|(coverage, boundary)| boundary.contains(tile) || coverage.contains(south + half, west + half))
-    });
-    Ok(Some(read))
+        boundary.contains(tile) || coverage.contains(south + tile.size() / 2, west + tile.size() / 2)
+    };
+    let any = tiles.iter().any(|tile| source.areas.iter().any(|area| inside(tile, &shapes[area])));
+    Ok(Some(source.areas.is_empty() || any))
 }
 
 /// The national terrain models of the archive tiles that the terrain cells of `leaf` read with the
-/// halo of the crest rule, merged into the reference archive of the leaf. A model reads the tiles
-/// that [`model_tiles`] gives, each one fetch `tile=<ti>-<tj>` at the version of the model. A model
-/// without a height in those tiles adds nothing. `None` when no model has one, or while the store
-/// lacks a fetch; then `wanted` has it. A missing fetch of a model behind a credential that this
-/// machine lacks blocks the reference layer and its dependents.
+/// halo of the crest rule, merged into the reference archive of the leaf. A model is the prepared
+/// source `terrain-reference/<key>` at the version that the target reads, and the leaf reads the
+/// tiles of its manifest among those. `None` when no model has one, or while the store lacks a
+/// manifest or a polygon; then `wanted` has its fetch. A model without a version adds nothing, and
+/// `notes` say so where it can have a height: a new version is a new input of the leaf.
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    leaf: LeafId,
-    cells: &[CellId],
+    (leaf, cells): (LeafId, &[CellId]),
     shapes: &mut BTreeMap<String, Shape>,
     wanted: &mut Vec<Wanted>,
+    notes: &mut Vec<Note>,
 ) -> Result<Option<Step>, Unplanned> {
     let window_of = |cell: &CellId| {
         let (ci, cj) = (u32::try_from(cell.i).ok()?, u32::try_from(cell.j).ok()?);
@@ -534,53 +505,50 @@ fn reference(
     let windows = cells.iter().map(|cell| window_of(cell).expect("a terrain cell has a window"));
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
-    let name = leaf_layer("device/reference", leaf);
-    let (mut reads, mut models, mut missing) = (Vec::new(), Vec::new(), false);
-    for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-")) {
-        let Some(read) = model_tiles(inputs, store, source, &tiles, shapes, wanted)? else {
-            missing = true;
-            continue;
-        };
-        if read.is_empty() {
+    let paths: BTreeSet<String> = tiles.iter().map(|tile| format!("16/{:04}/{:04}.tif", tile.i, tile.j)).collect();
+    let square = |tile: &&CellId| {
+        let (west, south, east, north) = tile.square();
+        [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
+    };
+    let (mut reads, mut models) = (Vec::new(), Vec::new());
+    for source in sources::all().iter().filter(|source| source.id.starts_with("terrain-reference/")) {
+        let near: Vec<CellId> = tiles.iter().filter(|tile| source.meets(square(tile))).copied().collect();
+        if near.is_empty() {
             continue;
         }
-        let version = version(inputs, store, &source.id, &[]).map_err(Unplanned::Failed)?;
-        // The files of each tile at that version in the store.
-        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        if let Ok(version) = &version {
-            let stored = store.snapshot(&source.id, version).map_err(Unplanned::Failed)?;
-            for file in stored.into_iter().flat_map(|snapshot| snapshot.files).map(|file| file.name) {
-                if let Some((tile, _)) = file.strip_prefix("#tile=").and_then(|rest| rest.split_once('/')) {
-                    known.entry(tile.into()).or_default().insert(file);
+        let id = &source.id;
+        let Ok(pinned) = version(inputs, store, id, &[]).map_err(Unplanned::Failed)? else {
+            if in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
+                let text =
+                    format!("{id} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare {id}");
+                let note = Note { layer: DEVICE_TERRAIN.name.into(), text };
+                if !notes.contains(&note) {
+                    notes.push(note);
                 }
             }
-        }
-        let mut files = BTreeSet::new();
-        for tile in read.iter().map(|tile| format!("{:04}-{:04}", tile.i, tile.j)) {
-            if let Some(names) = known.remove(&tile) {
-                files.extend(names);
-                continue;
+            continue;
+        };
+        let manifest = snapshot_files(store, id, &pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)?;
+        let Some(manifest) = manifest else {
+            let fetch = Wanted { source: id.clone(), version: Some(pinned), params: Vec::new() };
+            if !wanted.contains(&fetch) {
+                wanted.push(fetch);
             }
-            if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
-                let (source, credential) = (&source.id, credential.describe());
-                return Err(invalid(format!(
-                    "{name} reads `{source}`, which is blocked: credential missing: {credential}"
-                )));
-            }
-            let version = version.as_ref().map_or_else(|fetch| fetch.version.clone(), |version| Some(version.clone()));
-            wanted.push(Wanted { source: source.id.clone(), version, params: vec![("tile".into(), tile)] });
-            missing = true;
-        }
-        let Ok(version) = version else { continue };
-        // A `.none` file is a tile where the model has no height.
-        if files.iter().any(|file: &String| file.ends_with(".tif")) {
-            models
-                .push(serde_json::json!({"source": source.id, "version": version, "credit": attribution(&source.id)}));
-            let files = files.into_iter().collect();
-            reads.push(Input::Snapshot { source: source.id.clone(), version, params: Vec::new(), files });
+            continue;
+        };
+        let path = &manifest[MANIFEST];
+        let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+        let manifest: Manifest =
+            serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))?;
+        let files: Vec<String> =
+            manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
+        if !files.is_empty() {
+            // The credit names the day of the data.
+            models.push(serde_json::json!({"source": id, "version": manifest.version, "credit": attribution(id)}));
+            reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
         }
     }
-    if models.is_empty() || missing {
+    if models.is_empty() {
         return Ok(None);
     }
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
@@ -588,7 +556,7 @@ fn reference(
         client: Client::None,
         ..crate::python(
             &DEVICE_TERRAIN,
-            &name,
+            &leaf_layer("device/reference", leaf),
             reads,
             serde_json::json!({"models": models, "tiles": tiles}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
@@ -706,6 +674,7 @@ pub(crate) mod tests {
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(store: &Store, glo30: &str) -> (Inputs, Regions) {
+        with_model_areas(store);
         let inputs = serving("grimsel", glo30);
         let regions = Regions::load(&root()).unwrap();
         let Area::Box { bbox } = &regions.get("grimsel").unwrap().area else { unreachable!() };
@@ -727,6 +696,7 @@ pub(crate) mod tests {
     /// A Geofabrik region about Freiburg, in leaf `0037-0032`, whose `.poly` the store has, and the
     /// tile list.
     fn freiburg(store: &Store) -> (Inputs, Regions) {
+        with_model_areas(store);
         let area = [("area".to_string(), "europe/test".to_string())];
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
         with_index(store);
@@ -798,32 +768,21 @@ pub(crate) mod tests {
         }
     }
 
-    /// A store whose tile list names the Grimsel tiles in `land`.
-    fn with_tile_list(store: &Store, land: &[&str]) {
-        let list: String = land.iter().map(|tile| format!("Copernicus_DSM_COG_10_{tile}_00_DEM\n")).collect();
-        fetched(store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list)]);
-    }
-
     /// The polygon of each Geofabrik area of a national model: the box of its `extent`.
     pub(crate) fn with_model_areas(store: &Store) {
-        for source in sources::all().iter().filter(|source| !source.areas.is_empty()) {
+        for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-")) {
             let [west, south, east, north] = source.extent.unwrap();
             let poly = box_poly(&Bbox { west, south, east, north });
             for area in &source.areas {
-                let params = [("area".to_string(), area.clone())];
-                fetched(store, POLY, "1", &params, &[(format!("{area}.poly"), poly.clone())]);
+                fetched(store, POLY, "1", &[("area".into(), area.clone())], &[(format!("{area}.poly"), poly.clone())]);
             }
         }
     }
 
-    /// Record that no national model has a height in a tile that the step list asks for.
-    pub(crate) fn without_models(store: &Store, inputs: &Inputs, regions: &Regions) {
-        with_model_areas(store);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), inputs, regions, store) else { return };
-        for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
-            let tile = &fetch.params[0].1;
-            fetched(store, &fetch.source, "1", &[], &[(format!("#tile={tile}/{tile}.none"), String::new())]);
-        }
+    /// A store whose tile list names the Grimsel tiles in `land`.
+    fn with_tile_list(store: &Store, land: &[&str]) {
+        let list: String = land.iter().map(|tile| format!("Copernicus_DSM_COG_10_{tile}_00_DEM\n")).collect();
+        fetched(store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list)]);
     }
 
     fn terrain_steps(steps: &[Step]) -> impl Iterator<Item = &Step> {
@@ -867,7 +826,6 @@ pub(crate) mod tests {
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
-        without_models(&store, &inputs, &regions);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         let osm = listed.steps.iter().find(|step| step.name == "device/source/europe/test").unwrap();
@@ -911,7 +869,6 @@ pub(crate) mod tests {
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
-        without_models(&store, &inputs, &regions);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         let raw = |name: &str| listed.steps.iter().find(|step| step.name == format!("device/source/{name}")).unwrap();
@@ -957,8 +914,6 @@ pub(crate) mod tests {
         const OLD: &str = "2023-01-01";
         const NEW: &str = "2024-01-01";
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E007", "N47_00_E008"]);
-        let (inputs, regions) = grimsel(&store, OLD);
-        without_models(&store, &inputs, &regions);
         let steps = |version: &str| {
             let (inputs, regions) = grimsel(&store, version);
             let mut steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
@@ -996,7 +951,6 @@ pub(crate) mod tests {
 
         // As if N47_00_E007 were sea.
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
-        without_models(&store, &inputs, &regions);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let terrain: Vec<&Step> = terrain_steps(&steps).collect();
         assert_eq!(tiles(terrain[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
@@ -1014,7 +968,6 @@ pub(crate) mod tests {
         };
         assert_eq!(wanted.iter().map(|fetch| fetch.source.as_str()).collect::<Vec<_>>(), [EXTRACTS, LAND]);
         with_osm(&store);
-        without_models(&store, &inputs, &regions);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
@@ -1055,7 +1008,6 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        without_models(&store, &inputs, &regions);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
@@ -1120,7 +1072,6 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        without_models(&store, &inputs, &regions);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         // The release of the firmware before: device/map one format older, the rest as declared.
         let older = obcm::VERSION as u32 - 1;
@@ -1149,7 +1100,6 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         let (inputs, regions) = freiburg(&store);
         with_osm(&store);
-        without_models(&store, &inputs, &regions);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
         // The sources and the steps that a step reads at any depth.
@@ -1184,155 +1134,96 @@ pub(crate) mod tests {
         }
     }
 
+    /// A version of `terrain-reference/ch` whose manifest names `paths`, for the inputs of the
+    /// Grimsel: its pin and the bytes of its manifest.
+    fn swiss_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
+        let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
+        let manifest = Manifest {
+            source: "terrain-reference/ch".into(),
+            version: "2026-10-01".into(),
+            format: 1,
+            revision: 1,
+            inputs: Vec::new(),
+            files: paths.iter().map(|path| file(path)).collect(),
+            scope: None,
+            licence: None,
+            attribution: None,
+            machine: "test".into(),
+            time: "2026-10-01T00:00:00Z".into(),
+            cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+        };
+        let bytes = manifest.canonical();
+        let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+        inputs.resolved.insert(("terrain-reference/ch".into(), Vec::new()), pinned.clone());
+        (pinned, bytes)
+    }
+
     #[test]
-    fn a_leaf_fetches_each_tile_that_its_cells_read_of_each_model_whose_polygon_meets_it() {
+    fn a_leaf_plans_from_the_manifest_of_a_model_and_reads_only_the_tiles_of_its_window() {
         let temp = temp("models");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
-        let (inputs, regions) = grimsel(&store, "1");
-        with_model_areas(&store);
-        // The box of `dtm-fr` reaches 9.6° east; its polygon stops west of the Grimsel.
-        let france = [("area".to_string(), "europe/france".to_string())];
-        let west = box_poly(&Bbox { west: -5.0, south: 42.0, east: 7.5, north: 51.0 });
-        fetched(&store, POLY, "2", &france, &[("europe/france.poly".into(), west)]);
+        let (mut inputs, regions) = grimsel(&store, "1");
+        let (pinned, manifest) =
+            swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"]);
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
-            panic!("no model")
+            panic!("no manifest")
         };
-        let mut tiles: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for fetch in &wanted {
-            let [(name, tile)] = &fetch.params[..] else { panic!("{fetch:?}") };
-            assert_eq!((name.as_str(), &fetch.version), ("tile", &None));
-            tiles.entry(fetch.source.as_str()).or_default().insert(tile.as_str());
-        }
-        // Each tile of the terrain cells, 18 rows of 18, and Bavaria only where its box reaches.
-        assert_eq!(tiles.keys().collect::<Vec<_>>(), [&"dtm-ch", &"dtm-de-by"]);
-        assert_eq!(tiles["dtm-ch"].len(), 18 * 18);
-        assert_eq!(tiles["dtm-de-by"], ["4816-4231", "4816-4232"].into());
+        let swiss = "terrain-reference/ch".to_string();
+        assert_eq!(wanted, [Wanted { source: swiss.clone(), version: Some(pinned.clone()), params: Vec::new() }]);
 
-        // Swiss heights in the west column only, which the east leaf does not read.
-        for (source, tiles) in &tiles {
-            for tile in tiles {
-                let name = if tile.ends_with("4215") { format!("{tile}.tif") } else { format!("{tile}.none") };
-                fetched(&store, source, "1", &[], &[(format!("#tile={tile}/{name}"), name.clone())]);
-            }
-        }
+        stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest)]);
         let steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
-        assert!(!steps.iter().any(|step| step.name == "device/reference/0037-0033"), "no height, no reference");
+        let reads = |leaf: &str| {
+            let reference = steps.iter().find(|step| step.name == format!("device/reference/{leaf}")).unwrap();
+            let [Input::Snapshot { source, version, files, .. }] = &reference.inputs[..] else { panic!() };
+            assert_eq!((source, version), (&swiss, &pinned));
+            files.clone()
+        };
+        assert_eq!(reads("0037-0032"), ["16/4808/4215.tif"]);
+        assert_eq!(reads("0037-0033"), ["16/4816/4232.tif"]);
         let reference = steps.iter().find(|step| step.name == "device/reference/0037-0032").unwrap();
-        let models = serde_json::json!([{"source": "dtm-ch", "version": "1", "credit": "© swisstopo"}]);
+        let models = serde_json::json!([{"source": swiss, "version": "2026-10-01", "credit": "© swisstopo"}]);
         assert_eq!(reference.options["models"], models);
-        let [Input::Snapshot { source, version, params, files }] = &reference.inputs[..] else { panic!() };
-        assert_eq!((source.as_str(), version.as_str(), params.len(), files.len()), ("dtm-ch", "1", 0, 18 * 10));
-        assert!(files.contains(&"#tile=4808-4215/4808-4215.tif".to_string()));
         assert!(reference.client.is_none(), "only the terrain step reads the national models");
         let terrain = steps.iter().find(|step| step.name == "device/terrain/0037-0032").unwrap();
         assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
-    }
-
-    /// Fetch each model tile that the step list asks for, as the fetch rounds of an update do. A
-    /// fetch without a version gives `day` when it is the first of its source in the run, and else
-    /// the next day.
-    fn fetch_models(store: &Store, inputs: &mut Inputs, regions: &Regions, day: &str) {
-        let mut seen = BTreeSet::new();
-        for _ in 0..3 {
-            let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), inputs, regions, store) else { return };
-            for wanted in &wanted {
-                let wanted = inputs.pinned(wanted);
-                let first = seen.insert(wanted.source.clone());
-                let version = wanted.version.clone().unwrap_or_else(|| if first { day } else { "2099-01-01" }.into());
-                let tile = &wanted.params[0].1;
-                fetched(store, &wanted.source, &version, &[], &[(format!("#tile={tile}/{tile}.tif"), tile.clone())]);
-                inputs.manual.insert(wanted.source.clone());
-                inputs.resolve(&wanted, version);
-            }
-        }
-        panic!("the step list still asks for a model tile");
+        let national = |input: &Input| matches!(input, Input::Snapshot { source, .. } if source.starts_with("dtm-"));
+        assert!(!steps.iter().flat_map(|step| &step.inputs).any(national), "no step reads a national model");
     }
 
     #[test]
-    fn a_model_fetched_tile_by_tile_has_one_version_also_when_it_is_due() {
-        let temp = temp("model-version");
+    fn a_leaf_over_a_model_without_a_version_reads_glo30_alone_and_its_first_version_stales_it() {
+        use obc_data::engine::{changes, state::Newer};
+        let temp = temp("unprepared");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
-        with_model_areas(&store);
-        let read = |inputs: &Inputs| -> BTreeSet<(String, String)> {
-            let steps = map_steps(&root(), inputs, &regions, &store).unwrap().steps;
-            let inputs =
-                steps.into_iter().filter(|step| step.name.starts_with("device/reference/")).flat_map(|s| s.inputs);
-            inputs
-                .map(|input| match input {
-                    Input::Snapshot { source, version, .. } => (source, version),
-                    Input::Step { name, .. } => panic!("{name}"),
-                })
-                .collect()
-        };
-        // No serving version and none in the store: the first tile names the version of the model.
-        fetch_models(&store, &mut inputs, &regions, "2026-10-06");
-        let versions = |ch: &str| -> BTreeSet<(String, String)> {
-            let models = [("dtm-ch", ch), ("dtm-de-by", "2026-10-06"), ("dtm-fr", "2026-10-06")];
-            models.iter().map(|(source, version)| (source.to_string(), version.to_string())).collect()
-        };
-        assert_eq!(read(&inputs), versions("2026-10-06"));
-
-        // A due refresh of `dtm-ch` fetches every tile of the model again, at one new version.
-        let mut due = Inputs { resolved: Default::default(), ..inputs.clone() };
-        due.due.insert(("dtm-ch".into(), Vec::new()));
-        fetch_models(&store, &mut due, &regions, "2026-10-07");
-        assert_eq!(read(&due), versions("2026-10-07"));
-        let stored: BTreeSet<_> = store.snapshots("dtm-ch").unwrap().into_iter().map(|s| s.version).collect();
-        assert_eq!(stored, ["2026-10-06".to_string(), "2026-10-07".into()].into());
-    }
-
-    #[test]
-    fn a_model_whose_credential_this_machine_lacks_blocks_its_reference_and_terrain() {
-        let temp = temp("credential");
-        let store = Store::at(temp.0.join("store"));
-        with_tile_list(&store, &[]);
-        with_model_areas(&store);
-        // The leaf meets Niedersachsen first, then Denmark, whose credential is required.
-        let region = "name = \"Jutland\"\nkind = \"box\"\nbox = [8.2, 53.8, 8.3, 56.1]\n";
-        let regions = Regions::new(vec![obc_data::regions::parse_region("jutland", region).unwrap()]).unwrap();
-        let (mut inputs, _) = grimsel(&store, "1");
-        inputs.settings.region = "jutland".into();
-        let bounds = Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 };
-        let poly = box_poly(&bounds);
-        let coverage = Coverage::parse_poly(&poly).unwrap();
-        let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
-            "properties":{"id":"jutland","name":"Jutland","parent":null,
-                "urls":{"pbf":"https://download.geofabrik.de/europe/jutland-latest.osm.pbf"}},
-            "geometry":serde_json::from_str::<serde_json::Value>(&coverage.geojson()).unwrap()}]});
-        fetched(&store, catalog::INDEX, "2", &[], &[("index-2.json".into(), index.to_string())]);
-        let area = [("area".into(), "europe/jutland".into())];
-        fetched(&store, POLY, "1", &area, &[("europe/jutland.poly".into(), poly.clone())]);
-        extracted(&store, "1", &area, "europe/jutland.osm.pbf");
-        let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
-        match map_steps(&root(), &inputs, &regions, &store) {
-            Ok(listed) => {
-                assert!(!token.present());
-                for layer in ["device/reference/0038-0032", "device/terrain/0038-0032"] {
-                    assert!(listed
-                        .blocked
-                        .iter()
-                        .any(|b| b.step == layer && b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
-                }
-                assert!(listed.blocked.iter().any(|b| b.step == "device/catalog"));
-                assert!(!listed
-                    .steps
-                    .iter()
-                    .any(|step| step.name == "device/catalog" || step.name == "device/network/0038-0032"));
-                assert!(
-                    listed.steps.iter().any(|step| step.name == "device/coarse/0038-0032"),
-                    "independent bands stay usable"
-                );
-            }
-            // A machine with the token fetches the model.
-            Err(Unplanned::NeedsFetch(wanted)) => {
-                assert!(token.present());
-                assert!(wanted.iter().any(|fetch| fetch.source == "dtm-dk"));
-                assert!(wanted.iter().any(|fetch| fetch.source == "dtm-de-ni"));
-            }
-            other => panic!("{:?}", other.map(|steps| steps.steps.len())),
+        // The boxes of `dtm-fr` and `dtm-de-by` reach the Grimsel; their polygons stop west and east of it.
+        for (area, [west, south, east, north]) in
+            [("europe/france", [-5.0, 42.0, 7.5, 51.0]), ("europe/germany/bayern", [8.97, 47.27, 13.84, 50.56])]
+        {
+            let poly = box_poly(&Bbox { west, south, east, north });
+            fetched(&store, POLY, "2", &[("area".into(), area.into())], &[(format!("{area}.poly"), poly)]);
         }
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
+        assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
+        assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/reference/")));
+        let text = "terrain-reference/ch has no version: device/terrain uses GLO-30 there. \
+                    Fix: obc data source prepare terrain-reference/ch";
+        assert_eq!(listed.notes, [Note { layer: "device/terrain".into(), text: text.into() }]);
+        let declared: Vec<Output> = listed.steps.iter().map(|step| declared(step, step.layer.format)).collect();
+        let release = declared.iter().map(|output| (output.step.as_str(), output)).collect();
+
+        // Swiss heights in the west leaf only.
+        let (pinned, manifest) = swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif"]);
+        stored(&store, "terrain-reference/ch", &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
+        assert_eq!(listed.notes, []);
+        let update = changes::update(&Store::at(temp.0.join("empty")), &listed.steps, &release, &Newer::new(), &[]);
+        let update = update.unwrap();
+        let terrain: BTreeSet<&str> =
+            builds(&update.plan).into_iter().filter(|step| step.starts_with("device/terrain/")).collect();
+        assert_eq!(terrain, ["device/terrain/0037-0032"].into(), "the leaf without a Swiss tile is kept");
     }
 }

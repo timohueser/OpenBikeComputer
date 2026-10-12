@@ -261,17 +261,22 @@ impl Target {
 }
 
 impl Target {
-    /// Give `key` the bytes of `file`, also when it holds other bytes: only for a key that no reader
-    /// reads yet. rclone replaces an object of another checksum.
-    pub fn replace(&self, file: &Path, key: &str) -> Result<(), String> {
-        let Target::Dir(dir) = self else { return self.upload(&[(file.to_path_buf(), key.into())]) };
-        crate::r2::check_key(key)?;
-        let path = dir.join(key);
-        let parent = path.parent().expect("a key has a parent folder");
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        let part = part(&path);
-        let _ = fs::remove_file(&part);
-        link(file, &part).and_then(|()| fs::rename(&part, &path)).map_err(|e| format!("{}: {e}", path.display()))
+    /// Give each key of `files` the bytes of its file, also when it holds other bytes: only for keys
+    /// that no reader reads yet. rclone replaces an object of another checksum.
+    pub fn replace(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
+        let Target::Dir(dir) = self else { return self.upload(files) };
+        for (file, key) in files {
+            crate::r2::check_key(key)?;
+            let path = dir.join(key);
+            let parent = path.parent().expect("a key has a parent folder");
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            let part = part(&path);
+            let _ = fs::remove_file(&part);
+            link(file, &part)
+                .and_then(|()| fs::rename(&part, &path))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        Ok(())
     }
 
     /// The files under `folder` of the target, sorted by key.
