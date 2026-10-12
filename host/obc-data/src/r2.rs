@@ -437,6 +437,11 @@ pub fn owned(key: &str) -> bool {
         || ["objects/", "releases/", "sources/"].iter().any(|prefix| key.starts_with(prefix))
 }
 
+/// Whether `key` is of the legacy pipelines: under `cell-catalog/`, `planner/` or `reference/`.
+pub fn legacy(key: &str) -> bool {
+    ["cell-catalog/", "planner/", "reference/"].iter().any(|prefix| key.starts_with(prefix))
+}
+
 fn refuse_removal_log<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<(), String> {
     if keys.any(|key| key == REMOVAL_LOG) {
         return Err(format!("{REMOVAL_LOG} is the removal history; the client never deletes it"));

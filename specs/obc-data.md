@@ -1666,10 +1666,10 @@ A request that does not, and a command that the page does not run, get HTTP 403 
 ## R2 client
 
 The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --target r2`,
-`obc bake clean-r2`, `obc r2 rm`, `obc fixtures publish` and the firmware publish workflow.
-rclone moves the bytes. The reference archive ingest still uses the remote of `tools/r2.py`.
-`obc data r2` is plumbing for scripts: those commands call it. It does not change the state of a
-release. Once the bucket has the
+`obc bake clean-r2`, `obc fixtures publish` and the firmware publish workflow. rclone moves the
+bytes. The reference archive ingest reaches `reference/v1/` with rclone and the same variables.
+`obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
+`obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
 and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under `objects/`,
 `releases/` or `sources/`. `obc bake clean-r2` refuses to run when the pointer of its prefix has
@@ -1696,7 +1696,7 @@ target signs with the secret key and never sends it.
 | `obc data r2 stat KEY... [--json]` | Lists the objects of the keys that the bucket holds; a missing key is not an error |
 | `obc data r2 get KEY FILE [--json]` | Downloads one object |
 | `obc data r2 put FILE KEY [--cache-control V] [--content-type V] [--immutable] [--json]` | Uploads with `--checksum` and the headers given, then verifies |
-| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--yes] [--json]` | Deletes, see below |
+| `obc data r2 delete (KEY... \| --prefix P) --reason TEXT [--legacy] [--yes] [--json]` | Deletes, see below |
 
 Rules:
 
@@ -1710,8 +1710,9 @@ Rules:
   replaced. The command passes only when the object has the size and the MD5 of the file. It
   fails when they differ, and when the bucket reports no MD5 for the object.
 - `delete --prefix P` resolves `P` to its keys first. Then explicit keys and a prefix have the
-  same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, and
-  then nothing is deleted.
+  same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, a key
+  under `cell-catalog/`, `planner/` or `reference/` is refused without `--legacy`, and then nothing
+  is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
