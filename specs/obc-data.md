@@ -1052,9 +1052,10 @@ only a `dir` target. One run does each phase in this order:
 3. Build. It fetches and bakes the groups.
 4. Verify. The new release has the output of each step, the pointer and the named files of each
    product. When it serves as the serving release, with the same settings, outputs, pointers,
-   named files and source files, the update changes nothing but a pointer that drifts. Whether the
-   target copies a source, and its credit, change no file of the release. Else each product checks it,
-   and a failed check changes nothing.
+   named files and source files, the update changes nothing but a pointer that drifts. A source
+   file is the same when its name, size and SHA-256 are. Whether the target copies a source, and
+   its credit, change no file of the release. Else each product checks it, and a failed check
+   changes nothing.
 5. Upload and switch, as [Publish and switch](#publish-and-switch) says.
 6. Collect, as [Collection](#collection) says, when it switched to another release.
 
@@ -1068,13 +1069,17 @@ its bakes and the checks of the products read:
 - A fetch that the serving release lists with `copy` comes from the copies on the target, in the
   phase `download`: the files that the store lacks, with their snapshot record and the time when a
   machine retrieved them first. Another fetch comes from upstream.
-- Before any bake, a step that bakes and reads a file of a fetch that the serving release lists
-  must find the same SHA-256 in the record of the store. Else nothing changes (`verify_failed`).
+- A step that bakes and reads a file of a fetch that the serving release lists must find the same
+  SHA-256 in the record of the store: before the review, and again after the fetches of the
+  update, before any bake. Else nothing changes (`verify_failed`).
 - A fetch that the serving release read, of a source whose upstream gives only its newest version
   (a capture, a national terrain model, a delivery) and that the target does not copy, refuses the
-  update (`blocked`): this machine cannot get that version again. Run the update on the machine
-  whose store holds it, or move the source with a due refresh. A national terrain model on a new
-  machine is such a case.
+  update (`blocked`) before the fetch, also while the update lists the steps: this machine cannot
+  get that version again. The fix names the machine that made the serving release. A refresh that
+  moves the source to a new version is the other way. A national terrain model on a new machine
+  is such a case.
+- When the store and the serving release give a fetched file the same name, size and SHA-256, the
+  new release keeps the entry of the serving release.
 - A file of a kept step that a step that bakes reads, or that the check of a product reads, comes
   from `objects/` of the target when the store lacks it.
 - A kept step whose file a step that bakes reads, when no client reads that file and the store
@@ -1101,9 +1106,9 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
   options, else of the `cost` of the step in the serving release, else of the newest receipt of the
   step. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
   under `sources/` that the serving release does not name, as the store records them. `unknown`
-  lists each bake without an estimate or without a peak, and each fetch whose size is not known.
-  `process_peak_rss_bytes` is the highest peak of a bake that runs in the `obc` process: the peak
-  of that process, not of the step.
+  lists each bake without an estimate or without a peak, and each fetch whose size is not known,
+  also of a new copy that the store lacks yet. `process_peak_rss_bytes` is the highest peak of a
+  bake that runs in the `obc` process: the peak of that process, not of the step.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
   listing. A bake that runs in its own process and whose estimated peak is more than the memory,
   or fetches, downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.

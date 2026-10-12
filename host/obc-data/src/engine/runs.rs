@@ -338,7 +338,8 @@ impl Run {
         Ok(built)
     }
 
-    fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
+    /// Fetch what `plan` fetches.
+    pub fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
         for planned in plan.fetches() {
             self.check_stop(context.store)?;
             let source = context.sources.iter().find(|known| known.id == planned.source).ok_or_else(|| {

@@ -80,6 +80,14 @@ pub struct FetchedFile {
     pub retrieved: String,
 }
 
+impl FetchedFile {
+    /// Whether `other` has the same name and bytes. Where and when a machine retrieved it do not
+    /// count.
+    pub fn same(&self, other: &FetchedFile) -> bool {
+        (&self.name, self.size, &self.sha256) == (&other.name, other.size, &other.sha256)
+    }
+}
+
 impl Fetched {
     /// The key of the copy of `file` on a target.
     pub fn key(&self, file: &FetchedFile) -> String {
@@ -320,12 +328,16 @@ impl Release {
     /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
         let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
-        // Whether the target copies a source, and its credit, change no file of the release.
-        fn read(fetched: &Fetched) -> (&String, &String, &Vec<(String, String)>, &Vec<FetchedFile>) {
-            (&fetched.source, &fetched.version, &fetched.params, &fetched.files)
-        }
+        // Whether the target copies a source, its credit, and where and when a machine retrieved a
+        // file change no file of the release.
+        let read = |a: &Fetched, b: &Fetched| {
+            (&a.source, &a.version, &a.params) == (&b.source, &b.version, &b.params)
+                && a.files.len() == b.files.len()
+                && a.files.iter().zip(&b.files).all(|(a, b)| a.same(b))
+        };
         (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
-            && self.sources.iter().map(read).eq(other.sources.iter().map(read))
+            && self.sources.len() == other.sources.len()
+            && self.sources.iter().zip(&other.sources).all(|(a, b)| read(a, b))
             && self.outputs.len() == other.outputs.len()
             && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }

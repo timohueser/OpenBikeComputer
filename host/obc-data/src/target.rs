@@ -56,10 +56,10 @@ enum Entry {
 /// The file of a dir target that one conditional write at a time holds.
 const LOCK: &str = ".lock";
 
-/// `obc data` reaches an R2 target only through its public URL, which serves reads.
 /// A number for each part file of this process.
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// `obc data` reaches an R2 target only through its public URL, which serves reads.
 const READ_ONLY: &str = "`obc data` only reads an R2 target, through its public URL";
 
 /// The targets of `data/targets.toml` in the repository at `root`, by name. A dir target without

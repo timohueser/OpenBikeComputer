@@ -174,8 +174,9 @@ pub struct Parts<'a> {
     /// The steps that bake only because the target does not hold files of them.
     pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
-    /// The size of the copies under `sources/` that the update adds.
-    pub copies: u64,
+    /// The size of the copies under `sources/` that the update adds, and the fetches of copies
+    /// that the store lacks yet.
+    pub copies: (u64, BTreeSet<String>),
     pub machine: &'a MachineCheck,
 }
 
@@ -250,15 +251,20 @@ pub fn review(parts: Parts) -> Review {
     // A layer that only other layers read is listed when it bakes only for files that the target
     // does not hold.
     for step in steps.iter().filter(|step| unheld.contains(&step.name)) {
+        let leaf = leaf(&step.name).filter(|_| step.layer.shape == Shape::Tiled).map(str::to_string);
         match changes.iter_mut().find(|change| change.layer == step.layer.name) {
-            Some(change) if !change.steps.contains(&step.name) => change.steps.push(step.name.clone()),
+            Some(change) if !change.steps.contains(&step.name) => {
+                change.steps.push(step.name.clone());
+                change.leaves.extend(leaf.filter(|leaf| !change.leaves.contains(leaf)));
+                change.leaves.sort();
+            }
             Some(_) => {}
             None => changes.push(LayerChange {
                 layer: step.layer.name.into(),
                 cause: Cause::Unheld,
                 text: text(&Cause::Unheld),
                 steps: vec![step.name.clone()],
-                leaves: Vec::new(),
+                leaves: leaf.into_iter().collect(),
                 drops: Vec::new(),
                 readers: Vec::new(),
                 format: None,
@@ -301,12 +307,17 @@ pub fn review(parts: Parts) -> Review {
     let mut seen = BTreeSet::new();
     let bakes: Vec<Build> = plan.builds().filter(|build| seen.insert(&build.step)).cloned().collect();
     let fetches = plan.fetches();
-    let mut cost = ReviewCost { upload_bytes: copies, ..ReviewCost::default() };
+    let (upload_bytes, unknown_copies) = copies;
+    let mut cost = ReviewCost { upload_bytes, ..ReviewCost::default() };
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,
             None => cost.unknown.size.push(format!("{}@{}", fetch.source, fetch.version)),
         }
+    }
+    // The size of a copy is known only after its fetch.
+    for fetch in unknown_copies.into_iter().filter(|fetch| !cost.unknown.size.contains(fetch)).collect::<Vec<_>>() {
+        cost.unknown.size.push(fetch);
     }
     cost.store_bytes += downloads.bytes;
     let in_process: BTreeSet<&str> =

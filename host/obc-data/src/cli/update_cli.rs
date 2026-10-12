@@ -14,12 +14,12 @@ use serde::Serialize;
 use super::{freshness, listing, print_json, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
-use crate::engine::plan::{outputs, Kept, Plan};
+use crate::engine::plan::{outputs, Fetch, Kept};
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
-use crate::product::{Inputs, Product, RequestKey};
+use crate::product::{Inputs, Product, RequestKey, Wanted};
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
 use crate::settings::Settings;
@@ -243,8 +243,17 @@ pub(super) fn prepare(
         }
     }
     let listed = {
-        let fetch = listing::fetcher(root, store, http, &sources, run, true);
-        listing::steps(root, products, &mut inputs, &regions, store, false, fetch)?
+        let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
+        // The listing asks for what the store lacks.
+        let refetch = |wanted: &Wanted| {
+            if let Some(version) = &wanted.version {
+                let (source, params) = (wanted.source.clone(), wanted.params.clone());
+                let wanted = Fetch { source, version: version.clone(), params, files: Vec::new(), bytes: None };
+                refetchable(&wanted, serving.as_ref(), &sources)?;
+            }
+            fetch(wanted)
+        };
+        listing::steps(root, products, &mut inputs, &regions, store, false, refetch)?
     };
     if !listed.blocked.is_empty() {
         let reasons: Vec<String> =
@@ -268,7 +277,9 @@ pub(super) fn prepare(
     for group in &mut update.plan.groups {
         group.fetches.retain(|fetch| !copies.iter().any(|(copy, _)| covers(copy, fetch)));
     }
-    refetchable(&update.plan, read, &sources)?;
+    for fetch in update.plan.fetches() {
+        refetchable(&fetch, serving.as_ref(), &sources)?;
+    }
     let downloads = downloads(store, &listed.steps, &update, &copies);
     let machine = match machine {
         Some(machine) => machine.clone(),
@@ -295,7 +306,7 @@ pub(super) fn prepare(
 }
 
 /// Whether the copy `fetched` on a target has the files that `fetch` gets.
-fn covers(fetched: &Fetched, fetch: &crate::engine::plan::Fetch) -> bool {
+fn covers(fetched: &Fetched, fetch: &Fetch) -> bool {
     (&fetched.source, &fetched.version, &fetched.params) == (&fetch.source, &fetch.version, &sorted(&fetch.params))
         && fetch.files.iter().all(|name| fetched.files.iter().any(|file| &file.name == name))
 }
@@ -335,28 +346,28 @@ fn same_bytes<'a>(
     Ok(())
 }
 
-/// Refuse a fetch that the serving release read, of a source whose upstream gives only its newest
-/// version and that the target does not copy: this machine cannot get that version again.
-fn refetchable<'a>(plan: &Plan, read: impl Iterator<Item = &'a Fetched>, sources: &[Source]) -> Result<(), Error> {
-    let read: Vec<&Fetched> = read.collect();
-    for fetch in plan.fetches() {
-        let captured = sources.iter().find(|source| source.id == fetch.source);
-        let captured = captured
-            .is_some_and(|source| matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Dtm | FetchKind::ByHand));
-        if captured && read.iter().any(|fetched| covers(fetched, &fetch)) {
-            let source = &fetch.source;
-            return Err(Code::Blocked
-                .error(format!(
-                    "this machine cannot fetch {source}@{}, which the serving release read: upstream gives only its newest version, and the target holds no copy; nothing changed",
-                    fetch.version
-                ))
-                .fix(format!(
-                    "Run the update on the machine whose store holds {source}@{}, or move `{source}` to its newest version with a due refresh: `--refresh {source}=1`.",
-                    fetch.version
-                )));
-        }
-    }
-    Ok(())
+/// Refuse `fetch` when the serving release read it, upstream gives only the newest version of its
+/// source, and the target does not copy it: this machine cannot get that version again.
+fn refetchable(fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> Result<(), Error> {
+    let Some(source) = sources.iter().find(|source| source.id == fetch.source) else { return Ok(()) };
+    let newest_only = matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Dtm | FetchKind::ByHand);
+    let read = |serving: &&Release| serving.sources.iter().any(|read| !read.copy && covers(read, fetch));
+    let Some(serving) = serving.filter(|serving| newest_only && read(serving)) else { return Ok(()) };
+    let (id, version) = (&source.id, &fetch.version);
+    let policy = match source.refresh {
+        Refresh::Days(days) => days.to_string(),
+        Refresh::Manual => "manual".into(),
+    };
+    Err(Code::Blocked
+        .error(format!(
+            "this machine cannot fetch {id}@{version}, which the serving release read: upstream gives only its \
+             newest version, and the target holds no copy; nothing changed"
+        ))
+        .fix(format!(
+            "Run this update on `{}`, whose store has {id}@{version}. Or move `{id}` to a new version with \
+             `--refresh {id}=1`, then set its policy back with `--refresh {id}={policy}`.",
+            serving.machine
+        )))
 }
 
 /// What this machine downloads from the target: the files of the copies that the store lacks, and
@@ -388,7 +399,7 @@ fn apply(
     prepared: Prepared,
     run: &mut Run,
 ) -> Result<Updated, Error> {
-    let Prepared { review, base, serving, settings, sources, steps, update, copies } = prepared;
+    let Prepared { review, base, serving, settings, sources, steps, mut update, copies } = prepared;
     if !copies.is_empty() {
         run.record(&Event::Phase { phase: Phase::Download })?;
         for (copy, names) in &copies {
@@ -397,6 +408,12 @@ fn apply(
     }
     run.record(&Event::Phase { phase: Phase::Build })?;
     let context = Context { store, root, sources: &sources, http, kept: &update.kept, limits: Limits::machine() };
+    // The fetches first: upstream too must give the bytes that the serving release read.
+    run.fetch(&context, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
+    same_bytes(store, &steps, &update.kept, serving.iter().flat_map(|release| &release.sources))?;
+    for group in &mut update.plan.groups {
+        group.fetches.clear();
+    }
     let built = run.build(&context, &steps, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
     let baked =
         built.into_iter().map(|built| Baked { step: built.receipt.step, key: built.receipt.key, reused: built.reused });
@@ -517,29 +534,35 @@ pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Err
 }
 
 /// The size of the copies under `sources/` that the update adds to the target: the files of a copied
-/// source that a step that bakes reads, and that the serving release does not name. A fetch that
-/// the store lacks yet counts nothing.
+/// source that a step that bakes reads, and that the serving release does not name; and each such
+/// fetch that the store lacks yet, as `SOURCE@VERSION`.
 fn new_copies(
     store: &Store,
     steps: &[Step],
     update: &Update,
     serving: Option<&Release>,
     sources: &[Source],
-) -> Result<u64, Error> {
+) -> Result<(u64, BTreeSet<String>), Error> {
     let named: BTreeSet<String> = serving.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
-    let mut copies = BTreeMap::new();
+    let (mut copies, mut unknown) = (BTreeMap::new(), BTreeSet::new());
     for input in steps.iter().filter(|step| !update.kept.contains_key(&step.name)).flat_map(|step| &step.inputs) {
         let Input::Snapshot { source, version, params, files } = input else { continue };
         if !sources.iter().any(|declared| declared.id == *source && declared.copied()) {
             continue;
         }
-        let objects = crate::engine::snapshot_files(store, source, version, params, files)?;
-        for (name, object) in objects.into_iter().flatten() {
+        let Some(objects) = crate::engine::snapshot_files(store, source, version, params, files)? else {
+            let read = serving.iter().flat_map(|release| &release.sources);
+            if !read.into_iter().any(|read| read.copy && (&read.source, &read.version) == (source, version)) {
+                unknown.insert(format!("{source}@{version}"));
+            }
+            continue;
+        };
+        for (name, object) in objects {
             let size = std::fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.len();
             copies.insert(release::copy_key(source, version, &name), size);
         }
     }
-    Ok(copies.into_iter().filter(|(key, _)| !named.contains(key)).map(|(_, size)| size).sum())
+    Ok((copies.into_iter().filter(|(key, _)| !named.contains(key)).map(|(_, size)| size).sum(), unknown))
 }
 
 /// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
@@ -586,9 +609,17 @@ fn reads(
         let served = serving.iter().flat_map(|release| &release.sources);
         let earlier = served.into_iter().find(|f| (&f.source, &f.version, &f.params) == (&source, &version, &params));
         let earlier = earlier.and_then(|fetched| pick(fetched.files.clone()));
-        let files = recorded.or(earlier).ok_or_else(|| {
-            Code::Failed.error(format!("neither the store nor the serving release has the files of {source}@{version}"))
-        })?;
+        // A file that the serving release read keeps its entry there, so the manifest stays the same.
+        let files = match (recorded, earlier) {
+            (Some(recorded), Some(earlier)) => recorded
+                .into_iter()
+                .map(|file| earlier.iter().find(|served| served.same(&file)).cloned().unwrap_or(file))
+                .collect(),
+            (recorded, earlier) => recorded.or(earlier).ok_or_else(|| {
+                Code::Failed
+                    .error(format!("neither the store nor the serving release has the files of {source}@{version}"))
+            })?,
+        };
         let copied = sources.iter().find(|declared| declared.id == source && declared.copied());
         let (licence, attribution) =
             copied.map_or((None, None), |source| (source.licence.clone(), source.attribution.clone()));
@@ -685,6 +716,12 @@ pub(super) mod tests {
         fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
             let head = crate::product::version(inputs, store, "head", &[]).map_err(Unplanned::Failed)?;
             let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+            // The file `listed` makes the step list read `head`, as the list of a capture does.
+            let files = crate::engine::snapshot_files(store, "head", &head, &[], &[]).map_err(Unplanned::Failed)?;
+            if root.join("listed").exists() && files.is_none() {
+                let wanted = Wanted { source: "head".into(), version: Some(head), params: Vec::new() };
+                return Err(Unplanned::NeedsFetch(vec![wanted]));
+            }
             let mut steps = pipeline();
             steps[2].inputs = vec![snapshot("head", &head, &["head.txt"])];
             crate::engine::tests::revise(root, &mut steps);
@@ -928,7 +965,7 @@ pub(super) mod tests {
 
     /// An update without flags on another machine: its store has no objects, records or receipts,
     /// and takes what it lacks from `target`.
-    fn elsewhere(fixture: &Fixture, target: &Target) -> (Store, Updated) {
+    fn elsewhere(fixture: &Fixture, target: &Target) -> (Store, Result<Updated, Error>) {
         for dir in ["objects", "snapshots", "requests", "layers"] {
             let _ = std::fs::remove_dir_all(fixture.store.root().join(dir));
         }
@@ -948,7 +985,7 @@ pub(super) mod tests {
             &mut run,
         );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
-        (store, updated.unwrap())
+        (store, updated)
     }
 
     /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
@@ -1191,6 +1228,7 @@ pub(super) mod tests {
 
         write(&fixture.root().join("revised"), "test/join");
         let (store, updated) = elsewhere(&fixture, &target);
+        let updated = updated.unwrap();
         assert_eq!(steps(&updated), ["test/join", "test/count"]);
         let release = Release::read(&target, &updated.serving).unwrap();
         let tail = &store.snapshot("tail", "1").unwrap().unwrap().files[0].sha256;
@@ -1213,9 +1251,42 @@ pub(super) mod tests {
         let first = update(&fixture, &target, region).unwrap();
         write(&fixture.root().join("revised"), "test/join");
         let (store, updated) = elsewhere(&fixture, &target);
+        let updated = updated.unwrap();
         assert_eq!(steps(&updated), ["test/upper", "test/join", "test/count"]);
         assert!(store.snapshot("head", "1").unwrap().is_some(), "from the copy on the target");
         assert_eq!(updated.rollback, Some(first.serving));
+    }
+
+    #[test]
+    fn a_machine_that_cannot_fetch_a_capture_that_the_release_read_refuses_while_it_lists() {
+        let fixture = fixture("update-capture");
+        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
+        (head.id, head.fetch.kind, head.redistribute) = ("head".into(), FetchKind::Capture, false);
+        fixture.with_sources(&[head]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        write(&fixture.root().join("listed"), "");
+        let refused = elsewhere(&fixture, &target).1.unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "{}", refused.message);
+        assert!(refused.message.starts_with("this machine cannot fetch head@1"), "{}", refused.message);
+        assert!(refused.fix.starts_with(&format!("Run this update on `{}`", crate::machine())), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_file_that_a_machine_retrieved_again_keeps_its_entry_and_switches_nothing() {
+        let fixture = fixture("update-retrieved");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let first = update(&fixture, &target, region).unwrap();
+        let mut record = fixture.store.snapshot("head", "1").unwrap().unwrap();
+        record.files[0].retrieved = crate::date::timestamp(0);
+        fixture.store.put_snapshot(&record).unwrap();
+        assert_eq!(update(&fixture, &target, |_| Ok(())).unwrap().serving, first.serving, "nothing switched");
+
+        write(&fixture.root().join("revised"), "test/upper");
+        let revised = update(&fixture, &target, |_| Ok(())).unwrap();
+        let head = |id: &str| Release::read(&target, id).unwrap().sources.into_iter().find(|f| f.source == "head");
+        assert_eq!(head(&revised.serving).unwrap().files, head(&first.serving).unwrap().files);
     }
 
     #[test]
