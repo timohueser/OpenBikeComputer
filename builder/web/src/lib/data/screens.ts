@@ -22,3 +22,10 @@ export function runAt(hash: string): string | null {
     const [first, id] = hash.replace(/^#\/?/, "").split("/");
     return first === "runs" && id ? id : null;
 }
+
+/** What a target screen shows: `#/TARGET`, its review `#/TARGET/review`, or the review that
+ *  resumes a run, `#/TARGET/resume/RUN`. */
+export function targetAt(hash: string): { review: boolean; resume: string | null } {
+    const [, second, run] = hash.replace(/^#\/?/, "").split("/");
+    return { review: second === "review" || (second === "resume" && !!run), resume: second === "resume" && run ? run : null };
+}

@@ -50,6 +50,9 @@ pub struct Review {
     pub after: AfterUpdate,
     /// The arguments after `obc data` that start the update of this review.
     pub args: Vec<String>,
+    /// The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those
+    /// that are on.
+    pub optional: Vec<String>,
 }
 
 /// A layer that the update changes.
@@ -371,6 +374,7 @@ pub fn review(parts: Parts) -> Review {
         machine,
         after,
         args: Vec::new(),
+        optional: Vec::new(),
     }
 }
 

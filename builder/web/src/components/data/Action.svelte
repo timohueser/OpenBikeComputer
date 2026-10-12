@@ -9,7 +9,8 @@
         label,
         ondone,
         query,
-    }: { label: string; ondone?: (output: T) => void } & (
+        disabled = false,
+    }: { label: string; ondone?: (output: T) => void; disabled?: boolean } & (
         | { args: readonly string[]; query?: never }
         /** The Action runs the args of the query and gives it the answer; the view of the query
          *  shows the error. */
@@ -33,7 +34,7 @@
 </script>
 
 <div class="action">
-    <button type="button" disabled={running} aria-busy={running} onclick={run}>{label}</button>
+    <button type="button" disabled={running || disabled} aria-busy={running} onclick={run}>{label}</button>
     <code>{command(argv)}</code>
     {#if error}<Failure {error} />{/if}
 </div>

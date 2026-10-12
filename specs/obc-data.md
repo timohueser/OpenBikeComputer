@@ -1388,8 +1388,10 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`
-  and `obc data runs RUN --stop`.
+  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`,
+  `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
+  or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET` (with
+  `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -3250,6 +3252,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "machine": {
           "$ref": "#/$defs/MachineCheck"
         },
+        "optional": {
+          "description": "The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those\nthat are on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "settings": {
           "$ref": "#/$defs/Settings"
         },
@@ -3278,7 +3287,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cost",
         "machine",
         "after",
-        "args"
+        "args",
+        "optional"
       ],
       "type": "object"
     },

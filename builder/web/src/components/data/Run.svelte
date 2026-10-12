@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { command } from "../../lib/data/cli";
+    import { flagsOf, reviewArgs } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { changes, clock, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
@@ -45,12 +46,8 @@
         if (changed && !changed.lock && (view.state === "failed" || view.state === "stopped")) facts.push(`the ${target} lock is free`);
         return facts.join(" · ");
     });
-    /** The review of the same update again: its args without the review that it did. */
-    const resume = $derived.by(() => {
-        if (view?.args[0] !== "update") return null;
-        const args = view.args.filter((arg, i, all) => arg !== "--accept-format-change" && arg !== "--expect" && all[i - 1] !== "--expect");
-        return [...args, "--dry-run"];
-    });
+    /** The review of the same update again: the settings flags of the run. */
+    const resume = $derived(view?.args[0] === "update" && target ? reviewArgs(target, flagsOf(view.args)) : null);
 </script>
 
 {#if run.error}<Failure error={run.error} />{/if}
@@ -94,7 +91,10 @@
                 <p><b>Kept</b> · {new Intl.ListFormat("en").format(view.error.kept)}. The next update reuses them.</p>
             {/if}
             {#if resume}
-                <p>A new review of the same update: <code class="resume">{command(resume)}</code></p>
+                <p class="title">
+                    <a class="primary" href="#/{target}/resume/{id}">Resume…</a>
+                    <span>A new review of the same update: <code class="resume">{command(resume)}</code></span>
+                </p>
             {/if}
         </Failure>
     {/if}

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`../../../test-support/data/${name}.json`, import.meta.url), 'utf8'));
-const [status, running, failed] = [fixture('status'), fixture('run-running'), fixture('run-failed')];
+const [status, running, failed, review] = [fixture('status'), fixture('run-running'), fixture('run-failed'), fixture('review')];
 const elsewhere = status.targets.find(target => target.lock).lock.run;
 const ANSWERS = {
   '[]': status,
@@ -10,12 +10,16 @@ const ANSWERS = {
   '["runs"]': fixture('runs'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
+  [JSON.stringify(['update', 'local', '--dry-run'])]: review,
+  [JSON.stringify(['update', 'local', '--add', 'sun', '--dry-run'])]: review,
 };
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
-  ['#/', 'Not built yet'],
-  ['#/prod', 'Not built yet'],
-  ['#/local', 'Not built yet'],
+  ['#/', 'Select a layer'],
+  ['#/prod', 'Releases on prod'],
+  ['#/local', 'Layers of freiburg'],
+  ['#/local/review', `Review ${review.id}`],
+  [`#/local/resume/${failed.id}`, 'This review resumes run'],
   ['#/sources', 'Not built yet'],
   ['#/runs', 'The runs of this machine'],
   [`#/runs/${running.id}`, 'Layers in this run'],

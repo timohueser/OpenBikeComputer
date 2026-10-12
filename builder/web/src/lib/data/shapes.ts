@@ -4,8 +4,95 @@
  *  polls it. */
 export interface Status {
     machine: Machine;
-    /** `lock_error` says why the lock of the target cannot be read. */
-    targets: { target: string; lock: Holder | null; lock_error: string | null }[];
+    targets: Target[];
+}
+
+/** A target as `obc data --json` gives it. */
+export interface Target {
+    target: string;
+    kind: "dir" | "r2";
+    /** The folder of a dir target, or the public URL of an R2 bucket. */
+    at: string;
+    /** `null` while it serves nothing. */
+    release: { serving: Role; rollback: Role | null } | null;
+    lock: Holder | null;
+    lock_error: string | null;
+    region: string | null;
+    /** `null` while the target serves nothing or its steps cannot be listed. */
+    layers: Layer[] | null;
+    blocked: { layer: string; step: string; reason: string }[];
+    /** The pointer keys whose bytes are not those of the serving release. */
+    drift: string[];
+    error: string | null;
+    fix: string | null;
+    /** The command to run next, or the run to wait for. */
+    next: string | null;
+}
+
+/** A release and the time that the target took it. */
+export interface Role {
+    id: string;
+    since: string;
+}
+
+/** A layer of a target: its state against the serving release, and what a picture of the layers
+ *  needs. `reads` names layers and sources. */
+export interface Layer {
+    layer: string;
+    state: "ok" | "stale" | "off";
+    /** Why a stale layer is stale, in a few words. */
+    text: string | null;
+    shape: "tiled" | "whole" | null;
+    format: number | null;
+    revision: number | null;
+    readers: string[];
+    reads: string[];
+}
+
+export const LAYER_MARK: Record<Layer["state"], string> = { ok: "✓", stale: "●", off: "○" };
+
+/** What `obc data update TARGET --dry-run --json` writes. */
+export interface Review {
+    /** Start the update with `--expect ID`: it starts only when the decisions are these. */
+    id: string;
+    target: string;
+    base: string | null;
+    settings: { region: string; layers: string[]; refresh: Record<string, number | "manual"> };
+    layers: {
+        layer: string;
+        text: string;
+        steps: string[];
+        /** The grid leaves of a tiled layer that bake. */
+        leaves: string[];
+        drops: string[];
+        readers: string[];
+        format: { from: number; to: number } | null;
+    }[];
+    sources: { source: string; from: string | null; to: string }[];
+    /** The outputs that the release keeps by reference. */
+    kept: number;
+    fetches: { source: string; version: string; bytes: number | null }[];
+    bakes: { step: string }[];
+    downloads: { files: number; bytes: number };
+    cost: {
+        wall_ms: number;
+        peak_rss_bytes: number | null;
+        store_bytes: number;
+        upload_bytes: number;
+        unknown: { estimate: string[]; peak: string[]; size: string[] };
+    };
+    machine: { refusals: string[] };
+    after: { rollback: string | null; collects: { release: string; keys: number; bytes: number } | null };
+    /** The arguments that start the update of this review. */
+    args: string[];
+    /** The names that `--add` and `--remove` take; `settings.layers` holds those that are on. */
+    optional: string[];
+}
+
+/** What `update --json` writes: the run that it started. */
+export interface Started {
+    run: string;
+    review: string;
 }
 
 /** The run that holds the lock of a target, from its `lock.json`. A run on another machine shows
@@ -130,12 +217,22 @@ export function clock(time: string): string {
     return new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
+/** `YYYY-MM-DDTHH:MM:SSZ` as the local day and time, `12 Oct, 09:31`. */
+export function when(time: string): string {
+    return `${new Date(time).toLocaleDateString([], { day: "numeric", month: "short" })}, ${clock(time)}`;
+}
+
 /** `2 h 5 min`, `44 min`, `40 s`. */
 export function span(ms: number): string {
     const seconds = Math.max(0, Math.round(ms / 1000));
     if (seconds < 60) return `${seconds} s`;
     const minutes = Math.round(seconds / 60);
     return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+/** The first 4 hex digits of a release id, as a person reads it. */
+export function short(id: string): string {
+    return id.slice(0, 4);
 }
 
 /** What a person calls a run: `update local` of `update local --region freiburg --expect ID`. */

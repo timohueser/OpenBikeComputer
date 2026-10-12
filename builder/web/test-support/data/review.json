@@ -49,5 +49,6 @@
     "cost": {"wall_ms": 610000, "peak_rss_bytes": 2147483648, "process_peak_rss_bytes": null, "store_bytes": 1258291200, "upload_bytes": 102760448, "unknown": {"estimate": ["device/catalog"], "peak": [], "size": []}},
     "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
     "after": {"rollback": "0d9e444444444444444444444444444444444444444444444444444444444444", "collects": null},
-    "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"]
+    "args": ["update", "local", "--expect", "4c1e0d2a91b7", "--accept-format-change"],
+    "optional": ["climate", "snow", "sun"]
 }
