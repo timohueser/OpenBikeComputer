@@ -150,6 +150,8 @@ pub struct Run {
     planned: HashMap<String, (usize, Option<String>)>,
     /// Set when another run took the lock of the target of this run.
     stop: Arc<AtomicBool>,
+    /// Whether another process reserved the run, and this one runs it without a terminal.
+    detached: bool,
     _lock: Lock,
     _using: Lock,
 }
@@ -190,11 +192,15 @@ impl Run {
     pub fn create(store: &Store, args: impl IntoIterator<Item = impl Into<String>>) -> Result<Run, String> {
         let args: Vec<String> = args.into_iter().map(Into::into).collect();
         let id = reserve(store, &args)?;
-        Run::attach(store, &id)
+        Run::start(store, &id, false)
     }
 
-    /// Start the run `id` that [`reserve`] reserved, in this process.
+    /// Start the run `id` that another process reserved, in this process.
     pub fn attach(store: &Store, id: &str) -> Result<Run, String> {
+        Run::start(store, id, true)
+    }
+
+    fn start(store: &Store, id: &str, detached: bool) -> Result<Run, String> {
         check_id(id)?;
         let using = store.using()?;
         let lock = store.lock(&format!("run-{id}"))?;
@@ -216,6 +222,7 @@ impl Run {
             unsaved: false,
             planned: HashMap::new(),
             stop: Arc::new(AtomicBool::new(false)),
+            detached,
             _lock: lock,
             _using: using,
         };
@@ -226,6 +233,11 @@ impl Run {
 
     pub fn id(&self) -> &str {
         &self.status.id
+    }
+
+    /// Whether another process reserved the run: its standard error is the log of the run.
+    pub fn detached(&self) -> bool {
+        self.detached
     }
 
     /// Record `event`: a line in the log, and the status, which the run writes at most each second
@@ -711,7 +723,8 @@ pub struct Status {
     pub id: String,
     /// The arguments after `obc data` that started the run.
     pub args: Vec<String>,
-    /// The process of the run; 0 while it starts.
+    /// The process of the run: while it starts, the process that reserved it, and then the
+    /// process that it starts.
     pub pid: u32,
     pub state: State,
     /// `YYYY-MM-DDTHH:MM:SSZ`
@@ -788,7 +801,7 @@ impl RunError {
 }
 
 /// The code of a run that failed without an error of its command.
-const RUN_FAILED: &str = "run_failed";
+pub(crate) const RUN_FAILED: &str = "run_failed";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]

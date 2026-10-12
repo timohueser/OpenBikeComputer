@@ -650,11 +650,13 @@ step now fails the run.
 The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
 another run has that id. The folder `runs/<id>/` and a status `starting` reserve the id. The
 process that holds the lock `run-<id>` is the process of the run. A run whose status says
-`running` and whose lock is free has failed: its process ended before it finished.
+`running` and whose lock is free has failed: its process ended before it finished. A run whose
+status says `starting`, whose process does not exist and whose lock is free has failed too: its
+process never started.
 
 - `status.json` is the status of the run (`runs RUN --follow --json` in
-  [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (0 while it
-  starts), its state (`starting`, `running`, `ok`, `failed` or `stopped`), each phase that it
+  [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (while it starts,
+  the process that reserved it, then the process that it starts), its state (`starting`, `running`, `ok`, `failed` or `stopped`), each phase that it
   entered with its state, the progress of each layer that it bakes (steps done of the total, and
   for a tiled layer the leaves done and the leaves that bake now), its fetches and steps, the
   releases that it switched the target to, and its error with the code, the fix and the steps
@@ -664,9 +666,9 @@ process that holds the lock `run-<id>` is the process of the run. A run whose st
 - `log` has one line per event, with the time, and the output of the process of a detached run:
   any bytes, which a reader reads as UTF-8 with replacements.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
-  `obc data runs RUN --stop` writes it and sends SIGTERM to the process group of the run, once,
-  and only to a process that the status names. A run that stops frees the lock of its target,
-  keeps what it baked, and ends as `stopped`.
+  `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
+  run, once. A run that stops frees the lock of its target, keeps what it baked, and ends as
+  `stopped`.
 
 `obc data update` runs detached. It makes the review in its own process, refuses as the review
 says, and then starts its own program in a new session, without a terminal, with the arguments of
@@ -3834,7 +3836,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "pid": {
           "default": 0,
-          "description": "The process of the run; 0 while it starts.",
+          "description": "The process of the run: while it starts, the process that reserved it, and then the\nprocess that it starts.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -4386,7 +4388,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "pid": {
           "default": 0,
-          "description": "The process of the run; 0 while it starts.",
+          "description": "The process of the run: while it starts, the process that reserved it, and then the\nprocess that it starts.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

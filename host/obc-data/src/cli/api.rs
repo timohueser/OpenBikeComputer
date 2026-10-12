@@ -94,14 +94,16 @@ impl Code {
 
 /// Finish the run once, with the error of the command, and keep that error.
 pub(super) fn finish_run<T>(run: crate::engine::runs::Run, mut result: Result<T, Error>) -> Result<T, Error> {
-    let id = run.id().to_string();
+    let (id, detached) = (run.id().to_string(), run.detached());
     let error = result.as_ref().err().map(|error| {
         let code = serde_json::to_value(error.code).expect("a code serializes");
         crate::engine::runs::RunError::new(code.as_str().unwrap_or_default(), &error.message, &error.fix)
     });
     if let Err(message) = run.finish(error) {
-        // The status cannot say it; the log of a detached run gets it.
-        eprintln!("obc data: the run could not finish: {message}");
+        // The status cannot say it. A detached run writes no error report, so its log gets it.
+        if detached {
+            eprintln!("obc data: the run could not finish: {message}");
+        }
         match &mut result {
             Err(error) => error.message += &format!("; the run could not finish: {message}"),
             Ok(_) => result = Err(Code::Failed.error(message)),
