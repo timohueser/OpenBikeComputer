@@ -19,11 +19,12 @@ changes by hand in the change that improves the output. A refactor changes neith
 rebuilds nothing. A rebuild that gives the same bytes stops there: the layers that read it keep
 their keys. The [key contract](src:specs/obc-data.md) defines what a key holds.
 
-A layer is stale for three reasons: its version changed, a source has a newer version to use, or
-a layer or source that it reads has other bytes. Status gives one cause per layer, such as
-`format 19 → 20: readers need new data` or `follows device/map`. To see a code change without a
-version change, name the layer: `--only device/terrain` builds it again. The layers that read it
-build again only when its bytes change.
+A layer is stale for exactly three causes: its version changed, a source has a newer version to
+use, or an input changed: a layer or source that it reads has other bytes, or its options changed.
+Status gives one cause per layer, such as `format 19 → 20: readers need new data` or `follows
+device/map`. To see a code change without a version change, name the layer: `obc data build local
+--only device/terrain` builds it again. The layers that read it build again only when its bytes
+change.
 
 ## Shared landmark and peak content
 
