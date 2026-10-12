@@ -201,7 +201,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 | Path | Holds |
 | --- | --- |
-| `layout` | The layout number of the store, `2`, and a line end |
+| `layout` | The layout number of the store, `3`, and a line end |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
@@ -219,7 +219,8 @@ Rules:
   store directory gets `layout`. For a store without it or with `1`, the fix removes `layers/`,
   `releases/`, `runs/`, `operations/`, `settings/`, `regions/`, `code/`, `producers/` and
   `local/`, which hold records of an older format, and writes `layout`. A receipt of layout 1
-  names the input kind `layer`: a clean cannot read it. Snapshot records and objects stay.
+  names the input kind `layer`: a clean cannot read it. Snapshot records and objects stay. For a
+  store with `2`, the fix removes `runs/`, whose runs are event journals.
 - An object is complete. A download goes to `partial/` and moves into `objects/` with one
   rename after the digest check.
 - A record goes to a temporary file in its directory and replaces the old record with one
@@ -647,29 +648,33 @@ step now fails the run.
   them: it continues after the failed step.
 
 The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
-another run has that id. The folder `runs/<id>/` reserves the id. The process that holds the lock
-`run-<id>` is the process of the run. A run whose status says `running` and whose lock is free
-has failed: its process ended before it finished.
+another run has that id. The folder `runs/<id>/` and a status `starting` reserve the id. The
+process that holds the lock `run-<id>` is the process of the run. A run whose status says
+`running` and whose lock is free has failed: its process ended before it finished.
 
 - `status.json` is the status of the run (`runs RUN --follow --json` in
-  [JSON schemas](#json-schemas)): its arguments after `obc data`, its process, its state
-  (`running`, `ok`, `failed` or `stopped`), each phase that it entered with its state, the
-  progress of each layer that it bakes (steps done of the total, and for a tiled layer the leaves
-  done and the leaves that bake now), its fetches and steps, and its error with the code, the fix
-  and the steps whose layers the store keeps. The run replaces it with one rename, at most each
-  second while events come, and at each phase.
-- `log` has one line per event, with the time, and the output of the process of a detached run.
+  [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (0 while it
+  starts), its state (`starting`, `running`, `ok`, `failed` or `stopped`), each phase that it
+  entered with its state, the progress of each layer that it bakes (steps done of the total, and
+  for a tiled layer the leaves done and the leaves that bake now), its fetches and steps, the
+  releases that it switched the target to, and its error with the code, the fix and the steps
+  whose layers the store keeps. The run replaces it with one rename, at most each second while
+  events come, at each phase and at the start of each fetch. A reader takes keys that it does not
+  know, and the default of a missing key.
+- `log` has one line per event, with the time, and the output of the process of a detached run:
+  any bytes, which a reader reads as UTF-8 with replacements.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
-  `obc data runs RUN --stop` writes it and sends SIGTERM to the process group of the run. A run
-  that stops frees the lock of its target, keeps what it baked, and ends as `stopped`.
+  `obc data runs RUN --stop` writes it and sends SIGTERM to the process group of the run, once,
+  and only to a process that the status names. A run that stops frees the lock of its target,
+  keeps what it baked, and ends as `stopped`.
 
 `obc data update` runs detached. It makes the review in its own process, refuses as the review
 says, and then starts its own program in a new session, without a terminal, with the arguments of
 the review (with `--expect ID`) and `OBC_DATA_RUN=<id>`. That process is the run: it takes the
 lock and makes the review again, so an update whose target changed refuses. Closing the terminal
 does not stop it. The first process follows the log of the run until it ends, with the exit
-status of the run; Ctrl-C ends only the following. With `--json`, it writes `{run, review}` and
-ends. A rollback runs in the process that starts it.
+status of the run, and after a failure writes the fix; Ctrl-C ends only the following. With
+`--json`, it writes `{run, review}` and ends. A rollback runs in the process that starts it.
 
 ### Versions
 
@@ -1055,7 +1060,8 @@ Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/ob
   "run": "<run id>",
   "review": "<review id>",
   "phase": "build",
-  "heartbeat": "2026-10-12T08:00:00Z"
+  "heartbeat": "2026-10-12T08:00:00Z",
+  "progress": [{"layer": "device/map", "done": 12, "total": 40}]
 }
 ```
 
@@ -1082,8 +1088,8 @@ it.
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
   so the holder and `unlock` read the clock of one machine.
-- `lock.json` holds no progress of the run: `status.json` of the run gives it, see
-  [Runs](#runs).
+- `progress` gives the steps done of the total of each layer that the run bakes, at the last
+  heartbeat. `status.json` of the run has the detail, see [Runs](#runs).
 
 ### Update
 
@@ -2140,6 +2146,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "phase": {
           "$ref": "#/$defs/Phase"
         },
+        "progress": {
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
         "review": {
           "description": "The id of the review that the run does; `null` until the run has it.",
           "type": [
@@ -2156,7 +2169,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "run",
         "review",
         "phase",
-        "heartbeat"
+        "heartbeat",
+        "progress"
       ],
       "type": "object"
     },
@@ -2293,23 +2307,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "LayerProgress": {
-      "additionalProperties": false,
       "properties": {
         "done": {
+          "default": 0,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
         "layer": {
+          "default": "",
           "type": "string"
         },
         "leaves_baking": {
+          "default": [],
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "leaves_done": {
+          "default": [],
           "description": "The leaves `<i>-<j>` of a tiled layer whose steps finished, and those whose steps bake now.",
           "items": {
             "type": "string"
@@ -2317,6 +2334,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "total": {
+          "default": 0,
           "description": "The steps of the layer that the run bakes, and those that finished.",
           "format": "uint",
           "minimum": 0,
@@ -2587,7 +2605,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "string"
     },
     "PhaseState": {
-      "additionalProperties": false,
       "properties": {
         "phase": {
           "$ref": "#/$defs/Phase"
@@ -2764,27 +2781,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Publication": {
-      "description": "A change of a target.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "kind": {
-              "const": "switched",
-              "type": "string"
-            },
-            "release": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "release"
-          ],
-          "type": "object"
+    "Progress": {
+      "additionalProperties": false,
+      "description": "The steps of a layer that a run bakes, and those that finished.",
+      "properties": {
+        "done": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "total": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         }
-      ]
+      },
+      "required": [
+        "layer",
+        "done",
+        "total"
+      ],
+      "type": "object"
     },
     "Readiness": {
       "oneOf": [
@@ -3180,16 +3200,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "RunError": {
-      "additionalProperties": false,
       "properties": {
         "code": {
-          "description": "The code of the [error](#errors).",
-          "type": "string"
+          "$ref": "#/$defs/Code",
+          "description": "The code of the [error](#errors)."
         },
         "fix": {
           "type": "string"
         },
         "kept": {
+          "default": [],
           "description": "The steps whose layers the run built: the store keeps them, and the next update reuses\nthem.",
           "items": {
             "type": "string"
@@ -3209,10 +3229,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "RunFetch": {
-      "additionalProperties": false,
       "properties": {
         "acquisition": true,
         "bytes": {
+          "default": null,
           "description": "`None` while it runs, and when it failed.",
           "format": "uint64",
           "minimum": 0,
@@ -3222,12 +3242,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "error": {
+          "default": null,
           "type": [
             "string",
             "null"
           ]
         },
         "params": {
+          "default": [],
           "items": {
             "maxItems": 2,
             "minItems": 2,
@@ -3244,18 +3266,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "resolved": {
+          "default": null,
           "type": [
             "string",
             "null"
           ]
         },
         "source": {
+          "default": "",
           "type": "string"
         },
         "version": {
+          "default": "",
           "type": "string"
         },
         "wall_ms": {
+          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3291,9 +3317,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "RunStep": {
-      "additionalProperties": false,
       "properties": {
         "bytes_out": {
+          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3302,6 +3328,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "error": {
+          "default": null,
           "type": [
             "string",
             "null"
@@ -3318,10 +3345,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "layer": {
+          "default": "",
           "description": "Empty until it finishes.",
           "type": "string"
         },
         "peak_rss_bytes": {
+          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3330,6 +3359,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "reads": {
+          "default": [],
           "description": "The inputs that it read.",
           "items": {
             "type": "string"
@@ -3337,9 +3367,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "reused": {
+          "default": false,
           "type": "boolean"
         },
         "step": {
+          "default": "",
           "type": "string"
         },
         "users": {
@@ -3351,6 +3383,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "wall_ms": {
+          "default": null,
           "description": "`null` while it runs, and when it failed.",
           "format": "uint64",
           "minimum": 0,
@@ -3720,6 +3753,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         {
+          "const": "starting",
+          "description": "Reserved: no process took it yet.",
+          "type": "string"
+        },
+        {
           "const": "failed",
           "description": "It failed, or its process ended before it finished.",
           "type": "string"
@@ -3732,10 +3770,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ]
     },
     "Status": {
-      "additionalProperties": false,
-      "description": "`runs/<id>/status.json`: a run as far as it went. The process of the run writes it.",
+      "description": "`runs/<id>/status.json`: a run as far as it went. The process of the run writes it. A reader\ntakes fields that it does not know, and gives a missing one its default, so a status of another\nbuild of `obc data` reads.",
       "properties": {
         "args": {
+          "default": [],
           "description": "The arguments after `obc data` that started the run.",
           "items": {
             "type": "string"
@@ -3743,12 +3781,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "bytes_built": {
+          "default": 0,
           "description": "The size of the layers that it built; a reused layer is not counted.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "bytes_fetched": {
+          "default": 0,
           "description": "The size of the files of its fetches.",
           "format": "uint64",
           "minimum": 0,
@@ -3763,18 +3803,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               "type": "null"
             }
           ],
+          "default": null,
           "description": "`null` unless it failed or stopped."
         },
         "fetches": {
+          "default": [],
           "items": {
             "$ref": "#/$defs/RunFetch"
           },
           "type": "array"
         },
         "id": {
+          "default": "",
           "type": "string"
         },
         "layers": {
+          "default": [],
           "description": "Each layer whose steps it bakes, in the order of the plan.",
           "items": {
             "$ref": "#/$defs/LayerProgress"
@@ -3782,6 +3826,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "phases": {
+          "default": [],
           "description": "Each phase that it entered, in order.",
           "items": {
             "$ref": "#/$defs/PhaseState"
@@ -3789,32 +3834,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "pid": {
-          "description": "The process of the run.",
+          "default": 0,
+          "description": "The process of the run; 0 while it starts.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
-        "published": {
-          "items": {
-            "$ref": "#/$defs/Publication"
-          },
-          "type": "array"
-        },
         "started": {
+          "default": "",
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
           "type": "string"
         },
         "state": {
-          "$ref": "#/$defs/State2"
+          "$ref": "#/$defs/State2",
+          "default": "starting"
         },
         "steps": {
+          "default": [],
           "description": "In the order they started.",
           "items": {
             "$ref": "#/$defs/RunStep"
           },
           "type": "array"
         },
+        "switched": {
+          "default": [],
+          "description": "The releases that the run switched the target to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "wall_ms": {
+          "default": null,
           "description": "`null` until it ends.",
           "format": "uint64",
           "minimum": 0,
@@ -3835,7 +3887,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers",
         "fetches",
         "steps",
-        "published",
+        "switched",
         "bytes_fetched",
         "bytes_built",
         "error"
@@ -4266,6 +4318,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A run as `obc data runs RUN` gives it: its status, with the users and the earlier times of its\nsteps, and the end of its log.",
       "properties": {
         "args": {
+          "default": [],
           "description": "The arguments after `obc data` that started the run.",
           "items": {
             "type": "string"
@@ -4273,12 +4326,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "bytes_built": {
+          "default": 0,
           "description": "The size of the layers that it built; a reused layer is not counted.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "bytes_fetched": {
+          "default": 0,
           "description": "The size of the files of its fetches.",
           "format": "uint64",
           "minimum": 0,
@@ -4293,18 +4348,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               "type": "null"
             }
           ],
+          "default": null,
           "description": "`null` unless it failed or stopped."
         },
         "fetches": {
+          "default": [],
           "items": {
             "$ref": "#/$defs/RunFetch"
           },
           "type": "array"
         },
         "id": {
+          "default": "",
           "type": "string"
         },
         "layers": {
+          "default": [],
           "description": "Each layer whose steps it bakes, in the order of the plan.",
           "items": {
             "$ref": "#/$defs/LayerProgress"
@@ -4319,6 +4378,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "phases": {
+          "default": [],
           "description": "Each phase that it entered, in order.",
           "items": {
             "$ref": "#/$defs/PhaseState"
@@ -4326,32 +4386,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "pid": {
-          "description": "The process of the run.",
+          "default": 0,
+          "description": "The process of the run; 0 while it starts.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
-        "published": {
-          "items": {
-            "$ref": "#/$defs/Publication"
-          },
-          "type": "array"
-        },
         "started": {
+          "default": "",
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
           "type": "string"
         },
         "state": {
-          "$ref": "#/$defs/State2"
+          "$ref": "#/$defs/State2",
+          "default": "starting"
         },
         "steps": {
+          "default": [],
           "description": "In the order they started.",
           "items": {
             "$ref": "#/$defs/RunStep"
           },
           "type": "array"
         },
+        "switched": {
+          "default": [],
+          "description": "The releases that the run switched the target to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "wall_ms": {
+          "default": null,
           "description": "`null` until it ends.",
           "format": "uint64",
           "minimum": 0,
@@ -4372,7 +4439,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers",
         "fetches",
         "steps",
-        "published",
+        "switched",
         "bytes_fetched",
         "bytes_built",
         "error",

@@ -134,32 +134,33 @@ fn show(view: &View, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
+/// Follow run `id` until it ends: its log, or with `json` its status each time it changes. Ctrl-C
+/// ends only the following.
+pub(super) fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
     runs::stop_on_signals();
+    let mut written: Option<Status> = None;
     let ended = runs::follow(store, id, |lines, status| {
         match json {
-            true => println!("{}", serde_json::to_string(status).map_err(|e| e.to_string())?),
+            true if written.as_ref() != Some(status) => {
+                println!("{}", serde_json::to_string(status).map_err(|e| e.to_string())?);
+                written = Some(status.clone());
+            }
+            true => {}
             false => print!("{lines}"),
         }
         Ok(())
     })?;
-    ended_as(id, ended)
-}
-
-/// Follow run `id` in the terminal that started it, until it ends: Ctrl-C ends only the following.
-pub(super) fn follow_in_terminal(store: &Store, id: &str) -> Result<(), Error> {
-    follow(store, id, false)
-}
-
-/// The result of a run that ended as `status`; `None` while it continues.
-fn ended_as(id: &str, status: Option<Status>) -> Result<(), Error> {
-    let Some(status) = status else {
+    let Some(status) = ended else {
         eprintln!("obc data: the run continues; `obc data runs {id} --stop` stops it");
         return Ok(());
     };
     let Some(error) = status.error.filter(|_| status.state != State::Ok) else { return Ok(()) };
-    let code = serde_json::from_value(serde_json::Value::String(error.code)).unwrap_or(Code::RunFailed);
-    let mut failed = Code::error(code, error.message).fix(error.fix);
+    if !json {
+        // The last line of the log gave the error.
+        eprintln!("{}", error.fix);
+        std::process::exit(error.code.exit().into());
+    }
+    let mut failed = error.code.error(error.message).fix(error.fix);
     failed.run = Some(id.into());
     Err(failed)
 }
@@ -189,6 +190,7 @@ fn step_cells(step: &RunStep) -> [String; 4] {
 
 fn mark(state: State) -> &'static str {
     match state {
+        State::Starting => "○",
         State::Running => "◐",
         State::Ok => "✓",
         State::Failed => "✗",

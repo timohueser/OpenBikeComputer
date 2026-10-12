@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
 use super::{build_step, order, prepare, reusable, Built, Receipt, Shape, Step};
+use crate::cli::Code;
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::release::Output;
@@ -67,8 +68,9 @@ pub enum Event {
     Phase {
         phase: Phase,
     },
-    Published {
-        mutation: Publication,
+    /// The switch of the target to `release`.
+    Switched {
+        release: String,
     },
     FetchStarted {
         source: String,
@@ -125,13 +127,6 @@ impl std::fmt::Display for Phase {
     }
 }
 
-/// A change of a target.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Publication {
-    Switched { release: String },
-}
-
 /// The status file and the log file of a run.
 const STATUS: &str = "status.json";
 const LOG: &str = "log";
@@ -160,17 +155,22 @@ pub struct Run {
     _using: Lock,
 }
 
-/// Reserve a run id: its start time `YYYY-MM-DD-HHMMSS`, with a suffix `-N` when another run has
-/// it. The folder `runs/<id>/` reserves it.
-pub fn reserve(store: &Store) -> Result<String, String> {
-    let at = date::timestamp(date::now());
-    let base = format!("{}-{}", &at[..10], at[11..19].replace(':', ""));
+/// Reserve a run of the command `args`, the arguments after `obc data`: its id is its start time
+/// `YYYY-MM-DD-HHMMSS`, with a suffix `-N` when another run has it. The folder `runs/<id>/`
+/// reserves it, and its status says `starting` until a process takes the run.
+pub fn reserve(store: &Store, args: &[String]) -> Result<String, String> {
+    let started = date::timestamp(date::now());
+    let base = format!("{}-{}", &started[..10], started[11..19].replace(':', ""));
     crate::store::durable_directory(&store.root().join("runs"))?;
     for n in 1.. {
         let id = if n == 1 { base.clone() } else { format!("{base}-{n}") };
         let dir = store.run(&id);
         match fs::create_dir(&dir) {
-            Ok(()) => return Ok(id),
+            Ok(()) => {
+                let status = Status { id: id.clone(), args: args.to_vec(), started, ..Status::default() };
+                write_status(&dir, &status)?;
+                return Ok(id);
+            }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("{}: {e}", dir.display())),
         }
@@ -178,41 +178,34 @@ pub fn reserve(store: &Store) -> Result<String, String> {
     unreachable!("the ids never run out")
 }
 
+/// Write `status` into the folder `dir` of its run, with one rename.
+fn write_status(dir: &Path, status: &Status) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(status).map_err(|e| e.to_string())?;
+    let (path, part) = (dir.join(STATUS), dir.join(format!(".{STATUS}.part")));
+    fs::write(&part, bytes).and_then(|()| fs::rename(&part, &path)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 impl Run {
     /// Start a run of the command `args`, the arguments after `obc data`, in this process.
     pub fn create(store: &Store, args: impl IntoIterator<Item = impl Into<String>>) -> Result<Run, String> {
-        let id = reserve(store)?;
-        Run::attach(store, &id, args)
+        let args: Vec<String> = args.into_iter().map(Into::into).collect();
+        let id = reserve(store, &args)?;
+        Run::attach(store, &id)
     }
 
     /// Start the run `id` that [`reserve`] reserved, in this process.
-    pub fn attach(store: &Store, id: &str, args: impl IntoIterator<Item = impl Into<String>>) -> Result<Run, String> {
+    pub fn attach(store: &Store, id: &str) -> Result<Run, String> {
         check_id(id)?;
         let using = store.using()?;
-        let lock = store.try_lock(&format!("run-{id}"))?.ok_or_else(|| format!("run {id} runs in another process"))?;
+        let lock = store.lock(&format!("run-{id}"))?;
         let dir = store.run(id);
-        if dir.join(STATUS).exists() {
+        let reserved = status(store, id)?;
+        if reserved.state != State::Starting {
             return Err(format!("run {id} started before"));
         }
         let log = OpenOptions::new().create(true).append(true).open(dir.join(LOG));
         let log = log.map_err(|e| format!("{}: {e}", dir.join(LOG).display()))?;
-        let args: Vec<String> = args.into_iter().map(Into::into).collect();
-        let status = Status {
-            id: id.into(),
-            args,
-            pid: std::process::id(),
-            state: State::Running,
-            started: date::timestamp(date::now()),
-            wall_ms: None,
-            phases: Vec::new(),
-            layers: Vec::new(),
-            fetches: Vec::new(),
-            steps: Vec::new(),
-            published: Vec::new(),
-            bytes_fetched: 0,
-            bytes_built: 0,
-            error: None,
-        };
+        let status = Status { pid: std::process::id(), state: State::Running, ..reserved };
         let now = Instant::now();
         let mut run = Run {
             dir,
@@ -241,7 +234,8 @@ impl Run {
         let line = self.apply(event);
         self.line(&line)?;
         self.unsaved = true;
-        let now = matches!(event, Event::Phase { .. } | Event::Published { .. });
+        // A fetch can take long: its status shows that it runs.
+        let now = matches!(event, Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. });
         if now || self.saved.elapsed() >= SAVE {
             self.save()?;
         }
@@ -257,18 +251,20 @@ impl Run {
     }
 
     fn save(&mut self) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(&self.status).map_err(|e| e.to_string())?;
-        let (path, part) = (self.dir.join(STATUS), self.dir.join(format!(".{STATUS}.part")));
-        fs::write(&part, bytes)
-            .and_then(|()| fs::rename(&part, &path))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        write_status(&self.dir, &self.status)?;
         (self.saved, self.unsaved) = (Instant::now(), false);
         Ok(())
     }
 
+    /// The status file of the run.
+    pub fn status_file(&self) -> PathBuf {
+        self.dir.join(STATUS)
+    }
+
     fn line(&mut self, text: &str) -> Result<(), String> {
         let at = date::timestamp(date::now());
-        writeln!(self.log, "{} {text}", &at[11..19]).map_err(|e| format!("run {}: {e}", self.status.id))
+        let line = format!("{} {text}\n", &at[11..19]);
+        self.log.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.status.id))
     }
 
     /// Apply `event` to the status, and give its line of the log.
@@ -282,9 +278,10 @@ impl Run {
                 status.phases.push(PhaseState { phase, state: State::Running, started: date::timestamp(date::now()) });
                 format!("phase {phase}")
             }
-            Event::Published { mutation: Publication::Switched { release } } => {
-                status.published.push(Publication::Switched { release: release.clone() });
-                format!("switched to release {release}")
+            Event::Switched { release } => {
+                let line = format!("switched to release {release}");
+                status.switched.push(release);
+                line
             }
             Event::FetchStarted { source, version, params } => {
                 let line = format!("{} fetch started", fetched(&source, &version, &params));
@@ -705,14 +702,16 @@ pub fn check_id(id: &str) -> Result<(), String> {
     Err(format!("`{id}` is not a run id: YYYY-MM-DD-HHMMSS"))
 }
 
-/// `runs/<id>/status.json`: a run as far as it went. The process of the run writes it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// `runs/<id>/status.json`: a run as far as it went. The process of the run writes it. A reader
+/// takes fields that it does not know, and gives a missing one its default, so a status of another
+/// build of `obc data` reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct Status {
     pub id: String,
     /// The arguments after `obc data` that started the run.
     pub args: Vec<String>,
-    /// The process of the run.
+    /// The process of the run; 0 while it starts.
     pub pid: u32,
     pub state: State,
     /// `YYYY-MM-DDTHH:MM:SSZ`
@@ -726,7 +725,8 @@ pub struct Status {
     pub fetches: Vec<RunFetch>,
     /// In the order they started.
     pub steps: Vec<RunStep>,
-    pub published: Vec<Publication>,
+    /// The releases that the run switched the target to.
+    pub switched: Vec<String>,
     /// The size of the files of its fetches.
     pub bytes_fetched: u64,
     /// The size of the layers that it built; a reused layer is not counted.
@@ -735,9 +735,12 @@ pub struct Status {
     pub error: Option<RunError>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
+    /// Reserved: no process took it yet.
+    #[default]
+    Starting,
     Running,
     Ok,
     /// It failed, or its process ended before it finished.
@@ -747,7 +750,6 @@ pub enum State {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct PhaseState {
     pub phase: Phase,
     pub state: State,
@@ -756,7 +758,7 @@ pub struct PhaseState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(default)]
 pub struct LayerProgress {
     pub layer: String,
     /// The steps of the layer that the run bakes, and those that finished.
@@ -768,30 +770,30 @@ pub struct LayerProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct RunError {
     /// The code of the [error](#errors).
-    pub code: String,
+    pub code: Code,
     pub message: String,
     pub fix: String,
     /// The steps whose layers the run built: the store keeps them, and the next update reuses
     /// them.
+    #[serde(default)]
     pub kept: Vec<String>,
 }
 
 impl RunError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, fix: impl Into<String>) -> Self {
-        RunError { code: code.into(), message: message.into(), fix: fix.into(), kept: Vec::new() }
+    pub fn new(code: Code, message: impl Into<String>, fix: impl Into<String>) -> Self {
+        RunError { code, message: message.into(), fix: fix.into(), kept: Vec::new() }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct RunFetch {
     pub source: String,
     pub version: String,
     pub resolved: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
     /// `None` while it runs, and when it failed.
@@ -800,8 +802,8 @@ pub struct RunFetch {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
 pub struct RunStep {
     pub step: String,
     /// Empty until it finishes.
@@ -815,10 +817,8 @@ pub struct RunStep {
     pub reads: Vec<String>,
     pub error: Option<String>,
     /// The steps of this run that read it. `runs RUN` gives it; the status file has none.
-    #[serde(default)]
     pub users: Vec<String>,
     /// Its wall time in the newest earlier run that built it. `runs RUN` gives it.
-    #[serde(default)]
     pub last_wall_ms: Option<u64>,
 }
 
@@ -828,16 +828,7 @@ impl Status {
     fn fetch(&mut self, source: String, version: String, params: Vec<(String, String)>) -> &mut RunFetch {
         let same = |fetch: &RunFetch| (&fetch.source, &fetch.version, &fetch.params) == (&source, &version, &params);
         let at = self.fetches.iter().position(same).unwrap_or_else(|| {
-            self.fetches.push(RunFetch {
-                source,
-                version,
-                params,
-                resolved: None,
-                acquisition: None,
-                bytes: None,
-                wall_ms: None,
-                error: None,
-            });
+            self.fetches.push(RunFetch { source, version, params, ..RunFetch::default() });
             self.fetches.len() - 1
         });
         &mut self.fetches[at]
@@ -845,18 +836,7 @@ impl Status {
 
     fn step(&mut self, name: &str) -> &mut RunStep {
         let at = self.steps.iter().position(|step| step.step == name).unwrap_or_else(|| {
-            self.steps.push(RunStep {
-                step: name.into(),
-                layer: String::new(),
-                reused: false,
-                wall_ms: None,
-                peak_rss_bytes: None,
-                bytes_out: None,
-                reads: Vec::new(),
-                error: None,
-                users: Vec::new(),
-                last_wall_ms: None,
-            });
+            self.steps.push(RunStep { step: name.into(), ..RunStep::default() });
             self.steps.len() - 1
         });
         &mut self.steps[at]
@@ -891,6 +871,16 @@ pub struct View {
 /// How many lines of the log a [`View`] gives.
 const TAIL: usize = 50;
 
+/// The progress of each layer in the status file `file` of a run; none when it cannot be read.
+pub fn progress(file: &Path) -> Vec<crate::lock::Progress> {
+    let status = fs::read(file).ok().and_then(|bytes| serde_json::from_slice::<Status>(&bytes).ok());
+    let layers = status.map(|status| status.layers).unwrap_or_default();
+    layers
+        .into_iter()
+        .map(|layer| crate::lock::Progress { layer: layer.layer, done: layer.done, total: layer.total })
+        .collect()
+}
+
 /// The status of run `id`. A run whose process ended before it finished has failed.
 pub fn status(store: &Store, id: &str) -> Result<Status, String> {
     check_id(id)?;
@@ -903,30 +893,22 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
     let read = fs::read(dir.join(STATUS)).map_err(|e| e.to_string());
     let mut status: Status = match read.and_then(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string())) {
         Ok(status) => status,
+        // Its process is not known (pid 0): `stop` signals no process of it.
         Err(e) => {
             let message = format!("run {id}: {STATUS} cannot be read: {e}; its log tells why");
+            let fix = "Read its log: `obc data runs RUN`.";
             return Ok(Status {
                 id: id.into(),
-                args: Vec::new(),
-                pid: 0,
                 state: if running { State::Running } else { State::Failed },
-                started: String::new(),
-                wall_ms: None,
-                phases: Vec::new(),
-                layers: Vec::new(),
-                fetches: Vec::new(),
-                steps: Vec::new(),
-                published: Vec::new(),
-                bytes_fetched: 0,
-                bytes_built: 0,
-                error: (!running).then(|| RunError::new("run_failed", message, "Read its log: `obc data runs RUN`.")),
+                error: (!running).then(|| RunError::new(Code::RunFailed, message, fix)),
+                ..Status::default()
             });
         }
     };
     if status.state == State::Running && !running {
         status.state = State::Failed;
         let message = "its process ended before it finished";
-        status.error.get_or_insert_with(|| RunError::new("run_failed", message, "Run its command again."));
+        status.error.get_or_insert_with(|| RunError::new(Code::RunFailed, message, "Run its command again."));
     }
     Ok(status)
 }
@@ -964,10 +946,23 @@ pub fn view(store: &Store, id: &str) -> Result<View, String> {
             .rev()
             .find_map(|run| run.steps.iter().find(|earlier| earlier.step == step.step && !earlier.reused)?.wall_ms);
     }
-    let log = fs::read_to_string(store.run(id).join(LOG)).unwrap_or_default();
-    let lines: Vec<&str> = log.lines().collect();
-    let log = lines[lines.len().saturating_sub(TAIL)..].iter().map(|line| line.to_string()).collect();
-    Ok(View { status, log })
+    Ok(View { status, log: tail(&store.run(id).join(LOG)) })
+}
+
+/// The last [`TAIL`] lines of the log at `path`, from its last bytes only. The output of a step
+/// can be any bytes.
+fn tail(path: &Path) -> Vec<String> {
+    let Ok(mut file) = File::open(path) else { return Vec::new() };
+    let length = file.seek(SeekFrom::End(0)).unwrap_or(0);
+    let from = length.saturating_sub(TAIL as u64 * 400);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(from)).and_then(|_| file.read_to_end(&mut bytes)).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // A read from the middle of the file starts in the middle of a line.
+    let lines: Vec<&str> = text.lines().skip(usize::from(from > 0)).collect();
+    lines[lines.len().saturating_sub(TAIL)..].iter().map(|line| line.to_string()).collect()
 }
 
 /// Every run, oldest first.
@@ -1001,14 +996,14 @@ pub fn follow(
     let mut last: Option<Status> = None;
     loop {
         let running = store.is_locked(&format!("run-{id}"))?;
-        let mut text = String::new();
-        log.read_to_string(&mut text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut bytes = Vec::new();
+        log.read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         // A part of a line waits for its end.
-        let complete = text.rfind('\n').map_or(0, |end| end + 1);
-        log.seek(SeekFrom::Current(complete as i64 - text.len() as i64)).map_err(|e| e.to_string())?;
+        let complete = bytes.iter().rposition(|byte| *byte == b'\n').map_or(0, |end| end + 1);
+        log.seek(SeekFrom::Current(complete as i64 - bytes.len() as i64)).map_err(|e| e.to_string())?;
         let status = status(store, id)?;
         if complete > 0 || last.as_ref() != Some(&status) {
-            each(&text[..complete], &status)?;
+            each(&String::from_utf8_lossy(&bytes[..complete]), &status)?;
         }
         if !running {
             return Ok(Some(status));
@@ -1028,7 +1023,7 @@ pub const RUN: &str = "OBC_DATA_RUN";
 /// session without a terminal, so closing the terminal does not stop it. It writes its output to
 /// its log. Gives the id of the run once its process wrote its status.
 pub fn detach(store: &Store, args: &[String]) -> Result<String, String> {
-    let id = reserve(store)?;
+    let id = reserve(store, args)?;
     let dir = store.run(&id);
     let log = OpenOptions::new().create(true).append(true).open(dir.join(LOG));
     let log = log.map_err(|e| format!("{}: {e}", dir.join(LOG).display()))?;
@@ -1044,29 +1039,47 @@ pub fn detach(store: &Store, args: &[String]) -> Result<String, String> {
             _ => Ok(()),
         });
     }
-    let mut child = command.spawn().map_err(|e| format!("run {id}: {e}"))?;
+    let failed = |message: String| {
+        let fix = format!("Read its log: {}", dir.join(LOG).display());
+        let status = Status {
+            state: State::Failed,
+            error: Some(RunError::new(Code::RunFailed, &message, fix)),
+            ..status(store, &id)?
+        };
+        write_status(&dir, &status)?;
+        Err(message)
+    };
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => return failed(format!("run {id} did not start: {e}")),
+    };
     loop {
-        if dir.join(STATUS).exists() {
+        if status(store, &id)?.state != State::Starting {
             return Ok(id);
         }
-        if let Some(status) = child.try_wait().map_err(|e| format!("run {id}: {e}"))? {
-            return Err(format!("run {id} did not start ({status}): {}", dir.join(LOG).display()));
+        if let Some(exit) = child.try_wait().map_err(|e| format!("run {id}: {e}"))? {
+            return failed(format!("run {id} did not start ({exit})"));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// Stop run `id`: write its stop file, and send SIGTERM to the process group of its process. It
-/// frees what it holds, and keeps what it baked.
+/// Stop run `id`: write its stop file, and send SIGTERM to the process group of its process, once.
+/// It frees what it holds, and keeps what it baked. A run whose process is not known, such as one
+/// that starts or whose status cannot be read, gets only the stop file.
 pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
     let status = status(store, id)?;
-    if status.state != State::Running {
+    if !matches!(status.state, State::Starting | State::Running) {
         return Err(format!("run {id} does not run"));
     }
     let path = store.run(id).join(STOP);
+    // A second signal would end the process at once, and leave its lock held.
+    if path.exists() {
+        return Ok(status);
+    }
     fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
     #[cfg(unix)]
-    if let Ok(pid) = libc::pid_t::try_from(status.pid) {
+    if let Ok(pid @ 1..) = libc::pid_t::try_from(status.pid) {
         // SAFETY: kill sends a signal. The lock of the run says that its process still runs. A
         // detached run leads its process group; a run in a terminal may not.
         unsafe {
@@ -1201,10 +1214,22 @@ mod tests {
         std::fs::write(fixture.store.run(&id).join(STOP), "").unwrap();
         let stopped = run.check_stop(&fixture.store).unwrap_err();
         assert!(stopped.contains("--stop"), "{stopped}");
-        run.finish(Some(RunError::new("run_failed", stopped, "Run it again."))).unwrap();
+        run.finish(Some(RunError::new(Code::RunFailed, stopped, "Run it again."))).unwrap();
         let status = status(&fixture.store, &id).unwrap();
         assert_eq!(status.state, State::Stopped);
         assert!(stop(&fixture.store, &id).unwrap_err().contains("does not run"));
+    }
+
+    #[test]
+    fn a_reserved_run_shows_as_starting_and_a_stop_signals_no_process_of_it() {
+        let fixture = fixture("runs-reserved");
+        let id = reserve(&fixture.store, &["update".into(), "local".into()]).unwrap();
+        assert_eq!(list(&fixture.store).unwrap()[0].state, State::Starting);
+        // Its process is not known: only the stop file stops it.
+        stop(&fixture.store, &id).unwrap();
+        let run = Run::attach(&fixture.store, &id).unwrap();
+        assert_eq!(status(&fixture.store, &id).unwrap().args, ["update", "local"]);
+        assert!(run.check_stop(&fixture.store).is_err());
     }
 
     #[cfg(unix)]

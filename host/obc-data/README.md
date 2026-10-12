@@ -64,6 +64,9 @@ time: the run holds `lock.json` of the target, and another run refuses to start.
 or stops frees the lock. A crash or an out-of-memory kill keeps it:
 `obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
 
+On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
+`loginctl enable-linger USER` is set for the user.
+
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.
 

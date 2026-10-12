@@ -43,6 +43,18 @@ pub struct Holder {
     pub phase: Phase,
     /// The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.
     pub heartbeat: String,
+    /// Each layer that the run bakes, at the last heartbeat. The status of the run on its machine
+    /// has the detail.
+    pub progress: Vec<Progress>,
+}
+
+/// The steps of a layer that a run bakes, and those that finished.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Progress {
+    pub layer: String,
+    pub done: usize,
+    pub total: usize,
 }
 
 /// The lock of a target that this run holds. Dropped, it is free again.
@@ -57,7 +69,7 @@ pub struct Held {
 #[derive(Debug)]
 pub enum Refused {
     /// Another run holds it.
-    Held(Holder),
+    Held(Box<Holder>),
     Failed(String),
 }
 
@@ -88,7 +100,7 @@ impl Held {
         let condition = match read(target).map_err(Refused::Failed)? {
             None => Condition::Absent,
             Some((LockFile::Free, tag)) => Condition::Match(tag),
-            Some((LockFile::Held(holder), _)) => return Err(Refused::Held(holder)),
+            Some((LockFile::Held(holder), _)) => return Err(Refused::Held(Box::new(holder))),
         };
         let holder = Holder {
             machine: crate::machine(),
@@ -96,6 +108,7 @@ impl Held {
             review: None,
             phase: Phase::Prepare,
             heartbeat: crate::date::timestamp(now),
+            progress: Vec::new(),
         };
         match target.put(LOCK, &bytes(&LockFile::Held(holder.clone())), &condition).map_err(Refused::Failed)? {
             Some(tag) => Ok(Held {
@@ -105,7 +118,7 @@ impl Held {
                 released: false,
             }),
             None => match read(target).map_err(Refused::Failed)? {
-                Some((LockFile::Held(holder), _)) => Err(Refused::Held(holder)),
+                Some((LockFile::Held(holder), _)) => Err(Refused::Held(Box::new(holder))),
                 _ => Err(Refused::Failed(format!("{LOCK} changed while this run took it"))),
             },
         }
@@ -127,6 +140,11 @@ impl Held {
             None => self.lost.store(true, Ordering::Relaxed),
         }
         Ok(!self.lost())
+    }
+
+    /// Give the next heartbeat `progress`.
+    pub fn progress(&self, progress: Vec<Progress>) {
+        self.state.lock().expect("a heartbeat does not panic").0.progress = progress;
     }
 
     /// Whether another run took the lock.

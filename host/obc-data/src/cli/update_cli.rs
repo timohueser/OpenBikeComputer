@@ -18,7 +18,7 @@ use super::{freshness, listing, print_json, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
 use crate::engine::plan::{outputs, Fetch, Kept};
-use crate::engine::runs::{self, Context, Event, Limits, Phase, Publication, Run};
+use crate::engine::runs::{self, Context, Event, Limits, Phase, Run};
 use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
@@ -140,12 +140,17 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
         // A program that a step starts is not this run.
         std::env::remove_var(runs::RUN);
         runs::stop_on_signals();
-        let mut run = Run::attach(&store, &id, std::env::args().skip(1))?;
+        let mut run = Run::attach(&store, &id)?;
         let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
         return match super::api::finish_run(run, result) {
             Ok(updated) => print(&updated),
-            // The status and the log of the run have the error.
-            Err(error) => std::process::exit(error.code.exit().into()),
+            Err(error) => {
+                // The status has the error of a run that finished; else the log gets it.
+                if runs::status(&store, &id).map_or(true, |status| status.error.is_none()) {
+                    eprintln!("obc data: {}\n{}", error.message, error.fix);
+                }
+                std::process::exit(error.code.exit().into())
+            }
         };
     }
     let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
@@ -159,7 +164,7 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
         return print_json(&Started { run, review: prepared.review.id });
     }
     eprintln!("obc data: run {run} of review {}", prepared.review.id);
-    super::runs_cli::follow_in_terminal(&store, &run)
+    super::runs_cli::follow(&store, &run, false)
 }
 
 /// What `obc data update --json` writes: the run that it started.
@@ -252,11 +257,12 @@ pub(super) fn locked<T>(
             .error(format!("target `{name}`: {e}"))
             .fix(format!("Correct {} of the target, or move it aside: a target without it is free.", lock::LOCK)),
     })?;
-    let (stop, (done, wait)) = (run.stopper(), mpsc::channel::<()>());
+    let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
     let result = std::thread::scope(|scope| {
         let held = &held;
         scope.spawn(move || {
             while let Err(RecvTimeoutError::Timeout) = wait.recv_timeout(Duration::from_secs(lock::BEAT)) {
+                held.progress(runs::progress(&file));
                 // A write that fails is tried again at the next beat; a lock that another run took
                 // stops this run.
                 if let Ok(false) = held.beat(None, None, crate::date::now()) {
@@ -580,7 +586,7 @@ fn apply(
     if !release::switch(target, base.as_ref(), &id)? {
         return Err(changed());
     }
-    run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
+    run.record(&Event::Switched { release: id.clone() })?;
     run.sync()?;
     // The switch is done: a lock that is lost now stops only the collection.
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
