@@ -11,8 +11,7 @@ use crate::r2::{
     legacy as legacy_key, owned as release_key, refuse_older_publish, Bucket, Credentials, Object, Put, Upload,
     REMOVAL_LOG,
 };
-use crate::release::{self, Release};
-use crate::sources::Registry;
+use crate::release;
 use crate::store::{sha256_hex, Store};
 use crate::target::Target;
 
@@ -22,6 +21,13 @@ use super::{cells, print_json, table, Code, Error};
 /// The folders of the legacy pipelines that `r2 legacy` lists, sorted. Without `--prefix`, it lists
 /// the first two: `reference/v1` holds terrain until terrain-reference versions replace it.
 const LEGACY: [&str; 3] = ["cell-catalog", "planner", "reference/v1"];
+/// The index of `reference/v1/`: its `sources` names the key of each country that it holds.
+const INDEX: &str = "reference/v1/index.json";
+
+#[derive(serde::Deserialize)]
+struct Index {
+    sources: BTreeMap<String, serde::de::IgnoredAny>,
+}
 
 #[derive(Args)]
 pub struct R2 {
@@ -141,7 +147,7 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
         }
         let root = super::root()?;
         let target = crate::target::find(&root, &args.target, &Store::open()?).map_err(|e| Code::Usage.error(e))?;
-        return legacy(&super::registry(&root)?, &target, args, json);
+        return legacy(&target, args, json);
     }
     let failed = |e| Code::R2Failed.error(e);
     let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })
@@ -237,8 +243,8 @@ fn delete(
     Ok(())
 }
 
-fn legacy(registry: &Registry, target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
-    let listed = unused(registry, (&args.target, target), args.prefix.as_deref())?;
+fn legacy(target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
+    let listed = unused((&args.target, target), args.prefix.as_deref())?;
     if !args.delete {
         if json {
             return print_json(&listed);
@@ -246,7 +252,8 @@ fn legacy(registry: &Registry, target: &Target, args: LegacyArgs, json: bool) ->
         print!("{}", summary(&listed));
         return Ok(());
     }
-    super::update_cli::expect(&format!("r2 legacy {}", args.target), &listed.digest, args.expect.as_deref())
+    let what = format!("r2 legacy {}", args.target);
+    super::update_cli::expect(&what, &listed.digest, Some(args.expect.as_deref().unwrap_or_default()))
         .map_err(|e| e.fix("List the keys again: run the same command without `--delete`."))?;
     let bucket = match target {
         Target::Dir(dir) => Bucket::local(dir),
@@ -266,20 +273,25 @@ fn legacy(registry: &Registry, target: &Target, args: LegacyArgs, json: bool) ->
 /// The keys under `cell-catalog/` and `planner/`, or under `prefix`, that `obc data` does not
 /// write; `Release::check` keeps every other key of a release out of these folders. See the spec
 /// for when it refuses.
-fn unused(registry: &Registry, (name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legacy, Error> {
-    let Some((serving, _)) = release::serving(target)? else {
+fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legacy, Error> {
+    if release::serving(target)?.is_none() {
         return Err(Code::Blocked
             .error(format!("target `{name}` serves no release; nothing is legacy before the cutover"))
             .fix(format!("Run `obc data update {name}` first.")));
-    };
+    }
     if prefix == Some(LEGACY[2]) {
-        let read = Release::read(target, &serving.serving.id)?.versions();
-        let unread = |id: &&str| id.starts_with("terrain-reference/") && !read.keys().any(|(source, _)| source == id);
-        let missing: Vec<&str> = registry.sources.iter().map(|source| source.id.as_str()).filter(unread).collect();
+        let index: Option<Index> = target.get(INDEX)?.and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let index = index.ok_or_else(|| Code::Blocked.error(format!("{INDEX} is missing or does not parse")))?;
+        let mut missing = Vec::new();
+        for key in index.sources.into_keys() {
+            if crate::prepared::versions(target, &format!("terrain-reference/{key}"))?.is_empty() {
+                missing.push(key);
+            }
+        }
         if !missing.is_empty() {
             return Err(Code::Blocked
-                .error(format!("`{name}` serves no version of {} terrain-reference sources", missing.len()))
-                .fix(format!("reference/v1/ stays until a release serves {}.", missing.join(", "))));
+                .error(format!("`{name}` has no terrain-reference version of {} sources of {INDEX}", missing.len()))
+                .fix(format!("Prepare `terrain-reference/<key>` for each key first: {}.", missing.join(", "))));
         }
     }
     let mut folders: BTreeMap<String, Vec<LegacyKey>> = BTreeMap::new();
@@ -335,7 +347,6 @@ mod tests {
 
     /// Keys of the legacy pipelines that `obc data` does not write.
     const OLD: [&str; 3] = ["cell-catalog/cells/a.obcm", "planner/objects/a", "reference/v1/a.tif"];
-    const NO_SOURCES: Registry = Registry { sources: Vec::new() };
 
     /// A dir target that serves a release with a rollback, and has `planner/next.json` and [`OLD`].
     fn served(name: &str) -> (crate::store::tests::Scratch, Target) {
@@ -344,7 +355,7 @@ mod tests {
         for key in OLD.into_iter().chain([release::NEXT]) {
             target.put(key, b"{}", &crate::target::Condition::Any).unwrap();
         }
-        assert!(unused(&NO_SOURCES, ("local", &target), None).is_err(), "no cutover");
+        assert_eq!(unused(("local", &target), None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
         for device in ["device a", "device b"] {
             let (id, _) = crate::serve::tests::release_at(&target, device, device.as_bytes(), 1, "https://api.test");
             assert!(release::switch(&target, release::serving(&target).unwrap().as_ref(), &id).unwrap());
@@ -357,12 +368,19 @@ mod tests {
         let (_scratch, target) = served("r2-legacy-list");
         let serving = release::serving(&target).unwrap().unwrap().0;
         assert!(serving.rollback.is_some() && target.get(release::POINTERS[1]).unwrap().is_some());
-        let keys = |prefix| unused(&NO_SOURCES, ("local", &target), prefix).unwrap().folders.into_values().flatten();
-        assert_eq!(keys(None).map(|k| k.key).collect::<Vec<_>>(), OLD[..2]);
-        assert_eq!(keys(Some("reference/v1")).map(|k| k.key).collect::<Vec<_>>(), [OLD[2]]);
-        let checked_in = Registry::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
-        let refused = unused(&checked_in, ("local", &target), Some("reference/v1")).err().unwrap();
-        assert!(refused.fix.contains("terrain-reference/"), "{}", refused.fix);
+        let keys =
+            |prefix| unused(("local", &target), prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key));
+        assert_eq!(keys(None).unwrap().collect::<Vec<_>>(), OLD[..2]);
+
+        // `reference/v1` goes only when each source of its index has a terrain-reference version.
+        let reference = || keys(Some("reference/v1")).map(|keys| keys.collect::<Vec<_>>());
+        assert_eq!(reference().err().map(|e| e.code), Some(Code::Blocked), "no index.json");
+        let put = |key, bytes: &str| target.put(key, bytes.as_bytes(), &crate::target::Condition::Any).unwrap();
+        put(INDEX, r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
+        assert!(reference().unwrap_err().fix.ends_with(": ch."));
+        let version = r#"[{"version": "2026-10-01", "manifest_sha256": "", "format": 1, "bytes": 1, "time": ""}]"#;
+        put("sources/terrain-reference/ch/versions.json", version);
+        assert_eq!(reference().unwrap(), [OLD[2], INDEX]);
     }
 
     #[test]
@@ -377,15 +395,16 @@ mod tests {
             yes: true,
         };
         let before = target.list().unwrap();
-        let refused = legacy(&NO_SOURCES, &target, args(&"0".repeat(64)), true).unwrap_err();
+        let refused = legacy(&target, args(&"0".repeat(64)), true).unwrap_err();
         assert!(refused.code == Code::Usage && target.list().unwrap() == before);
         let next = (vec![release::NEXT.to_string()], None, true);
-        assert!(delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).is_err());
-        let digest = unused(&NO_SOURCES, ("local", &target), Some("planner")).unwrap().digest;
-        legacy(&NO_SOURCES, &target, args(&digest), true).unwrap();
+        let refused = delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).unwrap_err();
+        assert!(refused.message.starts_with("the bucket has `release.json`"), "{}", refused.message);
+        let digest = unused(("local", &target), Some("planner")).unwrap().digest;
+        legacy(&target, args(&digest), true).unwrap();
         let after = target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let gone: Vec<_> = before.into_iter().map(|listed| listed.key).filter(|key| !after.contains(key)).collect();
         assert_eq!(gone, [OLD[1]]);
-        legacy(&NO_SOURCES, &target, args(&sha256_hex(b"")), true).unwrap();
+        legacy(&target, args(&sha256_hex(b"")), true).unwrap();
     }
 }

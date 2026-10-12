@@ -1716,12 +1716,12 @@ Rules:
   under `cell-catalog/`, `planner/` or `reference/` is refused without `--legacy`, and then nothing
   is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
 - `legacy` lists each key under `cell-catalog/` and `planner/`, or under the one `--prefix`, that
-  `obc data` does not write. It refuses while the target serves no release, and refuses
-  `reference/v1` while the serving release reads no version of a `terrain-reference/*` source.
-  The digest is the SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With
-  `--delete`, it lists again, refuses when the digest is not `--expect`, and deletes as
-  `delete --legacy` with the counts, the bytes and the digest as its plan. With no key, it
-  deletes nothing and exits 0.
+  `obc data` does not write. It refuses while the target serves no release. It refuses
+  `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the target
+  has no version of `terrain-reference/<key>` for a key of its `sources`. The digest is the
+  SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
+  refuses when the digest is not `--expect`, and deletes as `delete --legacy` with the counts, the
+  bytes and the digest as its plan. With no key, it deletes nothing and exits 0.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
