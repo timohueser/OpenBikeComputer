@@ -317,10 +317,11 @@ r2 *args:
 # `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
 # bakes a layer again. `obc data sources` lists every source with licence, R2 copy, and policy,
 # versions and state per target; `obc data areas` lists regions and Geofabrik areas;
-# `obc data fetch` puts a source version in the store; `obc data clean` cleans the store;
-# `obc data serve` serves `local` to the apps and follows its updates. Every command takes
-# `--json`. Read commands change nothing.
-[doc("Data targets, sources and the store. Args: update TARGET [--region ID | --box W,S,E,N] [--add L] [--remove L] [--refresh SOURCE=DAYS|manual] [--only L,…] | sources | areas [QUERY] | fetch SOURCE[@VERSION] | runs [RUN] | serve [TARGET] | clean [--apply [--yes]] [--json]")]
+# `obc data fetch` puts a source version in the store; `obc data clean` cleans the store.
+# `obc data serve` serves `local` to the apps and follows its updates. `obc data setup` shows
+# what this machine can do; `obc data ui` serves its page, and `obc data open MACHINE` opens the
+# page of another machine. Every command takes `--json`. Read commands change nothing.
+[doc("Data targets, sources and the store. Args: update TARGET [--region ID | --box W,S,E,N] [--add L] [--remove L] [--refresh SOURCE=DAYS|manual] [--only L,…] | sources | areas [QUERY] | fetch SOURCE[@VERSION] | runs [RUN] | serve [TARGET] | clean [--apply [--yes]] | setup | ui | open MACHINE [--json]")]
 [group('maps')]
 data *args:
     #!/usr/bin/env bash
