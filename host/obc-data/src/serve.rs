@@ -177,8 +177,8 @@ pub trait Services {
 pub trait Load {
     type Services: Services;
     /// Give the store what the services of `served` read, on a thread of its own: a download can
-    /// take long, and the follower keeps polling.
-    fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>>;
+    /// take long, and the follower keeps polling. An error when the system gives no thread.
+    fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String>;
     /// Install the files of `served` from the store and start its services. The follower waits for
     /// it.
     fn start(&mut self, served: &Served) -> Result<Self::Services, String>;
@@ -244,11 +244,13 @@ impl<S: Services> Follower<S> {
     /// releases nor the current one need.
     pub fn poll(&mut self, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
         for served in self.wanted.serving.iter().chain(&self.wanted.next) {
+            let mut fetch = |backoff| match load.fetch(served) {
+                Ok(worker) => State::Fetching { worker, backoff },
+                Err(e) => failed(&served.planner, e, now(), backoff),
+            };
             let state = match self.planners.remove(&served.planner) {
-                None => State::Fetching { worker: load.fetch(served), backoff: BACKOFF },
-                Some(State::Failed { retry, backoff, .. }) if retry <= now() => {
-                    State::Fetching { worker: load.fetch(served), backoff }
-                }
+                None => fetch(BACKOFF),
+                Some(State::Failed { retry, backoff, .. }) if retry <= now() => fetch(backoff),
                 Some(State::Fetching { worker, backoff }) if worker.is_finished() => {
                     let fetched = worker.join().unwrap_or_else(|_| Err("the download stopped".into()));
                     match fetched.and_then(|()| load.start(served)) {
@@ -479,11 +481,11 @@ mod tests {
     impl Load for Fakes<'_> {
         type Services = Fake;
 
-        fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>> {
+        fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String> {
             let held = self.log.borrow_mut().held.remove(&served.planner);
             let real =
                 self.install.clone().map(|(store, programs)| (store, programs, self.reader.clone(), served.clone()));
-            std::thread::spawn(move || {
+            Ok(std::thread::spawn(move || {
                 if let Some(held) = held {
                     let _ = held.recv();
                 }
@@ -493,7 +495,7 @@ mod tests {
                     }
                     None => Ok(()),
                 }
-            })
+            }))
         }
 
         fn start(&mut self, served: &Served) -> Result<Fake, String> {
@@ -830,9 +832,16 @@ mod tests {
         published.case.step(false);
         assert!(matches!(published.case.planner(&ps), Some(http::Planner::Failed(_))), "and a service that stops");
 
+        // The publish gives up during the download: its release never starts.
+        published.case.target.remove(NEXT).unwrap();
+        published.follow();
         published.case.release(&pn, held);
-        published.answers(&pn);
-        assert_eq!(ready(&published, &pn).0, 200, "the next release loads once its objects are in the store");
+        while !published.case.follower.abandoned.iter().all(JoinHandle::is_finished) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        published.case.step(false);
+        assert!(!published.case.log.borrow().started.contains(&pn), "a download that no release needs starts nothing");
+        assert_eq!(ready(&published, &pn).0, 404);
     }
 
     #[test]

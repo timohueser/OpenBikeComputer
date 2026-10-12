@@ -1257,8 +1257,8 @@ When one of the two files changes:
    services do not answer within 120 seconds after they start. Its other services stop, and its
    API answers 404. Clients keep the current release, also when the failed planner release is the
    one of the current release. A planner release that failed starts again after 60 seconds, after
-   each later failure in a row twice the wait before, up to 30 minutes, and at once when one of
-   the two files changes.
+   each later failure in a row twice the wait before, up to 30 minutes. It starts again at once
+   only when the two files name other releases.
 4. The services of a planner release that neither the serving release, the rollback, the release
    of `planner/next.json` nor the current release names stop.
 
@@ -1270,9 +1270,10 @@ The services of a planner release read its files under `routing/`, `search/` and
 `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
 manifest names lists them. Each file comes from an object of the store, which downloads an object
 that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
-object, or the decoded bytes of a `gzip` object under a temporary name. When serve stops, it ends
-each download and waits for it. No write opens an
-existing file. Each file must have the SHA-256 and the size that the planner release gives.
+object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
+existing file. Each file must have the SHA-256 and the size that the planner release gives. When
+serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
+grace; a wait before a retry, a connection or a hash does not see the stop.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
 touch it. For a `dir` target, download bundles name the origin of the machine on its network when
 serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
@@ -1280,7 +1281,8 @@ serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_ori
 
 For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
 the routing service is the `planner-service` program beside the program of serve, and serve
-needs no tile handler.
+needs no tile handler. When the thread that follows the target ends without a stop, such as on a
+panic, serve ends with a `failed` error, so that a supervisor starts it again.
 
 ### Overview
 

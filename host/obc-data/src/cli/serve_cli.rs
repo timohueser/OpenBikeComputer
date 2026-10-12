@@ -100,10 +100,11 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     };
     let follower = {
         let (target, shared, stop) = (target.clone(), shared.clone(), stop.clone());
-        std::thread::spawn(move || follow(&target, loader, &shared, &stop))
+        let follower = std::thread::Builder::new().spawn(move || follow(&target, loader, &shared, &stop));
+        follower.map_err(|e| format!("cannot start the follower: {e}"))?
     };
     let router = http::router(shared, files);
-    let served = runtime.block_on(async {
+    let ended = runtime.block_on(async {
         let signalled = Arc::new(tokio::sync::Notify::new());
         let shutdown = {
             let signalled = signalled.clone();
@@ -113,9 +114,17 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
             }
         };
         let server = axum::serve(listener, router).with_graceful_shutdown(shutdown);
+        // A follower that ended, such as on a panic, runs no service: serve ends, and its supervisor
+        // starts it again.
+        let follows = async {
+            while !follower.is_finished() {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
         tokio::select! {
-            served = server.into_future() => served,
+            served = server.into_future() => served.map_err(|e| Code::Failed.error(format!("port {PORT}: {e}"))),
             () = async { signalled.notified().await; tokio::time::sleep(GRACE).await } => Ok(()),
+            () = follows => Err(Code::Failed.error("the follower of the target stopped").fix("Read the log above, then start `obc data serve` again.")),
         }
     });
     runtime.shutdown_background();
@@ -132,7 +141,7 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     }
     services::stop(&mut tile_server);
     let _ = std::fs::remove_dir_all(&work);
-    served.map_err(|e| Code::Failed.error(format!("port {PORT}: {e}")))
+    ended
 }
 
 /// The command that opens each app on the target, with absolute paths.
@@ -191,10 +200,11 @@ struct Loader {
 impl Load for Loader {
     type Services = Processes;
 
-    fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>> {
+    fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String> {
         let (programs, store) = (self.programs.clone(), Store::at(self.store.clone()));
         let (target, served) = (self.target.clone(), served.clone());
-        std::thread::spawn(move || services::fetch(&programs, &store, &target, &served))
+        let worker = std::thread::Builder::new().spawn(move || services::fetch(&programs, &store, &target, &served));
+        worker.map_err(|e| format!("cannot start a download: {e}"))
     }
 
     fn start(&mut self, served: &Served) -> Result<Processes, String> {
