@@ -2,7 +2,7 @@
     "store": { "path": "/Users/rider/.cache/openbikecomputer/store", "used_bytes": 0, "free_bytes": 442381631488 },
     "jobs": [
         { "name": "Bake device layers here", "state": "ready", "reason": "All tools are present." },
-        { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java. Install them, then check again." },
+        { "name": "Bake planner layers here", "state": "missing", "reason": "Needs GEOS and Java 21+. Install them, then check again." },
         { "name": "Publish to prod", "state": "missing", "reason": "Needs an R2 key. Ask the owner for the key, then put it in tools/obc.local." },
         { "name": "Fetch sources that need an account", "state": "optional", "reason": "Optional: 6 of 6 credentials are not set. Credentials names the sources of each." }
     ],
@@ -12,8 +12,8 @@
         { "name": "osmium-tool", "needed_for": "cutting OSM into cells", "state": "ready", "detail": "osmium version 1.17.0" },
         { "name": "GEOS", "needed_for": "planner layers", "state": "missing", "detail": "obc doctor --install" },
         { "name": "uv", "needed_for": "Python bakers", "state": "ready", "detail": "uv 0.8.17 (Homebrew 2025-09-10)" },
-        { "name": "Java", "needed_for": "planner/basemap", "state": "missing", "detail": "brew install openjdk@21" },
-        { "name": "Node", "needed_for": "this page, the web apps", "state": "ready", "detail": "v24.21.0" },
+        { "name": "Java 21+", "needed_for": "planner/basemap", "state": "missing", "detail": "brew install openjdk@21" },
+        { "name": "Node 22+", "needed_for": "this page, the web apps", "state": "ready", "detail": "v24.21.0" },
         { "name": "rclone", "needed_for": "publish to prod", "state": "ready", "detail": "rclone v1.71.0" }
     ],
     "credentials": [

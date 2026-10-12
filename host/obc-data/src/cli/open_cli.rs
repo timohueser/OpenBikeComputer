@@ -4,7 +4,7 @@
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{Code, Error};
 
@@ -18,21 +18,15 @@ pub fn open(root: &Path, machine: &str) -> Result<(), Error> {
             .error(format!("{LOCAL} is in use, perhaps by the tunnel of another `obc data open`"))
             .fix("Stop that command, then run this one again."));
     }
-    let args = ["-N", "-o", "ExitOnForwardFailure=yes", "-L", "8701:localhost:8700", host.as_str()];
+    let args = ["-N", "-o", "ExitOnForwardFailure=yes", "-L", "8701:localhost:8700", "--", host.as_str()];
     eprintln!("obc data: ssh {}", args.join(" "));
     let mut ssh = Command::new("ssh").args(args).spawn().map_err(|e| {
         Code::Failed.error(format!("ssh does not start: {e}")).fix("Install OpenSSH, then run the command again.")
     })?;
-    let start = Instant::now();
+    // ssh may first ask for a host key, a password or a second factor: wait as long as it runs.
     while TcpStream::connect(LOCAL).is_err() {
         if let Some(status) = ssh.try_wait().map_err(|e| e.to_string())? {
             return Err(tunnel_failed(machine, &host, status));
-        }
-        if start.elapsed() > Duration::from_secs(30) {
-            let _ = ssh.kill();
-            return Err(Code::Failed
-                .error(format!("the tunnel to `{host}` did not open within 30 s"))
-                .fix(format!("Check that `ssh {host}` works, then run the command again.")));
         }
         std::thread::sleep(Duration::from_millis(200));
     }

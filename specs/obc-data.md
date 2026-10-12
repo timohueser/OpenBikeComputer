@@ -1066,7 +1066,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
 | `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
-| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command, each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
+| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
 
@@ -1090,8 +1090,8 @@ addition:
   `obc data --json ARG…` in the repository root, with no standard input, and answers
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
-  The page runs only `obc data` without a command, `update`, `sources`, `areas`, `clean`,
-  `setup`, `runs` without `--follow`, and `serve --detach`.
+  A command runs to its end, and its output is read, also when the request ends first. The page
+  runs only `obc data` without a command and `obc data setup`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
@@ -1490,7 +1490,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "type": "object"
     },
-    "Credential2": {
+    "CredentialState": {
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
@@ -2209,6 +2210,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Job": {
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
@@ -2334,6 +2336,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Machine": {
+      "additionalProperties": false,
       "description": "The machine that runs the command.",
       "properties": {
         "colour": {
@@ -2974,12 +2977,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Setup": {
+      "additionalProperties": false,
       "description": "What `setup` writes.",
       "properties": {
         "credentials": {
           "description": "Only whether each credential is set; never its value.",
           "items": {
-            "$ref": "#/$defs/Credential2"
+            "$ref": "#/$defs/CredentialState"
           },
           "type": "array"
         },
@@ -3192,6 +3196,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ]
     },
     "StoreUse": {
+      "additionalProperties": false,
       "properties": {
         "free_bytes": {
           "description": "`null` where the system does not tell.",
@@ -3390,9 +3395,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Tool": {
+      "additionalProperties": false,
       "properties": {
         "detail": {
-          "description": "The version that the tool gives, or the command that installs it.",
+          "description": "The version that the tool gives, or the command that installs it; both when the version is\ntoo old.",
           "type": "string"
         },
         "name": {

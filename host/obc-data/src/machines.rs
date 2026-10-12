@@ -33,16 +33,22 @@ pub fn load(root: &Path) -> Result<BTreeMap<String, Machine>, String> {
 }
 
 fn parse(text: &str) -> Result<BTreeMap<String, Machine>, String> {
-    let machines: BTreeMap<String, Machine> = toml::from_str(text).map_err(|e| e.to_string())?;
-    for (name, machine) in &machines {
-        check_colour(&machine.colour).map_err(|e| format!("machine `{name}`: {e}"))?;
-    }
-    Ok(machines)
+    toml::from_str(text).map_err(|e| e.to_string())
 }
 
-/// The header colour of the machine `name`.
-pub fn colour(root: &Path, name: &str) -> Result<String, String> {
-    Ok(load(root)?.remove(name).map_or_else(|| LAPTOP.to_string(), |machine| machine.colour))
+/// The header colour of the machine `name`. A file or a colour that is not valid gives the
+/// charcoal of a laptop and a warning, so that it never stops a command.
+pub fn colour(root: &Path, name: &str) -> String {
+    let colour = load(root).and_then(|mut machines| match machines.remove(name) {
+        Some(machine) => check_colour(&machine.colour)
+            .map(|()| machine.colour)
+            .map_err(|e| format!("data/machines.toml: machine `{name}`: {e}")),
+        None => Ok(LAPTOP.to_string()),
+    });
+    colour.unwrap_or_else(|e| {
+        eprintln!("obc data: {e}; the page header is charcoal");
+        LAPTOP.to_string()
+    })
 }
 
 /// The SSH host of the machine `name`.
@@ -78,11 +84,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_header_colour_is_dark_enough_for_white_text_and_not_the_loading_grey() {
-        let machine = |colour: &str| parse(&format!("[bake]\ncolour = \"{colour}\"\nssh = \"root@bake\"\n"));
-        let bake = machine("#4a2a6a").unwrap().remove("bake").unwrap();
+    fn the_committed_machines_have_header_colours_for_white_text() {
+        for (name, machine) in parse(include_str!("../../../data/machines.toml")).unwrap() {
+            check_colour(&machine.colour).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        let bake = parse("[bake]\ncolour = \"#4a2a6a\"\nssh = \"root@bake\"\n").unwrap().remove("bake").unwrap();
         assert_eq!(bake, Machine { colour: "#4a2a6a".into(), ssh: Some("root@bake".into()) });
-        assert!(machine(LAPTOP).is_ok());
+        assert!(check_colour(LAPTOP).is_ok());
         for (colour, refusal) in [
             ("#ffd9a8", "too light"),
             ("#777777", "too light"),
@@ -90,7 +98,7 @@ mod tests {
             ("purple", "not #rrggbb"),
             ("#4a2a6", "not #rrggbb"),
         ] {
-            let error = machine(colour).unwrap_err();
+            let error = check_colour(colour).unwrap_err();
             assert!(error.contains(refusal), "{colour}: {error}");
         }
     }

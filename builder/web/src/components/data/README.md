@@ -14,9 +14,9 @@ obc data ui              # build the page, then serve it until Ctrl-C
 obc data open MACHINE    # the page of MACHINE, through an SSH tunnel at http://localhost:8701/
 ```
 
-`obc data ui` needs Node and `npm ci` in `builder/web`. It refuses a request from another site
-and a command that runs until it is stopped. `data/machines.toml` sets the header colour and the
-SSH host of each machine.
+`obc data ui` needs Node and `npm ci` in `builder/web`. It refuses a request from another site,
+and it runs only the commands that the page uses. A command runs to its end also when the page
+stops waiting for it. `data/machines.toml` sets the header colour and the SSH host of each machine.
 
 A systemd unit for `obc data ui` starts `tools/obc data ui`, so that `tools/obc.local` loads, and
 sets `KillMode=process`, so that a restart of the page does not stop the runs that it started.

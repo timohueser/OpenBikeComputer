@@ -142,38 +142,43 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
     if let Some(error) = refused(&ask.args) {
         return (StatusCode::FORBIDDEN, Json(Answer::failed(2, error))).into_response();
     }
-    Json(answer(&page.exe, &page.root, &ask.args).await).into_response()
+    Json(answer(page.exe.clone(), page.root.clone(), ask.args).await).into_response()
 }
 
-/// Why the page does not run `obc data ARGS`: a command that runs until it is stopped, opens a
-/// tunnel or a browser, or is plumbing belongs in a terminal. Each command that the page runs is
-/// named here.
+/// Why the page does not run `obc data ARGS`: it runs only the commands that its screens use, and
+/// each is named here.
 fn refused(args: &[String]) -> Option<Error> {
-    let has = |flag: &str| args.iter().any(|arg| arg == flag);
-    let allowed = match args.first().map(String::as_str) {
-        None | Some("update" | "sources" | "areas" | "clean" | "setup") => true,
-        Some("runs") => !has("--follow"),
-        Some("serve") => has("--detach"),
-        Some(_) => false,
-    };
+    let allowed = matches!(args.first().map(String::as_str), None | Some("setup"));
     let command = ["obc", "data"].into_iter().chain(args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
     (!allowed).then(|| Code::Usage.error(format!("the page does not run `{command}`")).fix("Run it in a terminal."))
 }
 
-/// Run `exe --json ARGS` in `root`. Its standard error goes to the log of the page, and a child
-/// that outlives the request keeps running.
-async fn answer(exe: &Path, root: &Path, args: &[String]) -> Answer {
-    let output = tokio::process::Command::new(exe)
-        .arg("--json")
-        .args(args)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
-        .output()
-        .await;
+/// Run `exe --json ARGS` in `root`; its standard error goes to the log of the page. The command
+/// runs in a task of its own, so a request that ends first (a page that stops waiting, a reload,
+/// a closed tunnel) neither stops the command nor closes the pipe that it writes to.
+async fn answer(exe: PathBuf, root: PathBuf, args: Vec<String>) -> Answer {
+    let command = tokio::spawn(async move {
+        let child = tokio::process::Command::new(&exe)
+            .arg("--json")
+            .args(&args)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn();
+        let output = match child {
+            Ok(child) => child.wait_with_output().await,
+            Err(e) => Err(e),
+        };
+        (output.map_err(|e| format!("{}: {e}", exe.display())), args)
+    });
+    let (output, args) = match command.await {
+        Ok(done) => done,
+        Err(e) => return Answer::failed(1, Code::Failed.error(format!("the command stopped: {e}"))),
+    };
     let output = match output {
         Ok(output) => output,
-        Err(e) => return Answer::failed(1, Code::Failed.error(format!("{} does not start: {e}", exe.display()))),
+        Err(e) => return Answer::failed(1, Code::Failed.error(e)),
     };
     let exit = output.status.code().unwrap_or(1);
     match serde_json::from_slice(&output.stdout) {
@@ -276,34 +281,68 @@ mod tests {
         }
     }
 
+    /// A stand-in for this binary in a folder of its own.
+    #[cfg(unix)]
+    fn stand_in(script: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("obc-data");
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, exe)
+    }
+
+    fn words(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_page_runs_an_allowed_command_and_answers_its_json_and_exit_status() {
-        use std::os::unix::fs::PermissionsExt;
-        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
-        for refused_args in
-            [&["ui"][..], &["open", "bake"], &["runs", "r1", "--follow"], &["r2", "list"], &["serve"], &["--help"]]
-        {
-            assert!(refused(&args(refused_args)).is_some(), "{refused_args:?}");
+        for args in [
+            &["ui"][..],
+            &["open", "bake"],
+            &["runs", "r1", "--follow"],
+            &["r2", "list"],
+            &["update", "local"],
+            &["--help"],
+        ] {
+            assert!(refused(&words(args)).is_some(), "{args:?}");
         }
-        for allowed in [&[][..], &["setup"], &["update", "local", "--yes"], &["runs", "r1"], &["serve", "--detach"]] {
-            assert!(refused(&args(allowed)).is_none(), "{allowed:?}");
+        for args in [&[][..], &["setup"]] {
+            assert!(refused(&words(args)).is_none(), "{args:?}");
         }
 
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("obc-data");
-        std::fs::write(&exe, "#!/bin/sh\nprintf '{\"args\":\"%s\",\"in\":\"%s\"}' \"$*\" \"$(pwd)\"\nexit 3\n")
-            .unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (dir, exe) = stand_in("#!/bin/sh\nprintf '{\"args\":\"%s\",\"in\":\"%s\"}' \"$*\" \"$(pwd)\"\nexit 3\n");
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let answer = runtime.block_on(answer(&exe, dir.path(), &args(&["setup"])));
+        let answer = runtime.block_on(answer(exe.clone(), dir.path().into(), words(&["setup"])));
         let root = dir.path().canonicalize().unwrap();
         assert_eq!(answer.exit, 3);
         assert_eq!(answer.output, json!({ "args": "--json setup", "in": root.to_str().unwrap() }));
 
         std::fs::write(&exe, "#!/bin/sh\necho 'not json'\n").unwrap();
-        let answer = runtime.block_on(super::answer(&exe, dir.path(), &args(&["setup"])));
+        let answer = runtime.block_on(super::answer(exe, dir.path().into(), words(&["setup"])));
         assert_eq!(answer.exit, 1);
         assert_eq!(answer.output["error"]["message"], "`obc data setup` wrote no JSON");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_finishes_and_writes_all_its_output_after_its_request_ends() {
+        // More output than a pipe holds: the command stops at its first failed write unless the
+        // page still reads its standard output.
+        let (dir, exe) = stand_in("#!/bin/sh\nset -e\nsleep 0.3\nhead -c 300000 /dev/zero | tr '\\0' x\ntouch done\n");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let request = answer(exe, dir.path().into(), words(&["setup"]));
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(100), request).await.is_err());
+            for _ in 0..100 {
+                if dir.path().join("done").exists() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("the command did not finish after its request ended");
+        });
     }
 }

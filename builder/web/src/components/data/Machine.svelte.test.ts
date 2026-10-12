@@ -29,13 +29,13 @@ it("runs `obc data setup` when it opens, shows what the machine can do, and chec
         expect(text()).toContain("This machine: laptop");
         expect(text()).toContain("macOS · 10 cores · 32 GB RAM · checked at");
         expect(state("Bake planner layers here")).toBe("missing");
-        expect(text()).toContain("Needs GEOS and Java.");
+        expect(text()).toContain("Needs GEOS and Java 21+.");
         expect(state("Rust")).toBe("ready");
         expect(text()).toContain("brew install openjdk@21");
         expect(state("R2 key (OBC_R2_*)")).toBe("missing");
         expect(state("OBC_REFERENCE_SE_USER and OBC_REFERENCE_SE_PASSWORD")).toBe("optional");
         expect(text()).toContain("/Users/rider/.cache/openbikecomputer/store · 0 B used · 412 GB free");
-        expect(text()).toContain("Install GEOS and Java (the commands are under Tools)");
+        expect(text()).toContain("Install GEOS and Java 21+ (the commands are under Tools)");
 
         document.querySelector("button")?.click();
         await vi.waitFor(() => expect(state("GEOS")).toBe("ready"));
