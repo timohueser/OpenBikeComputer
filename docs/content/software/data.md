@@ -20,8 +20,8 @@ rebuilds nothing. A rebuild that gives the same bytes stops there: the layers th
 their keys. The [key contract](src:specs/obc-data.md) defines what a key holds.
 
 A layer is stale for exactly three causes. Its version changed. A source has a newer version to
-use. Or an input changed, such as a layer or a source that it reads, or its options. Status gives
-one cause per layer, such as `format 19 → 20: readers need new data` or `follows device/map`. To
+use. Or an input changed, such as a layer or a source that it reads, or its options. `obc data`
+gives one cause per layer, such as `format 19 → 20: readers need new data` or `follows device/map`. To
 see a code change without a version change, name the layer:
 `obc data update local --only device/terrain` builds it again. The layers that read it build again
 only when its bytes change.
