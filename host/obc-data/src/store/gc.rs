@@ -1,7 +1,7 @@
 //! The collection of `obc data clean`: delete the objects and the snapshot records that no release
 //! of a target or fixture reaches. Receipts stay: they are history.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,8 @@ pub struct Roots {
     /// Each SHA-256 that an output of a release, a fixture or a planner region recipe names, with
     /// which of them.
     pub sha256s: BTreeMap<String, &'static str>,
+    /// `(source, version)` that `obc data source refresh` took: the next update reads it.
+    pub refreshed: BTreeSet<(String, String)>,
 }
 
 impl Roots {
@@ -92,8 +94,8 @@ pub struct Kept {
     pub entry: String,
     /// The size of its files.
     pub bytes: u64,
-    /// `served by TARGET, …`, `newest of the source`, `newest of a request`, `inputs kept`,
-    /// `release`, `fixture` or `planner recipe`.
+    /// `served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs
+    /// kept`, `release`, `fixture` or `planner recipe`.
     pub because: Vec<String>,
 }
 
@@ -157,7 +159,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let served = roots.served.get(&key).map(|targets| format!("served by {}", targets.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> = [served, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let refreshed = roots.refreshed.contains(&key).then(|| "refreshed".into());
+        let because: Vec<String> =
+            [served, newest_of_source, newest_of_request, refreshed].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
@@ -584,17 +588,27 @@ mod tests {
         let store = Store::at(scratch.0.join("store"));
         snapshot(&store, "land", "2026-10-01", "2026-10-01", &[("land.zip", b"land live")]);
         snapshot(&store, "land", "2026-10-02", "2026-10-02", &[("land.zip", b"land new")]);
+        // A digest of an earlier day that a refresh took.
+        snapshot(&store, "earth", "a", "2026-09-01", &[("earth.zip", b"earth a")]);
+        snapshot(&store, "earth", "b", "2026-10-01", &[("earth.zip", b"earth b")]);
         // A layer file whose receipt the store does not have.
         object(&store, b"layer");
         let mut roots = Roots::default();
         roots.add_release("local", &crate::release::tests::reading(b"layer", "land", "2026-10-01"));
+        roots.refreshed.insert(("earth".into(), "a".into()));
 
         let plan = plan(&store, &roots).unwrap();
         assert!(plan.snapshots.is_empty() && plan.objects.is_empty(), "{plan:?}");
         let kept: Vec<String> = plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(" · "))).collect();
         assert_eq!(
             kept,
-            ["land@2026-10-01: served by local", "land@2026-10-02: newest of the source", "1 object: release"]
+            [
+                "earth@a: refreshed",
+                "earth@b: newest of the source",
+                "land@2026-10-01: served by local",
+                "land@2026-10-02: newest of the source",
+                "1 object: release"
+            ]
         );
     }
 }

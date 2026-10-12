@@ -207,7 +207,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
-| `refreshed/<source>` | The version that `obc data source refresh` took last, and a line end |
+| `refreshed/<source>.json` | `{source, from, to}`: the version that `obc data source refresh` took last (`to`), and the versions that the targets served then (`from`) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `locks/` | One lock file per key and per run |
@@ -263,7 +263,8 @@ it runs in, and the store:
   newest record of each source, by the latest `retrieved` of its files, is also reached: a plan
   step list reads it when nothing else names a version (see [Versions](#versions)), and a source whose
   upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
-  latest `retrieved` of its files, such as the extract of each Geofabrik area.
+  latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
+  that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
   planner region recipe in `tools/planner-regions/`.
@@ -274,7 +275,7 @@ it runs in, and the store:
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
-and `newest of a request`. Then one entry for the reached layers of each step (`inputs kept`).
+`newest of a request` and `refreshed`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
 `release`, `fixture` or `planner recipe`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
@@ -564,7 +565,7 @@ ends.
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -593,9 +594,10 @@ fetch. An `id` names a group only in the plan that it comes from.
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
 | `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, and `again`: whether the step builds also when the store has its key |
 
-The estimate of a build is `wall_ms`, `bytes_out` and `peak_rss_bytes` of the newest receipt, by
-`built`, of the same step with the same options. Without one, it is the newest receipt of the
-step, or `null` when the store has none. The `bytes` of a fetch is the size of its files in the
+The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
+client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
+options. Without one, it is the `cost` of the output of the step in the serving release, else the
+newest receipt of the step, or `null`. The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
@@ -684,7 +686,9 @@ A `date` or a `release` version is newer by its parts: a run of digits by its nu
 run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
 and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
 its `start`, so that a change of `data/sources.toml` moves it; else the version that
-`obc data source refresh` took last on this machine; else the serving version; else the one
+`obc data source refresh` took last on this machine, when the target serves a version that the
+targets served then, or none: a refresh never moves a target that another machine moved since;
+else the serving version; else the one
 version in the store, when the store has exactly one. So an update after an update that changed
 nothing reads the same versions.
 
@@ -1055,29 +1059,35 @@ An update that stops keeps what it baked in the store, and the next update reuse
 ### Review
 
 The review of an update says what it does before it changes a target. `--dry-run` writes the
-review and creates no run. It fetches only what the step lists need to know their versions.
+review and creates no run. To list the steps, an update fetches what the step lists need, which
+can be bulk data. It fetches into the store only, and it never writes to the target.
 
 - `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
   [State of a layer](#state-of-a-layer), `named` by `--only`, or `off`), the steps that bake, the
-  grid leaves of a tiled layer, the steps of the release that no step makes now, the readers and
-  a format change. A layer that only other layers read is not listed.
+  grid leaves (the last part `<i>-<j>` of the names of the steps of a tiled layer), the steps of
+  the release that no step makes now, the readers and a format change. With `--only`, a layer
+  that bakes because it reads a named layer follows that layer. A layer that only other layers
+  read is not listed.
 - `sources`: each fetch that a baked step reads at another version than the serving release.
 - `kept`, `fetches` and `bakes`: the outputs that the release keeps by reference, and what this
   machine fetches and bakes. A step whose output is in the store already does not bake.
-- `cost`: each bake has the estimate of [Plan](#plan), else the `cost` of the step in the serving
-  release. The bakes without either are listed.
-- `machine`: the memory of the machine and the free bytes of the disk of the store. A bake whose
-  estimated peak is more than the memory, or fetches and bakes that leave less than 4 GiB free on
-  the disk, refuse the update.
+- `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
+  options, else of the `cost` of the step in the serving release, else of the newest receipt of the
+  step. `upload_bytes` is the size of the files of the bakes that a client reads. `unknown` lists
+  each bake without an estimate or without a peak, and each fetch whose size is not known.
+- `machine`: the memory of the machine and the free bytes of the disk of the store after the
+  listing. A bake whose estimated peak is more than the memory, or fetches and bakes that leave
+  less than 4 GiB free on the disk, refuse the update.
 - `after`: the release that becomes the rollback, and the rollback of now, which the collection
-  drops, with the keys that the serving release does not name.
-- `argv`: the command that starts the update of this review.
+  drops, with the keys that the serving release does not name: what it deletes at most.
+- `args`: the arguments after `obc data` that start the update of this review.
 
-The id is the first 12 hex digits of the SHA-256 of a JSON object: the tag of `release.json`
-(`null` while the target serves nothing), the settings, `layers`, the steps that bake, and the
-source, version and params of each snapshot that they read. It holds no cost, no time, and nothing
-of the store of the machine, so two machines that read the same target give the same id.
-`--expect ID` starts the update only when its review has this id.
+The id is the first 12 hex digits of the SHA-256 of the canonical JSON, as for the release id, of
+an object: the name of the target, the tag of `release.json` (`null` while the target serves
+nothing), the settings, `layers`, the steps that bake, and the source, version and params of each
+snapshot that they read. It holds no cost and no time. Two machines that read the same target give
+the same id when their stores resolve the same versions and files. `--expect ID` starts the update
+only when its review, computed after the listing, has this id.
 
 A format change is a step whose output in the serving release has another `format` than its layer
 now. Its readers need new data: old readers keep what they have and get no new data until they
@@ -1131,7 +1141,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
-| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a source and writes it to `refreshed/<source>` of the store: the next update of each target on this machine reads it, as [Versions](#versions) says. Refuses a source that needs a `NAME=VALUE`, and a `commit` or `digest` source with a `start` |
+| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
@@ -1821,6 +1831,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "client_bytes": {
+          "description": "The size of the files that a client reads: what a target gets.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "peak_rss_bytes": {
           "format": "uint64",
           "minimum": 0,
@@ -1838,6 +1854,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "wall_ms",
         "bytes_out",
+        "client_bytes",
         "peak_rss_bytes"
       ],
       "type": "object"
@@ -2453,7 +2470,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`release`, `fixture` or `planner recipe`.",
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release`, `fixture` or `planner recipe`.",
           "items": {
             "type": "string"
           },
@@ -2525,7 +2542,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "leaves": {
-          "description": "The grid leaves of a tiled layer whose steps bake, as `<i>-<j>`.",
+          "description": "The grid leaves whose steps bake, as `<i>-<j>`: the last part of the name of each step of a\ntiled layer that has that form.",
           "items": {
             "type": "string"
           },
@@ -3130,6 +3147,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "from": {
+          "description": "The versions that the targets served: a target that serves one of them, or none, moves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "source": {
           "type": "string"
         },
@@ -3140,6 +3164,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "source",
+        "from",
         "version",
         "bytes"
       ],
@@ -3294,8 +3319,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "after": {
           "$ref": "#/$defs/AfterUpdate"
         },
-        "argv": {
-          "description": "The command that starts the update of this review.",
+        "args": {
+          "description": "The arguments after `obc data` that start the update of this review.",
           "items": {
             "type": "string"
           },
@@ -3326,7 +3351,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "id": {
-          "description": "The first 12 hex digits of the SHA-256 of the decisions: the tag of `release.json`, the\nsettings, `layers`, every step that bakes and the source version that each of them reads.",
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the decisions: the target,\nthe tag of `release.json`, the settings, `layers`, every step that bakes and the source version\nthat each of them reads. Two machines that read the same target give the same id when their\nstores resolve the same versions and files.",
           "type": "string"
         },
         "kept": {
@@ -3372,7 +3397,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cost",
         "machine",
         "after",
-        "argv"
+        "args"
       ],
       "type": "object"
     },
@@ -3388,17 +3413,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "store_bytes": {
-          "description": "What the fetches and the bakes write into the store; the upload is the client files of it.",
+          "description": "What the fetches and the bakes write into the store.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "unknown": {
-          "description": "The bakes without an estimate: the store has no receipt of the step, and the serving release\nno cost.",
+          "description": "What the figures lack: a bake without an estimate or without a peak, and a fetch whose size\nis not known.",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "upload_bytes": {
+          "description": "What goes to the target: the files of the bakes that a client reads.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "wall_ms": {
           "description": "The estimated times of the bakes, added as if one ran after another.",
@@ -3411,6 +3442,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "wall_ms",
         "peak_rss_bytes",
         "store_bytes",
+        "upload_bytes",
         "unknown"
       ],
       "type": "object"
