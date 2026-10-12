@@ -17,6 +17,14 @@ export interface Holder {
     heartbeat: string;
     /** Each layer that the run bakes, at the last heartbeat. */
     progress: { layer: string; done: number; total: number }[];
+    /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
+    stale: boolean;
+}
+
+/** The runs of other machines, from the locks of the targets that they change. */
+export function elsewhere(status: Status | null): { target: string; holder: Holder }[] {
+    const here = status?.machine.name;
+    return (status?.targets ?? []).flatMap(({ target, lock }) => (lock && lock.machine !== here ? [{ target, holder: lock }] : []));
 }
 
 export const PHASES = ["prepare", "download", "build", "verify", "upload", "switch", "collect"] as const;
@@ -25,6 +33,8 @@ export type Phase = (typeof PHASES)[number];
 /** `starting` is a run that no process took yet. `failed` is also a run whose process ended before
  *  it finished. */
 export type RunState = "starting" | "running" | "ok" | "failed" | "stopped";
+
+export const MARK: Record<RunState, string> = { starting: "◌", running: "◐", ok: "✓", failed: "✗", stopped: "■" };
 
 /** A run as `obc data runs --json` lists it, newest first. */
 export interface RunSummary {

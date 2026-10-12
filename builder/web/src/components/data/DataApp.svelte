@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { runAt, SCREENS, screenAt } from "../../lib/data/screens";
-    import { free, hardware, title, type RunList, type Status } from "../../lib/data/shapes";
+    import { elsewhere, free, hardware, title, type RunList, type Status } from "../../lib/data/shapes";
     import Failure from "./Failure.svelte";
     import Later from "./Later.svelte";
     import Machine from "./Machine.svelte";
@@ -12,9 +12,7 @@
     const runs = new CliQuery<RunList>(["runs"]);
     const machine = $derived(status.output?.machine ?? null);
     const here = $derived(runs.output?.runs.filter((run) => run.state === "running" || run.state === "starting") ?? []);
-    const elsewhere = $derived(
-        (status.output?.targets ?? []).flatMap(({ target, lock }) => (lock && lock.machine !== machine?.name ? [{ target, lock }] : [])),
-    );
+    const others = $derived(elsewhere(status.output));
     let hash = $state(location.hash);
     const screen = $derived(screenAt(hash));
 
@@ -43,8 +41,8 @@
         </span>
         <span>
             Elsewhere:
-            {#each elsewhere as { target, lock }, i (lock.run)}{i ? ", " : ""}<a href="#/runs/{lock.run}"
-                    >{lock.machine} · {target} · {lock.phase}</a
+            {#each others as { target, holder }, i (holder.run)}{i ? ", " : ""}<a href="#/runs/{holder.run}"
+                    >{holder.machine} · {target} · {holder.phase}</a
                 >{:else}none{/each}
         </span>
     {/if}
@@ -84,10 +82,72 @@
     :global(*) {
         box-sizing: border-box;
     }
-    :global(h1),
-    :global(h2) {
+    /* What every screen shares. */
+    main :global(:is(h1, h2)) {
         margin: 0;
         font-weight: 600;
+        overflow-wrap: anywhere;
+    }
+    main :global(h1) {
+        font-size: 28px;
+        line-height: 36px;
+    }
+    main :global(h2) {
+        font-size: 18px;
+        line-height: 26px;
+    }
+    main :global(p) {
+        margin: 0;
+    }
+    main :global(code) {
+        font-family: var(--mono);
+        font-size: 13px;
+        overflow-wrap: anywhere;
+    }
+    main :global(.title) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 16px;
+    }
+    main :global(.grow) {
+        flex-grow: 1;
+    }
+    main :global(.card) {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+        padding: 20px;
+        background: var(--panel);
+        border: 1px solid var(--parchment-3);
+        border-radius: 12px;
+        overflow-wrap: anywhere;
+    }
+    main :global(button) {
+        min-height: 44px;
+        padding: 0 20px;
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid var(--ink);
+        border-radius: 8px;
+        font: 600 15px var(--sans);
+    }
+    main :global(button:disabled) {
+        opacity: 0.6;
+        cursor: progress;
+    }
+    main :global(.soft) {
+        color: var(--ink-soft);
+    }
+    main :global(:is(.ok, .ready)) {
+        color: var(--ready);
+    }
+    main :global(:is(.starting, .running)) {
+        color: var(--running);
+    }
+    main :global(:is(.failed, .stopped, .missing)) {
+        color: var(--missing);
     }
     header {
         display: flex;
@@ -107,7 +167,7 @@
     .facts {
         color: rgb(255 255 255 / 0.85);
     }
-    .grow {
+    header .grow {
         flex-grow: 1;
     }
     header a {

@@ -46,29 +46,12 @@
         gap: 8px 12px;
         min-width: 0;
     }
-    button {
-        min-height: 44px;
-        padding: 0 20px;
-        background: var(--panel);
-        color: var(--ink);
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        font-size: 15px;
-        font-weight: 600;
-    }
-    button:disabled {
-        opacity: 0.6;
-        cursor: progress;
-    }
     code {
         min-width: 0;
         padding: 8px 10px;
         background: var(--panel);
         border: 1px solid var(--line-strong);
         border-radius: 6px;
-        font-family: var(--mono);
-        font-size: 13px;
-        overflow-wrap: anywhere;
     }
     .action > :global(.failure) {
         flex-basis: 100%;

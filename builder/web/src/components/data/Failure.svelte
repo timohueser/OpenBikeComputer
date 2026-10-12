@@ -29,15 +29,8 @@
         border-radius: 12px;
         overflow-wrap: anywhere;
     }
-    p {
-        margin: 0;
-    }
     .message {
         font-weight: 600;
         color: var(--missing);
-    }
-    code {
-        font-family: var(--mono);
-        font-size: 13px;
     }
 </style>

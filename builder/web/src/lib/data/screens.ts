@@ -20,5 +20,5 @@ export function screenAt(hash: string): Screen {
 /** The run of a hash such as `#/runs/ID`, or null on the list of runs. */
 export function runAt(hash: string): string | null {
     const [first, id] = hash.replace(/^#\/?/, "").split("/");
-    return first === "runs" && id ? decodeURIComponent(id) : null;
+    return first === "runs" && id ? id : null;
 }

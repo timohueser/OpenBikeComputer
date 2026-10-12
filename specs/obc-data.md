@@ -2414,6 +2414,54 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Lock": {
+      "description": "The run that holds the lock of a target, as its `lock.json` says.",
+      "properties": {
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "progress": {
+          "default": [],
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the\nrun likely ended without freeing the lock.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat",
+        "progress",
+        "stale"
+      ],
+      "type": "object"
+    },
     "Machine": {
       "additionalProperties": false,
       "description": "The machine that runs the command.",
@@ -4063,7 +4111,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Holder"
+              "$ref": "#/$defs/Lock"
             },
             {
               "type": "null"

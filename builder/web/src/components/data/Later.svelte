@@ -9,17 +9,3 @@
 
 <h1>{screen.label}</h1>
 <p>Not built yet. Use a terminal: <code>{command(TERMINAL[screen.id])}</code></p>
-
-<style>
-    h1 {
-        font-size: 28px;
-        line-height: 36px;
-    }
-    p {
-        margin: 0;
-    }
-    code {
-        font-family: var(--mono);
-        font-size: 13px;
-    }
-</style>
