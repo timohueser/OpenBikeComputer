@@ -149,7 +149,6 @@ The bakes read this directory:
 | Reader | Regions |
 | --- | --- |
 | `obc-bake` (device maps) | Single-area definitions whose saved id equals the source path. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
-| Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
 | `obc data`, product `planner` | A region, its `countries` and its `time_zone` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
@@ -280,8 +279,8 @@ it runs in, and the store:
   latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
   that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
-  planner region recipe in `tools/planner-regions/`.
+  SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml` or a JSON or
+  TOML file below `fixtures/sources/`.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of the files that it names (`files`) of a reached record of its source, and a step input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -291,7 +290,7 @@ The plan lists what the collection deletes and what stays. What stays is one ent
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
 `newest of a request` and `refreshed`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
-`release`, `fixture` or `planner recipe`. The size of
+`release` or `fixture`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
 takes the store lock alone, or refuses to start while a run or a fetch holds it. A run holds it
 until it finishes. A collection deletes each snapshot record and each object that is not reached,
@@ -2542,7 +2541,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release`, `fixture` or `planner recipe`.",
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release` or `fixture`.",
           "items": {
             "type": "string"
           },

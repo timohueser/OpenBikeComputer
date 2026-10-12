@@ -330,15 +330,6 @@ data *args:
     cd "$OBC_ROOT"
     _run cargo run --release --quiet --locked -p obc-data-steps -- "$@"
 
-[doc("Prepare and verify regional planner data. See the planner README.")]
-[group('maps')]
-planner *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    cd "$OBC_ROOT"
-    _run python3 "$OBC_TOOLS/planner.py" "$@"
-
 # Bake the published cell catalog. `obc bake` processes every Geofabrik region in data/regions/;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree

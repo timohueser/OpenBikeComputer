@@ -839,7 +839,7 @@ mod tests {
         }
         let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
-        // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
+        // The terrain covers the region with a margin of 30 km for the sun layer.
         assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
         assert_eq!(
             tiles(&terrain.inputs[0]),
@@ -869,16 +869,16 @@ mod tests {
         );
         assert_eq!(basemap.options["bounds"], routing.options["bounds"]);
         assert!(basemap.options["attribution"].as_str().unwrap().contains("Natural Earth"));
-        // About Baden-Württemberg, and the box of the old planner recipe.
-        let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
+        // Pinned bounds: about Baden-Württemberg, and Baden-Württemberg with Switzerland.
+        let pinned = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
         assert!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0)
             .into_iter()
-            .zip(old)
+            .zip(pinned)
             .all(|(got, expected)| (got - expected).abs() < 1e-12));
-        let old = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
+        let pinned = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
         assert!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0)
             .into_iter()
-            .zip(old)
+            .zip(pinned)
             .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
         let store = store(&temp, &["2026-10-01"]);
