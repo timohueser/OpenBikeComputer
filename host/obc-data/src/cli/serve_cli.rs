@@ -53,7 +53,7 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
     let dir = match &target {
         Target::Dir(dir) => Some(dir.clone()),
-        Target::R2 { .. } => None,
+        Target::R2(_) => None,
     };
     let programs = programs(root, dir.is_some())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -167,7 +167,7 @@ fn print_links(root: &Path, listening: &Listening) {
 fn follow(target: &Target, mut loader: Loader, shared: &Shared, stop: &AtomicBool) {
     let every = match target {
         Target::Dir(_) => 1,
-        Target::R2 { .. } => 10,
+        Target::R2(_) => 10,
     };
     let (mut follower, mut seen) = (Follower::default(), Seen::default());
     for tick in 0u64.. {

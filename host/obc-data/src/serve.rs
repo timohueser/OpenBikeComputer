@@ -57,7 +57,7 @@ pub struct Wanted {
 }
 
 fn names(target: &Target) -> Result<Names, String> {
-    Ok([target.get(SERVING)?, target.get(NEXT)?])
+    Ok([target.get_public(SERVING)?, target.get_public(NEXT)?])
 }
 
 /// The releases that `names` of `target` name, and why the release of `planner/next.json` cannot
@@ -93,11 +93,13 @@ fn wanted(
 }
 
 fn served(target: &Target, id: &str) -> Result<Served, String> {
-    let release = Release::read(target, id)?;
+    let key = crate::release::manifest_key(id);
+    let bytes = target.get_public(&key)?.ok_or_else(|| format!("the target has no {key}"))?;
+    let release = Release::parse(id, &bytes)?;
     let mut pointers = BTreeMap::new();
     for pointer in &release.pointers {
         let key = format!("objects/{}", pointer.sha256);
-        let bytes = target.get(&key)?.filter(|bytes| sha256_hex(bytes) == pointer.sha256);
+        let bytes = target.get_public(&key)?.filter(|bytes| sha256_hex(bytes) == pointer.sha256);
         pointers.insert(pointer.key.clone(), bytes.ok_or_else(|| format!("{key} is missing or holds other bytes"))?);
     }
     let catalog: Value = serde_json::from_slice(&pointers[PLANNER]).map_err(|e| format!("{PLANNER} of {id}: {e}"))?;
@@ -698,7 +700,11 @@ mod tests {
             let (runtime, gets) = (tokio::runtime::Runtime::new().unwrap(), Arc::<Mutex<Vec<String>>>::default());
             let Target::Dir(dir) = &case.target else { unreachable!("a dir target") };
             std::fs::create_dir_all(dir).unwrap();
-            case.reader = Target::R2 { public: bucket(&runtime, dir, gets.clone()) };
+            case.reader = Target::R2(crate::r2::Remote {
+                public: bucket(&runtime, dir, gets.clone()),
+                bucket: "test".into(),
+                prefix: String::new(),
+            });
             let programs = services::Programs::reading(vec![("routing", "test".into(), 1)]);
             case.install = Some((case.scratch.0.join("store"), Arc::new(programs)));
             let view = http::Shared::default();

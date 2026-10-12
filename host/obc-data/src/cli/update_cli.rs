@@ -63,6 +63,9 @@ pub struct UpdateArgs {
     /// Start also when the format of a layer changes: its readers need new data.
     #[arg(long)]
     accept_format_change: bool,
+    /// Do not ask before an update of an R2 target. Required without a terminal.
+    #[arg(long)]
+    yes: bool,
 }
 
 impl UpdateArgs {
@@ -123,11 +126,7 @@ pub struct Baked {
 pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    if let Target::R2 { .. } = target {
-        return Err(Code::Blocked
-            .error(format!("`obc data update` writes only a dir target, and `{}` is an R2 bucket", args.target))
-            .fix("Update a dir target, such as `obc data update local`."));
-    }
+    super::api::writable(&args.target, &target)?;
     // A step reads a kept output from the target when this store lacks it.
     let store = store.reading(&target);
     let http = Http::new();
@@ -154,12 +153,28 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
         return review::print(&prepared.review, json);
     }
     review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
+    if let Target::R2(remote) = target.1 {
+        approved(&args, &prepared.review, remote)?;
+    }
     let run = runs::detach(&store, &prepared.review.args)?;
     if json {
         return print_json(&Started { run, review: prepared.review.id });
     }
     eprintln!("obc data: run {run} of review {}", prepared.review.id);
     super::runs_cli::follow(&store, &run, false)
+}
+
+/// Refuse an update of an R2 target, which serves riders, without the id of the review that the
+/// owner approved; then ask.
+fn approved(args: &UpdateArgs, review: &Review, remote: &crate::r2::Remote) -> Result<(), Error> {
+    if args.expect.is_none() {
+        return Err(Code::Usage
+            .error(format!("an update of `{}` starts only with `--expect ID`, the id of the review that the owner approved; nothing changed", args.target))
+            .fix(format!("Run `obc data update {} --dry-run` with the same flags, have the owner approve its id, then run the command that it shows.", args.target)));
+    }
+    let question =
+        format!("Publish review {} to `{}` ({}), which serves riders?", review.id, args.target, remote.url(""));
+    super::confirm(&question, args.yes)
 }
 
 /// What `obc data update --json` writes: the run that it started.
@@ -245,7 +260,9 @@ pub(super) fn locked<T>(
                 "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
                  last heartbeat: `obc data unlock {name} --from {0}`.",
                 holder.machine,
-                crate::date::timestamp(lock::stale_at(&holder))
+                crate::date::timestamp(
+                    lock::stale_since(target, &holder).map_or(lock::stale_at(&holder), |(at, _)| at)
+                )
             ))
         }
         lock::Refused::Failed(e) => Code::Failed
@@ -585,8 +602,13 @@ fn apply(
     run.sync()?;
     // The switch is done: a lock that is lost now stops only the collection.
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
-    updated.collection = Some(match enter((run, held), name, Phase::Collect) {
-        Ok(()) => collection::collect(target, since, crate::date::now()),
+    let holds = || match held.beat(None, None, crate::date::now())? {
+        true => Ok(()),
+        false => Err(lost(name).message),
+    };
+    let collect = enter((run, held), name, Phase::Collect).and_then(|()| Ok(target.now()?));
+    updated.collection = Some(match collect {
+        Ok(now) => collection::collect(target, since, now, &holds),
         Err(error) => Collected { stopped: Some(error.message), ..Collected::default() },
     });
     updated.rollback = base.map(|(base, _)| base.serving.id);
@@ -647,11 +669,10 @@ pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Err
                  `obc data update {name} --region ID` again.",
                 dir.display()
             ),
-            Target::R2 { .. } => {
-                "An older `obc data` can have written it: publish the bucket again once `obc data update` writes \
-                 R2."
-                .into()
-            }
+            Target::R2(_) => format!(
+                "An older `obc data` can have written it. Ask the owner: `obc data rollback {name}` serves the \
+                 rollback, when it reads."
+            ),
         };
         Code::InvalidData.error(format!("target `{name}`: {e}")).fix(fix)
     })
@@ -1164,7 +1185,7 @@ pub(super) mod tests {
     /// A collection after the grace of a release that stopped serving now.
     fn late(target: &Target) -> Collected {
         let now = crate::date::now();
-        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60)
+        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &|| Ok(()))
     }
 
     #[test]
@@ -1205,7 +1226,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_collection_deletes_nothing_while_a_pointer_drifts_or_a_manifest_cannot_be_read() {
+    fn a_collection_deletes_nothing_while_a_pointer_drifts_a_manifest_cannot_be_read_or_the_lock_is_lost() {
         let fixture = fixture("update-collect-guards");
         let dir = fixture.scratch.0.join("local");
         let target = Target::Dir(dir.clone());
@@ -1224,6 +1245,14 @@ pub(super) mod tests {
         let unknown = late(&target);
         assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
         assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
+
+        target.remove(&unreadable).unwrap();
+        let now = crate::date::now();
+        let lost = || Err("another run took the lock".to_string());
+        let lost =
+            collection::collect(&target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &lost);
+        assert_eq!(lost.stopped.as_deref(), Some("another run took the lock"));
+        assert_eq!((lost.keys, keys(&target)), (0, before));
     }
 
     #[test]

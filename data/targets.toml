@@ -5,6 +5,7 @@
 [prod]
 kind = "r2"
 public = "https://maps.openbikecomputer.com"
+bucket = "obc-maps"
 
 # A folder on the machine that runs `obc data`: the folder `local` beside the store, so that it
 # shares the disk of the store. Each machine has its own.

@@ -955,11 +955,25 @@ One table per target. The name of the table is the name of the target, in lowerc
 | --- | --- | --- |
 | `kind` | string | `r2` or `dir` |
 | `public` | string | `r2` only: the `https://` origin that serves the keys of the bucket, without a path |
+| `bucket` | string | `r2` only: the name of the bucket. `OBC_R2_BUCKET` must name it to write the target |
+| `prefix` | string | `r2` only, optional: the folder under `test/` of the bucket that holds the target, such as `test/run-1`, without `/` at the end. Without it, the root of the bucket. A collection deletes keys of the target, and a folder outside `test/` can hold live keys |
 | `dir` | string | `dir` only, optional: an absolute path, or a path that starts with `~/` for the home directory. Without it, the folder with the name of the target beside the store |
 
 The file has `prod`, the public bucket, and `local`, a folder on each machine. A `dir` target and
 the store do not overlap, also through a link, so a clean of the store never deletes a file of a
-target. `obc data` reads an R2 target only through its public URL.
+target.
+
+`obc data` reads an R2 target through the S3 API when it has the credentials, because the public
+origin can serve a cached pointer. Else, and always in [serve](#serve), it reads through the public
+URL, with each part of a key percent-encoded, so a `#` in a key under `sources/` is no fragment.
+
+`obc data` writes an R2 target with the credentials of `OBC_R2_*` (see [Credentials](#credentials)):
+a small document through the S3 API, signed with AWS Signature Version 4, and the files of a
+release with rclone. `OBC_R2_BUCKET` must be the `bucket` of the target. A command that writes an
+R2 target without these variables or without rclone refuses (`blocked`). A tagged read and a
+review need the credentials too: the review id holds the tag of `release.json`, which is the ETag
+of the S3 API, and the public origin can give another form of it, such as the weak ETag of a
+compressed answer.
 
 ### Target layout
 
@@ -1023,8 +1037,9 @@ a file of the release.
 }
 ```
 
-`since` is the time at which the release took its role, or at which a switch to the serving
-release wrote its pointers again. `rollback` is `null` until the second switch.
+`since` is the time, by the clock of the target, at which the release took its role, or at which
+a switch to the serving release wrote its pointers again. `rollback` is `null` until the second
+switch.
 
 `planner/next.json` names one more release with the same fields as `serving`: a published release
 that the target does not serve yet. [Serve](#serve) starts the services of its planner release
@@ -1052,6 +1067,14 @@ A `dir` target must be on a local file system. A conditional write holds `<dir>/
 compares and writes, and writes through a rename. The tag that it compares is the SHA-256 of the
 bytes. A key can be a hard link to an object of the store: nothing writes a key or an object in
 place.
+
+On an R2 target the tag is the ETag. A conditional write is a PUT with `If-None-Match: *` for an
+absent key, or `If-Match: <tag>`. Only HTTP 412 says that the condition fails; another answer
+that is not 2xx is an error. `release.json`, `planner/next.json` and `lock.json` get
+`Cache-Control: no-store`, a pointer `public, max-age=60, must-revalidate`, and every other key
+`public, max-age=31536000, immutable`. A document is `application/json`. After the upload and
+before the switch, each key of the release must be on the target with its size, else nothing
+switches.
 
 Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
 `planner/releases/` and `reference/v1/`. An update and a rollback never write or delete them.
@@ -1081,11 +1104,13 @@ it.
   of each phase, on the condition of the tag of its last write. `review` is `null` until the run
   has its review. The run makes its review after it takes the lock, so `--expect` compares the
   id of the target that the lock keeps.
-- When a write fails its condition, another run took the lock. Then the run stops and changes
-  nothing more. The write at the start of the phase `switch` checks this immediately before the
+- The server can apply a write whose answer does not come, so a later write on the old tag fails.
+  After a write that fails or gets no answer, the run reads `lock.json`: when it is what the run
+  wrote, the write is done; when it names this run on this machine, the run writes again on its
+  tag. Else another run took the lock: the run stops and changes nothing more. The write at the start of the phase `switch` checks this immediately before the
   switch. After the switch, a lost lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
+  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
   frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
@@ -1094,14 +1119,19 @@ it.
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
-  so the holder and `unlock` read the clock of one machine.
+  so the holder and `unlock` read the clock of one machine. On an R2 target, `unlock` measures the
+  age of the heartbeat with the clock of the server: its `Date` against the `Last-Modified` of
+  `lock.json`.
 - `progress` gives the steps done of the total of each layer that the run bakes, at the last
   heartbeat. `status.json` of the run has the detail, see [Runs](#runs).
 
 ### Update
 
-`obc data update TARGET` makes a target serve its settings as the steps make them now. It writes
-only a `dir` target. One run does each phase in this order, while it holds the [lock](#lock):
+`obc data update TARGET` makes a target serve its settings as the steps make them now. An R2
+target serves riders: its update starts only with `--expect ID`, the id of a review that the owner
+approved, and asks first, or needs `--yes` without a terminal. The first process checks the
+arguments of the person, before the run. One run does each phase in this order, while it holds the
+[lock](#lock):
 
 1. Prepare. It reads the serving release, applies the flags to its settings, and refuses a target
    without a region. It finds the fetches of the step lists, judges which are due (see
@@ -1198,8 +1228,8 @@ new data until they update. An update with a format change starts only with
 
 ### Rollback
 
-`obc data rollback TARGET` makes a `dir` target serve its rollback release again. The release
-that served becomes the rollback, so a second rollback undoes the first. A target without a
+`obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
+asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
 Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
 as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
@@ -1220,7 +1250,10 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
-- It runs while the update holds the [lock](#lock): no other run writes the target.
+- It runs while the update holds the [lock](#lock): no other run writes the target. Before each
+  100 deletes, a heartbeat checks that the run still holds it.
+- On an R2 target, it lists the keys under `objects/`, `releases/` and `sources/` only, and the
+  grace counts by the clock of the server: the `Date` of its answers, as `since` does.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
   that go. A collection that stops resumes at the next update that switches, from the manifests
   that remain.
@@ -1304,17 +1337,17 @@ each layer against the steps of now, the blocked steps, the pointers that drift,
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
 the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
 checks of the last hour. A target that serves nothing has the next command
-`obc data update TARGET --region ID`. An R2 target has no next command: `obc data update` writes
-only a `dir` target.
+`obc data update TARGET --region ID`. For an R2 target, the next command is the review
+(`--dry-run`): its update needs the id that the owner approved.
 
 ## Commands
 
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
-| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
-| `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
-| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a `dir` target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
+| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
+| `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
+| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
@@ -1379,7 +1412,8 @@ and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under 
 | `OBC_R2_LOCAL_DIR` | A local directory that replaces the bucket. Tests use it. When it is set, it must not be empty, and `OBC_R2_BUCKET` must not be set |
 
 `--fixtures` reads the same variables with the prefix `OBC_FIXTURE_R2_` instead. A credential
-goes to rclone only in its environment, never in an argument or a file.
+goes to rclone only in its environment, never in an argument or a file. The S3 client of an R2
+target signs with the secret key and never sends it.
 
 ### Commands
 
@@ -4106,7 +4140,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "next": {
-          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now, or when no command of this `obc data`\nwrites the target: an R2 bucket.",
+          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now. For an R2 target, the command is the\nreview: its update needs the id that the owner approved.",
           "type": [
             "string",
             "null"

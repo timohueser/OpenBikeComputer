@@ -401,6 +401,10 @@ pub fn publish(target: &Target, store: &Store, release: &Release) -> Result<Stri
         // Another writer of the same manifest writes the same bytes.
         target.put(&manifest_key(&id), &bytes, &Condition::Absent)?;
     }
+    // The switch names only a release whose keys the target holds, each with its size.
+    if let Some(key) = target.missing(&sizes)?.first() {
+        return Err(format!("{key} is not on the target after the upload; nothing switched"));
+    }
     Ok(id)
 }
 
@@ -419,7 +423,7 @@ pub fn serving(target: &Target) -> Result<Option<(Serving, Tag)>, String> {
 /// again.
 pub fn switch(target: &Target, base: Option<&(Serving, Tag)>, id: &str) -> Result<bool, String> {
     let release = Release::read(target, id)?;
-    let since = crate::date::timestamp(crate::date::now());
+    let since = crate::date::timestamp(target.now()?);
     let next = match base {
         // A pointer that drifted served other bytes until now: the grace of the collection starts now.
         Some((now, _)) if now.serving.id == id => {
