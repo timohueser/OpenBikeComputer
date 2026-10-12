@@ -119,8 +119,8 @@ pub enum Phase {
     Build,
     Verify,
     Upload,
-    /// An R2 target only: the run waits until the follower of the target serves the planner
-    /// release of the new release.
+    // An R2 target only: the run waits until the follower of the target serves the planner release
+    // of the new release.
     RouterReady,
     Switch,
     Collect,
@@ -295,7 +295,7 @@ impl Run {
         match event.clone() {
             Event::Phase { phase } => {
                 if let Some(last) = status.phases.last_mut() {
-                    last.state = State::Ok;
+                    (last.state, last.waiting) = (State::Ok, None);
                 }
                 let started = date::timestamp(date::now());
                 status.phases.push(PhaseState { phase, state: State::Running, started, waiting: None });
@@ -787,7 +787,7 @@ pub struct PhaseState {
     /// When it began, `YYYY-MM-DDTHH:MM:SSZ`.
     pub started: String,
     /// Why it waits: in `router-ready`, the last answer of the follower of the target.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
 }
 

@@ -1171,15 +1171,17 @@ switch to a new release, an update of an R2 target does this; a `dir` target ski
    on what the run read there.
 2. Every 10 seconds (`EVERY` in `ready.rs`), the run asks `GET
    <api_origin>/planner-api/releases/<planner>/ready`, with `api_origin` and `active.id` of the
-   planner pointer of the new release. 200 ends the wait. Any other answer, also 404 and no
-   answer, is a reason to wait: the reason of the answer, or its status. Each new reason goes to
-   the log and the status of the run and to the next heartbeat of the lock.
+   planner pointer of the new release. Only 200 with `{"state": "ready"}` ends the wait. Any
+   other answer, also 404, another 200 and no answer, is a reason to wait: the reason of the
+   answer, or its status. Each new reason goes to the log and the status of the run and to the
+   next heartbeat of the lock. The next phase clears it.
 3. After the switch, the run deletes `planner/next.json`.
 
 The run waits at most 24 hours (`GIVE_UP` in `ready.rs`). After that, or when the run stops or
-another run takes the lock, it deletes `planner/next.json` and fails with `<target> unchanged:
-<last reason>`. `release.json` and the pointers stay as they were; the next collection deletes
-the release that it uploaded. The run deletes `planner/next.json` only while it names its release.
+another run takes the lock, it fails with `<target> unchanged: <last reason>`. `release.json` and
+the pointers stay as they were; the next collection deletes the release that it uploaded. The run
+deletes `planner/next.json` at each end, but only while the file names its release, and never
+after it lost the lock: then the file belongs to the run that took it.
 
 ### Any machine
 
@@ -1348,9 +1350,10 @@ existing file. Each file must have the SHA-256 and the size that the planner rel
 serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
 grace; a wait before a retry, a connection or a hash does not see the stop.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
-touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. Each time the
-releases that the two files name change, serve deletes there each object and each unfinished
-download that the services of none of them read. For a `dir` target, download bundles name the origin of the machine on its network when
+touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. After the
+releases that the two files name change, and after downloads, serve deletes there each object and
+each unfinished download that the services of none of them read, once no download runs. A
+download for a planner release that no release names any more stops at its next object. For a `dir` target, download bundles name the origin of the machine on its network when
 serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
 
@@ -2548,6 +2551,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "stale": {
           "description": "Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the\nrun likely ended without freeing the lock.",
           "type": "boolean"
+        },
+        "waiting": {
+          "description": "Why the run waits, in the phase `router-ready`: the last answer of the follower of the\ntarget.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2743,25 +2753,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Phase": {
-      "oneOf": [
-        {
-          "enum": [
-            "prepare",
-            "download",
-            "build",
-            "verify",
-            "upload",
-            "switch",
-            "collect"
-          ],
-          "type": "string"
-        },
-        {
-          "const": "router-ready",
-          "description": "An R2 target only: the run waits until the follower of the target serves the planner\nrelease of the new release.",
-          "type": "string"
-        }
-      ]
+      "enum": [
+        "prepare",
+        "download",
+        "build",
+        "verify",
+        "upload",
+        "router-ready",
+        "switch",
+        "collect"
+      ],
+      "type": "string"
     },
     "PhaseState": {
       "properties": {
@@ -2776,7 +2778,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/State2"
         },
         "waiting": {
-          "default": null,
           "description": "Why it waits: in `router-ready`, the last answer of the follower of the target.",
           "type": [
             "string",
@@ -2787,8 +2788,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "phase",
         "state",
-        "started",
-        "waiting"
+        "started"
       ],
       "type": "object"
     },

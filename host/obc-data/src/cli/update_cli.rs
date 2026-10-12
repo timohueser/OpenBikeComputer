@@ -600,7 +600,7 @@ fn apply(
     enter((run, held), name, Phase::Upload)?;
     let id = release::publish(target, store, &next)?;
     let wait = matches!(target, Target::R2(_)).then_some(Wait::RUN);
-    switch_to((name, target), base.as_ref(), (&id, &next), http, wait, (run, held))?;
+    switch_to((name, target), base.as_ref(), &id, http, wait, (run, held))?;
     // The switch is done: a lock that is lost now stops only the collection.
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
     let holds = || match held.beat(None, None, crate::date::now())? {
@@ -624,20 +624,20 @@ fn changed(name: &str) -> Error {
         .fix(format!("Run `obc data update {name}` again: it keeps what this run baked."))
 }
 
-/// Switch `target` from `base` to the published release `release` (`id`). With `wait`, as for an
-/// R2 target: `planner/next.json` names the release first, and the switch waits until the follower
-/// of the target serves its planner release. A wait that ends without that deletes
-/// `planner/next.json`, and the target stays as it was.
+/// Switch `target` from `base` to the published release `id`. With `wait`, as for an R2 target:
+/// `planner/next.json` names the release first, and the switch waits until the follower of the
+/// target serves its planner release. A wait that ends without that deletes `planner/next.json`,
+/// and the target stays as it was.
 fn switch_to(
     (name, target): (&str, &Target),
     base: Option<&(Serving, Tag)>,
-    (id, release): (&str, &Release),
+    id: &str,
     http: &Http,
     wait: Option<Wait>,
     (run, held): (&mut Run, &Held),
 ) -> Result<(), Error> {
     let next = match wait {
-        Some(wait) => Some(router_ready((name, target), (id, release), http, wait, (run, held))?),
+        Some(wait) => Some(router_ready((name, target), id, http, wait, (run, held))?),
         None => None,
     };
     enter((run, held), name, Phase::Switch)?;
@@ -651,19 +651,19 @@ fn switch_to(
 }
 
 /// Name the release `id` in `planner/next.json` of `target`, and ask the follower each
-/// `wait.every` until it serves the planner release of `release`. The status and the lock of the
-/// run carry each new answer. A stop of the run, a lost lock or `wait.give_up` ends the wait
-/// without a switch.
+/// `wait.every` until it serves the planner release of `id`. The status and the lock of the run
+/// carry each new answer. A stop of the run, a lost lock or `wait.give_up` ends the wait without a
+/// switch.
 fn router_ready<'a>(
     (name, target): (&str, &'a Target),
-    (id, release): (&str, &Release),
+    id: &str,
     http: &Http,
     wait: Wait,
-    (run, held): (&mut Run, &Held),
+    (run, held): (&mut Run, &'a Held),
 ) -> Result<Next<'a>, Error> {
     enter((run, held), name, Phase::RouterReady)?;
-    let url = ready::url(target, release).map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
-    let next = Next::name(target, id)?;
+    let url = ready::url(target, id).map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
+    let next = Next::name(target, held, id)?;
     let (since, lost) = ((wait.now)(), run.stopper());
     let mut last = None;
     while let Some(reason) = ready::ask(http, &url) {
@@ -1668,11 +1668,11 @@ pub(super) mod tests {
     /// Switch `target` to the published release `id` as for an R2 target, on the clock of the
     /// test, with a wait that gives up after `give_up`.
     fn switch_after_ready(fixture: &Fixture, target: &Target, id: &str, give_up: Duration) -> Result<(), Error> {
-        let (base, release) = (release::serving(target).unwrap(), Release::read(target, id).unwrap());
+        let base = release::serving(target).unwrap();
         let wait = Wait { give_up, now: || CLOCK.get(), sleep: |every| CLOCK.set(CLOCK.get() + every), ..Wait::RUN };
         let mut run = Run::create(&fixture.store, ["update", "local"]).unwrap();
         let switched = locked(("local", target), &mut run, |run, held| {
-            switch_to(("local", target), base.as_ref(), (id, &release), &Http::new(), Some(wait), (run, held))
+            switch_to(("local", target), base.as_ref(), id, &Http::new(), Some(wait), (run, held))
         });
         crate::cli::api::finish_run(run, switched)
     }
@@ -1684,14 +1684,16 @@ pub(super) mod tests {
         let target = Target::Dir(dir.clone());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let unknown = r#"{"state":"unknown","reason":"no release of the target has the planner release"}"#;
-        let answers = [(503, r#"{"state":"starting"}"#), (404, unknown), (200, r#"{"state":"ready"}"#)];
+        // A 200 that is no answer of a follower, such as a page of the host, does not switch.
+        let page = "<html>OpenBikeComputer</html>";
+        let answers = [(503, r#"{"state":"starting"}"#), (404, unknown), (200, page), (200, r#"{"state":"ready"}"#)];
         let (api, asked) = follower(&runtime, &dir, &answers);
         let (a, _) = crate::serve::tests::release_at(&target, "device a", b"routing a", 1, &api);
         assert!(release::switch(&target, None, &a).unwrap());
         let (b, _) = crate::serve::tests::release_at(&target, "device b", b"routing b", 1, &api);
 
         switch_after_ready(&fixture, &target, &b, ready::GIVE_UP).unwrap();
-        let waited = vec![(Some(b.clone()), a.clone()); 3];
+        let waited = vec![(Some(b.clone()), a.clone()); 4];
         assert_eq!(*asked.lock().unwrap(), waited, "next.json names b, and release.json serves a until it is ready");
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, b);
         assert!(!dir.join(release::NEXT).exists(), "the switch deletes next.json");

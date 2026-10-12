@@ -158,7 +158,7 @@ impl Held {
     }
 
     /// Whether another run took the lock.
-    fn lost(&self) -> bool {
+    pub fn lost(&self) -> bool {
         self.lost.load(Ordering::Relaxed)
     }
 

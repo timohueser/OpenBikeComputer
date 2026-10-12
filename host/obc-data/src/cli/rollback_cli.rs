@@ -96,7 +96,8 @@ fn switch(
     }
     // The follower keeps the planner release of the rollback running, so one answer says enough.
     if follower {
-        let url = ready::url(target, &release).map_err(|e| Code::Failed.error(format!("the rollback release: {e}")))?;
+        let url =
+            ready::url(target, &rollback.id).map_err(|e| Code::Failed.error(format!("the rollback release: {e}")))?;
         if let Some(reason) = ready::ask(&Http::new(), &url) {
             let short = &rollback.id[..12];
             return Err(Code::Blocked

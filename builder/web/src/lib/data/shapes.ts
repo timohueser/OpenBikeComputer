@@ -18,6 +18,8 @@ export interface Holder {
     heartbeat: string;
     /** Each layer that the run bakes, at the last heartbeat. */
     progress: { layer: string; done: number; total: number }[];
+    /** Why the run waits in `router-ready`: the last answer of the follower of the target. */
+    waiting?: string;
     /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
     stale: boolean;
 }
@@ -35,7 +37,7 @@ export function ended(status: Status | null, target: string, run: string): boole
     return !!now && now.lock_error === null && now.lock?.run !== run;
 }
 
-export const PHASES = ["prepare", "download", "build", "verify", "upload", "switch", "collect"] as const;
+export const PHASES = ["prepare", "download", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
 export type Phase = (typeof PHASES)[number];
 
 /** `starting` is a run that no process took yet. `failed` is also a run whose process ended before
@@ -64,8 +66,8 @@ export interface RunList {
 
 /** What `obc data runs RUN --json` writes, and `runs RUN --stop`. */
 export interface RunView extends RunSummary {
-    /** Each phase that it entered, in order. */
-    phases: { phase: Phase; state: RunState; started: string }[];
+    /** Each phase that it entered, in order. `waiting` says why it waits, as `Holder` does. */
+    phases: { phase: Phase; state: RunState; started: string; waiting?: string }[];
     /** Each layer that it bakes. A tiled layer names its leaves `<i>-<j>`. */
     layers: { layer: string; total: number; done: number; leaves_done: string[]; leaves_baking: string[] }[];
     /** The releases that it switched its target to. */

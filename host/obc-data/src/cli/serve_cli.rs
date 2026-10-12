@@ -202,10 +202,11 @@ struct Loader {
 impl Load for Loader {
     type Services = Processes;
 
-    fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String> {
+    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Result<(), String>>, String> {
         let (programs, store) = (self.programs.clone(), Store::at(self.store.clone()));
         let (target, served) = (self.target.clone(), served.clone());
-        let worker = std::thread::Builder::new().spawn(move || services::fetch(&programs, &store, &target, &served));
+        let fetch = move || services::fetch(&programs, &store, &target, &served, &wanted);
+        let worker = std::thread::Builder::new().spawn(fetch);
         worker.map_err(|e| format!("cannot start a download: {e}"))
     }
 
@@ -218,19 +219,10 @@ impl Load for Loader {
     fn start(&mut self, served: &Served) -> Result<Processes, String> {
         let origins = match &self.public {
             Some(public) => Origins { api: public.clone(), objects: format!("{public}/objects") },
-            None => published(served)?,
+            None => served.origins()?,
         };
         services::start(&self.programs, &Store::at(self.store.clone()), &self.work, served, &origins)
     }
-}
-
-/// The origins that the planner pointer of `served` names: those of a published target.
-fn published(served: &Served) -> Result<Origins, String> {
-    let pointer: Value = serde_json::from_slice(&served.pointers[PLANNER]).map_err(|e| format!("{PLANNER}: {e}"))?;
-    let origin = |name: &str| {
-        pointer["origins"][name].as_str().map(String::from).ok_or_else(|| format!("{PLANNER} has no {name}"))
-    };
-    Ok(Origins { api: origin("api_origin")?, objects: format!("{}/objects", origin("objects_origin")?) })
 }
 
 /// The programs of the services. For a dir target it builds the routing service with cargo; for an

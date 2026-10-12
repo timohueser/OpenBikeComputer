@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::fetch::http::Http;
-use crate::release::{Release, Role, NEXT};
-use crate::serve::PLANNER;
+use crate::lock::Held;
+use crate::release::{Role, NEXT};
 use crate::target::{Condition, Target};
 
 /// How often a run asks the follower whether it serves the next release.
@@ -38,50 +38,46 @@ fn monotonic() -> Duration {
     START.get_or_init(Instant::now).elapsed()
 }
 
-/// The URL at which the follower of `target` says whether it serves the planner release of
-/// `release`: `/planner-api/releases/<planner>/ready` at the API origin of its planner pointer.
-pub fn url(target: &Target, release: &Release) -> Result<String, String> {
-    let pointer = release.pointers.iter().find(|pointer| pointer.key == PLANNER);
-    let key = format!("objects/{}", pointer.ok_or_else(|| format!("the release has no {PLANNER}"))?.sha256);
-    let bytes = target.get(&key)?.ok_or_else(|| format!("the target has no {key}"))?;
-    let catalog: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{PLANNER}: {e}"))?;
-    let planner = catalog["active"]["id"].as_str().filter(|planner| crate::release::is_sha256(planner));
-    match (catalog["origins"]["api_origin"].as_str(), planner) {
-        (Some(api), Some(planner)) => Ok(format!("{}/planner-api/releases/{planner}/ready", api.trim_end_matches('/'))),
-        _ => Err(format!("{PLANNER} names no API origin or no planner release")),
-    }
+/// The URL at which the follower of `target` says whether it serves the planner release of the
+/// release `id`: `/planner-api/releases/<planner>/ready` at the API origin of its planner pointer.
+pub fn url(target: &Target, id: &str) -> Result<String, String> {
+    let served = crate::serve::served(target, id)?;
+    Ok(format!("{}/planner-api/releases/{}/ready", served.origins()?.api.trim_end_matches('/'), served.planner))
 }
 
-/// Why the follower does not serve at `url` yet, as it says; `None` when it serves.
+/// Why the follower does not serve at `url` yet, as it says; `None` when it serves. Only the
+/// answer of a follower serves: 200 with the state `ready`.
 pub fn ask(http: &Http, url: &str) -> Option<String> {
     let (status, body) = match http.answer(url, "application/json") {
         Ok(answer) => answer,
         Err(e) => return Some(e),
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or_default();
-    match (status, body["reason"].as_str(), body["state"].as_str()) {
-        (200, ..) => None,
-        (_, Some(reason), _) => Some(reason.into()),
-        (_, None, Some(state)) => Some(format!("the planner release is {state}")),
-        _ => Some(format!("GET {url}: HTTP {status}")),
+    match (status, body["state"].as_str(), body["reason"].as_str()) {
+        (200, Some("ready"), _) => None,
+        (_, _, Some(reason)) => Some(reason.into()),
+        (503, Some(state), None) => Some(format!("the planner release is {state}")),
+        _ => Some(format!("GET {url}: HTTP {status} is no answer of a follower")),
     }
 }
 
-/// `planner/next.json` of a target while a run waits for its release. Dropped, it is gone.
+/// `planner/next.json` of a target while a run that holds its lock waits for its release. Dropped,
+/// it is gone, unless the run lost the lock: then it belongs to the run that took it.
 pub struct Next<'a> {
     target: &'a Target,
+    held: &'a Held,
     id: String,
 }
 
 impl<'a> Next<'a> {
     /// Name the release `id` in `planner/next.json` of `target`, in place of what a run that
     /// stopped left there.
-    pub fn name(target: &'a Target, id: &str) -> Result<Self, String> {
+    pub fn name(target: &'a Target, held: &'a Held, id: &str) -> Result<Self, String> {
         let role = Role { id: id.into(), since: crate::date::timestamp(target.now()?) };
         let bytes = serde_json::to_vec_pretty(&role).map_err(|e| e.to_string())?;
         let condition = target.get_tagged(NEXT)?.map_or(Condition::Absent, |(_, tag)| Condition::Match(tag));
         match target.put(NEXT, &bytes, &condition)? {
-            Some(_) => Ok(Self { target, id: id.into() }),
+            Some(_) => Ok(Self { target, held, id: id.into() }),
             None => Err(format!("{NEXT} changed while this run wrote it")),
         }
     }
@@ -91,6 +87,9 @@ impl Drop for Next<'_> {
     /// Delete `planner/next.json` while it names this release: a run that took the lock since can
     /// have named another.
     fn drop(&mut self) {
+        if self.held.lost() {
+            return;
+        }
         let named = self.target.get(NEXT).map(|bytes| {
             bytes.and_then(|bytes| serde_json::from_slice::<Role>(&bytes).ok()).is_some_and(|role| role.id == self.id)
         });
