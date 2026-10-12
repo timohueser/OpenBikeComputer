@@ -17,7 +17,7 @@ use crate::engine::changes::{self, Update};
 use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
-use crate::engine::{InputKind, Step};
+use crate::engine::{Input, InputKind, Step};
 use crate::fetch::http::Http;
 use crate::product::{Inputs, Product, RequestKey};
 use crate::regions::{Area, Bbox, Region, Regions};
@@ -253,6 +253,7 @@ pub(super) fn prepare(
         Some(machine) => machine.clone(),
         None => MachineCheck::this(store)?,
     };
+    let copies = new_copies(store, &listed.steps, &update, serving.as_ref(), &sources)?;
     let review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
@@ -264,6 +265,7 @@ pub(super) fn prepare(
         plan: &update.plan,
         kept: &update.kept,
         layers: &update.layers,
+        copies,
         machine: &machine,
     });
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
@@ -391,10 +393,40 @@ pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Err
                  `obc data update {name} --region ID` again.",
                 dir.display()
             ),
-            Target::R2 { .. } => "Correct the release of the bucket, or switch it to its rollback.".into(),
+            Target::R2 { .. } => {
+                "An older `obc data` can have written it: publish the bucket again once `obc data update` writes \
+                 R2."
+                .into()
+            }
         };
         Code::InvalidData.error(format!("target `{name}`: {e}")).fix(fix)
     })
+}
+
+/// The size of the copies under `sources/` that the update adds to the target: the files of a copied
+/// source that a step that bakes reads, and that the serving release does not name. A fetch that
+/// the store lacks yet counts nothing.
+fn new_copies(
+    store: &Store,
+    steps: &[Step],
+    update: &Update,
+    serving: Option<&Release>,
+    sources: &[Source],
+) -> Result<u64, Error> {
+    let named: BTreeSet<String> = serving.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
+    let mut copies = BTreeMap::new();
+    for input in steps.iter().filter(|step| !update.kept.contains_key(&step.name)).flat_map(|step| &step.inputs) {
+        let Input::Snapshot { source, version, params, files } = input else { continue };
+        if !sources.iter().any(|declared| declared.id == *source && declared.copied()) {
+            continue;
+        }
+        let objects = crate::engine::snapshot_files(store, source, version, params, files)?;
+        for (name, object) in objects.into_iter().flatten() {
+            let size = std::fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.len();
+            copies.insert(release::copy_key(source, version, &name), size);
+        }
+    }
+    Ok(copies.into_iter().filter(|(key, _)| !named.contains(key)).map(|(_, size)| size).sum())
 }
 
 /// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
@@ -760,12 +792,17 @@ pub(super) mod tests {
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
     }
 
-    /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
-    /// The target copies the files of `head`.
-    fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
+    /// A target copies the files of `head`.
+    fn copy_head(fixture: &Fixture) {
         let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
         head.id = "head".into();
         fixture.with_sources(&[head]);
+    }
+
+    /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
+    /// The target copies the files of `head`.
+    fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
+        copy_head(fixture);
         let a = update(fixture, target, region).unwrap().serving;
         fixture.fetched_version("head", "2", "head.txt", b"2\n");
         let b = update(fixture, target, |_| Ok(())).unwrap().serving;
@@ -868,6 +905,18 @@ pub(super) mod tests {
         assert_eq!((review.layers.len(), review.layers[0].text.as_str()), (1, "head 1 → 2"));
         let updated = asked_update(&fixture, &target, &expect(&review.id)).unwrap();
         assert_eq!((&updated.review, updated.rollback.as_ref()), (&review.id, Some(&first.serving)));
+    }
+
+    #[test]
+    fn the_upload_of_a_review_counts_the_copies_that_the_serving_release_does_not_name() {
+        let fixture = fixture("update-upload");
+        copy_head(&fixture);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(&fixture, &target, region).unwrap();
+        fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        let review = review(&fixture, &target);
+        let bakes: u64 = review.bakes.iter().filter_map(|bake| bake.estimate).map(|bake| bake.client_bytes).sum();
+        assert_eq!(review.cost.upload_bytes, bakes + 6, "with the copy of head 2");
     }
 
     #[test]

@@ -28,7 +28,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The Wikimedia API captures `wikidata`, `wikipedia` and `commons` have no copy. The national terrain models `dtm-*` have no copy either: `reference/v1/` holds what the device reads of them |
+| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The Wikimedia API captures `wikidata`, `wikipedia` and `commons` have no copy. The national terrain models `dtm-*` have no copy either: `obc data` reads them through a capture per archive tile |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -1074,8 +1074,9 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
   machine fetches and bakes. A step whose output is in the store already does not bake.
 - `cost`: each bake has the estimate of the newest receipt in the store of the step with the same
   options, else of the `cost` of the step in the serving release, else of the newest receipt of the
-  step. `upload_bytes` is the size of the files of the bakes that a client reads. `unknown` lists
-  each bake without an estimate or without a peak, and each fetch whose size is not known.
+  step. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
+  under `sources/` that the serving release does not name, as the store records them. `unknown`
+  lists each bake without an estimate or without a peak, and each fetch whose size is not known.
   `process_peak_rss_bytes` is the highest peak of a bake that runs in the `obc` process: the peak
   of that process, not of the step.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
@@ -1095,9 +1096,9 @@ the same id when their stores resolve the same versions and files. `--expect ID`
 only when its review, computed after the listing, has this id.
 
 A format change is a layer that bakes, and whose outputs in the serving release have another
-`format` than the layer now. Its readers need new data: old readers keep what they have and get no new data until they
-update. An update with a format change starts only with `--accept-format-change`. A new layer is
-no format change.
+`format` than the layer now. Its readers need new data: old readers keep what they have and get no
+new data until they update. An update with a format change starts only with
+`--accept-format-change`. A new layer is no format change.
 
 ### Rollback
 
@@ -1115,8 +1116,11 @@ another release, it collects the target. The grace of a collection is 10 minutes
 
 - When a pointer does not hold the bytes of the serving release, it deletes nothing.
 - It deletes the keys under `objects/` and `releases/` that no kept release names, the keys under
-  `sources/` that a release that it drops names, and the temporary files of a write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a pointer with the
-  name of the pointer. The pointers, `release.json` and the keys of older publishers stay.
+  `sources/` that a release that it drops names, and the temporary files of a write that stopped:
+  a hidden `.part` or `.tmp` file in the root, or beside a pointer with the name of the pointer.
+  The pointers, `release.json` and the keys of older publishers stay.
+- A publish that stops can leave copies under `sources/` that no manifest names. They stay, and a
+  later publish of the same version uses them again.
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
@@ -3437,7 +3441,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "What the figures lack."
         },
         "upload_bytes": {
-          "description": "What goes to the target: the files of the bakes that a client reads.",
+          "description": "What goes to the target: the files of the bakes that a client reads, and the copies under\n`sources/` that the serving release does not name.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

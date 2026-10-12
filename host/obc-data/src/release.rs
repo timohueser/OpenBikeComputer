@@ -193,7 +193,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = format!("sources/{}/{}/{}", fetched.source, fetched.version, file.name);
+                let key = copy_key(&fetched.source, &fetched.version, &file.name);
                 copies.insert(key.clone(), File { key, size: file.size, sha256: file.sha256.clone() });
             }
         }
@@ -251,7 +251,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = format!("sources/{}/{}/{}", fetched.source, fetched.version, file.name);
+                let key = copy_key(&fetched.source, &fetched.version, &file.name);
                 if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
                     return Err(format!("{key} is the copy of two files"));
                 }
@@ -306,6 +306,11 @@ impl Release {
 
 pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
+}
+
+/// The key of the copy of the file `name` of `source` at `version`.
+pub fn copy_key(source: &str, version: &str, name: &str) -> String {
+    format!("sources/{source}/{version}/{name}")
 }
 
 pub(crate) fn is_sha256(text: &str) -> bool {
