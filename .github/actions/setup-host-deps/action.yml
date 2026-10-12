@@ -5,7 +5,8 @@ description: >
   apt GEOS is older than 3.14, so GEOS is built from source (cached). obc-usb-host pulls serialport
   (libudev) and obc-sim/obc-usb-host build eframe natively (X11/xkbcommon); rfd uses the XDG portal,
   so no GTK is needed. obc-sim plays cues through cpal, which links ALSA (libasound2). The R2
-  client tests in obc-data run rclone against a local directory.
+  client tests in obc-data run rclone against a local directory. The leaf tests in obc-osm run
+  Osmium (osmium-tool).
 
 # Keep GEOS_VERSION in step with the `v3_*` feature on the `geos` dep in host/obc-pack/Cargo.toml.
 inputs:
@@ -23,7 +24,7 @@ runs:
         sudo apt-get install -y \
           libudev-dev \
           libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-          libxkbcommon-dev libssl-dev libasound2-dev rclone
+          libxkbcommon-dev libssl-dev libasound2-dev rclone osmium-tool
 
     - name: Cache GEOS ${{ inputs.geos-version }}
       id: geos-cache

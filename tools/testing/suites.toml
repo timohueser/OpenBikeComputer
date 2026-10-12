@@ -75,14 +75,11 @@ name = "obc-sim"
 triggers = ["fixtures/catalog.toml"]
 
 # Both compile the shipped preset in with `include_str!` and own the guard that fails when the
-# skin-preview fixture no longer matches it; obc-bake also reads data/regions/. No Cargo edge carries that.
+# skin-preview fixture no longer matches it; obc-bake also reads data/regions/ and the corpus
+# `tiny.osm.pbf`. No Cargo edge carries that.
 [[package]]
 name = "obc-bake"
-triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
-
-[[package]]
-name = "obc-osm"
-triggers = ["builder/tests/corpus/data/tiny.osm.pbf"]
+triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml", "builder/tests/corpus/data/tiny.osm.pbf"]
 
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
