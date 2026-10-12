@@ -71,6 +71,10 @@ pub enum Event {
     Switched {
         release: String,
     },
+    /// Why the phase waits, such as the answer of the follower in `router-ready`.
+    Waiting {
+        reason: String,
+    },
     FetchStarted {
         source: String,
         version: String,
@@ -108,13 +112,16 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum Phase {
     Prepare,
     Download,
     Build,
     Verify,
     Upload,
+    // An R2 target only: the run waits until the follower of the target serves the planner release
+    // of the new release.
+    RouterReady,
     Switch,
     Collect,
 }
@@ -247,7 +254,10 @@ impl Run {
         self.line(&line)?;
         self.unsaved = true;
         // A fetch can take long: its status shows that it runs.
-        let now = matches!(event, Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. });
+        let now = matches!(
+            event,
+            Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. } | Event::Waiting { .. }
+        );
         if now || self.saved.elapsed() >= SAVE {
             self.save()?;
         }
@@ -285,10 +295,18 @@ impl Run {
         match event.clone() {
             Event::Phase { phase } => {
                 if let Some(last) = status.phases.last_mut() {
-                    last.state = State::Ok;
+                    (last.state, last.waiting) = (State::Ok, None);
                 }
-                status.phases.push(PhaseState { phase, state: State::Running, started: date::timestamp(date::now()) });
+                let started = date::timestamp(date::now());
+                status.phases.push(PhaseState { phase, state: State::Running, started, waiting: None });
                 format!("phase {phase}")
+            }
+            Event::Waiting { reason } => {
+                let line = format!("waiting: {reason}");
+                if let Some(last) = status.phases.last_mut() {
+                    last.waiting = Some(reason);
+                }
+                line
             }
             Event::Switched { release } => {
                 let line = format!("switched to release {release}");
@@ -770,6 +788,9 @@ pub struct PhaseState {
     pub state: State,
     /// When it began, `YYYY-MM-DDTHH:MM:SSZ`.
     pub started: String,
+    /// Why it waits: in `router-ready`, the last answer of the follower of the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -930,6 +951,11 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
     };
     if let Some(message) = died.filter(|_| !running) {
         status.state = State::Failed;
+        status
+            .phases
+            .iter_mut()
+            .filter(|phase| phase.state == State::Running)
+            .for_each(|phase| phase.state = State::Failed);
         status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
     }
     Ok(status)
@@ -1365,11 +1391,13 @@ mod tests {
     #[test]
     fn a_run_whose_process_ends_before_it_finishes_has_failed() {
         let fixture = fixture("runs-interrupted");
-        let run = Run::create(&fixture.store, ["build", "test"]).unwrap();
+        let mut run = Run::create(&fixture.store, ["build", "test"]).unwrap();
+        run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Running);
         let id = run.id().to_string();
         drop(run);
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Failed);
+        assert_eq!(status(&fixture.store, &id).unwrap().phases[0].state, State::Failed);
         let ended = follow(&fixture.store, &id, |_, _| Ok(())).unwrap().unwrap();
         assert_eq!(ended.error.unwrap().message, "its process ended before it finished");
 

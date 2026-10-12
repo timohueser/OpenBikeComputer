@@ -30,7 +30,7 @@ pub fn command(
 ) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, name, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(name, &target)?;
+    super::api::writable(name, &target, false)?;
     let (label, unlock, target) = match source {
         None => (format!("target `{name}`"), format!("obc data unlock {name}"), target),
         Some(id) => (

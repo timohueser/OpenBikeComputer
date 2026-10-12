@@ -140,7 +140,7 @@ pub struct Done {
 pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.to, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(&args.to, &target)?;
+    super::api::writable(&args.to, &target, true)?;
     let (http, today) = (Http::new(), crate::date::format(crate::date::today()));
     let context = Context { root, store: &store, http: &http, prepared };
     let asked =

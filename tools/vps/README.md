@@ -48,5 +48,8 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
   toolchain of `rust-toolchain.toml`.
 - `/opt/obc-data/previous` keeps the build before. To go back, deploy that commit again.
 - A planner release in a format that the services do not read does not start. Deploy services
-  that read it before `obc data update prod` publishes it.
+  that read it before `obc data update prod` publishes it: the update waits up to 24 h for the
+  follower, and then leaves prod as it was.
+- The follower keeps the objects of the releases that prod names, and nothing else, in
+  `/var/lib/obc-data/store/follower/prod/`.
 - `journalctl -u obc-data-serve` shows why a release did not start.

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -104,18 +105,52 @@ pub struct Processes {
 /// Check that the services read the layers of `served` in their formats, then give `store` the
 /// document of its planner release and the object of each file that its services read, from
 /// `target`. It can download for a long time.
-pub fn fetch(programs: &Programs, store: &Store, target: &Target, served: &Served) -> Result<(), String> {
+pub fn fetch(
+    programs: &Programs,
+    store: &Store,
+    target: &Target,
+    served: &Served,
+    wanted: &AtomicBool,
+) -> Result<(), String> {
     readable(programs, served)?;
     let object = |key: &str, sha256: &str| match store.object(sha256) {
         object if object.is_file() => Ok(()),
+        _ if !wanted.load(Ordering::Relaxed) => Err("no release of the target names it any more".into()),
         _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
     };
-    let document = &served.document;
-    object(&document.key, &document.sha256)?;
-    for (_, entry) in runtime(&read(store, document)?)? {
-        object(&format!("objects/{}", entry.transport.sha256), &entry.transport.sha256)?;
+    object(&served.document.key, &served.document.sha256)?;
+    for (key, sha256) in objects(store, served)? {
+        object(&key, &sha256)?;
     }
     Ok(())
+}
+
+/// The key on the target and the object of each file that the services of `served` read: its
+/// document and, once `store` has it, each file under [`RUNTIME`].
+fn objects(store: &Store, served: &Served) -> Result<Vec<(String, String)>, String> {
+    let document = &served.document;
+    let mut objects = vec![(document.key.clone(), document.sha256.clone())];
+    if store.object(&document.sha256).is_file() {
+        let runtime = runtime(&read(store, document)?)?.into_iter().map(|(_, entry)| entry.transport.sha256);
+        objects.extend(runtime.map(|sha256| (format!("objects/{sha256}"), sha256)));
+    }
+    Ok(objects)
+}
+
+/// Delete from `store`, the store of a follower of `target`, each object and each unfinished
+/// download that the services of none of `wanted` read.
+pub fn prune(store: &Store, target: &Target, wanted: &[&Served]) -> Result<(), String> {
+    let mut keep = Vec::new();
+    for served in wanted {
+        keep.extend(objects(store, served)?);
+    }
+    // A download names its file in `partial/` by the URL of an R2 target, or by the object.
+    let part = |(key, sha256): &(String, String)| match target {
+        Target::R2(remote) => crate::fetch::http::key(&remote.url(key)),
+        Target::Dir(_) => sha256.clone(),
+    };
+    let parts: Vec<String> = keep.iter().map(part).collect();
+    crate::store::gc::keep_only(store, &keep.into_iter().map(|(_, sha256)| sha256).collect(), &parts)
 }
 
 /// Install the files of the planner release of `served` (see [`install`]), and start its services
@@ -372,7 +407,7 @@ mod tests {
         };
         let store = Store::at(scratch.0.join("store"));
         let target = Target::Dir(scratch.0.join("target"));
-        let refused = fetch(&programs, &store, &target, &served(9, 3)).err().unwrap();
+        let refused = fetch(&programs, &store, &target, &served(9, 3), &AtomicBool::new(true)).err().unwrap();
         assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
         assert!(!store.root().exists(), "nothing downloads");
         let index = readable(&programs, &served(8, 4)).unwrap_err();
@@ -410,18 +445,22 @@ mod tests {
             Named { key, size: bytes.len() as u64, sha256: sha256_hex(&bytes) }
         };
         let (store, dir_target) = (Store::at(scratch.0.join("store")), Target::Dir(target.clone()));
+        let served = |document: &Named| Served {
+            id: String::new(),
+            planner: String::new(),
+            document: document.clone(),
+            pointers: BTreeMap::new(),
+            formats: BTreeMap::new(),
+        };
         let materialize = |document: &Named, dir: &Path| {
-            let served = Served {
-                id: String::new(),
-                planner: String::new(),
-                document: document.clone(),
-                pointers: BTreeMap::new(),
-                formats: BTreeMap::new(),
-            };
-            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served)?;
+            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served(document), &AtomicBool::new(true))?;
             materialize(&store, document, dir)
         };
         let named = release(&document);
+        let unwanted =
+            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served(&named), &AtomicBool::new(false));
+        assert_eq!(unwanted.unwrap_err(), "no release of the target names it any more");
+        assert!(!store.object(&named.sha256).exists(), "a download that no release wants stops at its next object");
         let dir = scratch.0.join("work");
         assert_eq!(materialize(&named, &dir).unwrap(), "test");
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");

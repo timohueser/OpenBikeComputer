@@ -13,8 +13,9 @@ A changed producer does not rebuild its layer. Raise the `revision` of the layer
 that changes its output; a reader that needs new data raises its `format`.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
-public bucket. A write of `prod` needs the `OBC_R2_*` variables and rclone. The settings of a target (region, optional layers, refresh
-policies) are in the release that it serves, so they need no commit.
+public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
+settings of a target (region, optional layers, refresh policies) are in the release that it
+serves, so they need no commit.
 
 | Configuration or credential | Purpose |
 | --- | --- |
@@ -48,7 +49,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data update prod --dry-run` | Review an update of `prod`; the owner approves its id |
-| `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal |
+| `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data source prepare ID --to local` | Make a version of a prepared source; the same command resumes it |

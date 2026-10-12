@@ -296,6 +296,29 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
     Ok(Some(plan))
 }
 
+/// Delete each object of `store` but those of `keep`, and each entry of `partial/` whose name
+/// starts with none of `parts`: for a store that holds only what some releases read, such as the
+/// store of `obc data serve`.
+pub fn keep_only(store: &Store, keep: &BTreeSet<String>, parts: &[String]) -> Result<(), String> {
+    let objects = store.root().join("objects");
+    for prefix in names(&objects, "")? {
+        for sha256 in names(&objects.join(&prefix), "")? {
+            if !keep.contains(&sha256) {
+                remove(&objects.join(&prefix).join(sha256))?;
+            }
+        }
+    }
+    for name in names(&store.root().join("partial"), "")? {
+        let path = store.partial(&name);
+        match parts.iter().any(|part| name.starts_with(part.as_str())) {
+            true => {}
+            false if path.is_dir() => fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            false => remove(&path)?,
+        }
+    }
+    Ok(())
+}
+
 fn resumable(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("wikimedia-"))
         && ["work/records", "refresh/records"].into_iter().any(|records| path.join(records).is_dir())

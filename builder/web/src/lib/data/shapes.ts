@@ -1,8 +1,81 @@
 // The JSON of the commands that the page reads. `test-support/data/` has an example of each.
 
-/** What `obc data --json` writes about this machine. The header shows it and polls it. */
+/** What `obc data --json` writes about this machine and each target. The header shows it and
+ *  polls it. */
 export interface Status {
     machine: Machine;
+    /** `lock_error` says why the lock of the target cannot be read. */
+    targets: { target: string; lock: Holder | null; lock_error: string | null }[];
+}
+
+/** The run that holds the lock of a target, from its `lock.json`. A run on another machine shows
+ *  only this, read only. */
+export interface Holder {
+    machine: string;
+    run: string;
+    phase: Phase;
+    /** `YYYY-MM-DDTHH:MM:SSZ`; the run writes it each minute. */
+    heartbeat: string;
+    /** Each layer that the run bakes, at the last heartbeat. */
+    progress: { layer: string; done: number; total: number }[];
+    /** Why the run waits in `router-ready`: the last answer of the follower of the target. */
+    waiting?: string;
+    /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
+    stale: boolean;
+}
+
+/** The runs of other machines, from the locks of the targets that they change. */
+export function elsewhere(status: Status | null): { target: string; holder: Holder }[] {
+    const here = status?.machine.name;
+    return (status?.targets ?? []).flatMap(({ target, lock }) => (lock && lock.machine !== here ? [{ target, holder: lock }] : []));
+}
+
+/** Whether run `run`, which held the lock of `target`, ended: the lock is free or another run holds
+ *  it. A lock that cannot be read says nothing about the run. */
+export function ended(status: Status | null, target: string, run: string): boolean {
+    const now = status?.targets.find((at) => at.target === target);
+    return !!now && now.lock_error === null && now.lock?.run !== run;
+}
+
+export const PHASES = ["prepare", "download", "build", "verify", "upload", "router-ready", "switch", "collect"] as const;
+export type Phase = (typeof PHASES)[number];
+
+/** `starting` is a run that no process took yet. `failed` is also a run whose process ended before
+ *  it finished. */
+export type RunState = "starting" | "running" | "ok" | "failed" | "stopped";
+
+export const MARK: Record<RunState, string> = { starting: "◌", running: "◐", ok: "✓", failed: "✗", stopped: "■" };
+
+/** A run as `obc data runs --json` lists it, newest first. */
+export interface RunSummary {
+    id: string;
+    /** The arguments after `obc data` that started it. */
+    args: string[];
+    started: string;
+    state: RunState;
+    /** `null` until it ends. */
+    wall_ms: number | null;
+    bytes_fetched: number;
+    bytes_built: number;
+}
+
+/** What `obc data runs --json` writes. */
+export interface RunList {
+    runs: RunSummary[];
+}
+
+/** What `obc data runs RUN --json` writes, and `runs RUN --stop`. */
+export interface RunView extends RunSummary {
+    /** Each phase that it entered, in order. `waiting` says why it waits, as `Holder` does. */
+    phases: { phase: Phase; state: RunState; started: string; waiting?: string }[];
+    /** Each layer that it bakes. A tiled layer names its leaves `<i>-<j>`. */
+    layers: { layer: string; total: number; done: number; leaves_done: string[]; leaves_baking: string[] }[];
+    /** The releases that it switched its target to. */
+    switched: string[];
+    /** `kept` names the steps whose layers the store keeps for the next update. */
+    error: { code: string; message: string; fix: string; kept: string[] } | null;
+    /** The last lines of its log. */
+    log: string[];
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
@@ -52,4 +125,27 @@ const OS: Record<string, string> = { linux: "Linux", macos: "macOS" };
 export function hardware(machine: Machine): string {
     const memory = machine.memory_bytes === null ? [] : [`${size(machine.memory_bytes)} RAM`];
     return [OS[machine.os] ?? machine.os, `${machine.cores} cores`, ...memory].join(" · ");
+}
+
+/** `YYYY-MM-DDTHH:MM:SSZ` as the local time of day, `09:31`. */
+export function clock(time: string): string {
+    return new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
+
+/** `2 h 5 min`, `44 min`, `40 s`. */
+export function span(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.round(seconds / 60);
+    return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+/** What a person calls a run: `update local` of `update local --region freiburg --expect ID`. */
+export function title(args: readonly string[]): string {
+    return args.filter((arg) => !arg.startsWith("-")).slice(0, 2).join(" ");
+}
+
+/** The target that a run changes: `update` and `rollback` name it first. */
+export function changes(args: readonly string[]): string | null {
+    return ["update", "rollback"].includes(args[0]) && args[1] ? args[1] : null;
 }
