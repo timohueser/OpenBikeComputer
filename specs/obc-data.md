@@ -969,6 +969,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | --- | --- |
 | `release.json` | The release that the target serves, and its rollback. A switch writes it first |
 | `lock.json` | The [lock](#lock): the run that changes the target, or free |
+| `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
@@ -1024,6 +1025,10 @@ a file of the release.
 
 `since` is the time at which the release took its role, or at which a switch to the serving
 release wrote its pointers again. `rollback` is `null` until the second switch.
+
+`planner/next.json` names one more release with the same fields as `serving`: a published release
+that the target does not serve yet. [Serve](#serve) starts the services of its planner release
+beside the others, and gives it to no client.
 
 ### Publish and switch
 
@@ -1226,47 +1231,70 @@ stopped.
 
 ### Serve
 
-`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of every IPv4
-address of the machine. It refuses an R2 target. The current release is the release whose
-pointers clients get. Every answer allows each origin.
+`obc data serve [TARGET]` follows the releases that a target names, by default `local`, and runs
+the services of their planner releases. It answers on port 8710: for a `dir` target on every IPv4
+address of the machine, and for an R2 target on `127.0.0.1` only, behind a proxy. It reads an R2
+target through its public origin, without credentials. The current release is the serving
+release once its services answer: a `dir` target gives clients its pointers. Every answer allows
+each origin.
 
 | Path | Answer |
 | --- | --- |
-| `/cell-catalog/catalog.json` | The device pointer of the current release |
-| `/planner/catalog.json` | The planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
-| Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
+| `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
+| `/cell-catalog/catalog.json` | `dir` only: the device pointer of the current release |
+| `/planner/catalog.json` | `dir` only: the planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
+| Another path | `dir` only: the file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
-Serve reads `release.json` each second. When it changes:
+Serve reads `release.json` and `planner/next.json` of a `dir` target each second, and of an R2
+target every ten seconds. It reads the manifest and the pointers of a release once: a rollback
+reads nothing else. A `planner/next.json` that cannot be read, or whose release cannot be read,
+names no release: serve writes why, reads it again at each look, and loads the other releases.
+When one of the two files changes:
 
-1. Serve starts the services of the planner release of the serving release and of the rollback,
-   unless they run. The planner release of a release is `active.id` of its planner pointer.
+1. Serve loads the planner release of the serving release, of the rollback and of the release of
+   `planner/next.json`, unless it runs. The planner release of a release is `active.id` of its
+   planner pointer.
    First it compares the formats of the layers of the release with the formats that the services
    read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
-   release before anything starts: `needs a routing service that reads planner/routing format 9;
-   it reads 8`.
+   release before anything downloads: `needs a routing service that reads planner/routing format
+   9; it reads 8`. Then a thread downloads its objects into the store, and its services start once
+   they are there. Serve keeps reading the two files and checking the other services meanwhile.
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
-   `GET /catalog`. Until then clients keep the current release.
-3. A planner release fails when one of its services stops, or when its services do not answer
-   within 120 seconds after they start. Its other services stop, and its API answers 404. Clients
-   keep the current release, also when the failed planner release is the one of the current
-   release. A planner release that failed starts again at the next change of `release.json`, and
-   at no other time.
-4. The services of a planner release that neither the serving release, the rollback nor the
-   current release names stop.
+   `GET /catalog`. Until then clients keep the current release. No client gets the release of
+   `planner/next.json`.
+3. A planner release fails when its start fails, when one of its services stops, or when its
+   services do not answer within 120 seconds after they start. Its other services stop, and its
+   API answers 404. Clients keep the current release, also when the failed planner release is the
+   one of the current release. A planner release that failed starts again after 60 seconds, after
+   each later failure in a row twice the wait before, up to 30 minutes. It starts again at once
+   only when the two files name other releases.
+4. The services of a planner release that neither the serving release, the rollback, the release
+   of `planner/next.json` nor the current release names stop.
 
 When the serving release and the rollback fail one after the other, clients keep a release that
-`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
-release.
+`release.json` no longer names, and the services of its planner release keep answering. Serve
+then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
-`identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write opens
-an existing file. Each file must have the SHA-256 and the size that the planner release gives.
+`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
+manifest names lists them. Each file comes from an object of the store, which downloads an object
+that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
+object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
+existing file. Each file must have the SHA-256 and the size that the planner release gives. When
+serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
+grace; a wait before a retry, a connection or a hash does not see the stop.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
-touch it. Download bundles name the origin of the machine on its network when serve starts, else
-`http://127.0.0.1:8710`.
+touch it. For a `dir` target, download bundles name the origin of the machine on its network when
+serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
+`<objects_origin>/objects` of the planner pointer.
+
+For a `dir` target, serve builds the routing service with cargo when it starts. For an R2 target,
+the routing service is the `planner-service` program beside the program of serve, and serve
+needs no tile handler. When the thread that follows the target ends without a stop, such as on a
+panic, serve ends with a `failed` error, so that a supervisor starts it again.
 
 ### Overview
 
@@ -1296,7 +1324,7 @@ only a `dir` target.
 | `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
-| `obc data serve [TARGET] [--json]` | [Serves](#serve) a `dir` target until Ctrl-C. Writes its origin on the machine and on its network |
+| `obc data serve [TARGET] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target on its network |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -2392,7 +2420,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What `serve` writes when it listens.",
       "properties": {
         "network": {
-          "description": "Its origin on the network of this machine, for a phone; `null` without a network.",
+          "description": "Its origin on the network, for a phone; `null` without a network and for an R2 target.",
           "type": [
             "string",
             "null"

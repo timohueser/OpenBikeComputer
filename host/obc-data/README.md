@@ -87,10 +87,13 @@ npm run build:wasm --prefix builder/web
 
 Leave it running while `obc data update local` runs in another terminal. Clients get the new
 release when its services answer. A failed release leaves clients on the current release; the
-services write the cause to the terminal. A service that stops later does not start again: stop
-`obc data serve` with Ctrl-C and start it again.
+services write the cause to the terminal, and `GET /planner-api/releases/<planner id>/ready`
+gives it. A failed release starts again after a minute, then after longer waits, up to 30 minutes.
 Serve reads the formats of the services once, at start: start it again after a change of the
 format that a service reads.
+
+`obc data serve prod` is the follower on the VPS: [`tools/vps/README.md`](../../tools/vps/README.md).
+It gives only the planner API, on `127.0.0.1`.
 
 - Every machine on the local network reaches every file of the target, also `release.json`, and
   the three services. Any web page can read them (CORS `*`).

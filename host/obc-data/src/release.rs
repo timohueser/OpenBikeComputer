@@ -16,6 +16,9 @@ use crate::target::{Condition, Tag, Target};
 /// The key that names the release that a target serves, and its rollback.
 pub const SERVING: &str = "release.json";
 
+/// The key that names, as a [`Role`], the release whose planner services load before a switch to it.
+pub const NEXT: &str = "planner/next.json";
+
 /// The keys that clients read first, sorted. Every release names both. Clients that an older
 /// publisher served read them too, so nothing deletes them.
 pub const POINTERS: [&str; 2] = ["cell-catalog/catalog.json", "planner/catalog.json"];

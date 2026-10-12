@@ -1,5 +1,6 @@
 //! What `obc data serve` answers over HTTP: the API of each planner release whose services
-//! answer, the pointers of the current release, the files of the target, and its tiles.
+//! answer, and for a dir target the pointers of the current release, the files of the target, and
+//! its tiles.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,9 +12,9 @@ use axum::handler::Handler;
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use axum::Router;
+use axum::{Json, Router};
 use hyper_util::rt::TokioIo;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -26,24 +27,67 @@ use crate::release::POINTERS;
 pub struct View {
     /// The release that clients get.
     pub current: Option<Served>,
-    /// The port of each of the [`SERVICES`] of each planner release that answers, by its id.
-    pub ports: BTreeMap<String, [u16; SERVICES.len()]>,
+    /// What the services of each planner release of the follower do, by its id.
+    pub planners: BTreeMap<String, Planner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Planner {
+    Starting,
+    /// They answer, at the port of each of the [`SERVICES`] on this machine.
+    Ready([u16; SERVICES.len()]),
+    /// Why they stopped.
+    Failed(String),
 }
 
 pub type Shared = Arc<RwLock<View>>;
 
-/// The API of the planner releases at `/planner-api/releases/<id>/<service>/`, the pointers of the
-/// current release, and the files of the dir target `dir`. A path that names no file goes to the
-/// tile server at port `tiles` of this machine. Any origin may read it.
-pub fn router(shared: Shared, dir: &Path, tiles: u16) -> Router {
-    let files = ServeDir::new(dir).append_index_html_on_directories(false).fallback(forward_all.with_state(tiles));
-    Router::new()
+/// Whether each planner release is ready at `/planner-api/releases/<id>/ready`, its API at
+/// `/planner-api/releases/<id>/<service>/`, and the downloads of the current release at
+/// `/planner-offline/`. With `files`, a dir target and the port of its tile server on this machine:
+/// also the pointers of the current release and the files of the target, and a path that names no
+/// file goes to the tile server. Any origin may read it.
+pub fn router(shared: Shared, files: Option<(&Path, u16)>) -> Router {
+    let mut router = Router::new()
+        .route("/planner-api/releases/{id}/ready", get(ready))
         .route("/planner-api/releases/{id}/{service}/{*path}", any(api))
-        .route(&format!("/{}", POINTERS[0]), get(pointer))
-        .route(&format!("/{PLANNER}"), get(pointer))
-        .fallback_service(files)
-        .with_state(shared)
-        .layer(CorsLayer::permissive())
+        .route("/planner-offline/{*path}", any(offline));
+    if let Some((dir, tiles)) = files {
+        let files = ServeDir::new(dir).append_index_html_on_directories(false).fallback(forward_all.with_state(tiles));
+        router = router
+            .route(&format!("/{}", POINTERS[0]), get(pointer))
+            .route(&format!("/{PLANNER}"), get(pointer))
+            .fallback_service(files);
+    }
+    router.with_state(shared).layer(CorsLayer::permissive())
+}
+
+/// The port of the service `name` of the planner release `planner`, while its services answer, and
+/// the place of the service in [`SERVICES`].
+fn port(view: &View, planner: &str, name: &str) -> Option<(usize, u16)> {
+    let at = SERVICES.iter().position(|service| service.name == name)?;
+    match view.planners.get(planner)? {
+        Planner::Ready(ports) => Some((at, ports[at])),
+        _ => None,
+    }
+}
+
+/// 200 when the services of the planner release `id` answer; 503 while they start or after they
+/// failed, with the reason; 404 when no release that the target names has it.
+async fn ready(State(shared): State<Shared>, Params(id): Params<String>) -> Response {
+    let planner = shared.read().unwrap().planners.get(&id).cloned();
+    let (status, body) = match planner {
+        Some(Planner::Ready(_)) => (StatusCode::OK, json!({"state": "ready"})),
+        Some(Planner::Starting) => (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "starting"})),
+        Some(Planner::Failed(reason)) => {
+            (StatusCode::SERVICE_UNAVAILABLE, json!({"state": "failed", "reason": format!("not ready: {reason}")}))
+        }
+        None => {
+            let reason = format!("no release of the target has the planner release {id}");
+            (StatusCode::NOT_FOUND, json!({"state": "unknown", "reason": reason}))
+        }
+    };
+    (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
 async fn api(
@@ -51,9 +95,8 @@ async fn api(
     Params((id, name, _)): Params<(String, String, String)>,
     request: Request,
 ) -> Response {
-    let service = SERVICES.iter().position(|service| service.name == name);
-    let port = service.and_then(|at| Some(shared.read().unwrap().ports.get(&id)?[at]));
-    let (Some(service), Some(port)) = (service, port) else {
+    let found = port(&shared.read().unwrap(), &id, &name);
+    let Some((service, port)) = found else {
         return (StatusCode::NOT_FOUND, format!("No {name} service of planner release {id} runs here."))
             .into_response();
     };
@@ -61,6 +104,20 @@ async fn api(
     let rest = request.uri().path_and_query().map_or("", |path| path.as_str()).strip_prefix(&prefix).unwrap_or("/");
     let path = format!("{}{rest}", SERVICES[service].path);
     forward(port, request, &path).await
+}
+
+/// The downloads service of the current release, for apps that know no planner release.
+async fn offline(State(shared): State<Shared>, request: Request) -> Response {
+    let found = {
+        let view = shared.read().unwrap();
+        view.current.as_ref().and_then(|current| port(&view, &current.planner, "downloads"))
+    };
+    let Some((_, port)) = found else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "The downloads of the current release do not run.").into_response();
+    };
+    let path = request.uri().path_and_query().map_or("", |path| path.as_str());
+    let rest = path.strip_prefix("/planner-offline").unwrap_or("/").to_string();
+    forward(port, request, &rest).await
 }
 
 async fn pointer(State(shared): State<Shared>, uri: Uri, headers: HeaderMap) -> Response {
@@ -175,11 +232,12 @@ mod tests {
         let current = Served {
             id: "b".repeat(64),
             planner: planner.clone(),
+            document: crate::release::File { key: String::new(), size: 0, sha256: String::new() },
             pointers: [(POINTERS[0].into(), b"{}".to_vec()), (PLANNER.into(), pointer.clone().into())].into(),
             formats: BTreeMap::new(),
         };
-        let view = View { current: Some(current), ports: [(planner.clone(), [upstream; 3])].into() };
-        let port = listen(&runtime, router(Arc::new(RwLock::new(view)), &scratch.0, upstream));
+        let view = View { current: Some(current), planners: [(planner.clone(), Planner::Ready([upstream; 3]))].into() };
+        let port = listen(&runtime, router(Arc::new(RwLock::new(view)), Some((&scratch.0, upstream))));
         let origin = format!("http://127.0.0.1:{port}");
         let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).http_status_as_error(false).build().into();
         let text = |mut response: axum::http::Response<ureq::Body>| response.body_mut().read_to_string().unwrap();
