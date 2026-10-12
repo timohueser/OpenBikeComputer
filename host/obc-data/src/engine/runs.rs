@@ -71,6 +71,10 @@ pub enum Event {
     Switched {
         release: String,
     },
+    /// Why the phase waits, such as the answer of the follower in `router-ready`.
+    Waiting {
+        reason: String,
+    },
     FetchStarted {
         source: String,
         version: String,
@@ -108,13 +112,16 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum Phase {
     Prepare,
     Download,
     Build,
     Verify,
     Upload,
+    /// An R2 target only: the run waits until the follower of the target serves the planner
+    /// release of the new release.
+    RouterReady,
     Switch,
     Collect,
 }
@@ -247,7 +254,10 @@ impl Run {
         self.line(&line)?;
         self.unsaved = true;
         // A fetch can take long: its status shows that it runs.
-        let now = matches!(event, Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. });
+        let now = matches!(
+            event,
+            Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. } | Event::Waiting { .. }
+        );
         if now || self.saved.elapsed() >= SAVE {
             self.save()?;
         }
@@ -287,8 +297,16 @@ impl Run {
                 if let Some(last) = status.phases.last_mut() {
                     last.state = State::Ok;
                 }
-                status.phases.push(PhaseState { phase, state: State::Running, started: date::timestamp(date::now()) });
+                let started = date::timestamp(date::now());
+                status.phases.push(PhaseState { phase, state: State::Running, started, waiting: None });
                 format!("phase {phase}")
+            }
+            Event::Waiting { reason } => {
+                let line = format!("waiting: {reason}");
+                if let Some(last) = status.phases.last_mut() {
+                    last.waiting = Some(reason);
+                }
+                line
             }
             Event::Switched { release } => {
                 let line = format!("switched to release {release}");
@@ -768,6 +786,9 @@ pub struct PhaseState {
     pub state: State,
     /// When it began, `YYYY-MM-DDTHH:MM:SSZ`.
     pub started: String,
+    /// Why it waits: in `router-ready`, the last answer of the follower of the target.
+    #[serde(default)]
+    pub waiting: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]

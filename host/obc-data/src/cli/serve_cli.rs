@@ -78,6 +78,8 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let work = store.root().join("serve").join(&args.target);
     // The work folder holds what a serve that did not stop left.
     let _ = std::fs::remove_dir_all(&work);
+    // The objects of the releases that serve follows are in a store of their own, which it prunes.
+    let objects = Store::open_at(store.root().join("follower").join(&args.target))?;
     let mut tile_server = Vec::new();
     let mut files = None;
     if let Some(dir) = &dir {
@@ -93,7 +95,7 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let (shared, stop) = (Shared::default(), Arc::new(AtomicBool::new(false)));
     let loader = Loader {
         programs: Arc::new(programs),
-        store: store.root().to_path_buf(),
+        store: objects.root().to_path_buf(),
         target: target.clone(),
         work: work.clone(),
         public: dir.is_some().then(|| listening.network.clone().unwrap_or(listening.url.clone())),
@@ -205,6 +207,12 @@ impl Load for Loader {
         let (target, served) = (self.target.clone(), served.clone());
         let worker = std::thread::Builder::new().spawn(move || services::fetch(&programs, &store, &target, &served));
         worker.map_err(|e| format!("cannot start a download: {e}"))
+    }
+
+    fn keep(&mut self, wanted: &[&Served]) {
+        if let Err(e) = services::prune(&Store::at(self.store.clone()), &self.target, wanted) {
+            eprintln!("obc data serve: the store of serve keeps files that no release reads: {e}");
+        }
     }
 
     fn start(&mut self, served: &Served) -> Result<Processes, String> {

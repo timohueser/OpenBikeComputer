@@ -211,6 +211,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
+| `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -656,8 +657,9 @@ process never started.
 
 - `status.json` is the status of the run (`runs RUN --follow --json` in
   [JSON schemas](#json-schemas)): its arguments after `obc data`, its process (while it starts,
-  the process that reserved it, then the process that it starts), its state (`starting`, `running`, `ok`, `failed` or `stopped`), each phase that it
-  entered with its state, the progress of each layer that it bakes (steps done of the total, and
+  the process that reserved it, then the process that it starts), its state (`starting`,
+  `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
+  waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (steps done of the total, and
   for a tiled layer the leaves done and the leaves that bake now), its fetches and steps, the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
@@ -970,7 +972,8 @@ URL, with each part of a key percent-encoded, so a `#` in a key under `sources/`
 `obc data` writes an R2 target with the credentials of `OBC_R2_*` (see [Credentials](#credentials)):
 a small document through the S3 API, signed with AWS Signature Version 4, and the files of a
 release with rclone. `OBC_R2_BUCKET` must be the `bucket` of the target. A command that writes an
-R2 target without these variables or without rclone refuses (`blocked`). A tagged read and a
+R2 target without these variables refuses (`blocked`); so do an update and a rollback without
+rclone, which lists and checks the files of a release. A tagged read and a
 review need the credentials too: the review id holds the tag of `release.json`, which is the ETag
 of the S3 API, and the public origin can give another form of it, such as the weak ETag of a
 compressed answer.
@@ -983,7 +986,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | --- | --- |
 | `release.json` | The release that the target serves, and its rollback. A switch writes it first |
 | `lock.json` | The [lock](#lock): the run that changes the target, or free |
-| `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it |
+| `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it, see [Router ready](#router-ready) |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
@@ -1123,7 +1126,8 @@ it.
   age of the heartbeat with the clock of the server: its `Date` against the `Last-Modified` of
   `lock.json`.
 - `progress` gives the steps done of the total of each layer that the run bakes, at the last
-  heartbeat. `status.json` of the run has the detail, see [Runs](#runs).
+  heartbeat. `status.json` of the run has the detail, see [Runs](#runs). In the phase
+  `router-ready`, `waiting` gives the last answer of the follower of the target.
 
 ### Update
 
@@ -1151,10 +1155,31 @@ arguments of the person, before the run. One run does each phase in this order, 
    file is the same when its name, size and SHA-256 are. Whether the target copies a source, and
    its credit, change no file of the release. Else each product checks it, and a failed check
    changes nothing.
-5. Upload and switch, as [Publish and switch](#publish-and-switch) says.
+5. Upload and switch, as [Publish and switch](#publish-and-switch) says. On an R2 target, the
+   phase `router-ready` comes between them, as [Router ready](#router-ready) says.
 6. Collect, as [Collection](#collection) says, when it switched to another release.
 
 An update that stops keeps what it baked in the store, and the next update reuses it.
+
+### Router ready
+
+The follower of an R2 target, [serve](#serve) on the machine that serves its API, must run the
+planner release of a release before a client gets the release. So between the upload and the
+switch to a new release, an update of an R2 target does this; a `dir` target skips it.
+
+1. `planner/next.json` gets `{"id": "<release>", "since": "<time>"}`, with a conditional write
+   on what the run read there.
+2. Every 10 seconds (`EVERY` in `ready.rs`), the run asks `GET
+   <api_origin>/planner-api/releases/<planner>/ready`, with `api_origin` and `active.id` of the
+   planner pointer of the new release. 200 ends the wait. Any other answer, also 404 and no
+   answer, is a reason to wait: the reason of the answer, or its status. Each new reason goes to
+   the log and the status of the run and to the next heartbeat of the lock.
+3. After the switch, the run deletes `planner/next.json`.
+
+The run waits at most 24 hours (`GIVE_UP` in `ready.rs`). After that, or when the run stops or
+another run takes the lock, it deletes `planner/next.json` and fails with `<target> unchanged:
+<last reason>`. `release.json` and the pointers stay as they were; the next collection deletes
+the release that it uploaded. The run deletes `planner/next.json` only while it names its release.
 
 ### Any machine
 
@@ -1229,9 +1254,12 @@ new data until they update. An update with a format change starts only with
 ### Rollback
 
 `obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
-asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
-rollback refuses. The target must have each key of the rollback release, else nothing changes.
-Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
+asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so
+a second rollback undoes the first. A target without a rollback refuses. The target must have each
+key of the rollback release, else nothing changes. On an R2 target, the follower must also serve
+the planner release of the rollback: the rollback asks its `ready` once, as [Router
+ready](#router-ready) says, and any answer but 200 refuses (`blocked`) with its reason. The
+follower keeps that planner release running, so it waits for nothing. Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
 as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
 
 ### Collection
@@ -1313,14 +1341,16 @@ then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
-manifest names lists them. Each file comes from an object of the store, which downloads an object
+manifest names lists them. Each file comes from an object of the store of serve, which downloads an object
 that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
 object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
 existing file. Each file must have the SHA-256 and the size that the planner release gives. When
 serve stops, it ends each download at its next read and waits for it within the 10 seconds of its
 grace; a wait before a retry, a connection or a hash does not see the stop.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
-touch it. For a `dir` target, download bundles name the origin of the machine on its network when
+touch it. The objects are in a store of serve alone, `<store>/follower/<target>/`. Each time the
+releases that the two files name change, serve deletes there each object and each unfinished
+download that the services of none of them read. For a `dir` target, download bundles name the origin of the machine on its network when
 serve starts, else `http://127.0.0.1:8710`. For an R2 target, they name `api_origin` and
 `<objects_origin>/objects` of the planner pointer.
 
@@ -2226,6 +2256,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "run": {
           "type": "string"
+        },
+        "waiting": {
+          "description": "Why the run waits, in the phase `router-ready`: the last answer of the follower of the\ntarget.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2657,16 +2694,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Phase": {
-      "enum": [
-        "prepare",
-        "download",
-        "build",
-        "verify",
-        "upload",
-        "switch",
-        "collect"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "prepare",
+            "download",
+            "build",
+            "verify",
+            "upload",
+            "switch",
+            "collect"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "router-ready",
+          "description": "An R2 target only: the run waits until the follower of the target serves the planner\nrelease of the new release.",
+          "type": "string"
+        }
+      ]
     },
     "PhaseState": {
       "properties": {
@@ -2679,12 +2725,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "state": {
           "$ref": "#/$defs/State2"
+        },
+        "waiting": {
+          "default": null,
+          "description": "Why it waits: in `router-ready`, the last answer of the follower of the target.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "phase",
         "state",
-        "started"
+        "started",
+        "waiting"
       ],
       "type": "object"
     },

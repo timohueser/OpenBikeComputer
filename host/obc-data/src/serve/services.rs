@@ -110,12 +110,39 @@ pub fn fetch(programs: &Programs, store: &Store, target: &Target, served: &Serve
         object if object.is_file() => Ok(()),
         _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
     };
-    let document = &served.document;
-    object(&document.key, &document.sha256)?;
-    for (_, entry) in runtime(&read(store, document)?)? {
-        object(&format!("objects/{}", entry.transport.sha256), &entry.transport.sha256)?;
+    object(&served.document.key, &served.document.sha256)?;
+    for (key, sha256) in objects(store, served)? {
+        object(&key, &sha256)?;
     }
     Ok(())
+}
+
+/// The key on the target and the object of each file that the services of `served` read: its
+/// document and, once `store` has it, each file under [`RUNTIME`].
+fn objects(store: &Store, served: &Served) -> Result<Vec<(String, String)>, String> {
+    let document = &served.document;
+    let mut objects = vec![(document.key.clone(), document.sha256.clone())];
+    if store.object(&document.sha256).is_file() {
+        let runtime = runtime(&read(store, document)?)?.into_iter().map(|(_, entry)| entry.transport.sha256);
+        objects.extend(runtime.map(|sha256| (format!("objects/{sha256}"), sha256)));
+    }
+    Ok(objects)
+}
+
+/// Delete from `store`, the store of a follower of `target`, each object and each unfinished
+/// download that the services of none of `wanted` read.
+pub fn prune(store: &Store, target: &Target, wanted: &[&Served]) -> Result<(), String> {
+    let mut keep = Vec::new();
+    for served in wanted {
+        keep.extend(objects(store, served)?);
+    }
+    // A download names its file in `partial/` by the URL of an R2 target, or by the object.
+    let part = |(key, sha256): &(String, String)| match target {
+        Target::R2(remote) => crate::fetch::http::key(&remote.url(key)),
+        Target::Dir(_) => sha256.clone(),
+    };
+    let parts: Vec<String> = keep.iter().map(part).collect();
+    crate::store::gc::keep_only(store, &keep.into_iter().map(|(_, sha256)| sha256).collect(), &parts)
 }
 
 /// Install the files of the planner release of `served` (see [`install`]), and start its services
