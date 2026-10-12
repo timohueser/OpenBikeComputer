@@ -1671,9 +1671,9 @@ bytes. The reference archive ingest reaches `reference/v1/` with rclone and the 
 `obc data r2` is plumbing for scripts: those commands call it, and a person deletes a key with
 `obc data r2 delete`. It does not change the state of a release. Once the bucket has the
 `release.json` of `obc data`, `obc bake publish --target r2` refuses to run, and `obc data r2 put`
-and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under `objects/`,
-`releases/` or `sources/`. `obc bake clean-r2` refuses to run when the pointer of its prefix has
-`release`, or is not JSON. `obc data` never writes under `reference/v1/`.
+and `delete` refuse `release.json`, `lock.json`, `planner/next.json`, a pointer key, and a key
+under `objects/`, `releases/` or `sources/`. `obc bake clean-r2` refuses to run when the pointer
+of its prefix has `release`, or is not JSON. `obc data` never writes under `reference/v1/`.
 
 ### Credentials
 
@@ -1684,9 +1684,10 @@ and `delete` refuse `release.json`, `lock.json`, a pointer key, and a key under 
 | `OBC_R2_ENDPOINT` | Another endpoint; replaces the one from `OBC_R2_ACCOUNT_ID` |
 | `OBC_R2_LOCAL_DIR` | A local directory that replaces the bucket. Tests use it. When it is set, it must not be empty, and `OBC_R2_BUCKET` must not be set |
 
-`--fixtures` reads the same variables with the prefix `OBC_FIXTURE_R2_` instead. A credential
-goes to rclone only in its environment, never in an argument or a file. The S3 client of an R2
-target signs with the secret key and never sends it.
+`--fixtures` reads the same variables with the prefix `OBC_FIXTURE_R2_` instead. `legacy` refuses
+`--fixtures`: it reads the bucket of its target. A credential goes to rclone only in its
+environment, never in an argument or a file. The S3 client of an R2 target signs with the secret
+key and never sends it.
 
 ### Commands
 
@@ -1701,8 +1702,8 @@ target signs with the secret key and never sends it.
 
 Rules:
 
-- The `r2` commands are plumbing below the rule of [Errors](#errors). Only `delete` asks,
-  because a delete cannot be undone. `put` and `get` never ask.
+- The `r2` commands are plumbing below the rule of [Errors](#errors). Only `delete` and
+  `legacy --delete` ask, because a delete cannot be undone. `put` and `get` never ask.
 - A key or a prefix is never empty, has no empty, `.` or `..` part, and has no control
   character. The bucket root is never a target.
 - Verify passes when the object has the size of the file, and the same MD5 when both sides
@@ -1714,12 +1715,13 @@ Rules:
   same rules: a key that the bucket does not hold is refused, `removed.jsonl` is refused, a key
   under `cell-catalog/`, `planner/` or `reference/` is refused without `--legacy`, and then nothing
   is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
-- `legacy` lists each key under `cell-catalog/`, `planner/` and `reference/v1/`, or under the one
-  `--prefix`, that the target does not use: no key that its serving or rollback release names, no
-  pointer and not `planner/next.json`. It refuses while the target serves no release. Its digest
-  is the SHA-256 of the lines `<bytes>  <key>\n`, sorted by key. With `--delete`, it lists again,
-  refuses when the digest is not `--expect` or a run holds the lock, and then deletes as
-  `delete --legacy`.
+- `legacy` lists each key under `cell-catalog/` and `planner/`, or under the one `--prefix`, that
+  `obc data` does not write. It refuses while the target serves no release, and refuses
+  `reference/v1` while the serving release reads no version of a `terrain-reference/*` source.
+  The digest is the SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With
+  `--delete`, it lists again, refuses when the digest is not `--expect`, and deletes as
+  `delete --legacy` with the counts, the bytes and the digest as its plan. With no key, it
+  deletes nothing and exits 0.
 - `delete` cannot be undone. It prints the plan: the bucket, and each object with its size and
   upload time. With `--json`, the plan goes to standard error, and the output is the objects
   that it deleted. Then it asks as [Errors](#errors) says.
@@ -1791,7 +1793,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `runs` | `RunList` |
 | `runs RUN`, `runs RUN --stop` | `View` |
 | `runs RUN --follow`, one per line | `Status` |
-| `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
+| `r2 list`, `stat`, `delete`, `legacy --delete` | `Objects` |
 | `r2 get` | `Downloaded` |
 | `r2 put` | `Uploaded` |
 | `r2 legacy` | `Legacy` |
@@ -2422,30 +2424,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
-    "Folder": {
-      "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "keys": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "prefix": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "prefix",
-        "bytes",
-        "keys"
-      ],
-      "type": "object"
-    },
     "FormatChange": {
       "properties": {
         "from": {
@@ -3002,14 +2980,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "The keys of the legacy pipelines that a target does not use.",
       "properties": {
         "digest": {
-          "description": "The SHA-256 of the lines `<bytes>  <key>` of the keys of every folder, sorted by key.",
+          "description": "The SHA-256 of the lines `<bytes>  <key>\\n` of the keys of every folder, sorted by key.",
           "type": "string"
         },
         "folders": {
-          "items": {
-            "$ref": "#/$defs/Folder"
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/LegacyKey"
+            },
+            "type": "array"
           },
-          "type": "array"
+          "description": "The keys of each folder, sorted.",
+          "type": "object"
         },
         "target": {
           "type": "string"
@@ -3019,6 +3001,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "target",
         "folders",
         "digest"
+      ],
+      "type": "object"
+    },
+    "LegacyKey": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "bytes"
       ],
       "type": "object"
     },

@@ -316,7 +316,7 @@ mod tests {
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`, `runs RUN --stop`", generator.subschema_for::<View>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Status>()),
-            schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
+            schema("`r2 list`, `stat`, `delete`, `legacy --delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),
             schema("`r2 put`", generator.subschema_for::<r2_cli::Uploaded>()),
             schema("`r2 legacy`", generator.subschema_for::<r2_cli::Legacy>()),

@@ -1,6 +1,6 @@
 //! `obc data r2`: the R2 client as plumbing commands for scripts, and the legacy keys of a target.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -11,17 +11,17 @@ use crate::r2::{
     legacy as legacy_key, owned as release_key, refuse_older_publish, Bucket, Credentials, Object, Put, Upload,
     REMOVAL_LOG,
 };
-
-use crate::release::{self, Release, NEXT, POINTERS};
+use crate::release::{self, Release};
+use crate::sources::Registry;
 use crate::store::{sha256_hex, Store};
 use crate::target::Target;
 
 use super::api::confirm;
 use super::{cells, print_json, table, Code, Error};
 
-/// The folders of the legacy pipelines that `r2 legacy` lists, sorted. `reference/v1/` goes later
-/// than the other two, so `--prefix` takes one.
-const LEGACY: [&str; 3] = ["cell-catalog/", "planner/", "reference/v1/"];
+/// The folders of the legacy pipelines that `r2 legacy` lists, sorted. Without `--prefix`, it lists
+/// the first two: `reference/v1` holds terrain until terrain-reference versions replace it.
+const LEGACY: [&str; 3] = ["cell-catalog", "planner", "reference/v1"];
 
 #[derive(Args)]
 pub struct R2 {
@@ -29,22 +29,13 @@ pub struct R2 {
     #[arg(long, global = true)]
     fixtures: bool,
     #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    #[command(flatten)]
-    Bucket(Action),
-    /// The keys under `cell-catalog/`, `planner/` and `reference/v1/` that the target does not
-    /// use, and their digest; with `--delete`, delete them.
-    Legacy(LegacyArgs),
+    action: Action,
 }
 
 #[derive(Args)]
 struct LegacyArgs {
     target: String,
-    /// List only this folder.
+    /// List this folder instead of `cell-catalog` and `planner`.
     #[arg(long, value_parser = LEGACY)]
     prefix: Option<String>,
     /// List the keys again and delete them when their digest is `--expect`.
@@ -101,6 +92,9 @@ enum Action {
         #[arg(long)]
         legacy: bool,
     },
+    /// The keys under `cell-catalog/` and `planner/` that the target does not use, and their
+    /// digest; with `--delete`, delete them.
+    Legacy(LegacyArgs),
 }
 
 /// The objects of a bucket that a command lists or deletes.
@@ -115,16 +109,16 @@ pub struct Objects<'a> {
 #[derive(Serialize, JsonSchema)]
 pub struct Legacy {
     target: String,
-    folders: Vec<Folder>,
-    /// The SHA-256 of the lines `<bytes>  <key>` of the keys of every folder, sorted by key.
+    /// The keys of each folder, sorted.
+    folders: BTreeMap<String, Vec<LegacyKey>>,
+    /// The SHA-256 of the lines `<bytes>  <key>\n` of the keys of every folder, sorted by key.
     digest: String,
 }
 
 #[derive(Serialize, JsonSchema)]
-pub struct Folder {
-    prefix: String,
+pub struct LegacyKey {
+    key: String,
     bytes: u64,
-    keys: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -141,18 +135,18 @@ pub struct Uploaded<'a> {
 }
 
 pub fn run(r2: R2, json: bool) -> Result<(), Error> {
-    let action = match r2.command {
-        Command::Bucket(action) => action,
-        Command::Legacy(args) => {
-            let target = crate::target::find(&super::root()?, &args.target, &Store::open()?)
-                .map_err(|e| Code::Usage.error(e))?;
-            return legacy(&target, args, json);
+    if let Action::Legacy(args) = r2.action {
+        if r2.fixtures {
+            return Err(Code::Usage.error("`legacy` reads the bucket of its target, never the fixture bucket"));
         }
-    };
+        let root = super::root()?;
+        let target = crate::target::find(&root, &args.target, &Store::open()?).map_err(|e| Code::Usage.error(e))?;
+        return legacy(&super::registry(&root)?, &target, args, json);
+    }
     let failed = |e| Code::R2Failed.error(e);
     let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })
         .map_err(|e| Code::Blocked.error(e))?;
-    match action {
+    match r2.action {
         Action::List { prefix } => print_objects(&bucket, &bucket.list(&prefix).map_err(failed)?, json),
         Action::Stat { keys } => {
             print_objects(&bucket, &bucket.stat(&keys).map_err(failed)?.into_values().collect::<Vec<_>>(), json)
@@ -183,8 +177,9 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
             Ok(())
         }
         Action::Delete { keys, prefix, reason, yes, legacy } => {
-            delete(&bucket, (keys, prefix, legacy), &reason, yes, json)
+            delete(&bucket, (keys, prefix, legacy), None, &reason, yes, json)
         }
+        Action::Legacy(_) => unreachable!("`legacy` returns above"),
     }
 }
 
@@ -204,6 +199,7 @@ fn owned(message: String) -> Error {
 fn delete(
     bucket: &Bucket,
     (keys, prefix, allow_legacy): (Vec<String>, Option<String>, bool),
+    summary: Option<String>,
     reason: &str,
     yes: bool,
     json: bool,
@@ -224,7 +220,8 @@ fn delete(
     }
     let objects = bucket.plan_delete(&keys).map_err(|e| failed(format!("{e}; nothing was deleted")))?;
     let bytes: u64 = objects.iter().map(|object| object.bytes).sum();
-    let plan = format!("{} object(s), {bytes} bytes to delete\n{}", objects.len(), listing(bucket, &objects));
+    let each = summary.unwrap_or_else(|| listing(bucket, &objects));
+    let plan = format!("{} object(s), {bytes} bytes to delete\n{each}", objects.len());
     // With `--json`, standard output holds only the JSON.
     if json {
         eprint!("{plan}");
@@ -240,60 +237,69 @@ fn delete(
     Ok(())
 }
 
-fn legacy(target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
-    let listed = unused(&args.target, target, args.prefix.as_deref())?;
+fn legacy(registry: &Registry, target: &Target, args: LegacyArgs, json: bool) -> Result<(), Error> {
+    let listed = unused(registry, (&args.target, target), args.prefix.as_deref())?;
     if !args.delete {
         if json {
             return print_json(&listed);
         }
-        let mut rows = vec![cells(["PREFIX", "KEYS", "BYTES"])];
-        rows.extend(
-            listed.folders.iter().map(|f| vec![f.prefix.clone(), f.keys.len().to_string(), f.bytes.to_string()]),
-        );
-        print!("{}\n{}digest {}\n", listed.target, table(&rows), listed.digest);
+        print!("{}", summary(&listed));
         return Ok(());
     }
-    if args.expect.as_deref() != Some(listed.digest.as_str()) {
-        return Err(Code::Blocked
-            .error(format!("the list has the digest {}, not the one expected; nothing was deleted", listed.digest))
-            .fix("List the keys again, and delete the list that the owner approves."));
-    }
-    if let Some(holder) = crate::lock::holder(target)? {
-        return Err(Code::Blocked.error(format!("{}; nothing was deleted", crate::lock::held_by(&holder))));
-    }
+    super::update_cli::expect(&format!("r2 legacy {}", args.target), &listed.digest, args.expect.as_deref())
+        .map_err(|e| e.fix("List the keys again: run the same command without `--delete`."))?;
     let bucket = match target {
         Target::Dir(dir) => Bucket::local(dir),
         Target::R2(remote) => remote.writer()?.bucket()?,
     };
-    let keys = listed.folders.into_iter().flat_map(|folder| folder.keys).collect();
-    delete(&bucket, (keys, None, true), &args.reason.unwrap_or_default(), args.yes, json)
+    let keys: Vec<String> = listed.folders.values().flatten().map(|k| k.key.clone()).collect();
+    if keys.is_empty() {
+        if json {
+            return print_json(&Objects { bucket: bucket.describe(), objects: &[] });
+        }
+        println!("no legacy key is left; nothing was deleted");
+        return Ok(());
+    }
+    delete(&bucket, (keys, None, true), Some(summary(&listed)), &args.reason.unwrap_or_default(), args.yes, json)
 }
 
-/// The keys under the folders of [`LEGACY`], or under `prefix`, that `target` does not use: that
-/// neither its serving nor its rollback release names, and that are no pointer and not [`NEXT`].
-/// It refuses before the cutover, while the target serves no release.
-fn unused(name: &str, target: &Target, prefix: Option<&str>) -> Result<Legacy, Error> {
+/// The keys under `cell-catalog/` and `planner/`, or under `prefix`, that `obc data` does not
+/// write; `Release::check` keeps every other key of a release out of these folders. See the spec
+/// for when it refuses.
+fn unused(registry: &Registry, (name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legacy, Error> {
     let Some((serving, _)) = release::serving(target)? else {
         return Err(Code::Blocked
             .error(format!("target `{name}` serves no release; nothing is legacy before the cutover"))
             .fix(format!("Run `obc data update {name}` first.")));
     };
-    let mut used: BTreeSet<String> = POINTERS.iter().chain([&NEXT]).map(|key| key.to_string()).collect();
-    for role in std::iter::once(&serving.serving).chain(&serving.rollback) {
-        let release = Release::read(target, &role.id)?;
-        used.extend(release.files().into_iter().chain(release.pointers).map(|file| file.key));
+    if prefix == Some(LEGACY[2]) {
+        let read = Release::read(target, &serving.serving.id)?.versions();
+        let unread = |id: &&str| id.starts_with("terrain-reference/") && !read.keys().any(|(source, _)| source == id);
+        let missing: Vec<&str> = registry.sources.iter().map(|source| source.id.as_str()).filter(unread).collect();
+        if !missing.is_empty() {
+            return Err(Code::Blocked
+                .error(format!("`{name}` serves no version of {} terrain-reference sources", missing.len()))
+                .fix(format!("reference/v1/ stays until a release serves {}.", missing.join(", "))));
+        }
     }
-    let (mut folders, mut lines) = (Vec::new(), String::new());
-    for prefix in LEGACY.into_iter().filter(|folder| prefix.is_none_or(|only| only == *folder)) {
-        let mut keys = target.list_under(prefix.trim_end_matches('/'))?;
-        keys.retain(|listed| !used.contains(&listed.key));
-        // LEGACY is sorted and each listing is sorted, so the lines are sorted by key.
-        lines.extend(keys.iter().map(|listed| format!("{}  {}\n", listed.size, listed.key)));
-        let bytes = keys.iter().map(|listed| listed.size).sum();
-        let keys: Vec<String> = keys.into_iter().map(|listed| listed.key).collect();
-        folders.push(Folder { prefix: prefix.into(), bytes, keys });
+    let mut folders: BTreeMap<String, Vec<LegacyKey>> = BTreeMap::new();
+    for prefix in prefix.map_or(LEGACY[..2].to_vec(), |prefix| vec![prefix]) {
+        let mut keys = target.list_under(prefix)?;
+        keys.retain(|listed| !release_key(&listed.key));
+        folders.insert(prefix.into(), keys.into_iter().map(|l| LegacyKey { key: l.key, bytes: l.size }).collect());
     }
+    // Each listing is sorted, so the lines are sorted by key.
+    let lines: String = folders.values().flatten().map(|k| format!("{}  {}\n", k.bytes, k.key)).collect();
     Ok(Legacy { target: name.into(), folders, digest: sha256_hex(lines.as_bytes()) })
+}
+
+/// The keys and bytes of each folder, and the digest.
+fn summary(listed: &Legacy) -> String {
+    let mut rows = vec![cells(["PREFIX", "KEYS", "BYTES"])];
+    for (prefix, keys) in &listed.folders {
+        rows.push(vec![prefix.clone(), keys.len().to_string(), keys.iter().map(|k| k.bytes).sum::<u64>().to_string()]);
+    }
+    format!("{}\n{}digest {}\n", listed.target, table(&rows), listed.digest)
 }
 
 fn print_objects(bucket: &Bucket, objects: &[Object], json: bool) -> Result<(), Error> {
@@ -321,25 +327,24 @@ mod tests {
         crate::engine::tests::write(&cell, "a");
         let bucket = Bucket::local(&scratch.0);
         let keys = || (vec!["cell-catalog/a.obcm".to_string()], None, false);
-        let refused = delete(&bucket, keys(), "test", true, true).unwrap_err();
+        let refused = delete(&bucket, keys(), None, "test", true, true).unwrap_err();
         assert!(refused.message.starts_with("cell-catalog/a.obcm is a key of the legacy pipelines") && cell.exists());
-        delete(&bucket, (keys().0, None, true), "test", true, true).unwrap();
+        delete(&bucket, (keys().0, None, true), None, "test", true, true).unwrap();
         assert!(!cell.exists());
     }
 
-    /// The keys of the legacy pipelines that a target with a serving and a rollback release does
-    /// not use.
+    /// Keys of the legacy pipelines that `obc data` does not write.
     const OLD: [&str; 3] = ["cell-catalog/cells/a.obcm", "planner/objects/a", "reference/v1/a.tif"];
+    const NO_SOURCES: Registry = Registry { sources: Vec::new() };
 
-    /// A dir target that serves a release with a rollback, has `planner/next.json` and the keys
-    /// [`OLD`].
+    /// A dir target that serves a release with a rollback, and has `planner/next.json` and [`OLD`].
     fn served(name: &str) -> (crate::store::tests::Scratch, Target) {
         let scratch = crate::store::tests::Scratch::new(name);
         let target = Target::Dir(scratch.0.join("local"));
-        for key in OLD.into_iter().chain([NEXT]) {
+        for key in OLD.into_iter().chain([release::NEXT]) {
             target.put(key, b"{}", &crate::target::Condition::Any).unwrap();
         }
-        assert_eq!(unused("local", &target, None).err().map(|e| e.code), Some(Code::Blocked), "no cutover");
+        assert!(unused(&NO_SOURCES, ("local", &target), None).is_err(), "no cutover");
         for device in ["device a", "device b"] {
             let (id, _) = crate::serve::tests::release_at(&target, device, device.as_bytes(), 1, "https://api.test");
             assert!(release::switch(&target, release::serving(&target).unwrap().as_ref(), &id).unwrap());
@@ -348,33 +353,39 @@ mod tests {
     }
 
     #[test]
-    fn legacy_lists_only_the_keys_that_no_release_pointer_or_next_uses() {
+    fn legacy_lists_only_the_keys_that_obc_data_does_not_write() {
         let (_scratch, target) = served("r2-legacy-list");
         let serving = release::serving(&target).unwrap().unwrap().0;
-        assert!(serving.rollback.is_some() && target.get(POINTERS[1]).unwrap().is_some());
-        let keys = |prefix| unused("local", &target, prefix).unwrap().folders.into_iter().flat_map(|f| f.keys);
-        assert_eq!(keys(None).collect::<Vec<_>>(), OLD);
-        assert_eq!(keys(Some("reference/v1/")).collect::<Vec<_>>(), [OLD[2]]);
+        assert!(serving.rollback.is_some() && target.get(release::POINTERS[1]).unwrap().is_some());
+        let keys = |prefix| unused(&NO_SOURCES, ("local", &target), prefix).unwrap().folders.into_values().flatten();
+        assert_eq!(keys(None).map(|k| k.key).collect::<Vec<_>>(), OLD[..2]);
+        assert_eq!(keys(Some("reference/v1")).map(|k| k.key).collect::<Vec<_>>(), [OLD[2]]);
+        let checked_in = Registry::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let refused = unused(&checked_in, ("local", &target), Some("reference/v1")).err().unwrap();
+        assert!(refused.fix.contains("terrain-reference/"), "{}", refused.fix);
     }
 
     #[test]
     fn a_legacy_delete_needs_the_digest_of_the_list() {
-        let (_scratch, target) = served("r2-legacy-delete");
+        let (scratch, target) = served("r2-legacy-delete");
         let args = |expect: &str| LegacyArgs {
             target: "local".into(),
-            prefix: Some("planner/".into()),
+            prefix: Some("planner".into()),
             delete: true,
             expect: Some(expect.into()),
             reason: Some("test".into()),
             yes: true,
         };
         let before = target.list().unwrap();
-        let refused = legacy(&target, args(&"0".repeat(64)), true).unwrap_err();
-        assert!(refused.message.ends_with("nothing was deleted") && target.list().unwrap() == before);
-        let digest = unused("local", &target, Some("planner/")).unwrap().digest;
-        legacy(&target, args(&digest), true).unwrap();
+        let refused = legacy(&NO_SOURCES, &target, args(&"0".repeat(64)), true).unwrap_err();
+        assert!(refused.code == Code::Usage && target.list().unwrap() == before);
+        let next = (vec![release::NEXT.to_string()], None, true);
+        assert!(delete(&Bucket::local(&scratch.0.join("local")), next, None, "test", true, true).is_err());
+        let digest = unused(&NO_SOURCES, ("local", &target), Some("planner")).unwrap().digest;
+        legacy(&NO_SOURCES, &target, args(&digest), true).unwrap();
         let after = target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let gone: Vec<_> = before.into_iter().map(|listed| listed.key).filter(|key| !after.contains(key)).collect();
         assert_eq!(gone, [OLD[1]]);
+        legacy(&NO_SOURCES, &target, args(&sha256_hex(b"")), true).unwrap();
     }
 }
