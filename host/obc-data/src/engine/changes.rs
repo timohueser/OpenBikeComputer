@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::order;
 use super::plan::{build, build_of, needs, sized, walk, Build, Cause, Costs, Group, Kept, Plan};
 use super::state::{judge, LayerState, Newer};
-use super::Step;
+use super::{select_layer, Input, Step};
 use crate::release::Output;
 use crate::store::Store;
 
@@ -17,6 +17,9 @@ pub struct Update {
     pub plan: Plan,
     pub kept: Kept,
     pub layers: Vec<LayerState>,
+    /// The steps that bake again here only because the target does not hold files of them that a
+    /// step that bakes reads.
+    pub unheld: BTreeSet<String>,
 }
 
 /// The update of `release` to `steps`. Without `only`, it bakes each stale step. With `only`, it
@@ -44,7 +47,7 @@ pub fn update(
     let named: BTreeSet<&str> =
         steps.iter().filter(|step| only.iter().any(|name| name == step.layer.name)).map(|s| s.name.as_str()).collect();
     let ordered = order(steps)?;
-    let changed = if only.is_empty() {
+    let mut changed = if only.is_empty() {
         stale
     } else {
         let mut changed = named.clone();
@@ -63,6 +66,25 @@ pub fn update(
         }
         changed
     };
+    // A target holds only client files. A step that bakes and reads a file of a kept step that no
+    // client reads, which the store lacks, needs that step baked again on this machine.
+    let mut unheld = BTreeSet::new();
+    for step in ordered.iter().rev() {
+        if !changed.contains(step.name.as_str()) {
+            continue;
+        }
+        for input in &step.inputs {
+            let Input::Step { name, files } = input else { continue };
+            let Some(output) = release.get(name.as_str()).filter(|_| !changed.contains(name.as_str())) else {
+                continue;
+            };
+            let (read, _) = select_layer(&output.files, files);
+            if read.iter().any(|file| !output.client.includes(&file.path) && !store.object(&file.sha256).is_file()) {
+                changed.insert(name);
+                unheld.insert(name.clone());
+            }
+        }
+    }
     let kept: Kept = steps
         .iter()
         .filter(|step| !changed.contains(step.name.as_str()))
@@ -104,7 +126,7 @@ pub fn update(
         group.layers = group.builds.clone();
         groups.push(group);
     }
-    Ok(Update { plan: sized(store, groups)?, kept, layers })
+    Ok(Update { plan: sized(store, groups)?, kept, layers, unheld })
 }
 
 #[cfg(test)]

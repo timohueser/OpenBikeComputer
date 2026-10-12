@@ -462,7 +462,8 @@ fn map_cells(
         }),
         outputs: vec!["cells".into(), "metadata".into()],
         run: Run::Rust(if band.has_nav() || band.has_poi() { obc_network::step::cells } else { obc_draw::step::cells }),
-        client: Client::Paths(vec!["cells".into()]),
+        // The catalog reads the metadata: a target holds it for the bake of another machine.
+        client: Client::Paths(vec!["cells".into(), "metadata".into()]),
     }
 }
 
@@ -621,7 +622,8 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
         }),
         outputs: vec!["terrain".into(), "metadata".into()],
         run: Run::Rust(obc_dem::step::terrain),
-        client: Client::Paths(vec!["terrain".into()]),
+        // The map cells and the catalog read the metadata: a target holds it for another machine.
+        client: Client::Paths(vec!["metadata".into(), "terrain".into()]),
     }
 }
 

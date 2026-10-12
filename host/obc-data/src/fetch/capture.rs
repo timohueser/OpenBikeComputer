@@ -137,6 +137,17 @@ fn legacy(store: &Store, request: &Request) -> Result<Snapshot, String> {
     Err("regional Wikimedia capture is read-only; prepare shared content to acquire missing facts".into())
 }
 
+/// Whether a capture can give the version `version` of `source` for a request that the store lacks.
+/// The service answers with today's data. A manual source keeps one version, so a request that a
+/// started version lacks joins it: a national model is fetched tile by tile over days. A version
+/// that the store never started is a day the service cannot answer for.
+pub(crate) fn can_fetch(store: &Store, source: &Source, version: &str) -> Result<bool, String> {
+    if version == date::format(date::today()) {
+        return Ok(true);
+    }
+    Ok(source.refresh == Refresh::Manual && store.snapshot(&source.id, version)?.is_some())
+}
+
 /// The files of `request` that `query` names: from the store, or else from the program that
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
 /// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
@@ -173,11 +184,7 @@ pub(super) fn capture(
     if store.requested(&source.id, &version, &request.params)?.is_some_and(|files| files.is_empty()) {
         return Ok(snapshot(Vec::new()));
     }
-    // A manual source keeps one version, so a request that a started version lacks joins it:
-    // a national model is fetched tile by tile over days. A version that the store never started
-    // is a day the service cannot answer for.
-    let joins = source.refresh == Refresh::Manual && store.snapshot(&source.id, &version)?.is_some();
-    if version != today && !joins {
+    if !can_fetch(store, source, &version)? {
         return Err(format!(
             "source `{}`: {version} with {query} is not in the store, and the service answers with today's data",
             source.id

@@ -936,6 +936,29 @@ mod tests {
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
         assert_eq!(named.len(), 14, "thirteen operator layers and the OSM of the region: {named:?}");
+
+        // A target holds only client files: a device step reads only those of a step of another
+        // layer that a program reads, so another machine can bake it without that step. Two reads
+        // are exempt. The map leaves read `device/osm`, an internal layer: a machine without it
+        // splits the OSM of the region again. The landmark and peak leaves read the content of
+        // their own layer: that content bakes again only from the Wikimedia captures.
+        for step in steps.iter().filter(|step| step.name.starts_with("device/")) {
+            for input in &step.inputs {
+                let Input::Step { name, files } = input else { continue };
+                let read = steps.iter().find(|other| &other.name == name).unwrap();
+                if read.layer.readers.is_empty() || read.layer.name == step.layer.name {
+                    continue;
+                }
+                let paths = if files.is_empty() { &read.outputs } else { files };
+                let held = |path: &String| read.client.includes(path);
+                assert!(
+                    paths.iter().all(held),
+                    "{} reads files of {} that no client reads: {paths:?}",
+                    step.name,
+                    read.name
+                );
+            }
+        }
     }
 
     #[test]

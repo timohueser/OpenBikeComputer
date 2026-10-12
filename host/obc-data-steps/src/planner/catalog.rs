@@ -106,7 +106,7 @@ pub fn pointer(request: &Request) -> Result<(), String> {
 }
 
 fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String> {
-    let path = store.object(&file.sha256);
+    let path = store.ensure(&file.sha256)?;
     if hash_file(&path)? != (file.sha256.clone(), file.size) {
         return Err(format!("planner artifact `{}` differs from its receipt", file.path));
     }

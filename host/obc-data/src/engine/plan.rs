@@ -51,6 +51,9 @@ pub enum Cause {
     Named,
     /// The release has the layer, and no step makes it now.
     Off,
+    /// A step that bakes reads files of the layer that no client reads, so the target does not hold
+    /// them, and the store of this machine lacks them.
+    Unheld,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]

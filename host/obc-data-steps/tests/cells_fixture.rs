@@ -272,14 +272,17 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         let read = &source.snapshots[name];
         assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
     }
-    assert!(release
-        .outputs
-        .iter()
-        .filter(|output| output.step.starts_with("device/terrain/")
-            || ["coarse", "mid", "fine", "network"]
-                .iter()
-                .any(|band| output.step.starts_with(&format!("device/{band}/"))))
-        .all(|output| output.client_files().all(|file| !file.path.starts_with("metadata/"))));
+    assert!(
+        release
+            .outputs
+            .iter()
+            .filter(|output| output.step.starts_with("device/terrain/")
+                || ["coarse", "mid", "fine", "network"]
+                    .iter()
+                    .any(|band| output.step.starts_with(&format!("device/{band}/"))))
+            .all(|output| output.client_files().count() == output.files.len()),
+        "a target holds the metadata of each leaf, which the catalog reads"
+    );
 
     // One cut of every band over the leaf, as the planet bake cuts a leaf.
     let leaf = CellId::new(23, 37, 33).unwrap();
@@ -361,7 +364,8 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let backup = temp.0.join("retained-network.obcm");
     std::fs::rename(&path, &backup).unwrap();
     Device.verify(&root, Some(&release), &release, &store).unwrap();
-    assert!(Device.verify(&root, None, &release, &store).unwrap_err().contains("artifact"));
+    let refused = Device.verify(&root, None, &release, &store).unwrap_err();
+    assert!(refused.contains("artifact"), "{refused}");
     std::fs::rename(backup, path).unwrap();
     for step in &mut steps {
         if step.name == "device/network/0037-0033" {

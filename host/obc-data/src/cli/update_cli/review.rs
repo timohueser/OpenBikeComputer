@@ -42,6 +42,9 @@ pub struct Review {
     pub fetches: Vec<Fetch>,
     /// The steps that this machine bakes. A step whose output is in the store already is not here.
     pub bakes: Vec<Build>,
+    /// What this machine downloads from the target: copies of source files, and files of kept steps
+    /// that a step that bakes reads.
+    pub downloads: Downloads,
     pub cost: ReviewCost,
     pub machine: MachineCheck,
     pub after: AfterUpdate,
@@ -84,6 +87,12 @@ pub struct SourceMove {
     pub to: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema)]
+pub struct Downloads {
+    pub files: u64,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct ReviewCost {
     /// The estimated times of the bakes, added as if one ran after another.
@@ -93,7 +102,7 @@ pub struct ReviewCost {
     /// The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper
     /// bound, not the peak of a step. It refuses nothing.
     pub process_peak_rss_bytes: Option<u64>,
-    /// What the fetches and the bakes write into the store.
+    /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
     /// What goes to the target: the files of the bakes that a client reads, and the copies under
     /// `sources/` that the serving release does not name.
@@ -162,14 +171,33 @@ pub struct Parts<'a> {
     pub plan: &'a Plan,
     pub kept: &'a Kept,
     pub layers: &'a [LayerState],
-    /// The size of the copies under `sources/` that the update adds.
-    pub copies: u64,
+    /// The steps that bake only because the target does not hold files of them.
+    pub unheld: &'a BTreeSet<String>,
+    pub downloads: Downloads,
+    /// The size of the copies under `sources/` that the update adds, and the fetches of copies
+    /// that the store lacks yet.
+    pub copies: (u64, BTreeSet<String>),
     pub machine: &'a MachineCheck,
 }
 
 /// The review of an update from `parts`.
 pub fn review(parts: Parts) -> Review {
-    let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, copies, machine } = parts;
+    let Parts {
+        target,
+        base,
+        serving,
+        rollback,
+        settings,
+        steps,
+        only,
+        plan,
+        kept,
+        layers,
+        unheld,
+        downloads,
+        copies,
+        machine,
+    } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
     let layer_of: BTreeMap<&str, &str> = baked.iter().map(|step| (step.name.as_str(), step.layer.name)).collect();
@@ -191,6 +219,9 @@ pub fn review(parts: Parts) -> Review {
             _ if !mine.is_empty() && only.contains(&state.layer) => Cause::Named,
             (Some(cause), Verdict::Stale) => Cause::Stale { cause: cause.clone() },
             _ if mine.is_empty() => Cause::Off,
+            // Without `--only`, a layer that is not stale bakes only for files that the target does
+            // not hold.
+            _ if only.is_empty() => Cause::Unheld,
             _ => match follows.into_iter().find(|layer| *layer != state.layer) {
                 Some(layer) => Cause::Stale { cause: state::Cause::Input { name: layer.into() } },
                 None => Cause::Named,
@@ -216,6 +247,29 @@ pub fn review(parts: Parts) -> Review {
             readers: readers.iter().map(|reader| reader.to_string()).collect(),
             format,
         });
+    }
+    // A layer that only other layers read is listed when it bakes only for files that the target
+    // does not hold.
+    for step in steps.iter().filter(|step| unheld.contains(&step.name)) {
+        let leaf = leaf(&step.name).filter(|_| step.layer.shape == Shape::Tiled).map(str::to_string);
+        match changes.iter_mut().find(|change| change.layer == step.layer.name) {
+            Some(change) if !change.steps.contains(&step.name) => {
+                change.steps.push(step.name.clone());
+                change.leaves.extend(leaf.filter(|leaf| !change.leaves.contains(leaf)));
+                change.leaves.sort();
+            }
+            Some(_) => {}
+            None => changes.push(LayerChange {
+                layer: step.layer.name.into(),
+                cause: Cause::Unheld,
+                text: text(&Cause::Unheld),
+                steps: vec![step.name.clone()],
+                leaves: leaf.into_iter().collect(),
+                drops: Vec::new(),
+                readers: Vec::new(),
+                format: None,
+            }),
+        }
     }
     // Each fetch that a baked step reads, with its version.
     let reads: BTreeSet<(RequestKey, &str)> = baked
@@ -253,13 +307,19 @@ pub fn review(parts: Parts) -> Review {
     let mut seen = BTreeSet::new();
     let bakes: Vec<Build> = plan.builds().filter(|build| seen.insert(&build.step)).cloned().collect();
     let fetches = plan.fetches();
-    let mut cost = ReviewCost { upload_bytes: copies, ..ReviewCost::default() };
+    let (upload_bytes, unknown_copies) = copies;
+    let mut cost = ReviewCost { upload_bytes, ..ReviewCost::default() };
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,
             None => cost.unknown.size.push(format!("{}@{}", fetch.source, fetch.version)),
         }
     }
+    // The size of a copy is known only after its fetch.
+    for fetch in unknown_copies.into_iter().filter(|fetch| !cost.unknown.size.contains(fetch)).collect::<Vec<_>>() {
+        cost.unknown.size.push(fetch);
+    }
+    cost.store_bytes += downloads.bytes;
     let in_process: BTreeSet<&str> =
         steps.iter().filter(|step| matches!(step.run, Run::Rust(_))).map(|step| step.name.as_str()).collect();
     for build in &bakes {
@@ -306,6 +366,7 @@ pub fn review(parts: Parts) -> Review {
         kept: kept.len(),
         fetches,
         bakes,
+        downloads,
         cost,
         machine,
         after,
@@ -418,8 +479,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;
     let mut text = format!(
-        "{} fetches, {} bakes: about {} min, {} into the store, {} to the target",
+        "{} fetches, {} downloads, {} bakes: about {} min, {} into the store, {} to the target",
         review.fetches.len(),
+        review.downloads.files,
         review.bakes.len(),
         cost.wall_ms.div_ceil(60_000),
         size(cost.store_bytes),
@@ -474,6 +536,7 @@ fn text(cause: &Cause) -> String {
         Cause::Stale { cause } => cause.text(),
         Cause::Named => "named by --only".into(),
         Cause::Off => "no step makes it".into(),
+        Cause::Unheld => "a bake reads files of it that only a store holds".into(),
     }
 }
 

@@ -417,7 +417,7 @@ pub fn snapshot_files(
 
 /// The files of a layer that `selected` names, or all of them when it names none, and the selected
 /// paths that the layer lacks.
-fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
+pub(crate) fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
     let chosen = files.iter().filter(|file| selected.is_empty() || selected.contains(&file.path)).collect();
     let missing = selected.iter().filter(|path| !files.iter().any(|file| &file.path == *path));
     (chosen, missing.map(String::as_str).collect())
@@ -526,12 +526,9 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result
             request.layer_files.insert(name.clone(), metadata);
         }
         let mut paths = BTreeMap::new();
+        // A run takes the objects of a kept step from the target before the step runs.
         for (name, sha256, size) in files {
-            let object = store.object(&sha256);
-            if !object.is_file() {
-                return Err(format!("{} `{}`: the object of {name} is missing", record.kind.label(), record.name));
-            }
-            if paths.insert(name.clone(), object).is_some() {
+            if paths.insert(name.clone(), store.object(&sha256)).is_some() {
                 return Err(format!("{} `{}` has two files named {name}", record.kind.label(), record.name));
             }
             bytes_in += size;

@@ -56,6 +56,9 @@ enum Entry {
 /// The file of a dir target that one conditional write at a time holds.
 const LOCK: &str = ".lock";
 
+/// A number for each part file of this process.
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
 /// `obc data` reaches an R2 target only through its public URL, which serves reads.
 const READ_ONLY: &str = "`obc data` only reads an R2 target, through its public URL";
 
@@ -249,6 +252,31 @@ pub(crate) fn part(path: &Path) -> PathBuf {
 }
 
 impl Target {
+    /// Give `store` the object `sha256` from the bytes at `key`. `None` when the target has no such
+    /// key; an error when its bytes have another SHA-256.
+    pub fn download(&self, key: &str, sha256: &str, store: &Store) -> Result<Option<PathBuf>, String> {
+        crate::r2::check_key(key)?;
+        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        // Two processes on one store download into other files.
+        let part =
+            store.partial(&format!("{sha256}.{}.{}.target", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let parent = part.parent().expect("a partial file has a folder");
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        let _ = fs::remove_file(&part);
+        // A key is often a link to an object of a store on the same file system.
+        match fs::hard_link(dir.join(key), &part).or_else(|_| fs::copy(dir.join(key), &part).map(|_| ())) {
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{key}: {e}")),
+            Ok(()) => {}
+        }
+        let (held, _) = crate::store::hash_file(&part)?;
+        if held != sha256 {
+            let _ = fs::remove_file(&part);
+            return Err(format!("{key} holds bytes with the SHA-256 {held}, not {sha256}"));
+        }
+        store.insert(&part, sha256).map(Some)
+    }
+
     /// Every file of a dir target, also a hidden one, sorted by key.
     pub fn list(&self) -> Result<Vec<Listed>, String> {
         let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };

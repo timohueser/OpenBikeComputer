@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::engine::{digest, sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::settings::Settings;
-use crate::store::{hash_file, sha256_hex, Store};
+use crate::store::{hash_file, sha256_hex, FileRecord, Requested, Store};
 use crate::target::{Condition, Tag, Target};
 
 /// The key that names the release that a target serves, and its rollback.
@@ -72,8 +72,61 @@ pub struct Fetched {
 #[serde(deny_unknown_fields)]
 pub struct FetchedFile {
     pub name: String,
+    /// Where upstream gives it.
+    pub url: String,
     pub size: u64,
     pub sha256: String,
+    /// When a machine retrieved it first, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub retrieved: String,
+}
+
+impl FetchedFile {
+    /// Whether `other` has the same name and bytes. Where and when a machine retrieved it do not
+    /// count.
+    pub fn same(&self, other: &FetchedFile) -> bool {
+        (&self.name, self.size, &self.sha256) == (&other.name, other.size, &other.sha256)
+    }
+}
+
+impl Fetched {
+    /// The key of the copy of `file` on a target.
+    pub fn key(&self, file: &FetchedFile) -> String {
+        copy_key(&self.source, &self.version, &file.name)
+    }
+
+    /// The files that `names` names, or all of them when it names none.
+    pub fn named<'a>(&'a self, names: &'a [String]) -> impl Iterator<Item = &'a FetchedFile> {
+        self.files.iter().filter(move |file| names.is_empty() || names.contains(&file.name))
+    }
+
+    /// Give `store` the files of the fetch that `names` names, or all of them when it names none,
+    /// from their copies on `target`, with their records. A record keeps the time when a machine
+    /// retrieved the file first, so an old version never becomes the newest of its source.
+    pub fn restore(&self, target: &Target, store: &Store, names: &[String]) -> Result<(), String> {
+        for file in self.named(names).filter(|file| !store.object(&file.sha256).is_file()) {
+            let downloaded = target.download(&self.key(file), &file.sha256, store)?;
+            downloaded.ok_or_else(|| format!("the target has no {}", self.key(file)))?;
+        }
+        let records: Vec<FileRecord> = self
+            .named(names)
+            .map(|file| FileRecord {
+                name: file.name.clone(),
+                url: file.url.clone(),
+                size: file.size,
+                sha256: file.sha256.clone(),
+                retrieved: file.retrieved.clone(),
+            })
+            .collect();
+        crate::fetch::record(store, &self.source, &self.version, &records)?;
+        if !self.params.is_empty() {
+            let files = self.files.iter().map(|file| file.name.clone()).collect();
+            store.put_requested(
+                &self.source,
+                &Requested { version: self.version.clone(), params: self.params.clone(), files },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// The files of one step: its receipt, what it read of each source, and what a client reads.
@@ -193,7 +246,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = copy_key(&fetched.source, &fetched.version, &file.name);
+                let key = fetched.key(file);
                 copies.insert(key.clone(), File { key, size: file.size, sha256: file.sha256.clone() });
             }
         }
@@ -251,7 +304,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = copy_key(&fetched.source, &fetched.version, &file.name);
+                let key = fetched.key(file);
                 if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
                     return Err(format!("{key} is the copy of two files"));
                 }
@@ -275,12 +328,16 @@ impl Release {
     /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
         let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
-        // Whether the target copies a source, and its credit, change no file of the release.
-        fn read(fetched: &Fetched) -> (&String, &String, &Vec<(String, String)>, &Vec<FetchedFile>) {
-            (&fetched.source, &fetched.version, &fetched.params, &fetched.files)
-        }
+        // Whether the target copies a source, its credit, and where and when a machine retrieved a
+        // file change no file of the release.
+        let read = |a: &Fetched, b: &Fetched| {
+            (&a.source, &a.version, &a.params) == (&b.source, &b.version, &b.params)
+                && a.files.len() == b.files.len()
+                && a.files.iter().zip(&b.files).all(|(a, b)| a.same(b))
+        };
         (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
-            && self.sources.iter().map(read).eq(other.sources.iter().map(read))
+            && self.sources.len() == other.sources.len()
+            && self.sources.iter().zip(&other.sources).all(|(a, b)| read(a, b))
             && self.outputs.len() == other.outputs.len()
             && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }
@@ -567,7 +624,13 @@ pub(crate) mod tests {
             source: "land".into(),
             version: "1".into(),
             params: vec![("area".into(), params.into())],
-            files: vec![FetchedFile { name: "land.zip".into(), size: 1, sha256: sha256.into() }],
+            files: vec![FetchedFile {
+                name: "land.zip".into(),
+                url: String::new(),
+                size: 1,
+                sha256: sha256.into(),
+                retrieved: String::new(),
+            }],
             copy: true,
             licence: None,
             attribution: None,
