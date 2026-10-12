@@ -12,7 +12,7 @@ import threading
 
 from . import data_registry, planner_assets, planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
-from .planner_runtime import open_url
+from .planner_runtime import DATA_LAYERS, open_url
 
 
 SEARCH = maps.ROOT / "planner/search"
@@ -143,7 +143,7 @@ def build_layer(stage, config, name, terrain=None):
     maps.run("uv", "run", "--locked", "--group", f"planner-{name}",
              "python", "-m", f"tools.planner_{name}", config["region"], "--bounds", ",".join(map(str, config["bounds"])),
              *options, *(["--terrain", terrain / "terrain.pmtiles"] if name == "sun" else []), "--output", stage / f"{name}.pmtiles", cwd=maps.ROOT)
-    if not releases.archive_metadata(stage / f"{name}.pmtiles").get(releases.DATA_LAYERS[name]):
+    if not releases.archive_metadata(stage / f"{name}.pmtiles").get(DATA_LAYERS[name]):
         raise ValueError(f"Incomplete data layer: {name}")
 
 
@@ -206,7 +206,7 @@ def specifications(config, prepared=None):
         ("tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/step_request.py", "tools/data_registry.py", "uv.lock")])
     add("assets", build_assets, {"assets": sources.ASSETS_URL, "tangrams-icons": sources.VERSIONS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_sources.py", maps.ROOT / "tools/planner_assets.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
-    for name in releases.DATA_LAYERS:
+    for name in DATA_LAYERS:
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / "uv.lock"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
@@ -235,7 +235,7 @@ def execute(args, config, cache, specs, active):
         "routing": lambda stage: build_routing(stage, osm, args, config),
         "overlays": lambda stage: build_overlays(stage, built["routing"][0]),
         "assets": build_assets, "model": build_model,
-        **{name: (lambda stage, name=name: build_layer(stage, config, name, built["terrain"][0] if name == "sun" else None)) for name in releases.DATA_LAYERS if name in config}}
+        **{name: (lambda stage, name=name: build_layer(stage, config, name, built["terrain"][0] if name == "sun" else None)) for name in DATA_LAYERS if name in config}}
     def produce(name):
         if name in active and args.inputs and name == "source-basemap":
             supplied = json.loads((args.inputs / "inputs.json").read_bytes())
@@ -278,7 +278,7 @@ def compose(args, config, built, previous=None):
         def install(root, receipt, prefix, names=None):
             for name in names or receipt["files"]:
                 preparation.link(root / name, stage / prefix / name)
-        for name in ["basemap", "places", "overlays", "terrain", *[name for name in releases.DATA_LAYERS if name in config]]:
+        for name in ["basemap", "places", "overlays", "terrain", *[name for name in DATA_LAYERS if name in config]]:
             install(*built[name], "maps", [f"{name}.pmtiles"])
         install(*built["assets"], "maps")
         install(*built["routing"], "routing")
@@ -289,7 +289,7 @@ def compose(args, config, built, previous=None):
         map_manifest = {"bounds": config["bounds"], "terrain_bounds": terrain_coverage(config),
             "osm_sha256": config["osm"]["sha256"], **terrain,
             "files": {path.relative_to(stage / "maps").as_posix(): entry for name, (_, receipt) in built.items()
-                      if name in {"assets", "basemap", "places", "terrain", "overlays", *releases.DATA_LAYERS}
+                      if name in {"assets", "basemap", "places", "terrain", "overlays", *DATA_LAYERS}
                       for filename, entry in receipt["files"].items() if filename != "provenance.json"
                       for path in [stage / "maps" / filename]}}
         (stage / "maps/manifest.json").write_bytes(releases.encoded(map_manifest))

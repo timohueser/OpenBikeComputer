@@ -133,13 +133,13 @@ TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP k
 gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
 
-Routing and search APIs have the prefix `/planner-api/releases/ID/`. The final
-path component selects `routing` or `search`. Until finalization, a rollout
-serves the active release and the previous release on separate VPS ports.
+Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. The final
+path component selects `routing`, `search` or `downloads`. `obc data serve` runs the
+services of each release that `release.json` of its target names.
 
 ## Canonical grid storage
 
-The online services and `deploy` serve grid releases only. A regional release
+The online services serve grid releases only. A regional release
 without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
 entries retain logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
@@ -160,8 +160,7 @@ indexes and client objects without the producer files. Verification does not
 install tools, download data or build runtimes.
 
 The planner release binds service source and locked dependencies in its final index.
-The VPS builds services from the pushed commit. Publication requires successful local
-and public probes against the release's routing, search, model and offline catalog hashes.
+The VPS builds services from a pushed commit.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, route catalog cell, and device catalog has a small pointer at
@@ -188,21 +187,13 @@ the name of each data layer of the release to its TileJSON URL.
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 Its `slot` is `0` or `1`. `previous` has the same shape or is `null`.
 
-The publisher uploads and verifies all release files before the manifest.
-The deployer verifies public services before changing the catalogue. The
+The publisher uploads and verifies all release files before the manifest. The
 catalogue cache lifetime is 30 seconds. Immutable objects have a one-year
 cache lifetime. The web planner and the map builder read the catalogue at page
 load. The planner uses `active`, unchanged, as its configuration. The map builder
 uses its device catalogue. A client refuses a catalogue `format` that it does not
 know. When a release object returns 404 or no answer, a client reads the catalogue
 again, once, and retries with the new `active` entry.
-
-Finalization verifies the live services and the public catalogue against `active`. It stops
-the other VPS slot, removes its Caddy route, and deletes every other release
-directory on the VPS. It removes inactive planner releases and source mirrors
-that neither `active` nor a region recipe names. It then sets `previous` to `null`. Device cell objects and terrain reference
-objects remain outside planner cleanup. A completed rollout retains one
-regional planner dataset in R2.
 
 ## Component receipts
 
