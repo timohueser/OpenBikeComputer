@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{cells, freshness, listing, print_json, print_table, Code, Error};
 use crate::engine::runs::Limits;
@@ -26,7 +26,7 @@ pub struct Overview {
 }
 
 /// The machine that runs the command.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Machine {
     /// `OBC_DATA_MACHINE`, or else the short host name.
@@ -52,7 +52,7 @@ pub struct TargetState {
     /// What `release.json` of the target says; `null` while it serves nothing.
     pub release: Option<Serving>,
     /// The run that holds the lock of the target; `null` while it is free.
-    pub lock: Option<Holder>,
+    pub lock: Option<Lock>,
     /// Why `lock.json` of the target cannot be read; `null` when it can.
     pub lock_error: Option<String>,
     /// The region of the serving release.
@@ -72,6 +72,16 @@ pub struct TargetState {
     /// target serves its settings as the steps make them now, or when no command of this `obc data`
     /// writes the target: an R2 bucket.
     pub next: Option<String>,
+}
+
+/// The run that holds the lock of a target, as its `lock.json` says.
+#[derive(Serialize, JsonSchema)]
+pub struct Lock {
+    #[serde(flatten)]
+    pub holder: Holder,
+    /// Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the
+    /// run likely ended without freeing the lock.
+    pub stale: bool,
 }
 
 pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<(), Error> {
@@ -107,7 +117,7 @@ pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<()
                 }
             }
         }
-        if let Some(holder) = &target.lock {
+        if let Some(Lock { holder, .. }) = &target.lock {
             let (done, total) =
                 holder.progress.iter().fold((0, 0), |(done, total), layer| (done + layer.done, total + layer.total));
             let held = format!(
@@ -178,7 +188,9 @@ fn state(
     };
     let writes = kind == "dir";
     match lock::holder(target) {
-        Ok(holder) => state.lock = holder,
+        Ok(holder) => {
+            state.lock = holder.map(|holder| Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder })
+        }
         Err(error) => state.lock_error = Some(error),
     }
     let judged = (|| -> Result<(), Error> {
@@ -209,7 +221,7 @@ fn state(
     if let Err(error) = judged {
         (state.error, state.fix) = (Some(error.message), Some(error.fix));
     }
-    if let Some(holder) = state.lock.as_ref().filter(|_| writes) {
+    if let Some(Lock { holder, .. }) = state.lock.as_ref().filter(|_| writes) {
         state.next = Some(format!("wait for run {} of `{}` to end", holder.run, holder.machine));
     }
     state

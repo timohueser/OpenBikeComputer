@@ -928,6 +928,11 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
     };
     if let Some(message) = died.filter(|_| !running) {
         status.state = State::Failed;
+        status
+            .phases
+            .iter_mut()
+            .filter(|phase| phase.state == State::Running)
+            .for_each(|phase| phase.state = State::Failed);
         status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
     }
     Ok(status)
@@ -1363,11 +1368,13 @@ mod tests {
     #[test]
     fn a_run_whose_process_ends_before_it_finishes_has_failed() {
         let fixture = fixture("runs-interrupted");
-        let run = Run::create(&fixture.store, ["build", "test"]).unwrap();
+        let mut run = Run::create(&fixture.store, ["build", "test"]).unwrap();
+        run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Running);
         let id = run.id().to_string();
         drop(run);
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Failed);
+        assert_eq!(status(&fixture.store, &id).unwrap().phases[0].state, State::Failed);
         let ended = follow(&fixture.store, &id, |_, _| Ok(())).unwrap().unwrap();
         assert_eq!(ended.error.unwrap().message, "its process ended before it finished");
 

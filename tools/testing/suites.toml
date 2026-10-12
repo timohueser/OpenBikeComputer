@@ -87,7 +87,7 @@ triggers = ["builder/tests/corpus/data/tiny.osm.pbf"]
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
 name = "obc-data"
-# A test reads the page's examples of `setup --json` and of the machine block.
+# A test validates the examples of the operator page against the schemas of `--json`.
 triggers = ["data/**", "tools/basemap_tool.py", "specs/obc-data.md", "builder/web/test-support/data/**"]
 
 # Its tests plan the checked-in live environment and run the Python steps.

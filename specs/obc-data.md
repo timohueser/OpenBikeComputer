@@ -866,7 +866,7 @@ names it. All producers are intermediate layers. Grid steps select their `object
 | `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid` | `planner/assets` or `planner/model` | The input files, packed as `maps/assets/` or `search/model/`. The index maps logical paths to file and transport identities |
-| `planner/fonts/grid` | `planner/basemap`, `basemap.pmtiles`; `planner/places`, `places.pmtiles`; `planner/routing`, `routing/overlays.sqlite`; `planner/assets` | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
+| `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
@@ -2478,6 +2478,54 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "target",
         "url",
         "network"
+      ],
+      "type": "object"
+    },
+    "Lock": {
+      "description": "The run that holds the lock of a target, as its `lock.json` says.",
+      "properties": {
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "progress": {
+          "default": [],
+          "description": "Each layer that the run bakes, at the last heartbeat. The status of the run on its machine\nhas the detail.",
+          "items": {
+            "$ref": "#/$defs/Progress"
+          },
+          "type": "array"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        },
+        "stale": {
+          "description": "Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the\nrun likely ended without freeing the lock.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat",
+        "progress",
+        "stale"
       ],
       "type": "object"
     },
@@ -4130,7 +4178,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Holder"
+              "$ref": "#/$defs/Lock"
             },
             {
               "type": "null"

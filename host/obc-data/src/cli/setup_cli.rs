@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{print_json, print_table, Code, Error};
 use crate::r2::{Bucket, Credentials};
@@ -14,7 +14,7 @@ use crate::sources::Registry;
 use crate::store::Store;
 
 /// What `setup` writes.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Setup {
     pub store: StoreUse,
@@ -25,7 +25,7 @@ pub struct Setup {
     pub credentials: Vec<CredentialState>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Readiness {
     Ready,
@@ -34,7 +34,7 @@ pub enum Readiness {
     Optional,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoreUse {
     pub path: PathBuf,
@@ -44,7 +44,7 @@ pub struct StoreUse {
     pub free_bytes: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
     pub name: String,
@@ -52,7 +52,7 @@ pub struct Job {
     pub reason: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
     pub name: String,
@@ -63,7 +63,7 @@ pub struct Tool {
     pub detail: String,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialState {
     pub name: String,
@@ -357,21 +357,5 @@ mod tests {
             (Readiness::Missing, format!("openjdk 17.0.2 2022-01-18; needs 21 or newer: {java}").as_str())
         );
         assert_eq!(tool("GEOS"), (Readiness::Missing, "obc doctor --install"));
-    }
-
-    #[test]
-    fn the_examples_of_the_page_have_the_shapes_of_setup_and_of_the_machine_block() {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        #[allow(dead_code)]
-        struct Status {
-            machine: super::super::overview::Machine,
-            /// The page tests check the targets against the schema of the spec.
-            targets: Vec<serde_json::Value>,
-        }
-        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/web/test-support/data");
-        let example = |name: &str| std::fs::read_to_string(examples.join(name)).unwrap();
-        serde_json::from_str::<Setup>(&example("setup.json")).unwrap();
-        serde_json::from_str::<Status>(&example("status.json")).unwrap();
     }
 }

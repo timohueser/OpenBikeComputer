@@ -1,10 +1,9 @@
 <script lang="ts">
-    import { PHASES, type Phase, type RunState } from "../../lib/data/shapes";
+    import { MARK, PHASES, type Phase, type RunState } from "../../lib/data/shapes";
 
     // `entered` holds each phase that the run entered, in order; the phases after them wait.
     let { entered }: { entered: { phase: Phase; state: RunState }[] } = $props();
 
-    const MARK: Record<RunState, string> = { starting: "◌", running: "◐", ok: "✓", failed: "✗", stopped: "■" };
     const shown = $derived(PHASES.map((phase) => ({ phase, state: entered.find((at) => at.phase === phase)?.state })));
 </script>
 
@@ -41,18 +40,11 @@
         color: var(--ink-faint);
         background: var(--parchment);
     }
-    .ok {
-        color: var(--ready);
-    }
     .starting,
-    .running {
-        color: var(--running);
-        border: 2px solid var(--running);
-    }
+    .running,
     .failed,
     .stopped {
-        color: var(--missing);
-        border: 2px solid var(--missing);
+        border: 2px solid;
     }
     .hidden {
         position: absolute;
