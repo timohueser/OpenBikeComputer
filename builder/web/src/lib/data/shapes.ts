@@ -28,6 +28,13 @@ export function elsewhere(status: Status | null): { target: string; holder: Hold
     return (status?.targets ?? []).flatMap(({ target, lock }) => (lock && lock.machine !== here ? [{ target, holder: lock }] : []));
 }
 
+/** Whether run `run`, which held the lock of `target`, ended: the lock is free or another run holds
+ *  it. A lock that cannot be read says nothing about the run. */
+export function ended(status: Status | null, target: string, run: string): boolean {
+    const now = status?.targets.find((at) => at.target === target);
+    return !!now && now.lock_error === null && now.lock?.run !== run;
+}
+
 export const PHASES = ["prepare", "download", "build", "verify", "upload", "switch", "collect"] as const;
 export type Phase = (typeof PHASES)[number];
 
