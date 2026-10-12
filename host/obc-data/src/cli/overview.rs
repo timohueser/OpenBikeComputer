@@ -1,6 +1,7 @@
 //! `obc data`: what each target serves, how its layers stand against the steps of now, and the
 //! command to run next.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -57,6 +58,8 @@ pub struct TargetState {
     pub lock_error: Option<String>,
     /// The region of the serving release.
     pub region: Option<String>,
+    /// Each source version that the serving release read.
+    pub sources: Vec<SourceVersion>,
     /// Each layer of the steps and of the serving release; `null` while the target serves nothing
     /// or its steps cannot be listed.
     pub layers: Option<Vec<LayerState>>,
@@ -72,6 +75,15 @@ pub struct TargetState {
     /// target serves its settings as the steps make them now. For an R2 target, the command is the
     /// review: its update needs the id that the owner approved.
     pub next: Option<String>,
+}
+
+/// A source version that a release read.
+#[derive(Serialize, JsonSchema)]
+pub struct SourceVersion {
+    pub source: String,
+    pub version: String,
+    /// When a machine first retrieved a file of it, `YYYY-MM-DDTHH:MM:SSZ`; `null` without a file.
+    pub retrieved: Option<String>,
 }
 
 /// The run that holds the lock of a target, as its `lock.json` says.
@@ -175,6 +187,7 @@ fn state(
         lock: None,
         lock_error: None,
         region: None,
+        sources: Vec::new(),
         layers: None,
         blocked: Vec::new(),
         drift: Vec::new(),
@@ -201,6 +214,20 @@ fn state(
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
         let release = super::update_cli::read(name, target, &serving.serving.id)?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
+        let mut versions: BTreeMap<(&str, &str), Option<&str>> = BTreeMap::new();
+        for fetched in &release.sources {
+            let first = versions.entry((&fetched.source, &fetched.version)).or_default();
+            let retrieved = fetched.files.iter().map(|file| file.retrieved.as_str());
+            *first = first.iter().copied().chain(retrieved).min();
+        }
+        state.sources = versions
+            .into_iter()
+            .map(|((source, version), retrieved)| SourceVersion {
+                source: source.into(),
+                version: version.into(),
+                retrieved: retrieved.map(str::to_string),
+            })
+            .collect();
         state.drift = release::drift(target, &release)?;
         let regions = release.settings.regions()?;
         let mut sources = sources.to_vec();

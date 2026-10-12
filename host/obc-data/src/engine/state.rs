@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{digest, layer_digest, order, selection, Input, InputKind, Selection, Step};
+use super::{digest, layer_digest, order, selection, Input, InputKind, Selection, Shape, Step};
 use crate::product::RequestKey;
 use crate::release::Output;
 use crate::store::{sorted, Store};
@@ -30,6 +30,29 @@ pub struct LayerState {
     pub cause: Option<Cause>,
     /// The cause in a few words; `null` without a cause.
     pub text: Option<String>,
+    /// How its steps bake; `null` for a layer that only the release has.
+    pub shape: Option<LayerShape>,
+    /// The format and the revision of its steps; `null` for a layer that only the release has.
+    pub format: Option<u32>,
+    pub revision: Option<u32>,
+    /// The format and the revision of the layer in the release; `null` while the release has none.
+    pub served_format: Option<u32>,
+    pub served_revision: Option<u32>,
+    /// The programs that read its files.
+    pub readers: Vec<String>,
+    /// The layers and the sources that its steps read, sorted. In place of a layer that no program
+    /// reads, it names what that layer reads.
+    pub reads: Vec<String>,
+}
+
+/// How the steps of a layer bake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerShape {
+    /// Per grid leaf.
+    Tiled,
+    /// Once over the coverage of a target, also in named partitions.
+    Whole,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -113,6 +136,10 @@ pub(super) struct Judged<'a> {
     pub steps: Vec<(&'a Step, Option<Cause>)>,
     /// The steps of the layer in the release that no step makes now.
     pub drops: Vec<String>,
+    /// What its steps read, as [`LayerState::reads`] names it.
+    pub reads: BTreeSet<String>,
+    /// The format and the revision of the layer in the release.
+    pub served: Option<(u32, u32)>,
 }
 
 impl Judged<'_> {
@@ -123,7 +150,24 @@ impl Judged<'_> {
             (Some(_), false) => Verdict::Stale,
         };
         let text = self.cause.as_ref().map(Cause::text);
-        LayerState { layer: self.name.clone(), state, cause: self.cause.clone(), text }
+        let declared = self.steps.first().map(|(step, _)| step.layer);
+        LayerState {
+            layer: self.name.clone(),
+            state,
+            cause: self.cause.clone(),
+            text,
+            shape: declared.map(|layer| match layer.shape {
+                Shape::Tiled => LayerShape::Tiled,
+                Shape::Whole | Shape::Partitioned(_) => LayerShape::Whole,
+            }),
+            format: declared.map(|layer| layer.format),
+            revision: declared.map(|layer| layer.revision),
+            served_format: self.served.map(|(format, _)| format),
+            served_revision: self.served.map(|(_, revision)| revision),
+            readers: declared
+                .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.to_string()).collect()),
+            reads: self.reads.iter().cloned().collect(),
+        }
     }
 }
 
@@ -145,17 +189,38 @@ pub(super) fn judge<'a>(
 ) -> Result<Vec<Judged<'a>>, String> {
     let layer_of: HashMap<&str, &super::Layer> = steps.iter().map(|step| (step.name.as_str(), step.layer)).collect();
     let mut causes: HashMap<&str, Option<Cause>> = HashMap::new();
+    // What each step reads, with the reads of an internal layer in place of the layer.
+    let mut reads: HashMap<&str, BTreeSet<String>> = HashMap::new();
     let mut judged: Vec<Judged> = Vec::new();
     let at = |judged: &mut Vec<Judged>, name: &str, internal: bool| {
         judged.iter().position(|layer| layer.name == name).unwrap_or_else(|| {
-            judged.push(Judged { name: name.into(), internal, cause: None, steps: Vec::new(), drops: Vec::new() });
+            let (cause, steps, drops, reads) = (None, Vec::new(), Vec::new(), BTreeSet::new());
+            let served =
+                release.values().find(|output| output.layer == name).map(|output| (output.format, output.revision));
+            judged.push(Judged { name: name.into(), internal, cause, steps, drops, reads, served });
             judged.len() - 1
         })
     };
     for step in order(steps)? {
         let cause = cause(store, step, release, &causes, &layer_of, newer)?;
         causes.insert(&step.name, cause.clone());
+        let mut read = BTreeSet::new();
+        for input in &step.inputs {
+            match input {
+                Input::Snapshot { source, .. } => {
+                    read.insert(source.clone());
+                }
+                Input::Step { name, .. } => match layer_of[name.as_str()] {
+                    owner if owner.readers.is_empty() => read.extend(reads[name.as_str()].iter().cloned()),
+                    owner => {
+                        read.insert(owner.name.to_string());
+                    }
+                },
+            }
+        }
         let i = at(&mut judged, step.layer.name, step.layer.readers.is_empty());
+        judged[i].reads.extend(read.iter().filter(|name| **name != step.layer.name).cloned());
+        reads.insert(&step.name, read);
         judged[i].steps.push((step, cause));
     }
     for (step, layer) in release.iter().filter(|(step, _)| !layer_of.contains_key(*step)) {
@@ -285,6 +350,38 @@ mod tests {
     }
 
     #[test]
+    fn a_layer_names_how_it_bakes_its_readers_and_what_its_steps_read() {
+        static INTERNAL: crate::engine::Layer = crate::engine::Layer { readers: &[], ..UPPER };
+        let fixture = fixture("state-reads");
+        let release = released(&fixture, &layered());
+        let layers = judged(&fixture, &layered(), &release, &Newer::new());
+        let reads = |layers: &[LayerState]| {
+            layers.iter().map(|layer| (layer.layer.clone(), layer.reads.clone())).collect::<Vec<_>>()
+        };
+        let named = |pairs: &[(&str, &[&str])]| {
+            pairs
+                .iter()
+                .map(|(layer, reads)| (layer.to_string(), reads.iter().map(|read| read.to_string()).collect()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reads(&layers), named(&[("upper", &["head"]), ("test", &["tail", "upper"])]));
+        let test = &layers[1];
+        assert_eq!(
+            (test.shape, test.format, test.revision, test.readers.as_slice()),
+            (Some(LayerShape::Whole), Some(1), Some(1), &["tests".to_string()][..])
+        );
+
+        let mut steps = layered();
+        steps[2].layer = &INTERNAL;
+        let layers = judged(&fixture, &steps, &release, &Newer::new());
+        assert_eq!(
+            reads(&layers)[0],
+            named(&[("test", &["head", "tail"])])[0],
+            "what an internal layer reads, in its place"
+        );
+    }
+
+    #[test]
     fn a_refactor_with_no_version_change_leaves_every_layer_ok() {
         let fixture = fixture("state-refactor");
         let release = released(&fixture, &layered());
@@ -315,6 +412,7 @@ mod tests {
         let layers = judged(&fixture, &steps, &release, &Newer::new());
         assert_eq!((layers[0].state, &layers[1].cause), (Verdict::Ok, &revision));
         assert_eq!(layers[1].text.as_deref(), Some("revision 1 → 2: improved output"));
+        assert_eq!((layers[1].revision, layers[1].served_revision), (Some(2), Some(1)));
     }
 
     #[test]

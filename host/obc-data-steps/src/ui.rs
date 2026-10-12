@@ -150,14 +150,44 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
 /// each is named here.
 fn refused(args: &[String]) -> Option<Error> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
         [] | ["setup"] | ["runs"] => true,
         // Not `--follow`: it answers only when the run ends.
-        ["runs", run] | ["runs", run, "--stop"] => !run.starts_with('-'),
+        ["runs", run] | ["runs", run, "--stop"] => name(run),
+        ["update", target, ref rest @ ..] => name(target) && reviewed(rest),
+        // The page asks before it runs a command that changes an R2 target, so it sends `--yes`.
+        ["rollback", target, "--expect", id] | ["rollback", target, "--expect", id, "--yes"] => {
+            name(target) && name(id)
+        }
+        // Without a terminal, `unlock` asks nobody: the page asks first.
+        ["unlock", target, "--from", machine, "--yes"] => name(target) && name(machine),
         _ => false,
     };
     let command = ["obc", "data"].into_iter().chain(words).collect::<Vec<_>>().join(" ");
     (!allowed).then(|| Code::Usage.error(format!("the page does not run `{command}`")).fix("Run it in a terminal."))
+}
+
+/// Whether the words after `update TARGET` are settings flags with their values, then `--dry-run`
+/// for a review, or `--expect ID` that starts the update of a review, and with it
+/// `--accept-format-change` when the review changes a format and `--yes` for an R2 target.
+fn reviewed(mut rest: &[&str]) -> bool {
+    const SETTINGS: [&str; 6] = ["--region", "--box", "--add", "--remove", "--refresh", "--only"];
+    loop {
+        match rest {
+            ["--dry-run"] => return true,
+            ["--expect", id, end @ ..] => {
+                let end =
+                    matches!(end, [] | ["--accept-format-change"] | ["--yes"] | ["--accept-format-change", "--yes"]);
+                return end && !id.starts_with('-');
+            }
+            // A box can start with a minus: `--box -5,40,-4,41`.
+            [flag, value, more @ ..] if SETTINGS.contains(flag) && (*flag == "--box" || !value.starts_with('-')) => {
+                rest = more
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// Run `exe --json ARGS` in `root`; its standard error goes to the log of the page. The command
@@ -318,11 +348,45 @@ mod tests {
             &["runs", "--stop"],
             &["r2", "list"],
             &["update", "local"],
+            &["update", "local", "--yes"],
+            &["update", "local", "--dry-run", "--expect", "4c1e"],
+            &["update", "local", "--expect"],
+            &["update", "local", "--accept-format-change", "--expect", "4c1e"],
+            &["update", "local", "--region", "--dry-run"],
+            &["update", "local", "--only", "--expect", "4c1e"],
+            &["update", "--dry-run"],
+            &["update", "local", "--detach", "--dry-run"],
+            &["rollback", "local", "--expect", "2c91", "--yes", "--yes"],
+            &["rollback", "local"],
+            &["rollback", "prod", "--yes"],
+            &["rollback", "prod", "--yes", "--expect", "2c91"],
+            &["rollback", "prod", "--expect", "--yes"],
+            &["update", "prod", "--expect", "4c1e", "--yes", "--accept-format-change"],
+            &["rollback", "--yes"],
+            &["unlock", "prod", "--from", "bake"],
+            &["unlock", "prod", "--yes"],
+            &["unlock", "prod", "--from", "--yes", "--yes"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
         }
-        for args in [&[][..], &["setup"], &["runs"], &["runs", "r1"], &["runs", "r1", "--stop"]] {
+        for args in [
+            &[][..],
+            &["setup"],
+            &["runs"],
+            &["runs", "r1"],
+            &["runs", "r1", "--stop"],
+            &["update", "local", "--dry-run"],
+            &["update", "local", "--region", "freiburg", "--add", "sun", "--refresh", "wiki=30", "--dry-run"],
+            &["update", "local", "--box", "-5,40,-4,41", "--only", "device/map", "--dry-run"],
+            &["update", "local", "--region", "freiburg", "--expect", "4c1e"],
+            &["update", "prod", "--expect", "4c1e", "--accept-format-change"],
+            &["rollback", "local", "--expect", "2c91"],
+            &["rollback", "prod", "--expect", "2c91", "--yes"],
+            &["update", "prod", "--expect", "4c1e", "--yes"],
+            &["update", "prod", "--region", "dach", "--expect", "4c1e", "--accept-format-change", "--yes"],
+            &["unlock", "prod", "--from", "bake", "--yes"],
+        ] {
             assert!(refused(&words(args)).is_none(), "{args:?}");
         }
 

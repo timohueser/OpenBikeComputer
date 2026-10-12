@@ -6,7 +6,9 @@
     import Failure from "./Failure.svelte";
     import Later from "./Later.svelte";
     import Machine from "./Machine.svelte";
+    import Overview from "./Overview.svelte";
     import Runs from "./Runs.svelte";
+    import TargetScreen from "./Target.svelte";
 
     const status = new CliQuery<Status>([]);
     const runs = new CliQuery<RunList>(["runs"]);
@@ -60,6 +62,10 @@
         <Machine {machine} />
     {:else if screen.id === "runs"}
         <Runs id={runAt(hash)} {runs} {status} />
+    {:else if screen.id === "overview"}
+        <Overview {status} />
+    {:else if screen.id === "prod" || screen.id === "local"}
+        {#key screen.id}<TargetScreen name={screen.id} {hash} {status} />{/key}
     {:else}
         <Later {screen} />
     {/if}
@@ -70,6 +76,7 @@
         --ready: #2e6b4a;
         --missing: #8a1c12;
         --running: #2c4fb8;
+        --stale: #8a4a00;
     }
     :global(body) {
         margin: 0;

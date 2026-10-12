@@ -150,6 +150,9 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
     }
     let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
     prepared.review.args = args.args(&prepared.review);
+    prepared.review.optional =
+        products.iter().flat_map(|product| product.optional()).map(|layer| layer.to_string()).collect();
+    prepared.review.optional.sort();
     if args.dry_run {
         return review::print(&prepared.review, json);
     }

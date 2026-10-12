@@ -66,3 +66,23 @@
 :where(main :is(.failed, .stopped, .missing)) {
     color: var(--missing);
 }
+:where(main .stale) {
+    color: var(--stale);
+}
+:where(main .off) {
+    color: var(--ink-faint);
+}
+:where(main .primary) {
+    background: var(--ink);
+    color: var(--panel);
+}
+:where(main a.primary) {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    min-height: 44px;
+    padding: 0 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    text-decoration: none;
+}

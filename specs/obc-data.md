@@ -940,6 +940,11 @@ that is first in byte order:
 | `input` | `name` | `follows device/map`, or `options changed` | A step reads a step of another operator layer that is stale, or whose files in the release are not the files that its release output read; or the store has other files of a snapshot that it reads, at the same version and `params`. `name` is that layer or source. `name` is `options` when the release has other steps of the layer, or a step with other options, inputs (kind and name), snapshot `params` or `client` |
 
 A step that reads a step of its own layer, or of an internal layer, gets the cause of that step.
+
+Each layer also gives what a picture of the layers needs: `shape` (`tiled` or `whole`), the
+`format` and the `revision` of its steps, its `readers`, and `reads`, the layers and the sources
+that its steps read, sorted. In place of an internal layer, `reads` names what that layer reads.
+A layer that only the release has gives `null` and empty lists.
 `obc data` does not list an internal layer: the layers that read it show its cause. In JSON, a
 layer is `{"layer", "state", "cause", "text"}`; `cause` and `text` are `null` unless it is stale.
 A step that cannot be planned is not judged: `blocked` lists it with its layer and the reason.
@@ -1256,8 +1261,10 @@ new data until they update. An update with a format change starts only with
 ### Rollback
 
 `obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
-asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so
-a second rollback undoes the first. A target without a rollback refuses. The target must have each
+asks first, or needs `--yes` without a terminal. With `--expect ID`, where ID is the id of the
+rollback release or its first 12 or more hex digits, it refuses with `blocked` and changes nothing
+when the rollback release is another one. The release that served becomes the rollback, so a
+second rollback undoes the first. A target without a rollback refuses. The target must have each
 key of the rollback release, else nothing changes. On an R2 target, the follower must also serve
 the planner release of the rollback: the rollback asks its `ready` once, as [Router
 ready](#router-ready) says, and any answer but 200 refuses (`blocked`) with its reason. The
@@ -1417,8 +1424,10 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`
-  and `obc data runs RUN --stop`.
+  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`,
+  `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
+  or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
+  (with `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -2456,6 +2465,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "LayerShape": {
+      "description": "How the steps of a layer bake.",
+      "oneOf": [
+        {
+          "const": "tiled",
+          "description": "Per grid leaf.",
+          "type": "string"
+        },
+        {
+          "const": "whole",
+          "description": "Once over the coverage of a target, also in named partitions.",
+          "type": "string"
+        }
+      ]
+    },
     "LayerState": {
       "additionalProperties": false,
       "properties": {
@@ -2470,8 +2494,67 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "Why a `stale` layer is stale; `null` for another state."
         },
+        "format": {
+          "description": "The format and the revision of its steps; `null` for a layer that only the release has.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "layer": {
           "type": "string"
+        },
+        "readers": {
+          "description": "The programs that read its files.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reads": {
+          "description": "The layers and the sources that its steps read, sorted. In place of a layer that no program\nreads, it names what that layer reads.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "served_format": {
+          "description": "The format and the revision of the layer in the release; `null` while the release has none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "served_revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerShape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its steps bake; `null` for a layer that only the release has."
         },
         "state": {
           "$ref": "#/$defs/Verdict"
@@ -2488,7 +2571,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "state",
         "cause",
-        "text"
+        "text",
+        "shape",
+        "format",
+        "revision",
+        "served_format",
+        "served_revision",
+        "readers",
+        "reads"
       ],
       "type": "object"
     },
@@ -3239,6 +3329,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "machine": {
           "$ref": "#/$defs/MachineCheck"
         },
+        "optional": {
+          "description": "The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those\nthat are on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "settings": {
           "$ref": "#/$defs/Settings"
         },
@@ -3267,7 +3364,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cost",
         "machine",
         "after",
-        "args"
+        "args",
+        "optional"
       ],
       "type": "object"
     },
@@ -3862,6 +3960,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "SourceVersion": {
+      "description": "A source version that a release read.",
+      "properties": {
+        "retrieved": {
+          "description": "When a machine first retrieved a file of it, `YYYY-MM-DDTHH:MM:SSZ`; `null` without a file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "retrieved"
+      ],
+      "type": "object"
+    },
     "Sources": {
       "properties": {
         "sources": {
@@ -4269,6 +4391,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "What `release.json` of the target says; `null` while it serves nothing."
         },
+        "sources": {
+          "description": "Each source version that the serving release read.",
+          "items": {
+            "$ref": "#/$defs/SourceVersion"
+          },
+          "type": "array"
+        },
         "target": {
           "type": "string"
         }
@@ -4281,6 +4410,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "sources",
         "layers",
         "blocked",
         "drift",

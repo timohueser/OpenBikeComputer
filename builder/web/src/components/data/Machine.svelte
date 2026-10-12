@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { free, hardware, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
+    import { free, hardware, list, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
 
@@ -72,7 +72,7 @@
             <ol>
                 <li>
                     {#if missing.length}
-                        Install {new Intl.ListFormat("en").format(missing)} (the commands are under Tools), then press Check again.
+                        Install {list(missing)} (the commands are under Tools), then press Check again.
                     {:else}
                         Tools are ready. Ask the owner for an R2 key only if you will publish to prod.
                     {/if}
