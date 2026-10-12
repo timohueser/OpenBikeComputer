@@ -27,7 +27,7 @@ A panic or another internal failure answers `500 internal` and writes the cause
 to standard error. A worker that panicked gets a new router.
 Put a public service behind TLS and an OS memory and CPU limit. Keep the package
 read-only. Replace it by starting a new service instance on the new directory.
-`obc planner deploy` writes the systemd unit of the planner service.
+`obc data serve` starts one service for each planner release that it serves.
 
 ## Phone library
 

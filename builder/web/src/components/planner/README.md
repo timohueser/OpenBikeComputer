@@ -3,12 +3,11 @@
 The public planner at `/plan/` uses one active release for maps, routing, and
 search.
 
-## Prepare and publish a region
+## Prepare a region
 
-Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`, `rclone`,
+Run from the checkout. Install Rust, Node 24+, Python 3.12+, `uv`, `gh`,
 and the [PMTiles CLI](https://docs.protomaps.com/pmtiles/cli).
-Authenticate `gh` for the query model release. Set the R2 credential in
-`tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
+Authenticate `gh` for the query model release. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
 pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
 Its name and box are in the [region file](../../../../../data/regions/baden-wuerttemberg-switzerland.toml)
 with the same id.
@@ -19,51 +18,26 @@ OSM snapshot as routing and maps. It needs no database import. Builders use ever
 ```sh
 obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
 obc planner grid --input-release /srv/planner/bw-source --data-dir /srv/planner/bw
-obc planner publish --data-dir /srv/planner/bw --apply
-obc planner deploy --data-dir /srv/planner/bw --host root@YOUR_VPS --apply
 ```
 
-`publish`, `deploy` and `finalize` show their action without `--apply`. Publication uploads
-files and verifies remote bytes. Deployment checks the routing
-package, model readiness, CORS, tiles, search, and a real route. It updates
-`planner/catalog.json` only after these pass. The
-[release contract](../../../../../specs/planner-release.md) defines the files.
-Only grid releases go online.
+These commands publish nothing. `obc data update` publishes a target. The VPS follower of
+[`tools/vps/README.md`](../../../../../tools/vps/README.md) is installed once `obc data serve prod`
+serves an R2 target.
+The [release contract](../../../../../specs/planner-release.md) defines the files.
 
-`grid` builds reusable cells in a fresh directory. Publish and deploy one release
-at a time.
+`grid` builds reusable cells in a fresh directory.
 
 `prepare` accepts `--osm PATH` for a local copy of the pinned extract.
 Use `--inputs DIRECTORY` to supply a prepared `basemap.pmtiles` and `inputs.json`.
 The manifest names the OSM hash, bounds, tool versions, and output hashes.
 Search always builds from the verified OSM input.
 
-The VPS needs Caddy, Python 3.12+, `uv` 0.8.17+, `/root/.cargo/bin/cargo`, and
-Node 24+ at `/usr/local/bin/node`. Services bind to loopback under
-`releases.openbikecomputer.com`.
-
-Deploy the [tile Worker](../../../../../planner/tiles/README.md) first.
-
-`/plan/` and `/builder/` read `planner/catalog.json` at page load, so a release
-needs no site build. Then finish the rollout:
-
-```sh
-obc planner finalize --host root@YOUR_VPS
-obc planner finalize --host root@YOUR_VPS --apply
-```
-
-Finalization checks the live services and the public catalogue. Then it stops the
-inactive VPS slot, removes its Caddy route and every other release directory, and
-removes inactive planner releases and unused source mirrors from R2. It keeps one
-regional dataset. It preserves device cell objects and terrain reference data.
-Publication refuses another release while an inactive dataset remains.
-
 ## Replace a release
 
 For a larger region, add a recipe with its ID, name, bounds, time zone, and
 pinned inputs. Build into a fresh data directory with `--recipe PATH`. Pass
 `--device-catalog URL` for that region's published device catalogue. Use the
-same three commands. `deploy` takes the region name from the recipe.
+same two commands.
 
 For a component update, keep the recipe's pinned OSM snapshot and bounds:
 
@@ -73,7 +47,7 @@ obc planner prepare --input-release /srv/planner/bw-source --component pois --da
 obc planner grid --input-release /srv/planner/bw-source-next --data-dir /srv/planner/bw-next
 ```
 
-Publish and deploy `bw-next`. Repeat `--component` for:
+Repeat `--component` for:
 `pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
 `assets`, `model`, or data layers. Routing updates include overlays;
 POI updates include place tiles. Elevation changes select terrain,
@@ -86,20 +60,7 @@ one OSM snapshot. Preparation and grid publication share `--source-cache`
 component sizes and measured costs. Completed components and cells resume.
 
 POI transforms reuse addresses and unrelated grid objects. Search enrichment and
-routing construction remain regional. Remote releases can upload identical objects
-under distinct prefixes.
-
-Each kind of change goes out in one way:
-
-- **Code only.** For a route server or planner-search change, deploy the same
-  data directory again. `deploy` restarts the active slot in place. Open pages
-  see a short outage. This is accepted during development.
-- **New data release.** `deploy` installs it into the other slot and switches the
-  download service to it. The old slot serves open pages until finalize stops
-  it. Then run finalize. To recover before finalize, deploy the previous release's
-  local data directory again.
-- **New catalogue field.** Deploy the release from the branch first. Merge the
-  branch second.
+routing construction remain regional.
 
 ## Local data
 
@@ -129,7 +90,6 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 | `--region` | `baden-wuerttemberg-switzerland`; test regions `engadin`, `colorado-front-range` |
 | `--data-dir` | `OBC_PLANNER_DATA/REGION` for every command; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
 | `--recipe` | The recipe of `--region` |
-| `--host` or `OBC_PLANNER_HOST` | VPS of `deploy` and `finalize` |
 | `--pmtiles` or `PMTILES` | `pmtiles` |
 
 ## Client configuration

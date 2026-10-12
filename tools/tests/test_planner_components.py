@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools import planner_bake as bake, planner_blocks as blocks, planner_cleanup as cleanup, planner_components as components
+from tools import planner_bake as bake, planner_blocks as blocks, planner_components as components
 from tools import planner_grid_components as grid, planner_prepare as preparation, planner_runtime as runtime
 
 
@@ -287,7 +287,7 @@ class ComponentTests(unittest.TestCase):
             self.assertTrue(all(item["component"].startswith(("grid-search-pois", "grid-search-lookup-pois")) for item in added), added)
             _, first = runtime.release(root / "grid-first")
             _, second = runtime.release(root / "grid-updated")
-            self.assertIn(f"planner/sources/{OSM_SHA256}.osm.pbf", cleanup.referenced_keys(second, ""))
+            self.assertIn(f"sources/{OSM_SHA256}.osm.pbf", second["source_files"])
             changed_files = {name for name in first["files"] if first["files"][name] != second["files"].get(name)}
             self.assertTrue(any(name.startswith("search/tiles/pois/") for name in changed_files))
             self.assertTrue(all(name.startswith(("search/tiles/pois/", "offline/catalog.json", "search/test.grid.json")) for name in changed_files), changed_files)

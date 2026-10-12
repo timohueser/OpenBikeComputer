@@ -330,7 +330,7 @@ data *args:
     cd "$OBC_ROOT"
     _run cargo run --release --quiet --locked -p obc-data-steps -- "$@"
 
-[doc("Prepare, publish or deploy regional planner data. See the planner README.")]
+[doc("Prepare and verify regional planner data. See the planner README.")]
 [group('maps')]
 planner *args:
     #!/usr/bin/env bash

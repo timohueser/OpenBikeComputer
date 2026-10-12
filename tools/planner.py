@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, publish or deploy regional planner data."""
+"""Prepare and verify regional planner data."""
 
 import argparse
 from contextlib import closing
@@ -14,7 +14,7 @@ import sys
 
 if not __package__:  # `obc planner` runs this file as a script.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
+from tools import planner_bake, planner_maps as maps, planner_prepare
 from tools import planner_release as releases
 from tools.planner_components import Cache
 
@@ -93,8 +93,7 @@ def grid(args):
 
 
 COMMANDS = {"setup": setup, "verify": verify_local, "prepare": planner_bake.prepare,
-            "plan": planner_bake.prepare, "inventory": inventory, "grid": grid, "publish": releases.publish,
-            "deploy": planner_deploy.deploy, "finalize": planner_cleanup.finalize}
+            "plan": planner_bake.prepare, "inventory": inventory, "grid": grid}
 
 
 def main(argv=None):
@@ -115,12 +114,6 @@ def main(argv=None):
     parser.add_argument("--reference", type=Path, default=reference)
     parser.add_argument("--pmtiles", default=os.environ.get("PMTILES", "pmtiles"))
     parser.add_argument("--device-catalog", default=os.environ.get("OBC_CATALOG_URL", "https://maps.openbikecomputer.com/cell-catalog/catalog.json"))
-    parser.add_argument("--public-url", default="https://maps.openbikecomputer.com")
-    parser.add_argument("--tiles-url", default="https://tiles.openbikecomputer.com")
-    parser.add_argument("--api-url", default="https://releases.openbikecomputer.com")
-    parser.add_argument("--site-origin", default="https://openbikecomputer.com")
-    parser.add_argument("--host", default=os.environ.get("OBC_PLANNER_HOST"), help="VPS for deploy and finalize: USER@HOST")
-    parser.add_argument("--apply", action="store_true", help="Upload, install, or remove what the command previews")
     args = parser.parse_args(argv)
     args.recipe = args.recipe or RECIPES / f"{args.region}.json"
     args.data_dir = args.data_dir or Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner")) / args.region
@@ -151,8 +144,8 @@ def main(argv=None):
             COMMANDS[args.command](args)
     except KeyboardInterrupt:
         if args.command not in LOCAL:
-            parser.exit(130, "Planner command interrupted. Check the active catalogue before retrying.\n")
-    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError, r2.Refuse) as error:
+            parser.exit(130, "Planner command interrupted. Run it again: completed parts resume.\n")
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.CalledProcessError) as error:
         hint = "\nUse obc planner setup to prepare local data and dependencies." if args.command in LOCAL else ""
         parser.exit(1, f"planner: {error}{hint}\n")
 

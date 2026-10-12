@@ -1,0 +1,5 @@
+# The planner API of the follower, in the site block of releases.openbikecomputer.com.
+# A route of one legacy planner release has a longer path: Caddy tries it first.
+handle /planner-api/* {
+	reverse_proxy 127.0.0.1:8710
+}

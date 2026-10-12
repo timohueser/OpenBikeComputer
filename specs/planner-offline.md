@@ -71,7 +71,9 @@ from the installed packs.
 
 ## Download service
 
-The HTTPS prefix is `/planner-offline`. Bounds use west, south, east, north.
+A client calls the service that `downloads` of the active release in the planner pointer names.
+Without `downloads`, it calls `/planner-offline` of the API origin. A job `source` has the scheme of
+the service. Bounds use west, south, east, north.
 
 | Request | Result |
 | --- | --- |
