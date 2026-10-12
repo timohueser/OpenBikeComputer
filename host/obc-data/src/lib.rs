@@ -11,6 +11,7 @@ pub mod product;
 pub mod r2;
 pub mod regions;
 pub mod release;
+pub mod serve;
 pub mod settings;
 pub mod sources;
 pub mod store;

@@ -200,6 +200,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
+| `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -867,7 +868,8 @@ the bucket.
 The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
 `<objects_origin>/releases/<id>/release.json`. Its `device_catalog` names
-`<objects_origin>/cell-catalog/catalog.json`. `obc data` does not install the services.
+`<objects_origin>/cell-catalog/catalog.json`. [`obc data serve`](#serve) runs the services for a
+`dir` target; `obc data` does not install them on a server.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
@@ -1033,6 +1035,37 @@ only a `dir` target. One run does each phase in this order:
 
 An update that stops keeps what it baked in the store, and the next update reuses it.
 
+### Serve
+
+`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of each address
+of the machine. It refuses an R2 target. The current release is the release whose pointers clients
+get. Every answer allows each origin.
+
+| Path | Answer |
+| --- | --- |
+| `/cell-catalog/catalog.json` | The device pointer of the current release |
+| `/planner/catalog.json` | The planner pointer of the current release. Each string that is an `https://` URL gets the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
+| Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
+
+Serve reads `release.json` each second. When it changes:
+
+1. Serve starts the services of the planner release of the serving release and of the rollback,
+   unless they run. The planner release of a release is `active.id` of its planner pointer.
+2. Clients get the serving release once each service of its planner release answers: routing
+   `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
+   `GET /catalog`. Until then clients keep the current release.
+3. Services that stop, or do not answer within 120 seconds, fail. Clients keep the current release.
+   The planner release starts again at the next change of `release.json`.
+4. The services of a planner release that neither the serving release, the rollback nor the
+   current release names stop.
+
+The services of a planner release read its files under `routing/`, `search/` and `offline/` in
+`<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
+`identity` object, or the decoded bytes of a `gzip` object. It must have the SHA-256 and the size
+that the planner release gives. Serve starts with an empty `<store>/serve/<target>/`. Download
+bundles name the origin of the machine on its network, else `http://127.0.0.1:8710`.
+
 ### Overview
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves and
@@ -1055,6 +1088,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
 | `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
+| `obc data serve [TARGET] [--json]` | [Serves](#serve) a `dir` target until Ctrl-C. Writes its origin on the machine and on its network |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
@@ -1173,6 +1207,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `fetch` | `Fetched` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
+| `serve`, when it listens | `Listening` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -2259,6 +2294,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "state",
         "cause",
         "text"
+      ],
+      "type": "object"
+    },
+    "Listening": {
+      "description": "What `serve` writes when it listens.",
+      "properties": {
+        "network": {
+          "description": "Its origin on the network of this machine, for a phone; `null` without a network.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "url": {
+          "description": "The origin of `obc data serve` on this machine.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "url",
+        "network"
       ],
       "type": "object"
     },

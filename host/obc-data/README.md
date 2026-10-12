@@ -43,8 +43,25 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
+| `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
 rollback of the target.
+
+## Serve
+
+`obc data serve` serves `local` on port 8710 of each address of the machine, also on its network.
+It prints the URLs of the pointers. It runs the routing, search and downloads services of each
+planner release and the tile server of `planner/tiles`. At start it builds `planner-service`
+with cargo. Prepare Node and the other services once:
+
+```sh
+python3 planner/search/setup.py
+npm ci --prefix planner/tiles
+```
+
+Leave it running while `obc data update local` runs in another terminal. Clients get the new
+release when its services answer. A failed release leaves clients on the current release; the
+services write the cause to the terminal.

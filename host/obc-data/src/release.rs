@@ -236,7 +236,7 @@ pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
 }
 
-fn is_sha256(text: &str) -> bool {
+pub(crate) fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 

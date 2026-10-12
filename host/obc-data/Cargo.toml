@@ -16,6 +16,13 @@ serde_json = "1"
 sha2 = "0.11"
 toml = "0.9"
 ureq = "3"
+# `obc data serve`: the files of a target and the API of its planner releases.
+axum = "0.8"
+flate2 = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
