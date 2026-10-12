@@ -759,10 +759,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             );
         }
 
-        /// The plan of `steps` against a release that has none of them.
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
-            let none = std::collections::BTreeMap::new();
-            Ok(changes::update(&self.store, steps, &none, &state::Newer::new(), &[])?.plan)
+            plan::plan(&self.store, steps)
         }
 
         /// Plan `steps`, and run the plan.

@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use obc_data::engine::plan::{outputs, Kept, Plan};
+use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{digest, Built, Input, Request, Run, Step};
 use obc_data::fetch::http::Http;
@@ -44,12 +44,6 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
     }
-}
-
-/// The plan of `steps` against a release that has none of them.
-fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-    let none = BTreeMap::new();
-    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
 }
 
 #[test]

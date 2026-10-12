@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use obc_bake::cut::{cut, CutOptions};
-use obc_data::engine::plan::{outputs, Kept, Plan};
+use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
@@ -156,12 +156,6 @@ fn copy(request: &Request) -> Result<(), String> {
         std::fs::copy(extract, request.output.join(obc_osm::step::leaf_pbf(leaf))).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-/// The plan of `steps` against a release that has none of them.
-fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-    let none = BTreeMap::new();
-    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
 }
 
 #[test]

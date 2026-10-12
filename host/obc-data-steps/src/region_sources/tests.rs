@@ -1,6 +1,6 @@
 use super::*;
-use crate::device::tests::{fetched, plan, root, temp};
-use obc_data::engine::plan::{outputs, Kept};
+use crate::device::tests::{fetched, root, temp};
+use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as Journal};
 use obc_data::fetch::http::Http;
 use obc_data::regions::parse_region;

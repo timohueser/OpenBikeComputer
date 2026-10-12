@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use obc_bake::terrain::{DemCutter, TerrainBakeOptions, TerrainBakery, TerrainCellStatus, TerrainDoc};
-use obc_data::engine::plan::{Kept, Plan};
+use obc_data::engine::plan::{plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run};
-use obc_data::engine::Step;
 use obc_data::fetch::http::Http;
 use obc_data::product::Inputs;
 use obc_data::product::Unplanned;
@@ -101,12 +100,6 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
         store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name] }).unwrap();
     }
     store
-}
-
-/// The plan of `steps` against a release that has none of them.
-fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-    let none = BTreeMap::new();
-    Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
 }
 
 fn steps(store: &Store, inputs: &Inputs, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {

@@ -664,7 +664,7 @@ pub fn box_poly(bbox: &Bbox) -> String {
 pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
-    use obc_data::engine::plan::{Kept, Plan};
+    use obc_data::engine::plan::{plan, Kept, Plan};
     use obc_data::engine::runs::{Context, Limits, Run as RunLog};
     use obc_data::engine::Request;
     use obc_data::fetch::http::Http;
@@ -673,12 +673,6 @@ pub(crate) mod tests {
 
     use super::*;
     use obc_data::regions::Area;
-
-    /// The plan of `steps` against a release that has none of them.
-    pub(crate) fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
-        let none = BTreeMap::new();
-        Ok(obc_data::engine::changes::update(store, steps, &none, &Default::default(), &[])?.plan)
-    }
 
     fn map_steps(root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         Device.steps_with_tool(root, inputs, regions, store, Ok(()))

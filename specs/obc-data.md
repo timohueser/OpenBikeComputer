@@ -669,9 +669,11 @@ A step list gets the version of each fetch that it reads from one function
    product.
 
 A `date` or a `release` version is newer by its parts: a run of digits by its number, any other
-run as text, so `v1.9` comes before `v1.11`. A `commit` or a `digest` has no order: rule 2 gives
-the serving version, or else the `start`. So an update after an update that changed nothing reads
-the same versions, and two machines with the same store read the same versions.
+run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
+and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
+its `start`, so that a change of `data/sources.toml` moves it; else the serving version; else the
+one version in the store, when the store has exactly one. So an update after an update that
+changed nothing reads the same versions.
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
 metadata fetched (see [Products](#products)). It judges each of them, as

@@ -88,16 +88,17 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     fn number(part: &str) -> Option<&str> {
         part.bytes().all(|byte| byte.is_ascii_digit()).then(|| part.trim_start_matches('0'))
     }
-    for (a, b) in parts(a).into_iter().zip(parts(b)) {
-        let order = match (number(a), number(b)) {
-            (Some(a), Some(b)) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
-            _ => a.cmp(b),
+    for (x, y) in parts(a).into_iter().zip(parts(b)) {
+        let order = match (number(x), number(y)) {
+            (Some(x), Some(y)) => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
+            _ => x.cmp(y),
         };
         if order.is_ne() {
             return order;
         }
     }
-    parts(a).len().cmp(&parts(b).len())
+    // Equal numbers with other zeros, such as `v1.0` and `v1.00`, still have one order.
+    parts(a).len().cmp(&parts(b).len()).then_with(|| a.cmp(b))
 }
 
 /// How old the serving version may get before the source is stale.
@@ -499,7 +500,15 @@ mod tests {
     #[test]
     fn a_version_is_newer_by_the_numbers_of_its_parts() {
         use std::cmp::Ordering::Less;
-        for (older, newer) in [("v1.9", "v1.11"), ("5.3.2", "5.10.0"), ("2026-09-30", "2026-10-01"), ("1", "1.1")] {
+        let pairs = [
+            ("v1.9", "v1.11"),
+            ("5.3.2", "5.10.0"),
+            ("2026-09-30", "2026-10-01"),
+            ("1", "1.1"),
+            ("v1.0", "v1.00"),
+            ("01", "1"),
+        ];
+        for (older, newer) in pairs {
             assert_eq!(compare_versions(older, newer), Less, "{older} < {newer}");
             assert_eq!(compare_versions(newer, older), Less.reverse(), "{newer} > {older}");
         }

@@ -154,8 +154,6 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
-/// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
-/// refuses a symbolic link, which could name a file outside its directory.
 fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for (path, object) in files {

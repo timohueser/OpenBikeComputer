@@ -198,7 +198,8 @@ pub fn version(
 /// its source, by the order of the source's versions. The serving version of a fetch without
 /// params, or of any fetch of a source with a `start`, is the newest serving version of the source:
 /// one version names all its requests, such as the GLO-30 tiles of every region. A `commit` or a
-/// `digest` has no order: the serving version, or else the `start`.
+/// `digest` has no order: its `start`, so that a change of `data/sources.toml` moves it; else the
+/// serving version; else the one version in the store, when there is one.
 fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String)]) -> Result<Option<String>, String> {
     let declared = crate::sources::all().iter().find(|s| s.id == source);
     let start = declared.and_then(|s| s.start.clone());
@@ -210,13 +211,14 @@ fn known(inputs: &Inputs, store: &Store, source: &str, params: &[(String, String
         }
         None => None,
     };
-    if declared.is_some_and(|source| !source.version.ordered()) {
-        return Ok(serving.or(start));
-    }
     let stored: Vec<String> = match params {
         [] => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).collect(),
         params => store.requests(source, params)?.into_iter().map(|request| request.version).collect(),
     };
+    if declared.is_some_and(|source| !source.version.ordered()) {
+        let only = <[String; 1]>::try_from(stored).ok().map(|[version]| version);
+        return Ok(start.or(serving).or(only));
+    }
     Ok(newest(&mut serving.into_iter().chain(stored).chain(start)))
 }
 
@@ -267,9 +269,18 @@ mod tests {
         fixture.fetched_version("nominatim-country-data", "5.10.0", "data.whl", b"data\n");
         inputs.serving.insert(("nominatim-country-data".into(), Vec::new()), "5.3.2".into());
         assert_eq!(version(&inputs, "nominatim-country-data", &[]), Ok("5.10.0".into()), "by number, not text");
+        // A commit has no order: its `start`, else the serving version, else the one in the store.
+        let start = crate::sources::embedded("protomaps-assets").start.clone().unwrap();
         inputs.serving.insert(("protomaps-assets".into(), Vec::new()), "a".into());
         fixture.fetched_version("protomaps-assets", "b", "assets.zip", b"assets\n");
-        assert_eq!(version(&inputs, "protomaps-assets", &[]), Ok("a".into()), "a commit has no order");
+        assert_eq!(version(&inputs, "protomaps-assets", &[]), Ok(start.clone()), "a reviewed `start` moves it");
+        inputs.serving.insert(("protomaps-assets".into(), Vec::new()), start.clone());
+        assert_eq!(version(&inputs, "protomaps-assets", &[]), Ok(start), "the serving version is the `start`");
+        fixture.fetched_version("natural-earth", "c", "earth.zip", b"earth\n");
+        assert_eq!(version(&inputs, "natural-earth", &[]), Ok("c".into()), "the one digest in the store");
+        inputs.serving.insert(("natural-earth".into(), Vec::new()), "d".into());
+        fixture.fetched_version("natural-earth", "e", "earth.zip", b"other earth\n");
+        assert_eq!(version(&inputs, "natural-earth", &[]), Ok("d".into()), "a digest keeps its serving version");
 
         inputs.due.insert(("head".into(), Vec::new()));
         assert_eq!(version(&inputs, "head", &[]), Err(None), "a due fetch without a newer name");

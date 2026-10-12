@@ -19,10 +19,9 @@ pub struct Plan {
     pub groups: Vec<Group>,
 }
 
-/// One change, and the fetches and builds that it needs. Without a release, a group is builds that
-/// read each other's layers: it never needs a build of another group. Against a release, a group
-/// is one layer, and two groups can need the same build. Two groups can need the same fetch.
-/// `--only` gives one group of the named layers.
+/// One change, and the fetches and builds that it needs: one layer that changes against the
+/// release. Two groups can need the same build or the same fetch. `--only` gives one group of the
+/// named layers.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "PlanGroup")]
@@ -146,6 +145,11 @@ pub(super) fn build_of(walked: &Walked, receipts: &[Receipt]) -> Build {
         estimate: estimate(receipts, walked.step),
         again: false,
     }
+}
+
+/// The plan of `steps` against a release that has none of them: what a first update bakes.
+pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
+    Ok(super::changes::update(store, steps, &BTreeMap::new(), &super::state::Newer::new(), &[])?.plan)
 }
 
 /// The output of each step, in dependency order: kept by reference, or else the store's layer of
