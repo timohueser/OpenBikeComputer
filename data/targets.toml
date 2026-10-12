@@ -4,10 +4,9 @@
 # The public bucket that clients read.
 [prod]
 kind = "r2"
-bucket = "obc-maps"
 public = "https://maps.openbikecomputer.com"
 
-# A folder on the machine that runs `obc data`. Each machine has its own.
+# A folder on the machine that runs `obc data`: the folder `local` beside the store, so that it
+# shares the disk of the store. Each machine has its own.
 [local]
 kind = "dir"
-dir = "~/.local/share/openbikecomputer/local"

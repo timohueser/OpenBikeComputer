@@ -1207,13 +1207,12 @@ One table per target. The name of the table is the name of the target, in lowerc
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `kind` | string | `r2` or `dir` |
-| `bucket` | string | `r2` only: the name of the bucket |
 | `public` | string | `r2` only: the `https://` origin that serves the keys of the bucket, without a path |
-| `dir` | string | `dir` only: an absolute path, or a path that starts with `~/` for the home directory |
+| `dir` | string | `dir` only, optional: an absolute path, or a path that starts with `~/` for the home directory. Without it, the folder `local` beside the store |
 
-The file has `prod`, the bucket `obc-maps`, and `local`, a folder on each machine. A `dir` target
-and the store do not overlap, so a clean of the store never deletes a file of a target.
-`obc data` reads an R2 target only through its public URL.
+The file has `prod`, the public bucket, and `local`, a folder on each machine. A `dir` target and
+the store do not overlap, also through a link, so a clean of the store never deletes a file of a
+target. `obc data` reads an R2 target only through its public URL.
 
 ### Target layout
 
@@ -1223,12 +1222,13 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | --- | --- |
 | `release.json` | The release that the target serves, and its rollback. A switch writes it first |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
-| `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the SHA-256 of one file in the folder, which names the others. Immutable |
-| `objects/<sha256>` | A client file of an output, or a pointer document. Immutable |
-| A pointer key, such as `planner/catalog.json` | A copy of the object that the serving release names for the key |
+| `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
+| `objects/<sha256>` | A client file of an output, or the document of a pointer. Immutable |
+| `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
-A pointer key is not `release.json`, `lock.json` or `removed.jsonl`, and is not under
-`objects/`, `releases/` or `sources/`.
+Only client files of outputs go to a target: an output that no client reads can derive from a
+source that we may not give to others, and a bucket is public. A machine that needs such an output
+of a kept layer bakes it again from the sources at the versions of the release, with the same key.
 
 ### Release manifest
 
@@ -1239,21 +1239,30 @@ SHA-256 of these bytes.
 | --- | --- |
 | `settings` | The settings of the target: `region`, `definitions`, `layers` and `refresh`, as in [Live settings](#live-settings) |
 | `outputs` | One output per step, sorted by `step` |
-| `pointers` | `[{key, size, sha256}]`, sorted by `key`: a client reads the bytes of `objects/<sha256>` at `key` |
-| `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each has the bytes of a file of an output |
+| `pointers` | `[{key, size, sha256}]`, sorted by `key`: a pointer key and the file of an output that a client reads there |
+| `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a file of an output |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
 An output has `layer`, `step`, `format`, `revision`, `key`, `inputs`, `options`, `digest` and
 `files` as in the [receipt](#receipt), `snapshots` and `client` as in [Releases](#releases), and
-`cost`: the `wall_ms`, `peak_rss_bytes` and `bytes_out` of the build that made the receipt. The
-objects of a release are the client files of its outputs and its pointer documents, one object
-per SHA-256.
+`cost`: the `wall_ms`, `peak_rss_bytes` (`null` when the system does not report it) and
+`bytes_out` of the build that made the receipt. The objects of a release are the client files of
+its outputs and its pointer documents, one object per SHA-256.
 
 ### `release.json`
 
 ```json
-{"serving": {"id": "<id>", "since": "2026-10-12T08:00:00Z"}, "rollback": {"id": "<id>", "since": "2026-10-12T08:00:00Z"}}
+{
+  "serving": {
+    "id": "<id>",
+    "since": "2026-10-12T08:00:00Z"
+  },
+  "rollback": {
+    "id": "<id>",
+    "since": "2026-10-12T08:00:00Z"
+  }
+}
 ```
 
 `since` is the time at which the release took its role. `rollback` is `null` until the second
@@ -1264,16 +1273,21 @@ switch.
 1. The target gets each key of the release that it does not have, the manifest last. Before the
    target changes, each of these files in the store must have the SHA-256 that the release
    gives. A key is immutable: a key with another size is refused, and nothing replaces it.
-2. The switch needs the manifest on the target. A conditional write replaces `release.json` only
-   when it is still the file that was read, or when it is still absent. The release that served becomes the rollback. When the condition
-   fails, nothing changes.
-3. Then each pointer key gets the bytes of its object. So a pointer is always of the serving
-   release or of the rollback. A pointer key whose bytes are not those of the serving release is
-   drift, and the next switch writes it again.
+2. The switch reads the manifest from the target. A conditional write replaces `release.json`
+   only when it is still the file that was read, or when it is still absent. The release that
+   served becomes the rollback. When the condition fails, nothing changes.
+3. Then each pointer key of the release gets the bytes of its object.
+
+Drift is a pointer key whose bytes are not those that the serving release names, or that the
+serving release does not name and the target has. A switch to another release is refused while a
+pointer that the serving release names drifts. A switch to the serving release writes its
+pointers again. So each pointer that the serving release names holds its bytes or those of the
+rollback. Nothing deletes a pointer key: clients of older publishers read these keys.
 
 A `dir` target must be on a local file system. A conditional write holds `<dir>/.lock` while it
 compares and writes, and writes through a rename. The tag that it compares is the SHA-256 of the
-bytes.
+bytes. A key can be a hard link to an object of the store: nothing writes a key or an object in
+place.
 
 ## Commands
 
