@@ -137,11 +137,14 @@ def step():
     name = f'{component}.jsonl.zst'
     dump = Path(request['layers']['planner/search/records'][name])
     output = Path(request['output']) / component
+
+    def content(path):
+        # By file, not by step name: each source area has its own content step.
+        return [files[path] for files in request['layers'].values() if path in files]
+
     build(dump, name, output, component, options['region'], options['bounds'],
           [country.lower() for country in options['countries']], ZoneInfo(options['time_zone']),
-          options['attribution'],
-          landmarks=[files['landmarks/content.json'] for name, files in request['layers'].items() if name.startswith('maps/landmark-content')],
-          peaks=[files['peaks/peaks.json'] for name, files in request['layers'].items() if name.startswith('maps/peak-content')])
+          options['attribution'], landmarks=content('landmarks/content.json'), peaks=content('peaks/peaks.json'))
     (output / 'regions.geojson').unlink()
     # The key holds no SQLite version, so the metrics record it.
     step_request.metrics(request, {'sqlite': sqlite3.sqlite_version})

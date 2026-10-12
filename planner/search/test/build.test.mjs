@@ -206,3 +206,33 @@ for name,rows in [('forward',records),('reverse',list(reversed(records)))]:
     assert.equal(main.north,48.02);
   } finally {for(const c of connections)c.close();rmSync(directory,{recursive:true,force:true})}
 });
+
+test('the search step reads the landmark and peak content of every step that holds it',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-search-step-'));
+  const root=new URL('../../..',import.meta.url).pathname;
+  const python=['run','--locked','--project',root,'--group','planner-search','python'];
+  const attribution={source_url:'https://en.wikipedia.org/?oldid=1',revision:'1',license_url:'https://creativecommons.org/licenses/by-sa/4.0/'};
+  const article={default_language:'en',variants:[{language:'en',text_pages:['A short article.'],attribution}]};
+  let db;
+  try {
+    writeFileSync(join(directory,'content.json'),JSON.stringify({records:[{...article,qid:'Q1',name:'Castle',category:2,latitude:48,longitude:8}]}));
+    writeFileSync(join(directory,'peaks.json'),JSON.stringify({records:[{...article,id:'Q2',name:'Peak'}],
+      associations:[{node_id:2,article_id:'Q2',latitude:48.01,longitude:8.01}]}));
+    execFileSync('uv',[...python,'-c',`import json,sys,zstandard
+from pathlib import Path
+records=[{'type':'NominatimDumpFile','content':{'data_timestamp':'2026-01-01T00:00:00Z'}},
+ {'type':'Place','content':[{'object_type':'N','object_id':2,'osm_key':'natural','osm_value':'peak',
+  'name':{'name':'Peak'},'centroid':[8.01,48.01],'country_code':'de'}]}]
+Path(sys.argv[1]).write_bytes(zstandard.ZstdCompressor().compress(('\\n'.join(map(json.dumps,records))+'\\n').encode()))`,join(directory,'pois.jsonl.zst')]);
+    const request={step:'planner/search/pois',snapshots:{},layer_files:{},
+      layers:{'planner/search/records':{'pois.jsonl.zst':join(directory,'pois.jsonl.zst')},
+        'device/landmark-content/europe/test':{'landmarks/content.json':join(directory,'content.json')},
+        'device/peak-content/europe/test':{'peaks/peaks.json':join(directory,'peaks.json')}},
+      options:{component:'pois',region:'test',bounds:[7,47,9,49],countries:['DE'],time_zone:'Europe/Berlin',attribution:'OSM'},
+      output:join(directory,'out'),metrics:join(directory,'metrics.json')};
+    execFileSync('uv',[...python,'planner/search/build.py','--step'],{cwd:root,input:JSON.stringify(request)});
+    db=new DatabaseSync(join(directory,'out/pois/test.sqlite'),{readOnly:true});
+    const content=db.prepare('SELECT r.source,c.landmark_id FROM place_content c JOIN place_records r ON r.id=c.place_id ORDER BY r.source').all();
+    assert.deepEqual(content.map(row=>[row.source,row.landmark_id]),[['Q1','Q1'],['n2',null]]);
+  } finally {db?.close();rmSync(directory,{recursive:true,force:true});}
+});

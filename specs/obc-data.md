@@ -593,7 +593,7 @@ fetches a version with the same `params` once, with the files of every group tha
 
 ### Device-map publication
 
-The maps catalog step consumes selected layer paths and their receipt metadata. Map and terrain
+The `device/catalog` step consumes selected layer paths and their receipt metadata. Map and terrain
 layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
 and `terrain/` payloads are client files. Every file of the catalog layer is a client file: the
 pinned satellites in `objects/`, which it names `/objects/<sha256>`, and the root `catalog.json`
