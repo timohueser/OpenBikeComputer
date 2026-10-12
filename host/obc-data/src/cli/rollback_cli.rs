@@ -10,10 +10,11 @@ use serde::Serialize;
 
 use super::{print_json, update_cli, Code, Error};
 use crate::engine::runs::{Event, Phase, Run};
+use crate::fetch::http::Http;
 use crate::lock::Held;
-use crate::release;
 use crate::store::Store;
 use crate::target::Target;
+use crate::{ready, release};
 
 #[derive(Args)]
 pub struct RollbackArgs {
@@ -42,13 +43,14 @@ pub struct RolledBack {
 pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(&args.target, &target)?;
+    super::api::writable(&args.target, &target, true)?;
     if let Target::R2(remote) = &target {
         let question = format!("Serve the rollback release of `{}` ({}) to riders again?", args.target, remote.url(""));
         super::confirm(&question, args.yes)?;
     }
     let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
-    let result = rollback((&args.target, &target), args.expect.as_deref(), &mut run);
+    let follower = matches!(target, Target::R2(_));
+    let result = rollback((&args.target, &target), args.expect.as_deref(), &mut run, follower);
     let rolled = super::api::finish_run(run, result)?;
     if json {
         return print_json(&rolled);
@@ -57,15 +59,17 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
     Ok(())
 }
 
-/// Switch `target` to its rollback release, after a check that the target has each of its keys,
-/// while the run holds the lock of the target.
+/// Switch `target` to its rollback release, after a check that the target has each of its keys
+/// and, with `follower`, as for an R2 target, that the follower of the target serves its planner
+/// release, while the run holds the lock of the target.
 pub(super) fn rollback(
     (name, target): (&str, &Target),
     expect: Option<&str>,
     run: &mut Run,
+    follower: bool,
 ) -> Result<RolledBack, Error> {
     update_cli::locked((name, target), run, |run, held| {
-        let rolled = switch((name, target), expect, (run, held))?;
+        let rolled = switch((name, target), expect, (run, held), follower)?;
         Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rolled.0, rollback: rolled.1 })
     })
 }
@@ -75,6 +79,7 @@ fn switch(
     (name, target): (&str, &Target),
     expect: Option<&str>,
     (run, held): (&mut Run, &Held),
+    follower: bool,
 ) -> Result<(String, String), Error> {
     let base = release::serving(target)?.ok_or_else(|| {
         Code::Usage
@@ -104,6 +109,17 @@ fn switch(
             ))
             .fix(format!("Run `obc data update {name}` to publish again.")));
     }
+    // The follower keeps the planner release of the rollback running, so one answer says enough.
+    if follower {
+        let url =
+            ready::url(target, &rollback.id).map_err(|e| Code::Failed.error(format!("the rollback release: {e}")))?;
+        if let Some(reason) = ready::ask(&Http::new(), &url) {
+            let short = &rollback.id[..12];
+            return Err(Code::Blocked
+                .error(format!("the follower of `{name}` does not serve release {short}: {reason}; nothing changed"))
+                .fix(format!("Read the log of `obc data serve {name}` where it runs, then run the rollback again.")));
+        }
+    }
     update_cli::enter((run, held), name, Phase::Switch)?;
     if !release::switch(target, Some(&base), &rollback.id)? {
         return Err(Code::Failed
@@ -128,7 +144,7 @@ mod tests {
         expect: Option<&str>,
     ) -> Result<RolledBack, Error> {
         let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
-        let rolled = super::rollback(("local", target), expect, &mut run);
+        let rolled = super::rollback(("local", target), expect, &mut run, false);
         crate::cli::api::finish_run(run, rolled)
     }
 
@@ -168,5 +184,30 @@ mod tests {
         let refused = rollback(&fixture, &target, None).unwrap_err();
         assert_eq!(refused.code, Code::VerifyFailed, "{}", refused.message);
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, b);
+    }
+
+    #[test]
+    fn an_r2_rollback_whose_planner_release_the_follower_does_not_serve_is_refused() {
+        let fixture = fixture("rollback-ready");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let failed = r#"{"state":"failed","reason":"not ready: the search service stopped: exit status 1"}"#;
+        let (api, asked) = crate::cli::update_cli::tests::follower(&runtime, &dir, &[(503, failed)]);
+        let (a, _) = crate::serve::tests::release_at(&target, "device a", b"routing a", 1, &api);
+        let (b, _) = crate::serve::tests::release_at(&target, "device b", b"routing b", 1, &api);
+        for id in [&a, &b] {
+            assert!(release::switch(&target, release::serving(&target).unwrap().as_ref(), id).unwrap());
+        }
+        let before = std::fs::read(dir.join(release::SERVING)).unwrap();
+
+        let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
+        let refused = super::rollback(("local", &target), None, &mut run, true);
+        let refused = crate::cli::api::finish_run(run, refused).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked);
+        let reason = "not ready: the search service stopped: exit status 1; nothing changed";
+        assert!(refused.message.ends_with(reason), "{}", refused.message);
+        assert_eq!(asked.lock().unwrap().len(), 1, "one answer, for the rollback release {a}");
+        assert_eq!(std::fs::read(dir.join(release::SERVING)).unwrap(), before);
     }
 }

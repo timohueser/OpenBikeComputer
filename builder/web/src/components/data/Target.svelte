@@ -102,7 +102,7 @@
     {#if lock}
         <section class="card lock" aria-labelledby="lock">
             <h2 id="lock">{lock.machine} is updating {name}</h2>
-            <p>Run {lock.run} · phase {lock.phase} · last heartbeat {clock(lock.heartbeat)}</p>
+            <p>Run {lock.run} · phase {lock.phase}{lock.waiting ? `: ${lock.waiting}` : ""} · last heartbeat {clock(lock.heartbeat)}</p>
             {#if !lock.stale}
                 <p>One machine updates a target at a time. You can update or roll back {name} when this run ends, or watch it now.</p>
                 <a class="primary" href="#/runs/{lock.run}">Watch the run</a>

@@ -2,17 +2,18 @@
     import { MARK, PHASES, type Phase, type RunState } from "../../lib/data/shapes";
 
     // `entered` holds each phase that the run entered, in order; the phases after them wait.
-    let { entered }: { entered: { phase: Phase; state: RunState }[] } = $props();
+    let { entered }: { entered: { phase: Phase; state: RunState; waiting?: string }[] } = $props();
 
-    const shown = $derived(PHASES.map((phase) => ({ phase, state: entered.find((at) => at.phase === phase)?.state })));
+    const shown = $derived(PHASES.map((phase) => ({ phase, ...entered.find((at) => at.phase === phase) })));
 </script>
 
 <ol class="phases" aria-label="Phases">
-    {#each shown as { phase, state } (phase)}
+    {#each shown as { phase, state, waiting } (phase)}
         <li class={state ?? "waits"}>
             <span aria-hidden="true">{state ? MARK[state] : "○"}</span>
             {phase}
             <span class="hidden">{state ?? "waits"}</span>
+            {#if waiting}<span class="why">: {waiting}</span>{/if}
         </li>
     {/each}
 </ol>
@@ -35,6 +36,10 @@
         border-radius: 8px;
         font-weight: 600;
         text-transform: capitalize;
+    }
+    .why {
+        font-weight: 400;
+        text-transform: none;
     }
     .waits {
         color: var(--ink-faint);

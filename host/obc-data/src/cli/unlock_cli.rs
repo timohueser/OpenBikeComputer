@@ -21,7 +21,7 @@ pub struct Unlocked {
 pub fn command(root: &Path, name: &str, from: &str, yes: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, name, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(name, &target)?;
+    super::api::writable(name, &target, false)?;
     let unreadable = |e: String| {
         Code::Failed
             .error(format!("target `{name}`: {e}"))

@@ -10,7 +10,9 @@
     let { target, holder, ended }: { target: string; holder: Holder; ended: boolean } = $props();
 
     const at = $derived(PHASES.indexOf(holder.phase));
-    const entered = $derived(PHASES.slice(0, at + 1).map((phase, i) => ({ phase, state: i < at ? ("ok" as const) : ("running" as const) })));
+    const entered = $derived(
+        PHASES.slice(0, at + 1).map((phase, i) => (i < at ? { phase, state: "ok" as const } : { phase, state: "running" as const, waiting: holder.waiting })),
+    );
 </script>
 
 <div class="title">
