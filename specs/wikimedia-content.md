@@ -64,7 +64,8 @@ A rendered lead or a later API response must not inherit an earlier revision id.
 Each image candidate retains its source claim or eligible article identity,
 Commons identity, metadata/file pins, thumbnail URL, dimensions, relevant subject
 metadata and required licence/credit fields. Device conversion uses the standard
-500 px thumbnail. Temporary thumbnails are not published content.
+500 px thumbnail. The `wiki` source publishes the thumbnail of each photo that the compilers
+choose; other thumbnails are not published content.
 Full API envelopes, rejected image payloads and request logs are not permanent
 shared content. Required proofs and notices must survive compaction.
 
@@ -189,7 +190,18 @@ subject: an object with a `wikidata` or `wikipedia` tag. Its version has these f
 A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
 content of a step names them. A fact that two shards need is in both, with the same bytes. A
 subject has its entity, its links, the locales of the bounded P131 traversal and the articles that
-the compilers read. A fact that the version lacks is no content.
+the compilers read. A fact that the version lacks is no content. A member
+`content/assets/<sha256>` is the 500 px thumbnail of a photo that the compilers choose for a
+subject; the device cell steps convert it to the device format.
+
+The producer asks Commons in three rounds, as a region asks: the categories of the subjects that
+the compilers select, then the metadata of their photo candidates (P18, the lead images of their
+articles and the members of their categories), then the thumbnails of the files that the
+compilers choose. Each round asks only for what the rounds before have not answered, with the
+limits of the acquisition adapter: one request at a time, at most four a second, `maxlag` 5,
+`Retry-After`, three backoffs on 429 and 503, and media at 3 MB/s. When Wikimedia is busy, the
+producer waits ten minutes, then twice as long each time up to two hours, and asks again. A
+subject whose compile fails has no photo in the version.
 
 ## Photo fallback and reachability
 
@@ -205,7 +217,7 @@ The record states the limit reached. Files require subject evidence and valid cr
 The Store keeps inputs reachable from pinned releases, active plans and resumable
 operations under its existing retention rules. Compact shared records and final
 device assets use bounded publication bundles. Bundles retain their source pins
-and licence identities. Temporary thumbnails, full originals, rejected candidates
+and licence identities. Other thumbnails, full originals, rejected candidates
 and per-request logs are not R2 publication outputs. Cleanup follows Store
 reachability; content does not create an independent permanent history cache.
 

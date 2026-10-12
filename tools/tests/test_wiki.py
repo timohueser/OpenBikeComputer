@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 from tools.wiki import catalog, commons, dumps, shards, subjects
+from tools.wiki.__main__ import main as wiki_main
 from tools.wiki.facts import encoded
 
 TOOLS = shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) and shutil.which("zstd") or os.environ.get("CI")
@@ -269,6 +270,24 @@ class Wiki(unittest.TestCase):
         self.assertEqual([line["class"]["key"] for line in lines if "class" in line], ["Q2", "Q3"])
         self.assertEqual([line["subject"]["key"] for line in lines if "subject" in line], ["Q1", "Q999"])
         self.assertEqual([line["peak"] for line in lines if "peak" in line], ["Q1"])
+
+    def test_the_facts_of_a_chunk_hold_its_subjects_and_the_classes_of_their_types(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]), dict(osm="n2", wikidata="Q999"))
+        self.wikidata()
+        shards.export(self.db, self.root / "facts", ["Q1"], [])
+        found = facts({str(path.relative_to(self.root / "facts")): path.read_bytes()
+                       for path in (self.root / "facts").rglob("*.json")})
+        self.assertEqual(found, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q2"), ("entity", "Q3"),
+                                 ("entity", "Q4"), ("entity", "Q5")})
+
+    def test_a_busy_commons_leaves_its_mark_for_the_producer(self):
+        requests = self.root / "requests.json"
+        requests.write_text("{}")
+        argv = ["tools.wiki", "commons", "--work", str(self.work), "--requests", str(requests)]
+        with patch("sys.argv", argv), patch.object(commons, "acquire", side_effect=RuntimeError("Wikimedia is busy")):
+            with self.assertRaises(RuntimeError):
+                wiki_main()
+        self.assertTrue((self.work / "busy").exists())
 
     @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
     def test_a_published_shard_is_not_written_again_and_the_text_can_stay_out(self):

@@ -275,6 +275,13 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
         serde_json::from_slice(&fs::read(root.join("summits.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let facts = facts(files)?;
+    // The file of each link fact, by key: a summit finds its own at once.
+    let mut links = BTreeMap::new();
+    for (name, path) in files.iter().filter(|(name, _)| name.starts_with("content/link/")) {
+        let value: Value =
+            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        links.insert(string(&value, "key")?.to_owned(), name.clone());
+    }
     let mut ids = BTreeSet::new();
     let mut resolutions = Vec::new();
     for summit in &source.summits {
@@ -284,13 +291,7 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
             let Some(fact) = facts.get(&("link".into(), key.clone())) else {
                 return Err(format!("missing link fact: {key}"));
             };
-            let path = files
-                .iter()
-                .find_map(|(name, path)| {
-                    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-                    (value["kind"] == "link" && value["key"] == key).then_some(name.clone())
-                })
-                .ok_or("missing link file")?;
+            let path = links.get(&key).cloned().ok_or("missing link file")?;
             if fact["status"] == "present" {
                 ids.insert(string(fact, "identity")?.to_owned());
             }

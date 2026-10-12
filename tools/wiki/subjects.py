@@ -2,7 +2,8 @@
 
 A subject line is `{"osm": "w10", "wikidata": "Q1", "wikipedia": "en:Castle", "peak": true,
 "box": [west, south, east, north]}`; absent tags and an absent box are left out. `peak` marks a
-`natural=peak` object: the producer selects those subjects for the peak compiler.
+`natural=peak` object: the producer selects those subjects for the peak compiler, and reads their
+`tags`.
 """
 from __future__ import annotations
 
@@ -55,7 +56,7 @@ def extract(pbf: Path, out: Path, work: Path, bbox: list[float] | None = None):
             if len(subject) == 1:
                 continue
             if tags.get("natural") == "peak":
-                subject["peak"] = True
+                subject["peak"], subject["tags"] = True, tags
             if fields[0] in boxes:
                 subject["box"] = boxes[fields[0]]
             if bbox and not meets(subject.get("box"), bbox):

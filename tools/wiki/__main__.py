@@ -6,6 +6,7 @@ Each step resumes in its work directory. The producer runs them in this order:
     python -m tools.wiki import     --work W --inputs inputs.json --subjects subjects.ndjson
     python -m tools.wiki candidates --work W --out candidates.jsonl
     python -m tools.wiki articles   --work W --inputs inputs.json --selected selected.json
+    python -m tools.wiki facts      --work W --selected ids.json --requests links.json --out DIR
     python -m tools.wiki commons    --work W --requests requests.json
     python -m tools.wiki shards     --work W --out OUT [--done done.json] [--no-text]
 
@@ -17,7 +18,9 @@ others are SQL tables. A path may have no suffix: the first bytes name a bz2, gz
 QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
 that is published already. `requests.json` maps each
 subject that the compilers select to its Commons `categories`, `commons` and `files`; see
-`commons.acquire`.
+`commons.acquire`. When Wikimedia is busy, `commons` stops and leaves the file `busy` in the work
+directory: the next call resumes. `facts` writes the facts that the compilers read of the
+subjects `ids.json` and of the peaks with the tags of `links.json`.
 
 The steps need Osmium (or `OBC_OSMIUM`) and zstd; lbzip2 and pigz decompress in parallel when
 present.
@@ -34,7 +37,7 @@ from . import catalog, commons, shards, subjects
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("step", choices=["subjects", "import", "candidates", "articles", "commons", "shards"])
+    parser.add_argument("step", choices=["subjects", "import", "candidates", "articles", "facts", "commons", "shards"])
     parser.add_argument("--work", type=Path, required=True)
     for name in ("osm", "out", "inputs", "subjects", "selected", "requests", "done"):
         parser.add_argument(f"--{name}", type=Path)
@@ -68,8 +71,15 @@ def main() -> int:
             if spec := inputs.get("wikipedia", {}).get(language):
                 catalog.articles(db, args.work, language, *source("wikipedia:" + language, spec))
         catalog.links(db)
+    elif args.step == "facts":
+        shards.export(db, args.out, json.loads(args.selected.read_bytes()), json.loads(args.requests.read_bytes()))
     elif args.step == "commons":
-        commons.acquire(db, args.work, json.loads(args.requests.read_bytes()))
+        try:
+            commons.acquire(db, args.work, json.loads(args.requests.read_bytes()))
+        except RuntimeError as error:
+            if "busy" in str(error):
+                (args.work / "busy").touch()
+            raise
     else:
         done = json.loads(args.done.read_bytes()) if args.done else None
         shards.write(db, args.work, args.out, done, text=not args.no_text)

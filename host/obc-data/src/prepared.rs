@@ -430,6 +430,11 @@ impl<'a> Job<'a> {
         self.record(Entry::Input { source: source.into(), version: version.into(), files })
     }
 
+    /// Stop when a signal or `obc data runs RUN --stop` stops the run, such as in a long wait.
+    pub fn stopped(&self) -> Result<(), String> {
+        self.run.check_stop(self.store)
+    }
+
     /// Run `command`, a program of the producer, in the repository root, and wait for it.
     pub fn program(&self, command: &mut Command) -> Result<(), String> {
         self.run.check_stop(self.store)?;

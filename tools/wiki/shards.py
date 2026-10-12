@@ -43,6 +43,27 @@ def needs(db, targets, wikidata: str | None, wikipedia: str | None) -> set[tuple
     return keys
 
 
+def export(db, out: Path, ids: list[str], links: list[list[str | None]]):
+    """The facts that the compilers read of the subjects `ids` and of the peaks with the
+    `[wikidata, wikipedia]` tags of `links`, with the classes of their types, as
+    `content/<kind>/<sha256>.json` under `out`."""
+    targets = catalog.graph(db)
+    keys = set()
+    for qid in ids:
+        keys |= needs(db, targets, qid, None)
+    for wikidata, wikipedia in links:
+        keys |= needs(db, targets, wikidata, wikipedia)
+    found, pending = set(), set().union(*(targets(31, key) for kind, key in keys if kind == "entity"))
+    while pending:
+        found |= pending
+        pending = set().union(*(targets(279, qid) for qid in pending)) - found
+    for kind, key in keys | {("entity", qid) for qid in found}:
+        if row := db.execute("SELECT data FROM facts WHERE kind=? AND key=?", (kind, key)).fetchone():
+            path = out / "content" / kind / f"{hashlib.sha256(row[0]).hexdigest()}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(row[0])
+
+
 def archive(path: Path, members):
     """A reproducible tar of the `(name, bytes or file)` members, compressed by zstd."""
     path.parent.mkdir(parents=True, exist_ok=True)

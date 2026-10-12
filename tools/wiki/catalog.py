@@ -187,7 +187,7 @@ def subject_items(db) -> set[str]:
 def candidates(db, out: Path):
     """What the landmark rule of the compilers reads, for the producer: `{"class": fact}` for the
     entity of each class, then `{"subject": fact}` for the entity of each OSM `wikidata` tag, and
-    `{"peak": identity}` for each resolved link of a peak."""
+    `{"peak": identity, "entity": fact}` for each resolved link of a peak."""
     if not complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     partial = out.with_suffix(".partial")
@@ -204,7 +204,8 @@ def candidates(db, out: Path):
             for key in (f"wikidata:{wikidata}" if wikidata else None, f"wikipedia:{wikipedia}" if wikipedia else None):
                 if key and (link := fact(db, "link", key)) and link["status"] == "present":
                     peaks.add(link["identity"])
-        output.writelines(json.dumps({"peak": identity}) + "\n" for identity in sorted(peaks))
+        output.writelines(json.dumps({"peak": identity, "entity": fact(db, "entity", identity)}, ensure_ascii=False) + "\n"
+                          for identity in sorted(peaks))
     partial.replace(out)
 
 

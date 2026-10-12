@@ -501,8 +501,8 @@ version = "date"
 refresh = 90
 redistribute = true
 
-# The Wikimedia facts and article text of the OSM subjects, prepared from the dumps in the
-# directory that `OBC_WIKI_DUMPS` names on the machine that prepares.
+# The Wikimedia facts, article text and photos of the OSM subjects, prepared from the dumps in the
+# directory that `OBC_WIKI_DUMPS` names on the machine that prepares, and from Commons.
 [[source]]
 id = "wiki"
 kind = "data"
@@ -511,6 +511,7 @@ licence = "LicenseRef-Wikimedia-per-record"
 attribution = "facts from Wikidata, text from Wikipedia © the contributors, photos from Wikimedia Commons © the photographers"
 obligations = "Each record states the licence and the notices of its own text or photo"
 fetch = { kind = "prepared" }
+hosts = ["commons.wikimedia.org", "upload.wikimedia.org"]
 version = "date"
 refresh = 365
 redistribute = true
