@@ -1081,7 +1081,9 @@ layer in a release: for `status` and a plan of `live`, the live releases. A laye
 | `stale` | A build changes the layer |
 
 A stale layer has exactly one of three causes. A change of code, a commit or a compiler is no
-cause. When more than one row applies, the first row gives the cause:
+cause. When more than one row applies, the first row gives the cause. Within one row, `format`
+comes before `revision`, then the lower `from`, with `null` first; and the `source` or `name`
+that is first in byte order:
 
 | `cause.kind` | Fields | `text` | When |
 | --- | --- | --- | --- |
