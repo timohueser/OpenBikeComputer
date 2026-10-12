@@ -40,8 +40,7 @@ identity, retained inputs and selection outcomes.
 
 Live settings stay in the data store. A selection copies its full region definition, so a
 preset edit cannot silently change coverage. Apply records the reviewed settings in each
-release. Undo restores the applied region, layers and policies. Local has its own region and layers. Its saved releases retain source versions until an explicit Live refresh.
-An upstream check does not silently replace those pins.
+release. Undo restores the applied region, layers and policies. Local has its own region and layers.
 
 A plan separates required work from optional source moves. Changed geometry, product options
 or a layer version can require work even when no source moves.
@@ -67,18 +66,5 @@ Old data stays until it is replaced. An apply removes only the files of earlier 
 tool that the reviewed plan listed, after clients that read an old pointer had time to finish.
 Files of the older publishers are never removed. The [apply contract](src:specs/obc-data.md)
 defines the order.
-
-## Local keeps original provenance
-
-Local builds use current working-tree code and selected configuration. Compatible portable
-layers reuse verified published bytes and retain the original producer identity. They do not
-need the unused original compiler or a private intermediate archive. New work still requires
-its actual tools. Native executables are built for the current host.
-
-The saved Local release keeps useful bytes reachable by cleanup. Prepared apps share services
-when they need the same files. A rebuild updates affected running services and leaves stopped
-apps stopped. A Local check is read-only and makes no source requests.
-See [portable data](src:specs/obc-data.md) and
-[Local services](src:specs/obc-data.md).
 
 Use the [data README](src:host/obc-data/README.md) for setup, credentials and daily commands.
