@@ -183,14 +183,16 @@ impl Asking<'_, '_> {
                 summits.iter().map(|summit| [summit.tags.get("wikidata"), summit.tags.get("wikipedia")]).collect();
             let files = self.facts(&[], &links)?;
             let facts = shared::facts(&files)?;
-            let linked: Vec<(Summit, Vec<String>)> = summits.iter().map(|summit| linked(summit, &facts)).collect();
+            let linked: Vec<(&Summit, Vec<String>)> =
+                summits.iter().map(|summit| (summit, linked(summit, &facts))).collect();
             if round == 1 {
                 let ids: Vec<String> = linked.into_iter().flat_map(|(_, ids)| ids).collect();
                 candidates(&files, &ids, requests)?;
                 continue;
             }
-            let summits: Vec<Summit> =
-                linked.into_iter().filter(|(_, ids)| ids.iter().any(asked)).map(|(summit, _)| summit).collect();
+            // Round 2 compiles every summit, so a link fact that the export lacks counts.
+            let compiled = |(_, ids): &(&Summit, Vec<String>)| again.is_none() || ids.iter().any(asked);
+            let summits: Vec<Summit> = linked.into_iter().filter(compiled).map(|(summit, _)| summit.clone()).collect();
             if summits.is_empty() {
                 continue;
             }
@@ -337,7 +339,14 @@ pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
             continue;
         };
         let (Some(longitude), Some(latitude)) = (value["box"][0].as_f64(), value["box"][1].as_f64()) else { continue };
-        let tags = serde_json::from_value(tags.clone()).map_err(|e| e.to_string())?;
+        let mut tags: BTreeMap<String, String> = serde_json::from_value(tags.clone()).map_err(|e| e.to_string())?;
+        // The link tags that `subjects` kept: the export has a link fact of each.
+        for kind in ["wikidata", "wikipedia"] {
+            match value[kind].as_str() {
+                Some(link) => tags.insert(kind.into(), link.into()),
+                None => tags.remove(kind),
+            };
+        }
         if peaks::is_summit(&tags) {
             summits.push(Summit { node_id, latitude, longitude, tags });
         }
@@ -345,19 +354,14 @@ pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
     Ok(summits)
 }
 
-/// `summit` with the link tags that have a fact only, and the identities that they link.
-fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> (Summit, Vec<String>) {
-    let mut tags = summit.tags.clone();
-    let mut ids = Vec::new();
-    for kind in ["wikidata", "wikipedia"] {
-        let Some(tag) = tags.get(kind) else { continue };
-        match facts.get(&("link".to_string(), format!("{kind}:{tag}"))) {
-            None => drop(tags.remove(kind)),
-            Some(fact) if fact["status"] == "present" => ids.extend(fact["identity"].as_str().map(String::from)),
-            Some(_) => {}
-        }
-    }
-    (Summit { tags, ..*summit }, ids)
+/// The identities that the link tags of `summit` name. A tag without a link fact gives none, and the
+/// compile of the summit counts it as absent and refuses it.
+fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> Vec<String> {
+    let identity = |kind: &str| {
+        let fact = facts.get(&("link".to_string(), format!("{kind}:{}", summit.tags.get(kind)?)))?;
+        fact["identity"].as_str().filter(|_| fact["status"] == "present").map(String::from)
+    };
+    ["wikidata", "wikipedia"].into_iter().filter_map(identity).collect()
 }
 
 /// Remove each folder, so that it is new and empty.
@@ -426,20 +430,23 @@ mod tests {
         let compile = |ids: &[&str]| -> Compiled {
             match ids {
                 ["Q2"] => Ok(Err("invalid source summit".into())),
+                ["Q4"] => Ok(complete(shared::Absent::from([("link", 1)])).map(|()| Vec::new())),
                 [id] => Ok(Ok(vec![(id.to_string(), format!("{id}.jpg"))])),
                 _ => Ok(Err("the chunk fails".into())),
             }
         };
         let (mut requests, mut failed) = (Requests::new(), Vec::new());
-        chosen(&["Q1", "Q2", "Q3"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
+        chosen(&["Q1", "Q2", "Q3", "Q4"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
         assert_eq!(requests.keys().collect::<Vec<_>>(), ["Q1", "Q3"]);
-        assert_eq!(failed, [("Q2".to_string(), "invalid source summit".to_string())]);
+        let failure = |id: &str, error: &str| (id.to_string(), error.to_string());
+        let lacks = failure("Q4", "the export lacks facts: link 1");
+        assert_eq!(failed, [failure("Q2", "invalid source summit"), lacks], "a subject without its facts fails");
 
         let stopped = chosen(&["Q1", "Q2", "Q2"], &mut requests, &mut failed, |id| id.to_string(), compile);
         assert!(stopped.unwrap_err().contains("2 of the 3 subjects of a chunk fails"));
         let io = |_: &[&str]| -> Compiled { Err("No space left on device".into()) };
         let stopped = chosen(&["Q1"], &mut requests, &mut failed, |id| id.to_string(), io).unwrap_err();
-        assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 1));
+        assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 2));
     }
 
     #[test]

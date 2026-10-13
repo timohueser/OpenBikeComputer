@@ -343,13 +343,14 @@ mod tests {
         fs::write(&candidates, lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
         // The map takes a named peak as a summit, and an unnamed one not: no round asks for it.
         let subjects = temp.0.join("subjects.ndjson");
-        let peak =
-            |osm: &str, tags: Value| json!({"osm": osm, "peak": true, "box": [8.3, 46.5, 8.3, 46.5], "tags": tags});
-        let named = peak("n7", json!({"natural": "peak", "name": "Testhorn", "wikidata": "Q7"}));
+        let peak = |osm: &str, tags: Value| json!({"osm": osm, "wikidata": tags["wikidata"], "peak": true, "box": [8.3, 46.5, 8.3, 46.5], "tags": tags});
+        // `subjects` keeps no `wikipedia` link without a language: a summit takes the links it kept.
+        let named = peak("n7", json!({"natural": "peak", "name": "Testhorn", "wikidata": "Q7", "wikipedia": "Horn"}));
         let unnamed = peak("n8", json!({"natural": "peak", "wikidata": "Q8"}));
         fs::write(&subjects, format!("{named}\n{unnamed}\n")).unwrap();
         let summits = commons::summits(&subjects).unwrap();
         assert_eq!(summits.iter().map(|summit| summit.node_id).collect::<Vec<_>>(), [7]);
+        assert_eq!(summits[0].tags.get("wikipedia"), None);
         let selection = select(&candidates, &summits).unwrap();
         assert_eq!((selection.landmarks, selection.peaks), (["Q1".into()].into(), ["Q7".into()].into()));
         let categories: Vec<(&String, &BTreeSet<String>)> =
