@@ -190,11 +190,8 @@ impl Asking<'_, '_> {
                 candidates(&files, &ids, requests)?;
                 continue;
             }
-            // Round 2 also compiles a linked summit without an identity: an absent link fact must fail.
-            let compiled = |(summit, ids): &(&Summit, Vec<String>)| {
-                let tagged = ["wikidata", "wikipedia"].iter().any(|kind| summit.tags.contains_key(*kind));
-                ids.iter().any(asked) || (again.is_none() && ids.is_empty() && tagged)
-            };
+            // `summits()` gives only linked summits, so round 2 compiles each one and an absent link fact fails.
+            let compiled = |(_, ids): &(&Summit, Vec<String>)| again.is_none() || ids.iter().any(asked);
             let summits: Vec<Summit> = linked.into_iter().filter(compiled).map(|(summit, _)| summit.clone()).collect();
             if summits.is_empty() {
                 continue;
