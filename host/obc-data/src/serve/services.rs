@@ -347,7 +347,7 @@ fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, St
         let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
-            "identity" => crate::target::link(&object, &path),
+            "identity" => crate::engine::link(&object, &path),
             "gzip" => decode(&object, &path, entry.bytes),
             other => return Err(format!("{name} has the encoding `{other}`")),
         };

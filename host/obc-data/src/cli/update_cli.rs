@@ -461,10 +461,14 @@ pub(super) fn prepare(
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
 }
 
-/// The refusal of an update with layers that cannot be planned.
+/// The refusal of an update with layers that cannot be planned. The early refusal judges with the
+/// metadata that the store has, so newer Geofabrik metadata can make the settings suit.
 fn unplannable(blocked: &[BlockedLayer]) -> Error {
     let reasons: Vec<String> = blocked.iter().map(|b| format!("{} ({}): {}", b.layer, b.step, b.reason)).collect();
-    Code::Blocked.error(format!("layers cannot be planned: {}", reasons.join("; ")))
+    Code::Blocked.error(format!("layers cannot be planned: {}", reasons.join("; "))).fix(
+        "Change the region or the layers of the target. When a reason names Geofabrik data, fetch the newer \
+         data first, such as `obc data fetch geofabrik-index`, and update again.",
+    )
 }
 
 /// Whether the copy `fetched` on a target has the files that `fetch` gets.

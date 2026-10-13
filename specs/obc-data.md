@@ -715,8 +715,10 @@ nothing reads the same versions. A `prepared` source has the rule of
 [Prepared sources](#prepared-sources).
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
-metadata fetched (see [Products](#products)). When a product does not suit the settings there,
-the update and `--dry-run` fail with `blocked` before they fetch data. It judges each fetch, as
+metadata fetched (see [Products](#products)). When a product does not suit the settings with the
+metadata that the store has, the update and `--dry-run` fail with `blocked` before they fetch
+data. The fix says to change the region or the layers, or to fetch newer Geofabrik metadata first,
+such as with `obc data fetch geofabrik-index`. It judges each fetch, as
 [State of a source](#state-of-a-source) says, with the policies of the target. A stale fetch is
 due. A `manual` source is never due: a step list reads a newer version of it only when the store
 has one. In one update, a fetch of a `manual` source without a version takes the version of the
