@@ -300,7 +300,7 @@ impl Target {
 /// Give `path`, which must not exist, the bytes of `file`: a hard link, or on another file system
 /// a copy under a [`part`] name that is then linked. Nothing opens an existing file for writing:
 /// it can be a link to an object of the store.
-pub(crate) fn link(file: &Path, path: &Path) -> std::io::Result<()> {
+pub fn link(file: &Path, path: &Path) -> std::io::Result<()> {
     match fs::hard_link(file, path) {
         Err(e) if e.kind() == ErrorKind::CrossesDevices => {
             let part = part(path);

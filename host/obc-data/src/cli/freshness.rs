@@ -12,7 +12,7 @@ use crate::fetch::{
     http::Http,
     upstream::{self, Observation},
 };
-use crate::product::{Inputs, Product, RequestKey, Versions};
+use crate::product::{BlockedLayer, Inputs, Product, RequestKey, Versions};
 use crate::regions::Regions;
 use crate::sources::{self, Refresh, Source, State};
 use crate::store::Store;
@@ -29,7 +29,7 @@ pub(super) struct RequestStatus {
 }
 
 /// The fetches that the step lists of `inputs` ask for, with small metadata fetched and no bulk
-/// data. Nothing of `inputs` changes.
+/// data, and the layers of the products that do not suit the settings. Nothing of `inputs` changes.
 pub(super) fn discover(
     root: &Path,
     products: &[&dyn Product],
@@ -38,15 +38,16 @@ pub(super) fn discover(
     store: &Store,
     http: &Http,
     sources: &[Source],
-) -> Result<BTreeSet<RequestKey>, Error> {
+) -> Result<(BTreeSet<RequestKey>, Vec<BlockedLayer>), Error> {
     let mut inventory =
         Inputs { settings: inputs.settings.clone(), serving: inputs.serving.clone(), ..Inputs::default() };
     let fetch = listing::fetcher(root, store, http, sources, None, false);
-    match listing::steps(root, products, &mut inventory, regions, store, true, fetch) {
-        Ok(_) => Ok(inventory.requests.into_inner()),
-        Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => Ok(inventory.requests.into_inner()),
-        Err(error) => Err(error),
-    }
+    let invalid = match listing::steps(root, products, &mut inventory, regions, store, true, fetch) {
+        Ok(listed) => listed.invalid,
+        Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    Ok((inventory.requests.into_inner(), invalid))
 }
 
 /// The state of each request of `source` among `requests`, against the version that `serving`

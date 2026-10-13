@@ -453,7 +453,7 @@ mod tests {
         }
         let named =
             |files: &[(&str, &str)]| files.iter().map(|(name, object)| (name.to_string(), path(object))).collect();
-        let diffs = [("000/000/001.state.txt", "planet.osm"), ("000/000/002.osc.gz", "a"), ("000/000/003.osc.gz", "b")];
+        let diffs = [("000/000/002.osc.gz", "a"), ("000/000/003.osc.gz", "b")];
         let request = obc_data::engine::Request {
             step: "device/source/planet".into(),
             snapshots: [

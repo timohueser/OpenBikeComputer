@@ -715,7 +715,8 @@ nothing reads the same versions. A `prepared` source has the rule of
 [Prepared sources](#prepared-sources).
 
 Before it lists the steps, an update finds the fetches that the step lists read, with only small
-metadata fetched (see [Products](#products)). It judges each of them, as
+metadata fetched (see [Products](#products)). When a product does not suit the settings there,
+the update and `--dry-run` fail with `blocked` before they fetch data. It judges each fetch, as
 [State of a source](#state-of-a-source) says, with the policies of the target. A stale fetch is
 due. A `manual` source is never due: a step list reads a newer version of it only when the store
 has one. In one update, a fetch of a `manual` source without a version takes the version of the
@@ -782,9 +783,11 @@ A `planet` region has no Geofabrik area: its one source step is `device/source/p
 outline is the world box, and its catalog picks every Geofabrik area and the planet. Its layer
 has no client file, so a target never gets the planet with the diffs applied: another machine
 makes it again from the copies of `osm-planet` and `osm-replication` on the target. The
-landmark and peak content of the planet reads that step. The review of a planet lists the
-download of `osm-planet` and the new days of diffs, whose size is `unknown`. The planner refuses
-a `planet` region as invalid, before it fetches anything.
+landmark and peak content of the planet reads that step. The first listing of a planet fetches
+`osm-planet` and the diffs to learn `B` and `E`, as a Geofabrik listing fetches its extract. So a
+review lists them as downloads only for a later `B` or `E`, or on another machine; the size of
+the diffs is `unknown`. The planner refuses a `planet` region as invalid, so an update of a
+planet fails before it fetches data.
 
 A multi-area input uses prepared `osmium merge --with-history`, then `time-filter` at the latest
 object timestamp present in the union. For an overlapping object, its highest supplied version
@@ -813,7 +816,7 @@ input of the leaves that read it.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `device/source/planet` | `osm-planet` `B`; `osm-replication` `E` with `from=B` | `poly`: the world box | `source.osm.pbf`: the `osmium apply-changes --generator obc-data` of each diff of `E`, in the order of its sequence; `source.poly`: `poly`. The metrics name the version (`osmium`) |
+| `device/source/planet` | `osm-planet` `B`; `osm-replication` `E` with `from=B` | `poly`: the world box | `source.osm.pbf`: the `osmium apply-changes --generator obc-data` of each diff of `E`, in the order of its sequence, or a link to the file of `osm-planet` when `E` is `B`; `source.poly`: `poly`. The metrics name the version (`osmium`) |
 | `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds --generator obc-data` of the square of the leaf and one µdeg around it, without the header options of the input, such as its replication fields. Each Osmium run writes at most two extracts: the rectangle around the leaves is halved along its longer side, and each half is cut from the extract of its parent, until each part is one leaf. Each leaf has the bytes of the direct extract. The metrics name the version (`osmium`) |
 | `device/<band>/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |

@@ -21,9 +21,7 @@ pub fn area(request: &Request) -> Result<(), String> {
             return Err(format!("{source} input has {} files, not one", files.len()));
         };
         let target = request.output.join(output);
-        std::fs::hard_link(path, &target)
-            .or_else(|_| std::fs::copy(path, &target).map(drop))
-            .map_err(|e| format!("{}: {e}", target.display()))?;
+        obc_data::target::link(path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
     }
     Ok(())
 }
@@ -43,9 +41,7 @@ pub fn planet(request: &Request) -> Result<(), String> {
     std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
     let output = request.output.join("source.osm.pbf");
     match diffs.is_empty() {
-        true => std::fs::hard_link(base, &output)
-            .or_else(|_| std::fs::copy(base, &output).map(drop))
-            .map_err(|e| format!("{}: {e}", output.display()))?,
+        true => obc_data::target::link(base, &output).map_err(|e| format!("{}: {e}", output.display()))?,
         false => osmium.apply_changes(base, &diffs, &output)?,
     }
     let poly = request.options["poly"].as_str().ok_or("option `poly` is not text")?;

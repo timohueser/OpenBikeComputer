@@ -142,6 +142,7 @@ fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
     assert!(extracts.iter().any(|read| read.version == "2026-01-01" && read.params[0].1 == "europe/west"));
     assert!(extracts.iter().any(|read| read.version == "2026-02-01" && read.params[0].1 == "europe/east"));
     assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
+    assert!(!inputs.requests.borrow().iter().any(|(source, _)| source == REPLICATION), "no diffs stale an area");
 }
 
 /// The planet is one source step: `osm-planet` of `B` and the daily diffs from `B`. A newer day of

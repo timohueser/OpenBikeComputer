@@ -23,6 +23,8 @@ const METADATA: [&str; 3] = ["geofabrik-poly", "geofabrik-index", "copernicus-gl
 pub(super) struct Listed {
     pub steps: Vec<Step>,
     pub blocked: Vec<BlockedLayer>,
+    /// The layers of the products that do not suit the settings; `blocked` has them too.
+    pub invalid: Vec<BlockedLayer>,
     pub notes: Vec<Note>,
 }
 
@@ -90,7 +92,7 @@ pub(super) fn steps(
         return Err(Code::Usage.error(format!("no product has the optional layer `{layer}`")));
     }
     inputs.fetch_failures.clear();
-    let mut listed = Listed { steps: Vec::new(), blocked: Vec::new(), notes: Vec::new() };
+    let mut listed = Listed { steps: Vec::new(), blocked: Vec::new(), invalid: Vec::new(), notes: Vec::new() };
     for product in products {
         let blocked =
             |reason: String| BlockedLayer { step: product.name().into(), layer: product.name().into(), reason };
@@ -101,7 +103,10 @@ pub(super) fn steps(
                 listed.notes.extend(steps.notes);
                 add_steps(products, *product, &mut listed.steps, steps.steps)?;
             }
-            Ok(Err(reason)) => listed.blocked.push(blocked(reason)),
+            Ok(Err(reason)) => {
+                listed.invalid.push(blocked(reason.clone()));
+                listed.blocked.push(blocked(reason));
+            }
             Err(error)
                 if observe
                     && inputs.fetch_failures.len() > before

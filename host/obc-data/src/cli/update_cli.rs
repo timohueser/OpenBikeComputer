@@ -24,7 +24,7 @@ use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
 use crate::lock::{self, Held};
 use crate::prepared::Prepared as Producer;
-use crate::product::{Inputs, Product, RequestKey, Wanted};
+use crate::product::{BlockedLayer, Inputs, Product, RequestKey, Wanted};
 use crate::ready::{self, Next, Wait};
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
@@ -380,7 +380,11 @@ pub(super) fn prepare(
     if let Some(run) = run.as_deref_mut() {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
     }
-    let requests = freshness::discover(root, products, &inputs, &regions, store, http, &sources)?;
+    let (requests, invalid) = freshness::discover(root, products, &inputs, &regions, store, http, &sources)?;
+    // A product that does not suit the settings refuses before a fetch of data.
+    if !invalid.is_empty() {
+        return Err(unplannable(&invalid));
+    }
     for (key, newer) in freshness::newer(store, http, &sources, &requests, &inputs.serving) {
         match newer {
             Some(version) => {
@@ -409,9 +413,7 @@ pub(super) fn prepare(
         Code::Failed.error(e).fix("The code of the product is wrong, not the data: name the files that the step reads.")
     })?;
     if !listed.blocked.is_empty() {
-        let reasons: Vec<String> =
-            listed.blocked.iter().map(|b| format!("{} ({}): {}", b.layer, b.step, b.reason)).collect();
-        return Err(Code::Blocked.error(format!("layers cannot be planned: {}", reasons.join("; "))));
+        return Err(unplannable(&listed.blocked));
     }
     let release: BTreeMap<&str, &Output> =
         serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
@@ -457,6 +459,12 @@ pub(super) fn prepare(
     });
     review.notes = listed.notes;
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
+}
+
+/// The refusal of an update with layers that cannot be planned.
+fn unplannable(blocked: &[BlockedLayer]) -> Error {
+    let reasons: Vec<String> = blocked.iter().map(|b| format!("{} ({}): {}", b.layer, b.step, b.reason)).collect();
+    Code::Blocked.error(format!("layers cannot be planned: {}", reasons.join("; ")))
 }
 
 /// Whether the copy `fetched` on a target has the files that `fetch` gets.
@@ -977,6 +985,10 @@ pub(super) mod tests {
         }
 
         fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+            // The file `invalid` makes the product unsuited to the settings.
+            if root.join("invalid").exists() {
+                return Err(Unplanned::Invalid("it does not suit the settings".into()));
+            }
             let head = crate::product::version(inputs, store, "head", &[]).map_err(Unplanned::Failed)?;
             let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
             // The file `listed` makes the step list read `head` per tile, as the device reads a
@@ -1514,6 +1526,13 @@ pub(super) mod tests {
         );
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving);
         assert_eq!(fixture.store.layers().unwrap().len(), layers, "nothing baked");
+
+        // An unsuited product refuses before a fetch of data: `counter` now asks for
+        // `natural-earth`, which the registry does not have.
+        ["invalid", "earth"].iter().for_each(|flag| write(&fixture.root().join(flag), ""));
+        let refused = update(&fixture, &target, |_| Ok(())).unwrap_err();
+        let reason = "layers cannot be planned: test (test): it does not suit the settings";
+        assert_eq!((refused.code, refused.message.as_str()), (Code::Blocked, reason));
     }
 
     #[test]

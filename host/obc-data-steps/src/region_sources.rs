@@ -125,7 +125,7 @@ pub fn resolve(
     // Index shapes only choose candidates. The full fetched polygons establish coverage.
     loop {
         let selected = ids.union(&box_ids).cloned().collect::<Vec<_>>();
-        let mut sources = Vec::new();
+        let mut areas = Vec::new();
         let mut missing = false;
         for id in selected {
             let params = vec![("area".to_string(), id.clone())];
@@ -136,13 +136,12 @@ pub fn resolve(
             let poly_version = version(inputs, store, POLY, &params)
                 .map_err(Unplanned::Failed)?
                 .map_err(|fetch| Unplanned::NeedsFetch(vec![fetch]))?;
-            let osm = Osm::Geofabrik { extract: String::new(), poly: poly_version };
-            sources.push(Source { id, coverage: Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?, osm });
+            areas.push((id, poly_version, Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?));
         }
         if missing {
             return Ok(None);
         }
-        let coverage = Coverage::union(&sources.iter().map(|source| &source.coverage).collect::<Vec<_>>())
+        let coverage = Coverage::union(&areas.iter().map(|(_, _, coverage)| coverage).collect::<Vec<_>>())
             .ok_or_else(|| Unplanned::Failed("cannot union region source coverage".into()))?;
         let complete = boxes
             .iter()
@@ -165,14 +164,11 @@ pub fn resolve(
             box_ids = parents;
             continue;
         }
-        for source in &mut sources {
-            let params = [("area".to_string(), source.id.clone())];
+        let mut sources = Vec::new();
+        for (id, poly, coverage) in areas {
+            let params = [("area".to_string(), id.clone())];
             match version(inputs, store, EXTRACTS, &params).map_err(Unplanned::Failed)? {
-                Ok(version) => {
-                    if let Osm::Geofabrik { extract, .. } = &mut source.osm {
-                        *extract = version;
-                    }
-                }
+                Ok(extract) => sources.push(Source { id, osm: Osm::Geofabrik { extract, poly }, coverage }),
                 Err(fetch) => {
                     wanted.push(fetch);
                     missing = true;
