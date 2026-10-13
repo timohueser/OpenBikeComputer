@@ -72,7 +72,7 @@ pub(super) struct Asked<'a> {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PrepareReview {
     /// The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-    /// version, the format, the revision, the scope, `publish_text` and the source, version and
+    /// version, the format, the revision, the scope, the languages, `publish_text` and the source, version and
     /// params of each input.
     pub id: String,
     pub source: String,
