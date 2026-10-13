@@ -1409,8 +1409,9 @@ is compact JSON with the keys of each object in byte order:
    `credential` that is not on the machine, and for each target that reads the versions of this target the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
    first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-   version, the format, the revision, the scope, the languages, `publish_text` and the source, version and params
-   of each input. For an R2 target, the prepare starts only with `--expect ID`, and asks first or needs `--yes`.
+   version, the format, the revision, the scope, the languages, `publish_text` and each planned
+   input, including its archive path, URL, size and object identity. For an R2 target, the prepare
+   starts only with `--expect ID`, and asks first or needs `--yes`.
 3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
    of a target. It makes the review again under the lock, and refuses a review that is not
    `--expect`.
@@ -1497,16 +1498,22 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
 The producer `wiki`, format 1, makes the Wikimedia facts and the article text of the OSM subjects
 in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source):
 
-- It reads the dumps in the directory that `OBC_WIKI_DUMPS` names, its `credential`, in place: no
-  copy goes into the store. Of each kind it takes the newest day: `wikidata-<day>-all.json.bz2`,
+- It reads cached archives in place. `OBC_WIKI_DUMPS` overrides the default `wiki-dumps/` in the
+  store. Of each kind it reuses the newest cached day: `wikidata-<day>-all.json.bz2`,
   `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each selected article language
   `<lang>wiki-<day>-langlinks.sql.gz` and the Wikimedia Enterprise HTML
   `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`. A preparation without a region, or with
   a box, reads `planet-<yymmdd>.osm.pbf`. One Geofabrik area reads
   `<area>-<yymmdd>.osm.pbf` under the dump directory, such as `europe/dach-261009.osm.pbf`.
   The path of the area supplies the subdirectories. This extract selects the regional subjects
-  before article selection or Commons acquisition. A kind
-  without a file refuses. The review names each with `file=` and its size. The manifest names
+  before article selection or Commons acquisition. For a missing kind, the review discovers a
+  completed upstream version through metadata only. SQL jobs must be `done`; Wikidata JSON must
+  have a checksum entry. Wikipedia HTML uses the Enterprise Snapshot API. The review shows each
+  file, date, size and bytes to download. It does not download archives. Start downloads missing
+  archives serially, with Range resume and the reviewed size and ETag, then prepares the source.
+  A changed remote identity refuses. The archive becomes visible only after the download ends.
+  Credentials stay in the local environment and private token cache. No review or manifest holds
+  them. The manifest names
   `wikidata`, `wikipedia` and `osm-planet` or `geofabrik-extracts` at the days of their dumps, with the
   [digest](#keys) of the SHA-256 of the files.
 - `--languages en,de` selects article languages from `specs/content-languages.json`. Without
@@ -1516,12 +1523,15 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   is a `missing` fact with `reason: "language_not_prepared"`; it supplies no lead-image candidate.
   The identity order for a page without a Wikidata item stays the supported-language order.
   Without the dumps that prove its canonical identity, its link stays unresolved.
-- The first run of a version pins each dump with its path, size, modification time and SHA-256,
+- Start saves the reviewed input plan before it downloads. A resume uses this plan, including
+  the URLs, sizes and object identities. The review ID covers these decisions, but not whether
+  the download has since completed. After acquisition, the run pins each dump with its path, size,
+  modification time and SHA-256,
   and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
   or `publish_text` changed; the fix deletes the work of the version, so the next run starts a
   new one. A dump of the pinned size with another modification time is the pinned dump when its
-  SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. The review of a
-  resume lists the newest dumps, not the pinned ones. A row without `publish_text` refuses.
+  SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. A row without
+  `publish_text` refuses.
 - `python -m tools.wiki` runs the steps: `subjects` lists the OSM objects with a `wikidata` or
   `wikipedia` tag, `import` reads the Wikidata dump twice, `candidates` gives the classes, the
   subjects and the peaks, `articles` reads the language links and the HTML, and `shards` writes
@@ -3612,7 +3622,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "id": {
-          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, the languages, `publish_text` and the source, version and\nparams of each input.",
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, the languages, `publish_text` and each planned\ninput, including archive paths, URLs, sizes and object identities.",
           "type": "string"
         },
         "inputs": {
@@ -3750,7 +3760,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "PreparedInput": {
       "properties": {
         "bytes": {
-          "description": "The size of its files that the store records; `null` when the store has no record.",
+          "description": "Input bytes from local files, upstream metadata or the store; `null` when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "download_bytes": {
+          "description": "Archive bytes absent on this machine; null for other source inputs.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3789,7 +3808,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "source",
         "version",
         "params",
-        "bytes"
+        "bytes",
+        "download_bytes"
       ],
       "type": "object"
     },
