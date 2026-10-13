@@ -14,6 +14,11 @@ fn lacks(absent: &mut Absent, kind: &'static str) {
     *absent.entry(kind).or_default() += 1;
 }
 
+/// The counts of `absent` as text: `article 2, entity 1`.
+pub fn absent_text(absent: &Absent) -> String {
+    absent.iter().map(|(kind, count)| format!("{kind} {count}")).collect::<Vec<_>>().join(", ")
+}
+
 pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(String, String), Value>, String> {
     let mut facts = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {

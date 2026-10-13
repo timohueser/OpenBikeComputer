@@ -10,7 +10,7 @@ use std::process::Command;
 
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{digest, Built, Input, Request, Run, Step};
+use obc_data::engine::{digest, Built, Input, LayerFile, Request, Run, Step};
 use obc_data::fetch::http::Http;
 use obc_data::prepared::{Cost, Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product, Unplanned};
@@ -34,15 +34,25 @@ impl Drop for Temp {
     }
 }
 
-/// A version of `wiki` whose manifest names no shard: the region has no Wikimedia subject. Its pin.
+/// A version of `wiki` whose one shard, the common one, holds no fact: the region has no Wikimedia
+/// subject. Its pin, with its manifest and its shard in the store.
 fn wiki(store: &Store) -> String {
+    let record = |name: &str, bytes: &[u8]| {
+        let (file, sha256) = (store.partial("file"), sha256_hex(bytes));
+        write_atomic(&file, bytes).unwrap();
+        store.insert(&file, &sha256).unwrap();
+        let (url, size) = (format!("https://example.org/{name}"), bytes.len() as u64);
+        FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }
+    };
+    // An empty tar is two blocks of zeros.
+    let common = record("common.tar.zst", &zstd::encode_all(&[0u8; 1024][..], 0).unwrap());
     let manifest = Manifest {
         source: "wiki".into(),
         version: DAY.into(),
         format: 1,
         revision: 1,
         inputs: Vec::new(),
-        files: Vec::new(),
+        files: vec![LayerFile { path: common.name.clone(), size: common.size, sha256: common.sha256.clone() }],
         scope: None,
         licence: None,
         attribution: None,
@@ -52,7 +62,8 @@ fn wiki(store: &Store) -> String {
     };
     let bytes = manifest.canonical();
     let pinned = format!("{DAY}/{}", sha256_hex(&bytes));
-    fetched(store, "wiki", &pinned, Vec::new(), MANIFEST, &bytes);
+    let files = vec![record(MANIFEST, &bytes), common];
+    store.put_snapshot(&Snapshot { source: "wiki".into(), version: pinned.clone(), files }).unwrap();
     pinned
 }
 

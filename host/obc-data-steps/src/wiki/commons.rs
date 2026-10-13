@@ -277,16 +277,25 @@ fn landmark_photos(
     [view, out, world]: [&Path; 3],
     ids: &[String],
 ) -> Result<Vec<(String, String)>, String> {
-    shared::view(files, view, ids)?;
+    complete(shared::view(files, view, ids)?)?;
     let asked = obc_pack::landmarks::photo_requests(&view.join("manifest.json"), world, out, None)?;
     Ok(asked.requests.into_iter().map(|request| (request.qid, request.filename)).collect())
 }
 
 /// The files that the peak compiler chooses for the summits in `view/summits.json`.
 fn peak_photos(files: &Files, [view, out, world]: [&Path; 3]) -> Result<Vec<(String, String)>, String> {
-    shared::peak_view(files, view)?;
+    complete(shared::peak_view(files, view)?)?;
     let content = peaks::compile(&view.join("manifest.json"), world, out, true)?;
     Ok(content.photo_requests.into_iter().map(|request| (request.qid, request.filename)).collect())
+}
+
+/// Refuse a compile over facts that the export lacks. The export reads the database of the version,
+/// so in the producer an absent fact is a fault, not a subject without content.
+fn complete(absent: shared::Absent) -> Result<(), String> {
+    match absent.is_empty() {
+        true => Ok(()),
+        false => Err(format!("the export lacks facts: {}", shared::absent_text(&absent))),
+    }
 }
 
 /// The metadata that round 1 asks for: the P18 files, the lead images of the articles and the

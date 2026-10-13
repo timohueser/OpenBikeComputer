@@ -80,8 +80,12 @@ fn wiki_files(request: &Request) -> Result<BTreeMap<String, PathBuf>, String> {
     Ok(files)
 }
 
-/// The facts that the version lacks, as the metrics of the step.
+/// The facts that the version lacks, as the metrics of the step and a line of the run log.
 fn metrics(request: &Request, absent: &crate::landmarks::shared::Absent) -> Result<(), String> {
+    if !absent.is_empty() {
+        let counts = crate::landmarks::shared::absent_text(absent);
+        eprintln!("{}: facts that the `wiki` version lacks, which are no content: {counts}", request.step);
+    }
     let metrics = serde_json::json!({ "absent": absent });
     std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))
 }

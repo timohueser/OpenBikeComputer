@@ -4,13 +4,14 @@
 //! and peak artifacts per network cell. No client reads the files of the intermediate steps:
 //! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
 //! (`terrain-reference/<key>`) that the terrain cells of the leaf read, and
-//! `device/landmark-content` and `device/peak-content` the compiled Wikimedia captures of the region.
+//! `device/landmark-content` and `device/peak-content` the landmarks and peaks of the region, compiled
+//! from the `wiki` shards.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Step};
-use obc_data::prepared::{Manifest, MANIFEST};
+use obc_data::prepared::{show, Manifest, MANIFEST};
 use obc_data::product::{read, version, BlockedLayer, Inputs, Note, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Bbox, Regions};
 use obc_data::release::{Output, Release};
@@ -287,12 +288,14 @@ pub(crate) fn content_declarations(
                 blocked.push(BlockedLayer::new(name, &DEVICE_LANDMARKS, reason));
                 continue;
             };
-            let wiki = Input::Snapshot {
-                source: WIKI.into(),
-                version: version.clone(),
-                params: Vec::new(),
-                files: names.iter().filter(|path| paths.contains(*path)).cloned().collect(),
-            };
+            // A snapshot input without files reads every file of the version.
+            let files: Vec<String> = names.iter().filter(|path| paths.contains(*path)).cloned().collect();
+            if files.is_empty() {
+                let reason = format!("`{WIKI}` {} lists no shard of `{}`", show(version), source.id);
+                blocked.push(BlockedLayer::new(name, &DEVICE_LANDMARKS, reason));
+                continue;
+            }
+            let wiki = Input::Snapshot { source: WIKI.into(), version: version.clone(), params: Vec::new(), files };
             let regional = |source: &str, version: &String| Input::Snapshot {
                 source: source.into(),
                 version: version.clone(),
@@ -1058,8 +1061,8 @@ pub(crate) mod tests {
     }
 
     /// The content of a region reads its extract, its `.poly`, and the `wiki` shards of its cells:
-    /// the common one and those that its polygon touches. Without a version of `wiki`, the content
-    /// layers block, and the catalog with them.
+    /// the common one and those that its polygon touches. Without a version of `wiki`, or without a
+    /// shard of the region, the content layers block, and the catalog with them.
     #[test]
     fn content_reads_the_extract_the_poly_and_the_wiki_shards_of_its_cells() {
         let temp = temp("content");
@@ -1095,6 +1098,13 @@ pub(crate) mod tests {
         assert_eq!(&blocked[..2], [("device/landmark-content", reason), ("device/peak-content", reason)]);
         assert_eq!(blocked[2].0, catalog::LAYER);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/landmarks/")));
+
+        // A version without a shard of the region blocks too: a read without files reads them all.
+        let (pinned, manifest) = prepared(WIKI, "2026-11-01", &["cells/0000-0000.tar.zst"]);
+        stored(&store, WIKI, &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        inputs.resolved.insert((WIKI.into(), Vec::new()), pinned);
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
+        assert!(listed.blocked[0].reason.ends_with("lists no shard of `europe/test`"), "{:?}", listed.blocked);
     }
 
     /// The release output of `step` as it is declared, without files, at `format`.
@@ -1130,13 +1140,7 @@ pub(crate) mod tests {
             digest: String::new(),
             files: Vec::new(),
             snapshots: snapshots.collect(),
-            // A release records the paths sorted.
-            client: match &step.client {
-                Client::Paths(paths) => {
-                    Client::Paths(paths.iter().cloned().collect::<BTreeSet<_>>().into_iter().collect())
-                }
-                client => client.clone(),
-            },
+            client: step.client.sorted(),
             cost: Cost { wall_ms: 0, peak_rss_bytes: None, bytes_out: 0 },
         }
     }

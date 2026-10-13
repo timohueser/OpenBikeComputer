@@ -372,8 +372,8 @@ mod tests {
 
     /// `tools.wiki` as a script that logs each step to `calls`: `fail-<step>` fails a step, `import`
     /// keeps its inputs, `candidates` writes one castle, `commons` is busy once after `busy-once`,
-    /// `facts` gives no fact, and `shards` writes two shards that `done.json` does not name, and
-    /// the index.
+    /// `facts` gives no fact, so the compile of the castle fails, and `shards` writes two shards
+    /// that `done.json` does not name, and the index.
     const TOOLS: &str = r#"step=$1; shift; echo "$step" >> calls
 while [ $# -gt 1 ]; do case "$1" in --out) out=$2;; --done) done=$2;; --counts) counts=$2;; --selected) selected=$2;; --inputs) inputs=$2;; --work) work=$2;; esac; shift; done
 [ -e "fail-$step" ] && exit 1
@@ -458,7 +458,7 @@ esac
             assert!(fs::read_to_string(root.join(format!("{step}.args"))).unwrap().contains("--no-text"), "{step}");
         }
         let counts: Value = read_json(&root.join("counts.seen")).unwrap();
-        assert_eq!(counts, json!({"photo_compile_failures": 0}), "a castle without facts is no content");
+        assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no facts");
         let Target::Dir(dir) = &target else { unreachable!() };
         let version = dir.join("sources/wiki/2026-10-01");
         for path in ["common.tar.zst", "cells/0300-0262.tar.zst", "index.json"] {
