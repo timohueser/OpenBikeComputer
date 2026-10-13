@@ -5,33 +5,61 @@ use std::collections::{BTreeMap, BTreeSet};
 use obc_bake::coverage::Coverage;
 use obc_data::engine::{Client, Input, Layer, Run, Shape, Step};
 use obc_data::product::{version, Inputs, Unplanned, Wanted};
-use obc_data::regions::{geofabrik, Area, Regions};
+use obc_data::regions::{geofabrik, Area, Bbox, Regions};
 use obc_data::store::Store;
 use serde_json::json;
 
 use crate::device::{box_poly, text, EXTRACTS, POLY};
 
 const INDEX: &str = "geofabrik-index";
+const PLANET: &str = "osm-planet";
+const REPLICATION: &str = "osm-replication";
 
 /// The OSM of a region, from its source areas: the steps of the layers that read OSM read it.
 pub static OSM: Layer = Layer { name: "osm", shape: Shape::Whole, format: 1, revision: 2, readers: &[] };
 
 pub struct Source {
     pub id: String,
-    pub extract: String,
-    pub poly: String,
+    pub osm: Osm,
     pub coverage: Coverage,
 }
 
+/// The versions of the fetches that give the OSM of a source.
+pub enum Osm {
+    /// The extract and the `.poly` of the Geofabrik area.
+    Geofabrik { extract: String, poly: String },
+    /// `osm-planet` of `base`, and the daily diffs of `osm-replication` after it up to `day`.
+    Planet { base: String, day: String },
+}
+
 impl Source {
-    pub fn input(&self, source: &str) -> Input {
-        Input::Snapshot {
+    /// The fetches of its source step.
+    pub fn reads(&self) -> Vec<Input> {
+        let read = |source: &str, version: &String, params: Vec<(String, String)>| Input::Snapshot {
             source: source.into(),
-            version: if source == EXTRACTS { self.extract.clone() } else { self.poly.clone() },
-            params: vec![("area".into(), self.id.clone())],
+            version: version.clone(),
+            params,
             files: Vec::new(),
+        };
+        match &self.osm {
+            Osm::Geofabrik { extract, poly } => {
+                let area = vec![("area".to_string(), self.id.clone())];
+                vec![read(EXTRACTS, extract, area.clone()), read(POLY, poly, area)]
+            }
+            Osm::Planet { base, day } => vec![read(PLANET, base, Vec::new()), read(REPLICATION, day, from(base))],
         }
     }
+}
+
+/// The params of the daily diffs after `osm-planet` of `base`.
+fn from(base: &str) -> Vec<(String, String)> {
+    vec![("from".into(), base.into())]
+}
+
+/// Whether the region `id` holds the planet.
+pub fn planet(regions: &Regions, id: &str) -> Result<bool, Unplanned> {
+    let leaves = regions.leaves(id).map_err(Unplanned::Failed)?;
+    Ok(leaves.iter().any(|leaf| regions.get(leaf).is_some_and(|region| region.area == Area::Planet)))
 }
 
 pub struct Selection {
@@ -49,6 +77,16 @@ pub fn resolve(
     store: &Store,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Selection>, Unplanned> {
+    if planet(regions, &inputs.settings.region)? {
+        let base = version(inputs, store, PLANET, &[]).map_err(Unplanned::Failed)?;
+        let Some(base) = base.map_err(|fetch| wanted.push(fetch)).ok() else { return Ok(None) };
+        let day = version(inputs, store, REPLICATION, &from(&base)).map_err(Unplanned::Failed)?;
+        let Some(day) = day.map_err(|fetch| wanted.push(fetch)).ok() else { return Ok(None) };
+        let world = Coverage::parse_poly(&box_poly(&Bbox::WORLD)).map_err(Unplanned::Failed)?;
+        let source = Source { id: "planet".into(), osm: Osm::Planet { base, day }, coverage: world.clone() };
+        let (sources, outlines) = (vec![source], vec![world.clone()]);
+        return Ok(Some(Selection { sources, outlines, coverage: world, direct: false, index: None }));
+    }
     let mut ids = BTreeSet::new();
     let mut boxes = Vec::new();
     for id in regions.leaves(&inputs.settings.region).map_err(Unplanned::Failed)? {
@@ -56,7 +94,7 @@ pub fn resolve(
         match &region.area {
             Area::Geofabrik { areas } => ids.extend(areas.iter().cloned()),
             Area::Box { bbox } => boxes.push(Coverage::parse_poly(&box_poly(bbox)).map_err(Unplanned::Failed)?),
-            Area::Union { .. } => unreachable!("region leaf is not a union"),
+            Area::Union { .. } | Area::Planet => unreachable!("region leaf is not a union or the planet"),
         }
     }
     let mut index_version = None;
@@ -98,12 +136,8 @@ pub fn resolve(
             let poly_version = version(inputs, store, POLY, &params)
                 .map_err(Unplanned::Failed)?
                 .map_err(|fetch| Unplanned::NeedsFetch(vec![fetch]))?;
-            sources.push(Source {
-                id,
-                coverage: Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?,
-                poly: poly_version,
-                extract: String::new(),
-            });
+            let osm = Osm::Geofabrik { extract: String::new(), poly: poly_version };
+            sources.push(Source { id, coverage: Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?, osm });
         }
         if missing {
             return Ok(None);
@@ -134,7 +168,11 @@ pub fn resolve(
         for source in &mut sources {
             let params = [("area".to_string(), source.id.clone())];
             match version(inputs, store, EXTRACTS, &params).map_err(Unplanned::Failed)? {
-                Ok(version) => source.extract = version,
+                Ok(version) => {
+                    if let Osm::Geofabrik { extract, .. } = &mut source.osm {
+                        *extract = version;
+                    }
+                }
                 Err(fetch) => {
                     wanted.push(fetch);
                     missing = true;
@@ -204,27 +242,35 @@ fn select_box(
     Ok(selected)
 }
 
-/// Each request keeps its exact source version and files in its own intermediate receipt.
+/// Each request keeps its exact source version and files in its own intermediate receipt. The
+/// source step of the planet applies the diffs, and the outline is the world.
 pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
     selection
         .sources
         .iter()
-        .map(|source| Step {
-            layer: &OSM,
-            name: format!("{prefix}/source/{}", source.id),
-            inputs: [source.input(EXTRACTS), source.input(POLY)]
-                .into_iter()
-                .chain(selection.index.iter().map(|version| Input::Snapshot {
-                    source: INDEX.into(),
-                    version: version.clone(),
-                    params: Vec::new(),
-                    files: Vec::new(),
-                }))
-                .collect(),
-            options: json!({}),
-            outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
-            run: Run::Rust(obc_osm::step::area),
-            client: Client::None,
+        .map(|source| {
+            let (run, options) = match source.osm {
+                Osm::Geofabrik { .. } => (Run::Rust(obc_osm::step::area), json!({})),
+                Osm::Planet { .. } => (Run::Rust(obc_osm::step::planet), json!({"poly": box_poly(&Bbox::WORLD)})),
+            };
+            Step {
+                layer: &OSM,
+                name: format!("{prefix}/source/{}", source.id),
+                inputs: source
+                    .reads()
+                    .into_iter()
+                    .chain(selection.index.iter().map(|version| Input::Snapshot {
+                        source: INDEX.into(),
+                        version: version.clone(),
+                        params: Vec::new(),
+                        files: Vec::new(),
+                    }))
+                    .collect(),
+                options,
+                outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
+                run,
+                client: Client::None,
+            }
         })
         .collect()
 }

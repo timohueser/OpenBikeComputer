@@ -605,6 +605,7 @@ fn definition(region: &Region) -> String {
         Area::Geofabrik { areas } => format!("geofabrik: {}", areas.join(" + ")),
         Area::Box { bbox } => format!("box {},{} → {},{}", bbox.west, bbox.south, bbox.east, bbox.north),
         Area::Union { union } => format!("union: {}", union.join(" + ")),
+        Area::Planet => "planet".into(),
     }
 }
 

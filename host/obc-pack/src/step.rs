@@ -37,9 +37,11 @@ pub fn peak_content(request: &Request) -> Result<(), String> {
     metrics(request, &absent)
 }
 
-/// An empty view directory beside the output, the boundary from the `.poly`, and the `.osm.pbf`.
+/// An empty view directory beside the output, the boundary from the `.poly`, and the `.osm.pbf`:
+/// fetched files, or the files of a step.
 fn content_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let files: Vec<(&String, &PathBuf)> = request.snapshots.values().flat_map(|files| files.iter()).collect();
+    let files: Vec<(&String, &PathBuf)> =
+        request.snapshots.values().chain(request.layers.values()).flat_map(|files| files.iter()).collect();
     let one = |suffix: &str| match files.iter().filter(|(name, _)| name.ends_with(suffix)).collect::<Vec<_>>()[..] {
         [(_, object)] => Ok((*object).clone()),
         ref found => Err(format!("the step reads {} {suffix} files, not one", found.len())),

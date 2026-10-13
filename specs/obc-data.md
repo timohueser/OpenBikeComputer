@@ -121,7 +121,7 @@ without `.toml`. Each part of the id is lowercase kebab-case.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | The name a person reads; not empty |
-| `kind` | string | `geofabrik`, `box` or `union` |
+| `kind` | string | `geofabrik`, `box`, `union` or `planet` |
 | `box` | array of 4 numbers | Only for `box`: west, south, east, north in degrees, longitude first |
 | `areas` | array of strings | Only for `geofabrik`: one or more source paths. Paths are sorted and duplicates removed |
 | `union` | array of strings | Only for `union`: two or more region ids |
@@ -138,7 +138,8 @@ outside −90…90.
 A `geofabrik` region selects source paths such as `europe/germany/baden-wuerttemberg`.
 Its id is independent of those paths. An empty selection is refused. A union resolves to the
 regions in it that are not unions. A union that contains itself, or names a region that does not
-exist, is refused.
+exist, is refused. A `planet` region names no other key: it is the OSM planet, and a union that
+holds it is the planet too.
 
 `obc data areas [QUERY]` searches the regions of `data/regions/` and the names and paths of the
 newest Geofabrik index in the store. It verifies the object of the index and fetches nothing.
@@ -188,7 +189,7 @@ reads. The source has the least state of its fetches, in the order of this table
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
-| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture. Or its version is before the serving version of the source that `fetch.from` names |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture |
 | `unused` | The serving release reads no fetch of the source |
 | `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
@@ -365,8 +366,12 @@ to the sequence of `E`, in order.
   store, so a fetch of a later `E` from the same `B` downloads only the new days.
 
 A late or missing weekly planet does not block a version of `osm-replication`, because its base
-is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
-sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
+is a version of `osm-planet`. The fetch does not apply the diffs: `device/source/planet` does.
+`osm-planet` gives the OSM credit. A `planet` region reads `B`, its version of `osm-planet`, and
+`E`, its version of `osm-replication` with `from=B`; `E` is the day of its data. A due
+`osm-replication` moves only `E`. A due `osm-planet` moves `B`, and the diffs then start from the
+new `B`. `osm-planet` is due after 28 days, so that `osmium apply-changes`, which holds every
+change in memory, reads at most about five weeks of diffs.
 
 A `capture` fetch runs in the explicit repository root. The offline system selector
 of `uv python find` selects its Python and honors `UV_PYTHON`. A standard-library capture
@@ -773,6 +778,14 @@ Each selected area has a private `<product>/source/<area>` step. It reads the ex
 also records its selected index version. These receipts retain active request provenance even
 when a capture holds older extract or polygon bytes. Each product sorts and deduplicates areas.
 
+A `planet` region has no Geofabrik area: its one source step is `device/source/planet`, its
+outline is the world box, and its catalog picks every Geofabrik area and the planet. Its layer
+has no client file, so a target never gets the planet with the diffs applied: another machine
+makes it again from the copies of `osm-planet` and `osm-replication` on the target. The
+landmark and peak content of the planet reads that step. The review of a planet lists the
+download of `osm-planet` and the new days of diffs, whose size is `unknown`. The planner refuses
+a `planet` region as invalid, before it fetches anything.
+
 A multi-area input uses prepared `osmium merge --with-history`, then `time-filter` at the latest
 object timestamp present in the union. For an overlapping object, its highest supplied version
 wins. Unique supplied objects remain. An extract cannot reveal a deletion absent from its bytes;
@@ -800,12 +813,13 @@ input of the leaves that read it.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
+| `device/source/planet` | `osm-planet` `B`; `osm-replication` `E` with `from=B` | `poly`: the world box | `source.osm.pbf`: the `osmium apply-changes --generator obc-data` of each diff of `E`, in the order of its sequence; `source.poly`: `poly`. The metrics name the version (`osmium`) |
 | `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds --generator obc-data` of the square of the leaf and one µdeg around it, without the header options of the input, such as its replication fields. Each Osmium run writes at most two extracts: the rectangle around the leaves is halved along its longer side, and each half is cut from the extract of its parent, until each part is one leaf. Each leaf has the bytes of the direct extract. The metrics name the version (`osmium`) |
 | `device/<band>/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `device/reference/<i>-<j>` | Each `terrain-reference/<key>` of the leaf with a tile, without params, those tiles of its version | `models`: `source`, `version` (the date of the version) and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is the date of its version. A Python step with the group `terrain-reference` |
 | `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
-| `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | `wiki`, without params: `common.tar.zst` and the shards of the `2^20` µdeg cells that the `.poly` of the area touches, of its manifest; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json` and device photos. The metrics count the facts that the version lacks, by kind (`absent`), and the run log names them. No client reads the layer: the device cell layers publish the final assets |
+| `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | `wiki`, without params: `common.tar.zst` and the shards of the `2^20` µdeg cells that the `.poly` of the area touches, of its manifest; regional `geofabrik-extracts` and `geofabrik-poly`, or the files of `device/source/planet` | None | `landmarks/content.json` or `peaks/peaks.json` and device photos. The metrics count the facts that the version lacks, by kind (`absent`), and the run log names them. No client reads the layer: the device cell layers publish the final assets |
 | `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `device/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
@@ -3856,6 +3870,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "required": [
             "kind",
             "union"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The whole OSM planet. A union that holds it is the planet.",
+          "properties": {
+            "kind": {
+              "const": "planet",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }

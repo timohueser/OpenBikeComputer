@@ -1,4 +1,4 @@
-//! `data/regions/`: selected Geofabrik areas, a box, or a saved union in one `<id>.toml`.
+//! `data/regions/`: selected Geofabrik areas, a box, the planet, or a saved union in one `<id>.toml`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,6 +18,8 @@ pub struct Bbox {
 }
 
 impl Bbox {
+    pub const WORLD: Bbox = Bbox { west: -180.0, south: -90.0, east: 180.0, north: 90.0 };
+
     pub fn new([west, south, east, north]: [f64; 4]) -> Result<Self, String> {
         let lon = -180.0..=180.0;
         let lat = -90.0..=90.0;
@@ -58,6 +60,8 @@ pub enum Area {
     Union {
         union: Vec<String>,
     },
+    /// The whole OSM planet. A union that holds it is the planet.
+    Planet,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -116,6 +120,7 @@ enum AreaKind {
     Geofabrik,
     Box,
     Union,
+    Planet,
 }
 
 /// Parse one region file. `id` is its path below `data/regions/` without `.toml`.
@@ -139,9 +144,10 @@ pub fn parse_region(id: &str, text: &str) -> Result<Region, String> {
         }
         (AreaKind::Box, Some(bbox), None, None) => Area::Box { bbox: Bbox::new(bbox).map_err(fail)? },
         (AreaKind::Union, None, None, Some(union)) if union.len() >= 2 => Area::Union { union },
+        (AreaKind::Planet, None, None, None) => Area::Planet,
         _ => {
             return Err(fail(
-                "a region names only its kind's key: nonempty `areas`, `box` or `union` (two or more ids)".into(),
+                "a region names only its kind's key: nonempty `areas`, `box` or `union` (two or more ids), and the planet none".into(),
             ))
         }
     };

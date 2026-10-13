@@ -28,6 +28,7 @@ use obc_osm::LeafId;
 use obc_pack::step::WIKI;
 
 use crate::readers;
+use crate::region_sources::Osm;
 
 pub(crate) mod catalog;
 
@@ -272,7 +273,6 @@ pub(crate) fn content_declarations(
     let (mut steps, mut blocked) = (Vec::new(), Vec::new());
     let width = id_width(WIKI_CELL_LOG2);
     for source in &selection.sources {
-        let area = vec![("area".to_string(), source.id.clone())];
         let cells = source.coverage.cells(WIKI_CELL_LOG2).into_iter();
         let cells = cells.map(|cell| format!("cells/{:0width$}-{:0width$}.tar.zst", cell.i, cell.j));
         let names: Vec<String> = std::iter::once("common.tar.zst".to_string()).chain(cells).collect();
@@ -296,13 +296,15 @@ pub(crate) fn content_declarations(
                 continue;
             }
             let wiki = Input::Snapshot { source: WIKI.into(), version: version.clone(), params: Vec::new(), files };
-            let regional = |source: &str, version: &String| Input::Snapshot {
-                source: source.into(),
-                version: version.clone(),
-                params: area.clone(),
-                files: Vec::new(),
+            // The content of the planet reads the planet with its diffs applied, and the world.
+            let mut reads = match source.osm {
+                Osm::Planet { .. } => vec![Input::Step {
+                    name: format!("device/source/{}", source.id),
+                    files: vec!["source.osm.pbf".into(), "source.poly".into()],
+                }],
+                Osm::Geofabrik { .. } => source.reads(),
             };
-            let reads = vec![regional(EXTRACTS, &source.extract), regional(POLY, &source.poly), wiki];
+            reads.push(wiki);
             steps.push(Step { name, ..content(collection, reads) });
         }
     }

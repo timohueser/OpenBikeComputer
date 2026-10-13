@@ -28,6 +28,30 @@ pub fn area(request: &Request) -> Result<(), String> {
     Ok(())
 }
 
+/// The OSM of the planet on the day of its newest diff: the one file of `osm-planet` with the
+/// daily diffs of `osm-replication` applied, and the outline of the option `poly`. The step writes
+/// what [`area`] writes. Its metrics name the Osmium version.
+pub fn planet(request: &Request) -> Result<(), String> {
+    let osmium = OsmiumRunner::default();
+    let files = |source: &str| request.snapshots.get(source).ok_or_else(|| format!("missing {source} input"));
+    let planet: Vec<&PathBuf> = files("osm-planet")?.values().collect();
+    let [base] = planet[..] else { return Err(format!("the osm-planet input has {} files, not one", planet.len())) };
+    // A diff is named by its zero-padded sequence, so the names are in the order of the days.
+    let diffs = files("osm-replication")?.iter().filter(|(name, _)| name.ends_with(".osc.gz"));
+    let diffs: Vec<&PathBuf> = diffs.map(|(_, path)| path).collect();
+    let metrics = serde_json::json!({"osmium": osmium.version()?});
+    std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
+    let output = request.output.join("source.osm.pbf");
+    match diffs.is_empty() {
+        true => std::fs::hard_link(base, &output)
+            .or_else(|_| std::fs::copy(base, &output).map(drop))
+            .map_err(|e| format!("{}: {e}", output.display()))?,
+        false => osmium.apply_changes(base, &diffs, &output)?,
+    }
+    let poly = request.options["poly"].as_str().ok_or("option `poly` is not text")?;
+    std::fs::write(request.output.join("source.poly"), poly).map_err(|e| format!("{}: {e}", request.output.display()))
+}
+
 /// The option `leaves` names each leaf as `[i, j]`. The step reads the one file of its snapshots,
 /// and writes [`leaf_pbf`] for each leaf. Its metrics name the Osmium version.
 pub fn osm(request: &Request) -> Result<(), String> {

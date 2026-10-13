@@ -144,6 +144,43 @@ fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
     assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
 }
 
+/// The planet is one source step: `osm-planet` of `B` and the daily diffs from `B`. A newer day of
+/// the diffs moves only the diffs: a target that serves an older day is stale, one that serves it
+/// is not, and `B` stays.
+#[test]
+fn a_planet_lists_one_source_step_that_reads_the_planet_and_the_diffs_after_it() {
+    let temporary = temp("planet-source");
+    let store = Store::at(temporary.0.join("store"));
+    let regions = Regions::new(vec![parse_region("planet", "name='Planet'\nkind='planet'\n").unwrap()]).unwrap();
+    let mut wanted = Vec::new();
+    assert!(resolve(&inputs("planet"), &regions, &store, &mut wanted).unwrap().is_none());
+    assert_eq!(wanted, [Wanted { source: PLANET.into(), version: None, params: Vec::new() }], "B comes first");
+    fetched(&store, PLANET, "2026-10-05", &[], &[("planet-261005.osm.pbf".into(), "planet".into())]);
+    for day in ["2026-10-08", "2026-10-09"] {
+        fetched(&store, REPLICATION, day, &from("2026-10-05"), &[(format!("{day}.osc.gz"), day.into())]);
+    }
+    let reads = |serving: &str| {
+        let mut inputs = inputs("planet");
+        inputs.serving.insert((PLANET.into(), Vec::new()), "2026-10-05".into());
+        inputs.serving.insert((REPLICATION.into(), from("2026-10-05")), serving.into());
+        let selected = resolve(&inputs, &regions, &store, &mut Vec::new()).unwrap().unwrap();
+        assert_eq!(selected.outlines[0].bbox(), (-180_000_000, -90_000_000, 180_000_000, 90_000_000));
+        let [step] = &super::inputs("device", &selected)[..] else { panic!("one source step") };
+        assert_eq!((step.name.as_str(), step.client.is_none()), ("device/source/planet", true));
+        let read = |input: &Input| match input {
+            Input::Snapshot { source, version, params, .. } => (source.clone(), version.clone(), params.clone()),
+            Input::Step { .. } => panic!("a source step reads fetches"),
+        };
+        step.inputs.iter().map(read).collect::<Vec<_>>()
+    };
+    let newest = [
+        (PLANET.to_string(), "2026-10-05".to_string(), Vec::new()),
+        (REPLICATION.to_string(), "2026-10-09".to_string(), from("2026-10-05")),
+    ];
+    assert_eq!(reads("2026-10-08"), newest, "target A serves 2026-10-08: its source step moves to 2026-10-09");
+    assert_eq!(reads("2026-10-09"), newest, "target B serves 2026-10-09: the same step, so it stays");
+}
+
 /// The inputs of `region` without a serving release.
 fn inputs(region: &str) -> Inputs {
     Inputs {

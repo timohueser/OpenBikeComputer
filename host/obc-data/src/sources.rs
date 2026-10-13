@@ -484,16 +484,12 @@ pub struct Status {
 
 /// The state of `source` at `today`, from `serving`, the version that the serving release reads,
 /// the newest upstream version, its policy and its licence. Credentials gate selected fetches. The
-/// serving version is stale when its policy is due and upstream has a newer version, or when it is
-/// before `base`, the serving version of the source that `fetch.from` names.
-pub fn status(source: &Source, serving: Option<&str>, base: Option<&str>, upstream: &Upstream, today: i64) -> Status {
+/// serving version is stale when its policy is due and upstream has a newer version.
+pub fn status(source: &Source, serving: Option<&str>, upstream: &Upstream, today: i64) -> Status {
     let age_days =
         serving.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
-    } else if let Some(base) = base.filter(|&base| serving.is_some_and(|serving| serving < base)) {
-        let from = source.fetch.from.as_deref().unwrap_or_default();
-        (State::Stale, Some(format!("before `{from}` {base} of the serving release")))
     } else {
         let prepared = source.fetch.kind == FetchKind::Prepared;
         match (source.refresh, age_days) {
@@ -609,28 +605,21 @@ mod tests {
     fn a_live_version_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
         let newer = Upstream::Newest("2024-01-09".into());
-        let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today);
+        let fresh = status(&osm(), Some("2024-01-03"), &newer, today);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), None, &newer, today);
+        let old = status(&osm(), Some("2024-01-02"), &newer, today);
         assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
-        let failed = status(&osm(), Some("2024-01-02"), None, &Upstream::Failed("offline".into()), today);
+        let failed = status(&osm(), Some("2024-01-02"), &Upstream::Failed("offline".into()), today);
         assert_eq!(
             (failed.state, failed.reason.as_deref()),
             (State::Blocked, Some("8 d > 7 d, upstream unknown: the check failed"))
         );
         let same = Upstream::Newest("2024-01-02".into());
-        assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today).state, State::Ok);
-        assert_eq!(status(&osm(), Some("2024-01-02"), None, &Upstream::Capture, today).state, State::Stale);
+        assert_eq!(status(&osm(), Some("2024-01-02"), &same, today).state, State::Ok);
+        assert_eq!(status(&osm(), Some("2024-01-02"), &Upstream::Capture, today).state, State::Stale);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today).state, State::Ok);
-        assert_eq!(status(&osm(), None, None, &newer, today).state, State::Ok);
-        let replication = Source { fetch: Fetch { from: Some("osm-planet".into()), ..osm().fetch }, ..osm() };
-        let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today);
-        assert_eq!(
-            (behind.state, behind.reason.as_deref()),
-            (State::Stale, Some("before `osm-planet` 2024-01-09 of the serving release"))
-        );
-        assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today).state, State::Ok);
+        assert_eq!(status(&manual, Some("2020-01-01"), &newer, today).state, State::Ok);
+        assert_eq!(status(&osm(), None, &newer, today).state, State::Ok);
     }
 
     #[test]
@@ -657,11 +646,11 @@ mod tests {
     fn a_missing_licence_blocks_but_credentials_only_gate_selected_fetches() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(status(&unlicensed, Some("2024-01-09"), None, &Upstream::CannotCheck, today).state, State::Blocked);
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, None, &Upstream::CannotCheck, today).state, State::Ok);
+        assert_eq!(status(&tool, None, &Upstream::CannotCheck, today).state, State::Ok);
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today);
+        let blocked = status(&keyed, None, &Upstream::CannotCheck, today);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Ok, None));
     }
 

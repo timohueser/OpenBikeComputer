@@ -155,6 +155,9 @@ impl Planner {
         let region = regions.get(id).ok_or_else(|| Unplanned::Failed(format!("no region `{id}`")))?;
         // A region without a time zone, such as a box, gives the times of the search and the sun in UTC.
         let time_zone = region.time_zone.as_deref().unwrap_or("UTC");
+        if crate::region_sources::planet(regions, id)? {
+            return Err(invalid("the planner does not build the planet yet: its services do not scale to it".into()));
+        }
         let on = |layer: &str| inputs.settings.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
         let glo30 = version(inputs, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
@@ -667,6 +670,7 @@ mod tests {
             region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
             region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
+            region("planet", "kind = \"planet\"\n"),
         ])
         .unwrap()
     }
@@ -892,6 +896,8 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         let result = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store);
         assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("no country")));
+        let result = Planner.steps(&root(), &inputs("planet", &[]), &regions(), &store);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("planet")), "before a fetch");
         // A newer index names the country of the area.
         let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
             "properties":{"id":"test","name":"Test","parent":null,"iso3166-1:alpha2":["DE"],

@@ -13,8 +13,8 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
 fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
 version = "date"
-refresh = 90
-# A planet is about 84 GB, so a new one is seldom worth its download.
+# The daily diffs after it stay few: `osmium apply-changes` holds every change in memory.
+refresh = 28
 redistribute = true
 
 # The daily diffs after a version of `osm-planet`.

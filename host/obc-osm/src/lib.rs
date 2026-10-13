@@ -127,6 +127,20 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
+    /// Write `output` as `base` with the `.osc.gz` files of `changes` applied. `-F pbf`: the files
+    /// of the store have no file extension.
+    pub fn apply_changes(&self, base: &Path, changes: &[&PathBuf], output: &Path) -> Result<(), String> {
+        let mut command = Command::new(&self.binary);
+        command.args(["apply-changes", "-F", "pbf", "--change-file-format", "osc.gz", "-f", "pbf"]);
+        command.args(["--generator", GENERATOR, "-o"]).arg(output).arg(base).args(changes);
+        let status = obc_data::engine::run_child(&mut command)
+            .map_err(|e| format!("run {} apply-changes: {e}", self.binary.display()))?;
+        match status.success() {
+            true => Ok(()),
+            false => Err(format!("{} apply-changes failed with {status}", self.binary.display())),
+        }
+    }
+
     /// The first line of `osmium --version`.
     pub fn version(&self) -> Result<String, String> {
         let out = Command::new(&self.binary).arg("--version").output();
@@ -408,6 +422,56 @@ mod tests {
             assert_eq!(header["generator"], GENERATOR);
             assert!(!header.keys().any(|key| key.starts_with("osmosis_replication")), "{header:?}");
         }
+    }
+
+    /// The planet step applies each daily diff to the planet, and writes the outline of its option.
+    #[test]
+    fn the_planet_step_applies_the_daily_diffs_to_the_planet() {
+        let runner = OsmiumRunner::default();
+        if runner.check().is_err() {
+            return;
+        }
+        let temp = Temp::new("planet");
+        let path = |name: &str| temp.0.join(name);
+        let osmium = |args: &[&str]| {
+            let status = Command::new(&runner.binary).args(args).current_dir(&temp.0).status().unwrap();
+            assert!(status.success(), "osmium {args:?}");
+        };
+        let node =
+            |id: u32, version: u32, lat: f64| format!(r#"<node id="{id}" version="{version}" lat="{lat}" lon="1"/>"#);
+        let change = |body: String| format!(r#"<osmChange version="0.6">{body}</osmChange>"#);
+        let files = [
+            ("planet.osm", format!(r#"<osm version="0.6">{}{}</osm>"#, node(1, 1, 1.0), node(2, 1, 2.0))),
+            ("a.osc", change(format!("<modify>{}</modify>", node(1, 2, 1.5)))),
+            ("b.osc", change(format!("<modify>{}</modify><delete>{}</delete>", node(1, 3, 1.7), node(2, 2, 2.0)))),
+        ];
+        // The objects of the store have no file extension.
+        for (name, text) in files {
+            std::fs::write(path(name), text).unwrap();
+            let format = if name.ends_with(".osc") { "osc.gz" } else { "pbf" };
+            osmium(&["cat", name, "-f", format, "-o", name.split('.').next().unwrap()]);
+        }
+        let named =
+            |files: &[(&str, &str)]| files.iter().map(|(name, object)| (name.to_string(), path(object))).collect();
+        let diffs = [("000/000/001.state.txt", "planet.osm"), ("000/000/002.osc.gz", "a"), ("000/000/003.osc.gz", "b")];
+        let request = obc_data::engine::Request {
+            step: "device/source/planet".into(),
+            snapshots: [
+                ("osm-planet".into(), named(&[("planet-261005.osm.pbf", "planet")])),
+                ("osm-replication".into(), named(&diffs)),
+            ]
+            .into(),
+            layers: BTreeMap::new(),
+            layer_files: BTreeMap::new(),
+            options: serde_json::json!({"poly": "world\n"}),
+            output: path("out"),
+            metrics: path("metrics.json"),
+        };
+        std::fs::create_dir(path("out")).unwrap();
+        crate::step::planet(&request).unwrap();
+        let opl = Command::new(&runner.binary).args(["cat", "-f", "opl"]).arg(path("out/source.osm.pbf")).output();
+        assert_eq!(String::from_utf8(opl.unwrap().stdout).unwrap(), "n1 v3 dV c0 t i0 u T x1 y1.7\n");
+        assert_eq!(std::fs::read_to_string(path("out/source.poly")).unwrap(), "world\n");
     }
 
     /// The operator page draws a leaf from its id: builder/web/src/lib/data/leaf.test.ts has these numbers.

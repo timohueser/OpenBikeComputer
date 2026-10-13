@@ -29,12 +29,17 @@ pub fn step(
     body: &str,
 ) -> Result<Step, Unplanned> {
     let areas = obc_data::regions::geofabrik::parse(body.as_bytes()).map_err(Unplanned::Failed)?;
+    // The planet is no Geofabrik area: its catalog picks every area and the planet.
     let primary: BTreeMap<_, _> = selection
         .sources
         .iter()
-        .map(|source| {
+        .filter_map(|source| match &source.osm {
+            Osm::Geofabrik { poly, .. } => Some((source, poly)),
+            Osm::Planet { .. } => None,
+        })
+        .map(|(source, poly)| {
             let params = [("area".into(), source.id.clone())];
-            let (_, digest) = file(store, POLY, &source.poly, &params)?;
+            let (_, digest) = file(store, POLY, poly, &params)?;
             let poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
             Ok((source.id.clone(), poly))
         })
@@ -147,7 +152,10 @@ pub fn step(
         sources: selection
             .sources
             .iter()
-            .map(|source| CellSource { extract_id: source.id.clone(), snapshot: source.extract.clone() })
+            .map(|source| {
+                let (Osm::Geofabrik { extract: snapshot, .. } | Osm::Planet { day: snapshot, .. }) = &source.osm;
+                CellSource { extract_id: source.id.clone(), snapshot: snapshot.clone() }
+            })
             .collect(),
         coverage,
         picks,
