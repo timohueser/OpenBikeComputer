@@ -37,8 +37,14 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
-    /// What a prepare of `source` for `scope` reads and makes, for its review. It fetches nothing.
-    fn plan(&self, source: &Source, scope: Option<&Scope>, languages: &[String]) -> Result<Plan, String>;
+    /// Plan the inputs with metadata requests only; never download an archive here.
+    fn plan(
+        &self,
+        context: &Planning,
+        source: &Source,
+        scope: Option<&Scope>,
+        languages: &[String],
+    ) -> Result<Plan, String>;
     /// Validate and order the article languages of this version.
     fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
         if requested.is_empty() {
@@ -53,12 +59,43 @@ pub trait Prepared: Sync {
 }
 
 /// What a prepare reads and makes, as its review shows it.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Plan {
     /// The sources that it reads: the fetches, and a source that a program of the producer reads,
     /// each with the size of its files when the producer knows it, such as a file on this machine.
-    pub inputs: Vec<(Wanted, Option<u64>)>,
+    pub inputs: Vec<Input>,
     /// The files of the version, at most; `None` when the producer cannot tell before the run.
     pub files: Option<u64>,
+}
+
+/// Services for input discovery.
+pub struct Planning<'a> {
+    pub store: &'a Store,
+    pub http: &'a Http,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Input {
+    pub wanted: Wanted,
+    pub bytes: Option<u64>,
+    /// A large archive read in place, outside the content-addressed object store.
+    pub archive: Option<Archive>,
+}
+
+impl From<(Wanted, Option<u64>)> for Input {
+    fn from((wanted, bytes): (Wanted, Option<u64>)) -> Self {
+        Self { wanted, bytes, archive: None }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Archive {
+    pub key: String,
+    pub path: PathBuf,
+    /// Absent for an archive supplied locally.
+    pub url: Option<String>,
+    /// The remote object identity; a mutable endpoint must supply a strong ETag.
+    pub etag: Option<String>,
 }
 
 /// The producer of the source `id`.
@@ -295,6 +332,7 @@ pub struct Job<'a> {
     pub version: String,
     pub scope: Option<Scope>,
     pub languages: Vec<String>,
+    pub plan: Plan,
     /// The row of the source in `data/sources.toml`.
     pub source: &'a Source,
     /// Where the producer writes a file before [`Job::finish`]. It stays when the run stops.
@@ -360,6 +398,7 @@ impl<'a> Job<'a> {
             version: version.into(),
             scope,
             languages: languages.to_vec(),
+            plan: Plan::default(),
             source,
             work: dir.join("work"),
             state: dir.join("state"),
@@ -385,6 +424,10 @@ impl<'a> Job<'a> {
             job.files.remove(&key[version.len() + 1..]);
         }
         Ok(job)
+    }
+
+    pub fn planning(&self) -> Planning<'_> {
+        Planning { store: self.store, http: self.http }
     }
 
     fn apply(&mut self, entry: Entry) {

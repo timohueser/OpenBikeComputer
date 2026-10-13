@@ -1,10 +1,11 @@
 //! The producer of `wiki`: the Wikimedia facts, the article text and the photos of the OSM
 //! subjects, in geographic shards (`specs/wikimedia-content.md`, "The `wiki` source"). It reads the
-//! dumps in the directory that `OBC_WIKI_DUMPS` names, in place. The steps of `tools.wiki` do the
+//! cached dumps in place and downloads missing inputs after review. The steps of `tools.wiki` do the
 //! imports, ask Commons and write the shards; this producer selects the subjects and their photos
 //! with the rules of the compilers.
 
 mod commons;
+mod downloads;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -56,14 +57,19 @@ impl Prepared for Wiki {
         1
     }
 
-    /// The newest dump of each kind, read in place: the review shows its day, its file and its
-    /// size. The number of shards is not known before the run.
-    fn plan(&self, source: &Source, scope: Option<&Scope>, languages: &[String]) -> Result<Plan, String> {
+    /// Reuse cached inputs and discover missing inputs from metadata. The review names each
+    /// archive and its size; the number of output shards is unknown before the run.
+    fn plan(
+        &self,
+        context: &obc_data::prepared::Planning,
+        source: &Source,
+        scope: Option<&Scope>,
+        languages: &[String],
+    ) -> Result<Plan, String> {
         if source.publish_text.is_none() {
             return Err("the row `wiki` names no `publish_text`: set it to `true` or `false`".into());
         }
-        let Some(dir) = dumps_dir() else { return Ok(Plan { inputs: Vec::new(), files: None }) };
-        let inputs = dumps(&dir, scope, languages)?.into_iter().map(|dump| (dump.wanted(), Some(dump.size))).collect();
+        let inputs = downloads::plan(context, scope, languages)?;
         Ok(Plan { inputs, files: None })
     }
 
@@ -222,10 +228,13 @@ fn pin(job: &Job) -> Result<Pin, String> {
         }
         return Ok(pin);
     }
-    let dir = dumps_dir().ok_or_else(|| format!("{DUMPS} names no directory of dumps"))?;
-    let mut dumps = dumps(&dir, job.scope.as_ref(), &job.languages)?;
+    let context = job.planning();
+    let mut dumps =
+        job.plan.inputs.iter().map(|input| downloads::acquire(&context, input)).collect::<Result<Vec<_>, _>>()?;
     for dump in &mut dumps {
-        dump.sha256 = hash_file(&dump.path)?.0;
+        if dump.sha256.is_empty() {
+            dump.sha256 = hash_file(&dump.path)?.0;
+        }
         if stat(&dump.path)? != (dump.size, dump.modified) {
             return Err(format!("{} changed while the run read it; run the prepare again", dump.path.display()));
         }
@@ -246,64 +255,6 @@ fn stat(path: &Path) -> Result<(u64, u64), String> {
 /// The directory that `OBC_WIKI_DUMPS` names; `None` when it is unset or empty.
 fn dumps_dir() -> Option<PathBuf> {
     std::env::var_os(DUMPS).filter(|dir| !dir.is_empty()).map(PathBuf::from)
-}
-
-/// The newest dump of each kind in `dir`, by the upstream names of the files. A kind without a
-/// file refuses, and names the file that it needs.
-fn dumps(dir: &Path, scope: Option<&Scope>, languages: &[String]) -> Result<Vec<Dump>, String> {
-    let area = regional_osm(scope)?;
-    let mut kinds = vec![
-        ("wikidata".to_string(), "wikidata", "wikidata-".to_string(), "-all.json.bz2".to_string()),
-        ("wikidata_pages".into(), "wikidata", "wikidatawiki-".into(), "-page.sql.gz".into()),
-        ("wikidata_redirects".into(), "wikidata", "wikidatawiki-".into(), "-redirect.sql.gz".into()),
-        (
-            "osm".into(),
-            if area.is_some() { "geofabrik-extracts" } else { "osm-planet" },
-            area.as_ref().map_or("planet-".into(), |area| format!("{area}-")),
-            ".osm.pbf".into(),
-        ),
-    ];
-    for language in languages {
-        kinds.push((
-            format!("langlinks:{language}"),
-            "wikipedia",
-            format!("{language}wiki-"),
-            "-langlinks.sql.gz".into(),
-        ));
-        let html = "-ENTERPRISE-HTML.json.tar.gz".to_string();
-        kinds.push((format!("wikipedia:{language}"), "wikipedia", format!("{language}wiki-NS0-"), html));
-    }
-    let mut found = Vec::new();
-    for (key, source, prefix, suffix) in kinds {
-        let prefix_path = Path::new(&prefix);
-        let directory = dir.join(prefix_path.parent().unwrap_or(Path::new("")));
-        let prefix = prefix_path.file_name().and_then(|name| name.to_str()).ok_or("invalid dump prefix")?;
-        let entries = fs::read_dir(&directory).map_err(|e| format!("{DUMPS} {}: {e}", directory.display()))?;
-        let names: Vec<String> = entries.filter_map(|entry| entry.ok()?.file_name().into_string().ok()).collect();
-        // A day of a dump is `YYYYMMDD`; the day of a planet is `YYMMDD`.
-        let day = |name: &String| {
-            let digits = name.strip_prefix(prefix)?.strip_suffix(&suffix)?;
-            let digits = if key == "osm" { format!("20{digits}") } else { digits.to_string() };
-            let day = format!("{}-{}-{}", digits.get(..4)?, digits.get(4..6)?, digits.get(6..)?);
-            (digits.len() == 8 && obc_data::date::parse(&day).is_some()).then_some(day)
-        };
-        let newest = names.iter().filter_map(|name| Some((day(name)?, name))).max();
-        let (day, name) =
-            newest.ok_or_else(|| format!("{DUMPS} {} has no `{prefix}<day>{suffix}`", directory.display()))?;
-        let path = directory.join(name);
-        let (size, modified) = stat(&path)?;
-        found.push(Dump {
-            key: key.clone(),
-            source: source.into(),
-            day,
-            path,
-            size,
-            modified,
-            sha256: String::new(),
-            area: if key == "osm" { area.clone() } else { None },
-        });
-    }
-    Ok(found)
 }
 
 /// A Geofabrik scope reads its extract; a box clips the planet input.
@@ -489,21 +440,26 @@ esac
             )]
             .into(),
         };
-        let plan = producer.plan(&sources[0], Some(&scope), &languages).unwrap();
-        assert!(plan.inputs.iter().all(|(wanted, _)| wanted.source != "osm-planet"));
-        assert!(producer.plan(&sources[0], None, &languages).is_err(), "worldwide still requires the planet");
+        let plan = producer
+            .plan(&obc_data::prepared::Planning { store: &store, http: &http }, &sources[0], Some(&scope), &languages)
+            .unwrap();
+        assert!(plan.inputs.iter().all(|input| input.wanted.source != "osm-planet"));
         let read: Vec<String> = plan
             .inputs
             .iter()
-            .map(|(wanted, _)| wanted.params.iter().find(|(key, _)| key == "file").unwrap().1.clone())
+            .map(|input| input.wanted.params.iter().find(|(key, _)| key == "file").unwrap().1.clone())
             .collect();
         assert_eq!((read.len(), read[0].as_str()), (8, "wikidata-20260915-all.json.bz2"), "the newest of each kind");
         let prepare = |sources: &[Source]| {
             let _ = fs::remove_file(root.join("calls"));
             let mut run = Run::create(&store, ["source", "prepare", "wiki"]).unwrap();
             let opening = Opening { root: &root, store: &store, http: &http, sources, target: ("t", &target) };
-            let done = Job::open(opening, ("wiki", "2026-10-01"), Some(scope.clone()), &languages, &mut run)
-                .and_then(|mut job| producer.prepare(&mut job));
+            let done = Job::open(opening, ("wiki", "2026-10-01"), Some(scope.clone()), &languages, &mut run).and_then(
+                |mut job| {
+                    job.plan = plan.clone();
+                    producer.prepare(&mut job)
+                },
+            );
             (done, fs::read_to_string(root.join("calls")).unwrap_or_default())
         };
 

@@ -56,5 +56,11 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
     await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash.split('/').slice(0, 2).join('/'));
     await expect(page.getByText(shows).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), hash).toBeLessThanOrEqual(390);
+    if (hash === '#/sources/wiki/prepare?to=prod') {
+      await expect(page.getByText(/· Cached/)).toBeVisible();
+      await expect(page.getByText(/Start downloads missing archives/)).toBeVisible();
+      await page.getByLabel('German').uncheck();
+      await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0);
+    }
   }
 });

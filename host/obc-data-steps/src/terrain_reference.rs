@@ -51,7 +51,13 @@ impl Prepared for TerrainReference {
 
     /// The model, and the polygons of its areas. The tiles of its extent, in the box of a scope of
     /// boxes, and `index.json` are the files at most.
-    fn plan(&self, source: &Source, scope: Option<&Scope>, _: &[String]) -> Result<Plan, String> {
+    fn plan(
+        &self,
+        _: &obc_data::prepared::Planning,
+        source: &Source,
+        scope: Option<&Scope>,
+        _: &[String],
+    ) -> Result<Plan, String> {
         let mut tiles = extent_tiles(source)?;
         if let Some(bbox) = scope.map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id)) {
             let inside = box_tiles(&bbox)?;
@@ -59,7 +65,7 @@ impl Prepared for TerrainReference {
         }
         let model = Wanted { source: model(source), version: None, params: Vec::new() };
         let polygons = source.areas.iter().map(|area| polygon(area, None));
-        let inputs = std::iter::once(model).chain(polygons).map(|wanted| (wanted, None)).collect();
+        let inputs = std::iter::once(model).chain(polygons).map(|wanted| (wanted, None).into()).collect();
         Ok(Plan { inputs, files: Some(tiles.len() as u64 + 1) })
     }
 

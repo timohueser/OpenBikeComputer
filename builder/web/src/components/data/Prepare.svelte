@@ -71,7 +71,18 @@
             {#if id === "wiki"}
                 <p><b>Coverage</b> · {r.scope?.region ?? "Worldwide"} · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}</p>
             {/if}
-            <p><b>Inputs</b> · {list(r.inputs.map((input) => `${input.source} ${input.version ?? "newest"} ${input.params.find(([key]) => key === "file")?.[1] ?? ""}${input.bytes === null ? "" : ` (${size(input.bytes)})`}`))}</p>
+            <h3>Inputs</h3>
+            <ul class="inputs">
+                {#each r.inputs as input}
+                    <li>
+                        <span>{input.params.find(([key]) => key === "file")?.[1] ?? `${input.source} ${input.version ?? "newest"}`}</span>
+                        <b>{input.bytes === null ? "Size unknown" : size(input.bytes)}{input.download_bytes === null ? "" : input.download_bytes === 0 ? " · Cached" : " · To download"}</b>
+                    </li>
+                {/each}
+            </ul>
+            {#if id === "wiki"}
+                <p><b>Download</b> · {size(r.inputs.reduce((total, input) => total + (input.download_bytes ?? 0), 0))}. Start downloads missing archives, then prepares the selected region. Interrupted downloads resume.</p>
+            {/if}
             <p>
                 <b>Files</b> · {r.files === null ? "counted by the run" : `up to ${r.files}`}{r.publish_text === null
                     ? ""
@@ -150,6 +161,10 @@
     .options code { overflow-wrap: anywhere; }
     .options input:not([type="checkbox"]) { margin-left: 8px; padding: 8px; font: inherit; }
     .options button { align-self: flex-start; }
+
+    .inputs { padding-left: 20px; }
+    .inputs li { margin: 8px 0; overflow-wrap: anywhere; }
+    .inputs b { display: block; }
 
     .review {
         border: 2px solid var(--ink);

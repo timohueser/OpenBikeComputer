@@ -128,7 +128,7 @@ pub enum Unplanned {
 }
 
 /// A fetch that a step list needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Wanted {
     pub source: String,
     /// `None` for the newest version upstream.

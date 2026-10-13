@@ -9,7 +9,7 @@
     "revision": 2,
     "scope": {"region": "europe/dach", "definitions": {"europe/dach": "name = \"DACH\"\nkind = \"geofabrik\"\nareas = [\"europe/dach\"]\n"}},
     "languages": ["en", "de"],
-    "inputs": [{"source": "wikidata", "version": null, "params": [], "bytes": null}, {"source": "wikipedia", "version": "2026-10-01", "params": [["lang", "de"]], "bytes": 21474836480}],
+    "inputs": [{"source": "wikidata", "version": null, "params": [], "bytes": 103000000000, "download_bytes": 0}, {"source": "wikipedia", "version": "2026-10-01", "params": [["lang", "de"]], "bytes": 21474836480, "download_bytes": 21474836480}],
     "files": null,
     "publish_text": true,
     "done": {"files": 0, "bytes": 0},

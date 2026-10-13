@@ -50,7 +50,7 @@ export interface PrepareReview {
     abandoned: string | null;
     scope: { region: string; definitions: Record<string, string> } | null;
     languages: string[];
-    inputs: { source: string; version: string | null; bytes: number | null; params: [string, string][] }[];
+    inputs: { source: string; version: string | null; bytes: number | null; download_bytes: number | null; params: [string, string][] }[];
     /** The files of the version at most; `null` when the producer cannot tell before the run. */
     files: number | null;
     /** Whether the version publishes its article text; `null` for a source without text. */
