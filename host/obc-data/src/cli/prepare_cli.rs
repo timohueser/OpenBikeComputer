@@ -26,12 +26,15 @@ use crate::target::Target;
 pub struct PrepareArgs {
     /// The prepared source, as `data/sources.toml` names it.
     id: String,
-    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. Not for `prod`.
+    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki` accepts a region.
     #[arg(long, conflicts_with = "bbox")]
     region: Option<String>,
-    /// Only a box: west,south,east,north in degrees. Not for `prod`.
+    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki` accepts a region.
     #[arg(long = "box", allow_hyphen_values = true)]
     bbox: Option<String>,
+    /// Wiki article languages, joined by commas; all supported languages by default.
+    #[arg(long, value_delimiter = ',', num_args = 1)]
+    languages: Vec<String>,
     /// The target that gets the version.
     #[arg(long, default_value = PROD)]
     to: String,
@@ -61,6 +64,7 @@ pub(super) struct Asked<'a> {
     /// `--region` and `--box`.
     pub scope: (Option<&'a str>, Option<&'a str>),
     pub expect: Option<&'a str>,
+    pub languages: &'a [String],
 }
 
 /// The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when
@@ -85,6 +89,7 @@ pub struct PrepareReview {
     pub revision: u32,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
+    pub languages: Vec<String>,
     pub inputs: Vec<PreparedInput>,
     /// The files of the version, at most; `null` when the producer cannot tell before the run.
     pub files: Option<u64>,
@@ -151,8 +156,12 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     super::api::writable(&args.to, &target, true)?;
     let (http, today) = (Http::new(), crate::date::format(crate::date::today()));
     let context = Context { root, store: &store, http: &http, prepared };
-    let asked =
-        Asked { id: &args.id, scope: (args.region.as_deref(), args.bbox.as_deref()), expect: args.expect.as_deref() };
+    let asked = Asked {
+        id: &args.id,
+        scope: (args.region.as_deref(), args.bbox.as_deref()),
+        expect: args.expect.as_deref(),
+        languages: &args.languages,
+    };
     let print = |done: &Done| {
         println!(
             "{}@{} on {}: {} files, {}, manifest {}; this run uploaded {}",
@@ -174,6 +183,9 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     review.args = ["source", "prepare", &args.id, "--to", &args.to].map(String::from).into();
     args.region.iter().for_each(|region| review.args.extend(["--region".into(), region.clone()]));
     args.bbox.iter().for_each(|bbox| review.args.extend(["--box".into(), bbox.clone()]));
+    if !review.languages.is_empty() {
+        review.args.extend(["--languages".into(), review.languages.join(",")]);
+    }
     review.args.extend(["--expect".into(), review.id.clone()]);
     if args.dry_run {
         return print_review(&review, json);
@@ -223,7 +235,7 @@ fn plan<'a>(
     update_cli::select(root, asked.scope, &mut settings)?;
     let scope = (!settings.region.is_empty())
         .then(|| Scope { region: settings.region.clone(), definitions: settings.definitions.clone() });
-    if scope.is_some() && name == PROD {
+    if scope.is_some() && name == PROD && id != "wiki" {
         return Err(Code::Usage
             .error(format!(
                 "a version of a region or a box is not for `{PROD}`, whose versions every target reads; nothing changed"
@@ -232,6 +244,7 @@ fn plan<'a>(
                 "Prepare the region for another target, such as `--to local`, or all of `{id}` for `{PROD}`."
             )));
     }
+    let languages = producer.languages(asked.languages).map_err(|e| Code::Usage.error(e))?;
     let listed = prepared::versions(target, id)?;
     let newest = listed.iter().map(|listed| listed.version.as_str()).max();
     // A run never writes a key of a complete version. When the manifest of a stopped version is
@@ -254,7 +267,8 @@ fn plan<'a>(
             .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
             .fix("The next version starts on the next day, by UTC."));
     }
-    let made = producer.plan(&source, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
+    let made =
+        producer.plan(&source, scope.as_ref(), &languages).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
     let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
     for (wanted, known) in made.inputs {
         let bytes = match &wanted.version {
@@ -288,11 +302,14 @@ fn plan<'a>(
     let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
     if let Some(newest) = listed.last() {
         let manifest = prepared::manifest(target, id, &newest.version)?;
-        (cost.wall_ms, cost.peak_rss_bytes) =
-            manifest.map_or((None, None), |m| (Some(m.cost.wall_ms), m.cost.peak_rss_bytes));
-        cost.store_bytes += newest.bytes;
-        cost.upload_bytes = Some(newest.bytes.saturating_sub(done.bytes));
+        if let Some(manifest) = manifest.filter(|m| m.scope == scope && m.languages == languages) {
+            cost.wall_ms = Some(manifest.cost.wall_ms);
+            cost.peak_rss_bytes = manifest.cost.peak_rss_bytes;
+            cost.store_bytes += newest.bytes;
+            cost.upload_bytes = Some(newest.bytes.saturating_sub(done.bytes));
+        }
     }
+
     let mut machine = MachineCheck::this(store)?;
     if let Some((peak, memory)) = cost.peak_rss_bytes.zip(machine.memory_bytes).filter(|(peak, memory)| peak > memory) {
         machine.refusals.push(format!(
@@ -316,6 +333,7 @@ fn plan<'a>(
         "format": producer.format(),
         "revision": producer.revision(),
         "scope": scope,
+        "languages": languages,
         "publish_text": source.publish_text,
         "inputs": inputs.iter().map(|input| (&input.source, &input.version, &input.params)).collect::<Vec<_>>(),
     });
@@ -330,6 +348,7 @@ fn plan<'a>(
         format: producer.format(),
         revision: producer.revision(),
         scope: scope.clone(),
+        languages,
         inputs,
         files: made.files,
         publish_text: source.publish_text,
@@ -469,7 +488,7 @@ fn make(
         target: (name, target),
     };
     let (files, inputs, uploaded) = {
-        let mut job = Job::open(opening, (id, version), scope.clone(), run)?;
+        let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
         producer.prepare(&mut job).map_err(|e| Code::RunFailed.error(format!("{id}@{version}: {e}")))?;
         (job.files().cloned().collect::<Vec<_>>(), job.reads(), job.uploaded)
     };
@@ -485,6 +504,7 @@ fn make(
         inputs,
         files,
         scope,
+        languages: review.languages.clone(),
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
         machine: crate::machine(),
@@ -504,6 +524,9 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     let mut rows = Vec::new();
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
+    if !review.languages.is_empty() {
+        rows.push(vec!["  languages".into(), review.languages.join(", ")]);
+    }
     rows.push(vec!["  version".into(), format!("format {}, revision {}", review.format, review.revision)]);
     if let Some(files) = review.files {
         rows.push(vec!["  files".into(), format!("up to {files}")]);
@@ -616,7 +639,7 @@ mod tests {
             1
         }
 
-        fn plan(&self, _: &Source, _: Option<&Scope>) -> Result<prepared::Plan, String> {
+        fn plan(&self, _: &Source, _: Option<&Scope>, _: &[String]) -> Result<prepared::Plan, String> {
             Ok(prepared::Plan { inputs: vec![(head(), None)], files: Some(3) })
         }
 
@@ -946,6 +969,64 @@ mod tests {
         prepare(&fixture, "local", "2026-10-01", boxed()).unwrap();
         let manifest = prepared::manifest(&local, "sample", "2026-10-01").unwrap().unwrap();
         assert_eq!(manifest.scope.map(|scope| scope.region), Some("box".into()));
+    }
+
+    #[test]
+    fn a_regional_wiki_review_and_resume_pin_the_languages() {
+        struct Wiki;
+        impl Prepared for Wiki {
+            fn name(&self) -> &'static str {
+                "wiki"
+            }
+            fn format(&self) -> u32 {
+                1
+            }
+            fn revision(&self) -> u32 {
+                1
+            }
+            fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
+                Ok(requested.to_vec())
+            }
+            fn plan(
+                &self,
+                source: &Source,
+                scope: Option<&Scope>,
+                languages: &[String],
+            ) -> Result<prepared::Plan, String> {
+                Sample(1).plan(source, scope, languages)
+            }
+            fn prepare(&self, job: &mut Job) -> Result<(), String> {
+                Sample(1).prepare(job)
+            }
+        }
+        let (fixture, prod, _) = setup("wiki-selection");
+        let root = fixture.root();
+        let registry = root.join("data/sources.toml");
+        fs::write(&registry, fs::read_to_string(&registry).unwrap().replace("id = \"sample\"", "id = \"wiki\""))
+            .unwrap();
+        let http = Http::new();
+        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Wiki] };
+        let languages = ["en".into(), "de".into()];
+        let asked = Asked { id: "wiki", scope: (None, Some("7,47,8,48")), languages: &languages, ..Default::default() };
+        let review = plan(&context, ("prod", &prod), &asked, "2026-10-01").unwrap().review;
+        assert_eq!(review.languages, languages);
+        assert_eq!(review.scope.as_ref().unwrap().region, "box");
+        let english = Asked { languages: &languages[..1], ..asked };
+        let other = plan(&context, ("prod", &prod), &english, "2026-10-01").unwrap().review;
+        assert_ne!(review.id, other.id);
+        assert!(check(&other, Some(&review.id)).is_err());
+        write(&root.join("fail-c.txt"), "");
+        let mut run = Run::create(&fixture.store, ["source", "prepare", "wiki"]).unwrap();
+        assert!(super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).is_err());
+        fs::remove_file(root.join("fail-c.txt")).unwrap();
+        let error = super::prepare(&context, ("prod", &prod), &english, "2026-10-01", &mut run).unwrap_err();
+        assert!(error.message.contains("another region or language selection"), "{}", error.message);
+        super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).unwrap();
+        let manifest = prepared::manifest(&prod, "wiki", "2026-10-01").unwrap().unwrap();
+        assert_eq!(manifest.languages, languages);
+        assert_eq!(manifest.scope, review.scope);
+        let changed = plan(&context, ("prod", &prod), &english, "2026-10-02").unwrap().review;
+        assert_eq!(changed.cost.wall_ms, None, "another selection has no measured cost");
     }
 
     #[test]

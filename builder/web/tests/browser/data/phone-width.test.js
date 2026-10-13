@@ -11,7 +11,7 @@ const ANSWERS = {
   '["areas"]': fixture('areas'),
   '["sources"]': fixture('sources'),
   '["router","prod"]': fixture('router'),
-  [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--dry-run'])]: fixture('prepare-review'),
+  [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
   [JSON.stringify(['update', 'local', '--dry-run'])]: review,
@@ -46,6 +46,13 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
   await expect(page.getByText('This page runs on')).toBeVisible();
   for (const [hash, shows] of SCREENS) {
     await page.evaluate(next => { location.hash = next; }, hash);
+    if (hash === '#/sources/wiki/prepare?to=prod') {
+      await page.getByLabel('Geofabrik area').fill('europe/dach');
+      await page.getByLabel('French').uncheck();
+      await page.getByLabel('Spanish').uncheck();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), 'wiki options').toBeLessThanOrEqual(390);
+      await page.getByRole('button', { name: 'Review preparation' }).click();
+    }
     await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash.split('/').slice(0, 2).join('/'));
     await expect(page.getByText(shows).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), hash).toBeLessThanOrEqual(390);

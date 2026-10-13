@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import contentLanguages from "../../../../../specs/content-languages.json";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { list, size, span, when, type Started, type Target } from "../../lib/data/shapes";
@@ -10,12 +11,26 @@
     // With `rows`: the versions of a prepared source on each target, or the chips of a family, such as
     // `terrain-reference`. With `to`: the review of a new version for that target, and its Start,
     // which waits for `kind`, the kind of that target.
-    let { id, rows = [], to, kind = null }: { id: string; rows?: SourceRow[]; to?: string; kind?: Target["kind"] | null } = $props();
+    let { id, rows = [], to, kind = null, region = "" }: { id: string; rows?: SourceRow[]; to?: string; kind?: Target["kind"] | null; region?: string } = $props();
 
     // svelte-ignore state_referenced_locally
-    const review = to ? new CliQuery<PrepareReview>(["source", "prepare", id, "--to", to, "--dry-run"]) : null;
-    onMount(() => void review?.refresh());
-    // A prepare asks before it changes an R2 target; the page asks with this screen.
+    let area = $state(region);
+    let worldwide = $state(false);
+    let languages = $state(contentLanguages.map(([code]) => code));
+    const languageName = new Intl.DisplayNames(["en"], { type: "language" });
+    const args = $derived([
+        "source", "prepare", id, "--to", to ?? "prod",
+        ...(id === "wiki" ? [...(worldwide ? [] : ["--region", area.trim()]), "--languages", languages.join(",")] : []),
+        "--dry-run",
+    ]);
+    let query = $state<CliQuery<PrepareReview> | null>(null);
+    // A changed selection cannot start an earlier review, including a response still in flight.
+    const review = $derived(query?.args.join("\0") === args.join("\0") ? query : null);
+    function inspect() {
+        query = new CliQuery<PrepareReview>(args);
+        void query.refresh();
+    }
+    onMount(() => { if (to && id !== "wiki") inspect(); });
     const start = $derived(review?.output ? [...review.output.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
     const names = $derived([...new Set(rows.flatMap((row) => Object.keys(row.prepared)))]);
     let target = $state("prod");
@@ -27,15 +42,36 @@
     }
 </script>
 
-{#if review}
+{#if to}
     <h1>Prepare {id} for {to}</h1>
     <a href="#/sources/{encodeURIComponent(id)}">Back to {id}</a>
-    {#if review.error}<Failure error={review.error} />{/if}
-    {#if review.output}
+    {#if id === "wiki"}
+        <form class="card options" onsubmit={(event) => { event.preventDefault(); inspect(); }}>
+            <h2>Coverage and languages</h2>
+            <label><input type="checkbox" bind:checked={worldwide} /> Worldwide</label>
+            {#if !worldwide}
+                <label>Geofabrik area <input required bind:value={area} placeholder="europe/dach" /></label>
+            {/if}
+            <fieldset>
+                <legend>Article languages</legend>
+                {#each contentLanguages as [code] (code)}
+                    <label><input type="checkbox" bind:group={languages} value={code} /> {languageName.of(code)}</label>
+                {/each}
+            </fieldset>
+            <p class="soft">Photos are fetched only for selected subjects in this coverage. The selected language archives are worldwide inputs.</p>
+            <code>{command(args)}</code>
+            <button type="submit" disabled={!languages.length || (!worldwide && !area.trim())}>Review preparation</button>
+        </form>
+    {/if}
+    {#if review?.error}<Failure error={review.error} />{/if}
+    {#if review?.output}
         {@const r = review.output}
         <section class="card review" aria-labelledby="prepare">
             <h2 id="prepare">Review {r.id}: version {r.version} of {r.source}</h2>
-            <p><b>Inputs</b> · {list(r.inputs.map((input) => `${input.source} ${input.version ?? "newest"}${input.bytes === null ? "" : ` (${size(input.bytes)})`}`))}</p>
+            {#if id === "wiki"}
+                <p><b>Coverage</b> · {r.scope?.region ?? "Worldwide"} · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}</p>
+            {/if}
+            <p><b>Inputs</b> · {list(r.inputs.map((input) => `${input.source} ${input.version ?? "newest"} ${input.params.find(([key]) => key === "file")?.[1] ?? ""}${input.bytes === null ? "" : ` (${size(input.bytes)})`}`))}</p>
             <p>
                 <b>Files</b> · {r.files === null ? "counted by the run" : `up to ${r.files}`}{r.publish_text === null
                     ? ""
@@ -49,9 +85,10 @@
                     ? ""
                     : ` · upload ${size(r.cost.upload_bytes)}`}{r.cost.unknown.length ? ` · no size for ${list(r.cost.unknown)}` : ""}
             </p>
+            <p><b>Peak memory</b> · {r.cost.peak_rss_bytes === null ? "unknown" : size(r.cost.peak_rss_bytes)} · <b>Upload</b> · {r.cost.upload_bytes === null ? "unknown" : size(r.cost.upload_bytes)}</p>
             <p>
                 <b>This machine</b> · {#if r.machine.refusals.length}<span class="missing">cannot do it: {r.machine.refusals.join("; ")}</span
-                    >{:else}can do it{/if}
+                    >{:else}no known refusal{/if}
             </p>
             {#if r.abandoned}<p><b>Abandoned</b> · the stopped version {r.abandoned} does not resume.</p>{/if}
             <p><b>When it finishes</b> · {list(r.stale.map((at) => `${at.target}: ${at.layers.length ? list(at.layers) : "nothing"} stale`))}</p>
@@ -63,7 +100,7 @@
                 ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
             />
         </section>
-    {:else if !review.error}
+    {:else if review && !review.error}
         <p class="soft">Reviewing the prepare…</p>
     {/if}
 {:else}
@@ -108,6 +145,12 @@
 {/if}
 
 <style>
+    .options { display: flex; flex-direction: column; gap: 12px; }
+    fieldset { display: flex; flex-wrap: wrap; gap: 16px; }
+    .options code { overflow-wrap: anywhere; }
+    .options input:not([type="checkbox"]) { margin-left: 8px; padding: 8px; font: inherit; }
+    .options button { align-self: flex-start; }
+
     .review {
         border: 2px solid var(--ink);
     }

@@ -38,7 +38,15 @@ pub trait Prepared: Sync {
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
     /// What a prepare of `source` for `scope` reads and makes, for its review. It fetches nothing.
-    fn plan(&self, source: &Source, scope: Option<&Scope>) -> Result<Plan, String>;
+    fn plan(&self, source: &Source, scope: Option<&Scope>, languages: &[String]) -> Result<Plan, String>;
+    /// Validate and order the article languages of this version.
+    fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
+        if requested.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err("this source has no article languages".into())
+        }
+    }
     /// Make the files of the version of `job`: write each into `job.work`, then give it to
     /// [`Job::finish`]. A run that resumes calls it again; [`Job::done`] names what is done.
     fn prepare(&self, job: &mut Job) -> Result<(), String>;
@@ -87,6 +95,8 @@ pub struct Manifest {
     pub files: Vec<LayerFile>,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
+    /// Article languages included in this version; empty for a source without articles.
+    pub languages: Vec<String>,
     /// The licence and the credit of the source in `data/sources.toml`.
     pub licence: Option<String>,
     pub attribution: Option<String>,
@@ -250,7 +260,7 @@ pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, 
     Ok(entry)
 }
 
-/// What a resume needs on this machine: `STORE/prepared/<target>/<id>/<version>/` holds the scope
+/// What a resume needs on this machine: `STORE/prepared/<target>/<id>/<version>/` holds the selection
 /// of the run, its journal, `work/` and `state/`.
 pub(crate) fn job_dir(store: &Store, target: &str, id: &str, version: &str) -> PathBuf {
     store.root().join("prepared").join(target).join(id).join(version)
@@ -284,6 +294,7 @@ pub struct Job<'a> {
     pub id: String,
     pub version: String,
     pub scope: Option<Scope>,
+    pub languages: Vec<String>,
     /// The row of the source in `data/sources.toml`.
     pub source: &'a Source,
     /// Where the producer writes a file before [`Job::finish`]. It stays when the run stops.
@@ -317,11 +328,12 @@ pub struct Opening<'a> {
 
 impl<'a> Job<'a> {
     /// The job of `id@version` with `scope`, with what earlier runs of it did. A run of the version
-    /// for another scope refuses.
+    /// for another scope or language selection refuses.
     pub fn open(
         opening: Opening<'a>,
         (id, version): (&str, &str),
         scope: Option<Scope>,
+        languages: &[String],
         run: &'a mut Run,
     ) -> Result<Job<'a>, String> {
         let Opening { root, store, http, sources, target: (name, target) } = opening;
@@ -331,22 +343,23 @@ impl<'a> Job<'a> {
         for folder in ["work", "state"] {
             fs::create_dir_all(dir.join(folder)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let scope_file = dir.join("scope.json");
-        let bytes = serde_json::to_vec(&scope).expect("a scope serializes");
-        match fs::read(&scope_file) {
+        let selection_file = dir.join("selection.json");
+        let bytes = serde_json::to_vec(&(&scope, languages)).expect("a selection serializes");
+        match fs::read(&selection_file) {
             Ok(held) if held == bytes => {}
             Ok(_) => {
                 return Err(format!(
-                    "a run of {id}@{version} for another region stopped; resume it with its region, or delete {}",
+                    "a run of {id}@{version} for another region or language selection stopped; resume it with its selection, or delete {}",
                     dir.display()
                 ))
             }
-            Err(_) => crate::store::write_atomic(&scope_file, &bytes)?,
+            Err(_) => crate::store::write_atomic(&selection_file, &bytes)?,
         }
         let mut job = Job {
             id: id.into(),
             version: version.into(),
             scope,
+            languages: languages.to_vec(),
             source,
             work: dir.join("work"),
             state: dir.join("state"),

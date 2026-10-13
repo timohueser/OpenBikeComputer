@@ -112,6 +112,23 @@ class Wiki(unittest.TestCase):
         self.assertEqual(link["proof"]["aliases"], [{"from": "Old Castle", "to": "Castle"}])
         self.assertIsNone(catalog.fact(self.db, "article", "en:Old Castle"))
 
+    def test_unselected_article_languages_are_explicit_omissions_and_not_photo_inputs(self):
+        self.subjects(dict(osm="n1", wikidata="Q1"))
+        self.wikidata(self.dump([entity("Q1", sitelinks={
+            "enwiki": {"site": "enwiki", "title": "Castle"},
+            "dewiki": {"site": "dewiki", "title": "Burg"},
+        })]))
+        catalog.want(self.db, self.work, ["Q1"], ["en"])
+        self.assertEqual(self.db.execute("SELECT language, title FROM wanted").fetchall(), [("en", "Castle")])
+        self.assertEqual(catalog.fact(self.db, "article", "de:Burg"), dict(
+            kind="article", key="de:Burg", status="missing", reason="language_not_prepared"))
+        wiki = self.root / "en.tar.gz"
+        archive(wiki, [page()])
+        catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+        self.assertEqual(catalog.fact(self.db, "article", "en:Castle")["status"], "present")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            catalog.want(self.db, self.work, ["Q1"], ["en", "de"])
+
     def test_store_objects_without_a_suffix_are_read_by_their_first_bytes(self):
         self.subjects(dict(osm="n1", wikidata="Q1"))
         objects = self.root / "objects"
