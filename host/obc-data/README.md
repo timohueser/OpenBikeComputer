@@ -26,6 +26,7 @@ serves, so they need no commit.
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_DATA_STORE` | Build store |
+| `OBC_WIKI_DUMPS` | Directory of compressed Wikimedia dumps and OSM inputs; read in place |
 | `OBC_DATA_MACHINE` | The machine name in a release; the short host name without it |
 | `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key, for `prod` and `obc data r2` |
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
@@ -54,6 +55,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data source prepare ID --to local` | Make a version of a prepared source; the same command resumes it |
 | `obc data source prepare ID --dry-run` | Review a prepare for `prod`; the owner approves its id |
+| `obc data source prepare wiki --region europe/dach --languages en,de --dry-run` | Review a DACH version with English and German articles |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress; Ctrl-C ends only the following |
 | `obc data runs RUN --stop` | Stop a run: it frees the lock and keeps what it baked |
@@ -74,6 +76,13 @@ in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test 
 
 On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
 `loginctl enable-linger USER` is set for the user.
+
+On the Wiki page, select a Geofabrik area and article languages, then select **Review preparation**.
+Select **Worldwide** only for a global version. For DACH, use `europe/dach`; put its dated extract
+at `$OBC_WIKI_DUMPS/europe/dach-<yymmdd>.osm.pbf`. Links to existing archives are accepted.
+Supply the Wikidata JSON, page and redirect dumps, and the HTML and language-link dumps for each
+selected language. The [wiki contract](../../specs/obc-data.md#wiki) gives their names.
+Only **Start** starts the reviewed run. Changing the selection requires a matching review.
 
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.
