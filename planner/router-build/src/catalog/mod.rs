@@ -19,6 +19,7 @@ use std::{
 };
 
 pub const FILE: &str = "route-catalog.json";
+pub const FORMAT: u32 = 2;
 const MIN_LENGTH_M: f64 = 2_000.0;
 const MAX_GAP_M: f64 = 500.0;
 const ROUNDTRIP_M: f64 = 200.0;
@@ -57,6 +58,8 @@ pub enum Reason {
     NestedLongRoute,
     NoStages,
     MissingStage,
+    MissingProfile,
+    TooDifficult,
 }
 
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
@@ -74,12 +77,37 @@ fn selected(tags: &Tags) -> Option<&str> {
     .then_some(kind)
 }
 
-/// The Balanced profiles of the activities that list a kind. The first gives the plan route.
-fn profiles(kind: &str) -> &'static [&'static str] {
+/// The profiles that reproduce a kind. The first gives the plan route.
+fn profiles(kind: &str, advanced: bool) -> &'static [&'static str] {
+    match (kind, advanced) {
+        ("bicycle", _) => &["touring", "road", "gravel"],
+        ("mtb", true) => &["mtb/technical"],
+        ("mtb", false) => &["mtb"],
+        (_, true) => &["hiking/alpine"],
+        (_, false) => &["hiking"],
+    }
+}
+
+/// A known member grade selects an explicit capability before the route is shaped.
+fn advanced(kind: &str, tags: &Tags) -> Result<bool, Reason> {
+    let hiking = match tag(tags, "sac_scale") {
+        "" | "strolling" | "hiking" | "mountain_hiking" => Ok(false),
+        "demanding_mountain_hiking" | "alpine_hiking" => Ok(true),
+        _ => Err(Reason::TooDifficult),
+    };
     match kind {
-        "bicycle" => &["touring", "road", "gravel"],
-        "mtb" => &["mtb"],
-        _ => &["hiking"],
+        "bicycle" => Ok(false),
+        "mtb" => {
+            if hiking? {
+                return Err(Reason::TooDifficult);
+            }
+            match tag(tags, "mtb:scale").trim_end_matches(['+', '-']).parse::<u8>() {
+                Ok(2 | 3) => Ok(true),
+                Ok(4..=6) => Err(Reason::TooDifficult),
+                _ => Ok(false),
+            }
+        }
+        _ => hiking,
     }
 }
 
@@ -180,6 +208,8 @@ struct Job<'a> {
     relation: &'a Relation,
     kind: String,
     members: Vec<assemble::Member>,
+    advanced: bool,
+    check_advanced: bool,
 }
 
 /// The facts that the report needs, besides the records.
@@ -251,15 +281,19 @@ pub fn check(countries: &[String], profiles: &[Profile]) -> Result<bool, String>
 pub fn write(directory: &Path, osm: Data, france: bool) -> Result<Report, String> {
     let started = std::time::Instant::now();
     let package = Directory::open(directory).map_err(|e| e.to_string())?;
-    // The routers share one graph, one junction mapping and the five prepared profiles; each
+    // The routers share one graph, one junction mapping and the catalog profiles; each
     // adds its own label blocks and a search space of `SEARCH_BYTES`.
     let routing = Selection::whole(package);
-    let shared = routing.shared_bytes(PROFILES).map_err(|e| e.to_string())?;
+    let profiles = routing
+        .profiles()
+        .into_iter()
+        .filter(|p| PROFILES.contains(p) || matches!(*p, "mtb/technical" | "hiking/alpine"));
+    let shared = routing.shared_bytes(profiles).map_err(|e| e.to_string())?;
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let workers = cpus.min(ROUTERS_MEMORY.saturating_sub(shared) / (routing.router_bytes() + SEARCH_BYTES)).max(1);
     let (records, report) = catalog(&routing, osm, france, workers)?;
-    let bytes =
-        serde_json::to_vec(&crate::sort_keys(json!({"format": 1, "routes": records}))).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&crate::sort_keys(json!({"format": FORMAT, "routes": records})))
+        .map_err(|e| e.to_string())?;
     std::fs::write(directory.join(FILE), bytes).map_err(|e| e.to_string())?;
     Ok(Report { seconds: started.elapsed().as_secs_f64(), ..report })
 }
@@ -282,6 +316,12 @@ fn catalog<S: Source + Clone + Send>(
             .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(*id) } else { None })
             .collect()
     };
+    let stages = |relation: &Relation| -> Vec<i64> {
+        children(relation)
+            .into_iter()
+            .filter(|id| tag(&relations[id].tags, "network") == tag(&relation.tags, "network") && is_route(id))
+            .collect()
+    };
     let mut long = Vec::new();
     let mut jobs = Vec::new();
     for relation in relations.values() {
@@ -293,7 +333,7 @@ fn catalog<S: Source + Clone + Send>(
         } else if children.iter().any(is_route) {
             long.push((relation, kind.to_string()));
         } else {
-            jobs.push(Job { relation, kind: kind.into(), members: Vec::new() });
+            jobs.push(Job { relation, kind: kind.into(), members: Vec::new(), advanced: false, check_advanced: false });
         }
     }
     let needed: HashSet<i64> = jobs
@@ -306,6 +346,7 @@ fn catalog<S: Source + Clone + Send>(
     let needed: HashSet<i64> = ways.values().flat_map(|w| w.nodes.iter().copied()).collect();
     let points: HashMap<i64, P> =
         nodes.into_values().filter(|n| needed.contains(&n.id)).map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
+    let available = selection.profiles();
     jobs.retain_mut(|job| {
         for (id, role) in &job.relation.members {
             let Id::Way(id) = id else { continue };
@@ -313,20 +354,56 @@ fn catalog<S: Source + Clone + Send>(
                 continue;
             }
             match ways.get(id) {
-                Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => job.members.push(assemble::Member {
-                    nodes: way.nodes.clone(),
-                    role: role.clone(),
-                    roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
-                }),
+                Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => {
+                    match advanced(&job.kind, &way.tags) {
+                        Ok(advanced) => job.advanced |= advanced,
+                        Err(reason) => {
+                            drops.insert(job.relation.id, reason);
+                            return false;
+                        }
+                    }
+                    job.members.push(assemble::Member {
+                        nodes: way.nodes.clone(),
+                        role: role.clone(),
+                        roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
+                    });
+                }
                 _ => {
                     drops.insert(job.relation.id, Reason::ExtractEdge);
                     return false;
                 }
             }
         }
+        if profiles(&job.kind, job.advanced).iter().any(|name| !available.contains(name)) {
+            drops.insert(job.relation.id, Reason::MissingProfile);
+            return false;
+        }
         true
     });
     drop(ways);
+    // Every stage of an advanced parent must reproduce under that parent's profile too.
+    let advanced: HashSet<_> = jobs.iter().filter(|job| job.advanced).map(|job| job.relation.id).collect();
+    let extra_checks: HashSet<_> = long
+        .iter()
+        .flat_map(|(relation, kind)| {
+            let stages = stages(relation);
+            if stages.iter().any(|id| advanced.contains(id))
+                && stages
+                    .iter()
+                    .all(|id| profiles(tag(&relations[id].tags, "route"), false)[0] == profiles(kind, false)[0])
+            {
+                stages
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    for job in &mut jobs {
+        job.check_advanced = !job.advanced
+            && job.kind != "bicycle"
+            && extra_checks.contains(&job.relation.id)
+            && available.contains(&profiles(&job.kind, true)[0]);
+    }
     // The largest routes go first, so that the long searches run side by side.
     jobs.sort_by_key(|job| job.members.iter().map(|m| m.nodes.len()).sum::<usize>());
     let queue = Mutex::new(jobs);
@@ -372,16 +449,14 @@ fn catalog<S: Source + Clone + Send>(
     let mut parents = BTreeMap::<i64, (i64, usize)>::new();
     let mut records = Vec::new();
     for (relation, kind) in long {
-        let network = tag(&relation.tags, "network");
-        let stages: Vec<i64> = children(relation)
-            .into_iter()
-            .filter(|id| tag(&relations[id].tags, "network") == network && is_route(id))
-            .collect();
+        let stages = stages(relation);
         let reason = if children(relation).iter().any(|id| children(&relations[id]).iter().any(is_route)) {
             Some(Reason::NestedLongRoute)
         } else if stages.is_empty() {
             Some(Reason::NoStages)
-        } else if stages.iter().any(|id| !kept.contains_key(id)) {
+        } else if stages.iter().any(|id| {
+            !kept.contains_key(id) || profiles(tag(&relations[id].tags, "route"), false)[0] != profiles(&kind, false)[0]
+        }) {
             Some(Reason::MissingStage)
         } else {
             None
@@ -396,6 +471,8 @@ fn catalog<S: Source + Clone + Send>(
         let joins = parts.windows(2).filter(|w| w[0].finish == w[1].start).count();
         report.long_points.push((relation.id, parts.iter().map(|k| k.points).sum::<usize>() - joins));
         let mut record = header(relation, &kind, france);
+        let advanced = parts.iter().any(|part| part.record["profile"].as_str().is_some_and(|p| p.contains('/')));
+        record.insert("profile".into(), json!(profiles(&kind, advanced)[0]));
         let sum = |field: &str| parts.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
         record.insert("loop".into(), json!(start == finish || roundtrip));
         for field in ["length_m", "ascent_m", "descent_m"] {
@@ -467,7 +544,14 @@ fn route<D: RoutingData>(
     if length < MIN_LENGTH_M {
         return Err(Reason::Short);
     }
-    let profiles = profiles(&job.kind);
+    let profiles = if job.check_advanced {
+        match job.kind.as_str() {
+            "mtb" => &["mtb", "mtb/technical"][..],
+            _ => &["hiking", "hiking/alpine"][..],
+        }
+    } else {
+        profiles(&job.kind, job.advanced)
+    };
     let mut patch = |line: &mut Vec<P>, to: P| -> Result<(), Reason> {
         let from = line[line.len() - 1];
         if from == to {
@@ -520,6 +604,7 @@ fn route<D: RoutingData>(
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
     let mut record = header(job.relation, &job.kind, france);
+    record.insert("profile".into(), json!(profiles[0]));
     let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));
     record.insert("length_m".into(), json!(totals.distance_m));

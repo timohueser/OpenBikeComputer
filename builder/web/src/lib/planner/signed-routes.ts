@@ -7,6 +7,7 @@ import { decodeCoordinates } from './route-answer';
 export interface CatalogRecord {
     id: number;
     kind: 'hiking' | 'foot' | 'bicycle' | 'mtb';
+    profile: 'touring' | 'hiking' | 'hiking/alpine' | 'mtb' | 'mtb/technical';
     name?: string;
     ref?: string;
     operator?: string;
@@ -32,6 +33,16 @@ export interface CatalogRecord {
 
 /** A record with a line, not a long route. */
 export type RouteRecord = CatalogRecord & Required<Pick<CatalogRecord, 'line_udeg' | 'via'>>;
+
+/** Bicycle plans reproduce with all three road activities; trail plans require their catalog profile. */
+export function catalogProfile(route: Pick<CatalogRecord, 'kind' | 'profile'>, bike: BikeType = 'touring'): string | null {
+    switch (route.kind) {
+        case 'bicycle': return route.profile === 'touring' ? ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring' : null;
+        case 'mtb': return ['mtb', 'mtb/technical'].includes(route.profile) ? route.profile : null;
+        case 'hiking': case 'foot': return ['hiking', 'hiking/alpine'].includes(route.profile) ? route.profile : null;
+        default: return null;
+    }
+}
 
 export type RouteShape = 'any' | 'loop' | 'one-way';
 export type RouteSort = 'nearest' | 'shortest' | 'longest' | 'most-climb' | 'least-climb';

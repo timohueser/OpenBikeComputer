@@ -3,7 +3,7 @@ import { calculateLine, profileId, regionProfiles, requestAlternatives, requestR
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
-import { presetName, presetNames, servedPresets, type BikeType } from './riding-profiles';
+import { presetDescription, presetName, servedPresets, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
@@ -30,12 +30,18 @@ function trip(): Trip {
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
     it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
-        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing'];
+        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing', 'mtb/technical', 'hiking/alpine'];
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
         const served = await regionProfiles();
         expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('road', served), servedPresets('road', undefined)])
-            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], [], presetNames]);
+            .toEqual([['Balanced', 'Shorter'], ['Less climbing', 'Alpine (T4)'], [], ['Balanced', 'Shorter', 'Less climbing']]);
         for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
+        expect(servedPresets('mtb', served)).toEqual(['Technical (S3)']);
+        for (const bike of ['mtb', 'hiking'] as const) expect(servedPresets(bike, undefined)).toEqual(['Balanced', 'Shorter', 'Less climbing']);
+        expect(servedPresets('gravel', ['gravel/technical', 'gravel/alpine'])).toEqual([]);
+        expect(servedPresets('mtb', ['mtb/alpine'])).toEqual([]);
+        expect(presetDescription(presetName('mtb/technical'))).toContain('Advanced riding skills');
+        expect(presetDescription(presetName('hiking/alpine'))).toContain('alpine experience');
         expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
     });
     it('keeps directed shaping context in one request and preserves unknown elevation', async () => {

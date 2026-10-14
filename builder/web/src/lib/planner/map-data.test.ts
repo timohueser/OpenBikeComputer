@@ -126,7 +126,7 @@ describe('live catalogue', () => {
 
 // Cell-aligned bounds of the cells 9-267-178 and 9-268-178, as the release builder writes them.
 const BOUNDS = [7.734375, 47.51720069783939, 9.140625, 47.98992166741417];
-const record = (id: number, cells: string[]) => ({ id, kind: 'hiking', name: `Route ${id}`, rank: 1, loop: false,
+const record = (id: number, cells: string[]) => ({ id, kind: 'hiking', profile: 'hiking', name: `Route ${id}`, rank: 1, loop: false,
     length_m: 3000, ascent_m: 10, descent_m: 10, cells, line_udeg: [8000000, 47800000, 100, 100], via: [] });
 
 async function catalog(url: string, files: Record<string, unknown>) {
@@ -138,12 +138,25 @@ async function catalog(url: string, files: Record<string, unknown>) {
 }
 
 describe('route catalog cells', () => {
+    it('rejects old catalogs, missing capabilities and profiles from a different activity', async () => {
+        const url = 'https://planner.example/routes/freiburg.json';
+        const route = record(7, ['9-267-178']);
+        for (const document of [
+            { format: 1, routes: [route] },
+            { format: 2, routes: [{ ...route, profile: undefined }] },
+            { format: 2, routes: [{ ...route, profile: 'mtb/technical' }] },
+        ]) {
+            vi.resetModules();
+            const { loadRouteCell } = await catalog(url, { [url]: document });
+            await expect(loadRouteCell('9-267-178')).rejects.toThrow('Unsupported route catalog');
+        }
+    });
     it('reads a covered grid cell, and never fetches a cell outside the covered set', async () => {
         const tiles = 'https://tiles.example/releases/id/routes/tiles';
         const loop = { ...record(7, ['9-267-178']), loop: true };
         const { fetch, loadRouteCell } = await catalog(`${tiles}/{cell}.json`, {
-            [`${tiles}/9-267-178.json`]: { format: 1, routes: [loop] },
-            [`${tiles}/9-268-178.json`]: { format: 1, routes: [] },
+            [`${tiles}/9-267-178.json`]: { format: 2, routes: [loop] },
+            [`${tiles}/9-268-178.json`]: { format: 2, routes: [] },
         });
         expect(await loadRouteCell('9-267-178')).toEqual([loop]);
         expect(await loadRouteCell('9-268-178')).toEqual([]);
@@ -160,7 +173,7 @@ describe('route catalog cells', () => {
     it('reads the cells of a regional release from its one region file', async () => {
         const url = 'https://planner.example/routes/freiburg.json';
         const long = { ...record(10, ['9-267-178', '9-268-178', '9-269-178']), stages: [21, 22] };
-        const { fetch, loadRouteCell } = await catalog(url, { [url]: { format: 1, routes: [long, record(21, ['9-267-178']), record(22, ['9-268-178', '9-269-178'])] } });
+        const { fetch, loadRouteCell } = await catalog(url, { [url]: { format: 2, routes: [long, record(21, ['9-267-178']), record(22, ['9-268-178', '9-269-178'])] } });
         expect((await loadRouteCell('9-267-178'))?.map((route) => route.id)).toEqual([10, 21]);
         expect((await loadRouteCell('9-268-178'))?.map((route) => route.id)).toEqual([10, 22]);
         expect(await loadRouteCell('9-269-178')).toBeNull();

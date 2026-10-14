@@ -17,8 +17,14 @@ pub fn ingest_osm(
     bbox: Option<Bbox>,
     progress: &Progress,
 ) -> Result<Ingested, String> {
-    let (source, ways) = ingest_osm_ways(paths, config, bbox, progress)?;
-    let (nav_graph, stats) = nav::build_graph_with(&ways, config.routing.min_component_edges);
+    let (source, selected_ways) = ingest_osm_ways(paths, config, bbox, progress)?;
+    let mut metadata = obc_places::osm::harvest(paths, config, progress)?;
+    if bbox.is_some() {
+        let selected: std::collections::HashSet<_> = selected_ways.iter().map(|way| way.id).collect();
+        metadata.ways.retain(|way| selected.contains(&way.id));
+    }
+    let (nav_graph, stats) =
+        nav::build_graph_with(&metadata.ways, &metadata.routing, config.routing.min_component_edges)?;
     progress.log(nav::format_summary(&nav_graph, &stats));
     Ok(Ingested { source, nav_graph })
 }
@@ -56,7 +62,8 @@ mod tests {
                 "article links and approach selection",
             );
         }
-        let (graph, _) = nav::build_graph_with(&metadata.ways, config.routing.min_component_edges);
+        let (graph, _) = nav::build_graph_with(&metadata.ways, &metadata.routing, config.routing.min_component_edges)
+            .expect("source graph");
         assert_eq!(graph.nodes, ingested.nav_graph.nodes, "the same source topology");
         assert_eq!(graph.edges, ingested.nav_graph.edges, "the same geometry and way kinds");
     }

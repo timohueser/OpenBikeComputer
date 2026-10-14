@@ -2,15 +2,14 @@
 //!
 //! Node ids are file-local and an `Edge Id` addresses one cell's own pool, so nothing survives
 //! concatenation: the graph is read back out of every `network` cell, unified at the seams, pruned,
-//! renumbered and re-emitted. An edge record's bytes are copied verbatim — no polyline is decoded.
+//! renumbered and re-emitted. Edge bytes are copied verbatim; bounded decoding validates their
+//! endpoints and builds snap anchors.
 //!
 //! Nothing here is sized by the graph. Nodes and edges are spilled to the
 //! [scratch seam](crate::scratch) in collection order, so a record's position is its id, and every
 //! pass is a sorted or streamed walk of those files. The one whole-map structure is the seam table:
-//! the nodes on a boundary line of the `network` band's grid, which are the only coordinates two
-//! cells can both name. There is no tolerance knob — at a cell seam genuinely distinct junctions
-//! sit 3.9 m apart, while a whole-map coordinate key would fuse the stacked bridge and tunnel
-//! junctions that exist inside a single file.
+//! boundary nodes, joined by exact source identity and coordinate. Coincident bridge and tunnel
+//! nodes retain their separate source identities.
 //!
 //! The passes run in order and each one depends on the last: read the node set (off each cell's
 //! chunk run, which visits every stored record exactly once), unify seam nodes, deduplicate, prune
@@ -41,11 +40,11 @@ use crate::{prune, Error, Result};
 /// coordinate, but the assembler re-checks rather than assumes.
 const MAX_NEIGHBOR_DELTA: i64 = i16::MAX as i64;
 
-/// The record the collect pass spills, one per collected node: `lat i32, lon i32, digest u64`.
+/// One collected node: coordinates, incident-edge digest, crossing masks and source identity.
 ///
 /// It carries no node id: records are appended in id order, so a record's offset is
 /// `id × NODE_REC` and the read-back is a forward scan whose index is the id.
-const NODE_REC: usize = 16;
+const NODE_REC: usize = 42;
 
 /// …and the record the renumbering sorts: the same three fields plus the id they were spilled
 /// under.
@@ -131,14 +130,64 @@ struct MergedEdge {
     /// from.
     ascent_ab: u16,
     ascent_ba: u16,
+    ab: ArcRules,
+    ba: ArcRules,
+    seen_sides: u8,
 }
 
-/// [`MergedEdge`] on the scratch seam: `a u32, b u32, cost u32, hash u64, cell u32, off u32,
-/// len u16, ascent_ab u16, ascent_ba u16, kind u8`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ArcRules {
+    profiles: u8,
+    pushing: u8,
+    port: u8,
+    forbidden: u32,
+    target_requires_context: bool,
+}
+
+impl ArcRules {
+    fn encode(self) -> [u8; 6] {
+        let mut bytes = [self.profiles, self.pushing, 0, 0, 0, 0];
+        let turns = self.forbidden | (u32::from(self.port) << 24) | (u32::from(self.target_requires_context) << 29);
+        bytes[2..].copy_from_slice(&turns.to_le_bytes());
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        let turns = u32::from_le_bytes(bytes[2..6].try_into().expect("4 bytes"));
+        Self {
+            profiles: bytes[0],
+            pushing: bytes[1],
+            port: ((turns >> 24) & 31) as u8,
+            forbidden: turns & 0xffffff,
+            target_requires_context: turns & (1 << 29) != 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NodeRules {
+    profiles: u8,
+    pushing: u8,
+    source: [u64; 3],
+}
+
+impl NodeRules {
+    fn encode(self) -> [u8; 26] {
+        let mut bytes = [0; 26];
+        bytes[0] = self.profiles;
+        bytes[1] = self.pushing;
+        for (out, key) in bytes[2..].as_chunks_mut::<8>().0.iter_mut().zip(self.source) {
+            out.copy_from_slice(&key.to_le_bytes());
+        }
+        bytes
+    }
+}
+
+/// Endpoints, geometry reference, ascents and directional rules on the scratch seam.
 ///
 /// No collection index: the stream is appended in collection order, so a record's position is its
 /// index and the passes that need one count.
-pub(crate) const EDGE_REC: usize = 35;
+pub(crate) const EDGE_REC: usize = 47;
 
 impl MergedEdge {
     fn encode(&self) -> [u8; EDGE_REC] {
@@ -153,6 +202,8 @@ impl MergedEdge {
         r[30..32].copy_from_slice(&self.ascent_ab.to_le_bytes());
         r[32..34].copy_from_slice(&self.ascent_ba.to_le_bytes());
         r[34] = self.kind;
+        r[35..41].copy_from_slice(&self.ab.encode());
+        r[41..47].copy_from_slice(&self.ba.encode());
         r
     }
 }
@@ -170,20 +221,20 @@ pub(crate) fn edge_cell(r: &[u8; EDGE_REC]) -> u32 {
     u32::from_le_bytes(r[20..24].try_into().expect("4 bytes"))
 }
 
-/// The duplicate key, as a record the external sort can order: `hash u64, lo u32, hi u32,
-/// cost u32, index u32, kind u8` — not the edge, because the pass only compares keys and reports
-/// indices.
-const DUP_REC: usize = 25;
+/// Duplicate key, collection index, directional rules, and source address. Matching hashes still
+/// require exact source bytes and rules before one copy can be removed.
+const DUP_REC: usize = 47;
 
-/// `(hash, lo, hi, cost, kind)` — the whole duplicate key, without the collection index that
-/// separates two copies of it.
-fn dup_key(r: &[u8; DUP_REC]) -> (u64, u32, u32, u32, u8) {
+/// `(hash, lo, hi, cost, kind, ports)` — ports follow the geometry's orientation, so distinct
+/// physical ways with identical endpoints and geometry retain their own incidences.
+fn dup_key(r: &[u8; DUP_REC]) -> (u64, u32, u32, u32, u8, [u8; 2]) {
     (
         u64::from_le_bytes(r[0..8].try_into().expect("8 bytes")),
         u32::from_le_bytes(r[8..12].try_into().expect("4 bytes")),
         u32::from_le_bytes(r[12..16].try_into().expect("4 bytes")),
         u32::from_le_bytes(r[16..20].try_into().expect("4 bytes")),
         r[24],
+        [ArcRules::decode(&r[25..31]).port, ArcRules::decode(&r[31..37]).port],
     )
 }
 
@@ -196,6 +247,9 @@ fn dup_record(e: &MergedEdge, index: u32) -> [u8; DUP_REC] {
     r[16..20].copy_from_slice(&e.cost_m.to_le_bytes());
     r[20..24].copy_from_slice(&index.to_le_bytes());
     r[24] = e.kind;
+    r[25..31].copy_from_slice(&e.ab.encode());
+    r[31..37].copy_from_slice(&e.ba.encode());
+    r[37..47].copy_from_slice(&pool_record(&e.rec));
     r
 }
 
@@ -221,11 +275,10 @@ fn by_join_id(a: &[u8; JOIN_REC], b: &[u8; JOIN_REC]) -> Ordering {
     join_id(a).cmp(&join_id(b))
 }
 
-/// A surviving edge once the joins have run: both endpoints as `dense u32, lat i32, lon i32`, then
-/// `cost u32, hash u64, cell u32, off u32, len u16, ascent_ab u16, ascent_ba u16, kind u8`.
+/// A surviving edge with dense endpoint ids and coordinates, followed by its metadata.
 ///
 /// Between the two joins the `b` slot still holds `b`'s collection id and its coordinate is unset.
-const DENSE_REC: usize = 51;
+const DENSE_REC: usize = 63;
 
 /// Where each endpoint's `(dense, lat, lon)` triple starts.
 const A_AT: usize = 0;
@@ -285,22 +338,22 @@ fn by_endpoint_b(a: &[u8; DENSE_REC], b: &[u8; DENSE_REC]) -> Ordering {
     dense_id(a, B_AT).cmp(&dense_id(b, B_AT))
 }
 
-/// The emission order: `(min dense id, max dense id, Cost M, Way Kind, content hash)`.
+/// The emission order: `(min dense id, max dense id, Cost M, Way Kind, content hash, ports)`.
 ///
-/// A total order on what reaches it — two edges equal on all five would have collapsed in the
+/// A total order on what reaches it — two edges equal on all fields would have collapsed in the
 /// dedup — so the pool's layout, and with it every `Edge Id` in the file, is fixed by the records
 /// alone and not by the sort's stability.
 fn by_emission(x: &[u8; DENSE_REC], y: &[u8; DENSE_REC]) -> Ordering {
     let key = |r: &[u8; DENSE_REC]| {
         let (a, b) = (dense_id(r, A_AT), dense_id(r, B_AT));
-        (a.min(b), a.max(b), dense_cost(r), dense_kind(r), dense_hash(r))
+        let ports = [ArcRules::decode(&r[51..57]).port, ArcRules::decode(&r[57..63]).port];
+        (a.min(b), a.max(b), dense_cost(r), dense_kind(r), dense_hash(r), ports)
     };
     key(x).cmp(&key(y))
 }
 
-/// The renumbered junctions as a stream: `lat i32, lon i32`, in dense order, so a record's
-/// position is its dense id.
-const DENSE_NODE: usize = 8;
+/// Coordinates and node rules in dense-id order.
+const DENSE_NODE: usize = 34;
 
 /// The pool plan on the seam: one [`EdgeRef`] per kept edge, in emission order — `cell u32,
 /// off u32, len u16`.
@@ -325,17 +378,15 @@ fn pool_ref(r: &[u8; POOL_REC]) -> EdgeRef {
 /// One directed adjacency entry, as the emission walk wrote it: `from u32, seq u32, to u32,
 /// lat i32, lon i32, edge id u32, cost u16, ascent u16, kind u8, from's tree key u64`.
 ///
-/// `seq` is the entry's position in the emission walk, stated rather than implied because the
-/// degree cap does not choose 24 arcs — it refuses the ones that arrive after the junction is
-/// full. `(from, seq)` is therefore a total order, and the sort key puts `from`'s tree key in front
-/// of it so the entries arrive in the order the junction records are written in.
+/// `seq` preserves emission order. The sort key puts the source node's tree key first, so
+/// entries arrive in the order of their junction records.
 ///
 /// The neighbour's coordinate rides along because the adjacency stores it as an `int16` delta from
 /// the junction's own, and looking it up would need the whole-map node array this pass removes.
 ///
 /// `seq` fits a `u32` by construction: the pool is refused past 4 GiB, an edge record is at least
 /// [`obc_formats::obcm::NAV_EDGE_FIXED_LEN`] bytes, and the walk writes at most two entries per edge.
-const ADJ_REC: usize = 37;
+const ADJ_REC: usize = 43;
 
 #[allow(clippy::too_many_arguments)]
 fn adj_record(
@@ -348,6 +399,7 @@ fn adj_record(
     cost: u16,
     ascent: u16,
     kind: u8,
+    rules: ArcRules,
 ) -> [u8; ADJ_REC] {
     let mut r = [0u8; ADJ_REC];
     r[0..4].copy_from_slice(&from.to_le_bytes());
@@ -360,6 +412,7 @@ fn adj_record(
     r[26..28].copy_from_slice(&ascent.to_le_bytes());
     r[28] = kind;
     r[29..37].copy_from_slice(&from_key.to_le_bytes());
+    r[37..43].copy_from_slice(&rules.encode());
     r
 }
 
@@ -389,14 +442,13 @@ fn by_adjacency(a: &[u8; ADJ_REC], b: &[u8; ADJ_REC]) -> Ordering {
 }
 
 /// A renumbered junction on its way into tree order: `tree key u64, dense id u32, lat i32, lon i32`.
-const NODE_TREE_REC: usize = 20;
+const NODE_TREE_REC: usize = 46;
 
-fn node_tree_record(key: u64, dense: u32, lat: i32, lon: i32) -> [u8; NODE_TREE_REC] {
+fn node_tree_record(key: u64, dense: u32, node: &[u8; DENSE_NODE]) -> [u8; NODE_TREE_REC] {
     let mut r = [0u8; NODE_TREE_REC];
     r[0..8].copy_from_slice(&key.to_le_bytes());
     r[8..12].copy_from_slice(&dense.to_le_bytes());
-    r[12..16].copy_from_slice(&lat.to_le_bytes());
-    r[16..20].copy_from_slice(&lon.to_le_bytes());
+    r[12..].copy_from_slice(node);
     r
 }
 
@@ -445,8 +497,7 @@ pub struct NavStats {
     /// Share of the merged graph in its largest component, in per-mille. An implausibly small value
     /// is what a broken seam looks like; the assembler reports it and never repairs it.
     pub largest_component_permille: u32,
-    /// Adjacency entries refused at the degree cap of 24. The arc survives one-way through the
-    /// neighbour's own record, which the format permits, but it is a lost turn, so it is reported.
+    /// Always zero: degree overflow rejects the assembly.
     pub degree_truncated: usize,
     /// Junction records the chunk-capacity guard refused: co-located nodes past the quadtree's
     /// recursion floor. Never silent, because truncating the chunk would drop its `0xFF` sentinel.
@@ -496,6 +547,7 @@ pub struct MergedNav {
     snap_index_len: u64,
     /// What a read buffer in [`serialize`] may hold; the merge's own share of its budget.
     read_budget: usize,
+    lon_mm_per_udeg: u8,
     pub stats: NavStats,
 }
 
@@ -690,8 +742,9 @@ pub(crate) fn merge_profiled(
 
     // 1/2. The serialized node set, unified at boundary coordinates only. Everything but the seam
     // table is per cell and is spilled as the cell ends.
-    let mut seam: IdMap<(i32, i32), u32> = IdMap::default(); // coordinate → seam slot
+    let mut seam: IdMap<(i32, i32, [u64; 3]), u32> = IdMap::default();
     let mut seam_id: Vec<u32> = Vec::new(); // slot → the id its first cell minted
+    let mut seam_rules: Vec<NodeRules> = Vec::new();
     let mut seam_digest: Vec<u64> = Vec::new(); // slot → §4.6.5 digest, still accumulating
     let mut node_out = SpillWriter::<NODE_REC>::create(scratch, share)?;
     let mut edge_out = SpillWriter::<EDGE_REC>::create(scratch, share)?;
@@ -701,6 +754,8 @@ pub(crate) fn merge_profiled(
     // Where each cell's minted ids start, with the total appended — the map from a collection id
     // back to the cell that named it, which is what lets the prune decompose per cell.
     let mut cell_base: Vec<u32> = Vec::with_capacity(cells.len() + 1);
+    let lon_mm_per_udeg =
+        cells.iter().filter(|cell| !cell.nav.is_empty()).map(|cell| cell.nav.lon_mm_per_udeg).min().unwrap_or(0);
 
     for (ci, cell) in cells.iter().enumerate() {
         cell_base.push(id_count);
@@ -722,7 +777,7 @@ pub(crate) fn merge_profiled(
         let mut records: Vec<(NodeRef, i32, i32, usize)> = Vec::new();
         // The coordinates of the ids this cell minted, indexed by `id - base` — the only per-node
         // array alive at any point.
-        let mut minted: Vec<(i32, i32)> = Vec::new();
+        let mut minted: Vec<(i32, i32, NodeRules)> = Vec::new();
         let chunks = cell.read(data_start, dir.chunk_count * dir.chunk_size)?;
         for (k, chunk) in chunks.chunks_exact(dir.chunk_size).enumerate() {
             let mut at = 0usize;
@@ -735,36 +790,54 @@ pub(crate) fn merge_profiled(
                     .ok_or_else(|| Error::Format(format!("cell {}: nav record straddles chunk {k}", cell.id)))?;
                 let rec_len = record.bytes().len();
                 let (lat, lon, id) = (record.lat, record.lon, record.id);
+                let rules = NodeRules {
+                    profiles: record.crossing_profile_mask,
+                    pushing: record.crossing_push_mask,
+                    source: record.source_key,
+                };
                 stats.cell_nodes += 1;
                 let mut mint = || {
+                    if id_count >= u32::MAX - 1 {
+                        return Err(Error::Capacity("navigation node ids reach reserved virtual endpoints".into()));
+                    }
                     let id = id_count;
                     id_count += 1;
-                    minted.push((lat, lon));
-                    id
+                    minted.push((lat, lon, rules));
+                    Ok(id)
                 };
                 let node = if on_grid_boundary(lat as i64, lon as i64, band_log2) {
-                    match seam.get(&(lat, lon)) {
+                    match seam.get(&(lat, lon, rules.source)) {
                         Some(&slot) => {
+                            if seam_rules[slot as usize] != rules {
+                                return Err(Error::Format(format!(
+                                    "cell {}: conflicting access at seam source {:?}",
+                                    cell.id, rules.source
+                                )));
+                            }
                             stats.unified += 1;
                             NodeRef { id: seam_id[slot as usize], seam: slot }
                         }
                         None => {
                             let slot = seam_id.len() as u32;
-                            let node = NodeRef { id: mint(), seam: slot };
-                            seam.insert((lat, lon), slot);
+                            let node = NodeRef { id: mint()?, seam: slot };
+                            seam.insert((lat, lon, rules.source), slot);
                             seam_id.push(node.id);
+                            seam_rules.push(rules);
                             seam_digest.push(0);
                             node
                         }
                     }
                 } else {
-                    NodeRef { id: mint(), seam: NO_SEAM }
+                    NodeRef { id: mint()?, seam: NO_SEAM }
                 };
                 if local.insert(id, node).is_some() {
                     return Err(Error::Format(format!("cell {}: node id {id} appears twice", cell.id)));
                 }
                 records.push((node, lat, lon, k * dir.chunk_size + at));
                 at += rec_len;
+            }
+            if chunk[at..].iter().any(|&byte| byte != CHUNK_END) {
+                return Err(Error::Format(format!("cell {}: invalid padding in navigation chunk {k}", cell.id)));
             }
         }
 
@@ -783,61 +856,138 @@ pub(crate) fn merge_profiled(
         for &(own_node, lat, lon, at) in &records {
             let record = NavNodeRecord::parse(&chunks[at..]).expect("validated node record");
             for neighbor in record.neighbors() {
+                let rules = ArcRules {
+                    profiles: neighbor.profile_mask,
+                    pushing: neighbor.push_mask,
+                    port: neighbor.port,
+                    forbidden: neighbor.forbidden_incoming_ports,
+                    target_requires_context: neighbor.target_requires_context,
+                };
                 let (nbr_id, edge_id, cost_m, way_kind, ascent_m) =
                     (neighbor.id, neighbor.edge_id, neighbor.cost_m, neighbor.way_kind, neighbor.ascent_m);
+                let nbr_node = *local.get(&nbr_id).ok_or_else(|| {
+                    Error::Format(format!("cell {}: neighbour id {nbr_id} resolves to no record", cell.id))
+                })?;
+                let (rec_at, rec) = edge_record(&pool, edge_id, cell)?;
+                let geometry = NavEdgeRecord::parse(rec).expect("validated edge record");
+                let end = geometry.vertices().next_back().expect("two vertices");
+                if geometry.anchor() == end {
+                    return Err(Error::Format(format!(
+                        "cell {}: edge {edge_id} has ambiguous endpoint coordinates",
+                        cell.id
+                    )));
+                }
+                let own_is_anchor = geometry.anchor() == (lon, lat);
+                let endpoints = if own_is_anchor { (geometry.anchor(), end) } else { (end, geometry.anchor()) };
+                let masks = if own_is_anchor {
+                    (geometry.profile_mask_ab(), geometry.push_mask_ab())
+                } else {
+                    (geometry.profile_mask_ba(), geometry.push_mask_ba())
+                };
+                if endpoints != ((lon, lat), (neighbor.lon, neighbor.lat))
+                    || masks != (rules.profiles, rules.pushing)
+                    || geometry.way_kind() != way_kind
+                    || geometry.length_m() != cost_m
+                {
+                    return Err(Error::Format(format!(
+                        "cell {}: edge {edge_id} disagrees with its adjacency",
+                        cell.id
+                    )));
+                }
+                if u64::from(cost_m) * 1000
+                    < obc_formats::obcm::nav_distance_bound_mm(
+                        (lon, lat),
+                        (neighbor.lon, neighbor.lat),
+                        lon_mm_per_udeg,
+                    )
+                {
+                    return Err(Error::Format(format!(
+                        "cell {}: adjacency cost undercuts the navigation distance bound",
+                        cell.id
+                    )));
+                }
                 // The second sighting carries the other direction's ascent, which nothing else in
                 // the file states, so it is read rather than skipped.
                 if let Some(&index) = cell_edges.get(&edge_id) {
                     let edge: &mut MergedEdge = &mut pending[index];
+                    if edge.cost_m != cost_m || edge.kind != way_kind {
+                        return Err(Error::Format(format!("cell {}: inconsistent sides of edge {edge_id}", cell.id)));
+                    }
                     // This entry runs from this record's node, so it is the a→b direction exactly
                     // when that node is the edge's `a`.
                     if own_node.id == edge.a {
+                        if nbr_node.id != edge.b || edge.seen_sides & 1 != 0 {
+                            return Err(Error::Format(format!("cell {}: repeated edge incidence {edge_id}", cell.id)));
+                        }
                         edge.ascent_ab = ascent_m;
+                        edge.ab = rules;
+                        edge.seen_sides |= 1;
                     } else {
+                        if own_node.id != edge.b || nbr_node.id != edge.a || edge.seen_sides & 2 != 0 {
+                            return Err(Error::Format(format!(
+                                "cell {}: inconsistent edge incidence {edge_id}",
+                                cell.id
+                            )));
+                        }
                         edge.ascent_ba = ascent_m;
+                        edge.ba = rules;
+                        edge.seen_sides |= 2;
                     }
                     continue;
                 }
-                let nbr_node = *local.get(&nbr_id).ok_or_else(|| {
-                    Error::Format(format!("cell {}: neighbour id {nbr_id} resolves to no record", cell.id))
-                })?;
                 let (a, b) = (own_node.id, nbr_node.id);
                 // Everything the pass needs from the record's bytes is taken while the cell's pool
                 // is the buffer in hand. What survives the loop is the address, not the record.
-                let (rec_at, rec) = edge_record(&pool, edge_id, cell)?;
                 // The record's anchor is endpoint `a`'s coordinate, so keep the orientation the
                 // record itself states.
-                let (anchor_lon, anchor_lat) = NavEdgeRecord::parse(rec).expect("validated edge record").anchor();
-                let own_is_anchor = (anchor_lat, anchor_lon) == (lat, lon);
                 let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
+                if a == b {
+                    return Err(Error::Format(format!("cell {}: unsplit navigation self-loop {edge_id}", cell.id)));
+                }
                 let hash = fnv(rec);
                 let rec = EdgeRef { cell: ci, off: rec_at, len: rec.len() as u16 };
-                // The opposite direction arrives with the neighbour's own entry above. If it never
-                // does — a degree-capped arc, or a self-loop, which is written once — the other
-                // direction stays `0`, the value a map packed without terrain carries.
+                // Both geometry references are required, including a forbidden travel direction.
                 let (ascent_ab, ascent_ba) = if own_is_anchor { (ascent_m, 0) } else { (0, ascent_m) };
-                // The tie-break's contribution, booked to both endpoints while they are in hand. A
-                // self-loop books twice, exactly as summing over the edge list would.
+                // Book the tie-break contribution to both endpoints while they are in hand.
                 let h = digest_of(hash, cost_m, way_kind);
                 for node in [own_node, nbr_node] {
                     add_digest(&mut seam_digest, &mut cell_digest, base, node, h);
                 }
                 cell_edges.insert(edge_id, pending.len());
-                pending.push(MergedEdge { a, b, cost_m, kind: way_kind, rec, hash, ascent_ab, ascent_ba });
+                let (ab, ba, seen_sides) =
+                    if own_is_anchor { (rules, ArcRules::default(), 1) } else { (ArcRules::default(), rules, 2) };
+                pending.push(MergedEdge {
+                    a,
+                    b,
+                    cost_m,
+                    kind: way_kind,
+                    rec,
+                    hash,
+                    ascent_ab,
+                    ascent_ba,
+                    ab,
+                    ba,
+                    seen_sides,
+                });
             }
         }
 
         // The cell is done. A seam node's digest stays 0 here and arrives as a delta below; ids
         // were minted in this order, so the appends land at exactly `id × NODE_REC`.
-        for (k, &(lat, lon)) in minted.iter().enumerate() {
-            node_out.push(node_record(lat, lon, cell_digest[k]))?;
+        for (k, &(lat, lon, rules)) in minted.iter().enumerate() {
+            node_out.push(node_record(lat, lon, cell_digest[k], rules))?;
         }
         // …and its edges go out in collection order, so the stream stays grouped by cell, which is
         // what the prune's per-cell decomposition reads it as. Each one drops its duplicate key
         // into that pass's sort on the way past, while the record is in hand.
         for e in &pending {
+            if e.seen_sides != 3 {
+                return Err(Error::Format(format!("cell {}: an edge is missing an endpoint adjacency", cell.id)));
+            }
             dups.push(dup_record(e, edge_count))?;
-            edge_count += 1;
+            edge_count = edge_count
+                .checked_add(1)
+                .ok_or_else(|| Error::Capacity("navigation edge collection exceeds its uint32 index".into()))?;
             edge_out.push(e.encode())?;
         }
     }
@@ -862,7 +1012,7 @@ pub(crate) fn merge_profiled(
     // 3/4. Deduplicate from the keys the collection handed over, then prune islands over the
     // spilled stream itself.
     clock.nav_phase("collect");
-    let dead = dedup(dups, &mut deltas, &mut stats)?;
+    let dead = dedup(dups, cells, &mut deltas, &mut stats)?;
     clock.nav_phase("dedup");
     let pruned = prune::prune(
         scratch,
@@ -912,9 +1062,7 @@ pub(crate) fn merge_profiled(
     // arithmetic over the records' lengths, so the cursor below mints the id of the record it is
     // about to place and the two adjacency entries that quote that id are written on the spot.
     //
-    // They are written into a sort, not a buffer: the entries carry their walk position and
-    // `emit_nodes` puts them back in it. The degree cap refuses the entries that arrive after a
-    // node is full, so reproducing that order is the whole requirement.
+    // Entries carry their walk position so `emit_nodes` restores deterministic adjacency order.
     let mut pool_out = SpillWriter::<POOL_REC>::create(scratch, share)?;
     let mut adj = ExternalSort::<ADJ_REC, _>::new(scratch, budget / 2, by_adjacency);
     let mut anchors = SpillWriter::<ANCHOR_REC>::create(scratch, share)?;
@@ -937,8 +1085,8 @@ pub(crate) fn merge_profiled(
             ordinal = 0;
         }
         at = start;
-        // Both halves of the field are refused rather than wrapped. The 19-byte minimum record puts
-        // the real per-chunk maximum at 26, so the ordinal cap does not bind today; checking it
+        // Both halves of the field are refused rather than wrapped. The 23-byte minimum record puts
+        // the real per-chunk maximum at 22, so the ordinal cap does not bind today; checking it
         // keeps `0xFFFFFFFF` an impossible id unconditionally.
         if chunk_index >= NAV_EDGE_MAX_CHUNKS {
             return Err(Error::Capacity(format!(
@@ -968,18 +1116,22 @@ pub(crate) fn merge_profiled(
         let (a, b) = (dense_id(&rec, A_AT), dense_id(&rec, B_AT));
         let (a_at, b_at) = (dense_coord(&rec, A_AT), dense_coord(&rec, B_AT));
         // The cost is a `uint16` in the record this entry becomes.
-        let cost = dense_cost(&rec).min(u16::MAX as u32) as u16;
+        let cost =
+            u16::try_from(dense_cost(&rec)).map_err(|_| Error::Format("navigation cost exceeds uint16".into()))?;
         let kind = dense_kind(&rec);
         let (ascent_ab, ascent_ba) = dense_ascents(&rec);
         let a_key = qtree::tree_key(a_at.0, a_at.1, global_bbox);
-        adj.push(adj_record(a_key, a, seq, b, b_at, edge_id, cost, ascent_ab, kind))?;
-        seq += 1;
-        if a != b {
-            // A self-loop appears once.
-            let b_key = qtree::tree_key(b_at.0, b_at.1, global_bbox);
-            adj.push(adj_record(b_key, b, seq, a, a_at, edge_id, cost, ascent_ba, kind))?;
-            seq += 1;
+        let ab = ArcRules::decode(&rec[51..57]);
+        let ba = ArcRules::decode(&rec[57..63]);
+        if seq > u32::MAX - 2 {
+            return Err(Error::Capacity("navigation adjacency exceeds its uint32 order index".into()));
         }
+        adj.push(adj_record(a_key, a, seq, b, b_at, edge_id, cost, ascent_ab, kind, ab))?;
+        seq += 1;
+        debug_assert_ne!(a, b, "source self-loops were refused");
+        let b_key = qtree::tree_key(b_at.0, b_at.1, global_bbox);
+        adj.push(adj_record(b_key, b, seq, a, a_at, edge_id, cost, ascent_ba, kind, ba))?;
+        seq += 1;
     }
     // The tail pads to a whole chunk, because `Edge Chunk Count` measures the pool in chunks.
     let pool_len = at.div_ceil(NAV_CHUNK_SIZE as u64) * NAV_CHUNK_SIZE as u64;
@@ -1017,6 +1169,9 @@ pub(crate) fn merge_profiled(
             NAV_CHUNK_SIZE,
             NAV_CHUNK_SIZE,
         )?;
+        if flat.dropped != 0 {
+            return Err(Error::Capacity("coincident navigation snap anchors exceed one index chunk".into()));
+        }
         stats.dropped_snap_anchors = flat.dropped;
         Some(flat)
     };
@@ -1045,6 +1200,7 @@ pub(crate) fn merge_profiled(
         snap_chunk_count,
         snap_index_len,
         read_budget: share,
+        lon_mm_per_udeg,
         stats,
     })
 }
@@ -1055,7 +1211,7 @@ pub(crate) fn merge_profiled(
 /// which is sorted the same way, produces every junction's record in that order. So the records and
 /// the tree records that name them come out as the two tree-ordered streams the quadtree takes.
 ///
-/// Nothing here is sized by the graph. The record buffer is one junction's — 421 bytes at the
+/// Nothing here is sized by the graph. The record buffer is one junction's — 499 bytes at the
 /// degree cap — and the sorts are bounded by the caller's budget.
 #[allow(clippy::too_many_arguments)]
 fn emit_nodes(
@@ -1073,7 +1229,7 @@ fn emit_nodes(
         let rec = rec?;
         let lat = i32::from_le_bytes(rec[0..4].try_into().expect("4 bytes"));
         let lon = i32::from_le_bytes(rec[4..8].try_into().expect("4 bytes"));
-        nodes.push(node_tree_record(qtree::tree_key(lat, lon, global_bbox), dense as u32, lat, lon))?;
+        nodes.push(node_tree_record(qtree::tree_key(lat, lon, global_bbox), dense as u32, &rec))?;
     }
     scratch.remove(nodes_file)?;
 
@@ -1092,16 +1248,25 @@ fn emit_nodes(
             buf.extend_from_slice(&lat.to_le_bytes());
             buf.extend_from_slice(&lon.to_le_bytes());
             buf.extend_from_slice(&dense.to_le_bytes());
-            buf.push(0); // degree, once the cap has had its say
+            buf.push(0);
+            buf.extend_from_slice(&rec[20..46]);
             let mut degree = 0usize;
+            let mut ports = 0u32;
             while let Some(e) = head.filter(|e| (adj_key(e), adj_from(e)) == (key, dense)) {
                 head = entries.next().transpose()?;
-                // The entries are in the emission walk's own order, so the cap bites at the same
-                // entries the walk saw it bite at.
                 if degree >= NAV_MAX_DEGREE {
-                    stats.degree_truncated += 1;
-                    continue;
+                    return Err(Error::Capacity(format!(
+                        "merged junction {dense} exceeds the {NAV_MAX_DEGREE}-edge navigation degree limit"
+                    )));
                 }
+                let rules = ArcRules::decode(&e[37..43]);
+                if ports & (1 << rules.port) != 0 {
+                    return Err(Error::Format(format!(
+                        "merged junction {dense} has conflicting source port {}",
+                        rules.port
+                    )));
+                }
+                ports |= 1 << rules.port;
                 let (nlat, nlon) = adj_coord(&e);
                 let (dlat, dlon) = (nlat as i64 - lat as i64, nlon as i64 - lon as i64);
                 if dlat.abs() > MAX_NEIGHBOR_DELTA || dlon.abs() > MAX_NEIGHBOR_DELTA {
@@ -1115,9 +1280,17 @@ fn emit_nodes(
                 buf.extend_from_slice(&e[20..26]); // edge id, cost
                 buf.push(e[28]); // way kind
                 buf.extend_from_slice(&e[26..28]); // ascent
+                buf.extend_from_slice(&e[37..43]); // eligibility and source ports
                 degree += 1;
             }
             buf[12] = degree as u8;
+            // A source cell can refer to an incidence held only by its neighbour. At this point
+            // coverage and pruning are final, so references to absent ports can be removed.
+            for entry in buf[NAV_NODE_FIXED_LEN..].as_chunks_mut::<NAV_NEIGHBOR_LEN>().0 {
+                let mut rules = ArcRules::decode(&entry[17..23]);
+                rules.forbidden &= ports;
+                entry[17..23].copy_from_slice(&rules.encode());
+            }
             debug_assert_eq!(buf.len(), NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN);
             let at = recs.push(&buf)?;
             points.push(qtree::tree_record(key, dense, at, buf.len() as u16))?;
@@ -1134,6 +1307,9 @@ fn emit_nodes(
     debug_assert_eq!(count, node_count as u64, "one tree record per renumbered junction");
     let flat =
         qtree::flatten_streaming(scratch, budget, points, recs.seal()?, global_bbox, NAV_CHUNK_SIZE, NAV_CHUNK_SIZE)?;
+    if flat.dropped != 0 {
+        return Err(Error::Capacity("coincident navigation junctions exceed one index chunk".into()));
+    }
     stats.dropped_nodes = flat.dropped;
     Ok(flat)
 }
@@ -1190,24 +1366,44 @@ fn append_snap_anchors(
 /// The duplicate check, as one walk of the sorted key stream the collection filled.
 ///
 /// A duplicate is an edge two cells both wrote in full, keyed on the unified endpoint pair,
-/// `Cost M`, `Way Kind` and the record's content. Cell ownership should already prevent it, so this
-/// is a net, not a mechanism, and a net does not have to be a hash set carried through the whole
-/// collection. The first-collected copy of each key survives, because the collection index is the
-/// last component of the key.
+/// `Cost M`, `Way Kind`, source incidence ports and the record's content. Cell ownership should
+/// already prevent it, so this is a net, not a mechanism, and a net does not have to be a hash set
+/// carried through the whole collection. The first-collected copy of each key survives, because
+/// the collection index is the last component of the key.
 ///
 /// What comes back is the dead copies' collection indices, ascending, and `deltas` has gained the
 /// digest contribution each of them owes back to its two endpoints.
 fn dedup(
     sort: ExternalSort<'_, DUP_REC, impl Order<DUP_REC>>,
+    cells: &[&Cell<'_>],
     deltas: &mut Vec<(u32, u64)>,
     stats: &mut NavStats,
 ) -> Result<Vec<u32>> {
     let mut dead: Vec<u32> = Vec::new();
-    let mut previous: Option<(u64, u32, u32, u32, u8)> = None;
+    let mut previous = None;
+    let mut previous_rules = [0u8; 12];
+    let mut previous_ref = [0u8; POOL_REC];
     for rec in sort.finish()? {
         let rec = rec?;
         let key = dup_key(&rec);
         if previous == Some(key) {
+            let refs = [pool_ref(&previous_ref), pool_ref(rec[37..47].try_into().expect("pool reference"))];
+            let mut records = [[0u8; NAV_CHUNK_SIZE]; 2];
+            for (source, bytes) in refs.iter().zip(records.iter_mut()) {
+                let cell = cells
+                    .get(source.cell as usize)
+                    .ok_or_else(|| Error::Format("missing duplicate source cell".into()))?;
+                cell.read_into(
+                    cell.nav.edge_pool_offset + u64::from(source.off),
+                    &mut bytes[..usize::from(source.len)],
+                )?;
+            }
+            if refs[0].len != refs[1].len || records[0] != records[1] {
+                return Err(Error::Format("navigation edge digest collision".into()));
+            }
+            if rec[25..37] != previous_rules {
+                return Err(Error::Format("duplicate navigation edge has conflicting permissions".into()));
+            }
             // A dropped copy's digest contribution comes back off at both endpoints it was booked
             // to. `wrapping_neg` of what was added is exact, because the accumulation is a wrapping
             // sum.
@@ -1217,6 +1413,8 @@ fn dedup(
             dead.push(dup_index(&rec));
         }
         previous = Some(key);
+        previous_rules.copy_from_slice(&rec[25..37]);
+        previous_ref.copy_from_slice(&rec[37..47]);
     }
     stats.duplicate_edges += dead.len();
     // The later passes walk the stream in collection order with this as a cursor.
@@ -1284,6 +1482,7 @@ fn join_first<'s>(
         wide[36..46].copy_from_slice(&rec[20..30]); // cell, off, len
         wide[46..50].copy_from_slice(&rec[30..34]); // both ascents
         wide[50] = rec[34]; // kind
+        wide[51..63].copy_from_slice(&rec[35..47]);
         out.push(wide)?;
     }
     Ok(out)
@@ -1339,11 +1538,12 @@ fn add_digest(seam_digest: &mut [u64], cell_digest: &mut [u64], base: u32, node:
 }
 
 /// The spilled node record — see [`NODE_REC`] for why it carries no id.
-fn node_record(lat: i32, lon: i32, digest: u64) -> [u8; NODE_REC] {
+fn node_record(lat: i32, lon: i32, digest: u64, rules: NodeRules) -> [u8; NODE_REC] {
     let mut r = [0u8; NODE_REC];
     r[0..4].copy_from_slice(&lat.to_le_bytes());
     r[4..8].copy_from_slice(&lon.to_le_bytes());
     r[8..16].copy_from_slice(&digest.to_le_bytes());
+    r[16..42].copy_from_slice(&rules.encode());
     r
 }
 
@@ -1356,12 +1556,13 @@ fn sort_record(rec: &[u8; NODE_REC], id: u32) -> [u8; SORT_REC] {
 }
 
 /// `(lat, lon, digest, id)` out of a [`SORT_REC`] record.
-fn node_key(r: &[u8; SORT_REC]) -> (i32, i32, u64, u32) {
+fn node_key(r: &[u8; SORT_REC]) -> (i32, i32, [u64; 3], u64, u32) {
     (
         i32::from_le_bytes(r[0..4].try_into().expect("4 bytes")),
         i32::from_le_bytes(r[4..8].try_into().expect("4 bytes")),
+        core::array::from_fn(|i| u64::from_le_bytes(r[18 + i * 8..26 + i * 8].try_into().expect("8 bytes"))),
         u64::from_le_bytes(r[8..16].try_into().expect("8 bytes")),
-        u32::from_le_bytes(r[16..20].try_into().expect("4 bytes")),
+        u32::from_le_bytes(r[NODE_REC..SORT_REC].try_into().expect("4 bytes")),
     )
 }
 
@@ -1426,7 +1627,11 @@ fn renumber(
     let mut count = 0u32;
     let mut by_id = ExternalSort::<JOIN_REC, _>::new(scratch, (budget / 2).max(JOIN_REC), by_join_id);
     for rec in sort.finish()? {
-        let (lat, lon, _, id) = node_key(&rec?);
+        let rec = rec?;
+        let (lat, lon, _, _, id) = node_key(&rec);
+        if count >= u32::MAX - 1 {
+            return Err(Error::Capacity("navigation node ids reach the reserved virtual endpoints".into()));
+        }
         let dense = count;
         count = count.checked_add(1).ok_or_else(|| {
             Error::Capacity("the merged graph passes 4 G junctions, which §8.2's uint32 `Node Id` cannot name".into())
@@ -1440,6 +1645,7 @@ fn renumber(
         let mut node = [0u8; DENSE_NODE];
         node[0..4].copy_from_slice(&lat.to_le_bytes());
         node[4..8].copy_from_slice(&lon.to_le_bytes());
+        node[8..34].copy_from_slice(&rec[16..42]);
         nodes.push(node)?;
     }
     let (nodes, _) = nodes.seal()?;
@@ -1544,7 +1750,7 @@ pub fn serialize(
     dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
     dir.extend_from_slice(&scaled(start + l.profile_table)?.to_le_bytes());
     dir.push(profile_count as u8);
-    dir.push(0); // reserved — a field, so `0`, unlike a gap
+    dir.push(nav.lon_mm_per_udeg);
     dir.extend_from_slice(&scaled(start + l.snap_index)?.to_le_bytes());
     dir.extend_from_slice(&nav.snap_node_count.to_le_bytes());
     dir.extend_from_slice(&nav.snap_chunk_count.to_le_bytes());
@@ -1635,6 +1841,7 @@ impl MergedNav {
             snap_chunk_count: 0,
             snap_index_len: 0,
             read_budget: NAV_CHUNK_SIZE,
+            lon_mm_per_udeg: 0,
             stats,
         }
     }
@@ -1763,6 +1970,7 @@ mod tests {
             snap_chunk_count: 0,
             snap_index_len: 0,
             read_budget: 1 << 16,
+            lon_mm_per_udeg: 0,
             stats: NavStats::default(),
         }
     }
@@ -1809,14 +2017,7 @@ mod tests {
     /// retaining a graph-sized geometry collection.
     #[test]
     fn a_long_streamed_edge_spills_its_lookup_anchor() {
-        let mut edge = Vec::new();
-        edge.extend_from_slice(&334u32.to_le_bytes());
-        edge.extend_from_slice(&2u16.to_le_bytes());
-        edge.push(0);
-        edge.extend_from_slice(&500_000i32.to_le_bytes());
-        edge.extend_from_slice(&500_000i32.to_le_bytes());
-        edge.extend_from_slice(&0i16.to_le_bytes());
-        edge.extend_from_slice(&3_000i16.to_le_bytes());
+        let edge = obcm_testkit::pack_nav_edge_record(334, 0, &[(500_000, 500_000), (500_000, 503_000)]);
 
         let scratch = MemoryScratch::new();
         let mut anchors = SpillWriter::<ANCHOR_REC>::create(&scratch, 1 << 10).unwrap();
@@ -1941,9 +2142,9 @@ mod tests {
     }
 
     // Whole-merge fixtures. Two of the merge's outcomes are order-sensitive — which copy of a
-    // duplicated edge survives, and which adjacency entries the degree cap refuses — and neither is
+    // duplicated edge survives, and whether the merged junction exceeds the degree cap — and neither is
     // reachable from the assembler's oracle fixtures, which are real packed cells with no
-    // duplicates and no junction anywhere near degree 24. So they are built here, out of synthetic
+    // duplicates and no junction near the degree limit. So they are built here, out of synthetic
     // `network` cells laid out exactly as a packed one is.
 
     /// A longitude on the `2^20` grid. A node here is on a boundary line and is therefore eligible
@@ -1956,6 +2157,7 @@ mod tests {
         cost: u16,
         kind: u8,
         ascent: u16,
+        rules: ArcRules,
     }
 
     struct SrcNode {
@@ -1963,6 +2165,15 @@ mod tests {
         lat: i32,
         lon: i32,
         nbrs: Vec<SrcNbr>,
+        rules: NodeRules,
+    }
+
+    fn arc_rules(port: u8) -> ArcRules {
+        ArcRules { profiles: 15, port, ..ArcRules::default() }
+    }
+
+    fn node_rules(source: u64) -> NodeRules {
+        NodeRules { profiles: 15, pushing: 0, source: [0, source, 0] }
     }
 
     /// Where a packed cell would put a run of records — [`place`] from a zero cursor — as
@@ -2017,7 +2228,29 @@ mod tests {
                     (nb.id, lat, lon, nb.edge_id, u32::from(nb.cost), nb.kind, nb.ascent)
                 })
                 .collect();
-            let rec = obcm_testkit::pack_nav_record(n.lat, n.lon, n.id, &nbrs);
+            let rules: Vec<_> = n
+                .nbrs
+                .iter()
+                .map(|nb| {
+                    (
+                        nb.rules.profiles,
+                        nb.rules.pushing,
+                        nb.rules.port,
+                        nb.rules.forbidden,
+                        nb.rules.target_requires_context,
+                    )
+                })
+                .collect();
+            let rec = obcm_testkit::pack_nav_record_with_context(
+                n.lat,
+                n.lon,
+                n.id,
+                &nbrs,
+                n.rules.profiles,
+                n.rules.pushing,
+                n.rules.source,
+                &rules,
+            );
             if open_len + rec.len() > NAV_CHUNK_SIZE {
                 chunks.push(Vec::new());
                 open_len = 0;
@@ -2111,10 +2344,11 @@ mod tests {
         let rec = obcm_testkit::pack_nav_edge_record(1000, 3, &[(lat_p, SEAM_LON), (lat_q, SEAM_LON)]);
         let e = pool_ids(std::slice::from_ref(&rec))[0];
         let cell = |ids: (u32, u32), asc: (u16, u16)| {
-            let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: e, cost: 1000, kind: 3, ascent };
+            let nbr =
+                |id: u32, ascent: u16| SrcNbr { id, edge_id: e, cost: 1000, kind: 3, ascent, rules: arc_rules(0) };
             vec![
-                SrcNode { id: ids.0, lat: lat_p, lon: SEAM_LON, nbrs: vec![nbr(ids.1, asc.0)] },
-                SrcNode { id: ids.1, lat: lat_q, lon: SEAM_LON, nbrs: vec![nbr(ids.0, asc.1)] },
+                SrcNode { id: ids.0, lat: lat_p, lon: SEAM_LON, nbrs: vec![nbr(ids.1, asc.0)], rules: node_rules(1) },
+                SrcNode { id: ids.1, lat: lat_q, lon: SEAM_LON, nbrs: vec![nbr(ids.0, asc.1)], rules: node_rules(2) },
             ]
         };
         // Different local node ids in the two cells, because node ids are file-local.
@@ -2134,40 +2368,174 @@ mod tests {
         assert_eq!(nodes[1].3.iter().map(|n| n.4).collect::<Vec<_>>(), vec![22], "and so is b→a");
     }
 
-    /// The degree-cap pin. Unification unions adjacency, so a junction two cells share can pass the
-    /// cap of 24 even though neither cell's own record does: a hub on a seam line with 13 spokes in
-    /// each of two cells merges to degree 26.
-    ///
-    /// The cap does not choose 24 entries — it refuses the ones that arrive after the node is full,
-    /// which makes it a property of the walk order. Emission order is by renumbered endpoint pair,
-    /// so the hub keeps its 24 lowest-numbered spokes and the last two lose their hub-side arc
-    /// while keeping their own, which the format permits.
     #[test]
-    fn the_degree_cap_refuses_the_entries_that_arrive_after_the_junction_is_full() {
-        const SPOKES: usize = 26;
+    fn duplicate_incidence_rejects_permission_conflicts_and_digest_collisions() {
+        for collision in [false, true] {
+            let bytes = [b"same".as_slice(), if collision { b"else" } else { b"same" }];
+            let sources = bytes.map(obc_formats::io::SliceSource);
+            let cells = sources.each_ref().map(|src| nav_cell(src, obc_reader::NavDirectory::EMPTY));
+            let scratch = MemoryScratch::new();
+            let mut sort = ExternalSort::new(&scratch, 1, by_dup_key);
+            for cell in 0..2 {
+                let edge = MergedEdge {
+                    a: 0,
+                    b: 1,
+                    cost_m: 100,
+                    kind: 7,
+                    rec: EdgeRef { cell, off: 0, len: 4 },
+                    hash: 123,
+                    ascent_ab: 0,
+                    ascent_ba: 0,
+                    ab: ArcRules { forbidden: u32::from(!collision && cell == 1), ..arc_rules(0) },
+                    ba: arc_rules(1),
+                    seen_sides: 3,
+                };
+                sort.push(dup_record(&edge, cell)).unwrap();
+            }
+            let error = dedup(sort, &[&cells[0], &cells[1]], &mut Vec::new(), &mut NavStats::default()).unwrap_err();
+            let expected = if collision { "digest collision" } else { "conflicting permissions" };
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    fn node_records(nav: &Merged) -> Vec<NavNodeRecord<'_>> {
+        let mut records = Vec::new();
+        for chunk in nav.chunks().as_chunks::<NAV_CHUNK_SIZE>().0 {
+            let mut at = 0;
+            while let Some(record) = NavNodeRecord::parse(&chunk[at..]) {
+                at += record.bytes().len();
+                records.push(record);
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn seams_preserve_directional_access_barriers_and_foreign_turn_ports() {
+        let lat = 6_000_000;
+        let make_cell = |right: bool, identity: u64, scale| {
+            let far = (lat + if right { 1000 } else { -1000 }, SEAM_LON + if right { 1000 } else { -1000 });
+            let departure = if right { 0 } else { 3 };
+            let push = if right { 0 } else { 2 };
+            let rec =
+                obcm_testkit::pack_nav_edge_record_with_rules(1000, 3, &[(lat, SEAM_LON), far], departure, push, 15, 0);
+            let edge_id = pool_ids(std::slice::from_ref(&rec))[0];
+            let nodes = [
+                SrcNode {
+                    id: 50,
+                    lat,
+                    lon: SEAM_LON,
+                    rules: NodeRules { profiles: 3, pushing: 2, source: [0, identity, 0] },
+                    nbrs: vec![SrcNbr {
+                        id: 60,
+                        edge_id,
+                        cost: 1000,
+                        kind: 3,
+                        ascent: 7,
+                        rules: ArcRules {
+                            profiles: departure,
+                            pushing: push,
+                            port: if right { 9 } else { 5 },
+                            forbidden: if right { 0 } else { 1 << 9 },
+                            target_requires_context: false,
+                        },
+                    }],
+                },
+                SrcNode {
+                    id: 60,
+                    lat: far.0,
+                    lon: far.1,
+                    rules: node_rules(if right { 300 } else { 200 }),
+                    nbrs: vec![SrcNbr {
+                        id: 50,
+                        edge_id,
+                        cost: 1000,
+                        kind: 3,
+                        ascent: 2,
+                        rules: ArcRules { target_requires_context: true, ..arc_rules(0) },
+                    }],
+                },
+            ];
+            let (bytes, mut dir) = nav_bytes(&nodes, &[rec]);
+            dir.lon_mm_per_udeg = scale;
+            (bytes, dir)
+        };
+        let (left_bytes, left_dir) = make_cell(false, 100, 90);
+        let (right_bytes, right_dir) = make_cell(true, 100, 75);
+        let (left_source, right_source) =
+            (obc_formats::io::SliceSource(&left_bytes), obc_formats::io::SliceSource(&right_bytes));
+        let (left, right) = (nav_cell(&left_source, left_dir), nav_cell(&right_source, right_dir));
+        let bbox =
+            (i64::from(SEAM_LON) - 2000, i64::from(lat) - 2000, i64::from(SEAM_LON) + 2000, i64::from(lat) + 2000);
+        let joined = merged(&[&left, &right], 20, 0, bbox);
+        assert_eq!(joined.stats.unified, 1);
+        assert_eq!(joined.section[27], 75);
+        let nodes = node_records(&joined);
+        let hub = nodes.iter().find(|node| node.source_key == [0, 100, 0]).unwrap();
+        assert_eq!((hub.crossing_profile_mask, hub.crossing_push_mask), (3, 2));
+        let left_arc = hub.neighbors().find(|arc| arc.port == 5).unwrap();
+        let right_arc = hub.neighbors().find(|arc| arc.port == 9).unwrap();
+        assert_eq!((left_arc.profile_mask, left_arc.push_mask, left_arc.forbidden_incoming_ports), (3, 2, 1 << 9));
+        assert_eq!(right_arc.profile_mask, 0, "forbidden geometry direction remains forbidden");
+        assert!(!left_arc.target_requires_context && !right_arc.target_requires_context);
+        assert!(
+            nodes
+                .iter()
+                .flat_map(|node| node.neighbors())
+                .filter(|arc| arc.id == hub.id)
+                .all(|arc| arc.target_requires_context),
+            "incoming-state requirements survive seam union"
+        );
+        let reverse_order = merged(&[&right, &left], 20, 0, bbox);
+        assert_eq!(joined.section, reverse_order.section, "source ports and identities are order independent");
+
+        let clipped = merged(&[&left], 20, 0, bbox);
+        assert!(node_records(&clipped)
+            .iter()
+            .flat_map(|node| node.neighbors())
+            .all(|arc| arc.forbidden_incoming_ports == 0));
+
+        let (other_bytes, other_dir) = make_cell(true, 101, 75);
+        let other_source = obc_formats::io::SliceSource(&other_bytes);
+        let other = nav_cell(&other_source, other_dir);
+        let separate = merged(&[&left, &other], 20, 0, bbox);
+        assert_eq!(separate.stats.unified, 0, "coincident junctions with distinct source identities stay separate");
+        assert_eq!(node_records(&separate).iter().filter(|node| node.lat == lat && node.lon == SEAM_LON).count(), 2);
+    }
+
+    #[test]
+    fn a_merged_junction_over_the_degree_limit_is_rejected() {
+        const SPOKES: usize = 21;
         let hub_lat = 6_000_000i32;
-        // One record per spoke, all anchored at the hub and all distinct, so no two are duplicates
-        // and the only thing under test is the cap.
         let recs: Vec<Vec<u8>> = (0..SPOKES)
             .map(|k| {
                 let far = (hub_lat + 100 * (k as i32 + 1), SEAM_LON + 1);
-                obcm_testkit::pack_nav_edge_record(100 + k as u32, 3, &[(hub_lat, SEAM_LON), far])
+                obcm_testkit::pack_nav_edge_record(1000, 3, &[(hub_lat, SEAM_LON), far])
             })
             .collect();
         let half = |parity: usize| {
-            let indices: Vec<_> = (parity..SPOKES).step_by(2).collect();
+            let indices: Vec<_> = if parity == 0 { (0..11).collect() } else { (11..SPOKES).collect() };
             let own: Vec<Vec<u8>> = indices.iter().map(|&k| recs[k].clone()).collect();
             let ids = pool_ids(&own);
-            let mut nodes = vec![SrcNode { id: 0, lat: hub_lat, lon: SEAM_LON, nbrs: Vec::new() }];
+            let mut nodes =
+                vec![SrcNode { id: 0, lat: hub_lat, lon: SEAM_LON, nbrs: Vec::new(), rules: node_rules(1) }];
             for (n, &k) in indices.iter().enumerate() {
-                let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: ids[n], cost: 100 + k as u16, kind: 3, ascent };
+                let nbr = |id: u32, port| SrcNbr {
+                    id,
+                    edge_id: ids[n],
+                    cost: 1000,
+                    kind: 3,
+                    ascent: 0,
+                    rules: arc_rules(port),
+                };
                 let spoke = k as u32 + 1;
-                nodes[0].nbrs.push(nbr(spoke, 7));
+                nodes[0].nbrs.push(nbr(spoke, (k % NAV_MAX_DEGREE) as u8));
                 nodes.push(SrcNode {
                     id: spoke,
                     lat: hub_lat + 100 * (k as i32 + 1),
                     lon: SEAM_LON + 1,
-                    nbrs: vec![nbr(0, 9)],
+                    nbrs: vec![nbr(0, 0)],
+                    rules: node_rules(u64::from(spoke) + 1),
                 });
             }
             nav_bytes(&nodes, &own)
@@ -2177,26 +2545,12 @@ mod tests {
         let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
         let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
         let bbox = (SEAM_LON as i64 - 2700, hub_lat as i64 - 2700, SEAM_LON as i64 + 2700, hub_lat as i64 + 2700);
-        let nav = merged(&[&c0, &c1], 20, 0, bbox);
-
-        assert_eq!(nav.stats.unified, 1, "the hub is the only coordinate both cells wrote");
-        assert_eq!((nav.stats.nodes, nav.stats.edges), (SPOKES + 1, SPOKES));
-        assert_eq!(nav.stats.degree_truncated, SPOKES - NAV_MAX_DEGREE, "two entries past the §8.3 cap");
-        let nodes = merged_nodes(&nav);
-        let hub_node = nodes.iter().find(|node| node.0 == hub_lat).unwrap();
-        let hub = &hub_node.3;
-        assert_eq!(hub.len(), NAV_MAX_DEGREE, "the junction is capped, not overfull");
-        assert_eq!(nav.stats.dropped_nodes, 0);
-        assert_eq!(
-            hub.iter().map(|n| nodes[n.0 as usize].0).collect::<Vec<_>>(),
-            (1..=NAV_MAX_DEGREE as i32).map(|k| hub_lat + 100 * k).collect::<Vec<_>>(),
-            "the cap retains the same directed arcs across cell order"
-        );
-        assert!(hub.windows(2).all(|w| w[0].1 < w[1].1), "and its entries are in emission order");
-        for (dense, n) in nodes.iter().enumerate().filter(|(_, node)| node.2 != hub_node.2) {
-            assert_eq!(n.3.len(), 1, "every spoke keeps its own arc back to the hub");
-            assert_eq!(n.3[0].0, hub_node.2, "node {dense}'s neighbour is the hub");
-        }
+        let scratch = MemoryScratch::new();
+        let error = match merge(&[&c0, &c1], 20, 0, bbox, &scratch, 1 << 16) {
+            Ok(_) => panic!("an overflowing junction must not lose arcs"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Capacity(_)), "{error}");
     }
 
     /// The ordinal reset. Every other fixture in this file lays its edges out in a single 512-byte
@@ -2231,9 +2585,28 @@ mod tests {
             let mut nodes = Vec::new();
             for (k, _) in points.iter().enumerate() {
                 let (a, b) = (2 * k as u32, 2 * k as u32 + 1);
-                let nbr = |id: u32| SrcNbr { id, edge_id: ids[k], cost: 100 + k as u16, kind: 3, ascent: 7 };
-                nodes.push(SrcNode { id: a, lat: lat_of(k), lon: SEAM_LON, nbrs: vec![nbr(b)] });
-                nodes.push(SrcNode { id: b, lat: lat_of(k), lon: SEAM_LON + points[k] as i32 - 1, nbrs: vec![nbr(a)] });
+                let nbr = |id: u32| SrcNbr {
+                    id,
+                    edge_id: ids[k],
+                    cost: 100 + k as u16,
+                    kind: 3,
+                    ascent: 7,
+                    rules: arc_rules(0),
+                };
+                nodes.push(SrcNode {
+                    id: a,
+                    lat: lat_of(k),
+                    lon: SEAM_LON,
+                    nbrs: vec![nbr(b)],
+                    rules: node_rules(u64::from(a) + 1),
+                });
+                nodes.push(SrcNode {
+                    id: b,
+                    lat: lat_of(k),
+                    lon: SEAM_LON + points[k] as i32 - 1,
+                    nbrs: vec![nbr(a)],
+                    rules: node_rules(u64::from(b) + 1),
+                });
             }
             let (bytes, dir) = nav_bytes(&nodes, &recs);
             let src = obc_formats::io::SliceSource(&bytes);
@@ -2251,27 +2624,21 @@ mod tests {
             seen
         }
 
-        // Pushed: 26 x 19 = 494 bytes; the 27th needs 19 more, so it is pushed to the boundary and
-        // opens chunk 1.
-        assert_eq!(26 * MIN_REC, 494);
-        const { assert!(494 + MIN_REC > NAV_CHUNK_SIZE, "the 27th record cannot fit — it is pushed") };
-        let pushed = ids_of(&[2; 27]);
-        let mut want: Vec<(u32, u32)> = (0..26).map(|o| (0, o)).collect();
+        // Twenty-two minimal records leave six bytes; the next record starts a new chunk.
+        assert_eq!(22 * MIN_REC, 506);
+        let pushed = ids_of(&[2; 23]);
+        let mut want: Vec<_> = (0..22).map(|o| (0, o)).collect();
         want.push((1, 0));
-        assert_eq!(pushed, want, "26 ordinals in chunk 0, then the ordinal restarts at 0 in chunk 1");
+        assert_eq!(pushed, want);
 
-        // Flush: record lengths are `15 + 4*(n-1)`, so a run can only land on 512 with a multiple
-        // of four records. 23 x 19 + 75 = 512 exactly: a 16-point record closes chunk 0 on its last
-        // byte, with no filler and nothing pushed.
-        let big = NAV_EDGE_FIXED_LEN + 4 * (16 - 1);
-        assert_eq!(big, 75);
-        assert_eq!(23 * MIN_REC + big, NAV_CHUNK_SIZE, "chunk 0 ends flush on its boundary");
-        let mut shape = vec![2usize; 23];
-        shape.push(16); // the record that ends flush at 512
-        shape.push(2); // and the one that must therefore be (1, 0)
+        // Nineteen minimal records and one 15-point record close a chunk exactly.
+        let big = NAV_EDGE_FIXED_LEN + 4 * (15 - 1);
+        assert_eq!(19 * MIN_REC + big, NAV_CHUNK_SIZE);
+        let mut shape = vec![2; 19];
+        shape.extend([15, 2]);
         let flush = ids_of(&shape);
-        let mut want: Vec<(u32, u32)> = (0..24).map(|o| (0, o)).collect();
+        let mut want: Vec<_> = (0..20).map(|o| (0, o)).collect();
         want.push((1, 0));
-        assert_eq!(flush, want, "a flush chunk end restarts the ordinal just as a pushed one does");
+        assert_eq!(flush, want);
     }
 }

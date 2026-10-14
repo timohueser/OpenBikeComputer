@@ -6,14 +6,19 @@ import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
 import * as routing from '../../lib/planner/routing';
+import * as mapData from '../../lib/planner/map-data';
 import { newPlan, type Plan } from '../../lib/planner/library';
 import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
+import type { RouteRecord } from '../../lib/planner/signed-routes';
 
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
-vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
+vi.mock('./PlannerMap.svelte', async () => {
+    const { default: MapStub } = await import('../../../test-support/planner/MapStub.svelte');
+    return { default: (...args: Parameters<typeof MapStub>) => ({ ...MapStub(...args), placeName: () => undefined }) };
+});
 vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
 let app: ReturnType<typeof mount> | undefined;
@@ -429,5 +434,81 @@ describe('planner app transitions', () => {
         expect(button('Stay here', dialog).disabled).toBe(true);
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
+    });
+});
+
+describe('signed route profile recovery', () => {
+    const routesUrl = mapData.config.routes;
+    const route: RouteRecord = {
+        id: 901, name: 'Riverside loop', kind: 'bicycle', profile: 'touring', rank: 1, loop: true,
+        length_m: 3000, ascent_m: 30, descent_m: 30, cells: ['9-267-177'],
+        line_udeg: [7840000, 48000000, 10000, 10000, -10000, -10000], via: [1],
+    };
+
+    beforeEach(async () => {
+        mapData.config.routes = 'https://tiles.test/routes/{cell}.json';
+        vi.spyOn(mapData, 'loadRouteCell').mockResolvedValue([route]);
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelector('.elevation')).not.toBeNull());
+        vi.mocked(routing.calculateLine).mockClear();
+    });
+
+    afterEach(() => {
+        if (routesUrl === undefined) delete mapData.config.routes;
+        else mapData.config.routes = routesUrl;
+    });
+
+    async function openRoute() {
+        button('Pick map location').click(); await tick();
+        button('Signed routes from here').click();
+        await vi.waitFor(() => expect(document.querySelector('[data-route="901"]')).not.toBeNull());
+        document.querySelector<HTMLButtonElement>('[data-route="901"]')!.click(); await tick();
+    }
+
+    it('recovers the Plan action and routed preview together after retrying profile discovery', async () => {
+        let finish!: (profiles: string[]) => void;
+        const profiles = vi.spyOn(routing, 'regionProfiles')
+            .mockRejectedValueOnce(new Error('Offline'))
+            .mockImplementationOnce(() => new Promise(resolve => finish = resolve));
+        await openRoute();
+        await vi.waitFor(() => expect(document.querySelector('.plan-foot')?.textContent).toContain('Routing profiles could not load.'));
+        expect(document.querySelector('.plan-foot .primary')).toBeNull();
+        expect(routing.calculateLine).not.toHaveBeenCalled();
+        button('Retry', document.querySelector('.plan-foot')!).click(); await tick();
+        expect(document.querySelector('.plan-foot')?.textContent).toContain('Checking routing profiles…');
+        expect(document.querySelector('.plan-foot .primary')).toBeNull();
+        expect(routing.calculateLine).not.toHaveBeenCalled();
+        finish(['touring']);
+        await vi.waitFor(() => expect(button('Plan this route').disabled).toBe(false));
+        await vi.waitFor(() => expect(document.querySelector('.elevation')).not.toBeNull());
+        expect(routing.calculateLine).toHaveBeenCalledTimes(1);
+        expect(profiles).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([{ profiles: [] }, { profiles: ['hiking'] }])('keeps an unsupported route unavailable after retry returns $profiles', async ({ profiles }) => {
+        vi.spyOn(routing, 'regionProfiles').mockRejectedValueOnce(new Error('Offline')).mockResolvedValueOnce(profiles);
+        await openRoute();
+        await vi.waitFor(() => expect(document.querySelector('.plan-foot')?.textContent).toContain('Routing profiles could not load.'));
+        button('Retry', document.querySelector('.plan-foot')!).click();
+        await vi.waitFor(() => expect(document.querySelector('.plan-foot')?.textContent).toContain('The required routing profile is unavailable in this region.'));
+        expect(document.querySelector('.plan-foot button')).toBeNull();
+        expect(document.querySelector('.elevation')).toBeNull();
+        expect(routing.calculateLine).not.toHaveBeenCalled();
+    });
+
+    it('ignores profile discovery from a closed Routes view after reopening it', async () => {
+        let finish!: (profiles: string[]) => void;
+        vi.spyOn(routing, 'regionProfiles')
+            .mockImplementationOnce(() => new Promise(resolve => finish = resolve))
+            .mockResolvedValueOnce(['hiking']);
+        await openRoute();
+        expect(document.querySelector('.plan-foot')?.textContent).toContain('Checking routing profiles…');
+        button('Back to the planner').click(); await tick();
+        await openRoute();
+        await vi.waitFor(() => expect(document.querySelector('.plan-foot')?.textContent).toContain('The required routing profile is unavailable in this region.'));
+        finish(['touring']); await tick(); await tick();
+        expect(document.querySelector('.plan-foot')?.textContent).toContain('The required routing profile is unavailable in this region.');
+        expect(document.querySelector('.plan-foot button')).toBeNull();
+        expect(routing.calculateLine).not.toHaveBeenCalled();
     });
 });

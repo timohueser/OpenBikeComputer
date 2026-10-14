@@ -4,8 +4,9 @@ use crate::nav::{self, CutRun, JunctionKey, NavGraph};
 use obc_map_core::grid::{on_grid_boundary, segment_crossing, Axis, CellId, GRID_ORIGIN};
 use obc_map_core::progress::Progress;
 use obc_places::metadata::Poi;
+use obc_places::routing::data::Routing;
 use obc_places::routing::RoutableWay;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How many refinement passes the boundary-vertex insertion makes before it gives up.
 ///
@@ -27,12 +28,7 @@ pub fn bucket_pois(pois: &[Poi], cell_log2: u32) -> HashMap<(i64, i64), Vec<u32>
 }
 
 /// One source way with a boundary vertex inserted at every crossing of the nav band's grid.
-struct PreparedWay {
-    keys: Vec<JunctionKey>,
-    /// µdeg `(lon, lat)`, parallel to `keys`.
-    coords: Vec<(i32, i32)>,
-    kind: u8,
-}
+type PreparedWay = CutRun;
 
 /// The whole extract's routable ways, cut-ready: boundary vertices inserted, junction touch counts
 /// taken over the **source snapshot**, and an index from cell to the ways that reach it.
@@ -43,6 +39,8 @@ pub struct NavCut {
     /// from this, never from the ways that survive inside a cell.
     touch: HashMap<i64, u32>,
     cells: HashMap<(i64, i64), Vec<u32>>,
+    routing: Routing,
+    restriction_nodes: HashSet<i64>,
 }
 
 /// Prepare the nav cut: insert the deterministic boundary junctions and index the ways by cell.
@@ -60,7 +58,9 @@ pub struct NavCut {
 /// A [`RoutableWay`] whose `coords` and `node_ids` are not two parallel lists of at least two
 /// entries is rejected rather than indexed: every step below reads the two positionally, so a
 /// malformed one would panic deep inside the cut.
-pub fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Result<NavCut, String> {
+pub fn prepare_nav(ways: &[RoutableWay], routing: &Routing, log2: u32, progress: &Progress) -> Result<NavCut, String> {
+    let mut routing = routing.clone();
+    routing.validate(ways);
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
         if w.coords.len() < 2 || w.node_ids.len() != w.coords.len() {
@@ -90,7 +90,9 @@ pub fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Resu
                 unconverged += 1;
             }
             for c in cuts {
-                keys.push(JunctionKey::Boundary(c.0, c.1));
+                let a = w.node_ids[k] as u64;
+                let b = w.node_ids[k + 1] as u64;
+                keys.push(JunctionKey::Boundary([w.id as u64, a.min(b), a.max(b)], c.0, c.1));
                 coords.push(c);
                 inserted += 1;
             }
@@ -104,7 +106,17 @@ pub fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Resu
         for o in owners {
             cells.entry(o).or_default().push(idx);
         }
-        prepared.push(PreparedWay { keys, coords, kind: w.kind });
+        let incidences = vec![[nav::Incidence::default(); 2]; coords.len()];
+        let requires_context = vec![false; coords.len()];
+        prepared.push(PreparedWay {
+            keys,
+            coords,
+            kind: w.kind,
+            way_id: w.id,
+            access: w.access,
+            incidences,
+            requires_context,
+        });
     }
     progress.log(format!("nav cut: {inserted} boundary junction(s) inserted across {} routable way(s)", ways.len()));
     if unconverged > 0 {
@@ -114,7 +126,9 @@ pub fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Resu
             "warning: {unconverged} segment(s) did not converge in {MAX_CUT_REFINE} boundary-cut refinements"
         ));
     }
-    Ok(NavCut { log2, ways: prepared, touch, cells })
+    crate::topology::compile(&mut prepared, &routing)?;
+    let restriction_nodes = routing.restrictions.iter().map(|rule| rule.via).collect();
+    Ok(NavCut { log2, ways: prepared, touch, cells, routing, restriction_nodes })
 }
 
 /// Every grid line of size `2^log2` strictly between `v0` and `v1`, ascending.
@@ -226,6 +240,10 @@ impl NavCut {
                             keys: w.keys[s..=k].to_vec(),
                             coords: w.coords[s..=k].to_vec(),
                             kind: w.kind,
+                            way_id: w.way_id,
+                            access: w.access,
+                            incidences: w.incidences[s..=k].to_vec(),
+                            requires_context: w.requires_context[s..=k].to_vec(),
                         });
                         start = None;
                     }
@@ -233,7 +251,15 @@ impl NavCut {
                 }
             }
             if let Some(s) = start {
-                runs.push(CutRun { keys: w.keys[s..].to_vec(), coords: w.coords[s..].to_vec(), kind: w.kind });
+                runs.push(CutRun {
+                    keys: w.keys[s..].to_vec(),
+                    coords: w.coords[s..].to_vec(),
+                    kind: w.kind,
+                    way_id: w.way_id,
+                    access: w.access,
+                    incidences: w.incidences[s..].to_vec(),
+                    requires_context: w.requires_context[s..].to_vec(),
+                });
             }
         }
         runs
@@ -241,7 +267,7 @@ impl NavCut {
 
     /// This cell's nav graph: junction-ness from the source snapshot plus every vertex on a boundary
     /// line, and pruning restricted to strictly interior components.
-    pub fn cell_graph(&self, cell: CellId, min_component_edges: usize) -> NavGraph {
+    pub fn cell_graph(&self, cell: CellId, min_component_edges: usize) -> Result<NavGraph, String> {
         let runs = self.cell_runs(cell);
         let log2 = self.log2;
         let is_junction = |key: JunctionKey, coord: (i32, i32)| match key {
@@ -250,12 +276,16 @@ impl NavCut {
             // A real OSM node is a junction if the source's way set makes it one, or if it sits
             // exactly on a boundary line.
             JunctionKey::Osm(id) => {
-                on_grid_boundary(coord.1 as i64, coord.0 as i64, log2) || self.touch.get(&id).copied().unwrap_or(0) >= 2
+                on_grid_boundary(coord.1 as i64, coord.0 as i64, log2)
+                    || self.touch.get(&id).copied().unwrap_or(0) >= 2
+                    || self.routing.nodes.contains_key(&id)
+                    || self.restriction_nodes.contains(&id)
             }
         };
         let on_boundary = |coord: (i32, i32)| on_grid_boundary(coord.1 as i64, coord.0 as i64, log2);
-        let (graph, _stats) = nav::build_graph_cut(&runs, min_component_edges, &is_junction, &on_boundary);
-        graph
+        let (graph, _stats) =
+            nav::build_graph_cut(&runs, &self.routing, min_component_edges, &is_junction, &on_boundary)?;
+        Ok(graph)
     }
 }
 
@@ -263,6 +293,10 @@ impl NavCut {
 mod tests {
     use super::*;
     use obc_map_core::grid::{on_grid_line, GRID_ORIGIN};
+
+    fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Result<NavCut, String> {
+        super::prepare_nav(ways, &Routing::default(), log2, progress)
+    }
 
     const LOG2: u32 = 18;
     const S: i64 = 1 << LOG2;
@@ -362,9 +396,11 @@ mod tests {
 
     fn way(nodes: &[(i64, (i32, i32))]) -> RoutableWay {
         RoutableWay {
+            id: nodes.iter().map(|p| p.0).min().unwrap_or(0) + 1,
             node_ids: nodes.iter().map(|(id, _)| *id).collect(),
             coords: nodes.iter().map(|(_, c)| *c).collect(),
             kind: 7,
+            access: [obc_places::routing::ProfileAccess::OPEN; 2],
         }
     }
 
@@ -380,8 +416,8 @@ mod tests {
         let prep = prepare_nav(&[w], LOG2, &Progress::silent()).expect("prepare");
         let west = CellId::new(LOG2, 100, 100).unwrap();
         let east = CellId::new(LOG2, 100, 101).unwrap();
-        let gw = prep.cell_graph(west, 50);
-        let ge = prep.cell_graph(east, 50);
+        let gw = prep.cell_graph(west, 50).unwrap();
+        let ge = prep.cell_graph(east, 50).unwrap();
         assert_eq!(gw.edges.len(), 1, "the western stub");
         assert_eq!(ge.edges.len(), 1, "the eastern stub");
         let on_seam = |g: &NavGraph| -> Vec<(i32, i32)> {
@@ -408,12 +444,39 @@ mod tests {
         let prep = prepare_nav(&[w], LOG2, &Progress::silent()).expect("prepare");
         assert_eq!(prep.ways[0].coords.len(), 3, "nothing was inserted");
         assert!(matches!(prep.ways[0].keys[1], JunctionKey::Osm(2)), "the OSM node keeps its identity");
-        let gw = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50);
-        let ge = prep.cell_graph(CellId::new(LOG2, 100, 101).unwrap(), 50);
+        let gw = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50).unwrap();
+        let ge = prep.cell_graph(CellId::new(LOG2, 100, 101).unwrap(), 50).unwrap();
         for g in [&gw, &ge] {
             assert_eq!(g.edges.len(), 1);
             assert!(g.nodes.iter().any(|n| n.coord.0 as i64 == seam), "both sides carry the on-line junction");
         }
+    }
+
+    #[test]
+    fn seam_turn_keeps_the_port_of_an_approach_in_the_other_cell() {
+        use obc_places::routing::data::TurnRestriction;
+        let seam = seam_lon();
+        let junction = pt(row_lat(), seam);
+        let ways = [
+            RoutableWay::new(10, vec![1, 100], vec![pt(row_lat(), seam - 1000), junction], 7),
+            RoutableWay::new(20, vec![100, 2], vec![junction, pt(row_lat(), seam + 1000)], 7),
+        ];
+        let routing = Routing {
+            restrictions: vec![TurnRestriction { from: 10, to: 20, via: 100, only: false, u_turn: false }],
+            ..Routing::default()
+        };
+        let prepared = super::prepare_nav(&ways, &routing, LOG2, &Progress::silent()).unwrap();
+        let west = prepared.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 0).unwrap();
+        let east = prepared.cell_graph(CellId::new(LOG2, 100, 101).unwrap(), 0).unwrap();
+        let source = [0, 100, 0];
+        assert!(west.nodes.iter().any(|node| node.source_key == source));
+        assert!(east.nodes.iter().any(|node| node.source_key == source));
+        assert!(west.nodes.iter().find(|node| node.source_key == source).unwrap().requires_context);
+        assert!(east.nodes.iter().find(|node| node.source_key == source).unwrap().requires_context);
+        let incoming = west.edges[0].incidences[1];
+        let outgoing = east.edges[0].incidences[0];
+        assert_ne!(incoming.port, outgoing.port);
+        assert_ne!(outgoing.forbidden & (1 << incoming.port), 0);
     }
 
     /// Island pruning is strictly interior: a stub touching the cell edge survives however small,
@@ -425,7 +488,7 @@ mod tests {
         let crossing = way(&[(1, pt(row_lat(), seam - 5_000)), (2, pt(row_lat(), seam + 5_000))]);
         let islet = way(&[(10, at(100, 100, 100_000, 100_000)), (11, at(100, 100, 100_500, 100_500))]);
         let prep = prepare_nav(&[crossing, islet], LOG2, &Progress::silent()).expect("prepare");
-        let g = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50);
+        let g = prep.cell_graph(CellId::new(LOG2, 100, 100).unwrap(), 50).unwrap();
         assert!(g.nodes.iter().any(|n| n.coord.0 as i64 == seam), "the boundary stub survived pruning");
         assert!(
             !g.nodes.iter().any(|n| n.coord.1 as i64 == GRID_ORIGIN + 100 * S + 100_000),

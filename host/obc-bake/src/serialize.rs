@@ -253,14 +253,8 @@ mod tests {
             poi(18, 400_000, 400_000, Some("Velowerkstatt"), Some("24/7")),
         ];
         let nav = NavGraph {
-            nodes: vec![NavNode { id: 0, coord: (100_000, 100_000) }, NavNode { id: 1, coord: (200_000, 200_000) }],
-            edges: vec![Edge {
-                a: 0,
-                b: 1,
-                polyline: vec![(100_000, 100_000), (150_000, 160_000), (200_000, 200_000)],
-                length_m: 15_700,
-                kind: 0,
-            }],
+            nodes: vec![NavNode::new(0, (100_000, 100_000)), NavNode::new(1, (200_000, 200_000))],
+            edges: vec![Edge::new(0, 1, vec![(100_000, 100_000), (150_000, 160_000), (200_000, 200_000)], 0)],
         };
 
         // Two profiles so the profile table is non-trivial and both paths must agree on its bytes.

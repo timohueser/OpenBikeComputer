@@ -446,6 +446,8 @@ fn splicing_the_raster_moves_none_of_the_gaps_in_front_of_it() {
 /// the first chunk and nowhere else, so a fixture with several edges in one chunk tells them apart.
 #[test]
 fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
+    use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+
     let out = assemble_cells(cells(), &sidecar(), &skin(), &dark_skin(), &options(), &mut NoHooks)
         .expect("the assembly runs");
     let map = taken(&out);
@@ -456,14 +458,15 @@ fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
     let chunks_at = align_up(offset(map, nav_at) + le32(map, nav_at + 4) * 4);
     let mut ids: Vec<u32> = Vec::new();
     for k in 0..le32(map, nav_at + 8) {
-        let chunk = &map[chunks_at + k * 512..][..512];
+        let chunk = &map[chunks_at + k * NAV_CHUNK_SIZE..][..NAV_CHUNK_SIZE];
         let mut at = 0usize;
-        while at + 13 <= 512 && chunk[at + 12] != 0xFF {
+        while at + NAV_NODE_FIXED_LEN <= chunk.len() && chunk[at + 12] != 0xFF {
             let degree = chunk[at + 12] as usize;
             for n in 0..degree {
-                ids.push(u32::from_le_bytes(chunk[at + 13 + n * 17 + 8..][..4].try_into().unwrap()));
+                let neighbor = at + NAV_NODE_FIXED_LEN + n * NAV_NEIGHBOR_LEN;
+                ids.push(u32::from_le_bytes(chunk[neighbor + 8..][..4].try_into().unwrap()));
             }
-            at += 13 + degree * 17;
+            at += NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN;
         }
     }
     assert!(!ids.is_empty(), "the fixture's graph has adjacency to read");

@@ -63,7 +63,8 @@ public actor RouteCatalog {
             guard status == 200 else { throw PlannerFailure.unavailable }
             data = body
         }
-        guard let file = try? JSONDecoder().decode(File.self, from: data), file.format == 1 else { throw PlannerFailure.invalidData }
+        guard let file = try? JSONDecoder().decode(File.self, from: data), file.format == 2,
+              file.routes.allSatisfy({ $0.preference != nil }) else { throw PlannerFailure.invalidData }
         return file.routes
     }
 

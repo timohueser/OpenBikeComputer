@@ -1,7 +1,7 @@
 import { emptyTrip, loopTrip, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import type { BikeType } from './riding-profiles';
-import type { CatalogRecord } from './signed-routes';
+import { presetName, type BikeType } from './riding-profiles';
+import { catalogProfile, type CatalogRecord } from './signed-routes';
 
 /** The route API takes at most this many points. */
 const MAX_POINTS = 64;
@@ -22,15 +22,11 @@ export function joinedPlan(stages: RoutePlan[]): RoutePlan | null {
     return joined.points.length <= MAX_POINTS ? joined : null;
 }
 
-/**
- * The empty plan that a signed route fills: named after the route, with the Balanced preset of an activity that rides
- * its kind, which the shaping points of the catalog reproduce.
- */
+/** The empty plan that reproduces the catalog route with its required activity and terrain capability. */
 export function routeBase(route: CatalogRecord, trip: Trip): Trip {
-    const bike = trip.bike ?? 'touring';
-    const activity: BikeType = route.kind === 'hiking' || route.kind === 'foot' ? 'hiking' : route.kind === 'mtb' ? 'mtb'
-        : ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring';
-    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset: 'Balanced', startDate: trip.startDate };
+    const profile = catalogProfile(route, trip.bike);
+    if (!profile) throw new Error('The catalog route has an invalid routing profile.');
+    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: profile.split('/')[0] as BikeType, preset: presetName(profile), startDate: trip.startDate };
 }
 
 /** A plan of `base` that follows `plan`, from the route's own start. At a turnaround the route turns back. A loop plan ends at its start. */

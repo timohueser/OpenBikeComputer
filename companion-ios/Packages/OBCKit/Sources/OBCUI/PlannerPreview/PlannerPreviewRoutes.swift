@@ -43,8 +43,8 @@ import SwiftUI
         let list = names.count > 1 ? names.dropLast().joined(separator: ", ") + " or " + names.last! : names[0]
         let reading = range.lowerBound == 0 ? "Up to \(high)." : range.upperBound == 3 ? "Must include \(low) or harder."
             : low == high ? "Hardest part \(low)." : "Must include \(low) or harder, up to \(high)."
-        return (reading, range.lowerBound == 0 ? "Routes whose hardest part is \(list). A \(mtb ? "trail" : "path") without a grade counts as \(grade(0))."
-                : "Only routes with a part graded \(list).")
+        return (reading, range.lowerBound == 0 ? "Routes whose hardest mapped part is \(list). Routes without grades also appear; their difficulty is unknown."
+                : "Only routes with a part mapped as \(list).")
     }
     static func summary(_ filters: PlannerRouteFilters, activity: RouteActivity) -> String {
         ["\(Int(filters.radiusKm)) km", shape(filters.shape), range(filters.distanceKm, unit: "km"), range(filters.climbM, unit: "m"),
@@ -215,7 +215,8 @@ struct PlannerRoutesList: View {
 
     private func row(_ match: RouteMatch, number: Int) -> some View {
         let route = match.route
-        let facts = [PlannerRoutesText.kind(route, finder: finder), graded ? route.hardest.map { PlannerRoutesText.grade($0, mtb: route.kind == .mtb) } : nil,
+        let facts = [PlannerRoutesText.kind(route, finder: finder), graded ? route.hardest.map { PlannerRoutesText.grade($0, mtb: route.kind == .mtb) } ?? "Difficulty unknown" : nil,
+                     route.preference.flatMap { $0.explanation == nil ? nil : "Requires \($0.title)" },
                      "\(OBCFormat.distance(meters: match.distanceM)) away"].compactMap { $0 }.joined(separator: " · ")
         return HStack(spacing: 12) {
             PlannerRouteNumber(number: number, rank: route.rank)
@@ -262,6 +263,10 @@ struct PlannerRouteDetail: View {
                 PlannerPreviewProfile(profile: profile, height: 64, visibleRange: nil, selectedFraction: $fraction)
             }
             OBCStatStrip(figures(route))
+            if let preference = route.preference, let explanation = preference.explanation {
+                Text("Requires \(preference.title). \(explanation)")
+                    .font(.subheadline).foregroundStyle(OBCTheme.ink).fixedSize(horizontal: false, vertical: true)
+            }
             if let line = endsLine(route) {
                 Label(line, systemImage: route.loop ? "arrow.triangle.2.circlepath" : "flag").font(.subheadline)
             }
@@ -345,10 +350,24 @@ struct PlannerRouteDetail: View {
 /// "Plan this route" at the foot of the detail sheet, or why the route cannot be planned.
 struct PlannerRoutePlanFoot: View {
     let finder: PlannerRouteFinder
+    let canPlan: Bool
+    let profiles: PlannerPreviewModel.RoutingProfiles
+    let onRetry: () -> Void
     let onPlan: (CatalogRecord, RoutePlan) -> Void
 
     var body: some View {
         switch finder.plan {
+        case .ready where !canPlan:
+            switch profiles {
+            case .idle, .loading: note("Checking routing profiles…")
+            case .ready: note("The required routing profile is not available in this region.")
+            case .unknown, .failed:
+                VStack(alignment: .leading, spacing: 8) {
+                    note(profiles == .failed ? "Routing profiles could not load. Try again." : "Routing profile support is unknown.")
+                    Button("Try again", action: onRetry).buttonStyle(.obcGhost)
+                        .accessibilityIdentifier("planner.routes.retryProfiles")
+                }
+            }
         case .ready(let plan):
             Button("Plan this route") { if let route = finder.detail?.route { onPlan(route, plan) } }
                 .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.routes.plan")

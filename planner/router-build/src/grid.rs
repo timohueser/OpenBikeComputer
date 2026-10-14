@@ -48,7 +48,7 @@ pub fn cells(bounds: [f64; 4]) -> Vec<(String, [f64; 4])> {
 /// The route catalog of each cell of `cells`: the records of `catalog` that name the cell, by
 /// `id`. A record can name a cell outside the grid, which has no file.
 pub fn route_tiles(catalog: &Value, cells: &[&str]) -> Result<BTreeMap<String, Value>, String> {
-    if catalog["format"] != 1 {
+    if catalog["format"] != crate::catalog::FORMAT {
         return Err("Unsupported route catalog".into());
     }
     let mut routes: Vec<&Value> =
@@ -62,7 +62,10 @@ pub fn route_tiles(catalog: &Value, cells: &[&str]) -> Result<BTreeMap<String, V
             }
         }
     }
-    Ok(tiles.into_iter().map(|(cell, routes)| (cell, json!({"format": 1, "routes": routes}))).collect())
+    Ok(tiles
+        .into_iter()
+        .map(|(cell, routes)| (cell, json!({"format": crate::catalog::FORMAT, "routes": routes})))
+        .collect())
 }
 
 #[cfg(test)]
@@ -79,13 +82,17 @@ mod tests {
         assert_eq!(edge, tile_bounds(ZOOM, 267, 178)[3]);
         assert_eq!((cells[0].1, cells[1].1), ([7.77, edge, 7.93, 48.14], [7.77, 47.97, 7.93, edge]));
 
-        let catalog = json!({"format": 1, "routes": [
-            {"id": 2, "cells": ["9-267-178", "9-300-1"]},
-            {"id": 1, "cells": ["9-267-177", "9-267-178"]},
+        let mut catalog = json!({"format": crate::catalog::FORMAT, "routes": [
+            {"id": 2, "profile": "hiking/alpine", "cells": ["9-267-178", "9-300-1"]},
+            {"id": 1, "profile": "hiking", "cells": ["9-267-177", "9-267-178"]},
         ]});
         let tiles = route_tiles(&catalog, &ids).unwrap();
         let routes =
             |cell: &str| tiles[cell]["routes"].as_array().unwrap().iter().map(|r| r["id"].clone()).collect::<Vec<_>>();
         assert_eq!((routes("9-267-177"), routes("9-267-178")), (vec![json!(1)], vec![json!(1), json!(2)]));
+        assert!(tiles.values().all(|tile| tile["format"] == 2));
+        assert_eq!(tiles["9-267-178"]["routes"][1]["profile"], "hiking/alpine");
+        catalog["format"] = json!(1);
+        assert!(route_tiles(&catalog, &ids).is_err());
     }
 }

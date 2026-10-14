@@ -227,6 +227,7 @@ struct NavOffsets {
 
 /// Everything behind a populated graph's profile table, already in wire form.
 pub struct NavBody<'a> {
+    pub lon_mm_per_udeg: u8,
     pub index: &'a [u8],
     pub node_count: u32,
     pub chunks: &'a [u8],
@@ -314,7 +315,7 @@ fn nav_directory(offsets: &NavOffsets, body: Option<&NavBody<'_>>, profile_count
     dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
     dir.extend_from_slice(&scaled(offsets.profile_table_offset).to_le_bytes());
     dir.push(profile_count as u8);
-    dir.push(0u8); // reserved — a field, so `0`, unlike a gap
+    dir.push(body.map_or(0, |b| b.lon_mm_per_udeg));
     dir.extend_from_slice(&scaled(offsets.snap_index_offset).to_le_bytes());
     dir.extend_from_slice(&snap_node_count.to_le_bytes());
     dir.extend_from_slice(&snap_chunks.to_le_bytes());

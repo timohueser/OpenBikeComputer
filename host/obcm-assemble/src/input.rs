@@ -21,6 +21,8 @@ const COPY_BLOCK: usize = 256 * 1024;
 /// One cell handed to the assembler: which cell it is, which band it belongs to, and where its
 /// bytes are. `band` is not inferable from the bytes, because a legitimately empty cell is
 /// indistinguishable from an out-of-band one, so the caller states it from the catalog.
+/// All navigation cells must use the same complete source set and snapshots. The caller enforces
+/// this through one pinned catalog or bake output; cell bytes cannot prove that source context.
 pub struct CellInput<'a> {
     pub id: CellId,
     pub band: String,

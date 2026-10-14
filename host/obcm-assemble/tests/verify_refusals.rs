@@ -21,14 +21,14 @@ use obc_draw::geom::Geom;
 use obc_draw::quadtree::build_lod_with;
 use obc_draw::serialize::LodLayer;
 use obc_elevation::NullElevation;
-use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF, NAV_MAX_DEGREE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
 use obc_map_core::config::default_profiles;
 use obc_map_core::config::LineStyle as PackLineStyle;
 use obc_map_core::nav::DEFAULT_MIN_COMPONENT_EDGES;
 use obc_map_core::progress::Progress;
 use obc_map_core::serialize::Style;
 use obc_network::nav::build_graph_with;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 use obc_reader::{MapCache, MapTables, NavDirectory, Reader};
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::verify::verify_map;
@@ -59,18 +59,20 @@ fn ways() -> Vec<RoutableWay> {
     let id = |row: i32, col: i32| (row * 10 + col) as i64;
     let mut out = Vec::new();
     for row in 0..3 {
-        out.push(RoutableWay {
-            node_ids: (0..3).map(|col| id(row, col)).collect(),
-            coords: (0..3).map(|col| at(row, col)).collect(),
-            kind: 3,
-        });
+        out.push(RoutableWay::new(
+            row as i64 + 1,
+            (0..3).map(|col| id(row, col)).collect(),
+            (0..3).map(|col| at(row, col)).collect(),
+            3,
+        ));
     }
     for col in 0..3 {
-        out.push(RoutableWay {
-            node_ids: (0..3).map(|row| id(row, col)).collect(),
-            coords: (0..3).map(|row| at(row, col)).collect(),
-            kind: 3,
-        });
+        out.push(RoutableWay::new(
+            col as i64 + 4,
+            (0..3).map(|row| id(row, col)).collect(),
+            (0..3).map(|row| at(row, col)).collect(),
+            3,
+        ));
     }
     out
 }
@@ -95,7 +97,7 @@ fn features() -> Vec<(u8, Geom)> {
 
 /// `pack(X)` at fixture scale: the real packer's graph builder, quadtree and serializer.
 fn map() -> Vec<u8> {
-    let (graph, _) = build_graph_with(&ways(), DEFAULT_MIN_COMPONENT_EDGES);
+    let (graph, _) = build_graph_with(&ways(), &Routing::default(), DEFAULT_MIN_COMPONENT_EDGES).expect("source graph");
     let styles = vec![Style {
         id: 1,
         z_index: 1,
@@ -206,25 +208,6 @@ fn node_id(bytes: &[u8], off: usize) -> u32 {
 /// The `k`-th adjacency entry of the record at `off`.
 fn neighbor(off: usize, k: usize) -> usize {
     off + NAV_NODE_FIXED_LEN + k * NAV_NEIGHBOR_LEN
-}
-
-/// A record that is the last in its chunk and has room for `degree` adjacency entries.
-///
-/// `Degree` is a length field: bumping it on a record with a successor swallows that successor's
-/// bytes, and what the pass then reports is the hole in the numbering — a true refusal, but not the
-/// one under test. Growing the last record of a chunk instead eats only the `0xFF` sentinel and the
-/// padding behind it.
-fn last_record_with_room(bytes: &[u8], degree: usize) -> usize {
-    let (base, chunks, size) = node_chunks(bytes);
-    let records = node_records(bytes);
-    for chunk in (0..chunks).rev() {
-        let (start, end) = (base + chunk * size, base + (chunk + 1) * size);
-        let last = records.iter().copied().rfind(|&at| at >= start && at < end);
-        if let Some(at) = last.filter(|at| at + NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN <= end) {
-            return at;
-        }
-    }
-    panic!("the fixture has no chunk whose last record can grow to degree {degree}");
 }
 
 #[test]
@@ -403,9 +386,9 @@ fn adjacency_that_disagrees_with_the_edge_record_is_refused() {
 /// adjacency is read as anything.
 #[test]
 fn a_degree_past_the_cap_is_refused() {
-    refuses("a degree of 25", "exceed the §8.3 degree cap", |bytes| {
-        let at = last_record_with_room(bytes, 25);
-        bytes[at + 12] = 25;
+    refuses("a degree above the format cap", "the nav walk failed", |bytes| {
+        let at = node_records(bytes)[0];
+        bytes[at + 12] = (NAV_MAX_DEGREE + 1) as u8;
     });
 }
 

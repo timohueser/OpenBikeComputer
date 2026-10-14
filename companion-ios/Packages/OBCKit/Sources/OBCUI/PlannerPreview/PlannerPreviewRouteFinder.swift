@@ -146,12 +146,19 @@ final class PlannerRouteFinder {
     }
 
     /// Routes the plan of the detail once, with the request that "Plan this route" makes.
-    func routePreview(service: any PlannerDataSource, release: PlannerRelease, activity: RouteActivity) async {
-        guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan else { return }
+    func routePreview(model: PlannerPreviewModel) async {
+        let activity = model.activity
+        guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan,
+              let release = model.release, let selection = route.routingSelection(current: activity) else { return }
+        await model.loadActivities()
+        guard !Task.isCancelled, model.release?.id == release.id, model.activity == activity, detail?.route == route,
+              self.plan == .ready(plan), model.canPlanSignedRoute(route) else { return }
         let points = plan.requestPoints(loop: route.loop)
         let turnarounds = plan.turnarounds.filter { $0 > 0 && $0 < points.count - 1 }
-        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: .balanced,
-                                                  release: release), self.plan == .ready(plan) else { return }
+        guard let path = try? await model.service.route(points: points, turnarounds: turnarounds,
+                                                        activity: selection.activity, preference: selection.preference,
+                                                        release: release), !Task.isCancelled, model.release?.id == release.id, model.activity == activity,
+              detail?.route == route, self.plan == .ready(plan) else { return }
         preview = (plan, path, PlannerPreviewGrade(routePoints: path.points))
     }
 

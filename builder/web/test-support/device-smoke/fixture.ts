@@ -1,12 +1,12 @@
 /**
  * The map the device smoke sends, and what the device must say about it afterwards.
  *
- * The map is `sim/desktop/assets/grimsel-demo.obcm`, already in the tree: an OBCM v19 file with an
+ * The map is `sim/desktop/assets/grimsel-demo.obcm`, already in the tree: an OBCM v20 file with an
  * embedded OBCT v3 surface terrain region, whose source packages, producer commit, output digest and
- * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is
+ * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v20.json`. Nothing is
  * assembled here and no byte is appended.
  *
- * Its length is exactly 19,715 whole card blocks. The flat store lays an object out over 512-byte
+ * Its length is exactly 19,598 whole card blocks. The flat store lays an object out over 512-byte
  * blocks inside its extents, so a payload that is not a multiple of 512 ends inside a block and the
  * device's last write carries a partial tail; this one ends on a block boundary and it does not.
  * That is the case the fixture is here for. The producer pads the authored style tail so the complete
@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 /** Where the map and its provenance record live, relative to the repository root. */
 export const FIXTURE_MAP = "sim/desktop/assets/grimsel-demo.obcm";
-export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v19.json";
+export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v20.json";
 
 /** The flat store's block. A payload that is a whole number of these has no partial tail block. */
 export const CARD_BLOCK_BYTES = 512;
@@ -56,13 +56,13 @@ export interface SmokeFixture {
     readonly terrainBytes: number;
 }
 
-/** What the OBCM header says, for a file the reader has already accepted as v19. */
+/** What the OBCM header says, for a file the reader has already accepted as v20. */
 interface Header {
     readonly bbox: BoundingBox;
     readonly terrainBytes: number;
 }
 
-const OBCM_VERSION = 19;
+const OBCM_VERSION = 20;
 
 /**
  * Read the header fields the device echoes at boot.

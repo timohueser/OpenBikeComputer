@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "artifact": "sim/desktop/assets/grimsel-demo.obcm",
+  "obcm_version": 20,
+  "map": {
+    "bytes": 10034176,
+    "sha256": "d68389a6ba91a2ccfc0cff239a7fabb628480ba7c709b2960b7d0a219de641c1"
+  },
+  "producer_commit": "99d5d83c3a1a26651fea775b91b832edd203cac9",
+  "producer_worktree_modified": true,
+  "producer_policy": "The base commit identifies the checkout. Producer binaries include the uncommitted routing and format-20 changes; their exact SHA-256 values identify the tools used.",
+  "obc_pack_sha256": "fc6b08fec67b1bd7379c8c25c7daaed7de27c822a3a17a3dab0260f08d95fe2a",
+  "obcm_assemble_sha256": "75d3a2a56719df012c98c009b1f0276408055026aa4e5641e8f74c73e98fcef2",
+  "recipe_sha256": "a22af0f5c7e6561211312bd8de3d1439401820c6cf7ebf9a260648337e4bb943",
+  "schema_sha256": "7571eb2bad4a992e46e0c1c63dba46a386638fa375f2bae657a6a8a554d68b30",
+  "skins": {
+    "default": {
+      "path": "builder/presets/skins/default.json",
+      "sha256": "d1bc4ed2e4ccc1d0dbdb822da5eb1392ba7d8dc048a9e5650f5d79c521063377"
+    },
+    "dusk": {
+      "path": "builder/presets/skins/dusk.json",
+      "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
+    }
+  },
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "osm_source": {
+    "path": "switzerland.osm.pbf",
+    "bytes": 545916978,
+    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
+  },
+  "bounds_lon_lat": [
+    8.26,
+    46.54,
+    8.37,
+    46.67
+  ],
+  "terrain": {
+    "bytes": 7807488,
+    "sha256": "2c46061b61a444df3b24350089551a38451a01a9729de062520458f0749ad9ab",
+    "unchanged_from_v19": true,
+    "policy": "Existing embedded OBCT3 surface from the recorded v19 map is reused byte for byte for contours, ascent and embedding.",
+    "source_map_sha256": "6aedecd2d20ba254fd8b4f37ee744afec125c19291571d997069af872ecf3c4f"
+  },
+  "landmarks": [
+    {
+      "qid": 666668,
+      "variants": 3,
+      "photo": false
+    },
+    {
+      "qid": 114357029,
+      "variants": 1,
+      "photo": false
+    }
+  ],
+  "peak_associations": [
+    {
+      "osm_node_id": 1372219824,
+      "name": "M\u00f6nch",
+      "variants": 4,
+      "photo": true
+    }
+  ],
+  "landmark_section": {
+    "bytes": 1920,
+    "sha256": "19c7ecd29345cb46a4ca08c9da2ebf5a875e543d10c7d63705b49600306dbcac",
+    "unchanged_from_v19": false,
+    "policy": "Both names and all article payloads are unchanged. Approach metadata is regenerated from current access rules."
+  },
+  "peak_section": {
+    "bytes": 8624,
+    "sha256": "90d6d8c989c33644843b5da899a4cb5d1bff04cd01c6c8d05b34d3e9fcea437e",
+    "unchanged_from_v19": false,
+    "policy": "OSM association, article identity, name, multilingual articles and photo are unchanged. The current serializer rebuilds the photo credit."
+  },
+  "settlement_records": 3,
+  "summit_records": 72,
+  "lod_count": 14,
+  "contours": {
+    "lines": 816,
+    "vertices_after_simplification": 58790
+  },
+  "navigation_counts": {
+    "nodes": 719,
+    "edges": 816
+  },
+  "source_graph_counts": {
+    "nodes": 674,
+    "edges": 771
+  },
+  "command": "OBC_DEMO_SURFACE=VERIFIED-V19-SURFACE.obcd OBC_DEMO_LANDMARKS=LANDMARKS/content.json OBC_DEMO_PEAKS=PEAKS/peaks.json fixtures/build-map-package.sh grimsel-demo PINNED/switzerland.osm.pbf",
+  "land_policy": "The canonical demo corridor is landlocked. The recipe uses --no-land, with the schema natural.land renderer backdrop; source OSM inland water and landcover remain included. No global coastline dataset is used.",
+  "navigation": "The graph is rebuilt from source permissions, directional access, barriers, turn restrictions and the current four device profile definitions. Geographic rendering is regenerated; byte identity with the previous rendering is not asserted.",
+  "embedding": "The fixture recipe restamps Light and Dusk, appends the unchanged terrain, relocates the dark table and pads to a 512-byte boundary.",
+  "network": "Source packages are digest-verified locally before the bake. The bake downloads no sources and publishes no fixture catalog."
+}

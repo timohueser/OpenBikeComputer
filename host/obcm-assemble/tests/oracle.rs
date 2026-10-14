@@ -38,7 +38,7 @@ use obc_map_core::config::{Config, LineStyle as PackLineStyle};
 use obc_map_core::grid::BandTable;
 use obc_map_core::progress::Progress;
 use obc_places::metadata::Poi;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obc_route::nav::{plan_route, NavScratch};
@@ -159,11 +159,13 @@ fn rect_with_hole(
 /// coordinate but naming different ids are not connected, and a fixture that got that wrong would
 /// test the router's failure mode rather than the assembler's seams.
 fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
-    RoutableWay {
-        node_ids: pts.iter().map(|(id, _)| *id).collect(),
-        coords: pts.iter().map(|(_, (lat, lon))| (*lon as i32, *lat as i32)).collect(),
+    let source_id = pts.iter().fold(kind as i64 + 1, |id, (node, _)| id.wrapping_mul(31).wrapping_add(*node));
+    RoutableWay::new(
+        source_id,
+        pts.iter().map(|(id, _)| *id).collect(),
+        pts.iter().map(|(_, (lat, lon))| (*lon as i32, *lat as i32)).collect(),
         kind,
-    }
+    )
 }
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
@@ -329,14 +331,15 @@ fn cut_with(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay], band
         sources: vec![SourceExtent::parse("fixture=6.9,46.9,8.1,47.9").expect("source")],
         ..Default::default()
     };
-    cut_ingested(ing, ways, cfg, dir, &opts, &Progress::silent()).expect("the cutter runs")
+    cut_ingested(ing, ways, &Routing::default(), cfg, dir, &opts, &Progress::silent()).expect("the cutter runs")
 }
 
 /// `pack(X)`: the monolithic path over an explicit global bbox — the same stages
 /// [`obc_bake::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
 /// fixture has.
 fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i64, i64, i64)) -> Vec<u8> {
-    let (graph, _) = obc_network::nav::build_graph_with(ways, cfg.routing.min_component_edges);
+    let (graph, _) = obc_network::nav::build_graph_with(ways, &Routing::default(), cfg.routing.min_component_edges)
+        .expect("source graph");
     let lods: Vec<LodLayer> = cfg
         .lods
         .iter()
@@ -1332,6 +1335,81 @@ fn cell_input_order_does_not_change_the_connected_map() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+fn incidence_map(name: &str, ways: &[RoutableWay], reverse: bool) -> (Vec<u8>, obcm_assemble::nav::NavStats) {
+    let mut cfg = config();
+    cfg.routing.min_component_edges = 0;
+    let ing = Ingested {
+        features: vec![rect(style_id(&cfg, "natural", "water"), 0, LAT - 2000, SEAM - 3000, LAT + 2000, SEAM + 3000)],
+        coastlines: Vec::new(),
+        pois: Vec::new(),
+        landmark_links: Vec::new(),
+    };
+    let dir = scratch(name);
+    let summary = cut(&dir, &cfg, &ing, ways);
+    let loaded = load(&dir, &summary);
+    let mut order: Vec<_> = (0..loaded.cells.len()).collect();
+    if reverse {
+        order.reverse();
+    }
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (out, store) = loaded.assemble(&cfg, &order, &opts).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    (store.map.0, out.stats.nav)
+}
+
+#[test]
+fn an_ordinary_osm_vertex_on_the_grid_keeps_both_source_incidences() {
+    let mut road = way(7, &[(1, (LAT, SEAM - 1000)), (2, (LAT, SEAM)), (3, (LAT, SEAM + 1000))]);
+    let (map, stats) = incidence_map("osm-seam", &[road.clone()], false);
+    assert_eq!((stats.nodes, stats.edges, stats.unified), (3, 2, 1));
+    let endpoints = ((SEAM as i32 - 1000, LAT as i32), (SEAM as i32 + 1000, LAT as i32));
+    assert!(route(&map, endpoints.0, endpoints.1).is_some());
+    assert!(route(&map, endpoints.1, endpoints.0).is_some());
+    assert_eq!(sha256(&map), sha256(&incidence_map("osm-seam-cell-order", &[road.clone()], true).0));
+    road.node_ids.reverse();
+    road.coords.reverse();
+    let (reverse, reverse_stats) = incidence_map("osm-seam-reversed", &[road], true);
+    assert_eq!(stats, reverse_stats);
+    assert_eq!(route(&map, endpoints.0, endpoints.1), route(&reverse, endpoints.0, endpoints.1));
+    assert_eq!(route(&map, endpoints.1, endpoints.0), route(&reverse, endpoints.1, endpoints.0));
+}
+
+#[test]
+fn coincident_source_ways_keep_distinct_ports_and_directional_permissions() {
+    use obc_places::routing::ProfileAccess;
+
+    let road = way(7, &[(1, (LAT, SEAM - 2000)), (2, (LAT, SEAM - 1000))]);
+    for directional in [false, true] {
+        let mut ways = vec![road.clone(), road.clone()];
+        ways[1].id += 1;
+        if directional {
+            ways[0].access[1] = ProfileAccess::default();
+            ways[1].access = [ProfileAccess::default(), ProfileAccess { allowed: 3, pushing: 2 }];
+        }
+        let (map, stats) = incidence_map("coincident-ways", &ways, false);
+        assert_eq!((stats.nodes, stats.edges, stats.duplicate_edges), (2, 2, 0));
+        let src = SliceSource(&map);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        reader
+            .for_each_nav_node(&reader.bbox, &mut [0; 512], |node| {
+                let mut arcs: Vec<_> =
+                    node.neighbors().map(|arc| (arc.port, arc.profile_mask, arc.push_mask)).collect();
+                arcs.sort_unstable();
+                let expected = match (directional, node.source_key[1]) {
+                    (true, 1) => vec![(0, 15, 0), (1, 0, 0)],
+                    (true, 2) => vec![(0, 0, 0), (1, 3, 2)],
+                    _ => vec![(0, 15, 0), (1, 15, 0)],
+                };
+                assert_eq!(arcs, expected);
+            })
+            .unwrap();
+        ways.reverse();
+        assert_eq!(sha256(&map), sha256(&incidence_map("coincident-ways-reversed", &ways, true).0));
+    }
+}
+
 /// The degenerate and mis-stated selections. Each is a case a caller can actually produce — a
 /// catalog listing a cell twice, a one-cell corridor, a `network` cell with no roads in it, a band
 /// id that does not exist — and each has a specific right answer that is not "assemble something".
@@ -1697,7 +1775,8 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
         no_land: true,
         ..Default::default()
     };
-    let mut summary = cut_ingested(&ing, &ways, &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
+    let mut summary =
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
     let mut found = std::collections::BTreeMap::new();
     for cell in &summary.cells {
         let bytes = std::fs::read(dir.join("cells").join(&cell.path)).unwrap();
@@ -1757,14 +1836,16 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     assert!(far, "Peak View resolves a summit beyond the landmark query radius");
     // Catalogue and cell arrival order cannot change the merged content.
     opts.peaks.reverse();
-    let reverse = cut_ingested(&ing, &ways, &cfg, &dir.join("reverse"), &opts, &Progress::silent()).unwrap();
+    let reverse =
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, &dir.join("reverse"), &opts, &Progress::silent()).unwrap();
     assert_eq!(assembled(&dir.join("reverse"), &cfg, &reverse).0, bytes);
     summary.cells.reverse();
     assert_eq!(assembled(&dir.join("cells"), &cfg, &summary).0, bytes);
     // Clipping out the west summit retains the shared article for each remaining linked summit.
     opts.select = vec![obc_map_core::grid::CellId::new(18, 1204, 1053).unwrap()];
     opts.only_bands = vec!["network".into()];
-    let clipped = cut_ingested(&ing, &ways, &cfg, &dir.join("clipped"), &opts, &Progress::silent()).unwrap();
+    let clipped =
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, &dir.join("clipped"), &opts, &Progress::silent()).unwrap();
     let bytes = std::fs::read(dir.join("clipped").join(&clipped.cells[0].path)).unwrap();
     let src = SliceSource(&bytes);
     let section = obc_reader::peaks::map_section(&src).unwrap().unwrap();
@@ -1808,7 +1889,8 @@ fn a_peak_record_with_a_photo_and_no_text_survives_the_cut_and_the_assembler() {
         no_land: true,
         ..Default::default()
     };
-    let summary = cut_ingested(&ing, &ways, &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
+    let summary =
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
     let (bytes, _) = assembled(&dir.join("cells"), &cfg, &summary);
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();

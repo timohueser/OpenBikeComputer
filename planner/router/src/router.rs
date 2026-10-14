@@ -370,7 +370,7 @@ impl<P: RoutingData> Router<P> {
                 if (control.cancelled)() {
                     return Err(Error::Cancelled);
                 }
-                let (shape, total, mut piece) = self.package.with_road(slice.road, |road| {
+                let (shape, total, pace_multiplier, mut piece) = self.package.with_road(slice.road, |road| {
                     let along = geometry::cumulative(&road.shape);
                     let total = along[along.len() - 1];
                     let piece = Piece {
@@ -384,7 +384,12 @@ impl<P: RoutingData> Router<P> {
                         sac_scale: road.hiking_difficulty,
                         mtb_scale: road.mtb_scale(),
                     };
-                    (geometry::cut(&road.shape, &along, slice.from * total, slice.to * total), total, piece)
+                    (
+                        geometry::cut(&road.shape, &along, slice.from * total, slice.to * total),
+                        total,
+                        Pace::road_multiplier(road, profile),
+                        piece,
+                    )
                 })?;
                 piece.closures = closures.closing(slice.road, piece.mode);
                 let length = (total * (slice.to - slice.from)).round() as u64;
@@ -401,7 +406,8 @@ impl<P: RoutingData> Router<P> {
                 for (index, &point) in shape.iter().enumerate() {
                     if index > 0 {
                         let before = shape[index - 1];
-                        let step = request.pace.segment_seconds(before, point, piece.mode != BIKE, profile.mtb_pace);
+                        let step = request.pace.segment_seconds(before, point, piece.mode != BIKE, profile.mtb_pace)
+                            * pace_multiplier;
                         seconds += step;
                         totals.seconds += step;
                         if before.elevation != NO_ELEVATION && point.elevation != NO_ELEVATION {

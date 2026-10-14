@@ -1,7 +1,7 @@
 use crate::{
     data::RoutingData,
     geometry::{self, METRES_PER_UDEG},
-    model::{Point, Totals},
+    model::{Point, Profile, Totals},
     router::Response,
     snap, Control, Error, Request, Result, Route, Router,
 };
@@ -37,7 +37,10 @@ impl<P: RoutingData> Router<P> {
         let base = request.profile.split('/').next().unwrap_or(&request.profile);
         for variant in ["shorter", "less-climbing"] {
             let name = format!("{base}/{variant}");
-            if name == request.profile || self.package.profile(&name).is_err() {
+            let Ok(profile) = self.package.profile(&name) else {
+                continue;
+            };
+            if name == request.profile || !same_eligibility(self.package.profile(&request.profile)?, profile) {
                 continue;
             }
             let goal = Request { profile: name, alternatives: false, ..request.clone() };
@@ -147,6 +150,9 @@ impl<P: RoutingData> Router<P> {
             return Ok(false);
         }
         let primary = &selected[0];
+        if !same_attachments(primary, candidate) {
+            return Ok(false);
+        }
         let (a, b) = (primary.totals(), candidate.totals());
         if b.distance_m > a.distance_m * 3 / 2 || b.seconds > a.seconds * 1.8 {
             return Ok(false);
@@ -193,6 +199,31 @@ impl<P: RoutingData> Router<P> {
     }
 }
 
+fn same_eligibility(a: &Profile, b: &Profile) -> bool {
+    a.walking == b.walking
+        && a.modes() == b.modes()
+        && a.max_difficulty == b.max_difficulty
+        && a.allow_steps == b.allow_steps
+}
+
+fn same_attachments(primary: &Route, candidate: &Route) -> bool {
+    let close = |a: Option<&Point>, b: Option<&Point>| {
+        a.zip(b).is_some_and(|(a, b)| a.distance(*b) <= snap::Policy::default().ambiguity_m)
+    };
+    if !close(primary.points.first(), candidate.points.first())
+        || !close(primary.points.last(), candidate.points.last())
+    {
+        return false;
+    }
+    // Corridor probes add a via. Profile tradeoffs keep every requested shaping point.
+    primary.profile == candidate.profile
+        || primary.legs.len() == candidate.legs.len()
+            && primary.legs.iter().zip(&candidate.legs).all(|(a, b)| {
+                close(primary.points.get(a.from_index), candidate.points.get(b.from_index))
+                    && close(primary.points.get(a.to_index), candidate.points.get(b.to_index))
+            })
+}
+
 fn tradeoff(primary: &Route, candidate: &Route) -> Option<&'static str> {
     let (a, b) = (&primary.totals(), &candidate.totals());
     let unpaved = |t: &Totals| t.surface_m[3..].iter().sum::<u64>();
@@ -212,16 +243,96 @@ fn tradeoff(primary: &Route, candidate: &Route) -> Option<&'static str> {
     }
 }
 
-/// Whether a quarter or more of about 100 points along the candidate are 500 m or more from the
-/// primary route.
+/// Whether at least a quarter of evenly spaced samples lie 500 m from the primary route.
 fn distinct(primary: &Route, candidate: &Route) -> bool {
-    let mut far = 0;
-    let mut count = 0;
-    for &p in candidate.points.iter().step_by((candidate.points.len() / 100).max(1)) {
-        let distance =
-            primary.points.windows(2).map(|s| geometry::project(p, s[0], s[1]).1).fold(f64::INFINITY, f64::min);
-        far += usize::from(distance >= 500.0);
-        count += 1;
+    distinct_lines(&primary.points, &candidate.points)
+}
+
+fn distinct_lines(primary: &[Point], candidate: &[Point]) -> bool {
+    let along = geometry::cumulative(candidate);
+    let length = along.last().copied().unwrap_or(0.0);
+    if length == 0.0 || primary.len() < 2 {
+        return false;
     }
-    far * 4 >= count && far > 0
+    let far = (0..=100)
+        .filter(|&sample| {
+            let (index, fraction) = geometry::locate(&along, length * f64::from(sample) / 100.0);
+            let point = geometry::lerp(candidate[index], candidate[index + 1], fraction);
+            primary.windows(2).all(|segment| geometry::project(point, segment[0], segment[1]).1 >= 500.0)
+        })
+        .count();
+    far * 4 >= 101
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{router::Leg, snap::Position};
+
+    #[test]
+    fn alternatives_keep_skill_limits_and_requested_attachments() {
+        let profiles = Profile::presets();
+        let profile = |name: &str| profiles.iter().find(|p| p.name == name).unwrap();
+        for family in ["touring", "gravel", "road", "hiking", "mtb"] {
+            assert!(same_eligibility(profile(family), profile(&format!("{family}/shorter"))));
+        }
+        assert!(!same_eligibility(profile("hiking/alpine"), profile("hiking/shorter")));
+        assert!(!same_eligibility(profile("mtb/technical"), profile("mtb/less-climbing")));
+        let mut riding_only = profile("touring").clone();
+        riding_only.allow_pushing = false;
+        assert!(!same_eligibility(profile("touring"), &riding_only));
+        let mut carrying = profile("touring").clone();
+        carrying.allow_steps = true;
+        assert!(!same_eligibility(profile("touring"), &carrying));
+
+        let route = |profile: &str, coordinates: &[(i32, i32)]| Route {
+            id: String::new(),
+            reason: "primary",
+            package: String::new(),
+            profile: profile.into(),
+            cost: 0,
+            points: coordinates.iter().map(|&(lon, lat)| Point { lon, lat, elevation: 0.0 }).collect(),
+            elapsed: vec![],
+            legs: (1..coordinates.len())
+                .map(|end| Leg {
+                    start: Position { road: 0, fraction: 0.0 },
+                    end: Position { road: 0, fraction: 1.0 },
+                    from_index: end - 1,
+                    to_index: end,
+                    totals: Totals::default(),
+                    pieces: vec![],
+                })
+                .collect(),
+            snap_truncated: false,
+            via: None,
+        };
+        let primary = route("hiking", &[(0, 0), (10_000, 0), (20_000, 0)]);
+        let near = route("hiking/shorter", &[(0, 20), (10_000, 20), (20_000, 20)]);
+        assert!(same_attachments(&primary, &near));
+        let missed_finish = route("hiking/shorter", &[(0, 0), (10_000, 0), (18_000, 0)]);
+        assert!(!same_attachments(&primary, &missed_finish));
+        let summit = route("hiking/alpine", &[(0, 0), (20_000, 0)]);
+        let lower_road = route("hiking/shorter", &[(0, 0), (18_000, 0)]);
+        assert!(!same_attachments(&summit, &lower_road));
+        let missed_via = route("hiking/shorter", &[(0, 0), (10_000, 1000), (20_000, 0)]);
+        assert!(!same_attachments(&primary, &missed_via));
+        let direct = route("hiking", &[(0, 0), (20_000, 0)]);
+        let corridor = route("hiking", &[(0, 0), (5000, 1000), (15_000, 1000), (20_000, 0)]);
+        assert!(same_attachments(&direct, &corridor));
+    }
+
+    #[test]
+    fn corridor_distinctness_uses_distance_instead_of_vertex_density() {
+        let point = |lon, lat| Point { lon, lat, elevation: 0.0 };
+        let primary = [point(0, 0), point(100_000, 0)];
+        let short_excursion = [point(0, 0), point(1000, 10_000), point(2000, 0), point(100_000, 0)];
+        let separate_corridor = [point(0, 0), point(10_000, 10_000), point(90_000, 10_000), point(100_000, 0)];
+        for (line, expected) in [(&short_excursion, false), (&separate_corridor, true)] {
+            let mut dense: Vec<_> =
+                (0..1000).map(|index| geometry::lerp(line[0], line[1], f64::from(index) / 1000.0)).collect();
+            dense.extend_from_slice(&line[1..]);
+            assert_eq!(distinct_lines(&primary, line), expected);
+            assert_eq!(distinct_lines(&primary, &dense), expected);
+        }
+    }
 }

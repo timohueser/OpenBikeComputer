@@ -3,7 +3,7 @@
     import Select from './PlannerSelect.svelte';
     import VersionsMenu from './VersionsMenu.svelte';
     import { onMount } from 'svelte';
-    import { ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
+    import { presetDescription, ridingProfiles, servedPresets, type BikeType } from '../../lib/planner/riding-profiles';
     import { planTitle, type Trip } from '../../lib/planner/editor';
     import { regionProfiles, type RoutingLine } from '../../lib/planner/routing';
     import type { Version } from '../../lib/planner/versions';
@@ -29,10 +29,11 @@
 
     const bike = $derived(trip.bike ?? 'touring');
     const title = $derived(name || planTitle(trip));
-    // The profiles of the routing region; until they arrive, every activity and preset shows.
+    // Advanced terrain presets appear only when the routing region advertises them.
     let profiles = $state<string[]>();
     // An activity that the region does not serve stays listed while the plan uses it.
-    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => value === bike || servedPresets(value as BikeType, profiles).length));
+    const activities = $derived(Object.entries(ridingProfiles).filter(([value]) => value === bike
+        || servedPresets(value as BikeType, profiles).some(name => !presetDescription(name))));
 
     onMount(() => { regionProfiles().then(found => profiles = found, () => {}); });
 </script>
@@ -51,7 +52,7 @@
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
+            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, description: presetDescription(value), icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>

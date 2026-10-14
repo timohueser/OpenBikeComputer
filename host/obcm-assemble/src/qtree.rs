@@ -1,7 +1,7 @@
 //! The point quadtree the POI section and the nav node index share.
 //!
 //! Both are the same encoding over the file's global bbox, built with floor-division midpoints in
-//! NW/NE/SW/SE order and a 10 µdeg recursion floor — the same split geometry `obc-pack` uses,
+//! NW/NE/SW/SE order and an integer-coordinate recursion floor — the same split geometry `obc-pack` uses,
 //! because the reader's `walk_leaves` resolves exactly one subdivision rule and a second one would
 //! put records outside the leaf that indexes them.
 //!
@@ -29,10 +29,9 @@ use crate::grid::UBox;
 use crate::scratch::{ScratchId, ScratchStore};
 use crate::{Error, Result};
 
-/// Recursion floor, µdeg (~1 m): below this a leaf keeps whatever it holds. Identical to the
-/// packer's own literal and pinned by `tests/pinning.rs::the_split_floor_matches_the_packers`,
-/// because a silent divergence would put records outside the leaf that indexes them.
-pub const SPLIT_FLOOR: i64 = 10;
+/// Stop when both sides are at most one integer coordinate unit. A longer axis can still separate
+/// records even when the other axis has no extent.
+pub const SPLIT_FLOOR: i64 = 1;
 
 /// A record the tree can bin: it has an absolute coordinate and an on-wire size.
 pub trait Point {
@@ -68,7 +67,7 @@ pub enum Tree<T> {
 pub fn build<T: Point>(points: Vec<T>, bbox: UBox, capacity: usize) -> Tree<T> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let packed: usize = points.iter().map(Point::record_len).sum();
-    if packed <= capacity || max_lon - min_lon < SPLIT_FLOOR || max_lat - min_lat < SPLIT_FLOOR {
+    if packed <= capacity || at_floor(bbox) {
         return Tree::Leaf(points);
     }
     let mid_lon = (min_lon + max_lon).div_euclid(2);
@@ -252,7 +251,7 @@ pub fn flatten<T: Point>(
 /// Levels the [`tree_key`] descent can encode: two bits each in a `u64`.
 ///
 /// The assembly bbox is a square of `2^span` µdeg with `span ≤ 29`, and the [`SPLIT_FLOOR`] stops
-/// the descent once a side is under 10, so a real tree is at most 27 deep. A box that would need
+/// the descent at one unit, so a real tree is at most 29 deep. A box that would need
 /// more is refused rather than silently truncated: two points whose keys agreed only because the
 /// key ran out of bits would swap places.
 const MAX_LEVELS: u32 = 32;
@@ -274,7 +273,7 @@ const fn prefix_mask(depth: u32) -> u64 {
 /// Whether `bbox` is past the recursion floor — [`build`]'s own test, stated once.
 fn at_floor(bbox: UBox) -> bool {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    max_lon - min_lon < SPLIT_FLOOR || max_lat - min_lat < SPLIT_FLOOR
+    max_lon - min_lon <= SPLIT_FLOOR && max_lat - min_lat <= SPLIT_FLOOR
 }
 
 /// The four children of `bbox`, in [`build`]'s own NW/NE/SW/SE order.
@@ -334,8 +333,7 @@ fn descent_key(lat: i32, lon: i32, bbox: UBox) -> u64 {
 ///
 /// Every midline there halves an even side exactly, so the descent's digit at depth `d` is bit
 /// `k - 1 - d` of the point's offsets into the box, and the key is those bits interleaved. The
-/// descent stops at the first side under [`SPLIT_FLOOR`], which for a power of two is a side under
-/// the next power of two.
+/// descent stops at the one-unit [`SPLIT_FLOOR`].
 fn square_key(lat: i32, lon: i32, bbox: UBox) -> Option<u64> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let side = max_lon - min_lon;
@@ -345,8 +343,7 @@ fn square_key(lat: i32, lon: i32, bbox: UBox) -> Option<u64> {
         return None;
     }
     let k = side.trailing_zeros();
-    let floor_log2 = (SPLIT_FLOOR as u64).next_power_of_two().trailing_zeros();
-    let levels = (k + 1).saturating_sub(floor_log2).min(MAX_LEVELS);
+    let levels = k.min(MAX_LEVELS);
     if levels == 0 {
         return Some(0);
     }
@@ -373,7 +370,7 @@ pub fn depth_bound(bbox: UBox) -> Option<u32> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let (mut w, mut h) = (max_lon - min_lon, max_lat - min_lat);
     let mut depth = 0;
-    while w >= SPLIT_FLOOR && h >= SPLIT_FLOOR {
+    while w > SPLIT_FLOOR || h > SPLIT_FLOOR {
         if depth == MAX_LEVELS {
             return None;
         }
@@ -1035,7 +1032,7 @@ mod tests {
     /// `resize` truncate it into a chunk with no sentinel.
     #[test]
     fn an_unsplittable_leaf_drops_loudly_instead_of_overflowing() {
-        // Twelve records of 60 bytes at one coordinate: 720 > 512, and the 10-µdeg floor stops the
+        // Twelve records of 60 bytes at one coordinate: 720 > 512, and the integer floor stops the
         // tree from splitting them apart.
         let pts: Vec<P> = (0..12).map(|_| P(500_000, 500_000, 60)).collect();
         let tree = build(pts, (499_999, 499_999, 500_001, 500_001), 100);
@@ -1097,10 +1094,15 @@ mod tests {
     #[test]
     fn the_streaming_tree_is_the_tree_build_and_flatten_make() {
         const CHUNK: usize = 512;
-        let bbox: UBox = (0, 0, 1 << 20, 1 << 20);
         let mut seed = 0x2545_F491_4F6C_DD1D_u64;
 
-        for trial in 0..24 {
+        for trial in 0..27 {
+            let bbox: UBox = match trial {
+                24 => (0, 0, 8, 0),
+                25 => (0, 0, 0, 8),
+                26 => (0, 0, 8, 8),
+                _ => (0, 0, 1 << 20, 1 << 20),
+            };
             let n = 1 + (rng(&mut seed) % 400) as usize;
             let mut points: Vec<Q> = (0..n)
                 .map(|k| Q {
@@ -1111,17 +1113,30 @@ mod tests {
                 })
                 .collect();
             // A cluster inside the recursion floor, which no tree can split apart.
-            if trial % 3 == 0 {
+            if trial < 24 && trial % 3 == 0 {
                 let (lat, lon) = (500_000, 500_000);
                 for k in 0..20 {
                     points.push(Q { lat, lon, len: 60, ord: (n + k) as u32 });
                 }
+            }
+            if trial >= 24 {
+                points = (0..8)
+                    .map(|k| Q {
+                        lat: if trial == 24 { 0 } else { k },
+                        lon: if trial == 25 { 0 } else { k },
+                        len: 100,
+                        ord: k as u32,
+                    })
+                    .collect();
             }
 
             // The in-memory formulation, as the oracle.
             let tree = build(points.iter().collect::<Vec<&Q>>(), bbox, CHUNK);
             let (want_index, want_nodes, want_chunks, want_bins, want_dropped) =
                 flatten(&tree, CHUNK, true, &|p: &&Q, out: &mut Vec<u8>| pack_q(p, out));
+            if trial >= 24 {
+                assert_eq!(want_dropped, 0, "one-unit separation must preserve dense junctions");
+            }
 
             // …and the streaming one, over the same points and their packed bytes as tree-ordered
             // streams.
@@ -1156,7 +1171,7 @@ mod tests {
     /// that would recurse past [`MAX_LEVELS`] is a refusal rather than two points swapping places.
     #[test]
     fn a_box_too_deep_for_the_key_is_refused() {
-        assert_eq!(depth_bound((0, 0, 1 << 20, 1 << 20)), Some(17), "10 µdeg floor over a 2^20 box");
+        assert_eq!(depth_bound((0, 0, 1 << 20, 1 << 20)), Some(20), "integer floor over a 2^20 box");
         assert!(depth_bound((0, 0, 1 << 29, 1 << 29)).is_some(), "the largest box `grid.rs` can produce");
         let scratch = crate::scratch::MemoryScratch::new();
         let points = scratch.create().expect("a scratch file");

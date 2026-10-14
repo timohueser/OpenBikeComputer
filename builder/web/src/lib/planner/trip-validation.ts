@@ -1,6 +1,6 @@
 import { maxRidingDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
-import { presetNames, ridingProfiles } from './riding-profiles';
+import { presetAppliesTo, ridingProfiles, type BikeType } from './riding-profiles';
 
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -67,5 +67,5 @@ export function isTrip(value: unknown): value is Trip {
         integer(Number(night), 1, days - 1) && finite(progress) && progress >= 0 && progress <= 1))) return false;
 
     if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
-    return value.preset === undefined || (typeof value.preset === 'string' && presetNames.includes(value.preset));
+    return value.preset === undefined || (typeof value.preset === 'string' && presetAppliesTo(value.preset, (value.bike ?? 'touring') as BikeType));
 }

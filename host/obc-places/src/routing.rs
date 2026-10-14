@@ -1,8 +1,12 @@
 //! Routable source ways and their byte classification, before graph construction.
 
-/// Map an OSM `highway=*` value to its highway class (5-bit). `None` for a value that carries no
-/// class, including `motorway`, which is always bike-illegal, and `trunk`, which [`classify`]
-/// handles separately (class 13, only with `bicycle=yes`).
+pub mod access;
+pub mod country;
+pub mod data;
+mod device;
+pub use device::{node_access, way_access, ProfileAccess};
+
+/// Map a supported source highway to its device class. Motorways have no device class.
 fn highway_class(highway: &str) -> Option<u8> {
     Some(match highway {
         "cycleway" | "cycleway_link" => 0,
@@ -18,7 +22,7 @@ fn highway_class(highway: &str) -> Option<u8> {
         "tertiary" | "tertiary_link" => 10,
         "secondary" | "secondary_link" => 11,
         "primary" | "primary_link" => 12,
-        // `trunk`/`trunk_link` are class 13, but only with `bicycle=yes` — see `classify`.
+        // `trunk`/`trunk_link` are class 13; mode legality is checked separately.
         _ => return None,
     })
 }
@@ -37,64 +41,28 @@ fn surface_class(surface: Option<&str>) -> u8 {
     }
 }
 
-/// Classify a way into its packed way-kind byte, or `None` if the way is not routable.
-///
-/// The byte is `kind = (surface_class << 5) | highway_class`, from the canonical [`highway_class`]
-/// and [`surface_class`] tables that `OBCM_Spec.md` mirrors. The device never sees raw tags: a
-/// routing profile weights edges purely off this byte.
-///
-/// A way is not routable when any hard-exclude applies: `highway=motorway|motorway_link`;
-/// `highway=trunk|trunk_link` unless `bicycle=yes`; `motorroad=yes`; `bicycle=no|use_sidepath`;
-/// `access=no|private`. Everything else is kept, including `footway` and `steps`, which are legal to
-/// walk a bike along, and `bicycle=dismount`. Preference rather than legality is the router's job.
+/// Classify a source highway and surface into the packed byte. Legality and direction are
+/// separate in [`way_access`], so a mode-specific permission can override general restrictions.
 pub fn classify<'a, I>(tags: I) -> Option<u8>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let mut highway: Option<&str> = None;
-    let mut surface: Option<&str> = None;
-    let mut bicycle: Option<&str> = None;
-    let mut access: Option<&str> = None;
-    let mut motorroad: Option<&str> = None;
-    for (k, v) in tags {
-        match k {
-            "highway" => highway = Some(v),
-            "surface" => surface = Some(v),
-            "bicycle" => bicycle = Some(v),
-            "access" => access = Some(v),
-            "motorroad" => motorroad = Some(v),
+    let (mut highway, mut surface) = (None, None);
+    for (key, value) in tags {
+        match key {
+            "highway" => highway = Some(value),
+            "surface" => surface = Some(value),
             _ => {}
         }
     }
-
-    // Hard bike-illegal excludes (checked before any class assignment).
-    if matches!(access, Some("no") | Some("private")) {
-        return None;
-    }
-    if motorroad == Some("yes") {
-        return None;
-    }
-    if matches!(bicycle, Some("no") | Some("use_sidepath")) {
-        return None;
-    }
-
-    let highway = highway?;
-    let hclass = match highway {
-        // `trunk` is legal for bikes only when explicitly allowed, and is then its own class.
-        "trunk" | "trunk_link" => {
-            if bicycle == Some("yes") {
-                13
-            } else {
-                return None;
-            }
-        }
+    let class = match highway? {
+        "trunk" | "trunk_link" => 13,
         other => highway_class(other)?,
     };
-    Some((surface_class(surface) << 5) | hclass)
+    Some((surface_class(surface) << 5) | class)
 }
 
-/// Whether a way is routable for a bike: exactly `classify(tags).is_some()`. A named predicate
-/// because that is how the ingest reads it — routability first, then the kind.
+/// Whether a way has a supported source class. The importer must also check [`way_access`].
 pub fn is_routable<'a, I>(tags: I) -> bool
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -107,7 +75,16 @@ where
 /// filters before pushing, so `kind` is always a real class here.
 #[derive(Debug, Clone)]
 pub struct RoutableWay {
+    pub id: i64,
     pub node_ids: Vec<i64>,
     pub coords: Vec<(i32, i32)>,
     pub kind: u8,
+    pub access: [ProfileAccess; 2],
+}
+
+impl RoutableWay {
+    /// Explicitly open source topology for hand-built fixtures.
+    pub fn new(id: i64, node_ids: Vec<i64>, coords: Vec<(i32, i32)>, kind: u8) -> Self {
+        Self { id, node_ids, coords, kind, access: [ProfileAccess::OPEN; 2] }
+    }
 }

@@ -40,7 +40,7 @@ use obc_map_core::config::Config;
 use obc_map_core::grid::{BandTable, CellId};
 use obc_map_core::progress::Progress;
 use obc_places::metadata::Poi;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 
 const SNAPSHOT: &str = "2026-07-28";
 /// The two licences the fixture's landmark artifact is under: one article, one photo.
@@ -185,7 +185,7 @@ impl CellCutter for FixtureCutter {
         regions.sort();
         self.landmarks.lock().expect("landmarks").push((cells.clone(), regions));
         let (ing, ways) = fixture(config);
-        obc_bake::cut::cut_ingested(&ing, &ways, config, out_dir, opts, progress)
+        obc_bake::cut::cut_ingested(&ing, &ways, &Routing::default(), config, out_dir, opts, progress)
     }
 }
 
@@ -221,6 +221,8 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     // One long road across the whole area: every cell of row 1204 gets nav content, and every
     // column boundary gets a deterministic boundary junction.
     let ways = vec![RoutableWay {
+        id: 1,
+        access: [obc_places::routing::ProfileAccess::OPEN; 2],
         node_ids: (0..=24).collect(),
         coords: (0..=24).map(|k| ((lon0 + k * (lon1 - lon0) / 24) as i32, 47_300_000i32)).collect(),
         kind: 7,

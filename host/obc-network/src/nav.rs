@@ -1,5 +1,5 @@
 //! Build an in-memory routable navigation graph from the ingested `highway=*` ways: junction nodes
-//! joined by undirected edges whose polyline interiors carry no junctions. `serialize.rs` tiles and
+//! joined by physical edges with directed access and source-wide turn incidences. `serialize.rs` tiles and
 //! serializes it into the OBCM nav-graph section; nothing here touches the `.obcm` bytes.
 //!
 //! The render path drops OSM node ids the moment it resolves coordinates. This pass keeps, for
@@ -8,8 +8,8 @@
 //!
 //! The routable-class predicate ([`obc_places::routing::is_routable`]) and the [`obc_places::routing::classify`] way-kind are independent of
 //! render styling and config-free, so packing the same extract always yields the same graph.
-//! [`build_graph`] also classifies way kinds, drops bike-illegal ways, prunes tiny islands, and
-//! splits edges so the serialized `i16` neighbor deltas and `u16` costs hold by construction.
+//! [`build_graph`] preserves source access and turn rules, prunes tiny islands, and splits edges
+//! so the serialized `i16` neighbor deltas and `u16` costs hold by construction.
 //!
 //! Coordinates are µdeg `(lon, lat)` — the grid POIs and the serializer live on — so edge lengths
 //! reuse [`ground_dist_m`] and cannot drift from the route format's own distances.
@@ -20,9 +20,9 @@ use obc_elevation::{ElevationSource, ProfileIntegrator};
 use obc_map_scene::ground_dist_m;
 
 /// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <= max`), its geometry
-/// oriented to match, and its way-kind. A way and its reverse-order or parallel duplicate hash
-/// equal, while a cycleway drawn over a road survives as a separate edge.
-type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8);
+/// oriented to match, its way-kind, and source way identity. Duplicate input for the same source
+/// way collapses; distinct source ways retain their own access and turn identity.
+type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8, i64);
 
 /// Maximum endpoint-to-endpoint lat or lon delta (µdeg) an edge may span before [`build_graph`]
 /// splits it. Each neighbor's coordinate is stored as an `i16` µdeg delta from the record's own
@@ -36,7 +36,16 @@ const MAX_EDGE_LEN_M: u32 = 60_000;
 
 use obc_map_core::nav::{DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES};
 
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, ProfileAccess, RoutableWay};
+
+pub type SourceKey = [u64; 3];
+
+/// A physical incidence keeps its source-wide port across cell cuts and graph splits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Incidence {
+    pub port: u8,
+    pub forbidden: u32,
+}
 
 /// A junction node: a dense pack-local id (not the OSM id, and stable only within one pack run) and
 /// its µdeg `(lon, lat)` coordinate. Synthetic degree-2 nodes from the edge-split pass get ids past
@@ -45,12 +54,19 @@ use obc_places::routing::RoutableWay;
 pub struct Node {
     pub id: u32,
     pub coord: (i32, i32),
+    pub source_key: SourceKey,
+    pub access: ProfileAccess,
+    pub requires_context: bool,
 }
 
-/// An undirected edge between two junction nodes. `polyline` runs from `a` to `b` inclusive of both
-/// endpoints, and `length_m` is its summed great-circle length. `kind` is the parent way's
-/// [`obc_places::routing::classify`] byte, which every split piece inherits. `oneway` is deliberately ignored: bikes ride
-/// both ways.
+impl Node {
+    pub fn new(id: u32, coord: (i32, i32)) -> Self {
+        Self { id, coord, source_key: [0, u64::from(id) + 1, 0], access: ProfileAccess::OPEN, requires_context: true }
+    }
+}
+
+/// Physical geometry between two junctions. `polyline` runs from `a` to `b`; the access entries
+/// govern riding and pushing in each direction. Source keys and turn incidences survive splitting.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub a: u32,
@@ -58,6 +74,35 @@ pub struct Edge {
     pub polyline: Vec<(i32, i32)>,
     pub length_m: u32,
     pub kind: u8,
+    pub way_id: i64,
+    pub vertex_keys: Vec<SourceKey>,
+    pub access: [ProfileAccess; 2],
+    pub incidences: [Incidence; 2],
+}
+
+impl Edge {
+    /// Explicitly open geometry for fixtures; production edges retain OSM source identity.
+    pub fn new(a: u32, b: u32, polyline: Vec<(i32, i32)>, kind: u8) -> Self {
+        let way_id = ((u64::from(a) << 32) | u64::from(b)).saturating_add(1) as i64;
+        let mut vertex_keys = vec![[way_id as u64, u64::from(a) + 1, u64::from(b) + 1]; polyline.len()];
+        if let Some(first) = vertex_keys.first_mut() {
+            *first = [0, u64::from(a) + 1, 0];
+        }
+        if let Some(last) = vertex_keys.last_mut() {
+            *last = [0, u64::from(b) + 1, 0];
+        }
+        Self {
+            a,
+            b,
+            length_m: polyline_len_m(&polyline),
+            polyline,
+            kind,
+            way_id,
+            vertex_keys,
+            access: [ProfileAccess::OPEN; 2],
+            incidences: [Incidence { port: u8::MAX, forbidden: 0 }; 2],
+        }
+    }
 }
 
 /// The assembled routable graph. Adjacency is derivable from `edges`, since each contributes both
@@ -103,21 +148,26 @@ pub(crate) fn polyline_len_m(pts: &[(i32, i32)]) -> u32 {
 /// Touch-count is by occurrence across all routable ways, so a closed way such as a roundabout makes
 /// its own node a junction. Each way is then split at every junction it passes through, so edge
 /// interiors hold only non-junction nodes, and each junction gets a dense `u32` id in
-/// first-appearance order. Edges with the same unordered `(a, b)`, identical geometry and the same
-/// [`Edge::kind`] collapse to one; keying on kind keeps a cycleway drawn over a road distinct.
+/// first-appearance order. Duplicate edges of the same source way, geometry, and kind collapse.
 ///
 /// Island pruning keeps the largest component plus every component with at least
 /// [`DEFAULT_MIN_COMPONENT_EDGES`] edges, so a rider cannot snap onto an unroutable islet. Finally
 /// any edge over [`MAX_ENDPOINT_DELTA_UDEG`] or [`MAX_EDGE_LEN_M`] is split at a polyline vertex
 /// into pieces joined by synthetic degree-2 nodes, each piece's cost re-measured, so the serialized
 /// records are valid by construction.
-pub fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
-    build_graph_with(ways, DEFAULT_MIN_COMPONENT_EDGES)
+pub fn build_graph(ways: &[RoutableWay], routing: &Routing) -> Result<(NavGraph, NavStats), String> {
+    build_graph_with(ways, routing, DEFAULT_MIN_COMPONENT_EDGES)
 }
 
 /// [`build_graph`] with the island-pruning threshold supplied by the caller; the packer wires
 /// `routing.min_component_edges` here.
-pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (NavGraph, NavStats) {
+pub fn build_graph_with(
+    ways: &[RoutableWay],
+    routing: &Routing,
+    min_component_edges: usize,
+) -> Result<(NavGraph, NavStats), String> {
+    let mut routing = routing.clone();
+    routing.validate(ways);
     // Pass A: touch-count every node across the routable ways.
     let mut touch: HashMap<i64, u32> = HashMap::new();
     for w in ways {
@@ -128,62 +178,42 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
 
     // A junction: touched twice or more, or (handled per way below) a way endpoint.
     let is_junction = |nid: i64, is_endpoint: bool| is_endpoint || touch.get(&nid).copied().unwrap_or(0) >= 2;
+    let via: HashSet<_> = routing.restrictions.iter().map(|rule| rule.via).collect();
 
-    // Dense id assignment for junction OSM nodes, in first-seen order.
-    let mut dense_id: HashMap<i64, u32> = HashMap::new();
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut intern = |nid: i64, coord: (i32, i32)| -> u32 {
-        *dense_id.entry(nid).or_insert_with(|| {
-            let id = nodes.len() as u32;
-            nodes.push(Node { id, coord });
-            id
-        })
-    };
-
-    // Pass B: split each way at its junctions into edges.
-    let mut seen: HashSet<EdgeKey> = HashSet::new();
-    let mut edges: Vec<Edge> = Vec::new();
-    for w in ways {
-        let n = w.node_ids.len();
-        if n < 2 {
-            continue; // a degenerate 0/1-node way carries no edge.
-        }
-        let mut start = 0usize;
-        for i in 1..n {
-            let is_endpoint = i == n - 1;
-            if !is_junction(w.node_ids[i], is_endpoint) {
-                continue;
-            }
-            emit_edge(&w.node_ids, &w.coords, w.kind, start, i, &mut intern, &mut seen, &mut edges);
-            start = i;
-        }
-    }
-
-    // Pass C: island pruning.
-    let (nodes, edges, stats) = prune_islands(nodes, edges, min_component_edges, None);
-
-    // Pass D: split edges so the serialized i16 deltas and u16 costs hold.
-    let mut nodes = nodes;
-    let mut split: Vec<Edge> = Vec::with_capacity(edges.len());
-    for e in edges {
-        split_edge(e, &mut nodes, &mut split);
-    }
-
-    (NavGraph { nodes, edges: split }, stats)
+    let mut runs: Vec<_> = ways.iter().filter(|w| w.node_ids.len() >= 2).map(CutRun::from_way).collect();
+    crate::topology::compile(&mut runs, &routing)?;
+    build_graph_cut(
+        &runs,
+        &routing,
+        min_component_edges,
+        &|key, _| match key {
+            JunctionKey::Osm(id) => is_junction(id, false) || routing.nodes.contains_key(&id) || via.contains(&id),
+            JunctionKey::Boundary(..) => true,
+        },
+        &|_| false,
+    )
 }
 
 /// A junction's identity inside one cell.
 ///
 /// A whole-extract pack identifies junctions by OSM node id. A cell cannot: the junctions that carry
 /// a seam are minted at the cell edge, have no OSM id, and must come out identical in both
-/// neighbours, so they are identified by their coordinate, which both neighbours compute with the
-/// same integer formula ([`obc_map_core::grid::segment_crossing`]).
+/// neighbours. Their exact source segment and integer coordinate identify them in both cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JunctionKey {
     /// A real OSM node.
     Osm(i64),
     /// A junction materialised on a cell-edge line, keyed by its `(lon, lat)` µdeg coordinate.
-    Boundary(i32, i32),
+    Boundary(SourceKey, i32, i32),
+}
+
+impl JunctionKey {
+    pub fn source(self) -> SourceKey {
+        match self {
+            Self::Osm(id) => [0, id as u64, 0],
+            Self::Boundary(key, ..) => key,
+        }
+    }
 }
 
 /// One routable way as a single cell sees it: the run of its polyline that this cell owns, with a
@@ -195,6 +225,24 @@ pub struct CutRun {
     /// µdeg `(lon, lat)`, parallel to `keys`.
     pub coords: Vec<(i32, i32)>,
     pub kind: u8,
+    pub way_id: i64,
+    pub access: [ProfileAccess; 2],
+    pub incidences: Vec<[Incidence; 2]>,
+    pub requires_context: Vec<bool>,
+}
+
+impl CutRun {
+    pub(crate) fn from_way(way: &RoutableWay) -> Self {
+        Self {
+            keys: way.node_ids.iter().copied().map(JunctionKey::Osm).collect(),
+            coords: way.coords.clone(),
+            kind: way.kind,
+            way_id: way.id,
+            access: way.access,
+            incidences: vec![[Incidence::default(); 2]; way.coords.len()],
+            requires_context: vec![false; way.coords.len()],
+        }
+    }
 }
 
 /// Build a cell's routable graph from the runs the cutter carved out of the source ways.
@@ -208,16 +256,27 @@ pub struct CutRun {
 /// runs at assembly time, where component sizes are finally true.
 pub fn build_graph_cut(
     runs: &[CutRun],
+    routing: &Routing,
     min_component_edges: usize,
     is_junction: &dyn Fn(JunctionKey, (i32, i32)) -> bool,
     on_boundary: &dyn Fn((i32, i32)) -> bool,
-) -> (NavGraph, NavStats) {
+) -> Result<(NavGraph, NavStats), String> {
     let mut dense_id: HashMap<JunctionKey, u32> = HashMap::new();
     let mut nodes: Vec<Node> = Vec::new();
+    let mut contexts = HashMap::new();
+    for run in runs {
+        for (&key, &requires) in run.keys.iter().zip(&run.requires_context) {
+            *contexts.entry(key).or_insert(false) |= requires;
+        }
+    }
     let mut intern = |key: JunctionKey, coord: (i32, i32)| -> u32 {
         *dense_id.entry(key).or_insert_with(|| {
             let id = nodes.len() as u32;
-            nodes.push(Node { id, coord });
+            let access = match key {
+                JunctionKey::Osm(id) => routing.nodes.get(&id).copied().unwrap_or(ProfileAccess::OPEN),
+                JunctionKey::Boundary(..) => ProfileAccess::OPEN,
+            };
+            nodes.push(Node { id, coord, source_key: key.source(), access, requires_context: contexts[&key] });
             id
         })
     };
@@ -236,7 +295,7 @@ pub fn build_graph_cut(
             if !is_endpoint && !is_junction(r.keys[i], r.coords[i]) {
                 continue;
             }
-            emit_edge(&r.keys, &r.coords, r.kind, start, i, &mut intern, &mut seen, &mut edges);
+            emit_edge(r, start, i, &mut intern, &mut seen, &mut edges)?;
             start = i;
         }
     }
@@ -247,7 +306,7 @@ pub fn build_graph_cut(
     for e in edges {
         split_edge(e, &mut nodes, &mut split);
     }
-    (NavGraph { nodes, edges: split }, stats)
+    Ok((NavGraph { nodes, edges: split }, stats))
 }
 
 /// Split out one edge `keys/coords[start..=end]` and push it, deduped. `start` and `end` are both
@@ -257,19 +316,21 @@ pub fn build_graph_cut(
 /// cutter ([`build_graph_cut`], whose boundary junctions are identified by coordinate) share one
 /// dedup and interning path instead of two that can drift.
 #[allow(clippy::too_many_arguments)]
-fn emit_edge<K: Copy>(
-    keys: &[K],
-    coords: &[(i32, i32)],
-    kind: u8,
+fn emit_edge(
+    run: &CutRun,
     start: usize,
     end: usize,
-    intern: &mut impl FnMut(K, (i32, i32)) -> u32,
+    intern: &mut impl FnMut(JunctionKey, (i32, i32)) -> u32,
     seen: &mut HashSet<EdgeKey>,
     edges: &mut Vec<Edge>,
-) {
+) -> Result<(), String> {
+    let (keys, coords, kind) = (&run.keys, &run.coords, run.kind);
     let a = intern(keys[start], coords[start]);
     let b = intern(keys[end], coords[end]);
     let polyline: Vec<(i32, i32)> = coords[start..=end].to_vec();
+    if polyline.iter().all(|point| point == &polyline[0]) {
+        return Err(format!("OSM way {} has a junction segment with coincident coordinates", run.way_id));
+    }
 
     // Canonicalize for dedup: orient the key by (min, max) endpoint id, reversing the geometry to
     // match, so a way and its reverse-order duplicate hash equal. Kind is part of the key, so a
@@ -281,12 +342,23 @@ fn emit_edge<K: Copy>(
         rev.reverse();
         (b, a, rev)
     };
-    if !seen.insert((ka, kb, kgeom, kind)) {
-        return; // exact duplicate (same pair + geometry + kind) — already have it.
+    if !seen.insert((ka, kb, kgeom, kind, run.way_id)) {
+        return Ok(());
     }
 
     let length_m = polyline_len_m(&polyline);
-    edges.push(Edge { a, b, polyline, length_m, kind });
+    edges.push(Edge {
+        a,
+        b,
+        polyline,
+        length_m,
+        kind,
+        way_id: run.way_id,
+        vertex_keys: keys[start..=end].iter().map(|key| key.source()).collect(),
+        access: run.access,
+        incidences: [run.incidences[start][0], run.incidences[end][1]],
+    });
+    Ok(())
 }
 
 /// A minimal union-find (path halving + union by size) over the dense node ids.
@@ -391,7 +463,7 @@ fn prune_islands(
         if kept_roots.contains(&node_root[n.id as usize]) {
             let new_id = new_nodes.len() as u32;
             id_map.insert(n.id, new_id);
-            new_nodes.push(Node { id: new_id, coord: n.coord });
+            new_nodes.push(Node { id: new_id, ..n.clone() });
         }
     }
     let mut new_edges: Vec<Edge> = Vec::with_capacity(edges.len());
@@ -400,7 +472,7 @@ fn prune_islands(
         if kept_roots.contains(&root) {
             let a = id_map[&e.a];
             let b = id_map[&e.b];
-            new_edges.push(Edge { a, b, polyline: e.polyline, length_m: e.length_m, kind: e.kind });
+            new_edges.push(Edge { a, b, ..e });
         } else {
             edges_dropped += 1;
         }
@@ -446,31 +518,69 @@ fn midpoint_index(polyline: &[(i32, i32)]) -> usize {
 ///
 /// A 2-point edge that still violates a bound — a single OSM segment longer than the bound with no
 /// shape node — gets one interpolated midpoint on the straight line between its endpoints first.
-fn split_edge(e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
-    if !edge_exceeds_bounds(&e.polyline, e.length_m) {
+fn split_edge(mut e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
+    let closed = e.polyline.first() == e.polyline.last();
+    assert!(!closed || e.polyline.iter().any(|point| point != &e.polyline[0]), "degenerate self-loop geometry");
+    if !closed && !edge_exceeds_bounds(&e.polyline, e.length_m) {
         out.push(e);
         return;
     }
 
-    let poly = if e.polyline.len() >= 3 {
-        e.polyline
-    } else {
+    if e.polyline.len() < 3 {
         let a = e.polyline[0];
         let b = e.polyline[1];
         let mid = (((a.0 as i64 + b.0 as i64) / 2) as i32, ((a.1 as i64 + b.1 as i64) / 2) as i32);
-        vec![a, mid, b]
-    };
+        e.polyline.insert(1, mid);
+        e.vertex_keys.insert(1, segment_key(e.way_id, e.vertex_keys[0], e.vertex_keys[1]));
+    }
+    let poly = &e.polyline;
 
-    let cut = midpoint_index(&poly);
+    let mut cut = midpoint_index(poly);
+    if closed && poly[cut] == poly[0] {
+        cut = poly.iter().position(|point| point != &poly[0]).expect("nondegenerate loop");
+    }
     let left_poly = poly[..=cut].to_vec();
     let right_poly = poly[cut..].to_vec();
     let synth = nodes.len() as u32;
-    nodes.push(Node { id: synth, coord: poly[cut] });
+    nodes.push(Node {
+        id: synth,
+        coord: poly[cut],
+        source_key: e.vertex_keys[cut],
+        access: ProfileAccess::OPEN,
+        requires_context: false,
+    });
 
-    let left = Edge { a: e.a, b: synth, length_m: polyline_len_m(&left_poly), polyline: left_poly, kind: e.kind };
-    let right = Edge { a: synth, b: e.b, length_m: polyline_len_m(&right_poly), polyline: right_poly, kind: e.kind };
+    let left = Edge {
+        a: e.a,
+        b: synth,
+        length_m: polyline_len_m(&left_poly),
+        polyline: left_poly,
+        vertex_keys: e.vertex_keys[..=cut].to_vec(),
+        incidences: [e.incidences[0], Incidence { port: 0, forbidden: 0 }],
+        ..e.clone()
+    };
+    let right = Edge {
+        a: synth,
+        b: e.b,
+        length_m: polyline_len_m(&right_poly),
+        polyline: right_poly,
+        vertex_keys: e.vertex_keys[cut..].to_vec(),
+        incidences: [Incidence { port: 1, forbidden: 0 }, e.incidences[1]],
+        ..e
+    };
     split_edge(left, nodes, out);
     split_edge(right, nodes, out);
+}
+
+/// A generated point retains the exact original OSM segment, independently of cut order.
+pub(crate) fn segment_key(way_id: i64, a: SourceKey, b: SourceKey) -> SourceKey {
+    if a[0] != 0 {
+        a
+    } else if b[0] != 0 {
+        b
+    } else {
+        [way_id as u64, a[1].min(b[1]), a[1].max(b[1])]
+    }
 }
 
 /// Longest ground gap (m) the ascent sampler leaves between two elevation samples on an edge.
@@ -618,6 +728,10 @@ mod tests {
     use super::*;
     use obc_places::routing::{classify, is_routable};
 
+    fn build_graph(ways: &[RoutableWay]) -> (NavGraph, NavStats) {
+        super::build_graph(ways, &Routing::default()).unwrap()
+    }
+
     /// Build a `RoutableWay` of kind 0 from `(node_id, lon_udeg, lat_udeg)` triples.
     fn way(pts: &[(i64, i32, i32)]) -> RoutableWay {
         way_kind(pts, 0)
@@ -625,9 +739,11 @@ mod tests {
 
     fn way_kind(pts: &[(i64, i32, i32)], kind: u8) -> RoutableWay {
         RoutableWay {
+            id: pts.iter().map(|p| p.0).min().unwrap_or(0) + 1,
             node_ids: pts.iter().map(|&(id, ..)| id).collect(),
             coords: pts.iter().map(|&(_, x, y)| (x, y)).collect(),
             kind,
+            access: [ProfileAccess::OPEN; 2],
         }
     }
 
@@ -690,26 +806,28 @@ mod tests {
         assert_eq!(classify(tags(&[("highway", "path"), ("surface", "gravel")])), Some(0x61));
     }
 
-    /// The hard-excludes reject, `trunk` plus `bicycle=yes` becomes class 13, `dismount` stays.
+    /// Geometry classification preserves tags for the shared directional admission policy.
     #[test]
     fn classify_bike_legality() {
-        // trunk is class 13 ONLY with bicycle=yes; alone it's not routable.
+        let access = |pairs: &[(&str, &str)]| {
+            let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            obc_places::routing::way_access(get, (8.54, 47.37), classify(pairs.iter().copied()).unwrap())
+        };
         assert_eq!(classify(tags(&[("highway", "trunk"), ("bicycle", "yes")])).map(|k| k & 0x1F), Some(13));
         assert_eq!(classify(tags(&[("highway", "trunk_link"), ("bicycle", "yes")])).map(|k| k & 0x1F), Some(13));
-        assert_eq!(classify(tags(&[("highway", "trunk")])), None);
-        assert_eq!(classify(tags(&[("highway", "trunk_link")])), None);
+        assert_eq!(classify(tags(&[("highway", "trunk")])), Some(13));
+        assert_eq!(access(&[("highway", "trunk")])[0].allowed, 0);
+        assert_eq!(access(&[("highway", "trunk"), ("bicycle", "yes")])[0].allowed, 15);
         // motorway is always excluded, even with bicycle=yes.
         assert_eq!(classify(tags(&[("highway", "motorway")])), None);
         assert_eq!(classify(tags(&[("highway", "motorway_link")])), None);
         assert_eq!(classify(tags(&[("highway", "motorway"), ("bicycle", "yes")])), None);
-        // Hard excludes on otherwise-routable classes.
-        assert_eq!(classify(tags(&[("highway", "cycleway"), ("bicycle", "no")])), None);
-        assert_eq!(classify(tags(&[("highway", "path"), ("bicycle", "use_sidepath")])), None);
-        assert_eq!(classify(tags(&[("highway", "primary"), ("motorroad", "yes")])), None);
-        assert_eq!(classify(tags(&[("highway", "service"), ("access", "private")])), None);
-        assert_eq!(classify(tags(&[("highway", "path"), ("access", "no")])), None);
+        assert_eq!(access(&[("highway", "service"), ("access", "private")])[0].allowed, 0);
+        assert_eq!(access(&[("highway", "path"), ("access", "no")])[0].allowed, 0);
+        assert_eq!(access(&[("highway", "path"), ("access", "no"), ("bicycle", "yes")])[0].allowed, 15);
         // dismount stays routable with its normal footway kind.
         assert_eq!(classify(tags(&[("highway", "footway"), ("bicycle", "dismount")])).map(|k| k & 0x1F), Some(3));
+        assert_eq!(access(&[("highway", "footway"), ("bicycle", "dismount")])[0].pushing, 15);
         // Other access values stay routable.
         assert!(is_routable(tags(&[("highway", "track"), ("access", "permissive")])));
         assert!(is_routable(tags(&[("highway", "cycleway"), ("access", "destination")])));
@@ -815,7 +933,7 @@ mod tests {
         assert!((got as i64 - expected as i64).abs() <= 2, "length {got} ≈ {expected} within rounding");
     }
 
-    /// A closed way makes its shared node a junction, which gives one self-loop edge.
+    /// A closed way has two oriented pieces, so an incoming edge identifies one physical port.
     #[test]
     fn closed_way_is_a_loop() {
         let ways = [way(&[
@@ -825,11 +943,49 @@ mod tests {
             (1, 7_800_000, 47_990_000),
         ])];
         let (g, _) = build_graph(&ways);
-        assert_eq!(g.nodes.len(), 1, "only node 1 is a junction");
-        assert_eq!(g.edges.len(), 1, "the loop is one edge");
-        let e = &g.edges[0];
-        assert_eq!(e.a, e.b, "a self-loop: both endpoints are node 1");
-        assert_eq!(e.polyline.len(), 4, "the loop keeps all four points");
+        assert_eq!(g.nodes.len(), 2);
+        assert_eq!(g.edges.len(), 2);
+        assert!(g.edges.iter().all(|edge| edge.a != edge.b && edge.polyline.first() != edge.polyline.last()));
+        assert_ne!(g.edges[0].incidences[0].port, g.edges[1].incidences[1].port);
+        let geometry: Vec<_> = g.edges[0].polyline.iter().chain(g.edges[1].polyline.iter().skip(1)).copied().collect();
+        assert_eq!(geometry, ways[0].coords);
+    }
+
+    #[test]
+    fn barrier_nodes_split_geometry_and_same_way_turns_select_the_physical_port() {
+        use obc_places::routing::data::TurnRestriction;
+        let ways = [RoutableWay::new(10, vec![1, 2, 3], vec![(0, 0), (1000, 0), (2000, 0)], 7)];
+        let mut routing = Routing::default();
+        routing.nodes.insert(2, ProfileAccess::CLOSED);
+        for (only, u_turn) in [(false, true), (true, false), (true, true), (false, false)] {
+            routing.restrictions = vec![TurnRestriction { from: 10, to: 10, via: 2, only, u_turn }];
+            let (graph, _) = super::build_graph(&ways, &routing).unwrap();
+            let via = graph.nodes.iter().find(|node| node.source_key == [0, 2, 0]).unwrap();
+            assert_eq!(via.access, ProfileAccess::CLOSED);
+            assert!(via.requires_context);
+            assert_eq!(graph.edges.len(), 2);
+            let ports: Vec<_> = graph.edges.iter().map(|edge| edge.incidences[usize::from(edge.b == via.id)]).collect();
+            assert_ne!(ports[0].port, ports[1].port);
+            for outgoing in &ports {
+                for incoming in &ports {
+                    let target = u_turn == (incoming.port == outgoing.port);
+                    assert_eq!(outgoing.forbidden & (1 << incoming.port) != 0, target != only);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_split_preserves_direction_and_segment_identity() {
+        let mut way = RoutableWay::new(10, vec![1, 2], vec![(0, 0), (90_000, 0)], 7);
+        way.access = [ProfileAccess { allowed: 2, pushing: 0 }, ProfileAccess { allowed: 4, pushing: 4 }];
+        let (graph, _) = super::build_graph(&[way.clone()], &Routing::default()).unwrap();
+        assert!(graph.edges.len() > 1);
+        assert!(graph.edges.iter().all(|edge| edge.access == way.access));
+        assert!(graph.nodes.iter().all(|node| !node.requires_context));
+        assert!(graph.nodes.iter().filter(|node| node.source_key[0] != 0).all(|node| node.source_key == [10, 1, 2]));
+        let invalid = RoutableWay::new(91, vec![1, 2], vec![(0, 0); 2], 7);
+        assert!(super::build_graph(&[invalid], &Routing::default()).unwrap_err().contains("OSM way 91"));
     }
 
     #[test]
@@ -883,7 +1039,7 @@ mod tests {
         let mut mk = |count: u32, x0: i32| {
             let base = nodes.len() as u32;
             for i in 0..=count {
-                nodes.push(Node { id: base + i, coord: (x0 + i as i32 * 1_000, 0) });
+                nodes.push(Node::new(base + i, (x0 + i as i32 * 1_000, 0)));
             }
             for i in 0..count {
                 edges.push(Edge {
@@ -891,7 +1047,12 @@ mod tests {
                     b: base + i + 1,
                     polyline: vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
                     length_m: 100,
-                    kind: 7,
+                    ..Edge::new(
+                        base + i,
+                        base + i + 1,
+                        vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
+                        7,
+                    )
                 });
             }
         };
@@ -917,7 +1078,7 @@ mod tests {
         let mut mk = |count: u32, x0: i32| {
             let base = nodes.len() as u32;
             for i in 0..=count {
-                nodes.push(Node { id: base + i, coord: (x0 + i as i32 * 1_000, 0) });
+                nodes.push(Node::new(base + i, (x0 + i as i32 * 1_000, 0)));
             }
             for i in 0..count {
                 edges.push(Edge {
@@ -925,7 +1086,12 @@ mod tests {
                     b: base + i + 1,
                     polyline: vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
                     length_m: 100,
-                    kind: 7,
+                    ..Edge::new(
+                        base + i,
+                        base + i + 1,
+                        vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
+                        7,
+                    )
                 });
             }
         };
@@ -955,9 +1121,11 @@ mod tests {
         let (a, b) = (*poly.first().unwrap(), *poly.last().unwrap());
         let orig_len = polyline_len_m(&poly);
         let ways = [RoutableWay {
+            id: 1,
             node_ids: (0..=70).map(|i| i as i64).collect(),
             coords: poly.clone(),
             kind: 42, // an arbitrary distinctive kind byte
+            access: [ProfileAccess::OPEN; 2],
         }];
         // Interior vertices are touched once → the way is a single edge before split.
         let (g, _) = build_graph(&ways);
@@ -997,7 +1165,7 @@ mod tests {
         assert!((a.0 as i64 - b.0 as i64).abs() <= MAX_ENDPOINT_DELTA_UDEG);
         assert!((a.1 as i64 - b.1 as i64).abs() <= MAX_ENDPOINT_DELTA_UDEG);
 
-        let ways = [RoutableWay { node_ids: (0..poly.len() as i64).collect(), coords: poly.clone(), kind: 2 }];
+        let ways = [RoutableWay::new(1, (0..poly.len() as i64).collect(), poly.clone(), 2)];
         let (g, _) = build_graph(&ways);
         assert!(g.edges.len() > 1, "the long edge was split");
         for e in &g.edges {
@@ -1015,7 +1183,7 @@ mod tests {
         // Single 90 000-µdeg lon segment, no shape node.
         let a = (100_000, 500_000);
         let b = (190_000, 500_000);
-        let ways = [RoutableWay { node_ids: vec![0, 1], coords: vec![a, b], kind: 9 }];
+        let ways = [RoutableWay::new(1, vec![0, 1], vec![a, b], 9)];
         let (g, _) = build_graph(&ways);
         assert!(g.edges.len() > 1, "the bare segment was split via interpolated midpoints");
         for e in &g.edges {
@@ -1111,8 +1279,8 @@ mod tests {
     #[test]
     fn summary_line_format() {
         let g = NavGraph {
-            nodes: vec![Node { id: 0, coord: (0, 0) }, Node { id: 1, coord: (0, 0) }],
-            edges: vec![Edge { a: 0, b: 1, polyline: vec![(0, 0), (0, 0)], length_m: 2500, kind: 7 }],
+            nodes: vec![Node::new(0, (0, 0)), Node::new(1, (0, 0))],
+            edges: vec![Edge { length_m: 2500, ..Edge::new(0, 1, vec![(0, 0), (0, 0)], 7) }],
         };
         let stats = NavStats { components_found: 1, components_kept: 1, edges_dropped: 0 };
         assert_eq!(

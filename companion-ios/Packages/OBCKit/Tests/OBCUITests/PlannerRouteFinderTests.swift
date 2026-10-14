@@ -26,7 +26,7 @@ struct PlannerRouteFinderTests {
             let status = cell == failing ? 500 : 200
             if status == 500 { failing = nil }
             let records = (try JSONSerialization.jsonObject(with: routes) as! [[String: Any]]).filter { ($0["cells"] as? [String])?.contains(cell) == true }
-            let body = try JSONSerialization.data(withJSONObject: ["format": 1, "routes": records])
+            let body = try JSONSerialization.data(withJSONObject: ["format": 2, "routes": records])
             return (body, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
         }
     }
@@ -88,5 +88,18 @@ struct PlannerRouteFinderTests {
         // Route 301 also crosses 9-267-177, which is not downloaded.
         #expect(finder.offline && finder.status == .ready && finder.matches.isEmpty)
         #expect(Set(await cells.asked) == ["9-267-178"])
+    }
+
+    @Test func theGradeRangeFiltersResultsWhoseRequiredPresetIsKeptForPlanning() async throws {
+        let cells = Cells(routes: Self.routes), finder = finder(cells)
+        finder.start = Self.near
+        finder.filters.radiusKm = 25
+        finder.filters.hardest = 0...1
+        await finder.search(activity: .mtb)
+        #expect(finder.matches.isEmpty)
+        finder.filters.hardest = 0...2
+        await finder.search(activity: .mtb)
+        let route = try #require(finder.matches.first?.route)
+        #expect(route.id == 201 && route.routingSelection(current: .mtb)?.preference == .technical)
     }
 }

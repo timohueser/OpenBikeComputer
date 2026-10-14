@@ -60,6 +60,16 @@ impl Road {
     pub fn mtb_scale(&self) -> Option<u8> {
         (self.difficulty != 255).then_some(self.difficulty)
     }
+
+    /// The same physical segment in the opposite direction, independent of sampled heights.
+    pub fn is_reverse_of(&self, other: &Self) -> bool {
+        self.way == other.way
+            && self.from == other.to
+            && self.to == other.from
+            && self.reversed != other.reversed
+            && self.shape.len() == other.shape.len()
+            && self.shape.iter().zip(other.shape.iter().rev()).all(|(a, b)| a.lat == b.lat && a.lon == b.lon)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -67,10 +77,14 @@ pub struct Profile {
     pub name: String,
     pub weighting: Weighting,
     pub walking: bool,
+    pub allow_pushing: bool,
+    /// Steps require an explicit choice, independent of riding skill.
+    pub allow_steps: bool,
     /// Moving time follows the mountain-bike pace curve.
     pub mtb_pace: bool,
     /// The cost discount per level of a signed cycle route, on a road the rider cycles.
     pub route_bonus: f64,
+    /// Maximum SAC scale for walking, or MTB scale for cycling.
     pub max_difficulty: u8,
 }
 
@@ -93,6 +107,8 @@ impl Profile {
             Self {
                 name: "touring".into(),
                 walking: false,
+                allow_pushing: true,
+                allow_steps: false,
                 weighting: Weighting::Weighted {
                     surface: [1.4, 1.0, 1.15, 1.6, 2.5, 5.0],
                     road: [1.0, 1.15, 3.0, 1.2, 2.0, 8.0, 2.0],
@@ -105,6 +121,8 @@ impl Profile {
             Self {
                 name: "gravel".into(),
                 walking: false,
+                allow_pushing: true,
+                allow_steps: false,
                 weighting: Weighting::Weighted {
                     surface: [1.3, 1.4, 1.0, 1.0, 1.5, 3.5],
                     road: [1.1, 1.2, 4.0, 1.0, 1.7, 8.0, 2.0],
@@ -117,6 +135,8 @@ impl Profile {
             Self {
                 name: "road".into(),
                 walking: false,
+                allow_pushing: true,
+                allow_steps: false,
                 weighting: Weighting::RoadBike(RoadBike::Balanced),
                 mtb_pace: false,
                 route_bonus: 0.04,
@@ -125,6 +145,8 @@ impl Profile {
             Self {
                 name: "hiking".into(),
                 walking: true,
+                allow_pushing: false,
+                allow_steps: true,
                 weighting: Weighting::Weighted {
                     surface: [1.2, 1.3, 1.1, 1.0, 1.0, 1.5],
                     road: [1.4, 2.0, 8.0, 1.1, 1.0, 1.2, 2.0],
@@ -132,8 +154,7 @@ impl Profile {
                 },
                 mtb_pace: false,
                 route_bonus: 0.0,
-                // Up to `alpine_hiking` (T4), the route of marked alpine summits. T5 and T6 need climbing.
-                max_difficulty: 4,
+                max_difficulty: 2,
             },
         ];
         let mut mtb = profiles[1].clone();
@@ -143,7 +164,6 @@ impl Profile {
             road: [1.2, 1.4, 4.0, 1.0, 1.0, 8.0, 2.0],
             climb: 6.0,
         };
-        mtb.max_difficulty = 3;
         mtb.mtb_pace = true;
         profiles.push(mtb);
         let variants: Vec<_> = profiles
@@ -157,16 +177,15 @@ impl Profile {
                         Weighting::RoadBike(road) => {
                             *road = if shorter { RoadBike::Shorter } else { RoadBike::LessClimbing }
                         }
-                        Weighting::Weighted { road, climb, .. } => {
+                        Weighting::Weighted { climb, .. } => {
                             if shorter {
-                                *road = [1.0; 7];
                                 *climb = 0.0;
                             } else {
                                 *climb *= 3.0;
                             }
                         }
                     }
-                    // The shortest route follows the plain costs; a signed route is no shortcut.
+                    // Shorter keeps road suitability but removes discretionary detours.
                     if shorter {
                         p.route_bonus = 0.0;
                     }
@@ -175,6 +194,12 @@ impl Profile {
             })
             .collect();
         profiles.extend(variants);
+        for (activity, variant, difficulty) in [("mtb", "technical", 3), ("hiking", "alpine", 4)] {
+            let mut profile = profiles.iter().find(|p| p.name == activity).unwrap().clone();
+            profile.name = format!("{activity}/{variant}");
+            profile.max_difficulty = difficulty;
+            profiles.push(profile);
+        }
         profiles
     }
 
@@ -200,15 +225,15 @@ impl Profile {
         } else {
             road.mtb_scale().is_some_and(|d| d > self.max_difficulty) || road.hiking_difficulty.is_some_and(|d| d > 2)
         };
-        road.access & self.modes() != 0 && !too_difficult
+        road.access & self.modes() != 0 && !too_difficult && (road.class != 5 || self.allow_steps)
     }
 
-    /// The modes the profile moves in: on foot, or cycling and pushing.
+    /// The modes the profile permits, independent of technical difficulty.
     pub fn modes(&self) -> u8 {
         if self.walking {
             FOOT
         } else {
-            BIKE | PUSH
+            BIKE | if self.allow_pushing { PUSH } else { 0 }
         }
     }
 
@@ -247,6 +272,60 @@ impl Pace {
             return Err("Pace requires cycling 1–80 km/h, walking 0.5–15 km/h and multiplier 0.25–4".into());
         }
         Ok(())
+    }
+
+    /// Initial physical slowdown estimates, separate from route preferences and not rider-calibrated.
+    /// Unknown surfaces use highway context; ferries have no assumed wait or timetable.
+    pub fn road_multiplier(road: &Road, profile: &Profile) -> f64 {
+        if road.class == 6 {
+            return 1.0;
+        }
+        let mode = profile.mode(road);
+        if mode != BIKE {
+            let surface = match road.surface {
+                Surface::Unknown => match road.class {
+                    0..=2 => 1.02,
+                    3 => 1.03,
+                    5 => 1.0,
+                    _ => 1.08,
+                },
+                Surface::Paved | Surface::Compacted => 1.0,
+                Surface::Gravel => 1.03,
+                Surface::Dirt => 1.05,
+                Surface::Rough => 1.1,
+            };
+            let difficulty = road
+                .hiking_difficulty
+                .and_then(|grade| [1.0, 1.0, 1.1, 1.25, 1.5, 1.9, 2.4].get(grade as usize).copied())
+                .unwrap_or(1.0);
+            let pushing = if mode == PUSH { 1.2 } else { 1.0 };
+            let steps = if road.class == 5 {
+                if mode == PUSH {
+                    1.5
+                } else {
+                    1.2
+                }
+            } else {
+                1.0
+            };
+            return surface * difficulty * pushing * steps;
+        }
+        let surfaces = match profile.name.split('/').next().unwrap_or("") {
+            "road" => [1.0, 1.12, 1.3, 1.55, 2.0],
+            "gravel" => [1.0, 1.06, 1.12, 1.25, 1.5],
+            "mtb" => [1.0, 1.04, 1.08, 1.16, 1.35],
+            _ => [1.0, 1.1, 1.22, 1.4, 1.75],
+        };
+        let surface = match road.surface {
+            Surface::Unknown => match road.class {
+                0 | 2 => 1.03,
+                1 => 1.05,
+                3 => surfaces[2],
+                _ => surfaces[3],
+            },
+            known => surfaces[known as usize - 1],
+        };
+        surface * (1.0 + f64::from(road.mtb_scale().unwrap_or(0)) * 0.15)
     }
 
     pub fn segment_seconds(&self, from: Point, to: Point, walk: bool, mtb: bool) -> f64 {
@@ -309,4 +388,134 @@ fn cycling_pace(gradient: f64, mtb: bool) -> f64 {
     let right = GRADES.partition_point(|&g| g < grade).clamp(1, 8);
     let t = (grade - GRADES[right - 1]) / (GRADES[right] - GRADES[right - 1]);
     (PACE[right - 1].ln() * (1.0 - t) + PACE[right].ln() * t + if mtb { 0.2243923187 } else { 0.0268886981 }).exp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn road() -> Road {
+        Road {
+            from: 0,
+            to: 1,
+            way: 1,
+            reversed: false,
+            length_m: 100,
+            ascent_m: 0,
+            descent_m: 0,
+            surface: Surface::Dirt,
+            class: 4,
+            access: BIKE | FOOT | PUSH,
+            difficulty: 255,
+            hiking_difficulty: None,
+            structure: false,
+            shape: vec![Point::default(); 2],
+        }
+    }
+
+    #[test]
+    fn skill_choices_and_variants_keep_access_pushing_and_steps_independent() {
+        let profiles = Profile::presets();
+        assert_eq!(profiles.len(), 17);
+        assert_eq!(profiles.iter().map(|p| &p.name).collect::<std::collections::BTreeSet<_>>().len(), 17);
+        for profile in profiles {
+            profile.validate().unwrap();
+            assert!(profile.permits(&road()), "{}", profile.name);
+            assert!(!profile.permits(&Road { access: 0, ..road() }), "{}", profile.name);
+            assert_eq!(profile.permits(&Road { class: 5, ..road() }), profile.walking, "{}", profile.name);
+            assert_eq!(
+                profile.permits(&Road { difficulty: 1, ..road() }),
+                !profile.name.starts_with("road"),
+                "{}",
+                profile.name
+            );
+            for difficulty in 2..=4 {
+                assert_eq!(
+                    profile.permits(&Road { difficulty, ..road() }),
+                    profile.walking || profile.name == "mtb/technical" && difficulty <= 3,
+                    "{} MTB {difficulty}",
+                    profile.name
+                );
+            }
+            for difficulty in 2..=5 {
+                assert_eq!(
+                    profile.permits(&Road { hiking_difficulty: Some(difficulty), ..road() }),
+                    difficulty <= 2 || profile.name == "hiking/alpine" && difficulty <= 4,
+                    "{} SAC {difficulty}",
+                    profile.name
+                );
+            }
+            if !profile.walking {
+                let pushing = Road { access: FOOT | PUSH, ..road() };
+                assert!(profile.permits(&pushing), "{}", profile.name);
+                assert_eq!(profile.mode(&pushing), PUSH);
+                let mut riding_only = profile.clone();
+                riding_only.allow_pushing = false;
+                assert_eq!(riding_only.modes(), BIKE);
+                assert!(!riding_only.permits(&pushing));
+                assert!(riding_only.permits(&road()));
+                riding_only.allow_steps = true;
+                assert!(riding_only.permits(&Road { class: 5, ..road() }));
+                assert!(!riding_only.permits(&Road { class: 5, ..pushing }));
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_shorter_preserves_surface_and_road_suitability() {
+        let profiles = Profile::presets();
+        for base in profiles.iter().filter(|p| !p.name.contains('/')) {
+            let Weighting::Weighted { surface, road, .. } = &base.weighting else {
+                continue;
+            };
+            let shorter = profiles.iter().find(|p| p.name == format!("{}/shorter", base.name)).unwrap();
+            let Weighting::Weighted { surface: short_surface, road: short_road, climb } = &shorter.weighting else {
+                panic!("Shorter must keep weighted suitability");
+            };
+            assert_eq!(short_surface, surface);
+            assert_eq!(short_road, road);
+            assert_eq!(*climb, 0.0);
+            assert_eq!(shorter.route_bonus, 0.0);
+            assert_eq!(shorter.max_difficulty, base.max_difficulty);
+            assert_eq!(shorter.allow_steps, base.allow_steps);
+            assert_eq!(shorter.allow_pushing, base.allow_pushing);
+        }
+    }
+
+    #[test]
+    fn moving_time_tracks_surface_skill_and_pushing_independently_of_preferences() {
+        let profiles = Profile::presets();
+        for profile in profiles.iter().filter(|p| !p.walking) {
+            let factors: Vec<_> = [Surface::Paved, Surface::Compacted, Surface::Gravel, Surface::Dirt, Surface::Rough]
+                .into_iter()
+                .map(|surface| Pace::road_multiplier(&Road { surface, ..road() }, profile))
+                .collect();
+            assert_eq!(factors[0], 1.0);
+            assert!(factors.windows(2).all(|pair| pair[0] < pair[1]));
+            let unknown = |class| Pace::road_multiplier(&Road { surface: Surface::Unknown, class, ..road() }, profile);
+            assert!(unknown(1) > factors[0]);
+            assert!(unknown(1) < unknown(3));
+            assert!(unknown(3) < unknown(4));
+            let base = profiles.iter().find(|p| p.name == profile.name.split('/').next().unwrap()).unwrap();
+            assert_eq!(Pace::road_multiplier(&road(), profile), Pace::road_multiplier(&road(), base));
+            assert!(
+                Pace::road_multiplier(&Road { difficulty: 1, ..road() }, profile)
+                    < Pace::road_multiplier(&Road { difficulty: 3, ..road() }, profile)
+            );
+            assert_eq!(Pace::road_multiplier(&Road { class: 6, surface: Surface::Rough, ..road() }, profile), 1.0);
+        }
+        let hiking = profiles.iter().find(|p| p.name == "hiking").unwrap();
+        let touring = profiles.iter().find(|p| p.name == "touring").unwrap();
+        let paved = Road { surface: Surface::Paved, ..road() };
+        let pushing = Road { access: FOOT | PUSH, ..paved.clone() };
+        assert!(Pace::road_multiplier(&pushing, touring) > Pace::road_multiplier(&paved, hiking));
+        assert!(
+            Pace::road_multiplier(&Road { class: 5, ..pushing.clone() }, touring)
+                > Pace::road_multiplier(&pushing, touring)
+        );
+        let grades: Vec<_> = (1..=4)
+            .map(|grade| Pace::road_multiplier(&Road { hiking_difficulty: Some(grade), ..paved.clone() }, hiking))
+            .collect();
+        assert!(grades.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }

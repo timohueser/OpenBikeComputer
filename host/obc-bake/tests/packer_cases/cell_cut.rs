@@ -20,7 +20,7 @@ use obc_map_core::terrain::TerrainSet;
 use obc_map_scene::BBox;
 use obc_network::nav::integrate_edge_ascent;
 use obc_places::metadata::Poi;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 use obc_reader::{MapCache, MapTables, PoiCategory, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053`: the worked-example seam.
@@ -90,6 +90,8 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
 
 fn way(id_base: i64, kind: u8, pts: &[(i64, i64)]) -> RoutableWay {
     RoutableWay {
+        id: id_base,
+        access: [obc_places::routing::ProfileAccess::OPEN; 2],
         node_ids: (0..pts.len() as i64).map(|k| id_base + k).collect(),
         coords: pts.iter().map(|&(lat, lon)| (lon as i32, lat as i32)).collect(),
         kind,
@@ -180,7 +182,7 @@ fn options() -> CutOptions {
 fn cut_fixture(out: &Path, opts: &CutOptions) -> CutSummary {
     let cfg = config();
     let (ing, ways) = fixture(&cfg);
-    cut_ingested(&ing, &ways, &cfg, out, opts, &Progress::silent()).expect("cut succeeds")
+    cut_ingested(&ing, &ways, &Routing::default(), &cfg, out, opts, &Progress::silent()).expect("cut succeeds")
 }
 
 /// Every file under `dir`, as `relative path → bytes`.
@@ -228,7 +230,12 @@ fn two_runs_are_byte_identical() {
 
     let cfg = config();
     let (source, ways) = fixture(&cfg);
-    let metadata = obc_places::osm::Places { pois: source.pois.clone(), links: source.landmark_links.clone(), ways };
+    let metadata = obc_places::osm::Places {
+        pois: source.pois.clone(),
+        links: source.landmark_links.clone(),
+        ways,
+        routing: Routing::default(),
+    };
     let split = Scratch::new("independent-bands");
     for band in bands().bands {
         let cells: Vec<_> = sa.cells.iter().filter(|cell| cell.band == band.id).map(|cell| cell.id).collect();
@@ -346,6 +353,45 @@ fn adjacent_cells_meet_exactly_at_the_seam() {
     assert!(ev.iter().all(|(lon, _)| (*lon as i64) >= e_box.0), "eastern geometry stays in its square");
 }
 
+#[test]
+fn cell_cut_preserves_source_access_and_turn_rules() {
+    use obc_places::routing::{data::TurnRestriction, ProfileAccess};
+
+    let out = Scratch::new("routing-facts");
+    let cfg = config();
+    let (ing, mut ways) = fixture(&cfg);
+    ways[0].access = [ProfileAccess { allowed: 15, pushing: 7 }, ProfileAccess { allowed: 8, pushing: 0 }];
+    let mut routing = Routing::default();
+    routing.nodes.insert(2_001, ProfileAccess { allowed: 8, pushing: 0 });
+    routing.restrictions.push(TurnRestriction { from: 1_000, to: 2_000, via: 1_001, only: false, u_turn: false });
+    let summary = cut_ingested(&ing, &ways, &routing, &cfg, out.path(), &options(), &Progress::silent()).expect("cut");
+    let bytes = cell_file(out.path(), &summary, "network", 1204, 1053);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).expect("cell parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut scratch = [0; 512];
+    let (mut junction_seen, mut barrier_seen, mut push_seen) = (false, false, false);
+    reader
+        .for_each_nav_node(&reader.bbox, &mut scratch, |node| {
+            if node.source_key == [0, 1_001, 0] {
+                let neighbors: Vec<_> = node.neighbors().collect();
+                let west = neighbors.iter().find(|edge| edge.lon < node.lon).expect("incoming source road");
+                let north = neighbors.iter().find(|edge| edge.lat > node.lat).expect("restricted turn");
+                assert_eq!(west.profile_mask, 8, "reverse cycling access stays closed after the seam cut");
+                assert_ne!(north.forbidden_incoming_ports & (1 << west.port), 0, "source restriction survives");
+                junction_seen = true;
+            }
+            if node.source_key == [0, 2_001, 0] {
+                assert_eq!(node.crossing_profile_mask, 8, "the barrier keeps its mode-specific access");
+                barrier_seen = true;
+            }
+            push_seen |= node.neighbors().any(|edge| edge.push_mask == 7);
+        })
+        .expect("nav walk");
+    assert!(junction_seen && barrier_seen && push_seen, "all source facts reach the written cell");
+}
+
 /// The second seam is a `2^18` and a `2^19` line, so the same road is cut at it in one band and runs
 /// straight through the middle of a cell in another. Both must be true at once.
 #[test]
@@ -387,7 +433,8 @@ fn the_shipped_preset_still_meets_at_the_seam() {
     let (ing, ways) = fixture(&cfg);
     let out = Scratch::new("preset");
     let opts = CutOptions { bands: BandTable::recommended(), ..Default::default() };
-    let summary = cut_ingested(&ing, &ways, &cfg, out.path(), &opts, &Progress::silent()).expect("cut");
+    let summary =
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, out.path(), &opts, &Progress::silent()).expect("cut");
 
     // Nav (the `network` band): identical boundary junction on the shared edge.
     let west = nav_coords(&cell_file(out.path(), &summary, "network", 1204, 1052));
@@ -613,9 +660,11 @@ fn explicit_selection_cuts_exactly_those_cells() {
     let cfg = config();
     let (ing, ways) = fixture(&cfg);
     let bad = CutOptions { select: vec![CellId::new(16, 1, 1).unwrap()], ..options() };
-    assert!(cut_ingested(&ing, &ways, &cfg, picked.path(), &bad, &Progress::silent()).is_err());
+    assert!(cut_ingested(&ing, &ways, &Routing::default(), &cfg, picked.path(), &bad, &Progress::silent()).is_err());
     let bad_band = CutOptions { only_bands: vec!["nope".into()], ..options() };
-    assert!(cut_ingested(&ing, &ways, &cfg, picked.path(), &bad_band, &Progress::silent()).is_err());
+    assert!(
+        cut_ingested(&ing, &ways, &Routing::default(), &cfg, picked.path(), &bad_band, &Progress::silent()).is_err()
+    );
 }
 
 /// A band table that does not partition the ladder is refused before anything is written.
@@ -626,7 +675,8 @@ fn a_broken_band_table_is_refused() {
     let (ing, ways) = fixture(&cfg);
     // The recommended table is a 9-LOD table; this config's ladder has three levels.
     let opts = CutOptions { bands: BandTable::recommended(), ..Default::default() };
-    let err = cut_ingested(&ing, &ways, &cfg, out.path(), &opts, &Progress::silent()).expect_err("must refuse");
+    let err = cut_ingested(&ing, &ways, &Routing::default(), &cfg, out.path(), &opts, &Progress::silent())
+        .expect_err("must refuse");
     assert!(err.contains("LOD"), "the error names the partition problem: {err}");
     assert!(!out.path().join("cells.json").exists(), "and nothing was published");
 }
@@ -867,7 +917,7 @@ fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
             );
         }
         let out = scratch.path().join(if with_bbox { "bbox" } else { "selection" });
-        let summary = cut_ingested(&ing, &[], &cfg, &out, &opts, &Progress::silent()).unwrap();
+        let summary = cut_ingested(&ing, &[], &Routing::default(), &cfg, &out, &opts, &Progress::silent()).unwrap();
         assert_eq!(summary.cells.len(), 2);
         for artifact in summary.cells {
             let bytes = std::fs::read(out.join(artifact.path)).unwrap();

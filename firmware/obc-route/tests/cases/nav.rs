@@ -45,6 +45,18 @@ fn profile(name: &str, overrides: &[(u8, u8)]) -> NavProfile {
     NavProfile { name: name.into(), highway, surface: [16; 8], climb_weight: 0 }
 }
 
+fn edge(a: u32, b: u32, polyline: Vec<(i32, i32)>, length_m: u32, kind: u8) -> Edge {
+    let mut edge = Edge::new(a, b, polyline, kind);
+    edge.length_m = length_m;
+    edge
+}
+
+fn free_node(id: u32, coord: (i32, i32)) -> Node {
+    let mut node = Node::new(id, coord);
+    node.requires_context = false;
+    node
+}
+
 /// Serialize `graph` into a minimal map with the given routing profiles. At least one profile must
 /// be present.
 fn map_with_profiles(graph: &NavGraph, profiles: &[NavProfile]) -> Vec<u8> {
@@ -71,7 +83,7 @@ fn grid3(shortcut: bool) -> NavGraph {
     let mut nodes = Vec::new();
     for row in 0..3 {
         for col in 0..3 {
-            nodes.push(Node { id: (row * 3 + col) as u32, coord: at(row, col) });
+            nodes.push(Node::new((row * 3 + col) as u32, at(row, col)));
         }
     }
     let mut edges = Vec::new();
@@ -81,19 +93,19 @@ fn grid3(shortcut: bool) -> NavGraph {
             if col < 2 {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500); // nudge lat
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
+                edges.push(edge(a, a + 1, vec![ca, mid, cb], EDGE_COST, 0));
             }
             if row < 2 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2); // nudge lon
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
+                edges.push(edge(a, a + 3, vec![ca, mid, cb], EDGE_COST, 0));
             }
         }
     }
     if shortcut {
         let (ca, cb) = (at(0, 0), at(2, 2));
         let mid = ((ca.0 + cb.0) / 2 + 500, (ca.1 + cb.1) / 2 - 500);
-        edges.push(Edge { a: 0, b: 8, polyline: vec![ca, mid, cb], length_m: SHORTCUT_COST, kind: 0 });
+        edges.push(edge(0, 8, vec![ca, mid, cb], SHORTCUT_COST, 0));
     }
     NavGraph { nodes, edges }
 }
@@ -101,11 +113,11 @@ fn grid3(shortcut: bool) -> NavGraph {
 /// A straight west-to-east path graph of `n` nodes. Reaching the far end forces the router to
 /// track every node on the line, which makes it the deterministic range fixture.
 fn line_graph(n: u32, step_udeg: i32, cost_m: u32) -> NavGraph {
-    let nodes = (0..n).map(|i| Node { id: i, coord: (BASE.0 + i as i32 * step_udeg, BASE.1) }).collect::<Vec<_>>();
+    let nodes = (0..n).map(|i| free_node(i, (BASE.0 + i as i32 * step_udeg, BASE.1))).collect::<Vec<_>>();
     let edges = (0..n - 1)
         .map(|i| {
             let (ca, cb) = (nodes[i as usize].coord, nodes[i as usize + 1].coord);
-            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m, kind: 0 }
+            edge(i, i + 1, vec![ca, cb], cost_m, 0)
         })
         .collect();
     NavGraph { nodes, edges }
@@ -189,16 +201,8 @@ fn disconnected_graph_is_no_path() {
     let b0 = (550_000, 500_000); // ~5 km east of component A
     let b1 = (555_000, 500_000);
     let graph = NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a0 },
-            Node { id: 1, coord: a1 },
-            Node { id: 2, coord: b0 },
-            Node { id: 3, coord: b1 },
-        ],
-        edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
-        ],
+        nodes: vec![Node::new(0, a0), Node::new(1, a1), Node::new(2, b0), Node::new(3, b1)],
+        edges: vec![edge(0, 1, vec![a0, a1], 600, 0), edge(2, 3, vec![b0, b1], 600, 0)],
     };
     let (res, obcr, _) = plan(&map_with(&graph), a0, b0, "x");
     assert_eq!(res, Err(NavError::NoPath));
@@ -222,21 +226,16 @@ fn tiny_scratch_exhausts() {
     assert_eq!(res, Err(NavError::Exhausted));
 }
 
-/// A goal discovered before the table fills is still reached when a later insert fails. The start
-/// has two ways to the goal: one expensive direct edge, tracked at the first settle, and a cheap
-/// chain. A* settles the chain, fills the table mid-chain, and the goal then pops on the direct
-/// edge. That route exceeds the rung's bound, which is the accepted full-table outcome.
+/// A queued goal cannot certify a route after a cheaper branch no longer fits the table.
 #[test]
-fn goal_tracked_before_fill_survives_exhaustion() {
+fn a_queued_goal_does_not_hide_a_dropped_frontier() {
     // 9 chain nodes west to east; the goal is node 8.
     let step = 3_000;
     let coord = |i: u32| (BASE.0 + i as i32 * step, BASE.1);
-    let mut nodes: Vec<Node> = (0..9).map(|i| Node { id: i, coord: coord(i) }).collect();
-    let mut edges: Vec<Edge> = (0..8)
-        .map(|i| Edge { a: i, b: i + 1, polyline: vec![coord(i), coord(i + 1)], length_m: 400, kind: 0 })
-        .collect();
+    let mut nodes: Vec<Node> = (0..9).map(|i| Node::new(i, coord(i))).collect();
+    let mut edges: Vec<Edge> = (0..8).map(|i| edge(i, i + 1, vec![coord(i), coord(i + 1)], 400, 0)).collect();
     // The expensive direct escape: 20 km for a ~1.8 km straight line, still admissible.
-    edges.push(Edge { a: 0, b: 8, polyline: vec![coord(0), coord(8)], length_m: 20_000, kind: 0 });
+    edges.push(edge(0, 8, vec![coord(0), coord(8)], 20_000, 0));
     let _ = &mut nodes;
     let bytes = map_with(&NavGraph { nodes, edges });
 
@@ -252,9 +251,8 @@ fn goal_tracked_before_fill_survives_exhaustion() {
     let (from, to) = (coord(0), coord(8));
     let res =
         plan_route(&r, from, to, "Salvaged", BikeType::Road, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
-    let route = res.expect("the goal was tracked before the fill ⇒ salvage returns it");
-    assert_eq!(route.total_distance_m, 2671, "the direct edge, the full-table path");
-    assert_eq!(route_points(&sink.buf).len(), 2, "start → goal over the single direct edge");
+    assert_eq!(res, Err(NavError::Exhausted));
+    assert!(sink.buf.is_empty(), "an uncertified route never reaches the emitter");
 }
 
 /// An endpoint with no routable edge within the snap radius fails to snap. The wider internal
@@ -277,10 +275,8 @@ fn unsnappable_endpoint_is_no_path() {
 fn sparse_anchor_discovers_long_road_for_exact_projection() {
     let a = BASE;
     let b = (BASE.0 + SP, BASE.1);
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: 0 }],
-    };
+    let graph =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, vec![a, b], 1_113, 0)] };
     let bytes = map_with(&graph);
     // Deliberately not on an anchor: the anchor only finds the edge, the projection uses the
     // complete polyline.
@@ -302,10 +298,7 @@ fn sparse_anchor_discovers_long_road_for_exact_projection() {
 fn near_a_node_still_starts_at_the_exact_road_projection() {
     let a = BASE;
     let b = (BASE.0 + 2_000, BASE.1); // ~223 m, so no interior lookup anchor
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 223, kind: 0 }],
-    };
+    let graph = NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, vec![a, b], 223, 0)] };
     let rider = (BASE.0 + 400, BASE.1 + 180); // ~20 m off-road and ~49 m from node a
     let (result, obcr, _) = plan(&map_with(&graph), rider, b, "Near node");
     let route = result.expect("endpoint discovery finds the short edge");
@@ -324,8 +317,8 @@ fn both_endpoints_project_and_clip_inside_one_curving_edge() {
     let bend_b = (BASE.0 + 4_000, BASE.1 + 4_000);
     let b = (BASE.0 + 8_000, BASE.1 + 4_000);
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, bend_a, bend_b, b], length_m: 1_335, kind: 0 }],
+        nodes: vec![Node::new(0, a), Node::new(1, b)],
+        edges: vec![edge(0, 1, vec![a, bend_a, bend_b, b], 1_335, 0)],
     };
     let from = (BASE.0 + 2_000, BASE.1 - 250);
     let to = (BASE.0 + 6_000, BASE.1 + 4_250);
@@ -338,12 +331,78 @@ fn both_endpoints_project_and_clip_inside_one_curving_edge() {
     );
 }
 
+#[test]
+fn one_way_submetre_slices_keep_direction_and_identical_positions_need_no_travel() {
+    let a = BASE;
+    let b = (BASE.0 + 1000, BASE.1);
+    let mut road = edge(0, 1, vec![a, b], 111, 0);
+    road.access[0].allowed = 0;
+    let graph = NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![road] };
+    let bytes = map_with(&graph);
+    let left = (BASE.0 + 500, BASE.1);
+    let right = (BASE.0 + 501, BASE.1);
+    for (from, to) in [(left, right), (a, b)] {
+        let (forward, output, _) = plan(&bytes, from, to, "Wrong direction");
+        assert_eq!(forward, Err(NavError::NoPath));
+        assert!(output.is_empty());
+        let (backward, _, _) = plan(&bytes, to, from, "Legal direction");
+        backward.expect("the reverse-only edge permits this slice");
+    }
+    for here in [a, left, b] {
+        let (same, output, _) = plan(&bytes, here, here, "Already here");
+        let route = same.unwrap();
+        assert_eq!(route.point_count, 1);
+        assert_eq!(route.total_distance_m, 0);
+        assert_eq!(route_points(&output).first().map(|p| (p.lon, p.lat)), Some(here));
+    }
+}
+
+#[test]
+fn junction_arrival_context_controls_full_and_partial_goal_edges() {
+    let (start, cheap, legal, junction, goal) = (
+        BASE,
+        (BASE.0 + 3000, BASE.1 + 3000),
+        (BASE.0 + 3000, BASE.1 - 3000),
+        (BASE.0 + 6000, BASE.1),
+        (BASE.0 + 9000, BASE.1),
+    );
+    let mut edges = vec![
+        edge(0, 1, vec![start, cheap], 1000, 0),
+        edge(1, 3, vec![cheap, junction], 1000, 0),
+        edge(0, 2, vec![start, legal], 2000, 0),
+        edge(2, 3, vec![legal, junction], 2000, 0),
+        edge(3, 4, vec![junction, goal], 1000, 0),
+    ];
+    edges[1].incidences[1].port = 0;
+    edges[3].incidences[1].port = 1;
+    edges[4].incidences[0].port = 2;
+    edges[4].incidences[0].forbidden = 1 << 0;
+    let graph = NavGraph {
+        nodes: [start, cheap, legal, junction, goal]
+            .into_iter()
+            .enumerate()
+            .map(|(id, coord)| Node::new(id as u32, coord))
+            .collect(),
+        edges,
+    };
+    let bytes = map_with(&graph);
+    for to in [goal, (BASE.0 + 7500, BASE.1)] {
+        let (result, output, _) = plan(&bytes, start, to, "Legal arrival");
+        result.expect("the more expensive arrival permits the required turn");
+        let points = route_points(&output);
+        assert!(points.iter().any(|p| (p.lon, p.lat) == legal));
+        assert!(!points.iter().any(|p| (p.lon, p.lat) == cheap));
+    }
+}
+
 /// A map with an empty nav section can snap nothing.
 #[test]
 fn empty_graph_is_no_path() {
     let bytes = map_with(&NavGraph::default());
-    let (res, _, _) = plan(&bytes, (500_000, 500_000), (505_000, 500_000), "x");
-    assert_eq!(res, Err(NavError::NoPath));
+    for to in [(505_000, 500_000), (500_000, 500_000)] {
+        let (res, _, _) = plan(&bytes, (500_000, 500_000), to, "x");
+        assert_eq!(res, Err(NavError::NoPath));
+    }
 }
 
 /// There is no distance cap: a far target is attempted and fails by exhausting the table. Every
@@ -467,16 +526,18 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
 #[test]
 fn record_stride_keeps_odd_offsets_exercised() {
     assert_eq!(obc_formats::obcm::NAV_NODE_FIXED_LEN % 2, 1, "the fixed record head is odd-length");
-    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN, 17, "v12 neighbor entries are 17 bytes");
+    assert_eq!(obc_formats::obcm::NAV_NEIGHBOR_LEN % 2, 1, "neighbor entries retain odd alignment");
     // The neighbor entry length is odd too, so consecutive record starts keep varying parity and
     // record heads decode at odd offsets in multi-record chunks as well.
 }
 
-/// The 26 B/node layout holds: a 24 B entry plus a 2 B heap slot, plus the two length fields.
+/// Every arrival retains a 24 B entry and 2 B heap slot; shared metric fields fit the same budget.
 #[test]
 fn scratch_fits_the_per_target_budget() {
     let size = core::mem::size_of::<NavScratch<{ obc_route::NAV_MAX_NODES }>>();
-    assert!(size <= 26 * obc_route::NAV_MAX_NODES + 8, "NavScratch is {size} B — the 26 B/node layout drifted");
+    assert_eq!(obc_route::NAV_MAX_NODES, 1536);
+    assert_eq!(size, 26 * obc_route::NAV_MAX_NODES + 20);
+    assert!(size <= 40 * 1024, "NavScratch is {size} B");
 }
 
 /// Every node on this ~9 km line must be tracked to reach the goal, so a 300-node table exhausts
@@ -507,27 +568,40 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     assert_eq!(route.total_distance_m, 9001, "summed edge costs over the whole line");
 }
 
-/// The weighted `g` saturates instead of wrapping, so a path costing more than 65 535 m still
-/// plans. The displayed total is the unweighted `length_m` sum and does not clamp at that ceiling.
+/// Both corridors exceed 65,535. The expensive one reaches the goal first, before the cheaper
+/// branch can improve it; cost saturation would discard that improvement as a false tie.
 #[test]
-fn saturated_costs_plan_without_panicking() {
-    // Three nodes ~100 m apart with 60 km edge costs, so `g` saturates on the second hop. `n1` is
-    // nudged off-axis so the decimator keeps it.
-    let (n0, n1, n2) = (BASE, (BASE.0 + 900, BASE.1 + 500), (BASE.0 + 1_800, BASE.1));
+fn costs_above_u16_preserve_the_better_route_through_real_map_bytes() {
+    let (start, early, late, goal) =
+        (BASE, (BASE.0 + 900, BASE.1 + 500), (BASE.0 + 900, BASE.1 - 500), (BASE.0 + 1800, BASE.1));
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: n0 }, Node { id: 1, coord: n1 }, Node { id: 2, coord: n2 }],
+        nodes: vec![Node::new(0, start), Node::new(1, early), Node::new(2, late), Node::new(3, goal)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000, kind: 0 },
-            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000, kind: 0 },
+            edge(0, 1, vec![start, early], 5_000, 0),
+            edge(1, 3, vec![early, goal], 45_000, 0),
+            edge(0, 2, vec![start, late], 30_000, 0),
+            edge(2, 3, vec![late, goal], 5_000, 0),
         ],
     };
-    let (res, obcr, _) = plan(&map_with(&graph), n0, n2, "Far");
-    let route = res.expect("a saturated-cost path still plans");
-    assert_eq!(
-        route.total_distance_m, 229,
-        "the displayed total is the u32 length sum, past the u16 weighted-g ceiling"
-    );
-    assert_eq!(route_points(&obcr).len(), 3, "the geometry is intact");
+    let profile = profile("Heavy", &[(0, 32)]);
+    assert_eq!(dijkstra_weighted(&graph, &profile, 3), 70_000);
+    let (result, obcr, _) = plan(&map_with_profiles(&graph, &[profile]), start, goal, "Wide cost");
+    result.expect("the representable route plans");
+    let points = route_points(&obcr);
+    assert!(points.iter().any(|point| (point.lon, point.lat) == late));
+    assert!(!points.iter().any(|point| (point.lon, point.lat) == early));
+}
+
+/// The table fits this line, but its only route exceeds the accumulated cost range.
+#[test]
+fn costs_above_u32_fail_explicitly_without_emitting_a_saturated_route() {
+    let graph = line_graph(300, 1000, 60_000);
+    let profile = NavProfile { name: "Maximum".into(), highway: [255; 32], surface: [255; 8], climb_weight: 0 };
+    let edge_cost = (60_000u64 * ((255 * 255) >> 4)) >> 4;
+    assert!(edge_cost * 299 > u64::from(u32::MAX));
+    let (result, obcr, _) = plan(&map_with_profiles(&graph, &[profile]), BASE, graph.nodes[299].coord, "Range");
+    assert_eq!(result, Err(NavError::Exhausted));
+    assert!(obcr.is_empty());
 }
 
 /// Manual stepping produces a byte-identical OBCR to the one-shot `plan_route`, every search step
@@ -712,17 +786,12 @@ fn profile_steers_between_equal_length_corridors() {
     let c2 = (500_000 + SP, 500_000 - SP); // south (primary corridor)
     let hop = 2_000; // above the ~1 574 m straight line, so admissible at 1.0x
     let graph = NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a },
-            Node { id: 1, coord: c1 },
-            Node { id: 2, coord: c2 },
-            Node { id: 3, coord: b },
-        ],
+        nodes: vec![Node::new(0, a), Node::new(1, c1), Node::new(2, c2), Node::new(3, b)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE },
-            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE },
-            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY },
-            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY },
+            edge(0, 1, vec![a, c1], hop, K_CYCLE),
+            edge(1, 3, vec![c1, b], hop, K_CYCLE),
+            edge(0, 2, vec![a, c2], hop, K_PRIMARY),
+            edge(2, 3, vec![c2, b], hop, K_PRIMARY),
         ],
     };
     let cycle_loving = profile("cycle", &[(K_CYCLE, 16), (K_PRIMARY, 48)]); // primary 3.0×
@@ -754,11 +823,11 @@ fn detour_is_taken_exactly_when_the_multiplier_math_says_so() {
     let direct = 2_400; // above the ~2 226 m straight line, so admissible
     let leg = 1_680; // 2 * 1 680 = 3 360 = 1.4 * direct; each above its ~1 574 m straight line
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }, Node { id: 2, coord: d }],
+        nodes: vec![Node::new(0, a), Node::new(1, b), Node::new(2, d)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: direct, kind: K_PRIMARY },
-            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: leg, kind: K_CYCLE },
-            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: leg, kind: K_CYCLE },
+            edge(0, 1, vec![a, b], direct, K_PRIMARY),
+            edge(0, 2, vec![a, d], leg, K_CYCLE),
+            edge(2, 1, vec![d, b], leg, K_CYCLE),
         ],
     };
     let primary_2x = profile("p2", &[(K_PRIMARY, 32), (K_CYCLE, 16)]);
@@ -784,11 +853,11 @@ fn forbidden_class_detours_then_no_paths() {
 
     // The direct edge is forbidden steps, and the cycleway detour is legal.
     let detourable = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }, Node { id: 2, coord: d }],
+        nodes: vec![Node::new(0, a), Node::new(1, b), Node::new(2, d)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS },
-            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: 1_680, kind: K_CYCLE },
-            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: 1_680, kind: K_CYCLE },
+            edge(0, 1, vec![a, b], 2_400, K_STEPS),
+            edge(0, 2, vec![a, d], 1_680, K_CYCLE),
+            edge(2, 1, vec![d, b], 1_680, K_CYCLE),
         ],
     };
     let bytes = map_with_profiles(&detourable, std::slice::from_ref(&no_steps));
@@ -796,15 +865,15 @@ fn forbidden_class_detours_then_no_paths() {
     assert_eq!(res.unwrap().total_distance_m, 3148, "the forbidden direct edge is skipped ⇒ detour");
     assert!(route_points(&obcr).iter().any(|p| (p.lon, p.lat) == d), "the route goes around via the legal apex");
 
-    // The only edge is forbidden steps, so A snaps but has no legal escape.
-    let dead = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS }],
-    };
+    // The only edge is forbidden steps, so neither travel nor a stationary snap qualifies.
+    let dead =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, vec![a, b], 2_400, K_STEPS)] };
     let bytes = map_with_profiles(&dead, &[no_steps]);
-    let (res, obcr, _) = plan_p(&bytes, a, b, "Dead", BikeType::Road);
-    assert_eq!(res, Err(NavError::NoPath), "every escape forbidden ⇒ the frontier drains to NoPath");
-    assert!(obcr.is_empty());
+    for to in [a, b] {
+        let (res, obcr, _) = plan_p(&bytes, a, to, "Dead", BikeType::Road);
+        assert_eq!(res, Err(NavError::NoPath), "a forbidden road cannot supply a route or a stationary snap");
+        assert!(obcr.is_empty());
+    }
 }
 
 /// The emitted `total_distance_m` is the raw summed edge length, not the weighted `g`.
@@ -814,8 +883,8 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
     let b = (500_000 + SP, 500_000);
     let length = 2_000;
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY }],
+        nodes: vec![Node::new(0, a), Node::new(1, b)],
+        edges: vec![edge(0, 1, vec![a, b], length, K_PRIMARY)],
     };
     let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0x
     let (res, _, _) = plan_p(&bytes, a, b, "Honest", BikeType::Road);
@@ -824,38 +893,35 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
     assert_ne!(route.total_distance_m, 2 * length, "and not the weighted g, which is 2x");
 }
 
-/// An out-of-range profile index falls back to profile 0 and plans byte-identically.
+/// A missing bike profile cannot inherit another bike's access and suitability policy.
 #[test]
-fn out_of_range_profile_index_falls_back_to_zero() {
+fn a_missing_profile_fails_closed() {
     let a = (500_000, 500_000);
     let b = (500_000 + 2 * SP, 500_000);
     let c1 = (500_000 + SP, 500_000 + SP);
     let c2 = (500_000 + SP, 500_000 - SP);
     let hop = 2_000;
     let graph = NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a },
-            Node { id: 1, coord: c1 },
-            Node { id: 2, coord: c2 },
-            Node { id: 3, coord: b },
-        ],
+        nodes: vec![Node::new(0, a), Node::new(1, c1), Node::new(2, c2), Node::new(3, b)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE },
-            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE },
-            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY },
-            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY },
+            edge(0, 1, vec![a, c1], hop, K_CYCLE),
+            edge(1, 3, vec![c1, b], hop, K_CYCLE),
+            edge(0, 2, vec![a, c2], hop, K_PRIMARY),
+            edge(2, 3, vec![c2, b], hop, K_PRIMARY),
         ],
     };
-    // The second profile exists only to prove that a type past the table does not select it.
+    // The selected bike exists in neither profile slot.
     let bytes =
         map_with_profiles(&graph, &[profile("cycle", &[(K_PRIMARY, 48)]), profile("primary", &[(K_CYCLE, 48)])]);
     let (from, to) = (a, b);
     let (res0, obcr0, _) = plan_p(&bytes, from, to, "Fallback", BikeType::Road);
-    let (res3, obcr3, _) = plan_p(&bytes, from, to, "Fallback", BikeType::Touring);
-    assert_eq!(res0.unwrap().total_distance_m, res3.unwrap().total_distance_m);
-    assert_eq!(route_points(&obcr0), route_points(&obcr3), "a type past the table plans as profile 0");
-    // It took the profile-0 corridor, not a fallback-to-neutral tie.
-    assert!(route_points(&obcr3).iter().any(|p| (p.lon, p.lat) == c1));
+    res0.expect("the available profile plans");
+    assert!(route_points(&obcr0).iter().any(|p| (p.lon, p.lat) == c1));
+    for to in [from, to] {
+        let (res3, obcr3, _) = plan_p(&bytes, from, to, "Fallback", BikeType::Touring);
+        assert_eq!(res3, Err(NavError::NoPath));
+        assert!(obcr3.is_empty());
+    }
 }
 
 /// A grid with mixed per-edge kinds. The found path's weighted cost must stay within the rung's
@@ -865,7 +931,7 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
     let mut nodes = Vec::new();
     for row in 0..3 {
         for col in 0..3 {
-            nodes.push(Node { id: (row * 3 + col) as u32, coord: at(row, col) });
+            nodes.push(Node::new((row * 3 + col) as u32, at(row, col)));
         }
     }
     let mut edges = Vec::new();
@@ -876,12 +942,12 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
                 let kind = if row == 2 { K_CYCLE } else { K_PRIMARY }; // the bottom row is cheap
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(edge(a, a + 1, vec![ca, mid, cb], EDGE_COST, kind));
             }
             if row < 2 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: K_CYCLE });
+                edges.push(edge(a, a + 3, vec![ca, mid, cb], EDGE_COST, K_CYCLE));
             }
         }
     }
@@ -953,7 +1019,7 @@ fn grid_diag(rows: i32, cols: i32, kind: u8) -> NavGraph {
     let mut nodes = Vec::new();
     for row in 0..rows {
         for col in 0..cols {
-            nodes.push(Node { id: (row * cols + col) as u32, coord: at(row, col) });
+            nodes.push(free_node((row * cols + col) as u32, at(row, col)));
         }
     }
     let mut edges = Vec::new();
@@ -963,12 +1029,12 @@ fn grid_diag(rows: i32, cols: i32, kind: u8) -> NavGraph {
             if col < cols - 1 {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(edge(a, a + 1, vec![ca, mid, cb], EDGE_COST, kind));
             }
             if row < rows - 1 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
-                edges.push(Edge { a, b: a + cols as u32, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(edge(a, a + cols as u32, vec![ca, mid, cb], EDGE_COST, kind));
             }
         }
     }
@@ -1047,22 +1113,41 @@ fn plan_ladder<const N: usize>(bytes: &[u8], from: (i32, i32), to: (i32, i32), b
     (res, planner.epsilon_used(), planner.settles(), first_escalation, sink.buf)
 }
 
-/// A grid whose tight-rung diamond overruns a 50-slot table but whose greedier corridor fits. The
-/// plan escalates once and completes. `settles` is cumulative, so it exceeds both the table size
-/// and the count at the moment of escalation.
+/// Arrival context needs more slots than a node-only frontier. A larger table still demonstrates
+/// successful escalation, with settle counts accumulated across the retry.
 #[test]
-fn escalation_succeeds_on_second_rung() {
-    let bytes = map_with(&grid_diag(9, 12, 0));
+fn escalation_succeeds_without_discarding_arrival_context() {
+    let mut graph = grid_diag(9, 12, 0);
+    for node in &mut graph.nodes {
+        node.requires_context = true;
+    }
+    let bytes = map_with(&graph);
     let from = at(0, 0);
     let goal = at(8, 11);
     let to = goal;
-    let (res, eps, settles, first_esc, obcr) = plan_ladder::<50>(&bytes, from, to, BikeType::Road);
-    res.expect("the ε = 2.0 rung completes the route the tight bound couldn't fit");
-    assert_eq!(eps, (2, 1), "the plan escalated exactly one rung");
+    let (small, _, _, _, output) = plan_ladder::<50>(&bytes, from, to, BikeType::Road);
+    assert_eq!(small, Err(NavError::Exhausted));
+    assert!(output.is_empty());
+    let (res, eps, settles, first_esc, obcr) = plan_ladder::<100>(&bytes, from, to, BikeType::Road);
+    res.expect("a greedier attempt fits all required arrival states");
+    assert_ne!(eps, (13, 10), "the tight rung requires more states");
     assert!(!obcr.is_empty(), "a completed plan emits an OBCR");
     let escalated_at = first_esc.expect("the plan escalated, so a first-escalation settle count exists");
     assert!(settles > escalated_at, "settles accumulated across the retry (cumulative {settles} > {escalated_at})");
     assert!(settles > 50, "cumulative settles exceed the table size");
+}
+
+#[test]
+fn unrestricted_junctions_recover_grid_and_line_capacity() {
+    let uniform = map_with(&grid_diag(9, 12, 0));
+    let (result, _, _, _, _) = plan_ladder::<50>(&uniform, at(0, 0), at(8, 11), BikeType::Road);
+    result.expect("50 states fit the free-junction grid at a ladder rung");
+    let mixed = map_with_profiles(&grid_diag_mixed(7, 10), &[profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)])]);
+    let (result, _, _, _, _) = plan_ladder::<40>(&mixed, at(0, 0), at(6, 9), BikeType::Road);
+    result.expect("40 states fit the free-junction mixed grid at a ladder rung");
+    let graph = line_graph(1200, 135, 15);
+    let (result, _, _, _, _) = plan_ladder::<1536>(&map_with(&graph), BASE, graph.nodes[1199].coord, BikeType::Road);
+    result.expect("one state per unrestricted line node fits the shipped table");
 }
 
 /// A 20-slot table fits no rung's corridor, so all three exhaust and the plan fails at the top of
@@ -1089,16 +1174,8 @@ fn no_retry_on_disconnect_fails_fast_at_rung_zero() {
     let b0 = (550_000, 500_000);
     let b1 = (555_000, 500_000);
     let graph = NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a0 },
-            Node { id: 1, coord: a1 },
-            Node { id: 2, coord: b0 },
-            Node { id: 3, coord: b1 },
-        ],
-        edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
-        ],
+        nodes: vec![Node::new(0, a0), Node::new(1, a1), Node::new(2, b0), Node::new(3, b1)],
+        edges: vec![edge(0, 1, vec![a0, a1], 600, 0), edge(2, 3, vec![b0, b1], 600, 0)],
     };
     let bytes = map_with(&graph);
     let (res, eps, _, first_esc, obcr) =
@@ -1115,7 +1192,10 @@ fn no_retry_on_disconnect_fails_fast_at_rung_zero() {
 #[test]
 fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     let (rows, cols) = (7, 10);
-    let graph = grid_diag_mixed(rows, cols);
+    let mut graph = grid_diag_mixed(rows, cols);
+    for node in &mut graph.nodes {
+        node.requires_context = true;
+    }
     let prof = profile("mixed", &[(K_PRIMARY, 32), (K_CYCLE, 16)]); // primary 2.0x, cycleway 1.0x
     let bytes = map_with_profiles(&graph, std::slice::from_ref(&prof));
     let from = at(0, 0);
@@ -1148,10 +1228,13 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
             .sum()
     };
 
-    // A 40-slot table exhausts the first two rungs and completes greedy, on a suboptimal path.
-    let (res, eps, _, _, obcr) = plan_ladder::<40>(&bytes, from, to, BikeType::Road);
-    res.expect("the ε = 3.0 rung completes the mixed grid");
-    assert_eq!(eps, (3, 1), "the small table drove the plan to the top rung");
+    let (small, _, _, _, output) = plan_ladder::<40>(&bytes, from, to, BikeType::Road);
+    assert_eq!(small, Err(NavError::Exhausted));
+    assert!(output.is_empty());
+    // The tighter successful table needs a greedier attempt, but still certifies its bound.
+    let (res, eps, _, first_esc, obcr) = plan_ladder::<100>(&bytes, from, to, BikeType::Road);
+    res.expect("an escalated attempt completes the mixed grid");
+    assert!(first_esc.is_some());
     let found = found_weighted(&obcr);
     assert!(found > reference, "the escalated greedy path is genuinely suboptimal (found {found} > opt {reference})");
     assert!(
@@ -1162,7 +1245,7 @@ fn found_cost_is_within_used_rung_epsilon_of_dijkstra() {
     );
 
     // A roomy table completes optimally on the first try.
-    let (res, eps, _, first_esc, obcr) = plan_ladder::<120>(&bytes, from, to, BikeType::Road);
+    let (res, eps, _, first_esc, obcr) = plan_ladder::<400>(&bytes, from, to, BikeType::Road);
     res.expect("a roomy table completes at rung 0");
     assert_eq!(eps, (13, 10), "no escalation with room to spare");
     assert!(first_esc.is_none());
@@ -1262,7 +1345,7 @@ fn plan_with_elevation(bytes: &[u8], elev: &mut dyn obc_route::ElevationSource) 
 }
 
 /// With [`NullElevation`] the emitted OBCR carries no densification, no elevation and no stats.
-/// The digest must not move: if it does, terrain support has changed the no-terrain output.
+/// The digest pins deterministic output, including the route chosen among equal-cost paths.
 #[test]
 fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
     let bytes = map_with(&grid3(false));
@@ -1276,7 +1359,7 @@ fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
 }
 
 /// FNV-1a of the no-terrain emit for the fixture above.
-const NULL_PATH_DIGEST: u64 = 1853384897492501207;
+const NULL_PATH_DIGEST: u64 = 7243256262404055103;
 
 /// A real source fills every point's height and the header's min, max and dead-banded climb. The
 /// crest is reachable only through the densification: a vertex-only fill tops out at 900 m.
@@ -1521,17 +1604,12 @@ fn pass_vs_valley() -> NavGraph {
     let (a, b) = (at(0, 0), at(0, 2));
     let (pass, valley) = (at(1, 1), at(-1, 1));
     NavGraph {
-        nodes: vec![
-            Node { id: 0, coord: a },
-            Node { id: 1, coord: pass },
-            Node { id: 2, coord: valley },
-            Node { id: 3, coord: b },
-        ],
+        nodes: vec![Node::new(0, a), Node::new(1, pass), Node::new(2, valley), Node::new(3, b)],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 },
-            Edge { a: 1, b: 3, polyline: vec![pass, b], length_m: PASS_LEG, kind: 0 },
-            Edge { a: 0, b: 2, polyline: vec![a, valley], length_m: VALLEY_LEG, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![valley, b], length_m: VALLEY_LEG, kind: 0 },
+            edge(0, 1, vec![a, pass], PASS_LEG, 0),
+            edge(1, 3, vec![pass, b], PASS_LEG, 0),
+            edge(0, 2, vec![a, valley], VALLEY_LEG, 0),
+            edge(2, 3, vec![valley, b], VALLEY_LEG, 0),
         ],
     }
 }
@@ -1670,8 +1748,8 @@ fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
 fn the_displayed_distance_ignores_the_climb_term_entirely() {
     let (a, pass) = (at(0, 0), at(1, 1));
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: pass }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
+        nodes: vec![Node::new(0, a), Node::new(1, pass)],
+        edges: vec![edge(0, 1, vec![a, pass], PASS_LEG, 0)],
     };
     let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
     let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", BikeType::Road);
@@ -1680,25 +1758,22 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
     assert!(route.total_distance_m < ROW_CLIMB_M * 100, "and not the weighted g");
 }
 
-/// At `w = 255` the pass leg's climb term alone passes `u16::MAX`, so the frontier's `g` clamps. A
-/// saturated node must be maximally unattractive, never wrapped: the plan still completes and still
-/// takes the flat valley.
+/// A pass costing more than `u16::MAX` remains more expensive than the flat valley.
 #[test]
-fn a_saturating_climb_weight_clamps_instead_of_wrapping() {
-    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture must actually reach saturation");
+fn a_large_climb_cost_preserves_the_cheaper_valley() {
+    assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture exceeds u16");
     let bytes = map_with_terrain(&pass_vs_valley(), &[climb_profile("Absurd", 255)], &mut Hillside);
-    assert_eq!(plan_corridor(&bytes), (3148, false), "a saturated pass is unattractive, not cheap");
+    assert_eq!(plan_corridor(&bytes), (3148, false), "the pass retains its full climb cost");
 }
 
-/// When every route saturates there is no ordering left, and the contract is only that the search
-/// degrades: it must still terminate and return a real route.
+/// Large climb costs remain representable across the entire grid.
 #[test]
-fn a_wholly_saturated_frontier_still_returns_a_route() {
+fn large_climb_costs_across_the_frontier_remain_routable() {
     let graph = grid3(false);
     let bytes = map_with_terrain(&graph, &[climb_profile("Absurd", 255)], &mut Knoll);
     let (c0, c8) = (at(0, 0), at(2, 2));
     let (res, obcr, _) = plan_p(&bytes, c0, c8, "Saturated", BikeType::Road);
-    let route = res.expect("a saturated frontier still drains to the goal");
+    let route = res.expect("the full cost range remains routable");
     assert!(route.total_distance_m >= 4400, "a real path, not a wrapped shortcut");
     let pts = route_points(&obcr);
     assert_eq!((pts[0].lon, pts[0].lat), c0);
@@ -1711,10 +1786,8 @@ fn imported_surface_requires_unique_directed_continuous_graph_attribution() {
     let b = (BASE.0 + 10_000, BASE.1);
     let from = (BASE.0 + 3_000, BASE.1);
     let to = (BASE.0 + 3_500, BASE.1);
-    let mut graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1113, kind: 32 }],
-    };
+    let mut graph =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, vec![a, b], 1113, 32)] };
     let check = |graph: &NavGraph, from, to| {
         let bytes = map_with(graph);
         let source = SliceSource(&bytes);
@@ -1728,12 +1801,11 @@ fn imported_surface_requires_unique_directed_continuous_graph_attribution() {
     assert_eq!(check(&graph, from, (to.0, to.1 + 150)), 0);
     let c = (a.0, a.1 + 40);
     let d = (b.0, b.1 + 40);
-    graph.nodes.extend([Node { id: 2, coord: c }, Node { id: 3, coord: d }]);
-    graph.edges.push(Edge { a: 2, b: 3, polyline: vec![c, d], length_m: 1113, kind: 96 });
+    graph.nodes.extend([Node::new(2, c), Node::new(3, d)]);
+    graph.edges.push(edge(2, 3, vec![c, d], 1113, 96));
     assert_eq!(check(&graph, from, to), 0, "a parallel road inside the tolerance is ambiguous");
     graph.edges.truncate(1);
-    graph.edges[0].polyline = vec![a, b, a, b];
-    graph.edges[0].length_m = 3339;
+    graph.edges[0] = edge(0, 1, vec![a, b, a, b], 3339, 32);
     assert_eq!(check(&graph, from, to), 0, "repeated occurrences on one edge are ambiguous");
 }
 
@@ -1779,8 +1851,8 @@ fn unreadable_parallel_edge_cannot_prove_unique_import_attribution() {
     for lane in 0..2 {
         let polyline: Vec<_> = (0..124).map(|i| (BASE.0 + i * 80, BASE.1 + lane * 40)).collect();
         let a = graph.nodes.len() as u32;
-        graph.nodes.extend([Node { id: a, coord: polyline[0] }, Node { id: a + 1, coord: polyline[123] }]);
-        graph.edges.push(Edge { a, b: a + 1, polyline, length_m: 1095, kind: if lane == 0 { 32 } else { 96 } });
+        graph.nodes.extend([Node::new(a, polyline[0]), Node::new(a + 1, polyline[123])]);
+        graph.edges.push(edge(a, a + 1, polyline, 1095, if lane == 0 { 32 } else { 96 }));
     }
     let bytes = map_with(&graph);
     let source = SliceSource(&bytes);
@@ -1805,4 +1877,130 @@ fn unreadable_parallel_edge_cannot_prove_unique_import_attribution() {
         );
     }
     assert_eq!(fault.failures.get(), 2);
+}
+
+#[test]
+fn pushing_charges_one_dismount_until_a_riding_segment_resets_it() {
+    let points = [
+        BASE,
+        (BASE.0 + 100, BASE.1 + 100),
+        (BASE.0 + 200, BASE.1),
+        (BASE.0 + 300, BASE.1 + 100),
+        (BASE.0 + 150, BASE.1 - 200),
+    ];
+    for (ride_middle, detour_hop, expect_pushing_route) in [(false, 675, true), (true, 525, false)] {
+        let mut edges = vec![
+            edge(0, 1, vec![points[0], points[1]], 100, 0),
+            edge(1, 2, vec![points[1], points[2]], 100, 0),
+            edge(2, 3, vec![points[2], points[3]], 100, 0),
+            edge(0, 4, vec![points[0], points[4]], detour_hop, 0),
+            edge(4, 3, vec![points[4], points[3]], detour_hop, 0),
+        ];
+        for (index, edge) in edges[..3].iter_mut().enumerate() {
+            if index != 1 || !ride_middle {
+                for direction in &mut edge.access {
+                    direction.pushing = 1;
+                }
+            }
+        }
+        let graph = NavGraph {
+            nodes: points.into_iter().enumerate().map(|(id, coord)| free_node(id as u32, coord)).collect(),
+            edges,
+        };
+        let (result, output, _) = plan(&map_with(&graph), points[0], points[3], "Dismount transitions");
+        result.expect("both alternatives remain legal");
+        let route = route_points(&output);
+        // Continuous pushing costs 1,300 versus 1,350 riding. Riding the middle edge
+        // makes two dismounts: 1,100 versus 1,050 riding, so the alternative must win.
+        assert_eq!(route.iter().any(|p| (p.lon, p.lat) == points[1]), expect_pushing_route);
+        assert_eq!(route.iter().any(|p| (p.lon, p.lat) == points[4]), !expect_pushing_route);
+    }
+}
+
+#[test]
+fn a_free_junction_retains_a_costlier_pushing_arrival_to_avoid_another_dismount() {
+    let points = [BASE, (BASE.0 + 50, BASE.1 + 50), (BASE.0 + 100, BASE.1), (BASE.0 + 150, BASE.1 + 50)];
+    let mut graph = NavGraph {
+        nodes: points.into_iter().enumerate().map(|(id, coord)| free_node(id as u32, coord)).collect(),
+        edges: vec![
+            edge(0, 1, vec![points[0], points[1]], 10, 0),
+            edge(1, 2, vec![points[1], points[2]], 10, 0),
+            edge(0, 2, vec![points[0], points[2]], 150, 0),
+            edge(2, 3, vec![points[2], points[3]], 100, 0),
+        ],
+    };
+    for i in [0, 1, 3] {
+        for direction in &mut graph.edges[i].access {
+            direction.pushing = 1;
+        }
+    }
+    let (result, output, _) = plan(&map_with(&graph), points[0], points[3], "Pushing arrival");
+    result.expect("the free junction keeps both travel modes");
+    // The ride arrival is cheaper (150 versus180), but its next dismount raises the whole route
+    // to650. Continuous pushing totals580 and must remain in the frontier.
+    assert!(route_points(&output).iter().any(|p| (p.lon, p.lat) == points[1]));
+}
+
+#[test]
+fn node_barriers_apply_to_full_edges_and_projected_goal_slices() {
+    let a = BASE;
+    let barrier = (BASE.0 + 2_000, BASE.1);
+    let b = (BASE.0 + 4_000, BASE.1);
+    let mut graph = NavGraph {
+        nodes: vec![Node::new(0, a), free_node(1, barrier), Node::new(2, b)],
+        edges: vec![edge(0, 1, vec![a, barrier], 223, 0), edge(1, 2, vec![barrier, b], 223, 0)],
+    };
+    graph.nodes[1].access.allowed = 0;
+    let blocked = map_with(&graph);
+    for (from, to) in [(a, b), (a, (BASE.0 + 3_000, BASE.1)), (b, (BASE.0 + 1_000, BASE.1))] {
+        let (result, output, _) = plan(&blocked, from, to, "Closed crossing");
+        assert_eq!(result, Err(NavError::NoPath));
+        assert!(output.is_empty());
+    }
+    let (same_side, _, _) = plan(&blocked, a, (BASE.0 + 1_000, BASE.1), "Before the barrier");
+    same_side.expect("stopping before a barrier does not cross it");
+    graph.nodes[1].access.allowed = 1;
+    graph.nodes[1].access.pushing = 1;
+    let (dismount, _, _) = plan(&map_with(&graph), a, (BASE.0 + 3_000, BASE.1), "Dismount crossing");
+    dismount.expect("an explicitly permitted dismount crossing stays usable");
+}
+
+#[test]
+fn an_incorrect_free_arrival_hint_fails_before_emitting() {
+    use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+    let mut graph = line_graph(3, 2000, 223);
+    graph.nodes[1].access.pushing = 1;
+    graph.nodes[1].requires_context = true;
+    let mut bytes = map_with(&graph);
+    plan(&bytes, graph.nodes[0].coord, graph.nodes[2].coord, "Valid dismount crossing")
+        .0
+        .expect("the original context metadata is valid");
+    let offsets = {
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let view = obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1_000_000, max_lat: 1_000_000 };
+        let mut offsets = Vec::new();
+        reader
+            .for_each_nav_node(&view, &mut [0; NAV_CHUNK_SIZE], |node| {
+                let record = bytes.windows(node.bytes().len()).position(|record| record == node.bytes()).unwrap();
+                for (index, neighbor) in node.neighbors().enumerate() {
+                    if neighbor.id == 1 {
+                        assert!(neighbor.target_requires_context);
+                        offsets.push(record + NAV_NODE_FIXED_LEN + index * NAV_NEIGHBOR_LEN + 19);
+                    }
+                }
+            })
+            .unwrap();
+        offsets
+    };
+    assert_eq!(offsets.len(), 2);
+    for offset in offsets {
+        let word = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) & !(1 << 29);
+        bytes[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    let (result, output, _) = plan(&bytes, graph.nodes[0].coord, graph.nodes[2].coord, "Invalid context hint");
+    assert_eq!(result, Err(NavError::NoPath));
+    assert!(output.is_empty());
 }

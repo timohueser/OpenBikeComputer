@@ -264,7 +264,7 @@ pub fn resolve_approaches(
             } else {
                 mask
             }
-        });
+        }) & (way.access[0].allowed | way.access[1].allowed);
         for (&id, &coord) in way.node_ids.iter().zip(&way.coords) {
             if wanted.contains(&id) {
                 nodes.entry(id).and_modify(|v| v.1 |= mask).or_insert((coord, mask));
@@ -529,20 +529,22 @@ mod tests {
 
     #[test]
     fn approach_requires_explicit_topology() {
-        use crate::routing::RoutableWay;
+        use crate::routing::{ProfileAccess, RoutableWay};
         let mut linked = poi(1, 48.0, 7.8, Some("A"), true);
         linked.access_nodes = vec![10];
         let mut unrelated = linked.clone();
         unrelated.access_nodes = vec![11];
         let mut pois = vec![linked, unrelated];
-        let ways = [RoutableWay {
-            node_ids: vec![10, 20],
-            coords: vec![(7_800_000, 48_000_000), (7_800_010, 48_000_000)],
-            kind: 1,
-        }];
+        let mut ways = [RoutableWay::new(1, vec![10, 20], vec![(7_800_000, 48_000_000), (7_800_010, 48_000_000)], 1)];
         resolve_approaches(&mut pois, &ways, &obc_map_core::config::default_profiles());
         assert!(pois[0].metadata.approach.is_some());
         assert!(pois[1].metadata.approach.is_none());
+        ways[0].access = [ProfileAccess::CLOSED, ProfileAccess { allowed: 4, pushing: 4 }];
+        resolve_approaches(&mut pois, &ways, &obc_map_core::config::default_profiles());
+        assert_eq!(pois[0].metadata.approach.unwrap().profile_mask, 4);
+        ways[0].access = [ProfileAccess::CLOSED; 2];
+        resolve_approaches(&mut pois, &ways, &obc_map_core::config::default_profiles());
+        assert!(pois[0].metadata.approach.is_none());
     }
 
     #[test]

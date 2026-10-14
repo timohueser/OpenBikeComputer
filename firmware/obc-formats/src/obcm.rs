@@ -8,7 +8,7 @@ pub mod peaks;
 pub use nav::{NavEdgeRecord, NavNeighbor, NavNodeRecord, NavVertices};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 19;
+pub const VERSION: u8 = 20;
 /// Fixed header, including optional terrain and landmark region pointers.
 pub const HEADER_LEN: usize = 71;
 /// Header offset of the `Offset Scale` byte.
@@ -423,14 +423,14 @@ pub const POI_DIR_POOL_FIELDS_LEN: usize = 6;
 /// Width of the navigation directory: the graph and profile prefix, then the snap-index triple.
 pub const NAV_DIR_LEN: usize = 40;
 pub const NAV_CHUNK_SIZE: usize = 512;
-pub const NAV_NODE_FIXED_LEN: usize = 13;
+pub const NAV_NODE_FIXED_LEN: usize = 39;
 /// Width of one adjacency entry: `id u32, dlat i16, dlon i16, edge_id u32, cost_m u16,
-/// way_kind u8, ascent_m u16`.
-pub const NAV_NEIGHBOR_LEN: usize = 17;
+/// way_kind u8, ascent_m u16, profile_mask u8, push_mask u8, turn_word u32`.
+pub const NAV_NEIGHBOR_LEN: usize = 23;
 /// Offset of the `Ascent M` field inside a neighbor entry: the climb of riding the edge from this
 /// record's node toward the neighbor, so the two sides of an edge carry different values.
 pub const NAV_NEIGHBOR_ASCENT_OFF: usize = 15;
-pub const NAV_EDGE_FIXED_LEN: usize = 15;
+pub const NAV_EDGE_FIXED_LEN: usize = 19;
 /// All terrain integration samples were present for this edge.
 pub const NAV_EDGE_ELEVATION_COMPLETE: u16 = 0x8000;
 pub const NAV_EDGE_POINT_COUNT_MASK: u16 = 0x7fff;
@@ -443,7 +443,20 @@ pub const NAV_PROFILE_CLIMB_WEIGHT_OFF: usize = 52;
 /// Length of the reserved tail after `Climb Weight`; written `0`, ignored on read.
 pub const NAV_PROFILE_RESERVED_LEN: usize = 3;
 pub const NAV_MAX_PROFILES: usize = 8;
-pub const NAV_MAX_DEGREE: usize = 24;
+pub const NAV_MAX_DEGREE: usize = 20;
+/// Integer latitude scale used by the navigation cost lower bound.
+pub const NAV_DISTANCE_LAT_MM_PER_UDEG: u64 = 111;
+
+/// A symmetric, triangle-inequality distance bound for `(lon, lat)` microdegrees.
+/// Producers charge at least its ceiling in metres per edge; search uses its floor.
+/// The octagonal norm avoids a square root and bounds diagonal travel more tightly than either axis.
+#[inline]
+pub fn nav_distance_bound_mm(a: (i32, i32), b: (i32, i32), lon_mm_per_udeg: u8) -> u64 {
+    let lat = u64::from(a.1.abs_diff(b.1)) * NAV_DISTANCE_LAT_MM_PER_UDEG;
+    let lon = u64::from(a.0.abs_diff(b.0)) * u64::from(lon_mm_per_udeg);
+    lat.max(lon).max((707 * (lat + lon)).div_ceil(1000))
+}
+
 /// One snap-anchor record: absolute `lat i32`, absolute `lon i32`, and `edge_id u32`.
 pub const NAV_SNAP_RECORD_LEN: usize = 12;
 /// Edges no longer than this need no interior anchor: every on-edge position is already within
@@ -713,7 +726,7 @@ mod tests {
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
         validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x13, "the version byte is the hard cut, and it cuts in both directions");
+        assert_eq!(fixture[4], 0x14, "the version byte is the hard cut, and it cuts in both directions");
         assert_eq!(style.units(), 5);
         assert_eq!(style.bytes(), 80);
     }
@@ -950,9 +963,9 @@ mod tests {
         }
 
         let chunk = chunk_of(&[2, 5, 2]);
-        assert_eq!(nav_edge_record_range(&chunk, 0), Some((0, 19)));
-        assert_eq!(nav_edge_record_range(&chunk, 1), Some((19, 50)));
-        assert_eq!(nav_edge_record_range(&chunk, 2), Some((50, 69)));
+        assert_eq!(nav_edge_record_range(&chunk, 0), Some((0, 23)));
+        assert_eq!(nav_edge_record_range(&chunk, 1), Some((23, 58)));
+        assert_eq!(nav_edge_record_range(&chunk, 2), Some((58, 81)));
         // The walk must not pass the chunk's last record: the filler behind it spells the sentinel.
         assert_eq!(nav_edge_record_range(&chunk, 3), None);
         assert_eq!(nav_edge_record_range(&chunk, NAV_EDGE_ORDINAL_MASK), None);
@@ -960,7 +973,7 @@ mod tests {
         // A record claiming bytes past its chunk is refused rather than truncated.
         let mut overrun = std::vec![FILLER; NAV_CHUNK_SIZE];
         overrun[..NAV_EDGE_MIN_LEN].fill(0);
-        overrun[4..6].copy_from_slice(&200u16.to_le_bytes()); // 15 + 4*199 = 811 > 512
+        overrun[4..6].copy_from_slice(&200u16.to_le_bytes()); // 19 + 4*199 = 815 > 512
         assert_eq!(nav_edge_step(&overrun, 0), None);
 
         // `Pt Count` below 2 is impossible, and is also what stops `4 * (n - 1)` underflowing.
@@ -982,14 +995,12 @@ mod tests {
         edge_case[last + 4..last + 6].copy_from_slice(&2u16.to_le_bytes());
         assert_eq!(nav_edge_step(&edge_case, last), Some(NAV_EDGE_MIN_LEN));
 
-        // The `len` trap: `0xFFFE` computed in `u16` wraps to 3 and the walk would advance into
-        // the middle of a record. Evaluated in 32 bits it is 262 147 and refuses.
+        // A masked count still needs wide arithmetic before its chunk bound is checked.
         let mut wide = std::vec![FILLER; NAV_CHUNK_SIZE];
         wide[..NAV_EDGE_MIN_LEN].fill(0);
         wide[4..6].copy_from_slice(&0xFFFEu16.to_le_bytes());
         assert_eq!(nav_edge_step(&wide, 0), None);
-        assert_eq!(15u32 + 4 * (0xFFFEu32 - 1), 262_147);
-        assert_eq!((15u16).wrapping_add(4u16.wrapping_mul(0xFFFEu16 - 1)), 3, "the wrapped value the trap yields");
+        assert_eq!(NAV_EDGE_FIXED_LEN + 4 * (0x7ffeusize - 1), 131_079);
 
         // A short buffer is not a chunk: the walk needs the full 512 bytes to bound itself.
         assert_eq!(nav_edge_step(&chunk[..NAV_CHUNK_SIZE - 1], 0), None);
@@ -1001,7 +1012,7 @@ mod tests {
     /// next one starts, inside attacker-shaped bytes.
     #[test]
     fn a_malformed_intermediate_record_refuses_the_ordinals_behind_it() {
-        // Record 0 is `Pt Count = 0`, refused by the `n < 2` guard. Byte 19 then holds a record
+        // Record 0 is `Pt Count = 0`, refused by the `n < 2` guard. Byte 23 then holds a record
         // that is valid in isolation, exactly where a 2-point record 0 would have ended.
         let mut chunk = std::vec![FILLER; NAV_CHUNK_SIZE];
         chunk[..NAV_EDGE_MIN_LEN].fill(0);
@@ -1009,7 +1020,7 @@ mod tests {
         chunk[NAV_EDGE_MIN_LEN..NAV_EDGE_MIN_LEN + NAV_EDGE_MIN_LEN].fill(0);
         chunk[NAV_EDGE_MIN_LEN + 4..NAV_EDGE_MIN_LEN + 6].copy_from_slice(&2u16.to_le_bytes());
 
-        // In isolation the record at 19 is well-formed, so the walk is the only thing that can
+        // In isolation the record at 23 is well-formed, so the walk is the only thing that can
         // refuse it.
         assert_eq!(nav_edge_step(&chunk, NAV_EDGE_MIN_LEN), Some(NAV_EDGE_MIN_LEN));
 
@@ -1021,6 +1032,31 @@ mod tests {
     }
 
     #[test]
+    fn integer_navigation_bound_is_symmetric_and_consistent_after_rounding() {
+        let points = [(i32::MIN, i32::MAX), (i32::MAX, i32::MIN), (0, 0), (7, -9), (-13, 15)];
+        for scale in [0, 75, 111] {
+            for a in points {
+                for b in points {
+                    let ab = nav_distance_bound_mm(a, b, scale);
+                    assert_eq!(ab, nav_distance_bound_mm(b, a, scale));
+                    for goal in points {
+                        assert!(
+                            nav_distance_bound_mm(a, goal, scale) / 1000
+                                <= ab.div_ceil(1000) + nav_distance_bound_mm(b, goal, scale) / 1000
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            nav_distance_bound_mm(points[0], points[1], 111),
+            (u64::from(u32::MAX) * 111 * 2 * 707).div_ceil(1000)
+        );
+        // A diagonal metre must not collapse to either axis's length.
+        assert_eq!(nav_distance_bound_mm((0, 0), (1000, 1000), 111), 156_954);
+    }
+
+    #[test]
     fn record_widths_pin_spec_arithmetic() {
         assert_eq!(STYLE_RECORD_LEN, 1 + 1 + 2 + 1 + 1 + 2);
         assert_eq!(FEATURE_HEADER_COMPACT_LEN, 1 + 1 + 1 + 2 + 2);
@@ -1028,11 +1064,10 @@ mod tests {
         assert_eq!(POI_RECORD_LEN, 4 + 4 + 1 + 1 + POI_NAME_LEN + 2 + 28);
         assert_eq!(NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN + 32 + 8 + 1 + NAV_PROFILE_RESERVED_LEN);
         assert_eq!(NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_NAME_LEN + 32 + 8);
-        assert_eq!(NAV_NEIGHBOR_LEN, 4 + 2 + 2 + 4 + 2 + 1 + 2);
-        assert_eq!(NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN - 2);
-        // The degree-cap derivation: 13 + 17 × 24 = 421 ≤ 512, so the pinned nav chunk still holds
-        // a cap-degree record whole.
-        assert_eq!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN, 421);
+        assert_eq!(NAV_NEIGHBOR_LEN, 4 + 2 + 2 + 4 + 2 + 1 + 2 + 1 + 1 + 4);
+        assert_eq!(NAV_NEIGHBOR_ASCENT_OFF, 15);
+        // A maximum-degree record fits in one sector.
+        assert_eq!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN, 499);
     }
 
     #[test]

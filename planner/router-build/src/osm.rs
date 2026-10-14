@@ -115,18 +115,7 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
     })
 }
 
-/// The modes that pass a barrier, or `None` for a barrier the router does not know.
-fn barrier(value: Option<&str>) -> Option<u8> {
-    match value {
-        None
-        | Some(
-            "no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier" | "toll_booth"
-            | "border_control" | "cattle_grid" | "kerb" | "block" | "chain" | "height_restrictor",
-        ) => Some(BIKE | FOOT | PUSH),
-        Some("stile" | "kissing_gate" | "turnstile") => Some(FOOT),
-        Some(_) => None,
-    }
-}
+use obc_places::routing::access::barrier;
 
 /// The possible closures of a node: its access tags, and an unknown barrier that a rider may
 /// have to push through.
@@ -471,7 +460,9 @@ fn build_graph(
         for from in arrivals {
             for &to in &outgoing[via as usize] {
                 let target = graph.roads[to as usize].way == rule.to
-                    && (!rule.u_turn || graph.roads[from as usize].from == graph.roads[to as usize].to);
+                    && (!rule.u_turn
+                        || rule.from != rule.to
+                        || graph.roads[from as usize].is_reverse_of(&graph.roads[to as usize]));
                 if target != rule.only {
                     forbidden.push((from, to));
                 }
@@ -818,6 +809,55 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_way_crosses_a_barrier_unless_it_reverses_the_same_segment() {
+        let mut graph = fixture(
+            vec![way(10, &[1, 2, 3, 4, 1, 5, 3, 6, 1], &[("highway", "residential")])],
+            &[1, 2, 3, 4, 5, 6],
+            vec![],
+        );
+        let before = graph.roads.iter().position(|r| !r.reversed && r.shape[1].lon == 10_000_200).unwrap() as u32;
+        let reverse = graph.roads.iter().position(|r| r.reversed && r.shape[1].lon == 10_000_200).unwrap() as u32;
+        let via = graph.roads[before as usize].to as usize;
+        graph.node_access[via] = 0;
+        for point in &mut graph.roads[reverse as usize].shape {
+            point.elevation = 100.0;
+        }
+        for profile in
+            Profile::presets().into_iter().filter(|p| ["road", "touring", "hiking"].contains(&p.name.as_str()))
+        {
+            let doubts = crate::cost::Doubts::default();
+            let costing = crate::cost::Costing::new(&graph, &profile, &doubts).unwrap();
+            for &after in &graph.departures()[via] {
+                assert_eq!(costing.transition(before, after).is_some(), after == reverse, "{}, {after}", profile.name);
+            }
+        }
+    }
+
+    #[test]
+    fn u_turn_restrictions_distinguish_closed_way_arcs_and_separate_target_ways() {
+        for only in [false, true] {
+            let graph = fixture(
+                vec![way(10, &[1, 2, 3, 4, 1, 5, 3, 6, 1], &[("highway", "residential")])],
+                &[1, 2, 3, 4, 5, 6],
+                vec![Restriction { from: 10, to: 10, via: 3, only, u_turn: true, walking: false }],
+            );
+            let before = graph.roads.iter().position(|r| !r.reversed && r.shape[1].lon == 10_000_200).unwrap() as u32;
+            let reverse = graph.roads.iter().position(|r| r.reversed && r.shape[1].lon == 10_000_200).unwrap() as u32;
+            for &after in &graph.departures()[graph.roads[before as usize].to as usize] {
+                assert_eq!(graph.permits_turn(before, after, false), (after == reverse) == only, "{only}, {after}");
+            }
+        }
+        let graph = fixture(
+            vec![way(10, &[1, 2], &[("highway", "residential")]), way(20, &[2, 3], &[("highway", "residential")])],
+            &[1, 2, 3],
+            vec![Restriction { from: 10, to: 20, via: 2, only: false, u_turn: true, walking: false }],
+        );
+        assert_eq!(graph.forbidden.len(), 1);
+        let (before, after) = graph.forbidden[0];
+        assert_eq!((graph.roads[before as usize].way, graph.roads[after as usize].way), (10, 20));
+    }
+
+    #[test]
     fn a_node_closure_stays_routable_and_the_arriving_road_reports_it() {
         let node = |id: i64, pairs: &[(&str, &str)]| {
             let tags = tags(pairs);
@@ -868,7 +908,8 @@ mod tests {
         let closure = |kind, condition: &str| Some(vec![Closure { kind, condition: condition.into() }]);
         assert_eq!(table.closing(arriving(2), BIKE), closure(Kind::Seasonal, "Nov-Apr"));
         assert_eq!(table.closing(arriving(3), PUSH), closure(Kind::Unclear, "barrier=yes"));
-        assert_eq!((table.closing(arriving(3), BIKE), table.closing(arriving(4), BIKE)), (None, None));
+        assert_eq!(table.closing(arriving(3), BIKE), closure(Kind::Unclear, "barrier=yes"));
+        assert_eq!(table.closing(arriving(4), BIKE), None);
     }
 
     #[test]
@@ -907,7 +948,7 @@ mod tests {
         assert!(profiles.iter().filter(|p| !p.walking).all(|p| !p.permits(&graph.roads[0])));
         let alpine =
             fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "alpine_hiking")])], &[1, 2], vec![]);
-        assert!(profiles.iter().all(|p| p.permits(&alpine.roads[0]) == p.walking));
+        assert!(profiles.iter().all(|p| p.permits(&alpine.roads[0]) == (p.name == "hiking/alpine")));
         let climbing = fixture(
             vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")])],
             &[1, 2],
@@ -959,7 +1000,7 @@ mod tests {
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         assert_eq!(
             crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
-            Some(300)
+            Some(100)
         );
         // A crossing that bans pushing as well closes the transition for a cyclist.
         let mut graph = graph;

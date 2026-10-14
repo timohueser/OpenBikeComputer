@@ -33,6 +33,14 @@ struct PlannerServiceTests {
     @Test func eachActivityNamesItsRoutingProfile() {
         #expect(RouteActivity.allCases.map { RoutePreference.balanced.profile(for: $0) } == ["road", "gravel", "mtb", "touring", "hiking"])
         #expect(RoutePreference.lessClimbing.profile(for: .hiking) == "hiking/less-climbing")
+        #expect(RoutePreference.technical.profile(for: .mtb) == "mtb/technical")
+        #expect(RoutePreference.alpine.profile(for: .hiking) == "hiking/alpine")
+        #expect(RoutePreference.offered(for: .mtb, profiles: nil) == [.balanced, .shorter, .lessClimbing])
+        #expect(RoutePreference.offered(for: .hiking, profiles: nil) == [.balanced, .shorter, .lessClimbing])
+        let profiles = ["mtb", "mtb/technical", "hiking/alpine", "road/technical", "mtb/alpine"]
+        #expect(RoutePreference.offered(for: .mtb, profiles: profiles) == [.balanced, .technical])
+        #expect(RoutePreference.offered(for: .hiking, profiles: profiles) == [.alpine])
+        #expect(RoutePreference.offered(for: .road, profiles: profiles).isEmpty)
         #expect(BikeType.allCases.allSatisfy { RouteActivity($0).bikeType == $0 } && RouteActivity.hiking.bikeType == nil)
     }
     /// The route is the straight line through the request points. A leg position names its point.
@@ -223,7 +231,7 @@ struct PlannerServiceTests {
         let next = release("b"), reads = Bodies()
         let transport: RouteCatalog.Transport = { request in
             let status = request.url!.absoluteString.hasPrefix("https://planner.test/a/") ? 404 : 200
-            return (Data(#"{"format": 1, "routes": []}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+            return (Data(#"{"format": 2, "routes": []}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
         }
         let active: @Sendable () async throws -> PlannerRelease = { await reads.append(Data()); return next }
         let made = RouteCatalog(release: release("a"), transport: transport, active: active)

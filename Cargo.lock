@@ -3713,6 +3713,7 @@ dependencies = [
 name = "obc-places"
 version = "0.1.0"
 dependencies = [
+ "country-boundaries",
  "obc-elevation",
  "obc-formats",
  "obc-map-core",
@@ -4571,9 +4572,9 @@ name = "planner-router-build"
 version = "0.1.0"
 dependencies = [
  "clap",
- "country-boundaries",
  "obc-data",
  "obc-dem",
+ "obc-places",
  "osmpbfreader",
  "planner-router",
  "postcard",

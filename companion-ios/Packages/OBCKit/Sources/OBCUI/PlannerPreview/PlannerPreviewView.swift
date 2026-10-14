@@ -243,9 +243,9 @@ public struct PlannerPreviewView: View {
             await finder.search(activity: model.activity)
         }
         .task(id: panel == .route ? finder.plan : nil) {
-            guard panel == .route, let release = model.release else { return }
+            guard panel == .route else { return }
             routeEnds = (nil, nil)
-            await finder.routePreview(service: model.service, release: release, activity: model.activity)
+            await finder.routePreview(model: model)
             nameRouteEnds()
         }
         .onChange(of: routesFit) { if routesOpen { fraction = nil; fitRevision += 1 } }
@@ -333,6 +333,10 @@ public struct PlannerPreviewView: View {
                             Button("Try again") { model.retryRoute() }.frame(minHeight: 44)
                         }
                     }
+                    if let note = model.routeGapNote {
+                        Text(note).font(.subheadline).foregroundStyle(OBCTheme.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("planner.routeGap")
+                    }
                     if let replaced, replaced.depth == model.undoDepth {
                         HStack {
                             Text("Replaced “\(replaced.title)”.").font(.subheadline).foregroundStyle(OBCTheme.secondary).lineLimit(2)
@@ -409,7 +413,9 @@ public struct PlannerPreviewView: View {
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { routeContentHeight = $0 }
                     }
                 }.scrollBounceBehavior(.basedOnSize)
-                PlannerRoutePlanFoot(finder: finder, onPlan: planSignedRoute).padding(.horizontal, 16).padding(.vertical, 8)
+                PlannerRoutePlanFoot(finder: finder, canPlan: finder.detail.map { model.canPlanSignedRoute($0.route) } ?? false,
+                                     profiles: model.routingProfiles, onRetry: { Task { await finder.routePreview(model: model); nameRouteEnds() } },
+                                     onPlan: planSignedRoute).padding(.horizontal, 16).padding(.vertical, 8)
             }
         case .stops:
             PlannerPreviewPoints(model: model, onEdit: editPoint, onAdd: startSearch,
@@ -582,11 +588,16 @@ public struct PlannerPreviewView: View {
                 ForEach(model.activities, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
             VStack(spacing: 0) {
-                ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in
+                ForEach(Array(model.presets.enumerated()), id: \.element) { index, preset in
                     if index > 0 { Divider().overlay(OBCTheme.hairline) }
                     Button { model.setPreset(preset) } label: {
                         HStack {
-                            Text(preset.title)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(preset.title)
+                                if let explanation = preset.explanation {
+                                    Text(explanation).font(.caption).foregroundStyle(OBCTheme.secondary)
+                                }
+                            }
                             Spacer()
                             if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
@@ -925,8 +936,9 @@ public struct PlannerPreviewView: View {
 
     /// Replaces the plan with the route from its own start. Undo brings the old plan back.
     private func planSignedRoute(_ route: CatalogRecord, _ plan: RoutePlan) {
+        guard model.canPlanSignedRoute(route), let selection = route.routingSelection(current: model.activity) else { return }
         let old = model.hasRoute ? model.routeTitle : nil, depth = model.undoDepth
-        model.planSignedRoute(plan, loop: route.loop, name: route.title,
+        model.planSignedRoute(plan, loop: route.loop, name: route.title, activity: selection.activity, preference: selection.preference,
                               startName: routeEnds.start ?? plan.points.first.flatMap(namer.name(near:)),
                               finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)))
         // The same route planned again is no new undo step.

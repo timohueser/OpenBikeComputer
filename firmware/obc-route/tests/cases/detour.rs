@@ -56,6 +56,12 @@ fn street_at(i: i32) -> (i32, i32) {
     (BASE.0 + i * SP, BASE.1 + STREET_OFF)
 }
 
+fn edge(a: u32, b: u32, polyline: Vec<(i32, i32)>, length_m: u32, kind: u8) -> Edge {
+    let mut edge = Edge::new(a, b, polyline, kind);
+    edge.length_m = length_m;
+    edge
+}
+
 /// The blocked-road fixture: road nodes, an optional parallel street with end connectors, and an
 /// optional grade-separated bridge chord that crosses the road mid-span without sharing a node.
 /// Node ids must stay dense; the packer asserts it.
@@ -67,56 +73,26 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for i in 0..=SEGS {
-        nodes.push(Node { id: road(i), coord: road_at(i) });
+        nodes.push(Node::new(road(i), road_at(i)));
         if i < SEGS {
-            edges.push(Edge {
-                a: road(i),
-                b: road(i + 1),
-                polyline: vec![road_at(i), road_at(i + 1)],
-                length_m: SEG_COST,
-                kind: 0,
-            });
+            edges.push(edge(road(i), road(i + 1), vec![road_at(i), road_at(i + 1)], SEG_COST, 0));
         }
     }
     if street {
         for i in 0..=SEGS {
-            nodes.push(Node { id: street_id(i), coord: street_at(i) });
+            nodes.push(Node::new(street_id(i), street_at(i)));
             if i < SEGS {
-                edges.push(Edge {
-                    a: street_id(i),
-                    b: street_id(i + 1),
-                    polyline: vec![street_at(i), street_at(i + 1)],
-                    length_m: SEG_COST,
-                    kind: 0,
-                });
+                edges.push(edge(street_id(i), street_id(i + 1), vec![street_at(i), street_at(i + 1)], SEG_COST, 0));
             }
         }
-        edges.push(Edge {
-            a: road(0),
-            b: street_id(0),
-            polyline: vec![road_at(0), street_at(0)],
-            length_m: CONN_COST,
-            kind: 0,
-        });
-        edges.push(Edge {
-            a: road(SEGS),
-            b: street_id(SEGS),
-            polyline: vec![road_at(SEGS), street_at(SEGS)],
-            length_m: CONN_COST,
-            kind: 0,
-        });
+        edges.push(edge(road(0), street_id(0), vec![road_at(0), street_at(0)], CONN_COST, 0));
+        edges.push(edge(road(SEGS), street_id(SEGS), vec![road_at(SEGS), street_at(SEGS)], CONN_COST, 0));
     }
     if bridge {
         let x = BASE.0 + 6 * SP; // mid-span, ~1 670 m from either end
-        nodes.push(Node { id: bridge_base, coord: (x, BASE.1 + 1_000) });
-        nodes.push(Node { id: bridge_base + 1, coord: (x, BASE.1 - 1_000) });
-        edges.push(Edge {
-            a: bridge_base,
-            b: bridge_base + 1,
-            polyline: vec![(x, BASE.1 + 1_000), (x, BASE.1 - 1_000)],
-            length_m: 223,
-            kind: 0,
-        });
+        nodes.push(Node::new(bridge_base, (x, BASE.1 + 1_000)));
+        nodes.push(Node::new(bridge_base + 1, (x, BASE.1 - 1_000)));
+        edges.push(edge(bridge_base, bridge_base + 1, vec![(x, BASE.1 + 1_000), (x, BASE.1 - 1_000)], 223, 0));
     }
     NavGraph { nodes, edges }
 }
@@ -327,13 +303,7 @@ fn detour_bridge_crossing_edge_stays_usable() {
     let bridge_north = (SEGS + 1) as u32; // road_graph's dense-id layout, street absent
     let south = (BASE.0 + 6 * SP, BASE.1 - 1_000);
     // The approach road: the exempt start node to the bridge's north end.
-    graph.edges.push(Edge {
-        a: 0,
-        b: bridge_north,
-        polyline: vec![road_at(0), (BASE.0 + 6 * SP, BASE.1 + 1_000)],
-        length_m: 1_700,
-        kind: 0,
-    });
+    graph.edges.push(edge(0, bridge_north, vec![road_at(0), (BASE.0 + 6 * SP, BASE.1 + 1_000)], 1_700, 0));
     let bytes = map_with(&graph);
     let obcr = road_route_obcr();
 
@@ -979,25 +949,13 @@ fn road_graph_two_reliefs() -> NavGraph {
     let mut g = road_graph(true, false);
     let south_id = |i: i32| (2 * (SEGS + 1) + i) as u32;
     for i in 0..=SEGS {
-        g.nodes.push(Node { id: south_id(i), coord: south_at(i) });
+        g.nodes.push(Node::new(south_id(i), south_at(i)));
         if i < SEGS {
-            g.edges.push(Edge {
-                a: south_id(i),
-                b: south_id(i + 1),
-                polyline: vec![south_at(i), south_at(i + 1)],
-                length_m: SOUTH_SEG_COST,
-                kind: 0,
-            });
+            g.edges.push(edge(south_id(i), south_id(i + 1), vec![south_at(i), south_at(i + 1)], SOUTH_SEG_COST, 0));
         }
     }
     for i in [0, SEGS] {
-        g.edges.push(Edge {
-            a: i as u32,
-            b: south_id(i),
-            polyline: vec![road_at(i), south_at(i)],
-            length_m: CONN_COST,
-            kind: 0,
-        });
+        g.edges.push(edge(i as u32, south_id(i), vec![road_at(i), south_at(i)], CONN_COST, 0));
     }
     g
 }

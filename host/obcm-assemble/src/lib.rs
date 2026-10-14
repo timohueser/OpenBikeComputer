@@ -322,6 +322,9 @@ pub struct Summary {
 }
 
 /// Assemble `cells` into one map file.
+///
+/// The caller must supply one pinned catalog or bake output. Navigation cells require the same
+/// complete source set and snapshots so their turn ports agree; the engine cannot verify provenance.
 pub fn assemble(
     cells: Vec<CellInput<'_>>,
     schema: &Schema,
@@ -371,6 +374,8 @@ pub fn assemble_with_known_empty(
 }
 
 /// Assemble the map, with the raster spliced in if there is one.
+///
+/// The same source-context precondition as [`assemble`] applies to every navigation cell.
 ///
 /// The raster is prepared before the layout and emitted inside the write, which is the only order
 /// the format admits: the region's offset and length live in the header, and the header is the

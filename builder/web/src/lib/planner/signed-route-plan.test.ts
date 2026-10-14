@@ -4,9 +4,9 @@ import { emptyTrip, orderedRoutePoints, startLoopHere } from './editor';
 import type { Coordinate } from './geo';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
-import { calculateLine } from './routing';
-import { joinedPlan, planTrip } from './signed-route-plan';
-import { routePlan, type RouteRecord } from './signed-routes';
+import { calculateLine, profileId } from './routing';
+import { joinedPlan, planTrip, routeBase } from './signed-route-plan';
+import { catalogProfile, routePlan, type RouteRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
 
 const routes: RouteRecord[] = JSON.parse(readFileSync(new URL('../../../../../specs/vectors/signed-routes.json', import.meta.url), 'utf8')).routes;
@@ -17,6 +17,15 @@ const base = () => ({ ...emptyTrip(), bike: 'hiking' as const, preset: 'Balanced
 afterEach(() => vi.unstubAllGlobals());
 
 describe('signed route plans', () => {
+    it('requires the catalog trail capability while preserving the selected road activity', () => {
+        expect(profileId(routeBase(record(201), base()))).toBe('mtb/technical');
+        expect(profileId(routeBase(record(106), base()))).toBe('hiking/alpine');
+        expect(profileId(routeBase(record(102), { ...base(), preset: 'Alpine (T4)' }))).toBe('hiking');
+        for (const bike of ['road', 'gravel', 'touring'] as const) {
+            expect(profileId(routeBase(record(301), { ...base(), bike, preset: 'Shorter' }))).toBe(bike);
+        }
+        expect(catalogProfile({ kind: 'mtb', profile: 'hiking/alpine' })).toBeNull();
+    });
     it('keeps a lollipop loop turning back at its own start after "Start the loop here"', () => {
         const lollipop = { ...record(103), turnarounds: [0] };
         expect(routePlan(lollipop).turnarounds).toEqual([0]);
@@ -51,21 +60,21 @@ describe('signed route plans', () => {
         expect(isTrip(trip)).toBe(true);
     });
 
-    it('sends the turnarounds of a one-way plan with its route request', async () => {
+    it('sends the required alpine profile and turnarounds with the catalog route request', async () => {
         const plan = routePlan(record(106));
-        const trip = planTrip(base(), plan, false);
+        const trip = planTrip(routeBase(record(106), base()), plan, false);
         expect(orderedRoutePoints(trip).map(point => [point.kind, point.coordinate])).toEqual(
             plan.points.map((coordinate, i) => [i === 0 ? 'start' : i === plan.points.length - 1 ? 'finish' : 'via', coordinate]));
         expect(isTrip(trip)).toBe(true);
         const udeg = plan.points.flatMap(([lon, lat], i) => i ? [Math.round((lon - plan.points[i - 1][0]) * 1e6), Math.round((lat - plan.points[i - 1][1]) * 1e6)]
             : [Math.round(lon * 1e6), Math.round(lat * 1e6)]);
         const totals = { distance_m: 1, ascent_m: 0, seconds: 1, surface_m: [0, 1, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-        const answer = { id: 'route', reason: 'primary', package: 'test', profile: 'hiking', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
+        const answer = { id: 'route', reason: 'primary', package: 'test', profile: 'hiking/alpine', coordinates_udeg: udeg, elevation_dm: plan.points.map(() => 0),
             elapsed_s: plan.points.map(() => 1), edges: {}, totals, snap_truncated: false,
             legs: plan.points.slice(1).map((_, i) => ({ from_index: i, to_index: i + 1, start: `${i}`, end: `${i + 1}`, totals })) };
         const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ routes: [answer] }) });
         vi.stubGlobal('fetch', fetch);
         await calculateLine(trip, new AbortController().signal, new LegCache());
-        expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ points: plan.points, turnarounds: plan.turnarounds });
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ profile: 'hiking/alpine', points: plan.points, turnarounds: plan.turnarounds });
     });
 });

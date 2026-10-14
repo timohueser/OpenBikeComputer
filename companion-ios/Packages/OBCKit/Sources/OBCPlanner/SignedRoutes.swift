@@ -6,6 +6,7 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
     public enum Kind: String, Decodable, Sendable { case hiking, foot, bicycle, mtb }
     public let id: Int
     public let kind: Kind
+    public let profile: String
     public let name: String?
     public let ref: String?
     public let `operator`: String?
@@ -34,6 +35,26 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
     public var start: Coordinate? { start_udeg.flatMap { decodeCoordinates($0)?.first } ?? line.first }
     /// The name, else the `ref`.
     public var title: String { name ?? ref ?? "" }
+
+    /// The required terrain capability. Bicycle plans also reproduce with road and gravel Balanced.
+    public var preference: RoutePreference? {
+        switch (kind, profile) {
+        case (.bicycle, "touring"), (.mtb, "mtb"), (.hiking, "hiking"), (.foot, "hiking"): .balanced
+        case (.mtb, "mtb/technical"): .technical
+        case (.hiking, "hiking/alpine"), (.foot, "hiking/alpine"): .alpine
+        default: nil
+        }
+    }
+
+    public func routingSelection(current: RouteActivity) -> (activity: RouteActivity, preference: RoutePreference)? {
+        guard let preference else { return nil }
+        let activity: RouteActivity = switch kind {
+        case .bicycle: [.road, .gravel, .touring].contains(current) ? current : .touring
+        case .mtb: .mtb
+        case .hiking, .foot: .hiking
+        }
+        return (activity, preference)
+    }
 
     /// Nil for a long route, and for a record whose shaping points or turnarounds do not fit its line.
     public var plan: RoutePlan? {

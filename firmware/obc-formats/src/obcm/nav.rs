@@ -2,9 +2,13 @@
 
 use super::{
     CHUNK_END, NAV_CHUNK_SIZE, NAV_EDGE_ELEVATION_COMPLETE, NAV_EDGE_FIXED_LEN, NAV_EDGE_POINT_COUNT_MASK,
-    NAV_EDGE_PT_COUNT_SENTINEL, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_EDGE_PT_COUNT_SENTINEL, NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
 };
 use crate::io::{rd_i16, rd_i32, rd_u16, rd_u32};
+
+fn rd_u64(bytes: &[u8], at: usize) -> u64 {
+    u64::from(rd_u32(bytes, at)) | (u64::from(rd_u32(bytes, at + 4)) << 32)
+}
 
 /// One validated edge record. Fields can sit at odd byte offsets.
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +20,9 @@ impl<'a> NavEdgeRecord<'a> {
     /// Parse the first record, bounded by the supplied bytes and one navigation chunk.
     pub fn parse(bytes: &'a [u8]) -> Option<Self> {
         if bytes.len() < NAV_EDGE_FIXED_LEN {
+            return None;
+        }
+        if bytes[16] & !bytes[15] != 0 || bytes[18] & !bytes[17] != 0 {
             return None;
         }
         let count = rd_u16(bytes, 4);
@@ -50,6 +57,19 @@ impl<'a> NavEdgeRecord<'a> {
     }
     pub fn anchor(self) -> (i32, i32) {
         (rd_i32(self.bytes, 11), rd_i32(self.bytes, 7))
+    }
+
+    pub fn profile_mask_ab(self) -> u8 {
+        self.bytes[15]
+    }
+    pub fn push_mask_ab(self) -> u8 {
+        self.bytes[16]
+    }
+    pub fn profile_mask_ba(self) -> u8 {
+        self.bytes[17]
+    }
+    pub fn push_mask_ba(self) -> u8 {
+        self.bytes[18]
     }
 
     /// Forward or reverse vertices without a point buffer. Reverse iteration sums the deltas once.
@@ -131,6 +151,14 @@ pub struct NavNeighbor {
     pub way_kind: u8,
     /// Directional climb from this node toward the neighbor.
     pub ascent_m: u16,
+    pub profile_mask: u8,
+    pub push_mask: u8,
+    /// Stable incidence at this junction, assigned before map cutting.
+    pub port: u8,
+    /// Incoming incidences from which this departure is forbidden.
+    pub forbidden_incoming_ports: u32,
+    /// Arrival direction is significant at the destination junction.
+    pub target_requires_context: bool,
 }
 
 /// One validated junction record. Neighbor entries decode lazily in record order.
@@ -139,6 +167,9 @@ pub struct NavNodeRecord<'a> {
     pub lat: i32,
     pub lon: i32,
     pub id: u32,
+    pub crossing_profile_mask: u8,
+    pub crossing_push_mask: u8,
+    pub source_key: [u64; 3],
     bytes: &'a [u8],
 }
 
@@ -148,11 +179,39 @@ impl<'a> NavNodeRecord<'a> {
         if bytes.len() < NAV_NODE_FIXED_LEN || bytes[12] == CHUNK_END {
             return None;
         }
+        if bytes[12] as usize > NAV_MAX_DEGREE || bytes[14] & !bytes[13] != 0 || rd_u32(bytes, 8) >= u32::MAX - 1 {
+            return None;
+        }
         let len = NAV_NODE_FIXED_LEN + bytes[12] as usize * NAV_NEIGHBOR_LEN;
         if len > NAV_CHUNK_SIZE {
             return None;
         }
-        Some(Self { lat: rd_i32(bytes, 0), lon: rd_i32(bytes, 4), id: rd_u32(bytes, 8), bytes: bytes.get(..len)? })
+        let bytes = bytes.get(..len)?;
+        let mut ports = 0u32;
+        for e in bytes[NAV_NODE_FIXED_LEN..].as_chunks::<NAV_NEIGHBOR_LEN>().0 {
+            let word = rd_u32(e, 19);
+            let port = (word >> 24) & 31;
+            if rd_u32(e, 0) >= u32::MAX - 1
+                || rd_u32(e, 8) == u32::MAX
+                || e[18] & !e[17] != 0
+                || port >= NAV_MAX_DEGREE as u32
+                || word >> 30 != 0
+                || word & 0x00f0_0000 != 0
+                || ports & (1 << port) != 0
+            {
+                return None;
+            }
+            ports |= 1 << port;
+        }
+        Some(Self {
+            lat: rd_i32(bytes, 0),
+            lon: rd_i32(bytes, 4),
+            id: rd_u32(bytes, 8),
+            crossing_profile_mask: bytes[13],
+            crossing_push_mask: bytes[14],
+            source_key: [rd_u64(bytes, 15), rd_u64(bytes, 23), rd_u64(bytes, 31)],
+            bytes,
+        })
     }
     pub fn bytes(self) -> &'a [u8] {
         self.bytes
@@ -160,6 +219,13 @@ impl<'a> NavNodeRecord<'a> {
     pub fn degree(&self) -> usize {
         (self.bytes.len() - NAV_NODE_FIXED_LEN) / NAV_NEIGHBOR_LEN
     }
+    /// A free junction has identical onward choices for every arrival with the same travel mode.
+    pub fn requires_arrival_context(&self, profile_mask: u8) -> bool {
+        self.crossing_profile_mask & profile_mask != profile_mask
+            || self.crossing_push_mask & profile_mask != 0
+            || self.neighbors().any(|neighbor| neighbor.forbidden_incoming_ports != 0)
+    }
+
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
         let (lat, lon) = (self.lat, self.lon);
         self.bytes[NAV_NODE_FIXED_LEN..].as_chunks::<NAV_NEIGHBOR_LEN>().0.iter().map(move |e| NavNeighbor {
@@ -170,6 +236,11 @@ impl<'a> NavNodeRecord<'a> {
             cost_m: rd_u16(e, 12) as u32,
             way_kind: e[14],
             ascent_m: rd_u16(e, NAV_NEIGHBOR_ASCENT_OFF),
+            profile_mask: e[17],
+            push_mask: e[18],
+            port: ((rd_u32(e, 19) >> 24) & 31) as u8,
+            forbidden_incoming_ports: rd_u32(e, 19) & 0x00ff_ffff,
+            target_requires_context: rd_u32(e, 19) & (1 << 29) != 0,
         })
     }
 }
@@ -185,6 +256,7 @@ mod tests {
         bytes.push(0x2a);
         bytes.extend(i32::MIN.to_le_bytes());
         bytes.extend(i32::MAX.to_le_bytes());
+        bytes.extend([15, 0, 15, 0]);
         for (lat, lon) in [(1i16, 2i16), (-9, 3), (8, -11), (0, 0), (7, 12), (-2, -5), (-5, -1)] {
             bytes.extend(lat.to_le_bytes());
             bytes.extend(lon.to_le_bytes());
@@ -252,7 +324,12 @@ mod tests {
         bytes.extend(i32::MIN.to_le_bytes());
         bytes.extend(123u32.to_le_bytes());
         bytes.push(2);
-        for (id, dlat, dlon, ascent) in [(124u32, 1i16, -1i16, 5u16), (122, -2, 3, 17)] {
+        bytes.extend([15, 0]);
+        for key in [0u64, 123, 0] {
+            bytes.extend(key.to_le_bytes());
+        }
+        for (port, (id, dlat, dlon, ascent)) in [(124u32, 1i16, -1i16, 5u16), (122, -2, 3, 17)].into_iter().enumerate()
+        {
             bytes.extend(id.to_le_bytes());
             bytes.extend(dlat.to_le_bytes());
             bytes.extend(dlon.to_le_bytes());
@@ -260,6 +337,8 @@ mod tests {
             bytes.extend(400u16.to_le_bytes());
             bytes.push(0x2a);
             bytes.extend(ascent.to_le_bytes());
+            bytes.extend([15, 0]);
+            bytes.extend(((port as u32) << 24).to_le_bytes());
         }
         let node = NavNodeRecord::parse(&bytes[1..]).unwrap();
         assert_eq!((node.id, node.lat, node.lon, node.degree()), (123, i32::MAX, i32::MIN, 2));
@@ -273,7 +352,12 @@ mod tests {
                     edge_id: 31,
                     cost_m: 400,
                     way_kind: 0x2a,
-                    ascent_m: 5
+                    ascent_m: 5,
+                    profile_mask: 15,
+                    push_mask: 0,
+                    port: 0,
+                    forbidden_incoming_ports: 0,
+                    target_requires_context: false,
                 },
                 NavNeighbor {
                     id: 122,
@@ -282,7 +366,12 @@ mod tests {
                     edge_id: 31,
                     cost_m: 400,
                     way_kind: 0x2a,
-                    ascent_m: 17
+                    ascent_m: 17,
+                    profile_mask: 15,
+                    push_mask: 0,
+                    port: 1,
+                    forbidden_incoming_ports: 0,
+                    target_requires_context: false,
                 },
             ]
         );

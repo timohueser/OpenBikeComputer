@@ -7,6 +7,21 @@ import OBCPlanner
 
 @MainActor
 struct PlannerPreviewModelTests {
+    @Test func snapGapWarningUsesWaypointIndicesAndLeavesManualConnectionsAlone() {
+        let coordinate = { (longitude: Double, latitude: Double) in Coordinate(latitude: latitude, longitude: longitude) }
+        let line = [coordinate(0, 0), coordinate(0.005, 0), coordinate(0.01, 0), coordinate(0.015, 0), coordinate(0.02, 0)]
+        let path = PlannedPath(points: line.map { RoutePoint(coordinate: $0) }, distance: 2224, ascent: 0, seconds: 500,
+                               pointIndices: [0, 2, 4], elapsed: [0, 125, 250, 375, 500])
+        let requested = [coordinate(0, 0.00018), coordinate(0.01, 0), coordinate(0.02, 0.002)]
+        #expect(plannerRouteGapNote(path, points: requested, legs: [.routed, .routed])
+                == "Route ends 220 m before the selected point — no accessible path")
+        let middle = [line[0], coordinate(0.01, 0.002), line[4]]
+        #expect(plannerRouteGapNote(path, points: middle, legs: [.routed, .routed])
+                == "Route passes 220 m from the selected point — no accessible path")
+        for manual in [PlanPoint.Leg.straight, .drawn, .transfer] {
+            #expect(plannerRouteGapNote(path, points: middle, legs: [.routed, manual]) == nil)
+        }
+    }
     @Test func projectionsAndMapFeaturesRetainPlaceDetails() async throws {
         let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
         await model.calculateRoute()
@@ -222,24 +237,26 @@ struct PlannerPreviewModelTests {
     }
 
     @Test func aSignedRoutePlanReplacesThePlanInOneUndoStep() async throws {
-        let source = PlannerTestSource()
+        let source = PlannerTestSource(profiles: ["gravel", "gravel/shorter", "hiking"])
         let model = PlannerPreviewModel(sample: true, service: source)
         model.setPreset(.shorter)
+        await model.calculateRoute()
+        await model.loadActivities()
         let before = model.points
         let points = (0...3).map { Coordinate(latitude: 47.9, longitude: 8 + Double($0) / 100) }
-        model.planSignedRoute(RoutePlan(points: points, turnarounds: [2]), loop: false, name: "Westweg · Stage 9",
+        model.planSignedRoute(RoutePlan(points: points, turnarounds: [2]), loop: false, name: "Westweg · Stage 9", activity: .hiking, preference: .balanced,
                               startName: "Titisee", finishName: nil)
         await model.calculateRoute()
         #expect(model.routeTitle == "Westweg · Stage 9" && model.start?.name == "Titisee" && model.finish?.name == "Finish")
         #expect(model.points.map(\.kind) == [.visit, .shape, .shape, .visit] && model.preset == .balanced)
         let requested = await source.turnarounds
-        #expect(model.routePoints.map(\.coordinate) == points && requested == [[2]])
+        #expect(model.routePoints.map(\.coordinate) == points && requested == [[], [2]])
         model.undo()
         #expect(model.points == before && model.preset == .shorter && model.routeTitle == "Freiburg → Titisee")
     }
 
     @Test func movingTheStartKeepsTheOrderAroundTheLoop() async {
-        let source = PlannerTestSource()
+        let source = PlannerTestSource(profiles: ["gravel", "hiking"])
         let model = PlannerPreviewModel(sample: true, service: source)
         model.addPoint(PlannerPreviewModel.sampleMapPlaces[2])
         model.closeLoop()
@@ -250,14 +267,16 @@ struct PlannerPreviewModelTests {
         model.startLoop(at: "cafe")
         #expect(model.start?.id == "titisee")
         model.setNight(id: "cafe", false)
+        await model.calculateRoute()
+        await model.loadActivities()
 
         // A closed square with one shaping point. The route turns back at its start.
         let route = try! JSONDecoder().decode(CatalogRecord.self, from: Data("""
-        {"id":1,"kind":"hiking","name":"Square","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[],
+        {"id":1,"kind":"hiking","profile":"hiking","name":"Square","rank":1,"loop":true,"length_m":4000,"ascent_m":0,"descent_m":0,"cells":[],
          "line_udeg":[8000000,47900000,10000,0,0,10000,-10000,0,0,-10000],"via":[2],"turnarounds":[0]}
         """.utf8))
         let line = route.line
-        model.planSignedRoute(try! #require(route.plan), loop: true, name: "Square", startName: "Rieslehof", finishName: nil)
+        model.planSignedRoute(try! #require(route.plan), loop: true, name: "Square", activity: .hiking, preference: .balanced, startName: "Rieslehof", finishName: nil)
         await model.calculateRoute()
         #expect(model.isLoop && model.routeTitle == "Square" && model.start?.name == "Rieslehof")
         #expect(model.points.map(\.kind) == [.visit, .shape] && model.preset == .balanced)
@@ -268,7 +287,7 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         #expect(model.points.map(\.place.coordinate) == [line[2], line[0]] && model.points.map(\.turnaround) == [false, true])
         let requested = await source.turnarounds
-        #expect(requested == [[], [1]])
+        #expect(requested == [[], [], [1]])
         model.undo(); model.undo()
         #expect(model.points.map(\.id) == ["titisee", "freiburg", "cafe"] && model.planName == nil)
     }
@@ -372,11 +391,101 @@ struct PlannerPreviewModelTests {
         await model.calculateRoute()
         await model.loadActivities()
         #expect(model.activities == [.road, .gravel, .mtb, .touring])
+        #expect(model.presets == [.balanced, .shorter])
+    }
+
+    @Test func advancedTerrainPresetsNeedSupportAndStayWithTheirActivity() async {
+        let profiles = ["mtb", "mtb/technical", "hiking", "hiking/alpine", "road"]
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource(profiles: profiles))
+        model.setActivity(.mtb)
+        model.setPreset(.technical)
+        #expect(model.preset == .balanced)
+        await model.calculateRoute()
+        await model.loadActivities()
+        model.setPreset(.technical)
+        #expect(model.preset == .technical && model.exportPlan().preset == "Technical (S3)")
+        let saved = PlannerPreviewModel(plan: model.exportPlan(), service: PlannerTestSource())
+        #expect(saved.preset == .technical && saved.activity == .mtb)
+        model.setActivity(.hiking)
+        #expect(model.preset == .balanced && model.presets == [.balanced, .alpine])
+        model.setPreset(.technical)
+        #expect(model.preset == .balanced)
+        model.setPreset(.alpine)
+        #expect(model.exportPlan().preset == "Alpine (T4)")
+        model.setActivity(.road)
+        #expect(model.preset == .balanced && model.presets == [.balanced])
+    }
+
+    @Test func anAlpineCatalogPlanRequiresSupportAndKeepsItsProfile() async throws {
+        let route = try JSONDecoder().decode(CatalogRecord.self, from: Data("""
+        {"id":1,"kind":"hiking","profile":"hiking/alpine","name":"Ridge","rank":1,"loop":false,"length_m":4000,
+         "ascent_m":300,"descent_m":0,"cells":[],"line_udeg":[8000000,47900000,10000,0],"via":[]}
+        """.utf8))
+        let source = PlannerTestSource(profiles: ["hiking", "hiking/alpine"])
+        let model = PlannerPreviewModel(sample: true, service: source)
+        #expect(!model.canPlanSignedRoute(route))
+        await model.calculateRoute()
+        await model.loadActivities()
+        #expect(model.canPlanSignedRoute(route))
+        let selection = try #require(route.routingSelection(current: model.activity))
+        model.planSignedRoute(try #require(route.plan), loop: route.loop, name: route.title,
+                              activity: selection.activity, preference: selection.preference, startName: nil, finishName: nil)
+        await model.calculateRoute()
+        #expect(model.activity == .hiking && model.preset == .alpine && model.exportPlan().preset == "Alpine (T4)")
+        #expect(await source.routingProfiles.last == "hiking/alpine")
+        let unsupported = PlannerPreviewModel(sample: true, service: PlannerTestSource(profiles: ["hiking"]))
+        await unsupported.calculateRoute()
+        await unsupported.loadActivities()
+        #expect(!unsupported.canPlanSignedRoute(route))
+        unsupported.planSignedRoute(try #require(route.plan), loop: route.loop, name: route.title,
+                                    activity: .hiking, preference: .alpine, startName: nil, finishName: nil)
+        #expect(unsupported.activity == .gravel && unsupported.preset == .balanced)
+    }
+
+    @Test(arguments: [false, true])
+    func profileDiscoveryRecoversForPreviewAndPlanning(explicitRetry: Bool) async throws {
+        let route = try JSONDecoder().decode(CatalogRecord.self, from: Data("""
+        {"id":1,"kind":"hiking","profile":"hiking/alpine","name":"Ridge","rank":1,"loop":false,"length_m":4000,
+         "ascent_m":300,"descent_m":0,"cells":[],"line_udeg":[8000000,47900000,10000,0],"via":[]}
+        """.utf8))
+        let source = PlannerTestSource(profiles: ["hiking", "hiking/alpine"], profileFailures: 1)
+        let model = PlannerPreviewModel(service: source), finder = PlannerRouteFinder()
+        await model.calculateRoute()
+        await model.loadActivities()
+        #expect(model.routingProfiles == .failed && !model.canPlanSignedRoute(route))
+        model.planSignedRoute(try #require(route.plan), loop: route.loop, name: route.title,
+                              activity: .hiking, preference: .alpine, startName: nil, finishName: nil)
+        #expect(!model.hasRoute)
+
+        if explicitRetry { await model.loadActivities() }
+        await finder.select(route)
+        await finder.routePreview(model: model)
+        #expect(finder.preview != nil && model.canPlanSignedRoute(route))
+        #expect(await source.profileRequests == 2)
+        model.planSignedRoute(try #require(route.plan), loop: route.loop, name: route.title,
+                              activity: .hiking, preference: .alpine, startName: nil, finishName: nil)
+        await model.calculateRoute()
+        #expect(model.canSave && model.preset == .alpine && model.activity == .hiking)
+        #expect(await source.routingProfiles == ["hiking/alpine", "hiking/alpine"])
+    }
+
+    @Test func unknownProfileSupportIsDistinctFromAnEmptySupportedList() async {
+        let answers: [[String]?] = [nil, []]
+        for profiles in answers {
+            let model = PlannerPreviewModel(service: PlannerTestSource(profiles: profiles))
+            await model.calculateRoute()
+            await model.loadActivities()
+            #expect(model.routingProfiles == (profiles.map(PlannerPreviewModel.RoutingProfiles.ready) ?? .unknown))
+            #expect(model.activities == (profiles == nil ? RouteActivity.allCases : []))
+            model.planSignedRoute(RoutePlan(points: [Coordinate(latitude: 48, longitude: 8), Coordinate(latitude: 48, longitude: 8.1)], turnarounds: []),
+                                  loop: false, name: "Unknown", activity: .hiking, preference: .alpine, startName: nil, finishName: nil)
+            #expect(!model.hasRoute)
+        }
     }
 
     @Test func theHardestPartReadsInTheGradesOfTheActivity() {
         #expect(PlannerRoutesText.reading(0...2, mtb: false).0 == "Up to T3.")
-        #expect(PlannerRoutesText.reading(0...1, mtb: false).1 == "Routes whose hardest part is T1 or T2. A path without a grade counts as T1.")
+        #expect(PlannerRoutesText.reading(0...1, mtb: false).1 == "Routes whose hardest mapped part is T1 or T2. Routes without grades also appear; their difficulty is unknown.")
         #expect(PlannerRoutesText.reading(2...3, mtb: false).0 == "Must include T3 or harder.")
         #expect(PlannerRoutesText.reading(1...2, mtb: true).0 == "Must include S1 or harder, up to S2.")
         #expect(PlannerRoutesText.summary(PlannerRouteFilters(), activity: .hiking) == "10 km · Loop · up to T3")
@@ -483,11 +592,24 @@ private actor PlannerTestSource: PlannerDataSource {
     /// The points and turnarounds of each route request.
     var requests: [[Coordinate]] = []
     var turnarounds: [[Int]] = []
+    var routingProfiles: [String] = []
+    var profileRequests = 0
+    private var profileFailures: Int
+    private let advertisedProfiles: [String]?
+    init(profiles: [String]? = ["gravel", "gravel/shorter", "mtb", "road", "touring"], profileFailures: Int = 0) {
+        advertisedProfiles = profiles
+        self.profileFailures = profileFailures
+    }
     func release() async throws -> PlannerRelease { testRelease }
-    func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/shorter", "mtb", "road", "touring"] }
+    func profiles(release: PlannerRelease) throws -> [String]? {
+        profileRequests += 1
+        if profileFailures > 0 { profileFailures -= 1; throw PlannerFailure.unavailable }
+        return advertisedProfiles
+    }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         requests.append(points)
         self.turnarounds.append(turnarounds)
+        routingProfiles.append(preference.profile(for: activity))
         let samples = points.map { RoutePoint(coordinate: $0, elevationMeters: 300) }
         let length = MeasuredLine(routePoints: samples).length
         let elapsed = MeasuredLine(routePoints: samples).vertices.map { $0.distance / 4 }

@@ -1,7 +1,7 @@
 import { plannerConfig, type Bounds } from "./config";
 import type { Coordinate } from "./map-types";
 import { activeRelease, pageRelease, releaseFetch } from "./release";
-import type { CatalogRecord } from "./signed-routes";
+import { catalogProfile, type CatalogRecord } from "./signed-routes";
 
 const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
 
@@ -33,7 +33,8 @@ async function routeFile(url: string): Promise<CatalogRecord[]> {
     const response = await releaseFetch(url);
     if (!response.ok) throw new Error(`Route catalog request failed with status ${response.status}`);
     const document = await response.json();
-    if (document?.format !== 1 || !Array.isArray(document.routes)) throw new Error("Unsupported route catalog");
+    if (document?.format !== 2 || !Array.isArray(document.routes)
+        || !document.routes.every((route: CatalogRecord) => route && catalogProfile(route))) throw new Error("Unsupported route catalog");
     return document.routes;
 }
 

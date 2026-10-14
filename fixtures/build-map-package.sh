@@ -21,6 +21,7 @@
 #   fixtures/build-map-package.sh grimsel [switzerland.osm.pbf]
 #   fixtures/build-map-package.sh monaco  [monaco.osm.pbf]
 #   fixtures/build-map-package.sh freiburg [freiburg-regbez.osm.pbf]
+#   fixtures/build-map-package.sh teningen-preview [freiburg-regbez.osm.pbf]
 #   fixtures/build-map-package.sh all     [switzerland.osm.pbf] [monaco.osm.pbf] [dem_dir]
 #
 # With no source argument the newest Geofabrik extract comes from the store
@@ -69,6 +70,7 @@ MONACO_BBOX="$(box monaco)" # Monaco principality, tight
 # between them. Canonical + hand-picked, like every box above.
 FREIBURG_AREA="europe/germany/baden-wuerttemberg/freiburg-regbez"
 FREIBURG_BBOX="$(box freiburg)" # Freiburg to Emmendingen (lon,lat,lon,lat)
+TENINGEN_BBOX="$(box teningen)" # Embedded skin-preview geometry, without terrain or land polygons.
 # -----------------------------------------------------------------------------
 
 WORK="$(mktemp -d)"
@@ -80,14 +82,19 @@ store_path() { # store_path SOURCE [NAME=VALUE...]: the store path of the source
 
 repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     local name="$1" src="$2" bbox="$3" terrain="${4:-}"
-    local land
-    land="$(store_path land-polygons)"
-    local extra=(--land "$land")
+    local extra=(--no-land)
+    if [[ "$name" != teningen-preview && -z "$terrain" ]]; then
+        local land
+        land="$(store_path land-polygons)"
+        extra=(--land "$land")
+    fi
     # A map with a committed terrain sidecar is packed WITH it, so the fixture
     # carries real §8.3 ascent and (preset v6, #1094/#1095/#1104) the traced E3
     # contours. The sidecar itself never changes here — this script's `terrain`
     # owns it, on the DEM's own revision track.
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
+    # The demo is landlocked: land is the renderer backdrop, while OSM keeps inland water and landcover.
+    [[ "$name" == grimsel-demo ]] && extra+=(--no-land)
     if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_LANDMARKS:-}" ]]; then
         extra+=(--landmarks "$OBC_DEMO_LANDMARKS")
     fi
@@ -106,6 +113,7 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
       monaco) output="$BUILD_DIR/sim-monaco/monaco.obcm" ;;
       freiburg) output="$BUILD_DIR/sim-freiburg/freiburg.obcm" ;;
       grimsel-demo) output="$REPO_ROOT/sim/desktop/assets/grimsel-demo.obcm" ;;
+      teningen-preview) output="$REPO_ROOT/host/obc-bake/assets/teningen-preview.obcm" ;;
       *) echo "unknown map package $name" >&2; exit 2 ;;
     esac
     echo "packing $output (bbox $bbox${terrain:+, terrain $(basename "$terrain")}) ..."
@@ -210,6 +218,12 @@ do_freiburg() {
       --output "$BUILD_DIR/sim-freiburg.tar.gz"
 }
 
+do_teningen_preview() {
+    local src="${1:-}"
+    [[ -n "$src" ]] || src="$(store_path geofabrik-extracts area="$FREIBURG_AREA")"
+    repack teningen-preview "$src" "$TENINGEN_BBOX"
+}
+
 # === Terrain sidecars (OBCT, epic #1068 / #1070) =============================
 # `build-map-package.sh terrain [dem_dir]` bakes the two `.obcd` terrain
 # companions from Copernicus GLO-30. Self-contained: it shares nothing with the
@@ -270,6 +284,7 @@ grimsel) do_grimsel "${2:-}" ;;
 grimsel-demo) do_grimsel_demo "${2:-}" ;;
 monaco) do_monaco "${2:-}" ;;
 freiburg) do_freiburg "${2:-}" ;;
+teningen-preview) do_teningen_preview "${2:-}" ;;
 terrain) do_terrain "${2:-}" ;;
 all)
     do_terrain "${4:-}"
@@ -279,7 +294,7 @@ all)
     do_freiburg
     ;;
 *)
-    echo "usage: $0 grimsel|grimsel-demo|monaco|freiburg|terrain|all|assistant \
+    echo "usage: $0 grimsel|grimsel-demo|monaco|freiburg|teningen-preview|terrain|all|assistant \
 [source.osm.pbf ... | meiringen|west-cork|all]" >&2
     exit 2
     ;;

@@ -44,10 +44,7 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     }
 }
 
-public enum PlannerPreviewPreset: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing
-    public var title: String { self == .lessClimbing ? "Less climbing" : rawValue.capitalized }
-}
+public typealias PlannerPreviewPreset = RoutePreference
 
 public enum PlannerPreviewPointKind: String, CaseIterable, Sendable {
     case visit, shape, marker
@@ -175,6 +172,10 @@ public final class PlannerPreviewModel {
               legs: state.legIDs.map { state.legs[$0].flatMap { $0.mode == .routed ? nil : $0 } })
     }
     public var canSave: Bool { path != nil && !isRouting && routeError == nil }
+    public var routeGapNote: String? {
+        guard canSave, let path else { return nil }
+        return plannerRouteGapNote(path, points: state.coordinates, legs: state.legIDs.map { state.legs[$0]?.mode ?? .routed })
+    }
     public func retryRoute() { routingRevision += 1 }
 
     public func calculateRoute() async {
@@ -188,10 +189,10 @@ public final class PlannerPreviewModel {
             guard revision == routingRevision else { return }
             release = selected
             guard hasRoute else { return }
-            guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
+            guard preset.applies(to: activity) else {
                 throw PlannerFailure.invalidData
             }
-            let result = try await path(key, preference: preference, release: selected)
+            let result = try await path(key, preference: preset, release: selected)
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
             path = result
@@ -276,12 +277,38 @@ public final class PlannerPreviewModel {
     public func isEndpoint(_ id: String) -> Bool { id == points.first?.id || (!isLoop && id == points.last?.id) }
     public var activity: RouteActivity { state.activity }
     /// The activities whose Balanced profile the release lists. All of them while the release is unknown.
-    public private(set) var activities = RouteActivity.allCases
+    public var activities: [RouteActivity] {
+        guard let profiles = servedProfiles else { return RouteActivity.allCases }
+        return RouteActivity.allCases.filter { profiles.contains(RoutePreference.balanced.profile(for: $0)) }
+    }
+    enum RoutingProfiles: Equatable { case idle, loading, ready([String]), unknown, failed }
+    private var profileRegion: (id: String, state: RoutingProfiles)?
+    @ObservationIgnored private var profileLoad: Task<Void, Never>?
+    var routingProfiles: RoutingProfiles { profileRegion?.id == release?.id ? profileRegion?.state ?? .idle : .idle }
+    private var servedProfiles: [String]? {
+        guard case .ready(let profiles) = routingProfiles else { return nil }
+        return profiles
+    }
     public func loadActivities() async {
-        guard let release, let profiles = try? await service.profiles(release: release) else { return }
-        activities = RouteActivity.allCases.filter { profiles.contains(RoutePreference.balanced.profile(for: $0)) }
+        guard let selected = release else { return }
+        if case .ready = routingProfiles { return }
+        if case .loading = routingProfiles { await profileLoad?.value; return }
+        profileLoad?.cancel()
+        profileRegion = (selected.id, .loading)
+        let service = service
+        let task = Task { [weak self] in
+            let state: RoutingProfiles
+            do { state = try await service.profiles(release: selected).map(RoutingProfiles.ready) ?? .unknown }
+            catch { state = .failed }
+            guard !Task.isCancelled, let self, self.release?.id == selected.id else { return }
+            self.profileRegion = (selected.id, state)
+            self.profileLoad = nil
+        }
+        profileLoad = task
+        await task.value
     }
     public var preset: PlannerPreviewPreset { state.preset }
+    public var presets: [PlannerPreviewPreset] { RoutePreference.offered(for: activity, profiles: servedProfiles) }
     /// The points where a day ends, in ride order.
     public var nights: [PlannerPreviewPoint] { points.filter { state.nights.contains($0.id) } }
     public func isNight(_ id: String) -> Bool { state.nights.contains(id) }
@@ -412,8 +439,17 @@ public final class PlannerPreviewModel {
             else { $0.points[$0.points.count - 1].place = place }
         }
     }
-    public func setActivity(_ activity: RouteActivity) { edit { $0.activity = activity } }
-    public func setPreset(_ preset: PlannerPreviewPreset) { edit { $0.preset = preset } }
+    public func setActivity(_ activity: RouteActivity) {
+        let choices = RoutePreference.offered(for: activity, profiles: servedProfiles)
+        edit {
+            $0.activity = activity
+            if !choices.contains($0.preset) { $0.preset = choices.first ?? .balanced }
+        }
+    }
+    public func setPreset(_ preset: PlannerPreviewPreset) {
+        guard presets.contains(preset) else { return }
+        edit { $0.preset = preset }
+    }
     /// Ends a day at route point `id`, or takes its night away. A night is a stop; `name` names a
     /// shaping point that becomes one.
     public func setNight(id: String, _ isNight: Bool, name: String? = nil) {
@@ -640,12 +676,18 @@ public final class PlannerPreviewModel {
         return state
     }
 
-    /// A signed route as a plan from its own start, named after the route: the shaping points in their order, each with
-    /// its turnaround, and the Balanced preset that the catalog plan reproduces. A loop drops its closing point.
-    public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?) {
+    public func canPlanSignedRoute(_ route: CatalogRecord) -> Bool {
+        guard let selection = route.routingSelection(current: activity) else { return false }
+        return servedProfiles?.contains(selection.preference.profile(for: selection.activity)) == true
+    }
+
+    /// A signed route from its own start with its required profile and turnarounds. A loop drops its closing point.
+    public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, activity: RouteActivity,
+                                preference: RoutePreference, startName: String?, finishName: String?) {
         let closed = loop && plan.points.count > 2 && plan.points.last == plan.points.first
         let coordinates = closed ? Array(plan.points.dropLast()) : plan.points
-        guard coordinates.count > 1, plan.requestPoints(loop: loop).count <= RoutePlan.maxPoints else { return }
+        guard preference.applies(to: activity), servedProfiles?.contains(preference.profile(for: activity)) == true, coordinates.count > 1,
+              plan.requestPoints(loop: loop).count <= RoutePlan.maxPoints else { return }
         let turnarounds = Set(plan.turnarounds)
         edit { next in
             next.points = coordinates.enumerated().map { index, coordinate in
@@ -656,7 +698,8 @@ public final class PlannerPreviewModel {
                 point.turnaround = turnarounds.contains(index)
                 return point
             }
-            next.markers = []; next.nights = []; next.legs = [:]; next.loop = loop; next.name = name; next.preset = .balanced
+            next.markers = []; next.nights = []; next.legs = [:]; next.loop = loop; next.name = name
+            next.activity = activity; next.preset = preference
         }
     }
 

@@ -33,8 +33,12 @@ describe('stored planner data', () => {
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'night-3', kind: 'night', night: 3 }] },
             { ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'ferry' }] },
             { ...trip, preset: 'Smoother' }, { ...trip, points: [...trip.points, { ...trip.points[0], id: 'pin', kind: 'marker', legEnd: 7 }] },
+            { ...trip, bike: 'road', preset: 'Technical (S3)' }, { ...trip, bike: 'mtb', preset: 'Alpine (T4)' },
         ];
         expect(isTrip({ ...trip, bike: 'hiking', preset: 'Less climbing' })).toBe(true);
+        for (const [bike, preset] of [['mtb', 'Technical (S3)'], ['hiking', 'Alpine (T4)']]) {
+            expect(isTrip(JSON.parse(JSON.stringify({ ...trip, bike, preset })))).toBe(true);
+        }
         expect(isTrip({ ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'transfer' }] })).toBe(true);
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
     });

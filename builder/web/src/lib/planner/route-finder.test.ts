@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { CatalogRecord } from './signed-routes';
+import { emptyTrip } from './editor';
+import { routeBase } from './signed-route-plan';
+import { profileId } from './routing';
 
 const host = vi.hoisted(() => {
     Object.assign(globalThis, { window: { location: { href: 'http://localhost/' } } });
@@ -23,6 +26,19 @@ const finder = (filters: Partial<InstanceType<typeof RouteFinder>['filters']> = 
 const ids = (found: InstanceType<typeof RouteFinder>) => found.matches.map(match => match.route.id);
 
 describe('route finder', () => {
+    it('filters the route list by grade and selects the required preset only when planning a result', async () => {
+        host.load = cell;
+        const trip = { ...emptyTrip(), bike: 'mtb' as const, preset: 'Balanced' };
+        const found = finder({ radiusKm: 25, shape: 'any', hardest: [0, 1] });
+        await found.search('mtb');
+        expect(ids(found)).toEqual([]);
+        found.filters.hardest = [0, 2];
+        await found.search('mtb');
+        expect(ids(found)).toEqual([201]);
+        await found.select(201);
+        expect(profileId(trip)).toBe('mtb');
+        expect(profileId(routeBase(found.detail!.route, trip))).toBe('mtb/technical');
+    });
     it('names the next radius with matches when none is near', async () => {
         host.load = cell;
         const found = finder({ radiusKm: 10, shape: 'loop' });

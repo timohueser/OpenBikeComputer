@@ -4,7 +4,7 @@
     let { label, value, options, onChange }: {
         label: string;
         value: string;
-        options: { value: string; label: string; icon?: string }[];
+        options: { value: string; label: string; icon?: string; description?: string }[];
         onChange: (value: string) => void;
     } = $props();
 
@@ -66,7 +66,7 @@
                 <button type="button" role="option" id={`${id}-${index}`} tabindex="-1" aria-selected={option.value === value}
                     class:active={index === active} onpointermove={() => active = index}
                     onmousedown={(event) => event.preventDefault()} onclick={() => choose(index)}>
-                    <span class="label">{#if option.icon}<Icon name={option.icon} size={20} />{/if}{option.label}</span>
+                    <span class="label">{#if option.icon}<Icon name={option.icon} size={20} />{/if}<span class="option-text">{option.label}{#if option.description}<small>{option.description}</small>{/if}</span></span>
                     {#if option.value === value}<Icon name="check" size={15} />{/if}
                 </button>
             {/each}
@@ -77,6 +77,8 @@
 <style>
     .label { display: inline-flex; align-items: center; gap: 7px; }
     .label :global(svg) { flex: none; }
+    .option-text { display: flex; flex-direction: column; gap: 4px; }
+    .option-text small { max-width: 32ch; white-space: normal; font-size: 12px; font-weight: 400; color: var(--ink-soft); }
     .selector { position: relative; flex: none; min-width: 0; }
     .selector.open { z-index: 40; }
     button { font: 600 13px var(--sans); color: var(--ink); cursor: pointer; }

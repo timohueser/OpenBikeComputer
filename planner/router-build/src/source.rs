@@ -7,8 +7,12 @@ use std::collections::BTreeMap;
 
 pub type Tags = BTreeMap<String, String>;
 
-/// What an access value tells the router. Only `no` blocks a mode; every other restriction stays
-/// routable, and the route reports it as a closure.
+pub use obc_places::routing::access::{
+    access, conditional_modes, cycleway, cycleways, granted, inherited, oneway, Oneway,
+};
+use obc_places::routing::access::{conditions, unshadowed_modes};
+
+/// A source access restriction represented by the planner's displayed closure type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
     Open,
@@ -16,194 +20,26 @@ pub enum Access {
     Closed,
 }
 
-/// A list such as `agricultural;forestry` takes its most open value.
 pub fn classify(value: &str) -> Access {
-    let one = |value: &str| match value.trim() {
-        // `mtb` designates a way for mountain bikes, as in Switzerland.
-        "yes" | "designated" | "official" | "permissive" | "mtb" | "optional_sidepath" => Access::Open,
-        // `dismount` closes riding only; pushing follows foot access.
-        "no" | "dismount" => Access::Closed,
-        "permit" => Access::Uncertain(Kind::Permit),
-        "private" => Access::Uncertain(Kind::Private),
-        "agricultural" | "forestry" => Access::Uncertain(Kind::Farm),
-        "use_sidepath" => Access::Uncertain(Kind::Sidepath),
-        "discouraged" => Access::Uncertain(Kind::Discouraged),
-        "destination" | "customers" | "delivery" | "residents" | "military" | "psv" | "bus" | "emergency" | "hgv"
-        | "taxi" | "motor_vehicle" | "motorcar" => Access::Uncertain(Kind::Limited),
-        _ => Access::Uncertain(Kind::Unclear),
-    };
-    value.split(';').map(one).min().unwrap_or(Access::Closed)
+    use obc_places::routing::access::{Access as Shared, Restriction as R};
+    match obc_places::routing::access::classify(value) {
+        Shared::Open => Access::Open,
+        Shared::Closed => Access::Closed,
+        Shared::Uncertain(reason) => Access::Uncertain(match reason {
+            R::Permit => Kind::Permit,
+            R::Private => Kind::Private,
+            R::Farm => Kind::Farm,
+            R::Sidepath => Kind::Sidepath,
+            R::Discouraged => Kind::Discouraged,
+            R::Limited => Kind::Limited,
+            R::Unclear => Kind::Unclear,
+        }),
+    }
 }
 
-pub fn granted(value: &str) -> bool {
-    classify(value) == Access::Open
-}
-
-/// Road class and default access, before explicit tags and one-way rules. The modes are the
-/// worldwide defaults, unless the way's country differs.
+/// Country defaults specialize the shared worldwide highway table.
 pub fn highway_access(highway: &str, country: Country) -> Option<(u8, u8)> {
-    let (class, modes) = match highway {
-        "cycleway" => (0, BIKE),
-        "residential" | "living_street" | "unclassified" | "service" | "tertiary" | "tertiary_link" => {
-            (1, BIKE | FOOT | PUSH)
-        }
-        "trunk" | "trunk_link" | "primary" | "primary_link" | "secondary" | "secondary_link" => (2, BIKE | FOOT | PUSH),
-        "motorway" | "motorway_link" => (2, 0),
-        "track" | "road" => (3, BIKE | FOOT | PUSH),
-        "path" => (4, BIKE | FOOT | PUSH),
-        "footway" | "pedestrian" => (4, FOOT | PUSH),
-        "bridleway" => (4, 0),
-        "steps" => (5, FOOT | PUSH),
-        _ => return None,
-    };
-    Some((class, country.defaults(highway).unwrap_or(modes)))
-}
-
-pub fn inherited<'a>(get: &impl Fn(&str) -> Option<&'a str>, mode: &str, direction: &str) -> Option<&'a str> {
-    let keys: &[&str] = if mode == "bicycle" { &["access", "vehicle", "bicycle"] } else { &["access", "foot"] };
-    let mut result = None;
-    for key in keys {
-        result = get(key).or(result);
-        result = get(&format!("{key}:{direction}")).or(result);
-    }
-    result
-}
-
-/// The direction that a one-way rule leaves open for a mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Oneway {
-    Both,
-    Forward,
-    Backward,
-    /// The direction changes over the day; the route reports it as a closure.
-    Reversible,
-    Unknown,
-}
-
-fn oneway_value(value: &str) -> Oneway {
-    match value {
-        "yes" | "1" | "true" => Oneway::Forward,
-        "-1" | "reverse" => Oneway::Backward,
-        // Traffic takes turns, as on a one-lane bridge with lights.
-        "no" | "0" | "false" | "alternating" => Oneway::Both,
-        "reversible" => Oneway::Reversible,
-        _ => Oneway::Unknown,
-    }
-}
-
-/// The road's own one-way rule; a roundabout implies one.
-fn road_oneway<'a>(get: &impl Fn(&str) -> Option<&'a str>) -> Oneway {
-    let implied = get("junction") == Some("roundabout");
-    oneway_value(get("oneway").unwrap_or(if implied { "yes" } else { "no" }))
-}
-
-/// The one-way rule for `mode` ("bicycle" or "foot"). `oneway` binds riders only, and not where a
-/// cycle lane runs against it.
-pub fn oneway<'a>(get: impl Fn(&str) -> Option<&'a str>, mode: &str) -> Oneway {
-    if mode == "foot" {
-        return get("oneway:foot").map_or(Oneway::Both, oneway_value);
-    }
-    if let Some(value) = get("oneway:bicycle") {
-        return oneway_value(value);
-    }
-    match road_oneway(&get) {
-        // A lane on a one-way road follows the road, so the side of traffic does not matter.
-        Oneway::Forward if cycleway(&get, true, false) => Oneway::Both,
-        Oneway::Backward if cycleway(&get, false, false) => Oneway::Both,
-        oneway => oneway,
-    }
-}
-
-/// Whether a cycle lane runs in the travel direction. A lane on a two-way road without a direction
-/// runs with the traffic on its side of the road.
-pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool, left_hand: bool) -> bool {
-    let road_direction = match road_oneway(&get) {
-        Oneway::Forward => Some(false),
-        Oneway::Backward => Some(true),
-        _ => None,
-    };
-    ["cycleway", "cycleway:left", "cycleway:right"].iter().any(|key| {
-        let both = *key != "cycleway";
-        let value = get(key).or_else(|| both.then(|| get("cycleway:both")).flatten()).unwrap_or("");
-        if !matches!(
-            value,
-            "lane"
-                | "track"
-                | "shared_lane"
-                | "share_busway"
-                | "shoulder"
-                | "opposite"
-                | "opposite_lane"
-                | "opposite_track"
-        ) {
-            return false;
-        }
-        match get(&format!("{key}:oneway")).or_else(|| both.then(|| get("cycleway:both:oneway")).flatten()) {
-            Some("no" | "0" | "false") => true,
-            Some("yes" | "1" | "true") => !reversed,
-            Some("-1" | "reverse") => reversed,
-            Some(_) => false,
-            None if value.starts_with("opposite") => reversed != road_direction.unwrap_or(false),
-            None => road_direction.map_or(
-                match *key {
-                    "cycleway:left" => reversed != left_hand,
-                    "cycleway:right" => reversed == left_hand,
-                    _ => true,
-                },
-                |direction| reversed == direction,
-            ),
-        }
-    })
-}
-
-/// Pushing follows pedestrian access, unless explicitly restricted.
-/// With `routing`, an uncertain value opens its mode, and the route reports it as a closure.
-pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction: &str, routing: bool) -> u8 {
-    let opens = |value: &str| match classify(value) {
-        Access::Open => true,
-        Access::Uncertain(_) => routing,
-        Access::Closed => false,
-    };
-    let restricted_road =
-        get("motorroad") == Some("yes") || matches!(get("highway"), Some("motorway" | "motorway_link"));
-    let mut result = if restricted_road { 0 } else { defaults };
-    for (mode, bits) in [("foot", FOOT | PUSH), ("bicycle", BIKE)] {
-        if let Some(value) = inherited(&get, mode, direction) {
-            if opens(value) {
-                result |= bits;
-            } else {
-                result &= !bits;
-            }
-        }
-        if restricted_road && !get(&format!("{mode}:{direction}")).or(get(mode)).is_some_and(granted) {
-            result &= !bits;
-        }
-    }
-    if !restricted_road
-        && inherited(&get, "bicycle", direction) == Some("dismount")
-        && get(&format!("foot:{direction}")).or(get("foot")).is_none_or(granted)
-    {
-        result |= FOOT | PUSH;
-    }
-    if !restricted_road && inherited(&get, "bicycle", direction).is_none() && get("bicycle_road") == Some("yes") {
-        result |= BIKE;
-    }
-    if let Some(value) = get(&format!("bicycle:pushing:{direction}")).or(get("bicycle:pushing")) {
-        if opens(value) {
-            result |= PUSH;
-        } else {
-            result &= !PUSH;
-        }
-    }
-    if result & FOOT == 0 {
-        result &= !PUSH;
-    }
-    result
-}
-
-/// Modes with a conditional restriction. The router keeps them open; the map shows them.
-pub fn conditional_modes<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> u8 {
-    conditions(tags).filter(|(_, _, clauses)| !clauses.is_empty()).fold(0, |modes, (_, m, _)| modes | m)
+    obc_places::routing::access::highway_access(highway, country.defaults(highway))
 }
 
 /// What may close a road that the router keeps open: an uncertain access value, a reversible
@@ -229,8 +65,8 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: 
         }
     }
     for (key, modes, clauses) in conditions(tags.iter().map(|(key, value)| (*key, *value))) {
-        let other = ["forward", "backward"].into_iter().find(|d| key.ends_with(d) && !directions.contains(d));
-        if modes == 0 || key.starts_with("oneway") || other.is_some() {
+        let modes = unshadowed_modes(&tags, key, modes, directions);
+        if modes == 0 || key.starts_with("oneway") {
             continue;
         }
         for (_, condition) in clauses.into_iter().filter(|(value, _)| !granted(value)) {
@@ -245,38 +81,6 @@ pub fn closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, directions: 
         }
     }
     closures
-}
-
-/// The key, modes and `(value, condition)` clauses of each conditional tag. A hazardous-load
-/// clause never concerns a rider or walker, so it is left out.
-fn conditions<'a, I: Iterator<Item = (&'a str, &'a str)>>(
-    tags: I,
-) -> impl Iterator<Item = (&'a str, u8, Vec<(&'a str, &'a str)>)> + use<'a, I> {
-    tags.filter_map(|(key, value)| {
-        let key = key.strip_suffix(":conditional")?;
-        let modes = match key {
-            "access" | "access:forward" | "access:backward" => BIKE | FOOT | PUSH,
-            "vehicle" | "vehicle:forward" | "vehicle:backward" | "bicycle" | "bicycle:forward" | "bicycle:backward"
-            | "oneway" | "oneway:bicycle" => BIKE,
-            "bicycle:pushing" | "bicycle:pushing:forward" | "bicycle:pushing:backward" => PUSH,
-            "foot" | "foot:forward" | "foot:backward" | "oneway:foot" => FOOT | PUSH,
-            _ => 0,
-        };
-        let clauses = value
-            .split(';')
-            .map(|clause| {
-                let (value, condition) = clause.split_once('@').unwrap_or((clause, ""));
-                (value.trim(), condition.trim().trim_matches(['(', ')']).trim())
-            })
-            .filter(|(_, condition)| !hazmat(condition))
-            .collect();
-        Some((key, modes, clauses))
-    })
-}
-
-/// A hazardous-load condition never concerns a rider or walker.
-fn hazmat(condition: &str) -> bool {
-    matches!(condition, "hazmat" | "hazmat:water")
 }
 
 /// A closure such as `Nov-May` moves with the snow each year; the snow layer tells the rider
@@ -372,6 +176,34 @@ mod tests {
     }
 
     #[test]
+    fn conditional_warnings_follow_mode_and_direction_precedence() {
+        let all = BIKE | FOOT | PUSH;
+        let examples = [
+            (&[("access:conditional", "no @ (wet)"), ("bicycle", "yes")], [FOOT | PUSH; 2]),
+            (&[("access:conditional", "no @ (wet)"), ("vehicle", "yes")], [FOOT | PUSH; 2]),
+            (&[("access:conditional", "no @ (wet)"), ("foot", "yes")], [BIKE; 2]),
+            (&[("access:conditional", "no @ (wet)"), ("bicycle:forward", "yes")], [FOOT | PUSH, all]),
+            (&[("access:conditional", "no @ (wet)"), ("access:backward", "yes")], [all, 0]),
+            (&[("access:forward:conditional", "no @ (wet)"), ("bicycle", "yes")], [FOOT | PUSH, 0]),
+            (&[("bicycle:conditional", "no @ (wet)"), ("bicycle", "yes")], [BIKE; 2]),
+            (&[("foot:conditional", "no @ (wet)"), ("bicycle:pushing", "yes")], [FOOT | PUSH; 2]),
+            (&[("bicycle:pushing:conditional", "no @ (wet)"), ("bicycle:pushing:forward", "yes")], [0, PUSH]),
+        ];
+        for (tags, expected) in examples {
+            assert_eq!(conditional_modes(tags.iter().copied()), expected[0] | expected[1], "{tags:?}");
+            for (direction, bits) in ["forward", "backward"].into_iter().zip(expected) {
+                let expected = if bits == 0 {
+                    vec![]
+                } else {
+                    vec![(bits, Closure { kind: Kind::Conditional, condition: "wet".into() })]
+                };
+                assert_eq!(closures(tags.iter().copied(), &[direction]), expected, "{tags:?}, {direction}");
+            }
+        }
+        assert_eq!(conditional_modes([("oneway:conditional", "yes @ (Su)"), ("oneway:bicycle", "no")].into_iter()), 0);
+    }
+
+    #[test]
     fn only_no_closes_and_every_other_restriction_becomes_a_closure() {
         use Access::{Closed, Open, Uncertain};
         for (value, expected) in [
@@ -406,7 +238,7 @@ mod tests {
                 ("vehicle", "permit"),
                 ("access:conditional", "no @ Oct 14th - May 31st")
             ]),
-            vec![(all, closure(Kind::Permit, "permit")), (all, closure(Kind::Seasonal, "Oct 14th - May 31st"))]
+            vec![(all, closure(Kind::Permit, "permit")), (FOOT | PUSH, closure(Kind::Seasonal, "Oct 14th - May 31st"))]
         );
         assert_eq!(
             closures(&[("access", "destination"), ("bicycle", "yes"), ("bicycle:conditional", "no @ (wet)")]),

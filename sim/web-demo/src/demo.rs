@@ -594,6 +594,13 @@ mod tests {
         assert_eq!(demo.state(), expected, "`{command}` should reach {expected}");
     }
 
+    fn dwell(d: &mut Demo, now: &mut f64, ms: u32) {
+        for _ in 0..ms.div_ceil(16) {
+            *now += 16.0;
+            d.tick(*now);
+        }
+    }
+
     #[test]
     fn page_theme_redraws_and_survives_demo_resets() {
         use obc_app::settings::Theme;
@@ -1007,12 +1014,6 @@ mod tests {
     #[test]
     fn reroute_tour_reviews_and_accepts_a_real_visit_without_restarting_recording() {
         use obc_app::navigator::ReviewStatus;
-        fn dwell(d: &mut Demo, now: &mut f64, ms: u32) {
-            for _ in 0..ms.div_ceil(16) {
-                *now += 16.0;
-                d.tick(*now);
-            }
-        }
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
@@ -1025,19 +1026,31 @@ mod tests {
         drive(&mut d, &mut now, "press", "Assistant");
         drive(&mut d, &mut now, "press", "FindPlace");
         dwell(&mut d, &mut now, 2600);
-        for _ in 0..6 {
+        for _ in 0..2 {
             drive(&mut d, &mut now, "step:1", "FindPlace");
             dwell(&mut d, &mut now, 420);
         }
         drive(&mut d, &mut now, "press", "FindPlace");
+        let mut failures = Vec::new();
         for _ in 0..750 {
             if d.find_ready() {
                 break;
             }
+            if let ReviewStatus::Failed(error) = d.visit_status() {
+                failures.push(error);
+            }
             now += 16.0;
             d.tick(now);
         }
-        assert!(d.find_ready(), "real station search: {:?}, {:?}", d.device.app.find_place_state(), d.visit_status());
+        assert!(
+            d.find_ready(),
+            "real lodging search: {:?}, {:?}, results={}, released={}, fix={:?}, failures={failures:?}",
+            d.device.app.find_place_state(),
+            d.visit_status(),
+            d.device.app.find_place_result_count(),
+            d.device.app.assistant_planner_released(),
+            d.device.app.state.user_fix,
+        );
         dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "press", "VisitReview");
         now += 16.0;
@@ -1076,6 +1089,9 @@ mod tests {
         assert_eq!(d.visit_status(), ReviewStatus::Accepted);
         assert_eq!(d.device.routes.read_checkpoint().unwrap().unwrap().route, preview.source);
         assert_eq!(d.device.app.route_ids()[d.device.app.active_route_index().unwrap()], preview.source.object);
+        let accepted = d.device.routes.source(preview.source.object).unwrap();
+        let stop = obc_route::RouteObjectInfo::read(&accepted).unwrap().visit.unwrap();
+        assert_eq!((stop.target_kind, stop.target_id), (2, 61_645_387), "Hotel Alpenroesli");
         assert!(d.device.app.recording() && !d.device.app.recorder.closing());
         assert_eq!(d.state(), "Map", "accepted Visit returns to the riding map");
         let session = d.device.app.recorder.session();
@@ -1087,6 +1103,49 @@ mod tests {
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert!(d.queue.is_empty(), "playback end cannot clear a refused navigation reset");
         assert_eq!(d.device.app.recorder.session(), session);
+    }
+
+    #[test]
+    fn seasonal_station_access_does_not_offer_a_visit_or_interrupt_the_ride() {
+        use obc_app::{
+            find_place::State,
+            navigator::{NavigatorError, ReviewStatus},
+        };
+
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+        drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "pause", "Map");
+        let route = d.device.app.route_ids()[d.device.app.active_route_index().unwrap()];
+        let session = d.device.app.recorder.session();
+        dwell(&mut d, &mut now, 2600);
+        drive(&mut d, &mut now, "context", "ContextDrawer");
+        drive(&mut d, &mut now, "press", "Assistant");
+        drive(&mut d, &mut now, "press", "FindPlace");
+        dwell(&mut d, &mut now, 2600);
+        drive(&mut d, &mut now, "step:6", "FindPlace");
+        dwell(&mut d, &mut now, 420);
+        drive(&mut d, &mut now, "press", "FindPlace");
+        let mut no_path = false;
+        for _ in 0..750 {
+            no_path |=
+                matches!(d.visit_status(), ReviewStatus::Failed(NavigatorError::Plan(obc_route::NavError::NoPath)));
+            if d.device.app.find_place_state() == State::Ready && d.device.app.assistant_planner_released() {
+                break;
+            }
+            now += 16.0;
+            d.tick(now);
+        }
+        // Gletsch's approaches have access:conditional=no @ (Oct-May). The timeless device
+        // graph omits these roads, so an isolated mapped station cannot become a Visit route.
+        assert!(no_path, "the real station candidate must reach planning");
+        assert_eq!(d.device.app.find_place_state(), State::Ready);
+        assert_eq!(d.device.app.find_place_result_count(), 0);
+        assert!(d.device.app.assistant_planner_released());
+        assert_eq!(d.device.app.route_ids()[d.device.app.active_route_index().unwrap()], route);
+        assert_eq!(d.device.app.recorder.session(), session);
+        assert!(d.device.app.recording() && !d.device.app.recorder.closing());
     }
 
     /// The landing page's guided scenarios wait on screen-name strings, so a rename in the

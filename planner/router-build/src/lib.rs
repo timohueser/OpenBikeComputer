@@ -12,12 +12,14 @@ pub mod overlays;
 mod road_bike;
 pub mod source;
 pub mod step;
+mod suitability;
 pub mod terrain;
+mod traffic;
 
 use base::Dictionary;
 use planner_router::{
     closures::{self, Closures},
-    model::{Point, Profile, Road},
+    model::{Point, Profile, Road, BIKE, PUSH},
     package::{self, Manifest, CELL, ROADS_PER_PAGE},
     storage,
     table::Table,
@@ -172,7 +174,14 @@ pub fn prepare(
     };
     // A road reports the closures of its way and of the node where it arrives.
     let closures = Closures::build(ways.into_iter().zip(&graph.roads).map(|(mut closures, road)| {
-        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
+        let access = graph.node_access[road.to as usize];
+        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned().map(|(mut modes, closure)| {
+            // A cyclist on this road must push through a node that does not permit riding.
+            if road.access & BIKE != 0 && access & BIKE == 0 && access & PUSH != 0 && modes & PUSH != 0 {
+                modes |= BIKE;
+            }
+            (modes, closure)
+        }));
         closures
     }))?;
     let mut dictionary = Dictionary::default();

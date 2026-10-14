@@ -49,7 +49,7 @@ use obc_network::cut::{bucket_pois, prepare_nav};
 use obc_network::nav::NavGraph;
 use obc_pbf::bbox::Bbox;
 use obc_places::metadata::Poi;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 
 use obc_draw::cut::{merge_key, prepare_lod, LodSet, PreparedSemantic};
 
@@ -217,8 +217,8 @@ fn run(
     opts: &CutOptions,
     progress: &Progress,
 ) -> Result<CutSummary, String> {
-    // The ways, not a graph: the cutter builds one graph per cell (OBCA).
-    let (mut ingested, ways) = obc_draw::ingest::ingest_osm_ways(pbfs, config, opts.bbox, progress)?;
+    let (mut ingested, _) = obc_draw::ingest::ingest_osm_ways(pbfs, config, opts.bbox, progress)?;
+    let metadata = obc_places::osm::harvest(pbfs, config, progress)?;
     if ingested.features.is_empty() && ingested.coastlines.is_empty() && opts.source_extent.is_none() {
         return Err("no features found matching config".into());
     }
@@ -237,19 +237,20 @@ fn run(
         obc_draw::contour::add_contours(&mut ingested, config, extract, contour_terrain.as_ref(), progress)?;
         progress.check()?;
     }
-    cut_ingested(&ingested, &ways, config, out_dir, opts, progress)
+    cut_ingested(&ingested, &metadata.ways, &metadata.routing, config, out_dir, opts, progress)
 }
 
 /// Cut an already-ingested extract — the entry point tests and the bakery both drive.
 ///
 /// `ways` are the routable ways of the source snapshot; they are what junction-ness is classified
-/// from, so handing in a subset would quietly change the graph a cell writes.
+/// from. `routing` retains node access and turn rules from that same snapshot.
 ///
 /// Writes `<out_dir>/cells/<band>/<i>/<j>.obcm` plus the provenance sidecar
 /// `<out_dir>/`[`MANIFEST_NAME`], written last, so an interrupted run publishes nothing.
 pub fn cut_ingested(
     ing: &Ingested,
     ways: &[RoutableWay],
+    routing: &Routing,
     config: &Config,
     out_dir: &Path,
     opts: &CutOptions,
@@ -336,7 +337,7 @@ pub fn cut_ingested(
             })
             .collect();
         merged_sets.retain(|key, _| last_band[key] > index);
-        let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
+        let nav_cut = if band.has_nav() { Some(prepare_nav(ways, routing, band.cell_log2, progress)?) } else { None };
         let band_terrain = terrain_set.as_ref().filter(|_| reads_terrain(config, band));
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
@@ -353,7 +354,7 @@ pub fn cut_ingested(
                     .unwrap_or_default();
                 let graph = match &nav_cut {
                     None => NavGraph::default(),
-                    Some(prep) => prep.cell_graph(*cell, config.routing.min_component_edges),
+                    Some(prep) => prep.cell_graph(*cell, config.routing.min_component_edges)?,
                 };
                 let trees: Vec<(usize, Node)> =
                     lod_sets.iter().map(|set| (set.lod, set.cell_tree(*cell, chunk_size, progress))).collect();
@@ -807,7 +808,16 @@ mod tests {
             }
         });
         let out = obcm_testkit::scratch::scratch_dir("obc-cut", "merge-memo");
-        cut_ingested(&ing, &[], &config, &out, &CutOptions { bands, ..Default::default() }, &progress).unwrap();
+        cut_ingested(
+            &ing,
+            &[],
+            &Routing::default(),
+            &config,
+            &out,
+            &CutOptions { bands, ..Default::default() },
+            &progress,
+        )
+        .unwrap();
         std::fs::remove_dir_all(out).unwrap();
         assert_eq!(
             merges.load(std::sync::atomic::Ordering::Relaxed),

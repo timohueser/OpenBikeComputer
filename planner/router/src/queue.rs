@@ -39,6 +39,9 @@ impl Queue {
             return Err(Error::InvalidData("Nonmonotone search priority".into()));
         }
         let index = (128 - (key ^ self.last).leading_zeros()) as usize;
+        if self.buckets[index].capacity() == 0 && self.buckets[0].is_empty() {
+            self.buckets.swap(0, index);
+        }
         let bucket = &mut self.buckets[index];
         if bucket.len() == bucket.capacity() {
             let wanted = bucket.capacity().saturating_mul(2).max(4);
@@ -59,8 +62,14 @@ impl Queue {
                 return Ok(None);
             };
             self.last = key(self.buckets[index].iter().map(|entry| entry.0).min().unwrap());
-            while let Some(entry) = self.buckets[index].pop() {
-                self.push(entry, budget)?;
+            if self.buckets[index].iter().all(|entry| key(entry.0) == self.last) {
+                // Preserve redistribution order without a second allocation for equal priorities.
+                self.buckets.swap(0, index);
+                self.buckets[0].reverse();
+            } else {
+                while let Some(entry) = self.buckets[index].pop() {
+                    self.push(entry, budget)?;
+                }
             }
             self.capacity -= self.buckets[index].capacity();
             self.buckets[index] = Vec::new();
@@ -112,9 +121,35 @@ mod tests {
         assert_eq!(queue.bytes(), 0);
         assert!(matches!(queue.push((0, 0, 0, 0), 1), Err(Error::Limit)));
         queue.push((0, 0, 0, 0), 128).unwrap();
+        queue.push((1, 0, 0, 0), 128).unwrap();
         assert!(matches!(queue.front(128), Err(Error::Limit)));
         queue.clear();
         queue.push((1, 0, 0, 0), 1024).unwrap();
         assert_eq!(queue.front(1024).unwrap().unwrap().0, 1);
+    }
+
+    #[test]
+    fn equal_priorities_and_single_entry_frontiers_reuse_their_allocation() {
+        let mut queue = Queue::default();
+        let budget = 4 * size_of::<Entry>();
+        for priority in [i128::MIN, -9, -1, 0, 1, 8, 127, i128::MAX] {
+            for node in 0..4 {
+                queue.push((priority, 0, 0, node), budget).unwrap();
+            }
+            assert_eq!(queue.bytes(), budget);
+            for offset in 0..4 {
+                let node = if priority == i128::MIN { 3 - offset } else { offset };
+                assert_eq!(queue.front(budget).unwrap(), Some((priority, 0, 0, node)));
+                queue.pop();
+            }
+            assert!(queue.front(budget).unwrap().is_none());
+        }
+        queue.clear();
+        for priority in 0..10_000 {
+            queue.push((priority, 0, 0, 0), budget).unwrap();
+            assert_eq!(queue.front(budget).unwrap(), Some((priority, 0, 0, 0)));
+            queue.pop();
+            assert_eq!(queue.bytes(), budget);
+        }
     }
 }

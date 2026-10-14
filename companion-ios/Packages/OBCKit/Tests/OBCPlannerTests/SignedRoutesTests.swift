@@ -66,7 +66,7 @@ struct SignedRoutesTests {
     @Test func aPlanThatDoesNotFitItsLineIsRejected() throws {
         func record(_ fields: String, loop: Bool = false) throws -> CatalogRecord {
             try JSONDecoder().decode(CatalogRecord.self, from: Data("""
-            {"id":1,"kind":"hiking","rank":1,"loop":\(loop),"length_m":1,"ascent_m":0,"descent_m":0,"cells":[],\(fields)}
+            {"id":1,"kind":"hiking","profile":"hiking","rank":1,"loop":\(loop),"length_m":1,"ascent_m":0,"descent_m":0,"cells":[],\(fields)}
             """.utf8))
         }
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[1]"#).plan != nil)
@@ -97,6 +97,18 @@ struct SignedRoutesTests {
         #expect(RoutePlan.joined([.init(points: half, turnarounds: []), .init(points: half + p, turnarounds: [])]) == nil)
     }
 
+    @Test func catalogPlansSelectTheirRequiredTerrainCapability() throws {
+        let alpine = try #require(Self.vector.routes.first { $0.id == 106 }?.routingSelection(current: .gravel))
+        #expect(alpine.activity == .hiking && alpine.preference == .alpine)
+        let technical = try #require(Self.vector.routes.first { $0.id == 201 }?.routingSelection(current: .hiking))
+        #expect(technical.activity == .mtb && technical.preference == .technical)
+        let bicycle = try #require(Self.vector.routes.first { $0.id == 301 })
+        for activity in [RouteActivity.road, .gravel, .touring] {
+            let selection = try #require(bicycle.routingSelection(current: activity))
+            #expect(selection.activity == activity && selection.preference == .balanced)
+        }
+    }
+
     @Test func anEmptySearchNamesTheFilterOrTheNextRadius() async throws {
         let vector = Self.vector
         let loader: RouteCellLoader = { cell in vector.grid.contains(cell) ? vector.routes.filter { $0.cells.contains(cell) } : nil }
@@ -116,8 +128,8 @@ struct SignedRoutesTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory.appending(path: "routes/tiles"), withIntermediateDirectories: true)
         let routes = Self.vector.routes.filter { [101, 105].contains($0.id) }
-        func write(_ records: [CatalogRecord], _ path: String) throws {
-            let body = try JSONSerialization.data(withJSONObject: ["format": 1, "routes": records.map { ["id": $0.id, "kind": $0.kind.rawValue,
+        func write(_ records: [CatalogRecord], _ path: String, format: Int = 2, profile: String? = nil) throws {
+            let body = try JSONSerialization.data(withJSONObject: ["format": format, "routes": records.map { ["id": $0.id, "kind": $0.kind.rawValue, "profile": profile ?? $0.profile,
                 "rank": $0.rank, "loop": $0.loop, "length_m": $0.length_m, "ascent_m": $0.ascent_m, "descent_m": $0.descent_m, "cells": $0.cells]
             }])
             try body.write(to: directory.appending(path: path))
@@ -141,5 +153,9 @@ struct SignedRoutesTests {
         // A neighbour that only shares an edge with the bounds is not covered.
         #expect(try await online.loadCell("9-268-178") == nil)
         #expect(try await online.loadCell("9-267-178")?.map(\.id) == [101, 105])
+        try write(routes, "routes/tiles/9-267-178.json", format: 1)
+        await #expect(throws: PlannerFailure.invalidData) { try await online.loadCell("9-267-178") }
+        try write(routes, "routes/tiles/9-267-178.json", profile: "mtb/technical")
+        await #expect(throws: PlannerFailure.invalidData) { try await online.loadCell("9-267-178") }
     }
 }

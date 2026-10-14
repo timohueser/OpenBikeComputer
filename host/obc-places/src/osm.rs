@@ -2,23 +2,27 @@
 
 use crate::hours;
 use crate::metadata::{self as poi, Poi};
+use crate::routing::data::{MemberKind, Routing};
 use crate::routing::RoutableWay;
 use obc_pbf::bbox::to_deg;
 use obc_pbf::scan::Keyed;
 use std::collections::HashMap;
 
-/// Capture a routable way's node-id sequence and µdeg coords for the nav graph. Routability is
-/// tag-based ([`crate::routing::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
-/// grid POIs and the serializer use, so edge lengths and later serialization agree.
+/// Capture a supported way's source identity, directional access, and geometry independently of
+/// styling. Coordinates use the same µdeg grid as POIs and navigation serialization.
 pub fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
     if refs.len() < 2 {
         return;
     }
-    // Classify once (routability plus the way-kind byte). This is the only place tags exist, so
-    // the kind is captured here or never.
+    // Source tags provide both the physical kind and the separate access policy.
     let Some(kind) = crate::routing::classify(w.tags()) else { return };
     let coords_udeg = coords.iter().map(|&(x, y)| (crate::to_udeg(x), crate::to_udeg(y))).collect();
-    out.push(id, RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
+    let tags: HashMap<_, _> = w.tags().collect();
+    let access = crate::routing::way_access(|key| tags.get(key).copied(), coords[0], kind);
+    if access.iter().all(|direction| direction.allowed == 0) {
+        return;
+    }
+    out.push(id, RoutableWay { id, node_ids: refs.to_vec(), coords: coords_udeg, kind, access });
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
@@ -140,6 +144,7 @@ pub struct Places {
     pub pois: Vec<Poi>,
     pub links: Vec<poi::LandmarkLink>,
     pub ways: Vec<RoutableWay>,
+    pub routing: Routing,
 }
 
 /// Read source metadata and approaches without constructing drawing features or a graph.
@@ -163,10 +168,12 @@ pub fn harvest(
     }
     let merging = paths.len() > 1;
     let mut nodes = HashMap::new();
+    let mut routing = Routing::default();
     let mut node_pois = Keyed::new(merging);
     let mut relations = Keyed::new(merging);
     let mut links = Keyed::new(merging);
     let (mut seen_relations, mut seen_links) = (HashSet::new(), HashSet::new());
+    let mut seen_rules = HashSet::new();
     for (index, path) in paths.iter().enumerate() {
         let mut source_nodes = HashMap::new();
         let mut source_pois = Keyed::new(merging);
@@ -175,13 +182,36 @@ pub fn harvest(
                 Element::Node(n) => {
                     source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
+                    if !nodes.contains_key(&n.id()) {
+                        capture_crossing(n.id(), n.tags(), &mut routing);
+                    }
                 }
                 Element::DenseNode(n) => {
                     source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
+                    if !nodes.contains_key(&n.id()) {
+                        capture_crossing(n.id(), n.tags(), &mut routing);
+                    }
                 }
                 Element::Relation(r) => {
                     let tags: HashMap<_, _> = r.tags().collect();
+                    if seen_rules.insert(r.id()) {
+                        let members: Vec<_> = r
+                            .members()
+                            .map(|member| {
+                                (
+                                    member.member_id,
+                                    match member.member_type {
+                                        RelMemberType::Node => MemberKind::Node,
+                                        RelMemberType::Way => MemberKind::Way,
+                                        RelMemberType::Relation => MemberKind::Relation,
+                                    },
+                                    member.role().unwrap_or(""),
+                                )
+                            })
+                            .collect();
+                        routing.relation(|key| tags.get(key).copied(), &members);
+                    }
                     if (tags.contains_key("wikidata") || tags.contains_key("wikipedia"))
                         && (!merging || index == 0 || seen_links.insert(r.id()))
                     {
@@ -236,7 +266,23 @@ pub fn harvest(
                     source_claimed.push(w.id());
                     let refs: Vec<_> = w.refs().collect();
                     if let Some(coords) = resolve_coords(&refs, &nodes) {
-                        push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
+                        if !routing.excluded_ways.contains(&w.id()) {
+                            let tags: HashMap<_, _> = w.tags().collect();
+                            if crate::routing::classify(tags.iter().map(|(&k, &v)| (k, v))).is_some() {
+                                if tags.keys().any(|key| key.ends_with(":conditional")) {
+                                    routing.count("ways with conditional access: uncertain modes excluded");
+                                }
+                                if tags.get("oneway").is_some_and(|v| {
+                                    !matches!(
+                                        *v,
+                                        "yes" | "1" | "true" | "-1" | "reverse" | "no" | "0" | "false" | "alternating"
+                                    )
+                                }) {
+                                    routing.count("ways with unsupported one-way direction");
+                                }
+                            }
+                            push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
+                        }
                         push_way_poi(&w, &refs, &coords, &mut way_pois);
                         if needed.contains(&w.id()) {
                             member_geom.insert(w.id(), coords);
@@ -253,7 +299,9 @@ pub fn harvest(
         way_pois.sort();
         routable.sort();
     }
-    let ways = routable.into_items();
+    let mut ways = routable.into_items();
+    routing.validate(&ways);
+    ways.retain(|way| !routing.excluded_ways.contains(&way.id));
     let mut candidates = node_pois.into_items();
     candidates.extend(way_pois.into_items());
     for relation in relations {
@@ -276,5 +324,20 @@ pub fn harvest(
     landmark_links.extend(links.into_items());
     pois.retain(|p| p.subtype != 0);
     progress.log(poi::format_counts(&pois, dropped));
-    Ok(Places { pois, links: landmark_links, ways })
+    for (reason, count) in &routing.diagnostics {
+        progress.log(format!("routing: {count} {reason}"));
+    }
+    Ok(Places { pois, links: landmark_links, ways, routing })
+}
+
+fn capture_crossing<'a>(id: i64, tags: impl Iterator<Item = (&'a str, &'a str)>, routing: &mut Routing) {
+    let tags: HashMap<_, _> = tags.collect();
+    let access = crate::routing::node_access(|key| tags.get(key).copied());
+    if access != crate::routing::ProfileAccess::OPEN {
+        routing.nodes.insert(id, access);
+        routing.count(if access.allowed == 0 { "closed crossing nodes" } else { "dismount crossing nodes" });
+    }
+    if tags.keys().any(|key| key.ends_with(":conditional")) {
+        routing.count("nodes with conditional access: uncertain modes excluded");
+    }
 }

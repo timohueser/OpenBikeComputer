@@ -1,5 +1,5 @@
 //! Place, graph and snap section encoding.
-use crate::nav::{polyline_len_m, NavGraph};
+use crate::nav::{polyline_len_m, segment_key, Incidence, NavGraph, SourceKey};
 use obc_elevation::ElevationSource;
 use obc_formats::obcm::{
     nav_edge_id, settlement_class_of, BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FILLER, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN,
@@ -14,6 +14,7 @@ use obc_map_core::serialize::{
 use obc_map_core::tree::{flatten_tree, FlattenTree, TreeWalk};
 use obc_map_scene::ground_dist_m;
 use obc_places::metadata::{table_row, Poi};
+use obc_places::routing::ProfileAccess;
 use std::io;
 
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
@@ -248,6 +249,9 @@ struct WireNeighbor {
     cost_m: u32,
     way_kind: u8,
     ascent_m: u16,
+    access: ProfileAccess,
+    incidence: Incidence,
+    target_requires_context: bool,
 }
 
 /// A junction node ready to serialize: absolute µdeg coords, its dense id, and its capped neighbor
@@ -257,6 +261,8 @@ struct NavPoint {
     lon: i32,
     id: u32,
     neighbors: Vec<WireNeighbor>,
+    access: ProfileAccess,
+    source_key: SourceKey,
 }
 
 impl NavPoint {
@@ -281,6 +287,10 @@ fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
     out.extend_from_slice(&p.id.to_le_bytes());
     debug_assert!(p.neighbors.len() <= NAV_MAX_DEGREE, "degree capped before packing");
     out.push(p.neighbors.len() as u8);
+    out.extend([p.access.allowed, p.access.pushing]);
+    for key in p.source_key {
+        out.extend(key.to_le_bytes());
+    }
     for n in &p.neighbors {
         let dlat = n.lat as i64 - p.lat as i64;
         let dlon = n.lon as i64 - p.lon as i64;
@@ -297,6 +307,13 @@ fn pack_nav_record(p: &NavPoint, out: &mut Vec<u8>) {
         out.extend_from_slice(&(n.cost_m.min(u16::MAX as u32) as u16).to_le_bytes());
         out.push(n.way_kind);
         out.extend_from_slice(&n.ascent_m.to_le_bytes());
+        out.extend([n.access.allowed, n.access.pushing]);
+        out.extend(
+            (n.incidence.forbidden
+                | (u32::from(n.incidence.port) << 24)
+                | (u32::from(n.target_requires_context) << 29))
+                .to_le_bytes(),
+        );
     }
 }
 
@@ -412,7 +429,7 @@ impl FlattenBinnedTree for NavTreeNode {
 fn build_nav_tree(points: Vec<NavPoint>, bbox: (i64, i64, i64, i64), chunk_size: usize) -> NavTreeNode {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let packed: usize = points.iter().map(NavPoint::record_len).sum();
-    if packed <= chunk_size || max_lon - min_lon < 10 || max_lat - min_lat < 10 {
+    if packed <= chunk_size || (max_lon - min_lon <= 1 && max_lat - min_lat <= 1) {
         return NavTreeNode::Leaf(points);
     }
     let mid_lon = (min_lon + max_lon).div_euclid(2);
@@ -449,6 +466,8 @@ struct WorkEdge {
     polyline: Vec<(i32, i32)>,
     cost_m: u32,
     kind: u8,
+    access: [ProfileAccess; 2],
+    incidences: [Incidence; 2],
 }
 
 /// One interior lookup anchor. It is deliberately not a graph node: the coordinate only gets the
@@ -497,7 +516,7 @@ fn append_snap_points(edge: &WorkEdge, edge_id: u32, out: &mut Vec<SnapPoint>) {
 
 fn build_snap_tree(points: Vec<SnapPoint>, bbox: (i64, i64, i64, i64)) -> SnapTreeNode {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    if points.len() * NAV_SNAP_RECORD_LEN <= NAV_CHUNK_SIZE || max_lon - min_lon < 10 || max_lat - min_lat < 10 {
+    if points.len() * NAV_SNAP_RECORD_LEN <= NAV_CHUNK_SIZE || (max_lon - min_lon <= 1 && max_lat - min_lat <= 1) {
         return SnapTreeNode::Leaf(points);
     }
     let mid_lon = (min_lon + max_lon).div_euclid(2);
@@ -575,6 +594,7 @@ fn pack_edge_record(e: &WorkEdge, elevation_complete: bool, out: &mut Vec<u8>) {
     out.push(e.kind);
     out.extend_from_slice(&e.polyline[0].1.to_le_bytes()); // anchor lat
     out.extend_from_slice(&e.polyline[0].0.to_le_bytes()); // anchor lon
+    out.extend([e.access[0].allowed, e.access[0].pushing, e.access[1].allowed, e.access[1].pushing]);
     for w in e.polyline.windows(2) {
         let dlat = w[1].1 - w[0].1;
         let dlon = w[1].0 - w[0].0;
@@ -626,9 +646,8 @@ impl EdgeIds {
 /// Graph normalizations happen here, on working copies, so the caller's [`NavGraph`] is untouched.
 /// Polylines are densified, and an edge whose record would overflow one chunk, or whose piece would
 /// span more than [`NAV_MAX_NEIGHBOR_DELTA`], is split at a vertex into pieces joined by synthetic
-/// degree-2 nodes, so no record straddles a chunk and every neighbor delta fits `i16`. A node keeps
-/// its first [`NAV_MAX_DEGREE`] adjacency entries in edge-pool order and the packer warns about the
-/// rest. A self-loop edge contributes one adjacency entry, not two.
+/// degree-2 nodes, so no record straddles a chunk and every neighbor delta fits `i16`. Closed
+/// geometry is split into oriented pieces. Unsupported degree or leaf overflow rejects the graph.
 ///
 /// `terrain` is where `Ascent M` comes from. It is sampled after every split, over each final
 /// piece's own polyline, because an edge's total climb cannot be divided among its pieces after the
@@ -649,19 +668,51 @@ pub fn serialize_nav_section(
     // R1 assigns dense ids in push order — the serializer indexes `coords` by id.
     debug_assert!(graph.nodes.iter().enumerate().all(|(i, n)| n.id as usize == i), "node ids are dense");
     let mut coords: Vec<(i32, i32)> = graph.nodes.iter().map(|n| n.coord).collect();
+    let mut keys: Vec<_> = graph.nodes.iter().map(|n| n.source_key).collect();
+    let mut crossing: Vec<_> = graph.nodes.iter().map(|n| n.access).collect();
+    let mut requires_context: Vec<_> = graph
+        .nodes
+        .iter()
+        .map(|n| n.requires_context || n.access.allowed & 15 != 15 || n.access.pushing != 0)
+        .collect();
+    let polar_lat = global_bbox.1.abs().max(global_bbox.3.abs()).min(90_000_000) as f64 * 1e-6;
+    let lon_mm_per_udeg = (111.0 * polar_lat.to_radians().cos()).floor().clamp(0.0, 111.0) as u8;
+    let bound = |a, b| obc_formats::obcm::nav_distance_bound_mm(a, b, lon_mm_per_udeg).div_ceil(1000) as u32;
 
     // Densify, then split anything over one chunk's worth of points or whose piece would span more
     // than the i16-delta bound. Splitting appends synthetic nodes, so it runs before adjacency.
     let mut edges: Vec<WorkEdge> = Vec::with_capacity(graph.edges.len());
     for e in &graph.edges {
-        let poly = densify_polyline(&e.polyline);
+        let closed = e.polyline.first() == e.polyline.last();
+        assert!(!closed || e.polyline.iter().any(|point| point != &e.polyline[0]), "degenerate self-loop geometry");
+        assert_eq!(e.vertex_keys.len(), e.polyline.len(), "edge source keys parallel its geometry");
+        let mut poly = Vec::new();
+        let mut vertex_keys = Vec::new();
+        for (index, pair) in e.polyline.windows(2).enumerate() {
+            let segment = densify_polyline(pair);
+            let source = segment_key(e.way_id, e.vertex_keys[index], e.vertex_keys[index + 1]);
+            for (point, &coord) in segment.iter().enumerate().take(segment.len() - 1) {
+                poly.push(coord);
+                vertex_keys.push(if point == 0 { e.vertex_keys[index] } else { source });
+            }
+        }
+        poly.push(*e.polyline.last().expect("edge has geometry"));
+        vertex_keys.push(*e.vertex_keys.last().expect("edge has source identity"));
         // Fast path: a short polyline whose endpoints already fit the i16 neighbor delta. A
         // hand-built graph may not, so the span is re-checked rather than trusted.
         let (a, z) = (poly[0], *poly.last().unwrap());
         let span_ok = (a.0 as i64 - z.0 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA
             && (a.1 as i64 - z.1 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA;
-        if poly.len() <= NAV_MAX_EDGE_PTS && span_ok {
-            edges.push(WorkEdge { a: e.a, b: e.b, polyline: poly, cost_m: e.length_m, kind: e.kind });
+        if !closed && poly.len() <= NAV_MAX_EDGE_PTS && span_ok {
+            edges.push(WorkEdge {
+                a: e.a,
+                b: e.b,
+                polyline: poly,
+                cost_m: e.length_m.max(bound(a, z)),
+                kind: e.kind,
+                access: e.access,
+                incidences: e.incidences,
+            });
             continue;
         }
         // Walk the long polyline in pieces bounded by both the chunk point cap and the i16 endpoint
@@ -671,7 +722,16 @@ pub fn serialize_nav_section(
         let mut start = 0usize;
         let mut from = e.a;
         while start < poly.len() - 1 {
-            let max_end = (start + NAV_MAX_EDGE_PTS - 1).min(poly.len() - 1);
+            let max_end = if closed && start == 0 {
+                let middle = (poly.len() / 2).max(1).min(start + NAV_MAX_EDGE_PTS - 1);
+                if poly[middle] == poly[0] {
+                    poly.iter().position(|point| point != &poly[0]).unwrap().min(start + NAV_MAX_EDGE_PTS - 1)
+                } else {
+                    middle
+                }
+            } else {
+                (start + NAV_MAX_EDGE_PTS - 1).min(poly.len() - 1)
+            };
             let mut end = start + 1;
             while end < max_end {
                 let dlon = (poly[end + 1].0 as i64 - poly[start].0 as i64).abs();
@@ -687,10 +747,25 @@ pub fn serialize_nav_section(
             } else {
                 let id = coords.len() as u32;
                 coords.push(poly[end]);
+                keys.push(vertex_keys[end]);
+                crossing.push(ProfileAccess::OPEN);
+                requires_context.push(false);
                 id
             };
-            let cost_m = polyline_len_m(&piece);
-            edges.push(WorkEdge { a: from, b: to, polyline: piece, cost_m, kind: e.kind });
+            let cost_m = polyline_len_m(&piece).max(bound(piece[0], *piece.last().unwrap()));
+            let incidences = [
+                if start == 0 { e.incidences[0] } else { Incidence { port: 1, forbidden: 0 } },
+                if end == poly.len() - 1 { e.incidences[1] } else { Incidence { port: 0, forbidden: 0 } },
+            ];
+            edges.push(WorkEdge {
+                a: from,
+                b: to,
+                polyline: piece,
+                cost_m,
+                kind: e.kind,
+                access: e.access,
+                incidences,
+            });
             from = to;
             start = end;
         }
@@ -731,44 +806,67 @@ pub fn serialize_nav_section(
         "the edge pool's {edge_chunk_count} chunks exceed the {NAV_EDGE_MAX_CHUNKS} an Edge Id can name (§8.4)"
     );
 
-    // Adjacency with inline neighbor coords, capped at NAV_MAX_DEGREE.
+    for edge in &edges {
+        requires_context[edge.a as usize] |= edge.incidences[0].forbidden != 0;
+        requires_context[edge.b as usize] |= edge.incidences[1].forbidden != 0;
+    }
+
+    // Both physical incidences remain visible even when one travel direction is forbidden.
     let mut adj: Vec<Vec<WireNeighbor>> = (0..coords.len()).map(|_| Vec::new()).collect();
-    let mut truncated = 0usize;
     for ((e, &edge_id), &(ascent_ab, ascent_ba, _)) in edges.iter().zip(&edge_ids).zip(&edge_facts) {
-        // The two entries of an edge differ in exactly one field: `a->b` books the climb of riding
-        // the polyline forwards, `b->a` the climb of riding it backwards. A self-loop writes the
-        // forward one only, matching its single entry.
-        let mut push = |from: u32, to: u32, ascent_m: u16| {
+        // Each direction retains its own climb, access, source port, and turn exclusions.
+        let mut push = |from: u32, to: u32, ascent_m: u16, direction: usize| {
             let list = &mut adj[from as usize];
-            if list.len() >= NAV_MAX_DEGREE {
-                truncated += 1;
-                return;
-            }
+            assert!(list.len() < NAV_MAX_DEGREE, "navigation junction degree exceeds {NAV_MAX_DEGREE}");
             let (lon, lat) = coords[to as usize];
-            list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m, way_kind: e.kind, ascent_m });
+            list.push(WireNeighbor {
+                id: to,
+                lat,
+                lon,
+                edge_id,
+                cost_m: e.cost_m,
+                way_kind: e.kind,
+                ascent_m,
+                access: e.access[direction],
+                incidence: e.incidences[direction],
+                target_requires_context: requires_context[to as usize],
+            });
         };
-        push(e.a, e.b, ascent_ab);
+        push(e.a, e.b, ascent_ab, 0);
         if e.a != e.b {
-            push(e.b, e.a, ascent_ba);
+            push(e.b, e.a, ascent_ba, 1);
         }
     }
-    if truncated > 0 {
-        eprintln!("warning: {truncated} adjacency entrie(s) dropped at the degree cap ({NAV_MAX_DEGREE})");
+    for neighbors in &mut adj {
+        let mut ports = 0u32;
+        for neighbor in neighbors.iter().filter(|n| n.incidence.port != u8::MAX) {
+            let port = neighbor.incidence.port;
+            assert!(port < NAV_MAX_DEGREE as u8 && ports & (1 << port) == 0, "duplicate or invalid source turn port");
+            ports |= 1 << port;
+        }
+        for neighbor in neighbors.iter_mut().filter(|n| n.incidence.port == u8::MAX) {
+            let port = (!ports).trailing_zeros() as u8;
+            neighbor.incidence.port = port;
+            ports |= 1 << port;
+        }
     }
 
     let points: Vec<NavPoint> = coords
         .iter()
         .zip(adj)
         .enumerate()
-        .map(|(id, (&(lon, lat), neighbors))| NavPoint { lat, lon, id: id as u32, neighbors })
+        .map(|(id, (&(lon, lat), neighbors))| NavPoint {
+            lat,
+            lon,
+            id: id as u32,
+            neighbors,
+            access: crossing[id],
+            source_key: keys[id],
+        })
         .collect();
     let root = build_nav_tree(points, global_bbox, NAV_CHUNK_SIZE);
     let (index, node_count, chunks, chunk_count, dropped) = flatten_nav_tree(&root);
-    if dropped > 0 {
-        // Co-located junctions inside the 10-µdeg split floor: effectively impossible in real
-        // OSM, but never silent.
-        eprintln!("warning: {dropped} nav node record(s) dropped (leaf overflow at the split floor)");
-    }
+    assert_eq!(dropped, 0, "navigation leaf overflow: source junctions cannot be omitted");
 
     // The lookup-only interior anchors name the final pool ids, so they are generated after every
     // geometry split and after pool placement. A short edge contributes none: its endpoints in the
@@ -782,9 +880,7 @@ pub fn serialize_nav_section(
     } else {
         flatten_snap_tree(&build_snap_tree(snap_points, global_bbox))
     };
-    if snap_dropped > 0 {
-        eprintln!("warning: {snap_dropped} nav snap anchor(s) dropped (leaf overflow at the split floor)");
-    }
+    assert_eq!(snap_dropped, 0, "navigation snap leaf overflow: source geometry cannot be omitted");
 
     let body = NavBody {
         index: &index,
@@ -797,6 +893,7 @@ pub fn serialize_nav_section(
         snap_node_count,
         snap_chunks: &snap_chunks,
         snap_chunk_count,
+        lon_mm_per_udeg,
     };
     emit_nav_section(section_offset, &profile_table, Some(&body), profiles.len())
 }

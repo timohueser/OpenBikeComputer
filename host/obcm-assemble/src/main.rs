@@ -12,6 +12,8 @@
 //! `cells.json` is the cutter's provenance sidecar, which already states every cell's band, path
 //! and `partial` flag plus the schema they were baked at, so the common case needs no second
 //! document. `--schema` overrides it, which is what a hosted catalog hands in.
+//! All navigation cells must come from one complete source set and its snapshots. Use one bake
+//! output or pinned catalog; the CLI cannot detect mixed source context in a hand-edited sidecar.
 //!
 //! The `mem-profile` feature — off by default, native only — wraps the global allocator and the
 //! CLI's [`Clock`], so every phase boundary the engine ticks also snapshots the peak since the
@@ -430,7 +432,9 @@ USAGE:
     obcm-assemble restamp --map <path.obcm> --schema <schema.json> --light-skin <skin.json> --dark-skin <skin.json>
 
 REQUIRED:
-    --cells <path>          the cutter's provenance sidecar (obc-pack cut)
+    --cells <path>          the cutter's provenance sidecar (obc-pack cut), from one bake or pinned
+                            catalog. Navigation cells must share a complete source set and snapshots;
+                            mixed source context in a hand-edited sidecar cannot be detected
     --light-skin <path>     the light skin to stamp (OBCC §5, or an id-keyed style table)
     --dark-skin <path>      the dark skin to stamp (OBCC §5, or an id-keyed style table)
     --out <path>            the map file to write

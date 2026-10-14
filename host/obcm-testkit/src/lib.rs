@@ -331,7 +331,7 @@ pub fn nav_directory(
     d.extend_from_slice(&chunk_size.to_le_bytes());
     d.extend_from_slice(&scaled(profile_table_offset).to_le_bytes());
     d.push(profile_count);
-    d.push(0); // reserved — a field, so `0`, unlike a gap
+    d.push(0); // Longitude scale; latitude retains the fixed integer bound.
 
     // Testkit graphs carry no long-edge lookup anchors. Point the empty snap region just past the
     // edge pool, matching the production writer's empty-index convention. 512 is a multiple of `U`
@@ -395,17 +395,63 @@ pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
 /// in it.
 pub type NavNeighborSpec = (u32, i32, i32, u32, u32, u8, u16);
 
-/// Pack one variable-length junction record: `lat i32, lon i32, node_id u32, degree u8`, then one
-/// 17-byte entry per neighbor (`id u32, dlat i16, dlon i16, edge_id u32, cost_m u16, way_kind u8,
-/// ascent_m u16`). The record head coords are absolute µdeg, latitude first; each neighbor's coord
-/// is stored as an `i16` delta from this record's own.
+/// Pack a junction with unrestricted crossings and departures. Ports follow neighbor order.
 pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighborSpec]) -> Vec<u8> {
+    let rules: Vec<_> = (0..neighbors.len()).map(|port| (0x0f, 0, port as u8, 0)).collect();
+    pack_nav_record_with_rules(lat, lon, node_id, neighbors, 0x0f, 0, [0, u64::from(node_id), 0], &rules)
+}
+
+/// Pack exact junction metadata. Rules parallel neighbors as `(allowed, pushing, port, forbidden)`.
+/// Source keys identify OSM junctions or original segments across independently cut cells.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_nav_record_with_rules(
+    lat: i32,
+    lon: i32,
+    node_id: u32,
+    neighbors: &[NavNeighborSpec],
+    crossing_profile_mask: u8,
+    crossing_push_mask: u8,
+    source_key: [u64; 3],
+    rules: &[(u8, u8, u8, u32)],
+) -> Vec<u8> {
+    let rules: Vec<_> = rules.iter().map(|&(a, p, port, forbidden)| (a, p, port, forbidden, true)).collect();
+    pack_nav_record_with_context(
+        lat,
+        lon,
+        node_id,
+        neighbors,
+        crossing_profile_mask,
+        crossing_push_mask,
+        source_key,
+        &rules,
+    )
+}
+
+/// Pack exact rules plus each destination's arrival-context requirement.
+#[allow(clippy::too_many_arguments)]
+pub fn pack_nav_record_with_context(
+    lat: i32,
+    lon: i32,
+    node_id: u32,
+    neighbors: &[NavNeighborSpec],
+    crossing_profile_mask: u8,
+    crossing_push_mask: u8,
+    source_key: [u64; 3],
+    rules: &[(u8, u8, u8, u32, bool)],
+) -> Vec<u8> {
+    assert_eq!(neighbors.len(), rules.len());
     let mut rec = Vec::with_capacity(NAV_NODE_FIXED_LEN + neighbors.len() * NAV_NEIGHBOR_LEN);
     rec.extend_from_slice(&lat.to_le_bytes());
     rec.extend_from_slice(&lon.to_le_bytes());
     rec.extend_from_slice(&node_id.to_le_bytes());
     rec.push(neighbors.len() as u8);
-    for &(id, nlat, nlon, edge_id, cost_m, way_kind, ascent_m) in neighbors {
+    rec.extend([crossing_profile_mask, crossing_push_mask]);
+    for key in source_key {
+        rec.extend(key.to_le_bytes());
+    }
+    for (&(id, nlat, nlon, edge_id, cost_m, way_kind, ascent_m), &(allowed, pushing, port, forbidden, context)) in
+        neighbors.iter().zip(rules)
+    {
         rec.extend_from_slice(&id.to_le_bytes());
         rec.extend_from_slice(&((nlat - lat) as i16).to_le_bytes());
         rec.extend_from_slice(&((nlon - lon) as i16).to_le_bytes());
@@ -413,6 +459,8 @@ pub fn pack_nav_record(lat: i32, lon: i32, node_id: u32, neighbors: &[NavNeighbo
         rec.extend_from_slice(&(cost_m as u16).to_le_bytes());
         rec.push(way_kind);
         rec.extend_from_slice(&ascent_m.to_le_bytes());
+        rec.extend([allowed, pushing]);
+        rec.extend(((u32::from(port) << 24) | forbidden | (u32::from(context) << 29)).to_le_bytes());
     }
     rec
 }
@@ -436,12 +484,26 @@ pub fn pack_nav_chunk(records: &[Vec<u8>], chunk_size: usize) -> Vec<u8> {
 /// An `Edge Id` is the packed `(chunk, ordinal)` pair, so a caller writing one into an adjacency
 /// entry or a snap anchor builds it with [`nav_edge_id`] rather than from a byte offset.
 pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]) -> Vec<u8> {
+    pack_nav_edge_record_with_rules(length_m, way_kind, polyline, 0x0f, 0, 0x0f, 0)
+}
+
+/// Pack an edge with directional profile eligibility and pushing requirements.
+pub fn pack_nav_edge_record_with_rules(
+    length_m: u32,
+    way_kind: u8,
+    polyline: &[(i32, i32)],
+    profile_mask_ab: u8,
+    push_mask_ab: u8,
+    profile_mask_ba: u8,
+    push_mask_ba: u8,
+) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
     rec.extend_from_slice(&length_m.to_le_bytes());
     rec.extend_from_slice(&(polyline.len() as u16).to_le_bytes());
     rec.push(way_kind);
     rec.extend_from_slice(&polyline[0].0.to_le_bytes()); // anchor lat
     rec.extend_from_slice(&polyline[0].1.to_le_bytes()); // anchor lon
+    rec.extend([profile_mask_ab, push_mask_ab, profile_mask_ba, push_mask_ba]);
     for w in polyline.windows(2) {
         rec.extend_from_slice(&((w[1].0 - w[0].0) as i16).to_le_bytes()); // dlat
         rec.extend_from_slice(&((w[1].1 - w[0].1) as i16).to_le_bytes()); // dlon

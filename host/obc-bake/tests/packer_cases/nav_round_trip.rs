@@ -27,6 +27,12 @@ use obc_map_core::terrain::TerrainSet;
 use obc_network::nav::{Edge, NavGraph, Node};
 use obc_reader::{MapCache, MapTables, NavNeighbor, Reader, SliceSource};
 
+fn edge(a: u32, b: u32, polyline: Vec<(i32, i32)>, length_m: u32, kind: u8) -> Edge {
+    let mut edge = Edge::new(a, b, polyline, kind);
+    edge.length_m = length_m;
+    edge
+}
+
 /// Global bbox `(min_lon, min_lat, max_lon, max_lat)` µdeg — roomy enough that the
 /// node quadtree stays a single leaf for the small fixtures and subdivides for the
 /// dense ones.
@@ -86,7 +92,7 @@ fn decode_all(bytes: &[u8]) -> BTreeMap<u32, Decoded> {
 /// Node-chunk fill rate + the shared-chunk signature. Walks the whole graph counting **total**
 /// visit callbacks (which double-count records in a chunk shared by multiple visited leaves) and
 /// distinct node ids, and computes `payload / (chunk_count × 512)` where `payload` is the sum of
-/// every distinct record's on-wire size (`13 + 17 × degree`). Returns `(fill_ratio, total_visits,
+/// every distinct record's on-wire size from the format constants. Returns `(fill_ratio, total_visits,
 /// distinct, chunk_count)`.
 fn nav_fill_and_sharing(bytes: &[u8]) -> (f64, usize, usize, usize) {
     let src = SliceSource(bytes);
@@ -123,17 +129,17 @@ fn four_way_crossing_round_trips_identically() {
     // (densification itself is pinned separately below).
     let cross = (500_000, 500_000);
     let arms = [(520_000, 500_000), (480_000, 500_000), (500_000, 520_000), (500_000, 480_000)];
-    let mut nodes = vec![Node { id: 0, coord: cross }];
+    let mut nodes = vec![Node::new(0, cross)];
     let mut edges = Vec::new();
     for (k, &end) in arms.iter().enumerate() {
         let id = (k + 1) as u32;
-        nodes.push(Node { id, coord: end });
+        nodes.push(Node::new(id, end));
         // One interior shape point halfway, nudged off-axis so geometry is distinctive.
         let mid = ((cross.0 + end.0) / 2, (cross.1 + end.1) / 2 + 1_000);
         // A distinctive packed way_kind per arm (surface 1 = paved, highway = k) so the kind byte's
         // round-trip is pinned end-to-end.
         let kind = (1u8 << 5) | (k as u8);
-        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32, kind });
+        edges.push(edge(0, id, vec![cross, mid, end], 22_000 + k as u32, kind));
     }
     let graph = NavGraph { nodes, edges: edges.clone() };
     let bytes = map_with(&graph);
@@ -173,16 +179,15 @@ fn four_way_crossing_round_trips_identically() {
 #[test]
 fn the_edge_pool_is_in_emission_order() {
     // A 3×3 lattice whose edges are listed from the north-east corner backwards.
-    let nodes: Vec<Node> = (0..9u32)
-        .map(|k| Node { id: k, coord: (100_000 + 1_000 * (k % 3) as i32, 100_000 + 1_000 * (k / 3) as i32) })
-        .collect();
+    let nodes: Vec<Node> =
+        (0..9u32).map(|k| Node::new(k, (100_000 + 1_000 * (k % 3) as i32, 100_000 + 1_000 * (k / 3) as i32))).collect();
     let mut edges = Vec::new();
     for k in (0..9u32).rev() {
         let right = (k % 3 != 2).then_some(k + 1);
         let up = (k < 6).then_some(k + 3);
         for n in [right, up].into_iter().flatten() {
             let polyline = vec![nodes[n as usize].coord, nodes[k as usize].coord];
-            edges.push(Edge { a: n, b: k, polyline, length_m: 1_000, kind: 0 });
+            edges.push(edge(n, k, polyline, 1_000, 0));
         }
     }
     let decoded = decode_all(&map_with(&NavGraph { nodes, edges }));
@@ -224,14 +229,8 @@ fn empty_graph_round_trips() {
 #[test]
 fn populated_nav_chunk_regions_are_sector_aligned() {
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: (100_000, 100_000) }, Node { id: 1, coord: (110_000, 110_000) }],
-        edges: vec![Edge {
-            a: 0,
-            b: 1,
-            polyline: vec![(100_000, 100_000), (110_000, 110_000)],
-            length_m: 1_560,
-            kind: 0,
-        }],
+        nodes: vec![Node::new(0, (100_000, 100_000)), Node::new(1, (110_000, 110_000))],
+        edges: vec![edge(0, 1, vec![(100_000, 100_000), (110_000, 110_000)], 1_560, 0)],
     };
     let bytes = map_with(&graph);
     let src = SliceSource(&bytes);
@@ -268,10 +267,8 @@ fn long_segment_edge_is_densified() {
     // endpoint span (31 000) still fits the i16 neighbor delta, so the edge densifies **without**
     // splitting into synthetic-node pieces.
     let b = (100_000, 131_000);
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 3_451, kind: 0 }],
-    };
+    let graph =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, vec![a, b], 3_451, 0)] };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
     assert_eq!(decoded.len(), 2, "no synthetic split — the endpoints stay within the i16 bound");
@@ -294,20 +291,22 @@ fn long_segment_edge_is_densified() {
 #[test]
 fn over_long_edge_splits_at_a_synthetic_node() {
     // 200 points, 100 µdeg apart: nothing densifies, but 200 > NAV_MAX_EDGE_PTS
-    // (125 at the 512-byte chunk) forces one split.
+    // forces one split at the current record capacity.
     let polyline: Vec<(i32, i32)> = (0..200).map(|i| (100_000 + i * 100, 500_000)).collect();
     let (a, b) = (*polyline.first().unwrap(), *polyline.last().unwrap());
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: polyline.clone(), length_m: 1_478, kind: 0 }],
-    };
+    let graph =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, polyline.clone(), 1_478, 0)] };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
 
     assert_eq!(decoded.len(), 3, "one synthetic junction was inserted");
     let synth = &decoded[&2]; // the first synthetic id is nodes.len()
     assert_eq!(synth.neighbors.len(), 2, "a split point is a degree-2 junction");
-    assert_eq!(synth.coord, polyline[124], "split at the chunk-capacity vertex");
+    assert_eq!(
+        synth.coord,
+        polyline[obc_network::serialize::NAV_MAX_EDGE_PTS - 1],
+        "split at the chunk-capacity vertex"
+    );
 
     // Reconstruct: piece 0 → synth, piece 1 synth → b; shared vertex deduped.
     let e0 = decoded[&0].neighbors[0];
@@ -329,53 +328,41 @@ fn over_long_edge_splits_at_a_synthetic_node() {
     assert_eq!(e1.cost_m, len1);
 }
 
-/// A node past the degree cap keeps its first 24 arcs; the dropped arcs survive one-way through the
-/// spoke nodes' own records.
+/// Unsupported junction degree rejects the pack instead of dropping legal arcs.
 #[test]
-fn absurd_degree_node_is_capped_at_24() {
+#[should_panic(expected = "degree")]
+fn unsupported_degree_rejects_the_pack() {
     let hub = (500_000, 500_000);
-    let mut nodes = vec![Node { id: 0, coord: hub }];
+    let mut nodes = vec![Node::new(0, hub)];
     let mut edges = Vec::new();
-    for k in 1..=30u32 {
-        // Spokes stay within the i16 endpoint bound of the hub (span ≤ 30 000 µdeg), so no arc is
-        // split — the hub keeps a direct edge to each spoke and the degree cap is what limits it.
+    for k in 1..=21u32 {
         let end = (500_000 + 1_000 * k as i32, 505_000);
-        nodes.push(Node { id: k, coord: end });
-        edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k, kind: 0 });
+        nodes.push(Node::new(k, end));
+        edges.push(edge(0, k, vec![hub, end], 100 + k, 0));
     }
-    let bytes = map_with(&NavGraph { nodes, edges });
-    let decoded = decode_all(&bytes);
-
-    let hub_adj = &decoded[&0].neighbors;
-    assert_eq!(hub_adj.len(), 24, "degree capped at 24");
-    let kept: Vec<u32> = hub_adj.iter().map(|n| n.id).collect();
-    assert_eq!(kept, (1..=24).collect::<Vec<u32>>(), "the first 24 arcs (edge-pool order) are kept");
-    // Every spoke — including the 6 dropped from the hub's list — still points back.
-    for k in 1..=30u32 {
-        let back = &decoded[&k].neighbors;
-        assert_eq!(back.len(), 1, "spoke {k} keeps its arc");
-        assert_eq!(back[0].id, 0);
-    }
+    let _ = map_with(&NavGraph { nodes, edges });
 }
 
-/// A self-loop (a == b, e.g. a lollipop loop) contributes exactly ONE adjacency
-/// entry — not two — and its geometry round-trips.
+/// A closed way has two distinct incidences at its junction. Splitting the loop preserves both.
 #[test]
-fn self_loop_gets_one_adjacency_entry() {
+fn self_loop_keeps_both_junction_incidences() {
     let n = (500_000, 500_000);
     let loop_poly = vec![n, (502_000, 500_000), (502_000, 502_000), n];
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: n }],
-        edges: vec![Edge { a: 0, b: 0, polyline: loop_poly.clone(), length_m: 668, kind: 0 }],
-    };
+    let graph = NavGraph { nodes: vec![Node::new(0, n)], edges: vec![edge(0, 0, loop_poly.clone(), 668, 0)] };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
     let adj = &decoded[&0].neighbors;
-    assert_eq!(adj.len(), 1, "a self-loop is one entry, not two");
-    assert_eq!(adj[0].id, 0, "…pointing at the node itself");
-    let (poly, len) = fetch_edge(&bytes, adj[0].edge_id);
-    assert_eq!(poly, loop_poly);
-    assert_eq!(len, 668);
+    assert_eq!(decoded.len(), 2, "one interior node splits the closed geometry");
+    assert_eq!(adj.len(), 2, "both ends of the loop remain available");
+    assert!(adj.iter().all(|edge| edge.id == 1));
+    assert_ne!(adj[0].edge_id, adj[1].edge_id);
+    assert_ne!(adj[0].port, adj[1].port, "turn rules can distinguish the incidences");
+    assert_eq!(decoded[&1].neighbors.len(), 2);
+    let mut pieces: Vec<_> = adj.iter().map(|edge| fetch_edge(&bytes, edge.edge_id).0).collect();
+    pieces.sort();
+    let mut expected = vec![loop_poly[..=2].to_vec(), loop_poly[2..].to_vec()];
+    expected.sort();
+    assert_eq!(pieces, expected, "the complete source loop survives the split");
 }
 
 /// Many co-located-ish junctions force the node quadtree to subdivide (multiple
@@ -392,15 +379,9 @@ fn dense_graph_subdivides_and_point_query_descends() {
     for gy in 0..12 {
         for gx in 0..12 {
             let id = (gy * 12 + gx) as u32;
-            nodes.push(Node { id, coord: at(gx, gy) });
+            nodes.push(Node::new(id, at(gx, gy)));
             if gx > 0 {
-                edges.push(Edge {
-                    a: id - 1,
-                    b: id,
-                    polyline: vec![at(gx - 1, gy), at(gx, gy)],
-                    length_m: 5_566,
-                    kind: 0,
-                });
+                edges.push(edge(id - 1, id, vec![at(gx - 1, gy), at(gx, gy)], 5_566, 0));
             }
         }
     }
@@ -442,8 +423,8 @@ fn profile_table_round_trips() {
     let a = (100_000, 100_000);
     let b = (100_000, 110_000);
     let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: (3 << 5) | 12 }],
+        nodes: vec![Node::new(0, a), Node::new(1, b)],
+        edges: vec![edge(0, 1, vec![a, b], 1_113, (3 << 5) | 12)],
     };
     // Profile 0: highway[12] = 4.0× (64), highway[4] forbidden (0), surface[3] = 5.0× (80), rest 1.0×.
     let mut hw = [16u8; 32];
@@ -479,7 +460,7 @@ fn profile_table_round_trips() {
 }
 
 /// Build a `g × g` grid of well-separated **isolated** 2-node edges (every node degree 1, so a
-/// record is the minimal 28 bytes). Spreading them across the bbox makes the node quadtree
+/// record contains one neighbor). Spreading them across the bbox makes the node quadtree
 /// subdivide into many small leaves — the grimsel-like shape where bin-packing wins (v8 would give
 /// each such leaf its own mostly-empty chunk).
 fn grid_graph(g: i32) -> NavGraph {
@@ -493,9 +474,9 @@ fn grid_graph(g: i32) -> NavGraph {
             let base_y = 20_000 + gy * 40_000;
             let a = (base_x, base_y);
             let b = (base_x + 400, base_y);
-            nodes.push(Node { id, coord: a });
-            nodes.push(Node { id: id + 1, coord: b });
-            edges.push(Edge { a: id, b: id + 1, polyline: vec![a, b], length_m: 44, kind: 8 });
+            nodes.push(Node::new(id, a));
+            nodes.push(Node::new(id + 1, b));
+            edges.push(edge(id, id + 1, vec![a, b], 44, 8));
             id += 2;
         }
     }
@@ -619,8 +600,8 @@ fn arc(decoded: &BTreeMap<u32, Decoded>, from: u32, to: u32) -> NavNeighbor {
 /// A two-node graph joined by one straight edge between the given coords.
 fn two_node_graph(a: (i32, i32), b: (i32, i32), length_m: u32) -> NavGraph {
     NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m, kind: (1 << 5) | 10 }],
+        nodes: vec![Node::new(0, a), Node::new(1, b)],
+        edges: vec![edge(0, 1, vec![a, b], length_m, (1 << 5) | 10)],
     }
 }
 
@@ -764,10 +745,8 @@ fn reversing_a_polyline_swaps_the_two_directions_exactly() {
 
     let (a, b) = ((500_000, 486_000), (500_000, 514_000));
     let poly = vec![a, (500_000, 495_000), (500_000, 507_000), b];
-    let graph = NavGraph {
-        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: poly.clone(), length_m: 3_115, kind: 8 }],
-    };
+    let graph =
+        NavGraph { nodes: vec![Node::new(0, a), Node::new(1, b)], edges: vec![edge(0, 1, poly.clone(), 3_115, 8)] };
     let bytes = map_with_terrain(&graph, &default_profiles(), &mut terrain);
     let decoded = decode_all(&bytes);
 

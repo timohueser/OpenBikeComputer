@@ -41,7 +41,11 @@ pub fn write_cells(
     output: &Path,
     progress: &Progress,
 ) -> Result<(), String> {
-    let cut = if job.band.has_nav() { Some(prepare_nav(&places.ways, job.band.cell_log2, progress)?) } else { None };
+    let cut = if job.band.has_nav() {
+        Some(prepare_nav(&places.ways, &places.routing, job.band.cell_log2, progress)?)
+    } else {
+        None
+    };
     let buckets = if job.band.has_poi() { bucket_pois(&places.pois, job.band.cell_log2) } else { Default::default() };
     let tree = output.with_file_name("cut");
     let styles = config.styles();
@@ -54,7 +58,7 @@ pub fn write_cells(
             .unwrap_or_default();
         let graph = cut
             .as_ref()
-            .map_or_else(NavGraph::default, |cut| cut.cell_graph(*cell, config.routing.min_component_edges));
+            .map_or_else(|| Ok(NavGraph::default()), |cut| cut.cell_graph(*cell, config.routing.min_component_edges))?;
         let mut sampler = terrain.map(|set| set.sampler_for(Some(cell.square()))).transpose()?;
         let mut null = NullElevation;
         let terrain: &mut dyn ElevationSource = match &mut sampler {

@@ -13,11 +13,13 @@
     import { kindLabel } from '../../lib/planner/search/presentation';
     import type { SearchPlace } from '../../lib/planner/search/types';
     import type { RoutePlan } from '../../lib/planner/signed-route-plan';
-    import type { Bounds, CatalogRecord, RouteShape, RouteSort } from '../../lib/planner/signed-routes';
-    import type { BikeType } from '../../lib/planner/riding-profiles';
+    import { catalogProfile, type Bounds, type CatalogRecord, type RouteShape, type RouteSort } from '../../lib/planner/signed-routes';
+    import { presetDescription, presetName, type BikeType } from '../../lib/planner/riding-profiles';
 
-    let { finder, activity, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
+    let { finder, activity, profiles, onRetryProfiles, theme = 'light', current = null, placeName, findPlaces, onClose, onPlan, attribution }: {
         finder: RouteFinder;
+        profiles: string[] | 'loading' | 'failed';
+        onRetryProfiles: () => void;
         /** The map data credit of the release. */
         attribution: string;
         activity: BikeType;
@@ -59,8 +61,8 @@
     const reading = $derived(low === 0 ? `Up to ${grade(high)}.` : high === 3 ? `Must include ${grade(low)} or harder.`
         : low === high ? `Hardest part ${grade(low)}.` : `Must include ${grade(low)} or harder, up to ${grade(high)}.`);
     const readingDetail = $derived(low === 0
-        ? `Routes whose hardest part is ${gradeList(0, high)}. A ${activity === 'mtb' ? 'trail' : 'path'} without a grade counts as ${grade(0)}.`
-        : `Only routes with a part graded ${gradeList(low, high)}.`);
+        ? `Routes whose hardest mapped part is ${gradeList(0, high)}. Routes without grades also appear; their difficulty is unknown.`
+        : `Only routes with a part mapped as ${gradeList(low, high)}.`);
     const range = ({ from, to }: Bounds, unit: string) => from !== undefined && to !== undefined ? `${from}–${to} ${unit}`
         : from !== undefined ? `${from} ${unit} or more` : to !== undefined ? `up to ${to} ${unit}` : '';
     const hardestText = $derived(low === 0 ? `up to ${grade(high)}` : low === high ? grade(low) : `${grade(low)} or harder`);
@@ -117,7 +119,10 @@
         return detail.route.loop ? from ? `Starts and ends at ${from}` : '' : from && to ? `${from} → ${to}` : '';
     });
     const network = (route: CatalogRecord) => levels[route.rank] ? `${levels[route.rank]} ${kindWords[route.kind]}` : `${kindWords[route.kind][0].toUpperCase()}${kindWords[route.kind].slice(1)}`;
-    const rowLine = (route: CatalogRecord) => [kindLine(route, true), levels[route.rank], graded ? `Hardest ${grade(route.hardest ?? 0)}` : ''].filter(Boolean).join(' · ');
+    const routeGrade = (route: CatalogRecord, index: number) => route.kind === 'mtb' ? `S${index}` : `T${index + 1}`;
+    const rowLine = (route: CatalogRecord) => [kindLine(route, true), levels[route.rank], route.kind !== 'bicycle'
+        ? route.hardest === undefined ? 'Difficulty unknown' : `Hardest ${routeGrade(route, route.hardest)}` : '',
+        presetDescription(presetName(route.profile)) ? `Requires ${presetName(route.profile)}` : ''].filter(Boolean).join(' · ');
     const title = (route: CatalogRecord) => route.name ?? route.ref ?? 'Unnamed route';
 
     function bound(key: 'distanceKm' | 'climbM', end: 'from' | 'to', value: string) {
@@ -155,7 +160,8 @@
                 <h3>{title(route)}<small>{[kindLine(route), detail.distanceM === undefined ? '' : `${km(detail.distanceM)} from ${place}`].filter(Boolean).join(' · ')}</small></h3>
             </div>
             <p class="kind">{route.stage && detail.family ? `Official stage ${route.stage} of ${detail.family.stages!.length} · ${title(detail.family)}, ${km(detail.family.length_m)} · ` : ''}{network(route)}</p>
-            <RouteStats {...figures(route)} walking={activity === 'hiking'} />
+            {#if presetDescription(presetName(route.profile))}<p class="description"><strong>Requires {presetName(route.profile)}.</strong> {presetDescription(presetName(route.profile))}</p>{/if}
+            <RouteStats {...figures(route)} walking={route.kind === 'hiking' || route.kind === 'foot'} />
             {#if ends}<p class="ends"><Icon name="flag" size={16} />{ends}</p>{/if}
             {#if detail.stages && detail.family}
                 <p class="sub">{title(detail.family)} stages</p>
@@ -172,12 +178,12 @@
                     {/if}
                 </ol>
             {/if}
-            {#if graded && route.grades_m}
+            {#if route.kind !== 'bicycle' && route.grades_m}
                 {@const parts = route.grades_m.flatMap((metres, i) => metres > 0 ? [{ i, metres }] : [])}
                 <div class="mix">
-                    <p class="mix-head"><strong>Grade mix</strong><span>Hardest part {grade(route.hardest ?? 0)}</span></p>
+                    <p class="mix-head"><strong>Grade mix</strong><span>{route.hardest === undefined ? 'Difficulty unknown' : `Hardest part ${routeGrade(route, route.hardest)}`}</span></p>
                     <div class="track">{#each parts as { i, metres } (i)}<i style:flex={metres} style:background={gradeColors[i]}></i>{/each}</div>
-                    <p class="legend">{#each parts as { i, metres } (i)}<span><i style:background={gradeColors[i]}></i>{grade(i)} {km(metres)}</span>{/each}</p>
+                    <p class="legend">{#each parts as { i, metres } (i)}<span><i style:background={gradeColors[i]}></i>{routeGrade(route, i)} {km(metres)}</span>{/each}</p>
                 </div>
             {/if}
             {#if route.description}<p class="description">{route.description}</p>{/if}
@@ -185,7 +191,14 @@
             {#if website}<p class="sub">Website</p><p class="operator"><a href={website} target="_blank" rel="noreferrer">{new URL(website).hostname.replace(/^www\./, '')}</a></p>{/if}
         </div>
         <footer class="plan-foot">
-            {#if plan === null}
+            {#if profiles === 'loading'}
+                <p class="note">Checking routing profiles…</p>
+            {:else if profiles === 'failed'}
+                <p class="note" role="alert">Routing profiles could not load. Check your connection and retry.</p>
+                <button type="button" class="more" onclick={onRetryProfiles}>Retry</button>
+            {:else if !profiles.includes(catalogProfile(route, activity) ?? '')}
+                <p class="note">The required routing profile is unavailable in this region.</p>
+            {:else if plan === null}
                 <p class="note">This route is too long for one plan. Choose a stage to plan it.</p>
             {:else if !plan && detail.failed}
                 <p class="note" role="alert">This route could not load. Choose a stage to plan it.</p>
@@ -239,7 +252,7 @@
                     {/each}
                 </div>
                 {#if graded}
-                    <div class="field"><span class="label">Hardest part</span>
+                    <div class="field"><span class="label">Hardest part of signed routes</span>
                         <div class="range">
                             <div class="steps" aria-hidden="true">{#each [0, 1, 2, 3] as step (step)}<span class:on={step >= low && step <= high}>{grade(step)}</span>{/each}</div>
                             <div class="rail" style:--low={low} style:--high={high}>
@@ -249,6 +262,7 @@
                         </div>
                     </div>
                     <p class="reading"><b>{reading}</b> {readingDetail}</p>
+                    <p class="reading">Filters the signed route list. Planning a result selects the preset shown in its details.</p>
                 {/if}
             </div>
             {/if}

@@ -34,7 +34,7 @@
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
-        "arena_nav": 97448,
+        "arena_nav": 97480,
         "arena_places": 129148,
         "terrain": 2152,
         "terrain_window": 24,
@@ -176,6 +176,12 @@
         "source_commit": "codex/firmware-architecture worktree based on f45f9b43a",
         "build": "cargo build --release --locked --features resource-report; rustc 1.96.0; aarch64-apple-darwin",
         "changes": "Measured App 58,568 B with durable route identities; BLE sensor manager 358 B and BLE total 24,965 B after removing the scan request signal. The shared ride writer keeps the 570 B buffer. Resource limits stay unchanged."
+      },
+      "_routing_correctness_allocation_measurement": {
+        "source_commit": "99d5d83c3 with local planner and device routing changes",
+        "build": "cargo build --release --locked --bin obc-fw-nrf54l --features resource-report; x86_64-unknown-linux-gnu, rustc 1.99.0; measured 2026-10-14",
+        "changes": "Navigation arena +32 B for the integer distance-bound search context, endpoint arrival rules and alignment. NavScratch is 39,956 B with 1,536 entries of 24 B. The 40 KiB search limit and all resource ceilings stay unchanged.",
+        "verification": "One head build compared with the recorded baseline; no base rebuild. Shipping board resource guards pass: 316,432 B resident, 42,992 B residual main stack, 9,760 B largest poll frame, 1,963,188 B image. No device flash."
       }
     }
   },

@@ -47,9 +47,32 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
 }
 
 public enum RoutePreference: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing = "less-climbing"
+    case balanced, shorter, lessClimbing = "less-climbing", technical, alpine
     public var title: String {
-        switch self { case .balanced: "Balanced"; case .shorter: "Shorter"; case .lessClimbing: "Less climbing" }
+        switch self {
+        case .balanced: "Balanced"
+        case .shorter: "Shorter"
+        case .lessClimbing: "Less climbing"
+        case .technical: "Technical (S3)"
+        case .alpine: "Alpine (T4)"
+        }
+    }
+    public var explanation: String? {
+        switch self {
+        case .technical: "Trails up to S3, with steep slopes and large obstacles. Advanced riding skills required."
+        case .alpine: "Alpine hiking up to T4, including exposed terrain. Sure-footedness and alpine experience required."
+        default: nil
+        }
+    }
+    public func applies(to activity: RouteActivity) -> Bool {
+        switch self { case .technical: activity == .mtb; case .alpine: activity == .hiking; default: true }
+    }
+    /// Advanced terrain choices require the routing region to advertise the matching profile.
+    public static func offered(for activity: RouteActivity, profiles: [String]?) -> [Self] {
+        allCases.filter { preference in
+            preference.applies(to: activity) && (profiles?.contains(preference.profile(for: activity))
+                ?? (preference != .technical && preference != .alpine))
+        }
     }
     public func profile(for activity: RouteActivity) -> String {
         activity.rawValue + (self == .balanced ? "" : "/" + rawValue)

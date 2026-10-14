@@ -1031,14 +1031,14 @@ fn nav_two_node_map() -> (Vec<u8>, usize) {
     // One edge, polyline (lat, lon): (100,200) → (500,500) → (900,800), 1234 m, kind 0x2A.
     // It is the first record of the first pool chunk, so the wire id is `(0 << 5) | 0`.
     let edge = pack_nav_edge_record(1234, NAV_TEST_KIND, &[(100, 200), (500, 500), (900, 800)]);
-    assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: 15-byte head + two delta pairs");
+    assert_eq!(edge.len(), NAV_EDGE_FIXED_LEN + 2 * 4, "3-point record: header + two delta pairs");
     let edge_id = nav_edge_id(0, 0).expect("chunk 0, ordinal 0");
 
     // Two degree-1 junctions, each carrying the other inline. The ascents differ on purpose: same
     // edge, same cost and kind, one field that legitimately disagrees.
     let rec0 = pack_nav_record(100, 200, 0, &[(1, 900, 800, edge_id, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_AB)]);
     let rec1 = pack_nav_record(900, 800, 1, &[(0, 100, 200, edge_id, 1234, NAV_TEST_KIND, NAV_TEST_ASCENT_BA)]);
-    assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 30 bytes");
+    assert_eq!(rec0.len(), NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_LEN, "degree-1 record is 62 bytes");
 
     // The directory is no whole number of units, so the profile table sits on the next boundary,
     // the index follows it, and the node chunks begin one rounding step past the index.
@@ -1119,12 +1119,12 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert_eq!(edge_pool_offset, align_up(index_offset + 4) + 512, "edge pool follows the node chunks");
     assert_eq!(u32::from_le_bytes(bytes[nav_off + 16..nav_off + 20].try_into().unwrap()), 1, "edge_chunk_count");
     assert_eq!(u16::from_le_bytes(bytes[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "chunk_size pinned");
-    // Profile-table fields. `reserved` is a field, so it is zero, unlike the `0xFF` gap in front.
+    // Profile-table fields and the certified longitude-distance scale.
     let profile_off = resolve_offset(&bytes, nav_off + 22);
     assert_eq!(profile_off, align_up(nav_off + NAV_DIR_LEN), "the profile table sits on the boundary past the dir");
     assert!(bytes[nav_off + NAV_DIR_LEN..profile_off].iter().all(|&b| b == FILLER), "§1.2 gap, not zeros");
     assert_eq!(bytes[nav_off + 26], 1, "profile_count");
-    assert_eq!(bytes[nav_off + 27], 0, "reserved");
+    assert_eq!(bytes[nav_off + 27], 0, "no certified longitude lower bound in the fixture");
     let snap_index_offset = resolve_offset(&bytes, nav_off + 28);
     assert_eq!(snap_index_offset, edge_pool_offset + NAV_CHUNK_SIZE, "the empty snap index follows the edge pool");
     assert_eq!(
@@ -1145,43 +1145,51 @@ fn populated_nav_section_round_trips_with_record_layout() {
     // Node chunks start one rounding step past the index; pin record 0's exact bytes.
     let chunk_off = align_up(index_offset + 4);
     assert!(bytes[index_offset + 4..chunk_off].iter().all(|&b| b == FILLER), "the pre-chunk gap is 0xFF filler");
-    let rec = &bytes[chunk_off..chunk_off + 30];
+    let rec = &bytes[chunk_off..chunk_off + 62];
     assert_eq!(i32::from_le_bytes(rec[0..4].try_into().unwrap()), 100, "lat");
     assert_eq!(i32::from_le_bytes(rec[4..8].try_into().unwrap()), 200, "lon");
     assert_eq!(u32::from_le_bytes(rec[8..12].try_into().unwrap()), 0, "node id");
     assert_eq!(rec[12], 1, "degree");
-    assert_eq!(u32::from_le_bytes(rec[13..17].try_into().unwrap()), 1, "neighbor_id");
-    assert_eq!(i16::from_le_bytes(rec[17..19].try_into().unwrap()), 800, "dlat = 900 - 100");
-    assert_eq!(i16::from_le_bytes(rec[19..21].try_into().unwrap()), 600, "dlon = 800 - 200");
-    assert_eq!(u32::from_le_bytes(rec[21..25].try_into().unwrap()), 0, "edge_id");
-    assert_eq!(u16::from_le_bytes(rec[25..27].try_into().unwrap()), 1234, "cost_m (u16)");
-    assert_eq!(rec[27], NAV_TEST_KIND, "way_kind");
-    assert_eq!(u16::from_le_bytes(rec[28..30].try_into().unwrap()), NAV_TEST_ASCENT_AB, "ascent_m (v12)");
+    assert_eq!(&rec[13..15], &[15, 0], "crossing allows four riding profiles");
+    assert_eq!(&rec[15..39], &[0; 24], "source key of node zero");
+    assert_eq!(u32::from_le_bytes(rec[39..43].try_into().unwrap()), 1, "neighbor_id");
+    assert_eq!(i16::from_le_bytes(rec[43..45].try_into().unwrap()), 800, "dlat = 900 - 100");
+    assert_eq!(i16::from_le_bytes(rec[45..47].try_into().unwrap()), 600, "dlon = 800 - 200");
+    assert_eq!(u32::from_le_bytes(rec[47..51].try_into().unwrap()), 0, "edge_id");
+    assert_eq!(u16::from_le_bytes(rec[51..53].try_into().unwrap()), 1234, "cost_m (u16)");
+    assert_eq!(rec[53], NAV_TEST_KIND, "way_kind");
+    assert_eq!(u16::from_le_bytes(rec[54..56].try_into().unwrap()), NAV_TEST_ASCENT_AB, "ascent_m");
+    assert_eq!(
+        &rec[56..62],
+        &[15, 0, 0, 0, 0, 32],
+        "allowed profiles, pushing profiles, stable port, turn mask and conservative target context"
+    );
     assert_eq!(
         NAV_NODE_FIXED_LEN + NAV_NEIGHBOR_ASCENT_OFF,
-        28,
-        "the ascent field sits at record offset 28 = 13-byte head + entry offset 15"
+        54,
+        "the ascent field sits at record offset 54 = 39-byte head + entry offset 15"
     );
     // Record 1 is the same edge from the other end, with its own ascent.
-    let rec1 = &bytes[chunk_off + 30..chunk_off + 60];
-    assert_eq!(u32::from_le_bytes(rec1[21..25].try_into().unwrap()), 0, "same edge_id from the far end");
-    assert_eq!(u16::from_le_bytes(rec1[25..27].try_into().unwrap()), 1234, "same cost_m");
-    assert_eq!(rec1[27], NAV_TEST_KIND, "same way_kind");
-    assert_eq!(u16::from_le_bytes(rec1[28..30].try_into().unwrap()), NAV_TEST_ASCENT_BA, "its own ascent_m");
+    let rec1 = &bytes[chunk_off + 62..chunk_off + 124];
+    assert_eq!(u32::from_le_bytes(rec1[47..51].try_into().unwrap()), 0, "same edge_id from the far end");
+    assert_eq!(u16::from_le_bytes(rec1[51..53].try_into().unwrap()), 1234, "same cost_m");
+    assert_eq!(rec1[53], NAV_TEST_KIND, "same way_kind");
+    assert_eq!(u16::from_le_bytes(rec1[54..56].try_into().unwrap()), NAV_TEST_ASCENT_BA, "its own ascent_m");
     // Every padding byte is 0xFF, so the whole tail reads as the degree sentinel.
-    assert!(bytes[chunk_off + 60..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
+    assert!(bytes[chunk_off + 124..chunk_off + 512].iter().all(|&b| b == 0xFF), "0xFF padding ends the records");
 
     // Edge record bytes at pool offset 0: length, pt_count, way_kind, anchor, deltas.
-    let e = &bytes[edge_pool_offset..edge_pool_offset + 23];
+    let e = &bytes[edge_pool_offset..edge_pool_offset + 27];
     assert_eq!(u32::from_le_bytes(e[0..4].try_into().unwrap()), 1234, "length_m");
     assert_eq!(u16::from_le_bytes(e[4..6].try_into().unwrap()), 3, "pt_count");
     assert_eq!(e[6], NAV_TEST_KIND, "way_kind");
+    assert_eq!(&e[15..19], &[15, 0, 15, 0], "both directions allow four riding profiles");
     assert_eq!(i32::from_le_bytes(e[7..11].try_into().unwrap()), 100, "anchor_lat");
     assert_eq!(i32::from_le_bytes(e[11..15].try_into().unwrap()), 200, "anchor_lon");
-    assert_eq!(i16::from_le_bytes(e[15..17].try_into().unwrap()), 400, "dlat 0");
-    assert_eq!(i16::from_le_bytes(e[17..19].try_into().unwrap()), 300, "dlon 0");
-    assert_eq!(i16::from_le_bytes(e[19..21].try_into().unwrap()), 400, "dlat 1");
-    assert_eq!(i16::from_le_bytes(e[21..23].try_into().unwrap()), 300, "dlon 1");
+    assert_eq!(i16::from_le_bytes(e[19..21].try_into().unwrap()), 400, "dlat 0");
+    assert_eq!(i16::from_le_bytes(e[21..23].try_into().unwrap()), 300, "dlon 0");
+    assert_eq!(i16::from_le_bytes(e[23..25].try_into().unwrap()), 400, "dlat 1");
+    assert_eq!(i16::from_le_bytes(e[25..27].try_into().unwrap()), 300, "dlon 1");
 
     // Parse back through the reader: directory, profiles, walk, record fields, neighbors.
     let src = SliceSource(&bytes);
@@ -1229,6 +1237,131 @@ fn populated_nav_section_round_trips_with_record_layout() {
     assert!(matches!(r.for_each_nav_node(&r.bbox, &mut small, |_| {}), Err(Error::TooShort)));
 }
 
+#[test]
+fn nav_snap_filters_profile_before_distance_and_preserves_directed_endpoints() {
+    for blocked_class in [false, true] {
+        let (mut bytes, nav_off) = nav_two_node_map();
+        let profile_off = resolve_offset(&bytes, nav_off + 22);
+        if blocked_class {
+            bytes[profile_off + 12 + 4] = 0;
+        }
+        let near_mask = if blocked_class { 1 } else { 2 };
+        let node_at = align_up(resolve_offset(&bytes, nav_off) + 4);
+        let pool_at = resolve_offset(&bytes, nav_off + 12);
+        let mut records = Vec::new();
+        let mut edges = Vec::new();
+        for (edge, lat, kind, mask_ab, push_ab, mask_ba) in
+            [(0, 100, 36, near_mask, 0, near_mask), (1, 400, 39, 1, 1, 0)]
+        {
+            let edge_id = nav_edge_id(0, edge).unwrap();
+            // Distinct source nodes share the start coordinate, as at separated bridge levels.
+            let mut geometry = pack_nav_edge_record(89, kind, &[(400, 100), (lat, 500), (lat, 900)]);
+            geometry[15..19].copy_from_slice(&[mask_ab, push_ab, mask_ba, 0]);
+            edges.extend(geometry);
+            for (id, node_lat, lon, other, other_lat, other_lon, mask, pushing) in [
+                (edge * 2, 400, 100, edge * 2 + 1, lat, 900, mask_ab, push_ab),
+                (edge * 2 + 1, lat, 900, edge * 2, 400, 100, mask_ba, 0),
+            ] {
+                let mut record =
+                    pack_nav_record(node_lat, lon, id, &[(other, other_lat, other_lon, edge_id, 89, kind, 0)]);
+                record[NAV_NODE_FIXED_LEN + 17] = mask;
+                record[NAV_NODE_FIXED_LEN + 18] = pushing;
+                records.push(record);
+            }
+        }
+        records[0][13] = 0;
+        records[2][13] = 1;
+        records[3][13] = 0;
+        records[2][NAV_NODE_FIXED_LEN + 22] |= 1 << 5;
+        records[3][NAV_NODE_FIXED_LEN + 22] &= !(1 << 5);
+        bytes[node_at..node_at + NAV_CHUNK_SIZE].copy_from_slice(&pack_nav_chunk(&records, NAV_CHUNK_SIZE));
+        bytes[pool_at..pool_at + NAV_CHUNK_SIZE].copy_from_slice(&pad(edges, NAV_CHUNK_SIZE));
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut tiles = obc_reader::NavTileCache::new();
+        let snap = |tiles: &mut obc_reader::NavTileCache, point, departing| {
+            reader.nearest_nav_edge_candidate_cached(&reader.bbox, tiles, point, 100.0, 0, departing).unwrap()
+        };
+        let candidate = snap(&mut tiles, (500, 110), Some(true)).unwrap();
+        assert_eq!(candidate.edge_id, nav_edge_id(0, 1).unwrap(), "the nearest forbidden road cannot win");
+        assert_eq!(snap(&mut tiles, (500, 110), None).unwrap().edge_id, candidate.edge_id);
+        assert_eq!(
+            (candidate.allowed_ab, candidate.allowed_ba, candidate.push_ab, candidate.push_ba),
+            (true, false, true, false)
+        );
+        let resolved = reader.resolve_nav_edge_candidate_cached(candidate, &mut tiles).unwrap().unwrap();
+        assert_eq!((resolved.a.id, resolved.b.id), (2, 3));
+        assert_eq!((resolved.a.requires_context, resolved.b.requires_context), (false, true));
+        reader
+            .for_each_nav_node_cached(&reader.bbox, &mut tiles, |node| {
+                if node.id == 2 {
+                    assert!(node.neighbors().next().unwrap().target_requires_context);
+                } else if node.id == 3 {
+                    assert!(!node.neighbors().next().unwrap().target_requires_context);
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            (resolved.allowed_ab, resolved.allowed_ba, resolved.push_ab, resolved.push_ba),
+            (true, false, true, false)
+        );
+        assert!(snap(&mut tiles, (100, 400), Some(true)).is_some());
+        assert!(snap(&mut tiles, (100, 400), Some(false)).is_none());
+        assert!(snap(&mut tiles, (900, 400), Some(true)).is_none());
+        assert!(snap(&mut tiles, (900, 400), Some(false)).is_some());
+        assert!(snap(&mut tiles, (500, 400), Some(false)).is_some());
+        assert!(snap(&mut tiles, (100, 400), None).is_some());
+        assert!(snap(&mut tiles, (900, 400), None).is_some());
+        let end = BBox { min_lon: 900, max_lon: 900, min_lat: 400, max_lat: 400 };
+        assert!(
+            reader
+                .nearest_nav_edge_candidate_cached(&end, &mut tiles, (900, 400), 100.0, 0, Some(false))
+                .unwrap()
+                .is_some(),
+            "the forbidden reverse adjacency still discovers a legal incoming edge"
+        );
+        for departing in [Some(true), None] {
+            assert!(
+                reader
+                    .nearest_nav_edge_candidate_cached(&reader.bbox, &mut tiles, (500, 400), 100.0, 1, departing)
+                    .is_err(),
+                "an absent profile never falls back to another profile"
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_nav_permissions_and_nonfiller_tails_fail_all_node_queries() {
+    for (offset, value) in [
+        (14, vec![16]),
+        (NAV_NODE_FIXED_LEN + 18, vec![16]),
+        (NAV_NODE_FIXED_LEN + 22, vec![0x80]),
+        (NAV_CHUNK_SIZE - 1, vec![0]),
+        (8, (u32::MAX - 1).to_le_bytes().to_vec()),
+        (NAV_NODE_FIXED_LEN, (u32::MAX - 1).to_le_bytes().to_vec()),
+        (NAV_NODE_FIXED_LEN + 8, u32::MAX.to_le_bytes().to_vec()),
+    ] {
+        let (mut bytes, nav_off) = nav_two_node_map();
+        let node_at = align_up(resolve_offset(&bytes, nav_off) + 4);
+        bytes[node_at + offset..node_at + offset + value.len()].copy_from_slice(&value);
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut scratch = [0; NAV_CHUNK_SIZE];
+        assert_eq!(reader.for_each_nav_node(&reader.bbox, &mut scratch, |_| {}), Err(Error::BadOffset));
+        let mut tiles = obc_reader::NavTileCache::new();
+        assert_eq!(reader.for_each_nav_node_cached(&reader.bbox, &mut tiles, |_| {}), Err(Error::BadOffset));
+        assert_eq!(
+            reader.nearest_nav_edge_candidate_cached(&reader.bbox, &mut tiles, (500, 500), 100.0, 0, Some(true)),
+            Err(Error::BadOffset)
+        );
+    }
+}
+
 /// Corrupt nav directories are rejected at parse: an offset past EOF, a `chunk_size` that is not
 /// 512, a `profile_count` outside 1..=8, and counts whose regions overrun the file.
 #[test]
@@ -1262,6 +1395,15 @@ fn nav_directory_rejects_corrupt_fields() {
     let mut forged = bytes.clone();
     forged[nav_off + 26] = 9;
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "profile_count > 8");
+
+    let mut forged = bytes.clone();
+    forged[nav_off + 27] = 112;
+    assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "longitude bound > 111");
+    forged[nav_off + 27] = 111;
+    let src = SliceSource(&forged);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    assert_eq!(Reader::new(&src, &tables, &cache).nav_directory().lon_mm_per_udeg, 111);
 
     // A node_count big enough to wrap the index+chunks region past the file.
     let mut forged = bytes.clone();

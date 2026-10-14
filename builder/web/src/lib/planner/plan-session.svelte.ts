@@ -7,7 +7,7 @@ import { coordinateName, visitName } from './point-names';
 import { presetName } from './riding-profiles';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
-import { calculateLine, profileId, requestAlternatives, requestShape, routingKey, type EngineRoute, type RoutingLine } from './routing';
+import { calculateLine, profileId, regionProfiles, requestAlternatives, requestShape, routingKey, type EngineRoute, type RoutingLine } from './routing';
 import { planTrip, routeBase, type RoutePlan } from './signed-route-plan';
 import type { CatalogRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
@@ -340,8 +340,11 @@ export class PlanSession {
     }
 
     async planSignedRoute(route: CatalogRecord, plan: RoutePlan, placeName: PlaceName): Promise<boolean> {
-        const trip = planTrip(routeBase(route, this.trip), plan, route.loop);
-        const done = await this.create(() => ({ plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) }));
+        const done = await this.create(async () => {
+            const trip = planTrip(routeBase(route, this.trip), plan, route.loop);
+            if (!(await regionProfiles()).includes(profileId(trip))) throw new Error('This route requires a routing profile that is unavailable in this region.');
+            return { plan: newPlan({ ...trip, points: trip.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: placeName(p.coordinate) ?? p.label } : p) }) };
+        });
         if (!done) this.saveError = this.libraryError;
         return done;
     }

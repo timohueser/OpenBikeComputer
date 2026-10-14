@@ -40,10 +40,12 @@ struct PlannerRouteFiltersPage: View {
                         bounds("Climb", unit: "m", value: $draft.climbM, divider: false)
                     }
                     if PlannerRoutesText.graded(activity) {
-                        section("Hardest part") {
+                        section("Hardest part of signed routes") {
                             PlannerGradeRange(range: $draft.hardest, mtb: activity == .mtb)
                             let reading = PlannerRoutesText.reading(draft.hardest, mtb: activity == .mtb)
                             (Text(reading.0).fontWeight(.semibold) + Text(" " + reading.1)).font(.footnote).foregroundStyle(OBCTheme.secondary)
+                            Text("Filters the signed route list. Planning a result selects the preset shown in its details.")
+                                .font(.footnote).foregroundStyle(OBCTheme.secondary)
                         }
                     }
                 }.padding(20)

@@ -51,6 +51,8 @@ pub struct NavDirectory {
     pub profile_table_offset: u64,
     /// Number of 56-byte profile records at `profile_table_offset` (1..=8).
     pub profile_count: usize,
+    /// Certified longitude-distance lower bound in millimetres per microdegree (0..=111).
+    pub lon_mm_per_udeg: u8,
     /// Byte offset to the snap-anchor quadtree index.
     pub snap_index_offset: u64,
     /// Number of `uint32` nodes in the snap-anchor quadtree; `0` means no interior anchors.
@@ -72,6 +74,7 @@ impl NavDirectory {
         chunk_size: 0,
         profile_table_offset: 0,
         profile_count: 0,
+        lon_mm_per_udeg: 0,
         snap_index_offset: 0,
         snap_node_count: 0,
         snap_chunk_count: 0,
@@ -200,6 +203,12 @@ pub struct NavEdgePosition {
 pub struct NavEdgeCandidate {
     pub edge_id: u32,
     pub way_kind: u8,
+    profile_mask: u8,
+    /// Legal directions for the profile used by the candidate query.
+    pub allowed_ab: bool,
+    pub allowed_ba: bool,
+    pub push_ab: bool,
+    pub push_ba: bool,
     pub length_m: u32,
     pub from_a_m: u32,
     pub distance_m: f32,
@@ -215,6 +224,8 @@ pub struct NavEdgeEndpoint {
     pub id: u32,
     pub coord: (i32, i32),
     pub position: NavEdgePosition,
+    /// This profile needs an incoming edge to apply the node's crossing or turn rules.
+    pub requires_context: bool,
 }
 
 /// A winning exact edge projection with its two real graph endpoints. Directional ascent is
@@ -223,6 +234,10 @@ pub struct NavEdgeEndpoint {
 pub struct NavEdgeSnap {
     pub edge_id: u32,
     pub way_kind: u8,
+    pub allowed_ab: bool,
+    pub allowed_ba: bool,
+    pub push_ab: bool,
+    pub push_ba: bool,
     pub length_m: u32,
     pub from_a_m: u32,
     pub distance_m: f32,
@@ -272,9 +287,8 @@ impl<'a> Reader<'a> {
     /// spatial-refetch primitive.
     ///
     /// `scratch` is the caller-owned chunk buffer and must hold the directory's `chunk_size`
-    /// bytes, or this returns `Err(Error::TooShort)`. A truncated record ends that chunk cleanly;
-    /// source or index-cache failures return a typed [`Error`] rather than looking like an empty
-    /// leaf.
+    /// bytes, or this returns `Err(Error::TooShort)`. Malformed records, source failures and
+    /// index-cache failures return a typed [`Error`] rather than looking like an empty leaf.
     ///
     /// # Reentrancy
     ///
@@ -298,13 +312,12 @@ impl<'a> Reader<'a> {
             if read_error.is_some() {
                 return;
             }
-            // A leaf that names no chunk of the section is skipped, not fatal.
-            if let Err(Error::Source(error)) = self.for_each_nav_node_in_chunk(cid, scratch, &mut visit) {
+            if let Err(error) = self.for_each_nav_node_in_chunk(cid, scratch, &mut visit) {
                 read_error = Some(error);
             }
         })?;
         if let Some(error) = read_error {
-            return Err(Error::Source(error));
+            return Err(error);
         }
         Ok(())
     }
@@ -341,8 +354,7 @@ impl<'a> Reader<'a> {
         }
         let chunk = &mut scratch[..dir.chunk_size];
         self.src.read_at(start, chunk).map_err(Error::Source)?;
-        decode_nav_chunk(chunk, &mut visit);
-        Ok(())
+        decode_nav_chunk(chunk, &mut visit)
     }
 
     /// Resolve the packed `(chunk, ordinal)` edge id to a validated record. The ordinal walk
@@ -434,20 +446,24 @@ impl<'a> Reader<'a> {
             }
             let (start, end) = match dir.chunk_range(cid) {
                 Some(r) => r,
-                None => return,
+                None => {
+                    read_error = Some(Error::BadOffset);
+                    return;
+                }
             };
             if end > self.src.len() {
+                read_error = Some(Error::BadOffset);
                 return;
             }
             // A failed fill skips this leaf cleanly (the cache never keeps a bad slot).
             match tiles.chunk(self.src, start, dir.chunk_size) {
-                Some(chunk) => decode_nav_chunk(chunk, &mut |node| visit(node)),
-                None => read_error = Some(IoError::Io),
+                Some(chunk) => read_error = decode_nav_chunk(chunk, &mut |node| visit(node)).err(),
+                None => read_error = Some(Error::Source(IoError::Io)),
             }
         })
         .map_err(Error::from)?;
         if let Some(error) = read_error {
-            return Err(Error::Source(error));
+            return Err(error);
         }
         Ok(())
     }
@@ -460,12 +476,15 @@ impl<'a> Reader<'a> {
         p: (i32, i32),
         max_distance_m: f32,
     ) -> Result<Option<NavEdgeCandidate>, Error> {
-        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, true)
+        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, None, true)
     }
 
     /// Find the nearest exact edge projection among edges incident to graph nodes in `view` and
     /// edges named by interior anchors in `view`. Together the two indexes are the completeness
     /// argument: endpoints cover short edges, and a long edge has anchors at most 300 m apart.
+    /// Only edges permitted by `profile` qualify. At a junction, `departing` selects outgoing
+    /// directions with `Some(true)`, or incoming directions with `Some(false)`. `None` accepts
+    /// either direction for a request with no travel, while retaining profile eligibility.
     #[inline(never)] // keep the one 512-byte node-chunk copy in this bounded snap-only frame
     pub fn nearest_nav_edge_candidate_cached(
         &self,
@@ -473,8 +492,13 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         p: (i32, i32),
         max_distance_m: f32,
+        profile: usize,
+        departing: Option<bool>,
     ) -> Result<Option<NavEdgeCandidate>, Error> {
-        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, false)
+        if self.nav_profiles().get(profile).is_none() {
+            return Err(Error::BadOffset);
+        }
+        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, Some((profile, departing)), false)
     }
 
     #[inline(never)]
@@ -484,6 +508,7 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         p: (i32, i32),
         max_distance_m: f32,
+        profile: Option<(usize, Option<bool>)>,
         require_unique: bool,
     ) -> Result<Option<NavEdgeCandidate>, Error> {
         let dir = *self.nav_directory();
@@ -500,30 +525,38 @@ impl<'a> Reader<'a> {
             if read_error.is_some() {
                 return;
             }
-            let Some((start, end)) = dir.chunk_range(cid) else { return };
+            let Some((start, end)) = dir.chunk_range(cid) else {
+                read_error = Some(Error::BadOffset);
+                return;
+            };
             if end > self.src.len() {
+                read_error = Some(Error::BadOffset);
                 return;
             }
             let mut local = [0u8; NAV_MAX_CHUNK_BYTES];
             {
                 let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
-                    read_error = Some(IoError::Io);
+                    read_error = Some(Error::Source(IoError::Io));
                     return;
                 };
                 local[..dir.chunk_size].copy_from_slice(chunk);
             }
-            decode_nav_chunk(&local[..dir.chunk_size], &mut |n| {
+            let decoded = decode_nav_chunk(&local[..dir.chunk_size], &mut |n| {
                 if n.lon < view.min_lon || n.lon > view.max_lon || n.lat < view.min_lat || n.lat > view.max_lat {
                     return;
                 }
                 for nb in n.neighbors() {
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else {
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p, profile.map(|p| p.0))
+                    else {
                         if require_unique {
-                            read_error = Some(IoError::Io);
+                            read_error = Some(Error::Source(IoError::Io));
                             return;
                         }
                         continue;
                     };
+                    if !Self::permits_nav_candidate(&candidate, profile.and_then(|p| p.1)) {
+                        continue;
+                    }
                     if candidate.distance_m <= max_distance_m
                         && best.is_some_and(|old| old.edge_id != candidate.edge_id)
                     {
@@ -536,6 +569,9 @@ impl<'a> Reader<'a> {
                     }
                 }
             });
+            if read_error.is_none() {
+                read_error = decoded.err();
+            }
         })
         .map_err(Error::from)?;
 
@@ -547,14 +583,18 @@ impl<'a> Reader<'a> {
                 if read_error.is_some() {
                     return;
                 }
-                let Some((start, end)) = dir.snap_chunk_range(cid) else { return };
+                let Some((start, end)) = dir.snap_chunk_range(cid) else {
+                    read_error = Some(Error::BadOffset);
+                    return;
+                };
                 if end > self.src.len() {
+                    read_error = Some(Error::BadOffset);
                     return;
                 }
                 let mut local = [CHUNK_END; NAV_CHUNK_SIZE];
                 {
                     let Some(chunk) = tiles.chunk(self.src, start, dir.chunk_size) else {
-                        read_error = Some(IoError::Io);
+                        read_error = Some(Error::Source(IoError::Io));
                         return;
                     };
                     local[..dir.chunk_size].copy_from_slice(chunk);
@@ -568,13 +608,16 @@ impl<'a> Reader<'a> {
                     if lon < view.min_lon || lon > view.max_lon || lat < view.min_lat || lat > view.max_lat {
                         continue;
                     }
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else {
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p, profile.map(|p| p.0)) else {
                         if require_unique {
-                            read_error = Some(IoError::Io);
+                            read_error = Some(Error::Source(IoError::Io));
                             return;
                         }
                         continue;
                     };
+                    if !Self::permits_nav_candidate(&candidate, profile.and_then(|p| p.1)) {
+                        continue;
+                    }
                     if candidate.distance_m <= max_distance_m
                         && best.is_some_and(|old| old.edge_id != candidate.edge_id)
                     {
@@ -590,9 +633,25 @@ impl<'a> Reader<'a> {
             .map_err(Error::from)?;
         }
         if let Some(error) = read_error {
-            return Err(Error::Source(error));
+            return Err(error);
         }
         Ok(if require_unique && ambiguous { None } else { best })
+    }
+
+    fn permits_nav_candidate(candidate: &NavEdgeCandidate, departing: Option<bool>) -> bool {
+        let Some(departing) = departing else { return true };
+        let at_a = candidate.position.coord == candidate.a_coord;
+        let at_b = candidate.position.coord == candidate.b_coord;
+        if at_a || at_b {
+            let (from_a, from_b) = if departing {
+                (candidate.allowed_ab, candidate.allowed_ba)
+            } else {
+                (candidate.allowed_ba, candidate.allowed_ab)
+            };
+            at_a && from_a || at_b && from_b
+        } else {
+            candidate.allowed_ab || candidate.allowed_ba
+        }
     }
 
     /// Resolve the winning candidate's endpoint ids and directional ascents through two
@@ -621,26 +680,43 @@ impl<'a> Reader<'a> {
                     if ids.is_none_or(|old| old == pair) {
                         ids = Some(pair);
                         if forward {
-                            ascent_ab = Some(nb.ascent_m);
+                            ascent_ab = Some((nb.ascent_m, n.requires_arrival_context(candidate.profile_mask)));
                         } else {
-                            ascent_ba = Some(nb.ascent_m);
+                            ascent_ba = Some((nb.ascent_m, n.requires_arrival_context(candidate.profile_mask)));
                         }
                     }
                 }
             })?;
         }
         let Some((a_id, b_id)) = ids else { return Ok(None) };
+        let (Some((ascent_ab, a_context)), Some((ascent_ba, b_context))) = (ascent_ab, ascent_ba) else {
+            return Ok(None);
+        };
         Ok(Some(NavEdgeSnap {
             edge_id: candidate.edge_id,
             way_kind: candidate.way_kind,
+            allowed_ab: candidate.allowed_ab,
+            allowed_ba: candidate.allowed_ba,
+            push_ab: candidate.push_ab,
+            push_ba: candidate.push_ba,
             length_m: candidate.length_m,
             from_a_m: candidate.from_a_m,
             distance_m: candidate.distance_m,
             position: candidate.position,
-            a: NavEdgeEndpoint { id: a_id, coord: candidate.a_coord, position: candidate.a_position },
-            b: NavEdgeEndpoint { id: b_id, coord: candidate.b_coord, position: candidate.b_position },
-            ascent_ab: ascent_ab.unwrap_or(0),
-            ascent_ba: ascent_ba.unwrap_or(0),
+            a: NavEdgeEndpoint {
+                id: a_id,
+                coord: candidate.a_coord,
+                position: candidate.a_position,
+                requires_context: a_context,
+            },
+            b: NavEdgeEndpoint {
+                id: b_id,
+                coord: candidate.b_coord,
+                position: candidate.b_position,
+                requires_context: b_context,
+            },
+            ascent_ab,
+            ascent_ba,
         }))
     }
 
@@ -684,11 +760,22 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         edge_id: u32,
         p: (i32, i32),
+        profile: Option<usize>,
     ) -> Option<NavEdgeCandidate> {
         let record = self.nav_edge_record(tiles, edge_id)?;
         let length_m = record.length_m();
         let pt_count = record.point_count();
         let way_kind = record.way_kind();
+        let mask = profile.map_or(u8::MAX, |profile| 1u8 << profile);
+        let allowed_ab = record.profile_mask_ab() & mask != 0;
+        let allowed_ba = record.profile_mask_ba() & mask != 0;
+        let push_ab = record.push_mask_ab() & mask != 0;
+        let push_ba = record.push_mask_ba() & mask != 0;
+        if profile.is_some_and(|profile| self.nav_profiles()[profile].multiplier(way_kind).is_none())
+            || profile.is_some() && !allowed_ab && !allowed_ba
+        {
+            return None;
+        }
         let anchor = record.anchor();
         let cl = cos_lat(p.1).max(1e-3);
         let mut a = anchor;
@@ -721,6 +808,11 @@ impl<'a> Reader<'a> {
         Some(NavEdgeCandidate {
             edge_id,
             way_kind,
+            profile_mask: mask,
+            allowed_ab,
+            allowed_ba,
+            push_ab,
+            push_ba,
             length_m,
             from_a_m,
             distance_m: best_distance,
@@ -808,13 +900,19 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Visit records in chunk order. Padding or a truncated record ends the walk.
+/// Visit records in chunk order. Only all-filler padding ends the walk successfully.
 /// The shared record view decodes fields byte-wise, including fields at odd offsets.
-fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
+fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) -> Result<(), Error> {
     let mut rest = chunk;
-    while let Some(node) = NavNodeRef::parse(rest) {
+    while rest.len() >= obc_formats::obcm::NAV_NODE_FIXED_LEN && rest[12] != CHUNK_END {
+        let node = NavNodeRef::parse(rest).ok_or(Error::BadOffset)?;
         rest = &rest[node.bytes().len()..];
         visit(node);
+    }
+    if rest.iter().all(|&byte| byte == CHUNK_END) {
+        Ok(())
+    } else {
+        Err(Error::BadOffset)
     }
 }
 
@@ -844,6 +942,7 @@ pub(super) fn parse_nav_directory(
         chunk_size: rd_u16(&d, 20) as usize,
         profile_table_offset: resolve(scale.offset(rd_u32(&d, 22))),
         profile_count: d[26] as usize,
+        lon_mm_per_udeg: d[27],
         snap_index_offset: resolve(scale.offset(rd_u32(&d, 28))),
         snap_node_count: rd_u32(&d, 32) as usize,
         snap_chunk_count: rd_u32(&d, 36) as usize,
@@ -851,7 +950,7 @@ pub(super) fn parse_nav_directory(
     };
     // The nav chunk size is pinned to 512, and this is a distinct error from the version check, so
     // an old file and a mis-sized current one are told apart.
-    if dir.chunk_size != NAV_CHUNK_SIZE {
+    if dir.chunk_size != NAV_CHUNK_SIZE || dir.lon_mm_per_udeg > 111 {
         return Err(Error::BadOffset);
     }
     // The profile table is always present with 1..=8 records, so a bad count is malformed.

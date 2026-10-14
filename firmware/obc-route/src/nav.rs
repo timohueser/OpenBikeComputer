@@ -9,16 +9,15 @@
 //! cost, so relaxation does no second fetch.
 //!
 //! The scratch is a fixed [`NAV_MAX_NODES`] table, the same size on every target, so the sim's
-//! plannable range is the device's. A full table does not abort the search: it stops new inserts
-//! and keeps relaxing tracked nodes, then reports [`NavError::Exhausted`] when the frontier
-//! drains. The search is bounded-suboptimal, not exact: the priority is `f = g + eps*h` and the
+//! plannable range is the device's. A full table aborts that search attempt before any route is
+//! emitted. The search is bounded-suboptimal, not exact: the priority is `f = g + eps*h` and the
 //! [`NAV_EPSILON_LADDER`] climbs to a greedier rung after an exhaustion. There is no distance cap;
-//! the fixed table is the range limit.
+//! the fixed table and the accumulated cost range are the limits.
 //!
 //! An edge costs the profile-weighted ground length plus its own ascent charged at the profile
-//! climb weight. Costs are only added, never subtracted, so `h` (great-circle distance in the same
-//! metric the packer summed each `cost_m` in) stays a lower bound. Descent credits are therefore
-//! not permitted; gradient effects on time belong in ETA.
+//! climb weight. The packer bounds each edge cost below by an integer coordinate metric. The
+//! same metric, rounded down, is an admissible heuristic. Partial edges preserve that bound.
+//! Descent credits are not permitted; gradient effects on time belong in ETA.
 //!
 //! The planner is resumable: [`NavPlanner::step`] does one bounded unit of work, so the host runs
 //! render, input and watchdog between steps. Nothing is written to the sink before the emit phase,
@@ -26,7 +25,7 @@
 //!
 //! This module and the reader's record decode are cast-free: each field is assembled byte-wise
 //! with `from_le_bytes`, because records sit at odd offsets and a typed view over them is
-//! alignment UB on ARM. Run `cargo +nightly miri test -p obc-route --test nav` after a change to
+//! alignment UB on ARM. Run `cargo +nightly miri test -p obc-route --test main` after a change to
 //! the planner or the record decode.
 
 use heapless::Vec;
@@ -37,6 +36,7 @@ use crate::reader::MAX_WAYPOINTS;
 use obc_elevation::{ElevationSource, ELE_DEADBAND_M};
 use obc_formats::bike::BikeType;
 use obc_formats::io::{ByteSink, Error};
+use obc_formats::obcm::nav_distance_bound_mm;
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m};
 use obc_map_scene::{BBox, M_PER_DEG};
@@ -103,25 +103,26 @@ pub enum NavError {
     /// failed. Every non-range failure lands here. A rider cancel is not an error: the host stops
     /// stepping.
     NoPath,
-    /// The table filled and the frontier then drained without the goal popping.
+    /// A search attempt needed more table slots, or every remaining path exceeded the cost range.
     Exhausted,
 }
 
-/// Nodes the fixed A\* scratch tracks, open and closed together. One 24-byte [`NavEntry`] plus one
-/// 2-byte heap slot each: 1536 nodes is 39 936 B, under the device's 40 kB nav budget. The same
+/// Arrival states the fixed A\* scratch tracks, open and closed together. One 24-byte [`NavEntry`]
+/// plus one 2-byte heap slot each: 1536 states use 39 936 B before shared fields, under 40 KiB. The same
 /// value on every target, so the sim's plannable range is the device's.
 pub const NAV_MAX_NODES: usize = 1536;
 
 const META_OCCUPIED: u16 = 1 << 15;
-/// The node is settled. It can re-open on a shorter `g`.
-const META_CLOSED: u16 = 1 << 14;
-const META_POS_MASK: u16 = 0x3FFF;
+/// The incoming edge requires the selected cyclist to push.
+const META_PUSHING: u16 = 1 << 14;
+/// Onward choices depend on travel mode, but not the incoming physical edge.
+const META_CONTEXT_FREE: u16 = 1 << 13;
+const META_POS_MASK: u16 = 0x1FFF;
 /// `heap_pos` sentinel: not queued.
-const HEAP_NONE: u16 = 0x3FFF;
+const HEAP_NONE: u16 = 0x1FFF;
 
-/// One tracked node. `repr(C)` pins the 24-byte size the [`NAV_MAX_NODES`] budget counts. `g` and
-/// `h` are meters and saturate at 65 535; a saturated cost only makes its node maximally
-/// unattractive, so the ordering is never wrong.
+/// One arrival state. `repr(C)` pins the 24-byte size the [`NAV_MAX_NODES`] budget counts.
+/// Accumulated cost is exact within `u32`; the heuristic is calculated only during heap sifts.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct NavEntry {
@@ -129,30 +130,17 @@ struct NavEntry {
     lon: i32,
     lat: i32,
     edge_used: u32,
-    g: u16,
-    h: u16,
+    g: u32,
     /// The predecessor's table slot index, not a node id. Slots never move, so the emit
     /// chain-walk is direct indexing.
     came_from: u16,
-    /// Packed occupied and closed flags plus the heap position (see the `META_*` consts).
+    /// Packed occupancy, arrival policy and heap position (see the `META_*` consts).
     meta: u16,
 }
 
 impl NavEntry {
     /// All-zero, so a `static NavScratch` lands in `.bss` and a zeroed slot reads as free.
-    const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, h: 0, came_from: 0, meta: 0 };
-
-    /// The priority `f = g + eps*h`. The ratio comes from the owning [`NavScratch`] rather than a
-    /// const, so a [`NAV_EPSILON_LADDER`] retry can re-order the same heap at a greedier rung. A
-    /// zeroed scratch reads `0/0` and degrades to plain-`g` ordering instead of dividing by zero;
-    /// every search re-seeds a real rung first.
-    #[inline]
-    fn f(&self, eps_num: u32, eps_den: u32) -> u32 {
-        if eps_den == 0 {
-            return self.g as u32;
-        }
-        (self.g as u32).saturating_add(eps_num * self.h as u32 / eps_den)
-    }
+    const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, came_from: 0, meta: 0 };
 
     #[inline]
     fn occupied(&self) -> bool {
@@ -168,12 +156,6 @@ impl NavEntry {
     fn set_heap_pos(&mut self, pos: u16) {
         self.meta = (self.meta & !META_POS_MASK) | (pos & META_POS_MASK);
     }
-}
-
-/// Saturate a `u32` meter figure into the entry's `u16` cost field.
-#[inline]
-fn sat16(m: u32) -> u16 {
-    m.min(u16::MAX as u32) as u16
 }
 
 /// A fixed per-request preference. Highway/access prohibitions and the saved profile stay unchanged.
@@ -215,21 +197,23 @@ struct ProfileMult {
     /// Flat meters charged per meter of a neighbor's `ascent_m`. Widened once so relaxation does
     /// no cast. `0` is climb-blind, which is legal: a map without terrain decodes to it.
     climb: u32,
+    profile_mask: u8,
 }
 
 impl ProfileMult {
     /// The all-1.0x, climb-blind table: the placeholder a fresh [`NavPlanner`] holds until its
-    /// first step, and the fallback for a map with an empty profile table.
-    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
+    /// first step. It is never used to route a missing profile.
+    const NEUTRAL: ProfileMult = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0, profile_mask: 1 };
 
-    /// Resolve `bike`'s profile from the reader's profile table. A map with fewer profiles than
-    /// the contract falls back to profile 0, so a malformed map never stops routing.
-    fn resolve(reader: &Reader, bike: BikeType) -> ProfileMult {
-        let profiles = reader.nav_profiles();
-        match profiles.get(bike as usize).or_else(|| profiles.first()) {
-            Some(p) => ProfileMult { highway: p.highway, surface: p.surface, climb: u32::from(p.climb_weight()) },
-            None => ProfileMult::NEUTRAL,
-        }
+    /// A missing profile cannot inherit another bike's access or suitability policy.
+    fn resolve(reader: &Reader, bike: BikeType) -> Option<ProfileMult> {
+        let p = reader.nav_profiles().get(bike as usize)?;
+        Some(ProfileMult {
+            highway: p.highway,
+            surface: p.surface,
+            climb: u32::from(p.climb_weight()),
+            profile_mask: 1 << bike as u8,
+        })
     }
 
     fn prefer(mut self, objective: Objective) -> Self {
@@ -258,21 +242,20 @@ impl ProfileMult {
     /// `None` when either multiplier class is forbidden (a `0` byte). The neighbor is then skipped,
     /// not relaxed at a huge cost, so the graph stays whole for the other profiles.
     #[inline]
-    fn edge_cost(&self, cost_m: u32, ascent_m: u16, way_kind: u8) -> Option<u32> {
+    fn edge_cost(&self, cost_m: u32, ascent_m: u16, way_kind: u8, pushing: bool) -> Option<u64> {
         let mh = self.highway[(way_kind & 0x1F) as usize] as u32;
         let ms = self.surface[(way_kind >> 5) as usize] as u32;
         if mh == 0 || ms == 0 {
             return None;
         }
-        let distance = (cost_m.saturating_mul((mh * ms) >> 4)) >> 4;
-        // The climb term is only ever added. This is what keeps `h` admissible.
-        Some(distance.saturating_add(u32::from(ascent_m).saturating_mul(self.climb)))
+        let distance = ((u64::from(cost_m) * u64::from((mh * ms) >> 4)) >> 4) * if pushing { 4 } else { 1 };
+        Some(distance + u64::from(ascent_m) * u64::from(self.climb))
     }
 }
 
-/// The router's mutable state: an open-addressed `node_id -> NavEntry` table and a binary min-heap
-/// of table indices ordered by `f`. Heap-position back-pointers make decrease-key O(log n) and keep
-/// a node queued at most once, so the heap cannot outgrow the table.
+/// The router's mutable state: an open-addressed arrival-state table and a binary min-heap.
+/// Free junctions key arrivals by node and pushing mode; other junctions retain the incoming edge.
+/// Heap-position back-pointers make decrease-key O(log n) and queue each state at most once.
 ///
 /// Caller-owned, and callers depend on one property: [`NavScratch::new`] is `const` and all-zero,
 /// so an all-zero block is `new()`. `N` is generic so tests can exercise exhaustion with a tiny
@@ -287,18 +270,32 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     /// heap operation runs.
     eps_num: u16,
     eps_den: u16,
+    goal: (i32, i32),
+    lon_mm_per_udeg: u8,
+    /// Costs beyond `u32` cannot beat a representable route, but are not proof of disconnection.
+    cost_overflow: bool,
 }
 
-// Slot indices (heap positions and `came_from`) are 14-bit, with `HEAP_NONE` as the sentinel.
+// Heap positions are 13-bit, with `HEAP_NONE` as the sentinel.
 const _: () =
     assert!(core::mem::size_of::<NavScratch<NAV_MAX_NODES>>() <= 40 * 1024, "NavScratch busts the LM20 40 kB cap");
-const _: () = assert!(NAV_MAX_NODES < HEAP_NONE as usize, "table indices are 14-bit (meta packs flags above them)");
+const _: () = assert!(NAV_MAX_NODES < HEAP_NONE as usize, "table indices are 13-bit (meta packs flags above them)");
 const _: () = assert!(core::mem::size_of::<NavEntry>() == 24, "the slimmed 24-byte entry layout drifted");
 
 impl<const N: usize> NavScratch<N> {
     pub const fn new() -> Self {
         assert!(N > 0 && N < HEAP_NONE as usize);
-        NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0, eps_num: 0, eps_den: 0 }
+        NavScratch {
+            entries: [NavEntry::EMPTY; N],
+            heap: [0; N],
+            used: 0,
+            heap_len: 0,
+            eps_num: 0,
+            eps_den: 0,
+            goal: (0, 0),
+            lon_mm_per_udeg: 0,
+            cost_overflow: false,
+        }
     }
 
     /// Allocate a zeroed `NavScratch` directly on the heap, never on the stack. The table is tens
@@ -317,29 +314,43 @@ impl<const N: usize> NavScratch<N> {
         }
         self.used = 0;
         self.heap_len = 0;
+        self.cost_overflow = false;
     }
 
-    /// Find an existing entry, or insert at the first free slot. The boolean is true only for a
-    /// new entry. A full table still finds every tracked node, so exhaustion does not stop
-    /// decrease-key or re-open.
-    fn entry(&mut self, id: u32, lon: i32, lat: i32) -> Result<(usize, bool), NavError> {
-        let mut i = id as usize % N;
+    /// Find an arrival state or insert at the first free slot. An insertion failure ends the
+    /// attempt; a queued goal cannot certify a route after a frontier discovery is dropped.
+    fn entry(
+        &mut self,
+        id: u32,
+        coord: (i32, i32),
+        edge: u32,
+        pushing: bool,
+        requires_context: bool,
+    ) -> Result<(usize, bool), NavError> {
+        // A free state's edge can change on improvement; only its fixed mode belongs in the key.
+        let mode = if pushing { META_PUSHING } else { 0 };
+        let policy = if requires_context { 0 } else { META_CONTEXT_FREE };
+        let arrival_key = if requires_context { edge } else { u32::from(mode | policy) };
+        let mut i = (id ^ arrival_key.wrapping_mul(0x9e37_79b9)) as usize % N;
         for _ in 0..N {
             if !self.entries[i].occupied() {
                 self.entries[i] = NavEntry {
                     node_id: id,
-                    lon,
-                    lat,
-                    edge_used: 0,
+                    lon: coord.0,
+                    lat: coord.1,
+                    edge_used: edge,
                     g: 0,
-                    h: 0,
                     came_from: 0,
-                    meta: META_OCCUPIED | HEAP_NONE,
+                    meta: META_OCCUPIED | policy | mode | HEAP_NONE,
                 };
                 self.used += 1;
                 return Ok((i, true));
             }
-            if self.entries[i].node_id == id {
+            let entry = &self.entries[i];
+            if entry.node_id == id
+                && entry.meta & META_CONTEXT_FREE == policy
+                && if requires_context { entry.edge_used == edge } else { entry.meta & META_PUSHING == mode }
+            {
                 return Ok((i, false));
             }
             i = (i + 1) % N;
@@ -348,46 +359,56 @@ impl<const N: usize> NavScratch<N> {
     }
 
     #[inline]
-    fn heap_swap(&mut self, a: usize, b: usize) {
-        self.heap.swap(a, b);
-        self.entries[self.heap[a] as usize].set_heap_pos(a as u16);
-        self.entries[self.heap[b] as usize].set_heap_pos(b as u16);
+    fn priority(&self, idx: usize) -> u64 {
+        let e = &self.entries[idx];
+        let h = nav_distance_bound_mm((e.lon, e.lat), self.goal, self.lon_mm_per_udeg) / 1000;
+        // Compare the exact rational priorities without division or a narrowing sum.
+        u64::from(e.g) * u64::from(self.eps_den.max(1)) + h * u64::from(self.eps_num)
     }
 
     fn sift_up(&mut self, mut pos: usize) {
-        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
+        let held = self.heap[pos];
+        let priority = self.priority(held as usize);
         while pos > 0 {
             let parent = (pos - 1) / 2;
-            if self.entries[self.heap[pos] as usize].f(en, ed) >= self.entries[self.heap[parent] as usize].f(en, ed) {
+            if priority >= self.priority(self.heap[parent] as usize) {
                 break;
             }
-            self.heap_swap(pos, parent);
+            self.heap[pos] = self.heap[parent];
+            self.entries[self.heap[pos] as usize].set_heap_pos(pos as u16);
             pos = parent;
         }
+        self.heap[pos] = held;
+        self.entries[held as usize].set_heap_pos(pos as u16);
     }
 
     fn sift_down(&mut self, mut pos: usize) {
         let len = self.heap_len as usize;
-        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
+        let held = self.heap[pos];
+        let priority = self.priority(held as usize);
         loop {
             let (l, r) = (2 * pos + 1, 2 * pos + 2);
-            let mut min = pos;
-            if l < len
-                && self.entries[self.heap[l] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
-            {
-                min = l;
+            if l >= len {
+                break;
             }
-            if r < len
-                && self.entries[self.heap[r] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
-            {
-                min = r;
+            let mut child = l;
+            let mut child_priority = self.priority(self.heap[l] as usize);
+            if r < len {
+                let right = self.priority(self.heap[r] as usize);
+                if right < child_priority {
+                    child = r;
+                    child_priority = right;
+                }
             }
-            if min == pos {
-                return;
+            if child_priority >= priority {
+                break;
             }
-            self.heap_swap(pos, min);
-            pos = min;
+            self.heap[pos] = self.heap[child];
+            self.entries[self.heap[pos] as usize].set_heap_pos(pos as u16);
+            pos = child;
         }
+        self.heap[pos] = held;
+        self.entries[held as usize].set_heap_pos(pos as u16);
     }
 
     /// Queue entry `idx`, which must not already be queued. It cannot overflow: there is one heap
@@ -445,16 +466,16 @@ pub enum NavPhase {
 /// an interior projection stays a virtual node joined to both edge endpoints.
 #[derive(Clone, Copy)]
 enum SnappedEndpoint {
-    Node { id: u32, coord: (i32, i32) },
+    Node { id: u32, coord: (i32, i32), requires_context: bool },
     Edge(NavEdgeSnap),
 }
 
 impl SnappedEndpoint {
     fn from_snap(edge: NavEdgeSnap) -> Self {
         if edge.position.coord == edge.a.coord {
-            Self::Node { id: edge.a.id, coord: edge.a.coord }
+            Self::Node { id: edge.a.id, coord: edge.a.coord, requires_context: edge.a.requires_context }
         } else if edge.position.coord == edge.b.coord {
-            Self::Node { id: edge.b.id, coord: edge.b.coord }
+            Self::Node { id: edge.b.id, coord: edge.b.coord, requires_context: edge.b.requires_context }
         } else {
             Self::Edge(edge)
         }
@@ -471,6 +492,13 @@ impl SnappedEndpoint {
         match self {
             Self::Node { id, .. } => id,
             Self::Edge(_) => 0,
+        }
+    }
+
+    fn requires_context(self) -> bool {
+        match self {
+            Self::Node { requires_context, .. } => requires_context,
+            Self::Edge(_) => true,
         }
     }
 
@@ -516,6 +544,7 @@ pub struct NavPlanner {
     /// The snapped endpoints, valid once their phase has run.
     start_id: u32,
     start_c: (i32, i32),
+    start_requires_context: bool,
     goal_id: u32,
     goal_c: (i32, i32),
     /// Interior-edge metadata for the two virtual endpoints, plus the expanding lookup's current
@@ -528,10 +557,6 @@ pub struct NavPlanner {
     settles: u32,
     /// The current [`NAV_EPSILON_LADDER`] rung. It never advances past the last one.
     rung: usize,
-    /// Latched once an insert has failed. While set, the search relaxes only tracked nodes. It
-    /// tells the two frontier-drain outcomes apart: set is [`NavError::Exhausted`], clear is
-    /// [`NavError::NoPath`].
-    table_full: bool,
     /// Emit cursors: the staged chain length, the next hop (counting down to 1), the summed path
     /// cost, and the seam vertex shared across hops.
     chain_len: u16,
@@ -618,6 +643,7 @@ impl NavPlanner {
             core::ptr::addr_of_mut!((*slot).objective).write(Objective::Profile);
             core::ptr::addr_of_mut!((*slot).start_id).write(0);
             core::ptr::addr_of_mut!((*slot).start_c).write((0, 0));
+            core::ptr::addr_of_mut!((*slot).start_requires_context).write(true);
             core::ptr::addr_of_mut!((*slot).goal_id).write(0);
             core::ptr::addr_of_mut!((*slot).goal_c).write((0, 0));
             core::ptr::addr_of_mut!((*slot).start_edge).write(None);
@@ -626,7 +652,6 @@ impl NavPlanner {
             core::ptr::addr_of_mut!((*slot).snap_ordinal).write(0);
             core::ptr::addr_of_mut!((*slot).settles).write(0);
             core::ptr::addr_of_mut!((*slot).rung).write(0);
-            core::ptr::addr_of_mut!((*slot).table_full).write(false);
             core::ptr::addr_of_mut!((*slot).chain_len).write(0);
             core::ptr::addr_of_mut!((*slot).hop).write(0);
             core::ptr::addr_of_mut!((*slot).total_m).write(0);
@@ -648,6 +673,7 @@ impl NavPlanner {
                 objective: _,
                 start_id: _,
                 start_c: _,
+                start_requires_context: _,
                 goal_id: _,
                 goal_c: _,
                 start_edge: _,
@@ -656,7 +682,6 @@ impl NavPlanner {
                 snap_ordinal: _,
                 settles: _,
                 rung: _,
-                table_full: _,
                 chain_len: _,
                 hop: _,
                 total_m: _,
@@ -717,21 +742,44 @@ impl NavPlanner {
         Step::Failed(e)
     }
 
+    fn finish_snapping<const N: usize>(&mut self, reader: &Reader, scratch: &mut NavScratch<N>) -> Step {
+        if let Some(cor) = self.corridor.as_mut() {
+            cor.set_exempt_nodes(self.start_c, self.goal_c);
+        }
+        scratch.lon_mm_per_udeg = reader.nav_directory().lon_mm_per_udeg;
+        if let Err(e) = self.reseed(scratch) {
+            return self.fail(e);
+        }
+        self.phase = PhaseState::Search;
+        Step::Running
+    }
+
     /// Start a search attempt at the current [`NAV_EPSILON_LADDER`] rung: clear the table, set its
-    /// ratio, drop any latched `table_full`, and seed the start node into a fresh frontier. A retry
+    /// ratio, and seed the start node into a fresh frontier. A retry
     /// keeps the snapped endpoints and the warm tile cache, because it walks the same region.
     fn reseed<const N: usize>(&mut self, scratch: &mut NavScratch<N>) -> Result<(), NavError> {
         scratch.reset();
         let (num, den) = NAV_EPSILON_LADDER[self.rung];
-        debug_assert!(den != 0, "an ε rung denominator must be non-zero (NavEntry::f divides by it)");
+        debug_assert!(den != 0, "an ε rung denominator must be non-zero");
         scratch.eps_num = num as u16;
         scratch.eps_den = den as u16;
-        self.table_full = false;
-        let (si, _) = scratch.entry(self.start_id, self.start_c.0, self.start_c.1)?;
-        scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
+        scratch.goal = self.goal_c;
+        let (si, _) = scratch.entry(self.start_id, self.start_c, u32::MAX, false, self.start_requires_context)?;
         scratch.entries[si].came_from = si as u16;
         scratch.heap_push(si);
         Ok(())
+    }
+
+    /// A dropped discovery invalidates the whole attempt, including any already queued goal.
+    fn retry<const N: usize>(&mut self, scratch: &mut NavScratch<N>, error: NavError) -> Step {
+        if error == NavError::Exhausted && self.rung + 1 < NAV_EPSILON_LADDER.len() {
+            self.rung += 1;
+            return match self.reseed(scratch) {
+                Ok(()) => Step::Running,
+                Err(error) => self.fail(error),
+            };
+        }
+        self.fail(error)
     }
 
     /// Run one bounded unit of planning: one endpoint lookup window, a miss-budgeted burst of
@@ -755,11 +803,15 @@ impl NavPlanner {
                 if self.snap_ordinal == 0 {
                     scratch.reset();
                     tiles.reset();
-                    self.mult = ProfileMult::resolve(reader, self.bike).prefer(self.objective);
+                    let Some(profile) = ProfileMult::resolve(reader, self.bike) else {
+                        return self.fail(NavError::NoPath);
+                    };
+                    self.mult = profile.prefer(self.objective);
                 }
                 let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
                 let lookup_radius = snap_lookup_radius(self.snap_ordinal);
-                match snap_window(reader, tiles, self.from, lookup_radius, cap) {
+                let departing = (self.from != self.to).then_some(true);
+                match snap_window(reader, tiles, self.from, lookup_radius, cap, self.bike as usize, departing) {
                     Err(()) => return self.fail(NavError::NoPath),
                     Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
                         self.snap_best = Some(found);
@@ -779,15 +831,23 @@ impl NavPlanner {
                 };
                 let snapped = SnappedEndpoint::from_snap(edge);
                 self.start_c = snapped.coord();
+                self.start_requires_context = snapped.requires_context();
                 self.start_edge = snapped.edge();
                 self.start_id = if self.start_edge.is_some() { VIRTUAL_START_ID } else { snapped.node_id() };
+                if self.from == self.to {
+                    // No traversal requires an outgoing or incoming direction, or a second snap.
+                    self.goal_c = self.start_c;
+                    self.goal_edge = self.start_edge;
+                    self.goal_id = self.start_id;
+                    return self.finish_snapping(reader, scratch);
+                }
                 self.phase = PhaseState::SnapTo;
                 Step::Running
             }
             PhaseState::SnapTo => {
                 let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
                 let lookup_radius = snap_lookup_radius(self.snap_ordinal);
-                match snap_window(reader, tiles, self.to, lookup_radius, cap) {
+                match snap_window(reader, tiles, self.to, lookup_radius, cap, self.bike as usize, Some(false)) {
                     Err(()) => return self.fail(NavError::NoPath),
                     Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
                         self.snap_best = Some(found);
@@ -809,145 +869,107 @@ impl NavPlanner {
                 self.goal_c = snapped.coord();
                 self.goal_edge = snapped.edge();
                 self.goal_id = if self.goal_edge.is_some() { VIRTUAL_GOAL_ID } else { snapped.node_id() };
-                // Both endpoints are snapped, so the corridor exemptions can be set.
-                if let Some(cor) = self.corridor.as_mut() {
-                    cor.set_exempt_nodes(self.start_c, self.goal_c);
+                if self
+                    .start_edge
+                    .zip(self.goal_edge)
+                    .is_some_and(|(start, goal)| start.edge_id == goal.edge_id && start.position == goal.position)
+                {
+                    self.goal_id = self.start_id;
                 }
-                if let Err(e) = self.reseed(scratch) {
-                    return self.fail(e);
-                }
-                self.phase = PhaseState::Search;
-                Step::Running
+                self.finish_snapping(reader, scratch)
             }
-            // The search terminates because a settle either closes a node or strictly lowers an
-            // integer `g >= 0`, the frontier is bounded by the table, and no new node enters once
-            // the table is full.
+            // Each relaxation strictly lowers an integer cost or inserts one bounded arrival state.
             PhaseState::Search => {
                 let read_start = tiles.stats().source_reads();
                 let mut settled_this_step: u32 = 0;
                 loop {
                     let Some(idx) = scratch.heap_pop() else {
-                        // A table that filled ran out of room short of the goal; one that never
-                        // filled means the goal is disconnected.
-                        if self.table_full && self.rung + 1 < NAV_EPSILON_LADDER.len() {
-                            self.rung += 1;
-                            if let Err(e) = self.reseed(scratch) {
-                                return self.fail(e);
-                            }
-                            return Step::Running;
-                        }
-                        let e = if self.table_full { NavError::Exhausted } else { NavError::NoPath };
-                        return self.fail(e);
+                        let error = if scratch.cost_overflow { NavError::Exhausted } else { NavError::NoPath };
+                        return self.fail(error);
                     };
                     if scratch.entries[idx].node_id == self.goal_id {
-                        // The goal is reached even if the table filled on the way. The path may
-                        // then exceed the rung's bound, which is accepted.
                         return match self.stage_chain(scratch, idx) {
                             Ok(()) => {
                                 self.phase = PhaseState::Emit;
                                 Step::Running
                             }
-                            Err(e) => self.fail(e),
+                            Err(error) => self.fail(error),
                         };
                     }
-                    // An interior start is a virtual node with two partial-edge exits and no
-                    // record of its own. When both endpoints lie on one edge, the direct projected
-                    // connection is added too, so a short mid-block route takes no junction.
+                    // The exact start projection has no graph record. Its exits follow the
+                    // selected profile's directional masks, including a same-edge direct goal.
                     if scratch.entries[idx].node_id == VIRTUAL_START_ID {
                         let Some(start) = self.start_edge else {
                             return self.fail(NavError::NoPath);
                         };
-                        let raw_a = start.from_a_m;
-                        self.table_full |= relax_virtual_edge(
-                            scratch,
-                            idx,
-                            start.a.id,
-                            start.a.coord,
-                            start.edge_id,
-                            raw_a,
-                            partial_ascent(start.ascent_ba, raw_a, start.length_m),
-                            start.way_kind,
-                            self.goal_c,
-                            &self.mult,
-                        );
-                        let raw_b = start.length_m.saturating_sub(start.from_a_m);
-                        self.table_full |= relax_virtual_edge(
-                            scratch,
-                            idx,
-                            start.b.id,
-                            start.b.coord,
-                            start.edge_id,
-                            raw_b,
-                            partial_ascent(start.ascent_ab, raw_b, start.length_m),
-                            start.way_kind,
-                            self.goal_c,
-                            &self.mult,
-                        );
-                        if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
-                            let raw = start.from_a_m.abs_diff(goal.from_a_m);
-                            let ascent = if goal.from_a_m >= start.from_a_m {
-                                partial_ascent(start.ascent_ab, raw, start.length_m)
-                            } else {
-                                partial_ascent(start.ascent_ba, raw, start.length_m)
-                            };
-                            self.table_full |= relax_virtual_edge(
+                        let exits = [
+                            (start.a, start.from_a_m, start.ascent_ba, start.allowed_ba, start.push_ba),
+                            (
+                                start.b,
+                                start.length_m.saturating_sub(start.from_a_m),
+                                start.ascent_ab,
+                                start.allowed_ab,
+                                start.push_ab,
+                            ),
+                        ];
+                        for (endpoint, raw, ascent, allowed, pushing) in exits {
+                            if !allowed {
+                                continue;
+                            }
+                            if let Err(error) = relax_virtual_edge(
                                 scratch,
                                 idx,
-                                VIRTUAL_GOAL_ID,
-                                goal.position.coord,
+                                endpoint.id,
+                                endpoint.coord,
                                 start.edge_id,
+                                endpoint.requires_context,
                                 raw,
-                                ascent,
+                                partial_ascent(ascent, raw, start.length_m),
                                 start.way_kind,
-                                self.goal_c,
+                                pushing,
                                 &self.mult,
-                            );
+                            ) {
+                                return self.retry(scratch, error);
+                            }
                         }
-                        scratch.entries[idx].meta |= META_CLOSED;
+                        if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
+                            // Rounded metre offsets can tie for distinct sub-metre positions.
+                            let forward = (goal.position.segment, goal.position.fraction)
+                                >= (start.position.segment, start.position.fraction);
+                            let (allowed, pushing, ascent) = if forward {
+                                (start.allowed_ab, start.push_ab, start.ascent_ab)
+                            } else {
+                                (start.allowed_ba, start.push_ba, start.ascent_ba)
+                            };
+                            let raw = start.from_a_m.abs_diff(goal.from_a_m);
+                            if allowed {
+                                if let Err(error) = relax_virtual_edge(
+                                    scratch,
+                                    idx,
+                                    VIRTUAL_GOAL_ID,
+                                    goal.position.coord,
+                                    start.edge_id,
+                                    true,
+                                    raw,
+                                    partial_ascent(ascent, raw, start.length_m),
+                                    start.way_kind,
+                                    pushing,
+                                    &self.mult,
+                                ) {
+                                    return self.retry(scratch, error);
+                                }
+                            }
+                        }
                         continue;
                     }
-                    self.settles = self.settles.wrapping_add(1);
+                    self.settles = self.settles.saturating_add(1);
                     settled_this_step += 1;
-                    scratch.entries[idx].meta |= META_CLOSED;
-                    // A read failure is the only hard error; a full table latches `table_full`.
-                    if let Err(e) = settle::<N>(
-                        reader,
-                        scratch,
-                        tiles,
-                        idx,
-                        self.goal_c,
-                        &self.mult,
-                        self.corridor.as_ref(),
-                        &mut self.table_full,
-                    ) {
-                        return self.fail(e);
+                    if let Err(error) =
+                        settle::<N>(reader, scratch, tiles, idx, self.goal_edge, &self.mult, self.corridor.as_ref())
+                    {
+                        return self.retry(scratch, error);
                     }
-                    if let Some(goal) = self.goal_edge {
-                        let settled_id = scratch.entries[idx].node_id;
-                        let partial = if settled_id == goal.a.id {
-                            Some((goal.from_a_m, goal.ascent_ab))
-                        } else if settled_id == goal.b.id {
-                            Some((goal.length_m.saturating_sub(goal.from_a_m), goal.ascent_ba))
-                        } else {
-                            None
-                        };
-                        if let Some((raw, ascent)) = partial {
-                            self.table_full |= relax_virtual_edge(
-                                scratch,
-                                idx,
-                                VIRTUAL_GOAL_ID,
-                                goal.position.coord,
-                                goal.edge_id,
-                                raw,
-                                partial_ascent(ascent, raw, goal.length_m),
-                                goal.way_kind,
-                                self.goal_c,
-                                &self.mult,
-                            );
-                        }
-                    }
-                    // The check trails the settle, so a step always makes at least one node of
-                    // progress.
+                    // The check trails the settle, so a step always makes progress.
                     if tiles.stats().source_reads() - read_start >= NAV_MISSES_PER_STEP
                         || settled_this_step >= NAV_SETTLES_PER_STEP_CAP
                     {
@@ -1054,7 +1076,7 @@ impl NavPlanner {
             }
             scratch.heap[chain_len] = cur as u16;
             chain_len += 1;
-            if scratch.entries[cur].node_id == self.start_id {
+            if scratch.entries[cur].node_id == self.start_id && scratch.entries[cur].came_from as usize == cur {
                 break;
             }
             cur = scratch.entries[cur].came_from as usize;
@@ -1266,7 +1288,43 @@ fn partial_ascent(total: u16, partial_m: u32, length_m: u32) -> u16 {
     rounded.checked_div(u64::from(length_m)).unwrap_or(0).min(u64::from(u16::MAX)) as u16
 }
 
-/// Relax one synthetic partial-edge adjacency used by an exact projected start or goal.
+/// Relax one arrival state. A cost outside `u32` cannot beat a representable goal; retain the
+/// range failure so a drained frontier does not report a false disconnection.
+#[allow(clippy::too_many_arguments)]
+fn relax<const N: usize>(
+    scratch: &mut NavScratch<N>,
+    from: usize,
+    target_id: u32,
+    target_coord: (i32, i32),
+    edge_id: u32,
+    pushing: bool,
+    requires_context: bool,
+    cost: u64,
+) -> Result<(), NavError> {
+    let Ok(tentative) = u32::try_from(u64::from(scratch.entries[from].g) + cost) else {
+        scratch.cost_overflow = true;
+        return Ok(());
+    };
+    let (j, fresh) = scratch.entry(target_id, target_coord, edge_id, pushing, requires_context)?;
+    if !fresh && tentative >= scratch.entries[j].g {
+        return Ok(());
+    }
+    let entry = &mut scratch.entries[j];
+    entry.g = tentative;
+    entry.came_from = from as u16;
+    // Descendants remain valid: a free state's onward transitions are independent of this edge.
+    entry.edge_used = edge_id;
+    entry.meta = (entry.meta & !META_PUSHING) | if pushing { META_PUSHING } else { 0 };
+    if entry.heap_pos() == HEAP_NONE {
+        scratch.heap_push(j);
+    } else {
+        let pos = entry.heap_pos() as usize;
+        scratch.sift_up(pos);
+    }
+    Ok(())
+}
+
+/// A virtual edge uses the same integer distance lower bound as serialized adjacency entries.
 #[allow(clippy::too_many_arguments)]
 fn relax_virtual_edge<const N: usize>(
     scratch: &mut NavScratch<N>,
@@ -1274,52 +1332,23 @@ fn relax_virtual_edge<const N: usize>(
     target_id: u32,
     target_coord: (i32, i32),
     edge_id: u32,
+    requires_context: bool,
     raw_cost_m: u32,
     ascent_m: u16,
     way_kind: u8,
-    goal_c: (i32, i32),
+    pushing: bool,
     mult: &ProfileMult,
-) -> bool {
-    let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind) else { return false };
-    let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
-    match scratch.entry(target_id, target_coord.0, target_coord.1) {
-        Ok((j, false)) => {
-            if tentative < scratch.entries[j].g {
-                let entry = &mut scratch.entries[j];
-                entry.g = tentative;
-                entry.came_from = from as u16;
-                entry.edge_used = edge_id;
-                if entry.heap_pos() == HEAP_NONE {
-                    entry.meta &= !META_CLOSED;
-                    scratch.heap_push(j);
-                } else {
-                    let pos = scratch.entries[j].heap_pos() as usize;
-                    scratch.sift_up(pos);
-                }
-            }
-            false
-        }
-        Ok((j, true)) => {
-            let entry = &mut scratch.entries[j];
-            entry.g = tentative;
-            entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
-            entry.came_from = from as u16;
-            entry.edge_used = edge_id;
-            scratch.heap_push(j);
-            false
-        }
-        Err(_) => true,
-    }
+) -> Result<(), NavError> {
+    let entry = scratch.entries[from];
+    let bound = nav_distance_bound_mm((entry.lon, entry.lat), target_coord, scratch.lon_mm_per_udeg).div_ceil(1000);
+    let raw_cost_m = raw_cost_m.max(u32::try_from(bound).map_err(|_| NavError::NoPath)?);
+    let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind, pushing) else { return Ok(()) };
+    let dismount = if pushing && entry.meta & META_PUSHING == 0 { 100 } else { 0 };
+    relax(scratch, from, target_id, target_coord, edge_id, pushing, requires_context, weighted + dismount)
 }
 
-/// One settle: descend the node quadtree to the settled node's leaf and relax each neighbor
-/// through the plan's profile. A node the walk does not yield, which means a corrupt map, relaxes
-/// nothing and the search continues on the rest of the frontier.
-///
-/// A full scratch drops the new discovery and latches `*table_full`; decrease-key of a tracked
-/// neighbor still relaxes. The only hard error is a read failure.
-///
-/// Must stay `#[inline(never)]`: this is a phase-boundary frame and must not join the step frame.
+/// Settle one arrival state. Incoming edge identity retains the turn context at a junction.
+/// A full table aborts immediately; no partially explored frontier can certify a route.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn settle<const N: usize>(
@@ -1327,65 +1356,115 @@ fn settle<const N: usize>(
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
     idx: usize,
-    goal_c: (i32, i32),
+    goal: Option<NavEdgeSnap>,
     mult: &ProfileMult,
     corridor: Option<&Corridor>,
-    table_full: &mut bool,
 ) -> Result<(), NavError> {
     let settled = scratch.entries[idx];
     let view = BBox { min_lon: settled.lon, min_lat: settled.lat, max_lon: settled.lon, max_lat: settled.lat };
+    let mut outcome = Ok(());
+    let mut found = false;
     reader
         .for_each_nav_node_cached(&view, tiles, |n| {
-            // A node can be yielded more than once when two leaves share a chunk, so only the
-            // settled node's own record relaxes anything.
-            if n.id != settled.node_id {
+            if n.id != settled.node_id || found || outcome.is_err() {
                 return;
             }
-            for nb in n.neighbors() {
-                // A forbidden class is skipped, never relaxed, so the graph stays whole for the
-                // other profiles.
-                let Some(weighted) = mult.edge_cost(nb.cost_m, nb.ascent_m, nb.way_kind) else {
-                    continue;
+            found = true;
+            if settled.meta & META_CONTEXT_FREE != 0 && n.requires_arrival_context(mult.profile_mask) {
+                outcome = Err(NavError::NoPath);
+                return;
+            }
+            let incoming = if settled.edge_used == u32::MAX {
+                None
+            } else {
+                let Some(incoming) = n.neighbors().find(|nb| nb.edge_id == settled.edge_used) else {
+                    outcome = Err(NavError::NoPath);
+                    return;
                 };
-                // A blacklisted edge is skipped exactly like a forbidden class.
-                if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
+                if incoming.port >= 32 {
+                    outcome = Err(NavError::NoPath);
+                    return;
+                }
+                Some(incoming.port)
+            };
+            for nb in n.neighbors() {
+                if nb.profile_mask & mult.profile_mask == 0
+                    || incoming.is_some_and(|port| nb.forbidden_incoming_ports & (1u32 << port) != 0)
+                    || corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat)))
+                {
                     continue;
                 }
-                let tentative = sat16((settled.g as u32).saturating_add(weighted));
-                match scratch.entry(nb.id, nb.lon, nb.lat) {
-                    Ok((j, false)) => {
-                        if tentative < scratch.entries[j].g {
-                            let e = &mut scratch.entries[j];
-                            e.g = tentative;
-                            e.came_from = idx as u16;
-                            e.edge_used = nb.edge_id;
-                            if e.heap_pos() == HEAP_NONE {
-                                // The inflated `h` makes a better-`g` rediscovery of a closed
-                                // node routine, so it re-opens. The bound still holds.
-                                e.meta &= !META_CLOSED;
-                                scratch.heap_push(j);
-                            } else {
-                                let pos = scratch.entries[j].heap_pos() as usize;
-                                scratch.sift_up(pos);
+                // Turning back on the same physical edge does not cross the node's barrier.
+                let crosses = incoming.is_some() && settled.edge_used != nb.edge_id;
+                if crosses && n.crossing_profile_mask & mult.profile_mask == 0 {
+                    continue;
+                }
+                let pushing = nb.push_mask & mult.profile_mask != 0;
+                let crossing_push = crosses && n.crossing_push_mask & mult.profile_mask != 0;
+                let dismount = if (pushing || crossing_push) && settled.meta & META_PUSHING == 0 { 100 } else { 0 };
+                // The goal projection is an outgoing slice of this very adjacency, so its turn
+                // and barrier checks are identical to the complete edge's checks.
+                if let Some(goal) = goal.filter(|goal| goal.edge_id == nb.edge_id) {
+                    let partial = if settled.node_id == goal.a.id {
+                        Some((goal.from_a_m, goal.ascent_ab))
+                    } else if settled.node_id == goal.b.id {
+                        Some((goal.length_m.saturating_sub(goal.from_a_m), goal.ascent_ba))
+                    } else {
+                        None
+                    };
+                    if let Some((raw, ascent)) = partial {
+                        let ascent = partial_ascent(ascent, raw, goal.length_m);
+                        let bound = nav_distance_bound_mm(
+                            (settled.lon, settled.lat),
+                            goal.position.coord,
+                            scratch.lon_mm_per_udeg,
+                        )
+                        .div_ceil(1000);
+                        let raw = raw.max(bound as u32);
+                        if let Some(cost) = mult.edge_cost(raw, ascent, nb.way_kind, pushing) {
+                            outcome = relax(
+                                scratch,
+                                idx,
+                                VIRTUAL_GOAL_ID,
+                                goal.position.coord,
+                                nb.edge_id,
+                                pushing,
+                                true,
+                                cost + dismount,
+                            );
+                            if outcome.is_err() {
+                                return;
                             }
                         }
                     }
-                    // A new node is inserted only while the table has room. No new node once it
-                    // is full is what makes the frontier drain.
-                    Ok((j, true)) => {
-                        let e = &mut scratch.entries[j];
-                        e.g = tentative;
-                        e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
-                        e.came_from = idx as u16;
-                        e.edge_used = nb.edge_id;
-                        scratch.heap_push(j);
-                    }
-                    Err(_) => *table_full = true,
+                }
+                let bound =
+                    nav_distance_bound_mm((settled.lon, settled.lat), (nb.lon, nb.lat), scratch.lon_mm_per_udeg)
+                        .div_ceil(1000);
+                let raw = nb.cost_m.max(bound as u32);
+                let Some(weighted) = mult.edge_cost(raw, nb.ascent_m, nb.way_kind, pushing) else {
+                    continue;
+                };
+                outcome = relax(
+                    scratch,
+                    idx,
+                    nb.id,
+                    (nb.lon, nb.lat),
+                    nb.edge_id,
+                    pushing,
+                    nb.target_requires_context,
+                    weighted + dismount,
+                );
+                if outcome.is_err() {
+                    return;
                 }
             }
         })
         .map_err(|_| NavError::NoPath)?;
-    Ok(())
+    if !found {
+        return Err(NavError::NoPath);
+    }
+    outcome
 }
 
 /// Scan one lookup square and project every candidate edge geometry. The caller tries
@@ -1398,6 +1477,8 @@ fn snap_window(
     p: (i32, i32),
     lookup_radius_m: f32,
     cap: f32,
+    profile: usize,
+    departing: Option<bool>,
 ) -> Result<Option<NavEdgeCandidate>, ()> {
     if reader.nav_directory().is_empty() {
         return Err(());
@@ -1411,7 +1492,7 @@ fn snap_window(
         max_lon: p.0.saturating_add(lon_half),
         max_lat: p.1.saturating_add(full_half),
     };
-    reader.nearest_nav_edge_candidate_cached(&view, tiles, p, cap).map_err(|_| ())
+    reader.nearest_nav_edge_candidate_cached(&view, tiles, p, cap, profile, departing).map_err(|_| ())
 }
 
 #[inline]
@@ -1435,22 +1516,96 @@ fn snap_candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use super::{sat16, ProfileMult};
+    use super::*;
+
+    #[test]
+    fn wide_priorities_keep_heap_order_and_arrival_context() {
+        let mut scratch = NavScratch::<32>::new();
+        scratch.goal = (100_000, -200_000);
+        scratch.lon_mm_per_udeg = 73;
+        scratch.eps_num = 13;
+        scratch.eps_den = 10;
+        let slots: [usize; 16] = core::array::from_fn(|k| {
+            let (slot, fresh) = scratch.entry(1, (k as i32 * 1000, k as i32 * -1000), k as u32, false, true).unwrap();
+            assert!(fresh, "distinct incoming edges retain distinct arrival states");
+            scratch.entries[slot].g = u32::MAX - (k as u32 * 100_003);
+            scratch.heap_push(slot);
+            slot
+        });
+        scratch.entries[slots[0]].g = 70_000;
+        scratch.sift_up(scratch.entries[slots[0]].heap_pos() as usize);
+        assert_eq!(scratch.heap_pop(), Some(slots[0]));
+        let mut previous = 0;
+        while let Some(slot) = scratch.heap_pop() {
+            let priority = scratch.priority(slot);
+            assert!(priority >= previous);
+            assert!(priority > u64::from(u32::MAX));
+            previous = priority;
+            assert_eq!(scratch.entries[slot].heap_pos(), HEAP_NONE);
+        }
+        scratch.entries[slots[0]].g = 10;
+        scratch.heap_push(slots[0]);
+        assert_eq!(scratch.heap_pop(), Some(slots[0]));
+    }
+
+    #[test]
+    fn overflow_cannot_wrap_or_hide_a_representable_route() {
+        let mut scratch = NavScratch::<4>::new();
+        let (start, _) = scratch.entry(0, (0, 0), u32::MAX, false, true).unwrap();
+        scratch.entries[start].g = u32::MAX - 100;
+        relax(&mut scratch, start, 1, (1, 0), 1, false, true, 101).unwrap();
+        assert!(scratch.cost_overflow);
+        assert_eq!(scratch.used, 1, "the unrepresentable branch is not queued");
+        relax(&mut scratch, start, 2, (2, 0), 2, false, true, 100).unwrap();
+        let goal = scratch.heap_pop().unwrap();
+        assert_eq!(scratch.entries[goal].node_id, 2);
+        assert_eq!(scratch.entries[goal].g, u32::MAX, "the exact largest cost remains representable");
+    }
+
+    #[test]
+    fn free_arrivals_share_only_equal_modes_and_keep_improved_predecessors() {
+        let mut scratch = NavScratch::<8>::new();
+        let (start, _) = scratch.entry(0, (0, 0), u32::MAX, false, false).unwrap();
+        scratch.entries[start].came_from = start as u16;
+        relax(&mut scratch, start, 1, (1, 0), 10, false, false, 200).unwrap();
+        let (junction, fresh) = scratch.entry(1, (1, 0), 10, false, false).unwrap();
+        assert!(!fresh);
+        assert_eq!(scratch.heap_pop(), Some(junction));
+        relax(&mut scratch, junction, 3, (3, 0), 30, false, false, 10).unwrap();
+        let (goal, _) = scratch.entry(3, (3, 0), 30, false, false).unwrap();
+        relax(&mut scratch, start, 2, (2, 0), 20, false, false, 10).unwrap();
+        let (detour, _) = scratch.entry(2, (2, 0), 20, false, false).unwrap();
+        relax(&mut scratch, detour, 1, (1, 0), 21, false, false, 100).unwrap();
+        assert_eq!(scratch.entry(1, (1, 0), 99, false, false).unwrap(), (junction, false));
+        assert_eq!((scratch.entries[junction].g, scratch.entries[junction].edge_used), (110, 21));
+        assert_ne!(scratch.entries[junction].heap_pos(), HEAP_NONE, "the improved free state reopens");
+        let (pushing, fresh) = scratch.entry(1, (1, 0), 21, true, false).unwrap();
+        assert!(fresh);
+        assert_ne!(pushing, junction, "an already-pushing arrival has a different onward dismount cost");
+        assert!(scratch.entry(1, (1, 0), 21, false, true).unwrap().1, "restricted arrivals retain their edge");
+        let mut planner = NavPlanner::new((0, 0), (3, 0), "Improved predecessor", BikeType::Road);
+        planner.start_id = 0;
+        planner.stage_chain(&mut scratch, goal).unwrap();
+        assert_eq!(planner.chain_len, 4);
+        let chain = &scratch.heap[..usize::from(planner.chain_len)];
+        assert_eq!(chain, &[goal as u16, junction as u16, detour as u16, start as u16]);
+        assert_eq!(scratch.entries[goal].g, 210, "an older descendant cost remains a safe upper bound");
+    }
 
     #[test]
     fn objectives_keep_bans_suitability_and_distance_lower_bound() {
         use super::Objective;
-        let mut profile = ProfileMult { highway: [24; 32], surface: [32; 8], climb: 12 };
+        let mut profile = ProfileMult { highway: [24; 32], surface: [32; 8], climb: 12, profile_mask: 1 };
         profile.highway[4] = 0;
         profile.surface[7] = 0;
         for objective in Objective::TRIALS {
             let p = profile.prefer(objective);
             assert_eq!(p.highway, profile.highway);
             assert_eq!(p.surface[..3], profile.surface[..3]);
-            assert_eq!(p.edge_cost(100, 100, 4), None);
-            assert_eq!(p.edge_cost(100, 100, 7 << 5), None);
+            assert_eq!(p.edge_cost(100, 100, 4, false), None);
+            assert_eq!(p.edge_cost(100, 100, 7 << 5, false), None);
             for surface in 0..7 {
-                assert!(p.edge_cost(100, 0, surface << 5).unwrap() >= 100);
+                assert!(p.edge_cost(100, 0, surface << 5, false).unwrap() >= 100);
                 assert!(p.surface[surface as usize] >= profile.surface[surface as usize]);
             }
         }
@@ -1469,27 +1624,28 @@ mod tests {
     /// worst legal value fits.
     #[test]
     fn edge_cost_at_the_wire_maxima_is_exact_and_nowhere_near_wrapping() {
-        let p = ProfileMult { highway: [u8::MAX; 32], surface: [u8::MAX; 8], climb: u32::from(u8::MAX) };
-        let got = p.edge_cost(u32::from(u16::MAX), u16::MAX, 0xFF).expect("255 is not forbidden");
+        let p =
+            ProfileMult { highway: [u8::MAX; 32], surface: [u8::MAX; 8], climb: u32::from(u8::MAX), profile_mask: 1 };
+        let got = p.edge_cost(u32::from(u16::MAX), u16::MAX, 0xFF, false).expect("255 is not forbidden");
         assert_eq!(got, 16_645_890 + 16_711_425);
-        assert!(got < u32::MAX / 64, "the worst legal edge must stay far inside u32");
-        assert_eq!(sat16(u32::from(u16::MAX).saturating_add(got)), u16::MAX);
+        assert!(got < u64::from(u32::MAX) / 64, "the worst legal edge must stay far inside u32");
+        assert!(got > u64::from(u16::MAX));
     }
 
     #[test]
     fn either_zero_reproduces_the_pre_terrain_cost() {
-        let blind = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0 };
+        let blind = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 0, profile_mask: 1 };
         let weighted = ProfileMult { climb: 10, ..blind };
-        assert_eq!(blind.edge_cost(1_000, 400, 0), Some(1_000), "climb-blind ignores a 400 m climb");
-        assert_eq!(weighted.edge_cost(1_000, 0, 0), Some(1_000), "a flat edge costs its ground length");
-        assert_eq!(weighted.edge_cost(1_000, 400, 0), Some(5_000), "…and a climbing one is charged for it");
+        assert_eq!(blind.edge_cost(1_000, 400, 0, false), Some(1_000), "climb-blind ignores a 400 m climb");
+        assert_eq!(weighted.edge_cost(1_000, 0, 0, false), Some(1_000), "a flat edge costs its ground length");
+        assert_eq!(weighted.edge_cost(1_000, 400, 0, false), Some(5_000), "…and a climbing one is charged for it");
     }
 
     #[test]
     fn a_forbidden_class_stays_forbidden_under_any_climb() {
-        let mut p = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 255 };
+        let mut p = ProfileMult { highway: [16; 32], surface: [16; 8], climb: 255, profile_mask: 1 };
         p.highway[4] = 0;
-        assert_eq!(p.edge_cost(1_000, 0, 4), None);
-        assert_eq!(p.edge_cost(1_000, u16::MAX, 4), None);
+        assert_eq!(p.edge_cost(1_000, 0, 4, false), None);
+        assert_eq!(p.edge_cost(1_000, u16::MAX, 4, false), None);
     }
 }

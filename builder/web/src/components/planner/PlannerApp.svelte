@@ -23,7 +23,7 @@
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import SignedRoutes from './SignedRoutes.svelte';
-    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { presetDescription, presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
     import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -52,7 +52,7 @@
     import type { Version } from '../../lib/planner/versions';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
+    import { profileId, regionProfiles, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
@@ -161,6 +161,8 @@
     // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
     const finder = new RouteFinder();
     let routesOpen = $state(false);
+    let routeProfiles = $state<string[] | 'loading' | 'failed'>('loading');
+    let profileRetry = $state(0);
     // The plan came from the Routes view, so "Back to routes" shows under the search box.
     let fromRoutes = $state(false);
     const bike = $derived<BikeType>(trip.bike ?? 'touring');
@@ -700,7 +702,10 @@
             const route = await finder.find(id, at);
             const plan = route && await finder.dataPlan(route);
             if (!route) message = 'This route is not in the route catalog.';
-            else if (plan) planSignedRoute(route, plan);
+            else if (presetDescription(presetName(route.profile))) {
+                openRoutes({ coordinate: at });
+                await finder.select(route.id);
+            } else if (plan) planSignedRoute(route, plan);
             else message = 'This route is too long for one plan. Plan one of its stages from the Routes view.';
         } catch {
             message = 'The route could not load. Check your connection and retry.';
@@ -716,13 +721,25 @@
         showedDetail = !!detail;
     });
 
+    // The Plan action and detail preview use the same discovery result.
+    $effect(() => {
+        if (!routesOpen) return;
+        void profileRetry;
+        routeProfiles = 'loading';
+        let current = true;
+        regionProfiles().then(profiles => { if (current) routeProfiles = profiles; }, () => { if (current) routeProfiles = 'failed'; });
+        return () => { current = false; };
+    });
+
     // The detail plan is routed once, for its profile and time. The leg cache keeps the legs for "Plan this route".
     $effect(() => {
-        const detail = finder.detail, plan = routesOpen ? finder.plan : undefined;
-        if (!detail || !plan) return;
+        const detail = finder.detail, plan = routesOpen ? finder.plan : undefined, profiles = routeProfiles;
+        if (!detail || !plan || !Array.isArray(profiles)) return;
         const draft = untrack(() => planTrip(routeBase(detail.route, trip), plan, detail.route.loop));
+        if (!profiles.includes(profileId(draft))) return;
         const abort = new AbortController();
-        session.calculate(draft, abort.signal).then(line => { if (!abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
+        session.calculate(draft, abort.signal)
+            .then(line => { if (line && !abort.signal.aborted) finder.routed = { plan, line }; }, () => {});
         return () => abort.abort();
     });
 
@@ -977,7 +994,7 @@
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
-                <SignedRoutes {finder} activity={bike} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
+                <SignedRoutes {finder} activity={bike} profiles={routeProfiles} onRetryProfiles={() => profileRetry++} {theme} attribution={config.attribution} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
                     current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
                     findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}

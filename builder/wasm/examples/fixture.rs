@@ -46,7 +46,7 @@ use obc_map_core::config::Config;
 use obc_map_core::grid::BandTable;
 use obc_map_core::progress::Progress;
 use obc_places::metadata::Poi;
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{data::Routing, RoutableWay};
 
 /// The `2^18` lon line the fixture straddles.
 const SEAM: i64 = 7_602_176;
@@ -189,12 +189,13 @@ fn rect(style_id: u8, min_lod: usize, lat0: i64, lon0: i64, lat1: i64, lon1: i64
 /// A routable way from explicit `(osm node id, (lat, lon))` vertices. The packer identifies a
 /// junction by OSM node id, so two ways that meet at one coordinate under different ids are not
 /// connected.
-fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
-    RoutableWay {
-        node_ids: pts.iter().map(|(id, _)| *id).collect(),
-        coords: pts.iter().map(|(_, (lat, lon))| (*lon as i32, *lat as i32)).collect(),
+fn way(id: i64, kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
+    RoutableWay::new(
+        id,
+        pts.iter().map(|(id, _)| *id).collect(),
+        pts.iter().map(|(_, (lat, lon))| (*lon as i32, *lat as i32)).collect(),
         kind,
-    }
+    )
 }
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
@@ -267,12 +268,12 @@ fn extract(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     let junction = (LAT, SEAM + 30_000);
     let ways = vec![
         // Across the seam to the junction — the route neither cell can carry alone.
-        way(7, &[(1, (LAT, SEAM - 50_000)), (2, (LAT, SEAM - 10_000)), (3, junction)]),
-        way(7, &[(3, junction), (4, (LAT + 20_000, SEAM + 90_000)), (5, (LAT + 40_000, SEAM + 120_000))]),
-        way(10, &[(3, junction), (6, (LAT + 60_000, SEAM + 30_000))]),
+        way(1, 7, &[(1, (LAT, SEAM - 50_000)), (2, (LAT, SEAM - 10_000)), (3, junction)]),
+        way(2, 7, &[(3, junction), (4, (LAT + 20_000, SEAM + 90_000)), (5, (LAT + 40_000, SEAM + 120_000))]),
+        way(3, 10, &[(3, junction), (6, (LAT + 60_000, SEAM + 30_000))]),
         // An islet that crosses the seam, which a bake may not prune: it reaches the assembler
         // alive, in two cells, and the merge must drop it.
-        way(7, &[(92, (LAT - 40_000, SEAM - 20_000)), (93, (LAT - 40_000, SEAM + 20_000))]),
+        way(4, 7, &[(92, (LAT - 40_000, SEAM - 20_000)), (93, (LAT - 40_000, SEAM + 20_000))]),
     ];
     let mut pois = vec![
         poi(1, LAT, SEAM - 20_000, "West water"),
@@ -347,7 +348,8 @@ fn main() {
         sources: vec![SourceExtent::parse("fixture=7.34,47.18,7.87,47.45").expect("source")],
         ..Default::default()
     };
-    let summary = cut_ingested(&ing, &ways, &cfg, &dir, &opts, &Progress::silent()).expect("the cutter runs");
+    let summary = cut_ingested(&ing, &ways, &Routing::default(), &cfg, &dir, &opts, &Progress::silent())
+        .expect("the cutter runs");
     std::fs::write(dir.join("skin.json"), skin_json(&cfg)).expect("write skin.json");
 
     println!("wrote {} cell(s), {} bytes, {} partial", summary.cells.len(), summary.bytes, summary.partial);
