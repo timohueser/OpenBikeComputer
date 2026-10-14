@@ -5,17 +5,20 @@
 margin_m = 30000
 
 [routing]
-# The profiles of the routing package. The route catalog needs touring, road, gravel, mtb and hiking.
+# The profiles of the routing package. The route catalog needs touring, road, gravel, mtb/technical
+# and hiking/alpine.
 profiles = [
   "gravel",
   "gravel/less-climbing",
   "gravel/shorter",
   "hiking",
+  "hiking/alpine",
   "hiking/less-climbing",
   "hiking/shorter",
   "mtb",
   "mtb/less-climbing",
   "mtb/shorter",
+  "mtb/technical",
   "road",
   "road/less-climbing",
   "road/shorter",

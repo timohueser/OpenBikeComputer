@@ -581,21 +581,28 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
 #[test]
 fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
     let template = fixture().roads[0].clone();
-    // A track (1) to (2) and a longer cycleway through (4); a short road leads on from each end.
+    // A short cycleway crosses a hill; a longer, level cycleway goes through (4).
     let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 12_000)]
         .into_iter()
-        .map(|(lon, lat)| Point { lon, lat, elevation: NO_ELEVATION })
+        .map(|(lon, lat)| Point { lon, lat, elevation: 0.0 })
         .collect();
     let mut roads = vec![];
-    for (a, b, class) in [(0, 1, 0), (1, 2, 3), (1, 4, 0), (4, 2, 0), (2, 3, 0)] {
+    for (a, b) in [(0, 1), (1, 2), (1, 4), (4, 2), (2, 3)] {
         for (from, to) in [(a, b), (b, a)] {
+            let hill = a == 1 && b == 2;
+            let mut shape = vec![points[from], points[to]];
+            if hill {
+                shape.insert(1, Point { lon: 22_500, lat: 0, elevation: 100.0 });
+            }
             roads.push(Road {
                 from: from as u32,
                 to: to as u32,
-                class,
+                class: 0,
                 surface: Surface::Paved,
-                shape: vec![points[from], points[to]],
+                shape,
                 length_m: points[from].distance(points[to]).round() as u32,
+                ascent_m: if hill { 100 } else { 0 },
+                descent_m: if hill { 100 } else { 0 },
                 ..template.clone()
             });
         }

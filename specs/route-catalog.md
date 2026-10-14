@@ -77,9 +77,13 @@ shaping points and the finish, so the request index of an entry is its position
 in `via` plus 1. For a loop, `turnarounds` can hold 0: the plan route turns
 back at its start. It is absent when there are none.
 
-The plan reproduces the route with the Balanced profile of each activity that
-lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
-`gravel` and `touring` for `bicycle`. The main line is the member ways with an
+The plan reproduces the route with a profile of each activity that lists the
+kind: `hiking/alpine` for `hiking` and `foot`, `mtb/technical` for `mtb`, and
+`road`, `gravel` and `touring` for `bicycle`. A client plans a `hiking` or `foot`
+route with `hardest` above 1 (T2) with `hiking/alpine`, an `mtb` route with
+`hardest` above 2 (S2) with `mtb/technical`, and every other route with the
+Balanced profile. Both profiles give the same route when no grade on it is above
+the ordinary limit. The main line is the member ways with an
 empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
 builder orders them, with the forward branch where the route splits by
 direction. When that order has more than one piece, the builder joins the

@@ -26,7 +26,7 @@ const DESCRIPTION_CHARS: usize = 200;
 /// The memory of all routers together; it limits the number of workers.
 const ROUTERS_MEMORY: usize = 6 << 30;
 /// The profiles a route is checked with.
-const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb", "hiking"];
+const PROFILES: [&str; 5] = ["touring", "road", "gravel", "mtb/technical", "hiking/alpine"];
 /// The line keeps every point of the plan route within this distance.
 const LINE_TOLERANCE_M: f64 = 50.0;
 /// Router calls for the search of one route, for each profile that it checks. A search that needs
@@ -74,12 +74,13 @@ fn selected(tags: &Tags) -> Option<&str> {
     .then_some(kind)
 }
 
-/// The Balanced profiles of the activities that list a kind. The first gives the plan route.
+/// The profiles that reproduce a kind. The first gives the plan route. A graded kind uses its
+/// widest skill choice; a client selects it when `hardest` is above the ordinary limit.
 fn profiles(kind: &str) -> &'static [&'static str] {
     match kind {
         "bicycle" => &["touring", "road", "gravel"],
-        "mtb" => &["mtb"],
-        _ => &["hiking"],
+        "mtb" => &["mtb/technical"],
+        _ => &["hiking/alpine"],
     }
 }
 
