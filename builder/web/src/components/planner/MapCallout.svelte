@@ -220,7 +220,7 @@
                 onkeydown={(event) => {
                     if (event.key === 'Enter') rename(event.currentTarget.value);
                     if (event.key === 'Escape') {
-                        // Removing a focused input fires its change event; the old value keeps the cancelled name out.
+                        // Removing a focused input may fire its change event; the old value keeps the cancelled name out.
                         event.currentTarget.value = point.label;
                         renaming = false;
                     }

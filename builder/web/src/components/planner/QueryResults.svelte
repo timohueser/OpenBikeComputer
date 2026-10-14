@@ -15,7 +15,10 @@
     } = $props();
     const answer = $derived(state.answer);
     const count = $derived(answer?.type === 'places' ? `${answer.results?.length ?? 0}${answer.hasMore ? '+' : ''}` : '');
-    const announcement = $derived(state.loading && !answer ? 'Searching…' : count && `${count} ${count === '1' ? 'place' : 'places'} found`);
+    const summary = $derived(answer?.type === 'places' ? `${count} ${count === '1' ? 'place' : 'places'} found.`
+        : answer?.type === 'stretches' ? `${answer.stretches?.length ?? 0} stretches.` : answer?.type === 'change' ? answer.description : '');
+    // The one live region of the results; the notice and note show without a role so they are read once.
+    const announcement = $derived(state.loading && !answer ? 'Searching…' : [answer?.notice, summary, answer?.note].filter(Boolean).join(' '));
 </script>
 <div class="results" aria-busy={state.loading}>
     <span class="sr-only" role="status">{announcement}</span>
@@ -23,7 +26,7 @@
     {/if}
     {#if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>{/if}
     {#if answer}
-        {#if answer.notice}<p class="note" role="status">{answer.notice}</p>{/if}
+        {#if answer.notice}<p class="note">{answer.notice}</p>{/if}
         {#if answer.canRetry}<button type="button" onclick={onRetry}>Retry interpretation</button>{/if}
         {#if answer.type === 'change'}
             <p class="description">{answer.description}</p>
@@ -52,7 +55,7 @@
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}
-        {#if answer.note}<p class="note" role="status">{answer.note}</p>{/if}
+        {#if answer.note}<p class="note">{answer.note}</p>{/if}
         <p class="attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{attribution}</a> · ODbL</p>
     {/if}
 </div>

@@ -477,7 +477,7 @@
         await session.saveVersions(versions);
         const deleted = versions.length < before.length;
         message = deleted ? 'Version deleted' : 'Versions saved';
-        statusUndo = deleted ? () => void changeVersions(before).catch(() => {}) : null;
+        statusUndo = deleted ? () => void changeVersions(before).then(() => { message = 'Delete undone'; }, () => {}) : null;
     }
 
     function commit(next: Trip, description: string) {
@@ -935,7 +935,7 @@
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
-            else undo();
+            else (statusUndo ?? undo)();
         }
         if (event.key === 'Escape') {
             if (!selectedId && !picking && !drawing && focusedDay) showAllDays();
