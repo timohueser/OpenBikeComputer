@@ -2,8 +2,8 @@
   "schema": 3,
   "package": "sim-grimsel",
   "archive": {
-    "bytes": 4203719,
-    "sha256": "52f5ef7d1f6ab92d7a05183c5e4c026dab4e0c751c0ec48829d7ffad6e849092"
+    "bytes": 4203728,
+    "sha256": "4cdb6ddca7a649929e2378669ddddd32786bd4686921921a96e80ce36cbf2ddc"
   },
   "producer": {
     "source_commit": "e0a047c6c",
@@ -29,8 +29,8 @@
   },
   "map": {
     "bytes": 4802025,
-    "sha256": "0c9703fd13c193c4508ea62db4949b92bddb99d9a8b3ba9ac6627b132c849c17",
-    "obcm_version": 19,
+    "sha256": "1a7b148a3eaaf7103f5e06d2907e174d537c500b6f4cef301d6de9b49f1feff5",
+    "obcm_version": 20,
     "settlement_records": 19,
     "landmark_records": 7,
     "landmark_article_variants": 17,
@@ -44,17 +44,9 @@
       }
     ],
     "format_upgrade": {
-      "input_sha256": "8b7b72c99286e86a89bb25398e0b646eb55d1a4f0e69ee36ce730fafc90bf712",
-      "input_obcm_version": 18,
-      "dark_skin": {
-        "path": "builder/presets/skins/dusk.json",
-        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
-      },
-      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
-      "transformer": {
-        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
-        "name": "upgrade_obcm_v18_to_v19.py"
-      }
+      "input_sha256": "0c9703fd13c193c4508ea62db4949b92bddb99d9a8b3ba9ac6627b132c849c17",
+      "input_obcm_version": 19,
+      "policy": "Only the header version byte changes. A v19 navigation section reads as v20 with every direction rideable, so the map carries no one-way rules or bike-blocking barriers until it is next packed from source."
     }
   },
   "land_source": {

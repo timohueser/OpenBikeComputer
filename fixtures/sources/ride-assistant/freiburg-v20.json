@@ -1,9 +1,9 @@
 {
   "schema": 3,
-  "package": "sim-monaco",
+  "package": "sim-freiburg",
   "archive": {
-    "bytes": 456478,
-    "sha256": "507945c93b294928ad24788a1eb3fcabe97933a673564b4c727609e62af7e549"
+    "bytes": 8135965,
+    "sha256": "3db5781b6a1043274db5c8a5f7de8e78e1bb3a3a6fb88635df8e7778df56f344"
   },
   "base_artifact_producer": {
     "source_commit": "3d835f672",
@@ -15,37 +15,36 @@
     }
   },
   "bounds_lon_lat": [
-    7.39,
-    43.71,
-    7.47,
-    43.77
+    7.77,
+    47.97,
+    7.93,
+    48.14
   ],
-  "source_packages": {
-    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224"
-  },
+  "source_packages": {},
   "source_pbf": {
-    "path": "monaco.osm.pbf",
-    "bytes": 691365,
-    "sha256": "5522a7e2ac8084d935302d78e2ec9bbec8ec5eba8740ea29050e1e02bcdaa9c6"
+    "path": "europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf",
+    "url": "https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf",
+    "snapshot": "2026-08-03",
+    "last_modified": "Tue, 04 Aug 2026 03:56:44 GMT",
+    "bytes": 158362659,
+    "sha256": "1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707"
   },
   "map": {
-    "bytes": 743001,
-    "sha256": "bd7839adfc6d3aca8de4c3bb8c557676a129ccb181b5a4d6c6b2cab0deaeca11",
-    "obcm_version": 19,
+    "bytes": 11746905,
+    "sha256": "9ecef3c901b50d7d15fb1e5bacf1425f63e68aaee19ab5404a9d4475627184c5",
+    "obcm_version": 20,
     "format_upgrade": {
-      "input_sha256": "e61eac7f01b8fbaa468aa5c3c94c29b7e96b7e4408ba85491c2d061aaffae2af",
-      "input_obcm_version": 18,
-      "dark_skin": {
-        "path": "builder/presets/skins/dusk.json",
-        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
-      },
-      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
-      "transformer": {
-        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
-        "name": "upgrade_obcm_v18_to_v19.py"
-      }
+      "input_sha256": "4534b27a40c4c134e091ded346df4b1b606aa3351c5c93770b7b089d3a140108",
+      "input_obcm_version": 19,
+      "policy": "Only the header version byte changes. A v19 navigation section reads as v20 with every direction rideable, so the map carries no one-way rules or bike-blocking barriers until it is next packed from source."
     },
-    "settlement_records": 1,
+    "settlement_records": 44,
+    "settlement_classes": {
+      "city": 1,
+      "town": 3,
+      "village": 26,
+      "hamlet": 14
+    },
     "landmark_records": 0,
     "landmark_article_variants": 0,
     "landmark_photos": 0,
@@ -88,5 +87,5 @@
     ]
   },
   "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
-  "recipe": "fixtures/build-map-package.sh monaco PINNED/monaco.osm.pbf"
+  "recipe": "fixtures/build-map-package.sh freiburg CACHED/freiburg-regbez-latest.osm.pbf"
 }

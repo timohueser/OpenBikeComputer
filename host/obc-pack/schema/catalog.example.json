@@ -11,7 +11,7 @@
     "sha256": "80c632a3a0d8cc7185df9070dc234025a34d93cb5f663d79d7f2c4211777b11e",
     "name": "Bikepacking",
     "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
-    "obcm_version": 19,
+    "obcm_version": 20,
     "grid": {
       "origin_udeg": -268435456,
       "world_side_udeg": 536870912
@@ -340,8 +340,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 611,
-      "sha256": "0b7252a794e305deeab39b9213789c2b53f49bb0f788b22439efdf240f7711af",
-      "url": "https://maps.example.org/catalog/cells/coarse/index.0b7252a794e305deeab39b9213789c2b53f49bb0f788b22439efdf240f7711af.json"
+      "sha256": "e2b25fdae82087bb037bcabbe19230c225c898bf2ccb623f93db2cd5651c3225",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.e2b25fdae82087bb037bcabbe19230c225c898bf2ccb623f93db2cd5651c3225.json"
     },
     {
       "band": "mid",
@@ -349,8 +349,8 @@
       "cell_count": 1,
       "known_empty_count": 0,
       "bytes": 605,
-      "sha256": "a208ffc8b4277dc198233a3e08f647a44a8a27782d6c82c881b13826c992f009",
-      "url": "https://maps.example.org/catalog/cells/mid/index.a208ffc8b4277dc198233a3e08f647a44a8a27782d6c82c881b13826c992f009.json"
+      "sha256": "ae7ccd3f0319e42fc758610a123f699120c7c74cb5c52467b41762b34a8652d2",
+      "url": "https://maps.example.org/catalog/cells/mid/index.ae7ccd3f0319e42fc758610a123f699120c7c74cb5c52467b41762b34a8652d2.json"
     },
     {
       "band": "fine",
@@ -358,8 +358,8 @@
       "cell_count": 2,
       "known_empty_count": 1,
       "bytes": 1351,
-      "sha256": "144f37bc2d5268443e85928cb1a9a1d58a28bcff42ab45f3b3240d912505564f",
-      "url": "https://maps.example.org/catalog/cells/fine/index.144f37bc2d5268443e85928cb1a9a1d58a28bcff42ab45f3b3240d912505564f.json"
+      "sha256": "f2638a6b9ac66c42d18e7dafbeef270c72fe891ce9d91223ba8a3287d129995b",
+      "url": "https://maps.example.org/catalog/cells/fine/index.f2638a6b9ac66c42d18e7dafbeef270c72fe891ce9d91223ba8a3287d129995b.json"
     },
     {
       "band": "network",
@@ -367,8 +367,8 @@
       "cell_count": 2,
       "known_empty_count": 0,
       "bytes": 1051,
-      "sha256": "92ae70a355f9206767fd06fbd3b41407a51bf92a0b512547744be4b32ee1fa79",
-      "url": "https://maps.example.org/catalog/cells/network/index.92ae70a355f9206767fd06fbd3b41407a51bf92a0b512547744be4b32ee1fa79.json"
+      "sha256": "de73d29bb2d66a0484ff65455e43c4bc1532118f7fffd18b5d8bb6f99743f134",
+      "url": "https://maps.example.org/catalog/cells/network/index.de73d29bb2d66a0484ff65455e43c4bc1532118f7fffd18b5d8bb6f99743f134.json"
     }
   ],
   "terrain": {
