@@ -39,7 +39,7 @@ use obc_pbf::bbox::Bbox;
 use obc_pbf::scan::{par_sources, scan_blobs, Keyed, Scan};
 use obc_pbf::selection::{Crop, IdSet};
 use obc_places::metadata::{self as poi, Poi};
-use obc_places::osm::{push_node_poi, push_routable_way, resolve_coords};
+use obc_places::osm::{is_foot_only, push_node_poi, push_routable_way, resolve_coords};
 use obc_places::routing::RoutableWay;
 
 pub struct IngestFeature {
@@ -260,6 +260,8 @@ fn select_crop(
 struct NodeScan {
     links: Keyed<poi::LandmarkLink>,
     nodes: HashMap<i64, (i32, i32)>,
+    /// Barrier nodes a bike cannot pass.
+    foot_only: HashSet<i64>,
     pois: Keyed<Poi>,
     rels: Keyed<PendingRelation>,
 }
@@ -324,14 +326,14 @@ fn ingest_inner(
     // build UI, so each is reported when its pass actually starts, not both up front.
     progress.stage(Phase::Ingest, "Pass 1: reading nodes...");
     let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging, progress))?;
-    let NodeScan { nodes, pois: node_pois, rels, links } = fold_node_scans(scans, merging);
+    let NodeScan { nodes, foot_only, pois: node_pois, rels, links } = fold_node_scans(scans, merging);
     let pending = rels.into_items();
     let needed_ways: HashSet<i64> = pending.iter().flat_map(|r| r.member_ways.iter().copied()).collect();
 
     // Pass 2: ways into features and coastlines, plus member-way geometry capture.
     progress.stage(Phase::Ingest, "Pass 2: processing ways...");
     let scans = par_sources(paths, |i, path| {
-        read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &needed_ways, merging, progress)
+        read_ways(path, ways_at[i], config, crop.as_ref(), &nodes, &foot_only, &needed_ways, merging, progress)
     })?;
     let WayScan { features, coastlines, pois: way_pois, routable, member_geom, .. } = fold_way_scans(scans, merging);
     let mut features = features.into_items();
@@ -407,6 +409,7 @@ fn read_nodes(
     progress: &Progress,
 ) -> Result<NodeScan, String> {
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
+    let mut foot_only = HashSet::new();
     let mut pois = Keyed::new(tagged);
     let mut rels = Keyed::new(tagged);
     let mut links = Keyed::new(tagged);
@@ -416,10 +419,16 @@ fn read_nodes(
         match el {
             Element::Node(n) if keeps_node(n.id()) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                if is_foot_only(n.tags()) {
+                    foot_only.insert(n.id());
+                }
                 push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
             }
             Element::DenseNode(n) if keeps_node(n.id()) => {
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                if is_foot_only(n.tags()) {
+                    foot_only.insert(n.id());
+                }
                 push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
             }
             Element::Relation(r) => {
@@ -436,7 +445,7 @@ fn read_nodes(
         Scan::Continue
     })
     .map_err(|e| format!("pass 1: {e}"))?;
-    Ok(NodeScan { nodes, pois, rels, links })
+    Ok(NodeScan { nodes, foot_only, pois, rels, links })
 }
 
 /// Combine the sources' pass-1 harvests, in command-line order.
@@ -449,6 +458,8 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
         // Ownership is tested BEFORE this source's nodes land in `acc`, so the question is whether
         // an earlier source already had this node — and the whole object loses, tags and all.
         next.pois.retain_keys(|id| !acc.nodes.contains_key(&id));
+        next.foot_only.retain(|id| !acc.nodes.contains_key(id));
+        acc.foot_only.extend(next.foot_only);
         next.rels.retain_keys(|id| seen_rels.insert(id));
         next.links.retain_keys(|id| seen_links.insert(id));
         acc.links.append(next.links);
@@ -479,6 +490,7 @@ fn read_ways(
     config: &Config,
     crop: Option<&Crop>,
     nodes: &HashMap<i64, (i32, i32)>,
+    foot_only: &HashSet<i64>,
     needed_ways: &HashSet<i64>,
     tagged: bool,
     progress: &Progress,
@@ -503,7 +515,7 @@ fn read_ways(
                 let refs: Vec<i64> = w.refs().collect();
                 // A missing node aborts the whole way, as osmium's `InvalidLocationError` would.
                 if let Some(coords) = resolve_coords(&refs, nodes) {
-                    push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
+                    push_routable_way(w.id(), &w, &refs, &coords, foot_only, &mut routable);
                     process_way(&w, &refs, &coords, config, &mut features, &mut coastlines, &mut pois);
                     if needed_ways.contains(&w.id()) {
                         member_geom.insert(w.id(), coords);

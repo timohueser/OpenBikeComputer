@@ -73,6 +73,7 @@ fn run_find(scenario: Scenario) {
                 polyline: p.to_vec(),
                 length_m: obc_map_scene::ground_dist_m(p[0], p[1]) as u32,
                 kind: 0,
+                no_ride: 0,
             })
             .collect(),
     };

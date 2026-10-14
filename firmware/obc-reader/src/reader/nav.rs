@@ -219,6 +219,7 @@ pub struct NavEdgeEndpoint {
 
 /// A winning exact edge projection with its two real graph endpoints. Directional ascent is
 /// carried, so the virtual partial edges use the same climb-aware cost model as ordinary arcs.
+/// A direction a one-way rule closes has no ascent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavEdgeSnap {
     pub edge_id: u32,
@@ -229,8 +230,8 @@ pub struct NavEdgeSnap {
     pub position: NavEdgePosition,
     pub a: NavEdgeEndpoint,
     pub b: NavEdgeEndpoint,
-    pub ascent_ab: u16,
-    pub ascent_ba: u16,
+    pub ascent_ab: Option<u16>,
+    pub ascent_ba: Option<u16>,
 }
 
 #[inline]
@@ -620,10 +621,11 @@ impl<'a> Reader<'a> {
                     let pair = if forward { (n.id, nb.id) } else { (nb.id, n.id) };
                     if ids.is_none_or(|old| old == pair) {
                         ids = Some(pair);
+                        let ascent = nb.rideable.then_some(nb.ascent_m);
                         if forward {
-                            ascent_ab = Some(nb.ascent_m);
+                            ascent_ab = Some(ascent);
                         } else {
-                            ascent_ba = Some(nb.ascent_m);
+                            ascent_ba = Some(ascent);
                         }
                     }
                 }
@@ -639,8 +641,9 @@ impl<'a> Reader<'a> {
             position: candidate.position,
             a: NavEdgeEndpoint { id: a_id, coord: candidate.a_coord, position: candidate.a_position },
             b: NavEdgeEndpoint { id: b_id, coord: candidate.b_coord, position: candidate.b_position },
-            ascent_ab: ascent_ab.unwrap_or(0),
-            ascent_ba: ascent_ba.unwrap_or(0),
+            // A degree-capped side has no entry; it stays rideable and climb-blind.
+            ascent_ab: ascent_ab.unwrap_or(Some(0)),
+            ascent_ba: ascent_ba.unwrap_or(Some(0)),
         }))
     }
 

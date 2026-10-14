@@ -22,7 +22,7 @@ use obc_map_scene::ground_dist_m;
 /// Dedup key for an edge: the unordered endpoint pair (canonicalized to `min <= max`), its geometry
 /// oriented to match, and its way-kind. A way and its reverse-order or parallel duplicate hash
 /// equal, while a cycleway drawn over a road survives as a separate edge.
-type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8);
+type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8, u8);
 
 /// Maximum endpoint-to-endpoint lat or lon delta (µdeg) an edge may span before [`build_graph`]
 /// splits it. Each neighbor's coordinate is stored as an `i16` µdeg delta from the record's own
@@ -36,7 +36,8 @@ const MAX_EDGE_LEN_M: u32 = 60_000;
 
 use obc_map_core::nav::{DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES};
 
-use obc_places::routing::RoutableWay;
+use obc_places::routing::{reverse_no_ride, RoutableWay};
+pub use obc_places::routing::{NO_RIDE_BACKWARD, NO_RIDE_FORWARD};
 
 /// A junction node: a dense pack-local id (not the OSM id, and stable only within one pack run) and
 /// its µdeg `(lon, lat)` coordinate. Synthetic degree-2 nodes from the edge-split pass get ids past
@@ -47,10 +48,10 @@ pub struct Node {
     pub coord: (i32, i32),
 }
 
-/// An undirected edge between two junction nodes. `polyline` runs from `a` to `b` inclusive of both
+/// An edge between two junction nodes. `polyline` runs from `a` to `b` inclusive of both
 /// endpoints, and `length_m` is its summed great-circle length. `kind` is the parent way's
-/// [`obc_places::routing::classify`] byte, which every split piece inherits. `oneway` is deliberately ignored: bikes ride
-/// both ways.
+/// [`obc_places::routing::classify`] byte and `no_ride` the directions its one-way rule closes,
+/// with [`NO_RIDE_FORWARD`] meaning `a` to `b`. Every split piece inherits both.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub a: u32,
@@ -58,6 +59,7 @@ pub struct Edge {
     pub polyline: Vec<(i32, i32)>,
     pub length_m: u32,
     pub kind: u8,
+    pub no_ride: u8,
 }
 
 /// The assembled routable graph. Adjacency is derivable from `edges`, since each contributes both
@@ -154,7 +156,7 @@ pub fn build_graph_with(ways: &[RoutableWay], min_component_edges: usize) -> (Na
             if !is_junction(w.node_ids[i], is_endpoint) {
                 continue;
             }
-            emit_edge(&w.node_ids, &w.coords, w.kind, start, i, &mut intern, &mut seen, &mut edges);
+            emit_edge(&w.node_ids, &w.coords, (w.kind, w.no_ride), start, i, &mut intern, &mut seen, &mut edges);
             start = i;
         }
     }
@@ -195,6 +197,7 @@ pub struct CutRun {
     /// µdeg `(lon, lat)`, parallel to `keys`.
     pub coords: Vec<(i32, i32)>,
     pub kind: u8,
+    pub no_ride: u8,
 }
 
 /// Build a cell's routable graph from the runs the cutter carved out of the source ways.
@@ -236,7 +239,7 @@ pub fn build_graph_cut(
             if !is_endpoint && !is_junction(r.keys[i], r.coords[i]) {
                 continue;
             }
-            emit_edge(&r.keys, &r.coords, r.kind, start, i, &mut intern, &mut seen, &mut edges);
+            emit_edge(&r.keys, &r.coords, (r.kind, r.no_ride), start, i, &mut intern, &mut seen, &mut edges);
             start = i;
         }
     }
@@ -260,7 +263,7 @@ pub fn build_graph_cut(
 fn emit_edge<K: Copy>(
     keys: &[K],
     coords: &[(i32, i32)],
-    kind: u8,
+    (kind, no_ride): (u8, u8),
     start: usize,
     end: usize,
     intern: &mut impl FnMut(K, (i32, i32)) -> u32,
@@ -271,22 +274,23 @@ fn emit_edge<K: Copy>(
     let b = intern(keys[end], coords[end]);
     let polyline: Vec<(i32, i32)> = coords[start..=end].to_vec();
 
-    // Canonicalize for dedup: orient the key by (min, max) endpoint id, reversing the geometry to
-    // match, so a way and its reverse-order duplicate hash equal. Kind is part of the key, so a
-    // same-geometry way of a different class is not collapsed.
-    let (ka, kb, kgeom) = if a <= b {
-        (a, b, polyline.clone())
+    // Canonicalize for dedup: orient the key by (min, max) endpoint id, reversing the geometry and
+    // the riding directions to match, so a way and its reverse-order duplicate hash equal. Kind and
+    // directions are part of the key, so a same-geometry way of a different class or one-way rule
+    // is not collapsed.
+    let (ka, kb, kgeom, closed) = if a <= b {
+        (a, b, polyline.clone(), no_ride)
     } else {
         let mut rev = polyline.clone();
         rev.reverse();
-        (b, a, rev)
+        (b, a, rev, reverse_no_ride(no_ride))
     };
-    if !seen.insert((ka, kb, kgeom, kind)) {
-        return; // exact duplicate (same pair + geometry + kind) — already have it.
+    if !seen.insert((ka, kb, kgeom, kind, closed)) {
+        return; // exact duplicate (same pair + geometry + kind + directions) — already have it.
     }
 
     let length_m = polyline_len_m(&polyline);
-    edges.push(Edge { a, b, polyline, length_m, kind });
+    edges.push(Edge { a, b, polyline, length_m, kind, no_ride });
 }
 
 /// A minimal union-find (path halving + union by size) over the dense node ids.
@@ -400,7 +404,7 @@ fn prune_islands(
         if kept_roots.contains(&root) {
             let a = id_map[&e.a];
             let b = id_map[&e.b];
-            new_edges.push(Edge { a, b, polyline: e.polyline, length_m: e.length_m, kind: e.kind });
+            new_edges.push(Edge { a, b, ..e });
         } else {
             edges_dropped += 1;
         }
@@ -467,8 +471,22 @@ fn split_edge(e: Edge, nodes: &mut Vec<Node>, out: &mut Vec<Edge>) {
     let synth = nodes.len() as u32;
     nodes.push(Node { id: synth, coord: poly[cut] });
 
-    let left = Edge { a: e.a, b: synth, length_m: polyline_len_m(&left_poly), polyline: left_poly, kind: e.kind };
-    let right = Edge { a: synth, b: e.b, length_m: polyline_len_m(&right_poly), polyline: right_poly, kind: e.kind };
+    let left = Edge {
+        a: e.a,
+        b: synth,
+        length_m: polyline_len_m(&left_poly),
+        polyline: left_poly,
+        kind: e.kind,
+        no_ride: e.no_ride,
+    };
+    let right = Edge {
+        a: synth,
+        b: e.b,
+        length_m: polyline_len_m(&right_poly),
+        polyline: right_poly,
+        kind: e.kind,
+        no_ride: e.no_ride,
+    };
     split_edge(left, nodes, out);
     split_edge(right, nodes, out);
 }
@@ -628,6 +646,7 @@ mod tests {
             node_ids: pts.iter().map(|&(id, ..)| id).collect(),
             coords: pts.iter().map(|&(_, x, y)| (x, y)).collect(),
             kind,
+            no_ride: 0,
         }
     }
 
@@ -779,6 +798,19 @@ mod tests {
         assert_eq!(g.edges.len(), 1, "a way and its reverse are the same undirected edge");
     }
 
+    /// Dedup compares one-way rules in one orientation: a reversed duplicate with the same physical
+    /// direction collapses, and the opposite direction stays its own edge.
+    #[test]
+    fn reversed_duplicate_dedup_keeps_the_physical_one_way_direction() {
+        let one_way = |pts: &[(i64, i32, i32)], no_ride| RoutableWay { no_ride, ..way(pts) };
+        let (p1, p2) = ((1, 7_800_000, 47_990_000), (2, 7_810_000, 47_990_000));
+        let east = one_way(&[p1, p2], NO_RIDE_BACKWARD);
+        let (g, _) = build_graph(&[east.clone(), one_way(&[p2, p1], NO_RIDE_FORWARD)]);
+        assert_eq!(g.edges.len(), 1, "both ways only allow riding 1→2");
+        let (g, _) = build_graph(&[east, one_way(&[p2, p1], NO_RIDE_BACKWARD)]);
+        assert_eq!(g.edges.len(), 2, "1→2 and 2→1 are different one-way edges");
+    }
+
     /// Two distinct edges between the same node pair both survive: the dedup key includes geometry.
     #[test]
     fn distinct_parallel_geometry_kept() {
@@ -892,6 +924,7 @@ mod tests {
                     polyline: vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
                     length_m: 100,
                     kind: 7,
+                    no_ride: 0,
                 });
             }
         };
@@ -926,6 +959,7 @@ mod tests {
                     polyline: vec![(x0 + i as i32 * 1_000, 0), (x0 + (i as i32 + 1) * 1_000, 0)],
                     length_m: 100,
                     kind: 7,
+                    no_ride: 0,
                 });
             }
         };
@@ -958,6 +992,7 @@ mod tests {
             node_ids: (0..=70).map(|i| i as i64).collect(),
             coords: poly.clone(),
             kind: 42, // an arbitrary distinctive kind byte
+            no_ride: 0,
         }];
         // Interior vertices are touched once → the way is a single edge before split.
         let (g, _) = build_graph(&ways);
@@ -997,7 +1032,8 @@ mod tests {
         assert!((a.0 as i64 - b.0 as i64).abs() <= MAX_ENDPOINT_DELTA_UDEG);
         assert!((a.1 as i64 - b.1 as i64).abs() <= MAX_ENDPOINT_DELTA_UDEG);
 
-        let ways = [RoutableWay { node_ids: (0..poly.len() as i64).collect(), coords: poly.clone(), kind: 2 }];
+        let ways =
+            [RoutableWay { node_ids: (0..poly.len() as i64).collect(), coords: poly.clone(), kind: 2, no_ride: 0 }];
         let (g, _) = build_graph(&ways);
         assert!(g.edges.len() > 1, "the long edge was split");
         for e in &g.edges {
@@ -1015,7 +1051,7 @@ mod tests {
         // Single 90 000-µdeg lon segment, no shape node.
         let a = (100_000, 500_000);
         let b = (190_000, 500_000);
-        let ways = [RoutableWay { node_ids: vec![0, 1], coords: vec![a, b], kind: 9 }];
+        let ways = [RoutableWay { node_ids: vec![0, 1], coords: vec![a, b], kind: 9, no_ride: 0 }];
         let (g, _) = build_graph(&ways);
         assert!(g.edges.len() > 1, "the bare segment was split via interpolated midpoints");
         for e in &g.edges {
@@ -1112,7 +1148,7 @@ mod tests {
     fn summary_line_format() {
         let g = NavGraph {
             nodes: vec![Node { id: 0, coord: (0, 0) }, Node { id: 1, coord: (0, 0) }],
-            edges: vec![Edge { a: 0, b: 1, polyline: vec![(0, 0), (0, 0)], length_m: 2500, kind: 7 }],
+            edges: vec![Edge { a: 0, b: 1, polyline: vec![(0, 0), (0, 0)], length_m: 2500, kind: 7, no_ride: 0 }],
         };
         let stats = NavStats { components_found: 1, components_kept: 1, edges_dropped: 0 };
         assert_eq!(

@@ -201,11 +201,17 @@ fn dump(r: &Reader, path: &str) {
         }
         let mut line = format!("nav node id={} lat={} lon={} deg={}", n.id, n.lat, n.lon, n.degree());
         for nb in n.neighbors() {
-            // `ascent_m` last, and per direction: the one adjacency field that differs between the
-            // two sides of an edge, so a cross-bump `--dump` diff shows the climb it gained.
+            // The climb and the riding direction last: the adjacency fields that differ between the
+            // two sides of an edge, so a cross-bump `--dump` diff shows what each direction gained.
             line.push_str(&format!(
-                " [{} {} {} {} {} asc={}]",
-                nb.id, nb.lat, nb.lon, nb.cost_m, nb.way_kind, nb.ascent_m
+                " [{} {} {} {} {} asc={}{}]",
+                nb.id,
+                nb.lat,
+                nb.lon,
+                nb.cost_m,
+                nb.way_kind,
+                nb.ascent_m,
+                if nb.rideable { "" } else { " no-ride" }
             ));
             edge_ids.push(nb.edge_id);
         }
