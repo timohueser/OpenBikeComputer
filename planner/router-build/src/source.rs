@@ -114,56 +114,46 @@ pub fn oneway<'a>(get: impl Fn(&str) -> Option<&'a str>, mode: &str) -> Oneway {
     }
 }
 
-/// Whether a cycle lane runs in the travel direction.
+/// Whether a cycle lane runs in the travel direction. A lane on a two-way road without a direction
+/// runs with the traffic on its side of the road.
 pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool, left_hand: bool) -> bool {
-    !cycleways(get, reversed, left_hand).is_empty()
-}
-
-/// The values of the cycle facilities that run in the travel direction. A lane on a two-way road
-/// without a direction runs with the traffic on its side of the road.
-pub fn cycleways<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool, left_hand: bool) -> Vec<&'a str> {
     let road_direction = match road_oneway(&get) {
         Oneway::Forward => Some(false),
         Oneway::Backward => Some(true),
         _ => None,
     };
-    ["cycleway", "cycleway:left", "cycleway:right"]
-        .into_iter()
-        .filter_map(|key| {
-            let both = key != "cycleway";
-            let value = get(key).or_else(|| both.then(|| get("cycleway:both")).flatten()).unwrap_or("");
-            if !matches!(
-                value,
-                "lane"
-                    | "track"
-                    | "shared_lane"
-                    | "share_busway"
-                    | "shoulder"
-                    | "opposite"
-                    | "opposite_lane"
-                    | "opposite_track"
-            ) {
-                return None;
-            }
-            let follows =
-                match get(&format!("{key}:oneway")).or_else(|| both.then(|| get("cycleway:both:oneway")).flatten()) {
-                    Some("no" | "0" | "false") => true,
-                    Some("yes" | "1" | "true") => !reversed,
-                    Some("-1" | "reverse") => reversed,
-                    Some(_) => false,
-                    None if value.starts_with("opposite") => reversed != road_direction.unwrap_or(false),
-                    None => road_direction.map_or(
-                        match key {
-                            "cycleway:left" => reversed != left_hand,
-                            "cycleway:right" => reversed == left_hand,
-                            _ => true,
-                        },
-                        |direction| reversed == direction,
-                    ),
-                };
-            follows.then_some(value)
-        })
-        .collect()
+    ["cycleway", "cycleway:left", "cycleway:right"].iter().any(|key| {
+        let both = *key != "cycleway";
+        let value = get(key).or_else(|| both.then(|| get("cycleway:both")).flatten()).unwrap_or("");
+        if !matches!(
+            value,
+            "lane"
+                | "track"
+                | "shared_lane"
+                | "share_busway"
+                | "shoulder"
+                | "opposite"
+                | "opposite_lane"
+                | "opposite_track"
+        ) {
+            return false;
+        }
+        match get(&format!("{key}:oneway")).or_else(|| both.then(|| get("cycleway:both:oneway")).flatten()) {
+            Some("no" | "0" | "false") => true,
+            Some("yes" | "1" | "true") => !reversed,
+            Some("-1" | "reverse") => reversed,
+            Some(_) => false,
+            None if value.starts_with("opposite") => reversed != road_direction.unwrap_or(false),
+            None => road_direction.map_or(
+                match *key {
+                    "cycleway:left" => reversed != left_hand,
+                    "cycleway:right" => reversed == left_hand,
+                    _ => true,
+                },
+                |direction| reversed == direction,
+            ),
+        }
+    })
 }
 
 /// Pushing follows pedestrian access, unless explicitly restricted.

@@ -13,15 +13,29 @@ pub enum Protection {
 
 /// The best cycle facility in the travel direction.
 pub fn protection(tags: &Tags, reversed: bool, country: Country) -> Protection {
-    source::cycleways(|key| tags.get(key).map(String::as_str), reversed, country.left_hand())
-        .into_iter()
-        .map(|value| match value {
-            "track" | "opposite_track" => Protection::Track,
-            "lane" | "opposite_lane" => Protection::Lane,
-            _ => Protection::None,
-        })
-        .max()
-        .unwrap_or(Protection::None)
+    // `source::cycleway` sees only the facility values of one protection level.
+    let runs = |values: &[&str]| {
+        source::cycleway(
+            |key| {
+                let value = tags.get(key).map(String::as_str);
+                match key {
+                    "cycleway" | "cycleway:left" | "cycleway:right" | "cycleway:both" => {
+                        value.filter(|value| values.contains(value))
+                    }
+                    _ => value,
+                }
+            },
+            reversed,
+            country.left_hand(),
+        )
+    };
+    if runs(&["track", "opposite_track"]) {
+        Protection::Track
+    } else if runs(&["lane", "opposite_lane"]) {
+        Protection::Lane
+    } else {
+        Protection::None
+    }
 }
 
 /// A bounded preference from 0 to 1, not a measured traffic volume or collision risk.
