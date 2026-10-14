@@ -87,12 +87,12 @@ explicit tags.
 
 ## Profiles
 
-Pass `--profiles all` to prepare all 21 metrics, or supply comma-separated IDs.
+Pass `--profiles all` to prepare all preset metrics, or supply comma-separated IDs.
 Rebuild packages after changing the profile code. Rider validation is required.
 
 | Road profile | Preference |
 | --- | --- |
-| `road` | BRouter fastbike road classes, turns and downhill costs |
+| `road` | Surface suitability, road exposure, turns and downhill costs |
 | `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
 
@@ -104,19 +104,23 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 
 | Adaptation | Behavior |
 | --- | --- |
-| Missing surface | Use highway context; no universal unknown-surface penalty |
+| Missing surface | Use highway and track-grade context; retain uncertainty |
 | Explicit poor surface | Apply a minimum cost even on a paved road class |
-| Smoothness | Apply gravel-profile dry-surface multipliers |
+| Smoothness | Keep material, firmness and wheel suitability distinct |
 | Elevation | Filtered fractional heights; 1.5% slope threshold; additive costs |
 | BRouter elevation buffer | Not reproduced; no path-dependent state in the graph |
-| Estimated traffic, forest and noise | Not inferred from BRouter's derived data |
-| Access | Importer rules; restricted access is not a soft penalty |
-| Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
+| Road exposure | Directional cycle tracks and lanes, speed limits and lane counts; no measured traffic |
+| Access | Importer rules; uncertain access adds cost and a warning |
+| Pushing | Legal connectors cost distance plus 100 on entry; cycling presets exclude steps |
+| Ferries | Entry costs 1000 for cycling and 100 for walking; these are preferences, not wait times |
 
-Touring, gravel, MTB and hiking use separate surface and road-class tables.
-Each has shorter and less-climbing variants. Shorter ignores road class, climb
-preferences and signed cycle routes but keeps surface preferences. Access rules
-apply to every variant.
+Touring, gravel, MTB and hiking keep suitability in every variant. Shorter removes
+climb and signed-route preferences. Less-climbing triples the weighted climb cost.
+Signed routes discount only preferences above physical and traffic floors.
+MTB defaults to S1; `mtb/technical` permits S3. Hiking defaults to T2;
+`hiking/alpine` permits T4. Technical skill never enables steps for bicycles.
+Moving-time estimates use surface and difficulty separately from preferences.
+These coefficients need rider calibration. Rebuild packages and clients together.
 
 The package includes geometry, snap cells, a shared directed graph, profile
 costs and snap bits, possible closures, and compressed landmark bounds. A

@@ -29,7 +29,9 @@ empty. `alternatives_only` overrides `alternatives` when both are `true`. When t
 primary route fails, an `alternatives_only` request fails with that error, not
 with an empty answer. When the deadline or a limit stops the search for
 alternatives after the primary route, the answer holds the routes found before
-it. Each route has these fields:
+it. Profile alternatives keep the same difficulty, mode and steps permissions.
+Their requested points attach within 3 m of the primary route's attachments.
+Corridor alternatives keep the start and finish attachments. Each route has these fields:
 
 | Field | Value |
 | --- | --- |
@@ -80,10 +82,10 @@ The router blocks a mode only for the access value `no`; `dismount` blocks
 riding only. It uses an edge that is possibly closed for the mode that the route
 uses on it, and reports it. A closure on a node, such as a gate, belongs to the
 edges of the road that arrives at the node. A closure applies only to the
-direction of travel that its tag names. A closure from an access value makes
-the road cost three times its length, and a node cost as much as 300 m of good
-road. Thus a route uses the road only where every alternative is more than three
-times as long, or where a shaping point is on it. A `seasonal` or `conditional`
+direction of travel that its tag names. A closure from an access value triples
+the road's weighted distance cost. A node adds the cost of 300 m of good road.
+Other road preferences still affect the choice. A shaping point can keep the
+route on a road with uncertain access. A `seasonal` or `conditional`
 closure adds no cost:
 
 | `kind` | Source | `condition` |
@@ -181,8 +183,16 @@ the limits of a route request. The deadline is 30 s.
 | `warnings` | Strings that name known limits of the package data |
 
 A profile ID is an activity, such as `touring`, or an activity, `/` and a variant:
-`touring/shorter` or `touring/less-climbing`. The web planner offers the presets of
-the profiles that the region serves.
+`touring/shorter` or `touring/less-climbing`. The clients offer only the presets
+that the region serves. Cycling presets exclude steps and permit legal pushing.
+Shorter retains road and surface suitability. Default MTB permits difficulty
+through S1; `mtb/technical` permits S3. Default hiking permits SAC through T2;
+`hiking/alpine` permits T4. Clients label these advanced choices explicitly.
+Unknown difficulty remains unknown; a preset is not a guarantee of trail condition.
+
+Moving time uses gradient, surface, technical difficulty and the supplied pace.
+Preference penalties, dismount-entry costs and ferry-entry costs do not add time.
+The result has no ferry timetable or waiting-time estimate.
 
 ## Errors
 

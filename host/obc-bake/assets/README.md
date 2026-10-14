@@ -14,11 +14,12 @@ shared render path.
 The map is packed from a Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez` extract
 with `builder/presets/schema.json`, on this canonical crop, with `--no-land` and no terrain:
 
-```text
-obc pack freiburg-regbez.osm.pbf builder/presets/schema.json \
-  /tmp/teningen-preview.obcm -- \
-  --bbox 7.798,48.119,7.830,48.141
+```sh
+fixtures/build-map-package.sh teningen-preview freiburg-regbez.osm.pbf
 ```
+
+The target writes this asset at `7.798,48.119,7.830,48.141` and stamps the current Light and
+Dark skins. Omit the source argument to fetch the registered Geofabrik extract.
 
 The terrain sidecar comes from Copernicus DEM GLO-30 tile `N48_00_E007_00`, over the same crop
 but written latitude-first, which is `obc-dem`'s argument order and the opposite of `obc-pack`'s:

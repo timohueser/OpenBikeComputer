@@ -34,7 +34,7 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `mode` | Optional `route` or `trip` |
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
-| `preset` | Optional preset: `Balanced`, `Shorter` or `Less climbing` |
+| `preset` | Optional preset: `Balanced`, `Shorter`, `Less climbing`, `Technical (S3)` (MTB only) or `Alpine (T4)` (hiking only) |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |

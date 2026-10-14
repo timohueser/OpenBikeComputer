@@ -48,9 +48,9 @@ identity or sample byte: the native Demo and storage tests own those.
 ## Guided Visit
 
 The Add a stop chapter pauses the captured ride at its mid-climb position. The `find` command
-opens the shared Find Place screen; the tour selects Train, waits for a measured choice, opens
-Gletsch, and waits for the complete Visit preview. Select accepts that exact route and returns to
-the map, and the Recorder continues through acceptance.
+opens the shared Find Place screen; the tour selects Lodging, waits for a measured choice, opens
+Hotel Alpenroesli, and waits for the complete Visit preview. Select accepts that exact route and
+returns to the map, and the Recorder continues through acceptance.
 
 The page waits on `obc_demo_find_ready()` and `obc_demo_visit_status()` as well as the screen
 name. **A planning screen alone cannot advance a preview or acceptance caption.**

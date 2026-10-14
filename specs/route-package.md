@@ -7,11 +7,15 @@ A digest is lowercase SHA-256 as 64 hexadecimal characters. Each object name
 is the digest of its complete stored bytes. The package ID is the digest of the
 exact UTF-8 manifest bytes. Reformatting a manifest changes its ID.
 
-The manifest format is `8`. Its JSON fields are defined by `Manifest` and
+The manifest format is `9`. Its JSON fields are defined by `Manifest` and
 `Metric` in `planner/router/src/package.rs`. Bounds are
 `[west, south, east, north]` in degrees. Metric IDs equal their profile names.
 Source digests identify the input data. Attribution and warnings travel with
 the package.
+
+Each metric's profile includes separate `allow_pushing` and `allow_steps` flags.
+Its difficulty limit applies to SAC for walking and MTB scale for cycling.
+The prepared road costs and snap bits enforce these capabilities together.
 
 Bounds define query endpoint coverage.
 
@@ -153,7 +157,7 @@ still uses all prepared road and turn costs.
 ## Grid selections
 
 `routing/blocks.json` has `format: 2`. `source` is the source manifest SHA-256.
-`data` uses the format 8 manifest structure with selected bounds and region.
+`data` uses the format 9 manifest structure with selected bounds and region.
 Each sparse table adds `pages`, an ascending list of source page numbers,
 parallel to `blocks`. `len` remains the source column length. An absent page
 is unavailable, not an empty page.

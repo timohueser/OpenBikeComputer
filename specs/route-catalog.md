@@ -13,7 +13,7 @@ outside the extract leaves the catalog.
 | Regional | `routes/REGION.json` | Every record of the region |
 | Grid | `routes/tiles/9-X-Y.json` | One file for each grid cell |
 
-A file is UTF-8 JSON: `{"format": 1, "routes": [...]}`. The records are in
+A file is UTF-8 JSON: `{"format": 2, "routes": [...]}`. The records are in
 ascending `id` order. A grid release has no region file.
 
 A grid cell is a Web Mercator tile at zoom 9 whose box overlaps the release
@@ -38,6 +38,7 @@ heights are integer metres.
 | --- | --- |
 | `id` | OSM relation ID |
 | `kind` | The OSM `route` value: `hiking`, `foot`, `bicycle` or `mtb` |
+| `profile` | Required profile ID that reproduces the plan and gives its totals |
 | `name`, `ref`, `operator` | The OSM tag text |
 | `description` | The OSM tag text, at most 200 characters |
 | `website` | The OSM `website` text, else `contact:website`, else `url` |
@@ -77,9 +78,16 @@ shaping points and the finish, so the request index of an entry is its position
 in `via` plus 1. For a loop, `turnarounds` can hold 0: the plan route turns
 back at its start. It is absent when there are none.
 
-The plan reproduces the route with the Balanced profile of each activity that
-lists the kind: `hiking` for `hiking` and `foot`, `mtb` for `mtb`, and `road`,
-`gravel` and `touring` for `bicycle`. The main line is the member ways with an
+The plan reproduces the route with its `profile`. Hiking and foot routes use
+`hiking`, or `hiking/alpine` when a member has a known T3 or T4 grade. MTB routes
+use `mtb`, or `mtb/technical` when a member has a known S2 or S3 grade. A route
+above these limits, or without the required installed profile, leaves the
+catalog. A client selects the recorded profile and shows its difficulty before
+the rider chooses the route. A missing grade does not prove that a route is easy.
+
+Bicycle routes use `touring` for their totals. Their plans also reproduce the
+route with `road` and `gravel`; a client keeps the rider's bicycle activity and
+selects Balanced. The main line is the member ways with an
 empty, `main`, `forward` or `backward` role, ordered as the Waymarked Trails route
 builder orders them, with the forward branch where the route splits by
 direction. When that order has more than one piece, the builder joins the
@@ -91,9 +99,7 @@ router patches each gap. To reproduce the route, the router's route for the plan
 with each profile has a deviation of at most 2 % of the main-line length. The
 deviation is the length of the routed line that is more than 30 m from the main
 line, plus the length of the main line that is more than 30 m from the routed
-line. The plan route is the route that the
-router gives for the plan with one of these profiles: `touring` for `bicycle`,
-else the only one. The plan runs in the member order of the relation, also for a
+line. The plan route uses the recorded profile. The plan runs in the member order of the relation, also for a
 loop. A route is a loop when its main line is a closed ring, or when it has
 `roundtrip=yes` and its ends are within 200 m. A loop plan ends at its start, so
 the last vertex equals vertex 0.
@@ -136,7 +142,8 @@ route. It is absent when the plan route has no explicit grade.
 ### Long routes
 
 A long route is a relation that holds route relations. Its stages are its child
-routes with an empty or `main` role and the same `network`, in member order. A
+routes with an empty or `main` role and the same `network`, in member order. All
+stages must use the same activity family; `hiking` and `foot` share a family. A
 long route is in the catalog only when each of its stages is in it. A long route
 with a child relation that holds route relations leaves the catalog.
 
@@ -150,6 +157,9 @@ plans a whole long route only when its joined plan has at most 64 points;
 otherwise it offers its stages only. `start_udeg` is the start of its first
 stage. `length_m`, `ascent_m`, `descent_m` and `grades_m` are the sums of the
 values of its stages. `hardest` is the largest `hardest` of its stages. Its
+`profile` is the advanced profile when any stage needs it, else the ordinary
+profile of its kind. An ordinary stage in an advanced long route must reproduce
+its line with both profiles. Its
 `cells` are the union of the `cells` of its stages. Thus each file that holds a
 stage also holds its long route.
 
@@ -170,7 +180,7 @@ A one-way stage of 3.7 km in cell `9-267-178`, with one shaping point:
 
 ```json
 {"ascent_m":184,"cells":["9-267-178"],"descent_m":251,"grades_m":[2460,1250,0,0,0,0],
- "hardest":1,"id":1234567,"kind":"hiking","length_m":3710,
+ "hardest":1,"id":1234567,"kind":"hiking","profile":"hiking","length_m":3710,
  "line_udeg":[8004512,47873120,9210,-6400,8800,-11500,6500,-4200,5510,-2100],
  "loop":false,"name":"Mühlbach-Weg, Etappe 1","operator":"Schwarzwaldverein",
  "parent":2345678,"rank":1,"ref":"MW","stage":1,
@@ -181,7 +191,7 @@ Its long route, with two stages:
 
 ```json
 {"ascent_m":420,"cells":["9-267-178"],"descent_m":449,"grades_m":[6830,2000,0,0,0,0],
- "hardest":1,"id":2345678,"kind":"hiking","length_m":8830,"loop":false,
+ "hardest":1,"id":2345678,"kind":"hiking","profile":"hiking","length_m":8830,"loop":false,
  "name":"Mühlbach-Weg","operator":"Schwarzwaldverein","rank":1,"ref":"MW",
  "stages":[1234567,1234568],"start_udeg":[8004512,47873120],
  "symbol":"yellow:white:yellow_diamond"}

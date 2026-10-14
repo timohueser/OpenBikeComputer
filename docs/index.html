@@ -1172,8 +1172,8 @@
             { cmds: ['context'], until: ["ContextDrawer"], label: 'Open the ride tools' },
             { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
             { cmds: ['press'], until: ["FindPlace"], label: 'Find a place near the ride' },
-            { cmds: ['step:6', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare the mapped station' },
-            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Gletsch — review the complete Visit route' },
+            { cmds: ['step:2', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare nearby lodging' },
+            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Hotel Alpenroesli — review the complete Visit route' },
             { cmds: ['press'], until: ["Map"], waitFor: 'Accepted', label: 'Visit accepted — recording continues' }
           ]
         },

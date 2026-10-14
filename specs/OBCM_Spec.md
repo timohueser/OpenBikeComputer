@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v19)
+# OBCM File Format Specification (v20)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -10,9 +10,9 @@ This document is the normative byte contract. Its code authority for version num
 fixed lengths, flags, sentinels, the canonical POI id table, and endian primitives is
 `firmware/obc-formats/src/obcm.rs`; producers and consumers import those facts directly.
 
-**v19 is the only supported version**; earlier maps get repacked. A reader MUST
+**v20 is the only supported version**; earlier maps get repacked. A reader MUST
 check `Version` before it reads any later field and MUST refuse every value other
-than `0x13`. The header version applies to the whole file.
+than `0x14`. The header version applies to the whole file.
 
 Style flag bits gain meanings without a version bump, because the record's length, layout
 and offsets do not move. §2 states every defined bit.
@@ -59,7 +59,7 @@ Packed as `struct "<4sBiiiiIBIHIIBIIIIIIIH"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x13` |
+| 4 | Version | 1 | `uint8` | `0x14` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -724,7 +724,7 @@ excludes a place; unknown hours must never be presented as open.
 ## 8. Navigation-Graph Section
 
 The **routable graph** the on-device router runs A\* over: junction **nodes** (derived from
-OSM node ids shared across routable `highway=*` ways) joined by undirected **edges** (the
+OSM node ids and access/turn boundaries) joined by physical **edges** with directional access (the
 polyline between two junctions, junction-free inside). The packer builds the graph in
 `nav.rs` (way-kind classification, bike-legality filter, island pruning, junction split,
 dedup, edge splits) and this section is its on-wire form.
@@ -768,7 +768,7 @@ directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 | 20 | Chunk Size | 2 | `uint16` | Fixed capacity of every nav chunk — **must be `512`** (the reader rejects any other value) |
 | 22 | Profile Table Offset | 4 | `uint32` | **Scaled** offset of the §8.6 profile table |
 | 26 | Profile Count | 1 | `uint8` | Number of 56-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
-| 27 | Reserved | 1 | `uint8` | `0` (keeps the directory even-sized; no other meaning) |
+| 27 | Longitude bound scale | 1 | `uint8` | Millimetres per longitude microdegree, `0..=111`; used by the integer distance bound (§8.6) |
 | 28 | Snap Index Offset | 4 | `uint32` | **Scaled** offset to the §8.7 snap-anchor quadtree index |
 | 32 | Snap Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the snap index; `0` ⇒ no interior anchors |
 | 36 | Snap Chunk Count | 4 | `uint32` | Number of fixed 512-byte snap-anchor chunks following that index |
@@ -814,8 +814,8 @@ Identical to §4 / §7.2: a flat `uint32` array with the same node encoding (bra
 bit / empty-leaf sentinel / chunk id), built over the **same global bbox from the
 header**, with the same floor-division-midpoint NW/NE/SW/SE subdivision and BFS
 flattening. The packer splits a leaf once its packed records (§8.3) exceed one
-chunk — by **bytes**, since records are variable-length — with the same 10-µdeg
-recursion floor. As with POIs, a node's `node_bbox` is not needed to decode its
+chunk — by **bytes**, since records are variable-length — down to the 1-µdeg
+integer grid. As with POIs, a node's `node_bbox` is not needed to decode its
 records (coordinates are absolute); the walk only uses it to prune.
 
 **Bin-packed chunks.** After building the tree, the packer assigns chunk ids **first-fit over
@@ -836,17 +836,20 @@ The index stores exactly one chunk id per leaf; the leaf → chunk mapping is ma
 ### 8.3 Junction records (variable length)
 
 Records are packed back-to-back into 512-byte chunks; unused trailing bytes are
-`0xFF`. A record is `13 + 17 × Degree` bytes:
+`0xFF`. A record is `39 + 23 × Degree` bytes:
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Lat | 4 | `int32` | Latitude, **absolute** microdegrees |
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
-| 8 | Node Id | 4 | `uint32` | Dense pack-run node id (the A\* hash key; stable within one file) |
+| 8 | Node Id | 4 | `uint32` | Dense pack-run node id in `0..=2^32−3`; the top two values are virtual endpoint sentinels |
 | 12 | Degree | 1 | `uint8` | Neighbor count; **`0xFF` = end-of-chunk sentinel** |
-| 13 | Neighbors | 17 × Degree | | `Degree` entries, layout below |
+| 13 | Crossing profile mask | 1 | `uint8` | Profiles permitted to pass through this node |
+| 14 | Crossing push mask | 1 | `uint8` | Permitted profiles that must dismount here; subset of crossing mask |
+| 15 | Source key | 24 | `uint64[3]` | Exact source identity, defined below |
+| 39 | Neighbors | 23 × Degree | | `Degree` entries, layout below |
 
-Per neighbor entry (17 bytes):
+Per neighbor entry (23 bytes):
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
@@ -854,9 +857,12 @@ Per neighbor entry (17 bytes):
 | 4 | Neighbor dLat | 2 | `int16` | Its latitude as a **delta from this record's `Lat`** (µdeg) |
 | 6 | Neighbor dLon | 2 | `int16` | Its longitude as a delta from this record's `Lon` |
 | 8 | Edge Id | 4 | `uint32` | The connecting edge, §8.4 addressing |
-| 12 | Cost M | 2 | `uint16` | The edge's raw ground length in meters (the unweighted distance) |
+| 12 | Cost M | 2 | `uint16` | Ground-distance charge in metres; at least the ceiling of the §8.6 bound |
 | 14 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6) — the input to profile weighting |
 | 15 | Ascent M | 2 | `uint16` | **Directional**: the integrated climb, in metres, of riding this edge *from this record's node toward the neighbor*. Saturating; `0` on a map packed without terrain |
+| 17 | Profile mask | 1 | `uint8` | Profiles permitted to depart toward this neighbor |
+| 18 | Push mask | 1 | `uint8` | Permitted profiles that must push; subset of profile mask |
+| 19 | Turn word | 4 | `uint32` | Bits 0..23: forbidden incoming ports; bits 24..28: this incidence's port; bit 29: destination requires arrival context; bits 30..31: zero |
 
 The neighbor's absolute coord is reconstructed as `(Lat + dLat, Lon + dLon)`; the
 packer guarantees both endpoints of every edge sit within `int16` of each other
@@ -879,17 +885,23 @@ Rules:
   `Degree` would sit reads `0xFF` — the reader stops there (mirrors the POI
   subtype sentinel; the geometry chunks' style-id sentinel likewise). A record
   never straddles a chunk boundary, so a chunk decodes in isolation.
-- **Degree cap: 24.** `13 + 24 × 17 = 421 ≤ 512`, so a cap-degree record always fits one
-  chunk. A node past the cap keeps its **first 24** adjacency entries (edge-pool order,
-  deterministic) and the packer warns; a dropped arc survives one-way via the neighbor's own
-  record. `0xFF` can therefore never be a real degree.
-- **Undirected, with one exception.** Every edge appears in both endpoints'
-  records with the **same** `Edge Id`, `Cost M`, and `Way Kind`. **`Ascent M` is
-  the exception and MUST NOT be assumed equal**: the entry `a→b` carries
-  `ascent(a→b)` and the entry `b→a` carries `ascent(b→a)`, which is the first
-  direction's *descent*. A consumer that verifies "both sides agree" must exclude
-  this field. A self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its
-  node's record, carrying its forward direction's ascent.
+- **Degree cap: 20.** `39 + 20 × 23 = 499 ≤ 512`. Producers reject excess degree
+  or a leaf that cannot fit; they never discard adjacency entries to fit.
+- **Two physical incidences.** Every edge appears at both endpoints with the same edge id,
+  cost and kind. Directional masks and ascent may differ. A forbidden direction retains its
+  incidence with profile mask zero, so snapping can discover the edge from either endpoint.
+  Producers split self-loops at an interior vertex.
+- **Stable ports.** Ports are distinct in a node, in `0..19`, and assigned before cell cutting.
+  Forbidden-port bits 20..23 are zero. A cell may omit incidences, but preserves their port numbers.
+  Turn prohibitions refer to the incoming physical incidence, including for virtual endpoints.
+  Cells assembled together must use one complete source-incidence context. Production merges
+  regional sources before relation-complete extraction with a one-microdegree halo.
+- **Source identity.** An original node has key `[0, OSM node id, 0]`. A synthetic split
+  has `[OSM way id, min(original segment node ids), max(original segment node ids)]`.
+  Assemblers join only equal coordinates with equal source keys. Coincident bridges and paths
+  remain distinct. Splitting and densification preserve the original segment identity.
+- **Crossings.** Access and dismount requirements apply when passing through a node. Turning
+  back on the same physical incidence does not cross a barrier or permit a later forbidden exit.
 - **Seam determinism.** A producer that cuts one edge into pieces at a cell border
   (`OBCA_Spec.md` §3) integrates each piece over the **same global elevation
   lattice**, so two neighbouring cells' stubs are each the integral of their own
@@ -928,12 +940,12 @@ walk is written once and applied `ordinal + 1` times:
 ```
 # `p` is a byte position in 0..=512. Every bound below is written ADDITIVELY on `p`.
 step(p):
-    if p + 19 > 512:            refuse   # no record fits: 19 B is the format's smallest
+    if p + 23 > 512:            refuse   # no record fits: 23 B is the format's smallest
     n = u16_at(p + 4)                    # Pt Count
     if n == 0xFFFF:             refuse   # end-of-chunk sentinel: no record here
     n = n & 0x7FFF                       # low 15 bits are the point count
     if n < 2:                   refuse   # impossible count; also what stops 4*(n-1) underflowing
-    len = 15 + 4 * (n - 1)
+    len = 19 + 4 * (n - 1)
     if p + len > 512:           refuse   # record claims bytes past its chunk
     return len
 
@@ -943,20 +955,15 @@ repeat ordinal times:
 step(p)                                  # the target record, same four checks
 ```
 
-**`512 - p` MUST NOT appear anywhere in that walk, in any width.** Written as `512 - p < 19` the
+**`512 - p` MUST NOT appear anywhere in that walk, in any width.** Written as `512 - p < 23` the
 guard is a bug in every unsigned language this spec is implemented in: once `p` passes `512` — which
 a corrupt `Pt Count` does in a single step — the subtraction wraps to a huge value, the guard passes,
 and `u16_at(p + 4)` reads outside the chunk. This is the same class of mistake as the `u32 * U`
 narrowing §1.1 warns about, and it is spelled out here because this block is the one a reader
 transcribes verbatim.
 
-**`n` is a `uint16` but `len` needs 19 bits — evaluate `15 + 4 × (n - 1)` in at least 32 bits**, the
-same widening rule §1.1 states for `u32 × U`. It is the same defect one operator over: the largest
-`n` the guards above let through is `0xFFFE`, giving `len = 15 + 4 × 65 533 = 262 147`, and a
-transcriber that computes it in the operand's own width wraps that to `3`. Then `p + 3 > 512` is
-false, the `record claims bytes past its chunk` check passes, and the walk advances three bytes into
-the middle of a record instead of refusing — silently, and with every bound in the block written
-correctly.
+Compute `19 + 4 × (n - 1)` in at least 32 bits. The masked point count can exceed
+one chunk in malformed input; narrow arithmetic must not turn it into a small record.
 
 Four refusal rules, and a reader MUST apply all of them, because an `Edge Id` reaches it from an
 adjacency entry or a snap record and is arbitrary in a corrupt map: `chunk_index < Edge Chunk
@@ -969,12 +976,12 @@ chunk. A refused id is a malformed map, not an absent edge.
 already `0xFF`-filled, so the two bytes at `p + 4` of a gap already spell it. `Pt Count` is at least
 `2` in every real record, so `0xFFFF` is impossible content — the same shape as the style-id
 sentinel (§5.1), the POI subtype sentinel (§7.3) and the nav degree sentinel (§8.3). A gap shorter
-than six bytes cannot be read for it, which is what the `512 - p < 19` test covers: no record fits
+than six bytes cannot be read for it, which is what the `512 - p < 23` test covers: no record fits
 there either way.
 
-**Why five bits.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with `Pt Count ≥ 2`, so
-the smallest record this format can express is **19 bytes** and a 512-byte chunk holds at most
-`floor(512 / 19) = 26` of them. Five bits name `0..=31`, which covers 26, and leave **27** for
+**Why five bits.** An edge record is `19 + 4 × (Pt Count − 1)` bytes with `Pt Count ≥ 2`, so
+the smallest record this format can express is **23 bytes** and a 512-byte chunk holds at most
+`floor(512 / 23) = 22` of them. Five bits name `0..=31`, which covers 22, and leave **27** for
 the chunk index, which is the split where the two ceilings meet:
 
 ```
@@ -987,14 +994,14 @@ exceeds it: no `Edge Id` could name the chunks past that point, so the tail woul
 directory claims and no id reaches.
 
 **A chunk holds at most 31 records** — a producer MUST NOT write a 32nd, so `ordinal` is never
-more than `30`. Today's 19-byte minimum record puts the real maximum at 26, so the cap gives up
+more than `30`. The 23-byte minimum record puts the real maximum at 22, so the cap gives up
 nothing; it exists so that the encoding stays sound if a future record ever shrinks. **31 and
 not 32** is what makes `0xFFFFFFFF` impossible unconditionally: that id is ordinal `31` of
 chunk `2^27 − 1`, and both halves are otherwise legal.
 
 **`0xFFFFFFFF` remains an impossible id**, which is what keeps §8.7's sentinel working.
 
-Edge record (`15 + 4 × (Pt Count - 1)` bytes):
+Edge record (`19 + 4 × (Pt Count - 1)` bytes):
 
 Bit 15 of the count word records complete elevation integration. The packer sets it only when
 every sample in both directions resolved. The assembler preserves the bit. Readers check the
@@ -1003,19 +1010,23 @@ or absent terrain, even when both endpoint heights are valid.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
-| 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
-| 4 | Count / elevation validity | 2 | `uint16` | low 15 bits: vertex count (2..125); bit 15: all DEM integration samples present; `0xFFFF` remains the end-of-chunk sentinel |
+| 0 | Length M | 4 | `uint32` | Displayed ground length in metres; the adjacency cost may round upward to meet its bound |
+| 4 | Count / elevation validity | 2 | `uint16` | low 15 bits: vertex count (2..124); bit 15: all DEM integration samples present; `0xFFFF` remains the end-of-chunk sentinel |
 | 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
 | 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
-| 15 | Deltas | 4 × (Pt Count − 1) | | Per vertex: `dlat int16, dlon int16`, chained from the previous vertex |
+| 15 | Profile mask a→b | 1 | `uint8` | Directional profile eligibility |
+| 16 | Push mask a→b | 1 | `uint8` | Subset of the corresponding profile mask |
+| 17 | Profile mask b→a | 1 | `uint8` | Directional profile eligibility |
+| 18 | Push mask b→a | 1 | `uint8` | Subset of the corresponding profile mask |
+| 19 | Deltas | 4 × (Pt Count − 1) | | Per vertex: `dlat int16, dlon int16`, chained from the previous vertex |
 
 The polyline runs from endpoint `a` to endpoint `b` inclusive (first vertex = `a`'s
 coord, last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas are
 **lat-first** like every §7/§8 record (the geometry sections §5 are lon-first —
 anchors there are viewport-space `x, y`).
 
-`Pt Count ≥ 2` is what makes the 19-byte minimum record — and therefore the 26-record chunk and the
+`Pt Count ≥ 2` is what makes the 23-byte minimum record — and therefore the 22-record chunk and the
 5-bit ordinal (above) — a property of the format rather than an observation about real maps.
 
 Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
@@ -1030,7 +1041,7 @@ construction**:
   `Length M` exceeds `60000` m (so `Cost M` fits `uint16`), into pieces joined by
   **synthetic degree-2 junctions** (new dense ids past the real ones). The
   serializer additionally splits any piece whose densified record would exceed one
-  chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
+  chunk (`Pt Count > (512 − 19) / 4 + 1`, i.e. 124 points) or whose endpoint span
   would exceed the `int16` bound after densification. Because the smallest record is 19 bytes, a
   chunk that survives those splits holds `1..=26` records — inside the 31-record cap, and so
   inside the ordinal's `0..=30`. Routing-neutral: each piece's
@@ -1057,7 +1068,7 @@ S+0    Nav Directory (40 B):
          chunk_size            = 512
          profile_table_offset  = s+3      (byte S+48)
          profile_count         = 1
-         reserved              = 0
+         longitude_bound_scale = 111
          snap_index_offset     = s+127    (byte S+2032; snap chunks begin at S+2048)
          snap_index_node_count = 1
          snap_chunk_count      = 1
@@ -1074,16 +1085,19 @@ S+500  Filler (12 B, 0xFF)                         align_up(S+500, 16) = S+512
 S+512  Node Chunk 0 (512 B):
          rec A: lat=100 lon=200 id=0 degree=1
                 nbr { id=1, dLat=+800, dLon=+600, edge_id=0, cost_m=1234,
-                      way_kind=0x2A, ascent_m=300 }                          (30 B)
+                      way_kind=0x2A, ascent_m=300, profiles=15, push=0, port=0, forbidden=0 }
+                crossing=15 push=0 source=[0,100,0]                         (62 B)
          rec B: lat=900 lon=800 id=1 degree=1
                 nbr { id=0, dLat=-800, dLon=-600, edge_id=0, cost_m=1234,
-                      way_kind=0x2A, ascent_m=42 }                           (30 B)
-         0xFF × 452                                (padding = sentinel)
+                      way_kind=0x2A, ascent_m=42, profiles=15, push=0, port=0, forbidden=0 }
+                crossing=15 push=0 source=[0,101,0]                         (62 B)
+         0xFF × 388                                (padding = sentinel)
 S+1024 Edge Pool chunk 0 (512 B):
          edge 0 (chunk 0, ordinal 0 ⇒ edge_id = (0 << 5) | 0 = 0):
            length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
-           deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)
-         0xFF × 489                    (filler; its pt_count reads 0xFFFF = end of records)
+           profiles_ab=15 push_ab=0 profiles_ba=15 push_ba=0
+           deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (27 B)
+         0xFF × 485                    (filler; its pt_count reads 0xFFFF = end of records)
 S+1536 Alignment Filler (496 B, 0xFF)
 S+2032 Snap Quadtree (4 B): [0x00000000]            single leaf → snap chunk 0
 S+2036 Filler (12 B, 0xFF)                          align_up(S+2036, 16) = S+2048
@@ -1144,26 +1158,31 @@ ms = surface_mult[k >> 5]        # high 3 bits = surface class (0..=7)
 effective = (mh × ms) >> 4       # u32 math; 16×16>>4 = 16 = 1.0×
 ```
 
-The edge is **forbidden** (not routable under this profile) if either byte is `0`.
-The weighted A\* cost of the edge is
+The edge is forbidden if either multiplier is zero or the direction's profile bit is clear.
+For a permitted edge, search computes the distance term in wide arithmetic and adds the
+non-negative climb term. A pushing traversal charges four times the distance term. Entering
+pushing from riding adds 100 flat-equivalent metres. A forced dismount crossing also adds this
+entry charge. Cumulative cost is checked `uint32`; overflow must never saturate into success.
 
-```
-weighted = (Cost M × effective) >> 4  +  Ascent M × Climb Weight     # saturating
-```
+**Distance-bound invariant (normative).** Let `L` be directory byte 27. For coordinates in
+microdegrees, set `dy = 111 × abs(a.lat-b.lat)` and `dx = L × abs(a.lon-b.lon)` in millimetres.
+The octagonal bound is `B(a,b) = max(dx, dy, ceil(707 × (dx+dy)/1000))`.
+Every adjacency charge is at least `ceil(B(a,b)/1000)`. The search heuristic is
+`floor(B(node,goal)/1000)`. Compute differences and products in unsigned 64-bit arithmetic.
+This symmetric metric obeys the triangle inequality. Every non-zero profile multiplier is
+at least 16 and climb is non-negative, so the heuristic is admissible and consistent.
+Producers choose `L = floor(111 × cos(maximum absolute latitude))`; assemblers use the minimum
+input scale. Partial edges enforce the same bound between their projected endpoints. The
+router defensively raises an undercharged adjacency to the bound before profile weighting.
 
-The addition saturates into the `uint16` frontier cost.
-
-**Admissibility invariant (normative).** Every **non-zero** multiplier is `≥ 16` (that is,
-`≥ 1.0×`), which keeps the great-circle heuristic admissible. The packer **rejects** a config
-whose quantized weight is non-zero but `< 16`; the reader **clamps** a non-zero multiplier
-`< 16` up to `16`, so a hand-forged file cannot hand the router an inadmissible weight.
-
-**The climb term is additive and non-negative (normative).** `Ascent M` and `Climb Weight` are
-both unsigned and the term is *added*, so a descent MUST NOT reduce an edge's cost below its
-profile-weighted ground length. `Climb Weight` therefore needs no lower bound the way a
-multiplier does: every `uint8`, `0` included, is admissible. The worst real edge (60 km,
-3000 m of ascent, the §8.4 split bounds) at `Climb Weight = 15` is `60 000 + 45 000`, inside
-the saturating arithmetic.
+The producer rejects a non-zero multiplier below 16; the reader clamps it to 16. Weighted A*
+compares `g × epsilon_denominator + h × epsilon_numerator` in `uint64`. Search states distinguish
+arrival incidences at junctions with turn rules or crossing restrictions. At unrestricted
+junctions, arrivals with the same riding/pushing mode share a state; the cheapest arrival
+dominates because every onward transition has the same eligibility and cost. Neighbor turn-word
+bit 29 marks a destination that needs arrival context. A reader/search must reject a false
+context-free claim when the destination has relevant turn or crossing rules. A search that drops discoveries due to its state limit
+must report exhaustion, not a route carrying an invalid suboptimality guarantee.
 
 #### Canonical way-kind table (normative)
 
