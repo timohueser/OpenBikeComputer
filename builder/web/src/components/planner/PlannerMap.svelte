@@ -669,6 +669,12 @@
         waypoint: "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0",
         detour: "M8 5 3 10l5 5M3 10h11a5 5 0 0 1 0 10h-2",
     };
+    // The start plays and the finish waves a chequered flag, as in the iPhone planner. A loop has only its start.
+    const endpointIcons = {
+        start: '<path d="M9 6.5v11l9-5.5z" fill="currentColor" />',
+        finish: '<path d="M6 21V4h13v9H6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />'
+            + '<path d="M6 4h4.3v4.5H6zm8.7 0H19v4.5h-4.3zm-4.4 4.5h4.4V13h-4.4z" fill="currentColor" />',
+    };
 
     function routeProgress(marker: maplibregl.Marker) {
         const at = marker.getLngLat();
@@ -684,9 +690,7 @@
         let nightNumber = 0;
         for (const point of shown) {
             if (point.kind === "night") nightNumber++;
-            // While an option is previewed, the letters A, B… name routes, so the start and finish show none.
-            const endpoint = point.kind === "start" ? "A" : point.kind === "finish" ? "B" : undefined;
-            const key = JSON.stringify([point, point.kind === 'night' ? nightNumber : 0, endpoint && !compare]);
+            const key = JSON.stringify([point, point.kind === 'night' ? nightNumber : 0]);
             if (pins.get(point.id)?.key === key) continue;
             pins.get(point.id)?.marker.remove();
             const dayEnd = point.kind === "dayend";
@@ -696,14 +700,16 @@
             button.draggable = false;
             button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
-            button.setAttribute("aria-label", point.label);
+            button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
             button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
             if (point.kind === "place" && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
                 button.append(markerIcon(pointIcons[point.kind]));
+            } else if (point.kind === "start" || point.kind === "finish") {
+                button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" draggable="false">${endpointIcons[point.kind]}</svg>`;
             } else {
-                button.textContent = point.markerLabel ?? (endpoint ? (compare ? "" : endpoint) : point.kind === "night" ? String(nightNumber) : "");
+                button.textContent = point.markerLabel ?? (point.kind === "night" ? String(nightNumber) : "");
             }
             button.addEventListener("click", (event) => { event.stopPropagation(); onPointSelect?.(point.id); });
             button.addEventListener('mouseenter', () => onPointHover?.(point.id));
@@ -806,6 +812,9 @@
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
     :global(.planner-map-pin.draggable) { cursor: grab; }
+    :global(.planner-map-pin:is(.start, .finish)) { color: var(--ink, #1c1b14); background: var(--panel, #fff); border: 1.5px solid var(--ink-soft, #5c5a2e); }
+    :global(.planner-map-pin.finish) { border-radius: 7px; }
+    :global(.planner-map-pin:is(.start, .finish) svg) { width: 16px; height: 16px; }
     :global(.planner-map-pin.via) { width: 20px; height: 20px; background: var(--route, #cc2a93); }
     :global(.planner-map-pin.pass) { width: 22px; height: 22px; background: var(--panel, #fff); border: 3px solid var(--route, #cc2a93); }
     :global(.planner-map-pin.marker) { width: 24px; height: 24px; background: #e7ecdf; border-color: var(--ink-soft, #5c5a2e); color: #1c1b14; }
