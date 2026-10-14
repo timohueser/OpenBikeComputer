@@ -12,7 +12,8 @@ const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate): Ro
 const plan: Trip = { ...emptyTrip(), points: [point('start', 'start', [8, 48]), point('finish', 'finish', [8.1, 48])] };
 const moved = (trip: Trip, lon: number): Trip => ({ ...trip, points: trip.points.map(p => p.id === 'finish' ? { ...p, coordinate: [lon, 48] } : p) });
 
-/** The stub route service, its request bodies, and a switch that holds the next answers until `release`. */
+/** The stub route service, its request bodies, and a switch that holds the next answers until `release`. Address search
+ * answers `reverse`, which finds no address unless a test sets one. */
 function service(alternatives: AnswerRoute[] = []) {
     const answer = routeService();
     let held: Promise<void> | undefined, release = () => {};
@@ -21,9 +22,11 @@ function service(alternatives: AnswerRoute[] = []) {
         const body = JSON.parse(init.body as string);
         return body.alternatives_only ? { ok: true, json: async () => ({ routes: alternatives }) } : answer(url, init);
     });
-    vi.stubGlobal('fetch', fetch);
+    const reverse = vi.fn(async (_url: string, _init: RequestInit): Promise<unknown> => ({ ok: true, json: async () => ({ label: null }) }));
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => (url.endsWith('/reverse') ? reverse : fetch)(url, init));
     return {
         fetch,
+        reverse,
         bodies: () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body as string)),
         hold() { held = new Promise(resolve => release = () => { held = undefined; resolve(); }); },
         release: () => release(),
@@ -38,6 +41,13 @@ function alternative(id: string, reason: string, profile: string, line: Coordina
         elevation_dm: line.map(() => null), elapsed_s: line.map((_, i) => i && 300),
         legs: [{ from_index: 0, to_index: line.length - 1, start: 'a', end: 'b', totals }] };
 }
+
+function options(session: PlanSession) {
+    const options = session.routeOptions;
+    if (options.state !== 'ready') throw new Error(`Route options are ${options.state}.`);
+    return options;
+}
+const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -77,12 +87,12 @@ describe('plan session', () => {
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
-        await vi.waitFor(() => expect(session.alternatives?.choice).toBe('primary'));
-        const [primary, corridor, shorter] = session.alternatives!.routes;
+        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
+        const [primary, corridor, shorter] = options(session).routes;
         expect(routes.bodies().map(body => [body.points, body.alternatives_only])).toEqual([[[[8, 48], [8.1, 48]], undefined], [[[8, 48], [8.1, 48]], true]]);
         const pick = async (route: typeof primary) => {
             expect(session.pickAlternative(route)).toBe(true);
-            expect(session.alternatives?.choice).toBe(route.id);
+            expect(choice(session)).toBe(route.id);
             await vi.waitFor(() => expect(session.line).toBeDefined());
         };
         await pick(shorter);
@@ -97,8 +107,63 @@ describe('plan session', () => {
         expect(routes.fetch).toHaveBeenCalledTimes(3);
         // The checked route adds no Undo step: one Undo returns to the corridor.
         expect(session.pickAlternative(primary)).toBe(false);
-        expect(session.undo() && session.alternatives?.choice).toBe('corridor');
+        expect(session.undo() && choice(session)).toBe('corridor');
         expect(routes.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('previews an option without an edit, applies it as one Undo step, and refuses options of an earlier plan', async () => {
+        const via: Coordinate = [8.05, 48.02];
+        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        session.findAlternatives();
+        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
+        const [primary, corridor] = options(session).routes;
+        await session.saved();
+        const save = vi.spyOn(session, 'save');
+        const before = session.trip;
+
+        session.previewOption(corridor.id);
+        expect([session.compared, session.trip, session.canRedo]).toEqual([corridor, before, false]);
+        session.previewOption(primary.id);
+        expect(session.compared).toBeUndefined();
+        session.previewOption(corridor.id);
+        session.previewOption(null);
+        expect([session.compared, session.trip]).toEqual([undefined, before]);
+        expect(save).not.toHaveBeenCalled();
+
+        session.previewOption(corridor.id);
+        expect(session.pickAlternative(corridor)).toBe(true);
+        expect([session.compared, choice(session), save.mock.calls.length]).toEqual([undefined, 'corridor', 1]);
+        expect(session.undo() && session.trip).toBe(before);
+
+        // An edit makes the options stale; they never apply to the edited plan.
+        session.previewOption(corridor.id);
+        session.commit(moved(plan, 8.2));
+        expect([session.routeOptions.state, session.compared]).toEqual(['stale', undefined]);
+        expect(session.pickAlternative(corridor)).toBe(false);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        routes.fetch.mockResolvedValueOnce({ ok: false, json: async () => ({ message: 'Routing is unavailable. Retry shortly.' }) });
+        session.findAlternatives();
+        await vi.waitFor(() => expect(session.routeOptions).toEqual({ state: 'error', message: 'Routing is unavailable. Retry shortly.' }));
+        session.findAlternatives();
+        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
+        expect(session.pickAlternative(corridor)).toBe(false);
+        session.close();
+    });
+
+    it('names a corridor option after the settlement of the address nearest its via', async () => {
+        const via: Coordinate = [8.05, 48.02];
+        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
+        routes.reverse.mockResolvedValueOnce({ ok: true, json: async () => ({ label: 'Dietenbacher Straße 30, Kirchzarten' }) });
+        const session = new PlanSession();
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        session.findAlternatives();
+        await vi.waitFor(() => expect(session.optionPlaces).toEqual({ corridor: 'Kirchzarten' }));
+        expect(JSON.parse(routes.reverse.mock.calls[0][1].body as string)).toEqual({ coordinate: via });
     });
 
     it('duplicates a plan that is not open with the versions saved for it', async () => {

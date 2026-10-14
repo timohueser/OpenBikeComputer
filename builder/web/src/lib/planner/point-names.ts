@@ -15,3 +15,9 @@ export async function visitName(coordinate: Coordinate): Promise<string | null> 
     } catch { /* Coordinates remain usable when search is unavailable. */ }
     return null;
 }
+
+/** The settlement of the address nearest to `coordinate`: the part of its label after the last comma. */
+export async function settlementName(coordinate: Coordinate): Promise<string | null> {
+    const label = await visitName(coordinate), comma = label?.lastIndexOf(', ') ?? -1;
+    return comma < 0 ? null : label!.slice(comma + 2).trim() || null;
+}

@@ -3,7 +3,7 @@ import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints,
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
-import { coordinateName, visitName } from './point-names';
+import { coordinateName, settlementName, visitName } from './point-names';
 import { presetName } from './riding-profiles';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
@@ -14,6 +14,8 @@ import { isTrip } from './trip-validation';
 import { versionSummary, type Version } from './versions';
 
 type Routed = { trip: Trip; line?: RoutingLine };
+export type RouteOptions = { state: 'unavailable' | 'loading' | 'stale' } | { state: 'error'; message: string }
+    | { state: 'ready'; routes: EngineRoute[]; choice: string };
 type Created = { plan: Plan; versions?: Version[] };
 type PlaceName = (coordinate: Coordinate) => string | undefined;
 
@@ -59,7 +61,6 @@ export class PlanSession {
     routeError = $state('');
     dragging = $state(false);
     previewStatus = $state('');
-    alternativesStatus = $state('');
 
     // The trips in Undo order; `at` is the open one. Raw state: a change replaces a trip and never edits it in place.
     private history = $state.raw<Trip[]>([emptyTrip()]);
@@ -85,10 +86,25 @@ export class PlanSession {
     // The alternatives found for one trip, and by routing key the trips that it and its picks gave: the checked route and
     // the shaping point that a corridor pick added.
     private options = $state.raw<{ routes: EngineRoute[]; picks: Record<string, { id: string; via?: string }> } | null>(null);
-    /** The alternatives of the trip and the id of the checked one, when they are known. */
-    readonly alternatives = $derived.by(() => {
-        const pick = this.options?.picks[routingKey(this.trip)];
-        return pick && { routes: this.options!.routes, choice: pick.id };
+    private optionsRequest?: { key: string; abort: AbortController };
+    private optionsError = $state.raw<{ key: string; message: string } | null>(null);
+    /** The route options of the trip. `choice` is the id of the rider's current route. Options found for another trip are
+     * `stale` and never apply. */
+    readonly routeOptions = $derived.by((): RouteOptions => {
+        const key = routingKey(this.trip), pick = this.options?.picks[key];
+        if (pick) return { state: 'ready', routes: this.options!.routes, choice: pick.id };
+        if (this.routeError || (this.line && !this.line.primary)) return { state: 'unavailable' };
+        if (this.optionsError?.key === key) return { state: 'error', message: this.optionsError.message };
+        return { state: this.options ? 'stale' : 'loading' };
+    });
+    /** Settlement names near the `via` of corridor options, by route id. */
+    optionPlaces = $state.raw<Record<string, string>>({});
+    // The option the rider previews. Only `pickAlternative` changes the trip.
+    private previewId = $state<string | null>(null);
+    /** The previewed option, while it is an option of the trip other than the current route. */
+    readonly compared = $derived.by(() => {
+        const options = this.routeOptions;
+        return options.state === 'ready' && this.previewId !== options.choice ? options.routes.find(route => route.id === this.previewId) : undefined;
     });
 
     private readonly legs = new LegCache();
@@ -124,6 +140,7 @@ export class PlanSession {
         this.closed = true;
         this.cancelPreview();
         this.request?.abort.abort();
+        this.optionsRequest?.abort.abort();
         void this.library?.close();
     }
 
@@ -182,26 +199,41 @@ export class PlanSession {
         this.autosave();
     }
 
-    /** Requests the alternatives of the line when they are not known. Returns the cancel of that request. */
-    findAlternatives(): (() => void) | undefined {
-        const trip = this.trip, primary = this.line?.primary;
-        if (!primary || this.alternatives) return;
-        const abort = new AbortController();
-        this.alternativesStatus = 'Finding alternative routes…';
-        requestAlternatives(trip, primary, abort.signal).then(routes => {
-            if (abort.signal.aborted) return;
-            this.options = { routes, picks: { [routingKey(trip)]: { id: primary.id } } };
-            this.alternativesStatus = '';
-        }, error => { if (!abort.signal.aborted) this.alternativesStatus = error instanceof Error ? error.message : 'Alternatives unavailable.'; });
-        return () => abort.abort();
+    /** Requests the alternatives of the line when they are not known and no request for the trip is in flight. A request
+     * for an earlier trip stops. A corridor option is named once its settlement is known. */
+    findAlternatives(): void {
+        const trip = this.trip, primary = this.line?.primary, key = routingKey(trip);
+        if (!primary || this.routeOptions.state === 'ready' || this.optionsRequest?.key === key) return;
+        this.optionsRequest?.abort.abort();
+        const request = this.optionsRequest = { key, abort: new AbortController() };
+        this.optionsError = null;
+        requestAlternatives(trip, primary, request.abort.signal).then(routes => {
+            if (request.abort.signal.aborted) return;
+            this.optionsRequest = undefined;
+            this.options = { routes, picks: { [key]: { id: primary.id } } };
+            for (const route of routes) {
+                if (route.via && !this.optionPlaces[route.id]) void settlementName(route.via).then(name => { if (name) this.optionPlaces = { ...this.optionPlaces, [route.id]: name }; });
+            }
+        }, error => {
+            if (request.abort.signal.aborted) return;
+            this.optionsRequest = undefined;
+            this.optionsError = { key, message: error instanceof Error ? error.message : 'Route options are unavailable.' };
+        });
     }
 
-    /** Applies one of the alternatives to the trip they were found for: a corridor becomes one shaping point at its `via`,
-     * the profile of the route becomes the preset. The list stays, with the pick checked. A profile route keeps its legs,
-     * so its line needs no request. False when the route is already the checked one. */
+    /** Shows option `id` beside the current route, or ends the preview with null. The trip, its history and the saved
+     * plan stay as they are. */
+    previewOption(id: string | null): void {
+        this.previewId = id;
+    }
+
+    /** Applies one of the alternatives to the trip they were found for, as one Undo step: a corridor becomes one shaping
+     * point at its `via`, the profile of the route becomes the preset. The list stays, with the pick as the current
+     * route. A profile route keeps its legs, so its line needs no request. False when the route is already the current
+     * one or the options belong to another trip. */
     pickAlternative(route: EngineRoute): boolean {
         const options = this.options, current = options?.picks[routingKey(this.trip)];
-        if (!options || !current || current.id === route.id) return false;
+        if (!options || !current || current.id === route.id || !options.routes.includes(route)) return false;
         const { trip } = this, via = current.via;
         const found = via ? { ...trip, points: trip.points.filter(p => p.id !== via), routeOrder: trip.routeOrder.filter(id => id !== via) } : trip;
         const preset = { ...found, preset: presetName(route.profile) };
@@ -425,10 +457,12 @@ export class PlanSession {
         this.route();
     }
 
+    /** Ends the drag preview and the option preview. */
     private cancelPreview(): void {
         this.previews.cancel();
         this.preview = null;
         this.dragging = false;
+        this.previewId = null;
     }
 
     private remember(key: string, line: RoutingLine): void {
