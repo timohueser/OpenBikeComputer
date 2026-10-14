@@ -2,7 +2,8 @@
     import { tick } from 'svelte';
     import { radioKey } from './Segmented.svelte';
     import type { RouteOptions } from '../../lib/planner/plan-session.svelte';
-    import { difference, elevationComplete, optionLetter, optionName, optionOrder, unpavedKm } from '../../lib/planner/route-options';
+    import { climbM, difference, elevationComplete, optionLetter, optionName, unpavedKm } from '../../lib/planner/route-options';
+    import { presetName } from '../../lib/planner/riding-profiles';
     import type { EngineRoute } from '../../lib/planner/routing';
 
     let { options, previewId, places, onPreview, onApply, onRetry }: {
@@ -16,7 +17,7 @@
         onRetry: () => void;
     } = $props();
 
-    const rows = $derived(options.state === 'ready' ? optionOrder(options.routes, options.choice) : []);
+    const rows = $derived(options.state === 'ready' ? options.routes : []);
     const checked = $derived(rows.find(route => route.id === previewId) ?? rows[0]);
     const previewed = $derived(checked && checked !== rows[0] ? checked : undefined);
     const messages = {
@@ -25,10 +26,11 @@
         stale: 'Your plan changed. Finding route options for it…',
     };
     let group = $state<HTMLDivElement>();
+    let status = $state<HTMLDivElement>();
     const km = (metres: number) => (metres / 1000).toFixed(1);
 
     function label(route: EngineRoute, index: number): string {
-        const d = index ? difference(route, rows[0]) : null, climb = elevationComplete(route) ? `${route.totals.ascent_m} m` : 'incomplete';
+        const d = index ? difference(route, rows[0]) : null, climb = elevationComplete(route) ? `${climbM(route)} m` : 'incomplete';
         return `${optionLetter(index)}, ${index ? optionName(route, places) : 'Your route'}: ${km(route.totals.distance_m)} km${d ? ` (${d.distance})` : ''}, climb ${climb}${d?.climb ? ` (${d.climb})` : ''}, unpaved ${unpavedKm(route).toFixed(1)} km${d ? ` (${d.unpaved})` : ''}`;
     }
 
@@ -40,6 +42,20 @@
         group?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus();
     }
 
+    // Retry replaces its button with the loading state, so the state keeps the focus.
+    async function retry() {
+        onRetry();
+        await tick();
+        status?.focus();
+    }
+
+    function escape(event: KeyboardEvent) {
+        if (event.key !== 'Escape' || !previewed) return;
+        // The page's Escape would also clear the map selection.
+        event.stopPropagation();
+        void end();
+    }
+
     function key(event: KeyboardEvent, index: number) {
         if (event.key === 'Enter' && index) { event.preventDefault(); void end(rows[index]); }
         else radioKey(event, index, rows.length, next => onPreview(next ? rows[next].id : null));
@@ -49,7 +65,7 @@
 {#if options.state === 'ready'}
     <div class="ways">
         <div class="columns" aria-hidden="true"><span>Distance</span><span>Climb</span><span>Unpaved</span></div>
-        <div role="radiogroup" aria-label="Route options" tabindex="-1" bind:this={group} onkeydown={event => { if (event.key === 'Escape' && previewed) void end(); }}>
+        <div role="radiogroup" aria-label="Route options" tabindex="-1" bind:this={group} onkeydown={escape}>
             {#each rows as route, index (route.id)}
                 {@const d = index ? difference(route, rows[0]) : null}
                 <div class="option" class:previewed={route === previewed}>
@@ -58,12 +74,12 @@
                         <span class="letter" class:current={!index}>{optionLetter(index)}</span>
                         <span class="name">
                             <strong>{index ? optionName(route, places) : 'Your route'}</strong>
-                            {#if !index}<small>{optionName(route, places)}</small>{:else if route === previewed}<small>Previewing</small>{/if}
+                            {#if !index}<small>{presetName(route.profile)}</small>{:else if route === previewed}<small>Previewing</small>{/if}
                             {#if route.totals.surface_m[0]}<small>{km(route.totals.surface_m[0])} km unknown surface</small>{/if}
                             {#if !elevationComplete(route)}<small>Elevation incomplete</small>{/if}
                         </span>
                         <span class="value">{km(route.totals.distance_m)} km</span>
-                        <span class="value">{elevationComplete(route) ? `${route.totals.ascent_m} m` : '–'}</span>
+                        <span class="value">{elevationComplete(route) ? `${climbM(route)} m` : '–'}</span>
                         <span class="value quiet">{unpavedKm(route).toFixed(1)} km</span>
                         {#if d}<span class="difference">{d.distance}</span><span class="difference">{d.climb ?? ''}</span><span class="difference">{d.unpaved}</span>{/if}
                     </button>
@@ -79,9 +95,9 @@
         <p class="note">{rows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'}</p>
     </div>
 {:else}
-    <div class="ways state" role="status">
+    <div class="ways state" role="status" tabindex="-1" bind:this={status}>
         <p>{options.state === 'error' ? options.message : messages[options.state]}</p>
-        {#if options.state === 'error'}<button type="button" class="planner-action" onclick={onRetry}>Retry</button>{/if}
+        {#if options.state === 'error'}<button type="button" class="planner-action" onclick={retry}>Retry</button>{/if}
     </div>
 {/if}
 <span class="sr-only" role="status">{previewed ? `Previewing ${optionName(previewed, places)}. Your route is unchanged.` : ''}</span>
@@ -207,6 +223,9 @@
         margin: 8px 0 0;
         font-size: 13px;
         color: var(--ink-soft);
+    }
+    .state:focus {
+        outline: none;
     }
     .state .planner-action {
         margin-top: 8px;

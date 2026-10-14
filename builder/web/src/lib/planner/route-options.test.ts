@@ -4,8 +4,9 @@ import { difference, divergence, optionName, optionOrder } from './route-options
 import type { EngineRoute } from './routing';
 
 function route(id: string, reason: string, profile: string, km: number, climb: number, unpavedKm: number, unknownElevation = 0, via?: Coordinate): EngineRoute {
-    return { id, reason, profile, package: 'test', geometry: [], elevation: [], elapsed: [], edges: {}, legs: [], snap_truncated: false, via,
-        totals: { distance_m: km * 1000, ascent_m: climb, seconds: 0, surface_m: [0, km * 1000 - unpavedKm * 1000, 0, unpavedKm * 1000, 0, 0], unknown_elevation_m: unknownElevation, pushing_m: 0 } };
+    // The service's ascent runs low, so the list measures the climb on the heights.
+    return { id, reason, profile, package: 'test', geometry: [[8, 48], [8.01, 48]], elevation: [100, 100 + climb], elapsed: [], edges: {}, legs: [], snap_truncated: false, via,
+        totals: { distance_m: km * 1000, ascent_m: climb - 5, seconds: 0, surface_m: [0, km * 1000 - unpavedKm * 1000, 0, unpavedKm * 1000, 0, 0], unknown_elevation_m: unknownElevation, pushing_m: 0 } };
 }
 
 describe('route options', () => {

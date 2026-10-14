@@ -1,6 +1,8 @@
 import { coordinateAt, cumulative, routeDistance, type Coordinate } from './geo';
+import { profileAscent, type ProfileLine } from './profile-data';
 import { presetName } from './riding-profiles';
-import type { EngineRoute } from './routing';
+import { SURFACES, type EngineRoute } from './routing';
+import { UNPAVED } from './search/segments';
 
 /** The rider's current route first, then the other options in the order of the answer. Letter A is the current route. */
 export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[] {
@@ -18,8 +20,19 @@ export function optionName(route: EngineRoute, places: Record<string, string>): 
     return reasonNames[route.reason] ?? presetName(route.profile);
 }
 
-export const unpavedKm = (route: EngineRoute) => route.totals.surface_m.slice(3).reduce((sum, m) => sum + m, 0) / 1000;
+export const unpavedKm = (route: EngineRoute) => route.totals.surface_m.reduce((sum, m, i) => UNPAVED.includes(SURFACES[i]) ? sum + m : sum, 0) / 1000;
 export const elevationComplete = (route: EngineRoute) => route.totals.unknown_elevation_m === 0;
+
+const profiles = new WeakMap<EngineRoute, ProfileLine>();
+/** The heights along `route`, one object for each route, so its profile samples are computed once. */
+export function routeProfile(route: EngineRoute): ProfileLine {
+    let line = profiles.get(route);
+    if (!line) profiles.set(route, line = { coordinates: route.geometry, elevation: route.elevation });
+    return line;
+}
+
+/** Metres of climb, measured on the heights as the route summary does: the service's total rounds each piece. */
+export const climbM = (route: EngineRoute) => profileAscent(0, 1, routeProfile(route));
 
 /** A minus sign for less, and ±0 when the difference rounds to nothing. */
 export function signed(value: number, digits = 0): string {
@@ -33,7 +46,7 @@ export function difference(route: EngineRoute, current: EngineRoute): { distance
     const a = current.totals, b = route.totals;
     return {
         distance: signed((b.distance_m - a.distance_m) / 1000, 1),
-        climb: elevationComplete(route) && elevationComplete(current) ? signed(b.ascent_m - a.ascent_m) : null,
+        climb: elevationComplete(route) && elevationComplete(current) ? signed(climbM(route) - climbM(current)) : null,
         unpaved: signed(unpavedKm(route) - unpavedKm(current), 1),
     };
 }

@@ -1,12 +1,14 @@
 import type { RoutingLine } from './routing';
 import { cumulative, firstIndex } from './geo';
 
+/** The heights along a line, such as a routing line or a route of the route service. */
+export type ProfileLine = Pick<RoutingLine, 'coordinates' | 'elevation'>;
 export type ProfileSample = { progress: number; height: number | null };
 
 // A route is never changed after it is built, so each route's samples are computed once.
 const samplesByRoute = new WeakMap<object, readonly ProfileSample[]>();
 
-export function profileSamples(line?: Pick<RoutingLine, 'coordinates' | 'elevation'>): readonly ProfileSample[] {
+export function profileSamples(line?: ProfileLine): readonly ProfileSample[] {
     if (!line) return [];
     const known = samplesByRoute.get(line);
     if (known) return known;
@@ -45,7 +47,7 @@ export function profilePaths(samples: readonly ProfileSample[], low: number, hig
     return { line: runs.map(run => run.line).join(' '), area: runs.map(run => run.area).join(' ') };
 }
 
-function profileChange(from: number, to: number, line: RoutingLine | undefined, direction: number): number {
+function profileChange(from: number, to: number, line: ProfileLine | undefined, direction: number): number {
     const samples = profileSamples(line);
     let ascent = 0;
     const last = Math.min(samples.length - 1, sampleIndex(samples, to));
@@ -58,11 +60,11 @@ function profileChange(from: number, to: number, line: RoutingLine | undefined, 
     return Math.round(ascent);
 }
 
-export function profileAscent(from = 0, to = 1, line?: RoutingLine): number {
+export function profileAscent(from = 0, to = 1, line?: ProfileLine): number {
     return profileChange(from, to, line, 1);
 }
 
-export function profileDescent(from = 0, to = 1, line?: RoutingLine): number {
+export function profileDescent(from = 0, to = 1, line?: ProfileLine): number {
     return profileChange(from, to, line, -1);
 }
 

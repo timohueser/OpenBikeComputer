@@ -1,6 +1,7 @@
 <script lang="ts">
     import DrawerTitle from './DrawerTitle.svelte';
     import { heightRange, profilePaths, profileSamples } from '../../lib/planner/profile-data';
+    import { routeProfile } from '../../lib/planner/route-options';
     import type { EngineRoute } from '../../lib/planner/routing';
 
     let { option, current, letter, height, open, onToggle }: {
@@ -17,8 +18,8 @@
     // One distance scale: the longer route spans the plot.
     const km = (route: EngineRoute) => route.totals.distance_m / 1000;
     const longest = $derived(Math.max(km(option), km(current)) || 1);
-    const optionSamples = $derived(profileSamples({ coordinates: option.geometry, elevation: option.elevation }));
-    const currentSamples = $derived(profileSamples({ coordinates: current.geometry, elevation: current.elevation }));
+    const optionSamples = $derived(profileSamples(routeProfile(option)));
+    const currentSamples = $derived(profileSamples(routeProfile(current)));
     const { low, high } = $derived(heightRange(optionSamples, currentSamples));
     const optionPath = $derived(profilePaths(optionSamples, low, high, km(option) / longest));
     const currentPath = $derived(profilePaths(currentSamples, low, high, km(current) / longest));

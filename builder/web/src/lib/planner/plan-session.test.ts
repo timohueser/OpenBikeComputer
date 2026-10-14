@@ -154,6 +154,29 @@ describe('plan session', () => {
         session.close();
     });
 
+    it('keeps the options of a plan that Undo returns to during a request for the edit, and offers no corridor without via', async () => {
+        const via: Coordinate = [8.05, 48.02];
+        const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via),
+            alternative('bare', 'corridor', 'touring', [[8, 48], [8.05, 47.98], [8.1, 48]])]);
+        const session = new PlanSession();
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        session.findAlternatives();
+        await vi.waitFor(() => expect(choice(session)).toBe('primary'));
+        expect(options(session).routes.map(route => route.id)).toEqual(['primary', 'corridor']);
+        session.commit(moved(plan, 8.2));
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        routes.hold();
+        session.findAlternatives();
+        session.undo();
+        session.findAlternatives();
+        session.previewOption('corridor');
+        routes.release();
+        await routes.fetch.mock.results.at(-1)!.value;
+        await new Promise(resolve => setTimeout(resolve));
+        expect([choice(session), session.compared?.id]).toEqual(['primary', 'corridor']);
+    });
+
     it('names a corridor option after the settlement of the address nearest its via', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);

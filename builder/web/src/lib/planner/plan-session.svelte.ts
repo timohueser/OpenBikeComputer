@@ -5,6 +5,7 @@ import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
 import { coordinateName, settlementName, visitName } from './point-names';
 import { presetName } from './riding-profiles';
+import { optionOrder } from './route-options';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
 import { calculateLine, profileId, requestAlternatives, requestShape, routingKey, type EngineRoute, type RoutingLine } from './routing';
@@ -88,11 +89,11 @@ export class PlanSession {
     private options = $state.raw<{ routes: EngineRoute[]; picks: Record<string, { id: string; via?: string }> } | null>(null);
     private optionsRequest?: { key: string; abort: AbortController };
     private optionsError = $state.raw<{ key: string; message: string } | null>(null);
-    /** The route options of the trip. `choice` is the id of the rider's current route. Options found for another trip are
+    /** The route options of the trip, the rider's current route (`choice`) first. Options found for another trip are
      * `stale` and never apply. */
     readonly routeOptions = $derived.by((): RouteOptions => {
         const key = routingKey(this.trip), pick = this.options?.picks[key];
-        if (pick) return { state: 'ready', routes: this.options!.routes, choice: pick.id };
+        if (pick) return { state: 'ready', routes: optionOrder(this.options!.routes, pick.id), choice: pick.id };
         if (this.routeError || (this.line && !this.line.primary)) return { state: 'unavailable' };
         if (this.optionsError?.key === key) return { state: 'error', message: this.optionsError.message };
         return { state: this.options ? 'stale' : 'loading' };
@@ -200,16 +201,22 @@ export class PlanSession {
     }
 
     /** Requests the alternatives of the line when they are not known and no request for the trip is in flight. A request
-     * for an earlier trip stops. A corridor option is named once its settlement is known. */
+     * for another trip stops, and an answer for another trip is dropped. A corridor without `via` cannot become a plan, so
+     * it is no option. A corridor option is named once its settlement is known. */
     findAlternatives(): void {
         const trip = this.trip, primary = this.line?.primary, key = routingKey(trip);
-        if (!primary || this.routeOptions.state === 'ready' || this.optionsRequest?.key === key) return;
-        this.optionsRequest?.abort.abort();
+        if (this.optionsRequest && this.optionsRequest.key !== key) {
+            this.optionsRequest.abort.abort();
+            this.optionsRequest = undefined;
+        }
+        if (!primary || this.routeOptions.state === 'ready' || this.optionsRequest) return;
         const request = this.optionsRequest = { key, abort: new AbortController() };
         this.optionsError = null;
-        requestAlternatives(trip, primary, request.abort.signal).then(routes => {
+        requestAlternatives(trip, primary, request.abort.signal).then(answer => {
             if (request.abort.signal.aborted) return;
             this.optionsRequest = undefined;
+            if (routingKey(this.trip) !== key) return;
+            const routes = answer.filter(route => route.reason !== 'corridor' || route.via);
             this.options = { routes, picks: { [key]: { id: primary.id } } };
             for (const route of routes) {
                 if (route.via && !this.optionPlaces[route.id]) void settlementName(route.via).then(name => { if (name) this.optionPlaces = { ...this.optionPlaces, [route.id]: name }; });
@@ -217,7 +224,7 @@ export class PlanSession {
         }, error => {
             if (request.abort.signal.aborted) return;
             this.optionsRequest = undefined;
-            this.optionsError = { key, message: error instanceof Error ? error.message : 'Route options are unavailable.' };
+            if (routingKey(this.trip) === key) this.optionsError = { key, message: error instanceof Error ? error.message : 'Route options are unavailable.' };
         });
     }
 

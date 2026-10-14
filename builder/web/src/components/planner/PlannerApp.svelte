@@ -14,7 +14,7 @@
     import RouteStats from './RouteStats.svelte';
     import WaysList from './WaysList.svelte';
     import CompareProfile from './CompareProfile.svelte';
-    import { optionLetter, optionOrder } from '../../lib/planner/route-options';
+    import { optionLetter } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -25,7 +25,7 @@
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import SignedRoutes from './SignedRoutes.svelte';
-    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
     import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -82,7 +82,8 @@
     const visualRoute = $derived(shown.line);
     const routingStatus = $derived(!hasEndpoints ? 'Choose a start and finish' : session.routeError || 'Calculating route…');
     function useOption(route: EngineRoute, name: string) {
-        if (session.pickAlternative(route)) afterEdit(`Using ${name}`);
+        const preset = presetName(route.profile);
+        if (session.pickAlternative(route)) afterEdit(name === preset ? `Using ${preset}` : `Using ${name} · ${preset} preset`);
     }
     $effect(() => {
         if (fitPlan && currentRoute && map) {
@@ -102,8 +103,7 @@
     const comparison = $derived.by(() => {
         const option = session.compared;
         if (!option || options.state !== 'ready') return null;
-        const order = optionOrder(options.routes, options.choice);
-        return { option, current: order[0], letter: optionLetter(order.indexOf(option)) };
+        return { option, current: options.routes[0], letter: optionLetter(options.routes.indexOf(option)) };
     });
     $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
     let searching = $state(false);
