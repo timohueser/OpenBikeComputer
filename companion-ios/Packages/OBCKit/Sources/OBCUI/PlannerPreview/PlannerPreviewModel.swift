@@ -45,8 +45,11 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
 }
 
 public enum PlannerPreviewPreset: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing
+    case balanced, shorter, lessClimbing, technical, alpine
     public var title: String { self == .lessClimbing ? "Less climbing" : rawValue.capitalized }
+    public func applies(to activity: RouteActivity) -> Bool {
+        switch self { case .technical: activity == .mtb; case .alpine: activity == .hiking; default: true }
+    }
 }
 
 public enum PlannerPreviewPointKind: String, CaseIterable, Sendable {
@@ -412,7 +415,12 @@ public final class PlannerPreviewModel {
             else { $0.points[$0.points.count - 1].place = place }
         }
     }
-    public func setActivity(_ activity: RouteActivity) { edit { $0.activity = activity } }
+    public func setActivity(_ activity: RouteActivity) {
+        edit {
+            $0.activity = activity
+            if !$0.preset.applies(to: activity) { $0.preset = .balanced }
+        }
+    }
     public func setPreset(_ preset: PlannerPreviewPreset) { edit { $0.preset = preset } }
     /// Ends a day at route point `id`, or takes its night away. A night is a stop; `name` names a
     /// shaping point that becomes one.
@@ -641,8 +649,9 @@ public final class PlannerPreviewModel {
     }
 
     /// A signed route as a plan from its own start, named after the route: the shaping points in their order, each with
-    /// its turnaround, and the Balanced preset that the catalog plan reproduces. A loop drops its closing point.
-    public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?) {
+    /// its turnaround, and the preset that the catalog plan reproduces. A loop drops its closing point.
+    public func planSignedRoute(_ plan: RoutePlan, loop: Bool, name: String, startName: String?, finishName: String?,
+                                preset: PlannerPreviewPreset = .balanced) {
         let closed = loop && plan.points.count > 2 && plan.points.last == plan.points.first
         let coordinates = closed ? Array(plan.points.dropLast()) : plan.points
         guard coordinates.count > 1, plan.requestPoints(loop: loop).count <= RoutePlan.maxPoints else { return }
@@ -656,7 +665,7 @@ public final class PlannerPreviewModel {
                 point.turnaround = turnarounds.contains(index)
                 return point
             }
-            next.markers = []; next.nights = []; next.legs = [:]; next.loop = loop; next.name = name; next.preset = .balanced
+            next.markers = []; next.nights = []; next.legs = [:]; next.loop = loop; next.name = name; next.preset = preset
         }
     }
 

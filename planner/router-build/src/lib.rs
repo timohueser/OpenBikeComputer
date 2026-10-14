@@ -12,7 +12,9 @@ pub mod overlays;
 mod road_bike;
 pub mod source;
 pub mod step;
+mod suitability;
 pub mod terrain;
+mod traffic;
 
 use base::Dictionary;
 use planner_router::{
