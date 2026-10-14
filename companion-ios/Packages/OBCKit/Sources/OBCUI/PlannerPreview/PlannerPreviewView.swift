@@ -219,10 +219,8 @@ public struct PlannerPreviewView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                     .disabled(!model.canUndo).accessibilityLabel("Undo route change")
-                if model.canRedo {
-                    Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                        .accessibilityLabel("Redo route change")
-                }
+                Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(!model.canRedo).accessibilityLabel("Redo route change")
                 Button("Save", action: beginSave)
                     .fontWeight(.semibold).disabled(!model.canSave).accessibilityIdentifier("planner.save")
             }

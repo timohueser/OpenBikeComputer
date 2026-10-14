@@ -97,12 +97,13 @@ struct PlannerRouteFiltersPage: View {
                 .background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
                 .accessibilityLabel("\(label) \(placeholder), \(unit)")
         }
-        let pair = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
+        let stacked = dynamicTypeSize.isAccessibilitySize
+        let pair = stacked ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
         return OBCListRow(label: label, showsDivider: divider) {
             HStack(spacing: 6) {
                 pair {
                     field("from", \.from)
-                    Text("–").foregroundStyle(OBCTheme.secondary).accessibilityHidden(true)
+                    if !stacked { Text("–").foregroundStyle(OBCTheme.secondary).accessibilityHidden(true) }
                     field("to", \.to)
                 }
                 Text(unit).font(.subheadline).foregroundStyle(OBCTheme.secondary).frame(minWidth: 24, alignment: .leading)
@@ -148,7 +149,6 @@ struct PlannerGradeRange: View {
             }.onEnded { _ in movesLower = nil })
         }
         .frame(height: 40)
-        .accessibilityElement(children: .contain)
         .accessibilityChildren {
             HStack(spacing: 0) {
                 end("Minimum difficulty", lower: true)
