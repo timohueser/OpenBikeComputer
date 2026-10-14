@@ -13,7 +13,7 @@ const plan: Trip = { ...emptyTrip(), points: [point('start', 'start', [8, 48]), 
 const moved = (trip: Trip, lon: number): Trip => ({ ...trip, points: trip.points.map(p => p.id === 'finish' ? { ...p, coordinate: [lon, 48] } : p) });
 
 /** The stub route service, its request bodies, and a switch that holds the next answers until `release`. Address search
- * answers `reverse`, which finds no address unless a test sets one. */
+ * answers `places`, which finds no place unless a test sets one. */
 function service(alternatives: AnswerRoute[] = []) {
     const answer = routeService();
     let held: Promise<void> | undefined, release = () => {};
@@ -22,11 +22,11 @@ function service(alternatives: AnswerRoute[] = []) {
         const body = JSON.parse(init.body as string);
         return body.alternatives_only ? { ok: true, json: async () => ({ routes: alternatives }) } : answer(url, init);
     });
-    const reverse = vi.fn(async (_url: string, _init: RequestInit): Promise<unknown> => ({ ok: true, json: async () => ({ label: null }) }));
-    vi.stubGlobal('fetch', (url: string, init: RequestInit) => (url.endsWith('/reverse') ? reverse : fetch)(url, init));
+    const places = vi.fn(async (_url: string, _init: RequestInit): Promise<unknown> => ({ ok: true, json: async () => ({ type: 'places', results: [] }) }));
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => (url.endsWith('/query') ? places : fetch)(url, init));
     return {
         fetch,
-        reverse,
+        places,
         bodies: () => fetch.mock.calls.map(([, init]) => JSON.parse(init.body as string)),
         hold() { held = new Promise(resolve => release = () => { held = undefined; resolve(); }); },
         release: () => release(),
@@ -177,16 +177,20 @@ describe('plan session', () => {
         expect([choice(session), session.compared?.id]).toEqual(['primary', 'corridor']);
     });
 
-    it('names a corridor option after the settlement of the address nearest its via', async () => {
+    it('names a corridor option after the nearest city, town or village within 3 km of its via', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via)]);
-        routes.reverse.mockResolvedValueOnce({ ok: true, json: async () => ({ label: 'Dietenbacher Straße 30, Kirchzarten' }) });
+        const place = (name: string, kind: string, distance: number) => ({ name, kind, distance });
+        routes.places.mockResolvedValueOnce({ ok: true, json: async () => ({ type: 'places',
+            results: [place('Oberneuhäuser', 'hamlet', .4), place('Kirchzarten', 'village', .8), place('Freiburg', 'city', 2.9)] }) });
         const session = new PlanSession();
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
         await vi.waitFor(() => expect(session.optionPlaces).toEqual({ corridor: 'Kirchzarten' }));
-        expect(JSON.parse(routes.reverse.mock.calls[0][1].body as string)).toEqual({ coordinate: via });
+        const { view, request } = JSON.parse(routes.places.mock.calls[0][1].body as string);
+        expect([(view[0] + view[2]) / 2, (view[1] + view[3]) / 2].map(n => n.toFixed(6))).toEqual(via.map(n => n.toFixed(6)));
+        expect(request).toEqual({ type: 'places', what: ['town'], radius: { value: 3, unit: 'km' } });
     });
 
     it('duplicates a plan that is not open with the versions saved for it', async () => {

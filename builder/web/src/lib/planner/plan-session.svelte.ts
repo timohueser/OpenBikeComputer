@@ -3,7 +3,7 @@ import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints,
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
-import { coordinateName, settlementName, visitName } from './point-names';
+import { coordinateName, townName, visitName } from './point-names';
 import { presetName } from './riding-profiles';
 import { optionOrder } from './route-options';
 import { LegCache } from './route-legs';
@@ -219,7 +219,7 @@ export class PlanSession {
             const routes = answer.filter(route => route.reason !== 'corridor' || route.via);
             this.options = { routes, picks: { [key]: { id: primary.id } } };
             for (const route of routes) {
-                if (route.via && !this.optionPlaces[route.id]) void settlementName(route.via).then(name => { if (name) this.optionPlaces = { ...this.optionPlaces, [route.id]: name }; });
+                if (route.via && !this.optionPlaces[route.id]) void townName(route.via).then(name => { if (name) this.optionPlaces = { ...this.optionPlaces, [route.id]: name }; });
             }
         }, error => {
             if (request.abort.signal.aborted) return;
