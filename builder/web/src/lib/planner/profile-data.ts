@@ -4,9 +4,9 @@ import { cumulative, firstIndex } from './geo';
 export type ProfileSample = { progress: number; height: number | null };
 
 // A route is never changed after it is built, so each route's samples are computed once.
-const samplesByRoute = new WeakMap<RoutingLine, readonly ProfileSample[]>();
+const samplesByRoute = new WeakMap<object, readonly ProfileSample[]>();
 
-export function profileSamples(line?: RoutingLine): readonly ProfileSample[] {
+export function profileSamples(line?: Pick<RoutingLine, 'coordinates' | 'elevation'>): readonly ProfileSample[] {
     if (!line) return [];
     const known = samplesByRoute.get(line);
     if (known) return known;
@@ -15,6 +15,34 @@ export function profileSamples(line?: RoutingLine): readonly ProfileSample[] {
     const samples = line.elevation.map((height, i) => ({ progress: distance[i] / total, height }));
     samplesByRoute.set(line, samples);
     return samples;
+}
+
+/** Whole hundreds of metres that hold every known height of the sample lists; 0 to 100 m without one. */
+export function heightRange(...lists: (readonly ProfileSample[])[]): { low: number; high: number } {
+    let min = Infinity, max = -Infinity;
+    for (const list of lists) for (const { height } of list) if (height !== null) { min = Math.min(min, height); max = Math.max(max, height); }
+    if (min === Infinity) return { low: 0, high: 100 };
+    const low = Math.floor(min / 100) * 100;
+    return { low, high: Math.max(low + 100, Math.ceil(max / 100) * 100) };
+}
+
+/** SVG paths of a profile in a 1000 × 105 box between the heights `low` and `high`: one line, and the area below it, for
+ * each run of known heights. The route spans `width` of the box. */
+export function profilePaths(samples: readonly ProfileSample[], low: number, high: number, width = 1): { line: string; area: string } {
+    const runs: { line: string; area: string }[] = [];
+    let path = '', first = 0, last = 0;
+    function close() {
+        if (path) runs.push({ line: path, area: `${path}L${last} 105L${first} 105Z` });
+        path = '';
+    }
+    for (const sample of samples) {
+        if (sample.height === null) { close(); continue; }
+        last = sample.progress * width * 1000;
+        if (!path) first = last;
+        path += `${path ? 'L' : 'M'}${last} ${105 - (sample.height - low) / (high - low) * 100}`;
+    }
+    close();
+    return { line: runs.map(run => run.line).join(' '), area: runs.map(run => run.area).join(' ') };
 }
 
 function profileChange(from: number, to: number, line: RoutingLine | undefined, direction: number): number {
