@@ -15,6 +15,7 @@
     let limit = $state(50);
     let climb = $state(0);
     let form = $state<HTMLFormElement>();
+    let trigger = $state<HTMLButtonElement>();
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
@@ -42,7 +43,13 @@
     function apply() {
         if (!valid) return;
         onApply(budget, target, limit, climb);
+        void close();
+    }
+
+    async function close() {
         editing = false;
+        await tick();
+        trigger?.focus();
     }
 </script>
 
@@ -51,14 +58,14 @@
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>
-        <button type="button" class="planner-action" onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
+        <button type="button" class="planner-action" bind:this={trigger} onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
     </p>
 {:else}
     <!-- Escape bubbles from the fields; the form closes the editor in place. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <form class="plan-editor" bind:this={form} aria-label="Day plan"
         onsubmit={(event) => { event.preventDefault(); apply(); }}
-        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); editing = false; } }}>
+        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); void close(); } }}>
         <label class="wide">
             <span>Split the trip by</span>
             <span class="pair">
@@ -84,7 +91,7 @@
         </label>
         <p class="help">0 means no target.</p>
         <div class="buttons">
-            <button type="button" class="quiet" onclick={() => editing = false}>Cancel</button>
+            <button type="button" class="quiet" onclick={close}>Cancel</button>
             <button type="submit" class="primary" disabled={!valid}>Apply</button>
         </div>
     </form>

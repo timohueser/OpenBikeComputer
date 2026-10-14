@@ -6,7 +6,7 @@
 </script>
 
 <script lang="ts">
-    import { onMount, type Snippet } from 'svelte';
+    import { onMount, tick, type Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
@@ -82,6 +82,7 @@
     let root: HTMLDivElement;
     let opener: HTMLElement | null = null;
     let renaming = $state(false);
+    let renameButton = $state<HTMLButtonElement>();
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
 
@@ -209,7 +210,7 @@
         <div class="title">
             <h2>{point.kind === 'via' ? 'Shaping point' : point.label}</h2>
             {#if point.kind !== 'via'}
-                <button type="button" class="icon" aria-label="Rename point" aria-expanded={renaming} onclick={() => renaming = !renaming}><Icon name="pencil" size={15} /></button>
+                <button type="button" class="icon" bind:this={renameButton} aria-label="Rename point" aria-expanded={renaming} onclick={() => renaming = !renaming}><Icon name="pencil" size={15} /></button>
             {/if}
         </div>
         {#if renaming}
@@ -218,7 +219,12 @@
                 onchange={(event) => rename(event.currentTarget.value)}
                 onkeydown={(event) => {
                     if (event.key === 'Enter') rename(event.currentTarget.value);
-                    if (event.key === 'Escape') renaming = false;
+                    if (event.key === 'Escape') {
+                        // Removing a focused input fires its change event; the old value keeps the cancelled name out.
+                        event.currentTarget.value = point.label;
+                        renaming = false;
+                    }
+                    if (!renaming) tick().then(() => renameButton?.focus());
                 }} />
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}

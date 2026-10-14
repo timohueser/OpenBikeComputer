@@ -72,6 +72,8 @@
             return;
         } finally { busy = false; }
         naming = null;
+        await tick();
+        root.querySelector<HTMLElement>(what === 'new' ? '.save' : '.name-start')?.focus();
     }
 
     async function toggle() {

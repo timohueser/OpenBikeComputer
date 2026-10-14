@@ -14,9 +14,12 @@
         onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
     } = $props();
     const answer = $derived(state.answer);
+    const count = $derived(answer?.type === 'places' ? `${answer.results?.length ?? 0}${answer.hasMore ? '+' : ''}` : '');
+    const announcement = $derived(state.loading && !answer ? 'Searching…' : count && `${count} ${count === '1' ? 'place' : 'places'} found`);
 </script>
 <div class="results" aria-busy={state.loading}>
-    {#if state.loading && !answer}<p role="status">Searching…</p>
+    <span class="sr-only" role="status">{announcement}</span>
+    {#if state.loading && !answer}<p aria-hidden="true">Searching…</p>
     {/if}
     {#if state.error}<p role="alert">{state.error}</p><button type="button" onclick={onRetry}>Retry search</button>{/if}
     {#if answer}
@@ -43,7 +46,7 @@
                     <Icon name="chevron" size={13} />
                 </button>
             {/if}
-            <div class="result-heading"><p class="count">{answer.area}</p><span>{answer.results?.length ?? 0}{answer.hasMore ? '+' : ''}</span></div>
+            <div class="result-heading"><p class="count">{answer.area}</p><span>{count}</span></div>
             {#each answer.results ?? [] as result (result.source)}
                 <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
@@ -55,6 +58,7 @@
 </div>
 <style>
     .results { padding: 12px 16px 16px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     p { margin: 0 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-soft); overflow-wrap: anywhere; }
     .result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
     .result-heading p { margin: 0; }
