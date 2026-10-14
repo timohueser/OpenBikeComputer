@@ -219,9 +219,10 @@ public struct PlannerPreviewView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                     .disabled(!model.canUndo).accessibilityLabel("Undo route change")
-                    .contextMenu {
-                        Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.disabled(!model.canRedo)
-                    }
+                if model.canRedo {
+                    Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                        .accessibilityLabel("Redo route change")
+                }
                 Button("Save", action: beginSave)
                     .fontWeight(.semibold).disabled(!model.canSave).accessibilityIdentifier("planner.save")
             }
@@ -588,9 +589,10 @@ public struct PlannerPreviewView: View {
                         HStack {
                             Text(preset.title)
                             Spacer()
-                            if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
+                            if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold).accessibilityHidden(true) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    .accessibilityAddTraits(model.preset == preset ? .isSelected : [])
                 }
             }
         }
