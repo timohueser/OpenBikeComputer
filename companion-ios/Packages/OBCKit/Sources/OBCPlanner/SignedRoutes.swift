@@ -34,6 +34,14 @@ public struct CatalogRecord: Decodable, Equatable, Sendable {
     public var start: Coordinate? { start_udeg.flatMap { decodeCoordinates($0)?.first } ?? line.first }
     /// The name, else the `ref`.
     public var title: String { name ?? ref ?? "" }
+    /// The preference that reproduces the plan: Alpine above T2, Technical above S2 (`specs/route-catalog.md`).
+    public var preference: RoutePreference {
+        switch kind {
+        case .hiking, .foot: (hardest ?? 0) > 1 ? .alpine : .balanced
+        case .mtb: (hardest ?? 0) > 2 ? .technical : .balanced
+        case .bicycle: .balanced
+        }
+    }
 
     /// Nil for a long route, and for a record whose shaping points or turnarounds do not fit its line.
     public var plan: RoutePlan? {

@@ -46,10 +46,14 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     }
 }
 
+/// Technical (MTB) and Alpine (hiking) are skill choices that allow harder trails.
 public enum RoutePreference: String, CaseIterable, Sendable {
-    case balanced, shorter, lessClimbing = "less-climbing"
+    case balanced, shorter, lessClimbing = "less-climbing", technical, alpine
     public var title: String {
-        switch self { case .balanced: "Balanced"; case .shorter: "Shorter"; case .lessClimbing: "Less climbing" }
+        switch self {
+        case .balanced: "Balanced"; case .shorter: "Shorter"; case .lessClimbing: "Less climbing"
+        case .technical: "Technical"; case .alpine: "Alpine"
+        }
     }
     public func profile(for activity: RouteActivity) -> String {
         activity.rawValue + (self == .balanced ? "" : "/" + rawValue)

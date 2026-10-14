@@ -78,6 +78,17 @@ struct SignedRoutesTests {
         #expect(try record(#""line_udeg":[0,0,1,1,1,1],"via":[1],"turnarounds":[0]"#).plan == nil)
     }
 
+    @Test func aRouteAboveTheOrdinaryGradeNeedsTheSkillPreference() throws {
+        func preference(_ kind: String, _ grade: String = "") throws -> RoutePreference {
+            try JSONDecoder().decode(CatalogRecord.self, from: Data("""
+            {"id":1,"kind":"\(kind)","rank":1,"loop":false,"length_m":1,"ascent_m":0,"descent_m":0,"cells":[]\(grade)}
+            """.utf8)).preference
+        }
+        #expect(try [preference("hiking"), preference("foot", #","hardest":1"#), preference("hiking", #","hardest":2"#),
+                     preference("mtb", #","hardest":2"#), preference("mtb", #","hardest":3"#), preference("bicycle", #","hardest":5"#)]
+                == [.balanced, .balanced, .alpine, .balanced, .technical, .balanced])
+    }
+
     @Test func plansTheSharedVector() throws {
         for plan in Self.vector.plans {
             let route = try #require(Self.vector.routes.first { $0.id == plan.id })

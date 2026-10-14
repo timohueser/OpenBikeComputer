@@ -221,6 +221,15 @@ struct PlannerPreviewModelTests {
         #expect(!model.isLoop && !model.hasRoute)
     }
 
+    @Test func aSkillPresetBelongsToItsActivity() {
+        let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
+        model.setActivity(.mtb)
+        model.setPreset(.technical)
+        model.setActivity(.hiking)
+        #expect(model.preset == .balanced)
+        #expect(PlannerPreviewPreset.allCases.filter { $0.applies(to: .hiking) } == [.balanced, .shorter, .lessClimbing, .alpine])
+    }
+
     @Test func aSignedRoutePlanReplacesThePlanInOneUndoStep() async throws {
         let source = PlannerTestSource()
         let model = PlannerPreviewModel(sample: true, service: source)

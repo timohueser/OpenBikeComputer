@@ -150,7 +150,7 @@ final class PlannerRouteFinder {
         guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan else { return }
         let points = plan.requestPoints(loop: route.loop)
         let turnarounds = plan.turnarounds.filter { $0 > 0 && $0 < points.count - 1 }
-        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: .balanced,
+        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: route.preference,
                                                   release: release), self.plan == .ready(plan) else { return }
         preview = (plan, path, PlannerPreviewGrade(routePoints: path.points))
     }

@@ -1,5 +1,5 @@
 //! Compile source attributes and terrain into additive routing costs.
-use crate::{road_bike, source::Id, Graph};
+use crate::{road_bike, source::Id, suitability, Graph};
 use planner_router::{
     closures::Closure,
     cost::{turn, CostBasis, RoadCost},
@@ -46,7 +46,7 @@ impl<'a> Costing<'a> {
         if graph.node_access.len() != graph.points.len() || graph.node_ids.len() != graph.points.len() {
             return Err("Graph nodes lack source identities or access".into());
         }
-        let cycle_routes = cycle_routes(graph);
+        let cycle_routes = if profile.route_bonus == 0.0 { HashMap::new() } else { cycle_routes(graph) };
         let mut bases = Vec::with_capacity(graph.roads.len());
         let mut roads = Vec::with_capacity(graph.roads.len());
         for (id, road) in graph.roads.iter().enumerate() {
@@ -54,31 +54,34 @@ impl<'a> Costing<'a> {
                 return Err("Road has no geometry".into());
             }
             let mode = profile.mode(road);
-            let basis = if !profile.permits(road) {
+            let suitability = if !profile.permits(road) {
                 None
             } else {
+                let source = graph.osm.ways.get(&road.way);
+                let country = source.map(|source| graph.osm.country(source)).unwrap_or_default();
                 match &profile.weighting {
                     Weighting::RoadBike(variant) => {
-                        let source = graph.osm.ways.get(&road.way).ok_or("Road lacks source OSM way")?;
-                        road_bike::way(road, &source.tags, graph.osm.country(source), *variant, mode == PUSH)
+                        let source = source.ok_or("Road lacks source OSM way")?;
+                        road_bike::way(road, &source.tags, country, *variant, mode == PUSH)
                     }
-                    Weighting::Weighted { surface, road: weights, .. } => Some(CostBasis {
-                        factor: surface[road.surface as usize]
-                            * *weights.get(road.class as usize).ok_or("Unknown road class")?
-                            * if mode == PUSH { 4.0 } else { 1.0 },
-                        turn: 0.0,
-                        ferry: road.class == 6,
-                    }),
+                    Weighting::Weighted { .. } => {
+                        let empty = Default::default();
+                        suitability::way(road, source.map_or(&empty, |source| &source.tags), country, profile)
+                    }
                 }
             };
-            let basis = basis.map(|mut cost| {
+            let basis = suitability.map(|suitability| {
+                let mut cost = suitability.basis;
+                // A signed route discounts only the preference above the physical and traffic floor.
+                if mode == BIKE && !cost.ferry {
+                    if let Some(ranks) = cycle_routes.get(&road.way) {
+                        let preference = (cost.factor - suitability.minimum_factor).max(0.0);
+                        cost.factor = suitability.minimum_factor
+                            + preference * (1.0 - f64::from(ranks[usize::from(road.reversed)]) * profile.route_bonus);
+                    }
+                }
                 if doubts.roads.get(id).is_some_and(|&modes| modes & mode != 0) {
                     cost.factor *= UNCERTAIN_ACCESS;
-                }
-                if mode == BIKE && !cost.ferry {
-                    if let Some(&rank) = cycle_routes.get(&road.way) {
-                        cost.factor *= 1.0 - f64::from(rank) * profile.route_bonus;
-                    }
                 }
                 cost
             });
@@ -128,7 +131,8 @@ impl<'a> Costing<'a> {
     }
 }
 
-fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
+/// The highest route rank of each way, forward and backward.
+fn cycle_routes(graph: &Graph) -> HashMap<i64, [u8; 2]> {
     let mut pending: Vec<_> = graph
         .osm
         .relations
@@ -151,7 +155,7 @@ fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
         })
         .collect();
     let mut visited = HashMap::<i64, u8>::new();
-    let mut ways = HashMap::<i64, u8>::new();
+    let mut ways = HashMap::<i64, [u8; 2]>::new();
     while let Some((id, rank)) = pending.pop() {
         if visited.get(&id).is_some_and(|previous| *previous >= rank) {
             continue;
@@ -163,10 +167,16 @@ fn cycle_routes(graph: &Graph) -> HashMap<i64, u8> {
         if road_bike::tag(&relation.tags, "state") == "proposed" {
             continue;
         }
-        for (member, _) in &relation.members {
+        for (member, role) in &relation.members {
             match member {
                 Id::Way(id) => {
-                    ways.entry(*id).and_modify(|value| *value = (*value).max(rank)).or_insert(rank);
+                    // A `forward` or `backward` role follows the way's node order.
+                    let ranks = ways.entry(*id).or_default();
+                    for (reversed, value) in ranks.iter_mut().enumerate() {
+                        if role != if reversed == 0 { "backward" } else { "forward" } {
+                            *value = (*value).max(rank);
+                        }
+                    }
                 }
                 Id::Relation(id) => pending.push((*id, rank)),
                 _ => {}
@@ -269,6 +279,28 @@ mod tests {
         assert_eq!(cost(&graph, "touring"), previous);
         graph.osm.relations.get_mut(&10).unwrap().tags.insert("state".into(), "proposed".into());
         assert_eq!(cost(&graph, "touring"), ordinary);
+        graph.osm.relations.get_mut(&10).unwrap().tags.remove("state");
+        for role in ["forward", "backward"] {
+            graph.osm.relations.get_mut(&10).unwrap().members[0].1 = role.into();
+            for reversed in [false, true] {
+                graph.roads[0].reversed = reversed;
+                let against = role == if reversed { "forward" } else { "backward" };
+                assert_eq!(cost(&graph, "touring") == ordinary, against, "{role}, reversed {reversed}");
+            }
+        }
+        graph.roads[0].reversed = false;
+        graph.osm.relations.get_mut(&10).unwrap().members[0].1.clear();
+        // The discount stops at the traffic floor: a signed main road never undercuts a quiet road.
+        let quiet = cost(&graph, "touring");
+        graph.roads[0].class = 2;
+        graph.osm.ways.get_mut(&1).unwrap().tags.insert("highway".into(), "primary".into());
+        graph.osm.ways.get_mut(&1).unwrap().tags.insert("maxspeed".into(), "90".into());
+        assert!(cost(&graph, "touring") > quiet && cost(&graph, "road") > quiet);
+        graph.roads[0].class = 1;
+        graph.osm.ways.insert(
+            1,
+            Way { id: 1, nodes: vec![0, 1], tags: [("highway".into(), "residential".into())].into_iter().collect() },
+        );
         graph.roads[0].access = FOOT | PUSH;
         let pushing = cost(&graph, "touring");
         graph.osm.relations.clear();

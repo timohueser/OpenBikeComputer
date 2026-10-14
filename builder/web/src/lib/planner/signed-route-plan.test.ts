@@ -5,7 +5,7 @@ import type { Coordinate } from './geo';
 import { LegCache } from './route-legs';
 import { decodeCoordinates } from './route-answer';
 import { calculateLine } from './routing';
-import { joinedPlan, planTrip } from './signed-route-plan';
+import { joinedPlan, planTrip, routeBase } from './signed-route-plan';
 import { routePlan, type RouteRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
 
@@ -27,6 +27,12 @@ describe('signed route plans', () => {
         const moved = startLoopHere(trip, orderedRoutePoints(trip)[2].id, line(103)[4]);
         const order = orderedRoutePoints(moved);
         expect(order.slice(1, -1).find(point => point.id === start.id)).toMatchObject({ kind: 'via', turnaround: true });
+    });
+
+    it('chooses the skill preset that the hardest grade of a route needs', () => {
+        const preset = (kind: RouteRecord['kind'], hardest?: number) => routeBase({ ...record(103), kind, hardest }, base()).preset;
+        expect([preset('hiking'), preset('foot', 1), preset('hiking', 2), preset('mtb', 2), preset('mtb', 3), preset('bicycle', 5)])
+            .toEqual(['Balanced', 'Balanced', 'Alpine', 'Balanced', 'Technical', 'Balanced']);
     });
 
     it('joins the stages of a long route at their shared ends', () => {
