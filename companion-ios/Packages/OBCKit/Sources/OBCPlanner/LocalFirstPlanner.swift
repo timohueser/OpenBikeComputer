@@ -55,16 +55,29 @@ public actor LocalFirstPlanner: PlannerDataSource {
     public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference,
                       release: PlannerRelease) async throws -> PlannedPath {
         guard (2...64).contains(points.count) else { throw PlannerFailure.invalidData }
+        return try await routing(points, release: release) {
+            try await $0.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: $1)
+        }
+    }
+
+    public func options(points: [Coordinate], activity: RouteActivity, preference: RoutePreference,
+                        release: PlannerRelease) async throws -> [RouteOption] {
+        try await routing(points, release: release) {
+            try await $0.options(points: points, activity: activity, preference: preference, release: $1)
+        }
+    }
+
+    /// The first installed map that covers `points` answers `call`, else the online source.
+    private func routing<T>(_ points: [Coordinate], release: PlannerRelease,
+                            _ call: (any PlannerDataSource, PlannerRelease) async throws -> T) async throws -> T {
         for map in try await installed() where points.allSatisfy({ covers(map.bounds, $0) }) {
             do {
-                let source = try await source(map), local = try await source.release()
-                return try await source.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: local)
+                let source = try await source(map)
+                return try await call(source, try await source.release())
             } catch { try cancellation(error) }
         }
-        do {
-            let remote = try await remoteRelease(release)
-            return try await online.route(points: points, turnarounds: turnarounds, activity: activity, preference: preference, release: remote)
-        } catch { throw try fallbackError(error) }
+        do { return try await call(online, try await remoteRelease(release)) }
+        catch { throw try fallbackError(error) }
     }
 
     public func shape(line: [Coordinate], profile: String) async throws -> PlannedShape {
