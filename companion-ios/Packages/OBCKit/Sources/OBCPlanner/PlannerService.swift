@@ -408,8 +408,13 @@ public actor PlannerService: PlannerDataSource {
             elapsed += leg.elapsed.dropFirst(skip).map { $0 + offset }
             indices.append(path.count - 1)
         }
+        // Climb on the heights, as the web planner measures it: the service rounds each piece's climb down.
+        let ascent = zip(path, path.dropFirst()).reduce(0.0) { sum, pair in
+            guard let a = pair.0.elevationMeters, let b = pair.1.elevationMeters else { return sum }
+            return sum + max(0, b - a)
+        }
         return PlannedPath(points: path, distance: joined.reduce(0) { $0 + $1.totals.distance_m },
-                           ascent: joined.reduce(0) { $0 + $1.totals.ascent_m }, seconds: joined.reduce(0) { $0 + $1.totals.seconds },
+                           ascent: ascent, seconds: joined.reduce(0) { $0 + $1.totals.seconds },
                            pointIndices: indices, elapsed: elapsed)
     }
 

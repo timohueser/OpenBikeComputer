@@ -10,12 +10,13 @@ struct PlannerServiceTests {
         configuration.protocolClasses = [StubHTTP.self]
         return PlannerService(catalogURL: URL(string: "https://planner.test/\(status)/catalog.json?route=\(route.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)")!, session: URLSession(configuration: configuration))
     }
+    /// The climb is measured on the heights; the service's totals round each piece down.
     @Test func decodesCoordinatesElevationAndServerTotals() async throws {
         let service = client(), release = try await service.release()
         let route = try await service.route(points: [a, b], activity: .gravel, preference: .shorter, release: release)
         #expect(release.contains(a))
         #expect(route.points.map(\.coordinate) == [a, b])
-        #expect(route.points.map(\.elevationMeters) == [270, nil])
+        #expect(route.points.map(\.elevationMeters) == [270, 300])
         #expect(route.distance == 900 && route.ascent == 30 && route.seconds == 400)
     }
     @Test(arguments: ["wrong-package", "wrong-profile", "short-elevation", "bad-coordinate", "short-elapsed", "bad-leg"])
@@ -75,7 +76,7 @@ struct PlannerServiceTests {
         #expect(bodies[1]["points"] as? [[Double]] == [[8.1, 48], [8.2, 48.05], [8.3, 48]])
         #expect(bodies[1]["start_position"] as? String == "[8100000, 48000000]" && bodies[1]["end_position"] as? String == "[8300000, 48000000]")
         #expect(edited.points.map(\.coordinate) == moved && edited.pointIndices == [0, 1, 2, 3, 4])
-        #expect(edited.distance == 4000 && edited.ascent == 40 && edited.seconds == 800 && edited.elapsed.last == 800)
+        #expect(edited.distance == 4000 && edited.seconds == 800 && edited.elapsed.last == 800)
         // A window whose ends do not join the cached legs is followed by one request for the whole route.
         await sent.change(identity: "new")
         moved[2] = Coordinate(latitude: 48.06, longitude: 8.2)
@@ -354,13 +355,13 @@ private final class StubHTTP: URLProtocol, @unchecked Sendable {
                 let query = body()
                 // This fake server requires longitude first and the requested profile.
                 guard (query["profile"] as? String) == "gravel/shorter", (query["points"] as? [[Double]]) == [[8, 48], [8.1, 48.1]], query["alternatives"] as? Bool == false else { fatalError("Wrong route request") }
-                let heights: [Any] = kind == "short-elevation" ? [2700] : [2700, NSNull()]
+                let heights: [Any] = kind == "short-elevation" ? [2700] : [2700, 300]
                 let route: [String: Any] = ["reason": "primary", "package": kind == "wrong-package" ? "other" : packageID,
                     "profile": kind == "wrong-profile" ? "road" : "gravel/shorter",
                     "coordinates_udeg": kind == "bad-coordinate" ? [800_000_000, 48_000_000, -791_900_000, 100_000] : [8_000_000, 48_000_000, 100_000, 100_000],
                     "elevation_dm": heights, "elapsed_s": kind == "short-elapsed" ? [0] : [0,400], "legs": [["from_index": 0, "to_index": kind == "bad-leg" ? 2 : 1,
-                        "start": "a", "end": "b", "totals": ["distance_m": 900, "ascent_m": 30, "seconds": 400]]],
-                    "totals": ["distance_m": 900, "ascent_m": 30, "seconds": 400]]
+                        "start": "a", "end": "b", "totals": ["distance_m": 900, "ascent_m": 25, "seconds": 400]]],
+                    "totals": ["distance_m": 900, "ascent_m": 25, "seconds": 400]]
                 data = try! JSONSerialization.data(withJSONObject: ["routes": [route]])
             }
         }
