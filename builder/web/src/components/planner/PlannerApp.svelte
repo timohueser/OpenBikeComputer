@@ -50,6 +50,7 @@
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import type { Version } from '../../lib/planner/versions';
+    import { appearance, startTheme, toggleTheme } from '../../lib/theme.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
@@ -119,7 +120,7 @@
     let highlightedCategories = $state<PlaceCategory[]>([]);
     let corridor = $state<Place[]>([]);
     let corridorLoad = $state<'done' | 'loading' | 'failed'>('done');
-    let theme = $state<'light' | 'dark'>('light');
+    const theme = $derived<'light' | 'dark'>(appearance.dark ? 'dark' : 'light');
     let autoCenter = $state(false);
     let hoveredId = $state<string | null>(null);
     let hillshade = $state(true);
@@ -147,13 +148,15 @@
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
-    // The status line offers Undo after a version restore, until the next change.
-    let undoable = $state(false);
+    // The status line offers Undo after a version restore or delete, until the next change.
+    let statusUndo = $state<(() => void) | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
     let sideWidth = $state(360);
     let profileHeight = $state(260);
     let profileOpen = $state(true);
+    // The drawer without a profile opens only on request, so it keeps the rider's choice for the route.
+    let emptyOpen = $state(false);
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
@@ -173,12 +176,15 @@
 
     const minProfile = $derived(viewportWidth <= 760 && dataLayer?.strip ? 320 : DRAWER_MIN);
     const maxProfile = $derived(Math.max(minProfile, Math.min(340, viewportHeight - 400)));
-    const drawerHeight = $derived(profileOpen ? Math.min(Math.max(profileHeight, minProfile), maxProfile) : DRAWER_CLOSED);
+    const hasProfile = $derived(routesOpen ? !!finder.preview : !!visualRoute);
+    const drawerOpen = $derived(hasProfile ? profileOpen : emptyOpen);
+    const drawerHeight = $derived(drawerOpen ? Math.min(Math.max(profileHeight, minProfile), maxProfile) : DRAWER_CLOSED);
     const maxSide = $derived(Math.max(320, Math.min(460, viewportWidth - 540)));
     function resizeProfile(value: number, byKey: boolean) {
         const next = resizeDrawer(drawerHeight, value, byKey);
-        profileOpen = next > DRAWER_CLOSED;
-        if (profileOpen) profileHeight = next;
+        const open = next > DRAWER_CLOSED;
+        if (hasProfile) profileOpen = open; else emptyOpen = open;
+        if (open) profileHeight = next;
     }
     const view = $derived(planView(shown.trip, shown.line));
     const coordinates = $derived(view.coordinates);
@@ -390,11 +396,8 @@
         void session.start();
         beforeReload(() => session.saved());
         try { autoCenter = localStorage.getItem('obc-planner-auto-center') === 'true'; } catch { /* Optional browser preference. */ }
-        return () => session.close();
-    });
-
-    $effect(() => {
-        document.documentElement.dataset.theme = theme;
+        const stopTheme = startTheme();
+        return () => { stopTheme(); session.close(); };
     });
 
     $effect(() => {
@@ -406,7 +409,7 @@
         routesOpen = false;
         fromRoutes = false;
         finder.hovered = null;
-        undoable = false;
+        statusUndo = null;
         clearSelection();
         exitSearch();
         drawing = null;
@@ -470,8 +473,11 @@
     }
 
     async function changeVersions(versions: Version[]) {
+        const before = session.versions;
         await session.saveVersions(versions);
-        message = 'Versions saved';
+        const deleted = versions.length < before.length;
+        message = deleted ? 'Version deleted' : 'Versions saved';
+        statusUndo = deleted ? () => void changeVersions(before).catch(() => {}) : null;
     }
 
     function commit(next: Trip, description: string) {
@@ -482,7 +488,7 @@
     function afterEdit(description: string) {
         if (!hasEndpoints) { expandedDay = null; list = 'plan'; planEditing = false; hoverProgress = null; }
         message = description;
-        undoable = false;
+        statusUndo = null;
     }
 
     function edit(change: Partial<Trip>, description: string) {
@@ -508,7 +514,7 @@
         clearSelection();
         clampNight();
         message = description;
-        undoable = false;
+        statusUndo = null;
         nameVisits(trip);
     }
 
@@ -919,7 +925,7 @@
         }
         afterEdit(`Restored ‘${name}’`);
         fromRoutes = false;
-        undoable = true;
+        statusUndo = undo;
         clearSelection();
         clampNight();
     }
@@ -953,7 +959,7 @@
             {:else}<a href="/map-study.html">Map study</a>{/if}
             <span aria-current="page">Route planner</span>
         </nav>
-        <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={() => theme = theme === 'light' ? 'dark' : 'light'}>
+        <button type="button" class="theme" aria-label={theme === 'light' ? 'Use dark theme' : 'Use light theme'} onclick={toggleTheme}>
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
         </button>
     </header>
@@ -1132,9 +1138,9 @@
                     activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
             {:else if routesOpen || !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
-                    <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
-                    {#if profileOpen && routesOpen}<div><Icon name="route" size={24} /><p>The profile appears when you pick a route.</p><small>Hover a result to see it on the map.</small></div>
-                    {:else if profileOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
+                    <DrawerTitle title="Elevation & surface" open={emptyOpen} onToggle={() => emptyOpen = !emptyOpen} />
+                    {#if emptyOpen && routesOpen}<div><Icon name="route" size={24} /><p>The profile appears when you pick a route.</p><small>Hover a result to see it on the map.</small></div>
+                    {:else if emptyOpen}<div><Icon name="route" size={24} /><p>{hasEndpoints ? 'The profile appears when your route is ready.' : 'See the climbs and surfaces along your route.'}</p><small>{hasEndpoints ? routingStatus : stops.length ? `Choose a ${nextEndpoint} to see the profile.` : 'Choose a start and finish to get started.'}</small></div>{/if}
                 </section>
             {:else}
             <Profile
@@ -1151,7 +1157,7 @@
             <div class="status-line" role="status">
                 <span class:save-error={!!session.saveError}>{session.saveError || `${message} · ${routingMessage}`}</span>
                 {#if session.saveError}<button type="button" class="planner-action" onclick={() => session.download()}>Download plan</button><button type="button" class="planner-action" onclick={() => { session.save().catch(() => {}); }}>Retry save</button>{/if}
-                {#if undoable}<span>·</span><button type="button" class="planner-action" onclick={undo}>Undo</button>{/if}
+                {#if statusUndo}<span>·</span><button type="button" class="planner-action" onclick={statusUndo}>Undo</button>{/if}
                 {#if placeNote}<span>· {placeNote}</span>{/if}
                 <span class="lab-note">Regional map, search and routing</span>
                 <span class="legal"><a href={`${siteBase}docs/impressum/`}>Impressum</a> · <a href={`${siteBase}docs/datenschutz/`}>Datenschutz</a></span>
@@ -1451,7 +1457,7 @@
             font-size: 14px;
         }
     }
-    @media (max-width: 700px) {
+    @media (max-width: 760px) {
         .planner-shell { min-width: 0; height: auto; min-height: 100dvh; }
         main { grid-template-columns: minmax(0, 1fr); }
         main > :global([aria-label="Sidebar width"]) { display: none; }
