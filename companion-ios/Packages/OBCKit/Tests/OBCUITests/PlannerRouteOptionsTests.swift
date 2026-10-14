@@ -18,43 +18,51 @@ struct PlannerRouteOptionsTests {
 
     @Test func aPreviewLeavesThePlanAndUseIsOneUndoStep() async throws {
         let source = OptionsSource(), (model, options) = await planned(source)
-        #expect(options.items.map(\.name) == ["Your route", "Shorter", "Via Kirchzarten"])
+        // Your route is the plan's own, not the primary route of the options answer.
+        let yours = try #require(options.yours(model))
+        #expect(yours.option.path.distance == 30_700 && options.items.map(\.name) == ["Shorter", "Via Kirchzarten"])
         let shorter = try #require(options.items.first { $0.id == "B" })
-        #expect(PlannerRouteOptions.difference(shorter.option.path, from: options.items[0].option.path, locale: english) == "5.5 km shorter · 237 m less climbing")
-        #expect(options.accessibilityLabel(shorter, locale: english) == "B, Shorter, 25.2 kilometres, 669 metres climbing, 5.5 km shorter, 237 m less climbing")
+        #expect(PlannerRouteOptions.difference(shorter.option.path, from: yours.option.path, locale: english) == "5.5 km shorter · 237 m less climbing")
+        #expect(PlannerRouteOptions.accessibilityLabel(shorter, yours: yours, locale: english)
+                == "B, Shorter, 25.2 kilometres, 669 metres climbing, 5.5 km shorter, 237 m less climbing")
 
         let plan = model.exportPlan(), depth = model.undoDepth, revision = model.routingRevision
-        options.select("B")
+        options.select("B", model: model)
         #expect(options.preview?.name == "Shorter" && options.letterPlaces != nil)
         #expect(model.exportPlan() == plan && model.undoDepth == depth && model.routingRevision == revision && model.canSave)
         options.cancel()
         #expect(options.preview == nil && model.exportPlan() == plan)
 
-        options.select("B")
+        options.select("B", model: model)
         options.use(model)
         #expect(model.preset == .shorter && model.points.count == 2 && model.undoDepth == depth + 1 && options.preview == nil)
-        // The applied route is your route now; the route it replaced stays listed, and taking it is undo.
-        await options.load(model)
-        #expect(options.items.map(\.name) == ["Your route", "Less climbing", "Via Kirchzarten", "Balanced"])
-        options.select("D")
+        // The set stays: the route that Use replaced is listed under its own name.
+        #expect(options.isCurrent(model) && options.items.map(\.name) == ["Via Kirchzarten", "Balanced"])
+        await model.calculateRoute()
+        options.select("C", model: model)
         options.use(model)
-        #expect(model.preset == .balanced && model.undoDepth == depth && model.canRedo)
+        #expect(model.preset == .balanced && model.undoDepth == depth + 2 && options.items.map(\.name) == ["Via Kirchzarten", "Shorter"])
     }
 
     @Test func theCorridorBecomesAShapingPointAndStaleOptionsAreRefused() async throws {
         let source = OptionsSource(), (model, options) = await planned(source)
-        options.select("C")
+        options.select("C", model: model)
         model.setActivity(.road)
+        await model.calculateRoute()
         let depth = model.undoDepth
         options.use(model)
         #expect(model.points.count == 2 && model.undoDepth == depth && model.preset == .balanced)
 
         await options.load(model)
-        options.select("C")
+        options.select("C", model: model)
         options.use(model)
         #expect(model.points.map(\.kind) == [.visit, .shape, .visit] && model.points[1].place.coordinate == via)
         #expect(model.undoDepth == depth + 1)
-        model.undo()
+        // Another route of the same set takes the corridor's via away again.
+        await model.calculateRoute()
+        options.select("B", model: model)
+        options.use(model)
+        #expect(model.points.count == 2 && model.preset == .shorter && model.undoDepth == depth + 2)
 
         model.setLegMode(try #require(model.leg(into: model.points[1].id)), to: .straight)
         #expect(!model.offersRouteOptions)
@@ -95,7 +103,8 @@ private actor OptionsSource: PlannerDataSource {
                  release: PlannerRelease) async throws -> [RouteOption] {
         let mine = try await route(points: points, turnarounds: [], activity: activity, preference: preference, release: release)
         let other: RoutePreference = preference == .balanced ? .shorter : .lessClimbing
-        return [RouteOption(reason: .primary, preference: preference, path: mine),
+        return [RouteOption(reason: .primary, preference: preference,
+                            path: path(points, meters: mine.distance + 300, climb: mine.ascent)),
                 RouteOption(reason: preference == .balanced ? .shorter : .lessClimbing, preference: other,
                             path: path([points[0], Coordinate(latitude: 47.97, longitude: 8.0), points[1]], meters: 25_200, climb: 669)),
                 RouteOption(reason: .corridor, preference: preference, via: via,

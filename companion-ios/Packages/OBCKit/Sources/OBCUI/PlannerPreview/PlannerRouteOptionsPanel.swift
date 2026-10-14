@@ -19,14 +19,16 @@ struct PlannerRouteOptionsPanel: View {
         if case .failed(let message) = options.status, options.isCurrent(model) {
             Text(message).font(.subheadline).foregroundStyle(OBCTheme.secondary)
             Button("Try again") { Task { await options.load(model) } }.frame(minHeight: 44)
-        } else if options.status != .ready || !options.isCurrent(model) {
+        } else if options.status != .ready || !options.isCurrent(model) || model.routePath == nil {
             ProgressView("Finding other routes…").font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
-        } else if let yours = options.yours {
+        } else if let yours = options.yours(model) {
+            let rows = [yours] + options.items
             OBCGroupedSection {
-                ForEach(options.items) { item in
+                ForEach(rows) { item in
                     PlannerRouteOptionRow(item: item, yours: yours, selected: (options.previewed ?? yours.id) == item.id,
-                                          label: options.accessibilityLabel(item), showsDivider: item.id != options.items.last?.id) {
-                        options.select(item.id)
+                                          label: PlannerRouteOptions.accessibilityLabel(item, yours: yours),
+                                          showsDivider: item.id != rows.last?.id) {
+                        options.select(item.id, model: model)
                     }
                 }
             }
@@ -34,7 +36,7 @@ struct PlannerRouteOptionsPanel: View {
                 Button("Use \(preview.name)") { options.use(model) }
                     .buttonStyle(.obcPrimary).accessibilityIdentifier("planner.options.use")
             }
-            if options.items.count == 1 {
+            if options.items.isEmpty {
                 Text("No other route is clearly better.").font(.subheadline).foregroundStyle(OBCTheme.secondary)
             }
         }
@@ -103,16 +105,16 @@ private struct PlannerRouteOptionLetter: View {
 /// What the planner map draws while an option is previewed.
 extension PlannerRouteOptions {
     /// Your route as a thin dotted line under the option in ink; nil without a preview.
-    var strokes: [MapStroke]? {
-        guard let preview, let yours else { return nil }
+    func strokes(_ model: PlannerPreviewModel) -> [MapStroke]? {
+        guard let preview, let yours = yours(model) else { return nil }
         return [MapStroke(coordinates: yours.option.path.points.map(\.coordinate), color: OBCTheme.route, width: 3, cased: false,
                           dash: [0.1, 2]),
                 MapStroke(coordinates: preview.option.path.points.map(\.coordinate), color: OBCTheme.ink, width: 4.5,
                           casingColor: OBCTheme.surface)]
     }
 
-    var pins: [PlannerPreviewMapPin] {
-        guard let places = letterPlaces, let preview, let yours else { return [] }
+    func pins(_ model: PlannerPreviewModel) -> [PlannerPreviewMapPin] {
+        guard let places = letterPlaces, let preview, let yours = yours(model) else { return [] }
         return [PlannerPreviewMapPin(id: "option-\(yours.id)", title: "\(yours.id), \(yours.name)", coordinate: places.yours,
                                      kind: .option(yours.id, yours: true)),
                 PlannerPreviewMapPin(id: "option-\(preview.id)", title: "\(preview.id), \(preview.name)", coordinate: places.preview,

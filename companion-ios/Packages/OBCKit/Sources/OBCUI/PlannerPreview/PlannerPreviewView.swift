@@ -105,7 +105,7 @@ public struct PlannerPreviewView: View {
     public var body: some View {
         GeometryReader { geometry in
             PlannerPreviewMap(coordinates: model.geometry, routeLine: model.routeLine,
-                              pins: routesOpen ? finder.pins : panel == .options ? pins + routeOptions.pins : pins,
+                              pins: routesOpen ? finder.pins : panel == .options ? pins + routeOptions.pins(model) : pins,
                               selectedID: panel == .leg ? Self.legPinID : panel == .place ? editingPointID ?? selectedPlace?.id
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
@@ -118,7 +118,7 @@ public struct PlannerPreviewView: View {
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
                               onPlace: selectResult, onLayerStatus: { layerStatus = $0 },
                               strokes: routesOpen ? finder.strokes(plan: model.geometry)
-                                : panel == .options ? routeOptions.strokes ?? planStrokes : planStrokes,
+                                : panel == .options ? routeOptions.strokes(model) ?? planStrokes : planStrokes,
                               focus: routesOpen ? finder.focus : nil,
                               namer: namer, onIdle: nameRouteEnds)
                 .ignoresSafeArea(edges: .bottom)
@@ -375,8 +375,8 @@ public struct PlannerPreviewView: View {
                             .accessibilityIdentifier("planner.points")
                         if model.offersRouteOptions {
                             OBCListRow(icon: "arrow.triangle.branch", label: "Route options",
-                                       value: routeOptions.isCurrent(model) && routeOptions.items.count > 1
-                                        ? "\(routeOptions.items.count - 1)" : nil, showsChevron: true) { show(.options) }
+                                       value: routeOptions.isCurrent(model) && !routeOptions.items.isEmpty
+                                        ? "\(routeOptions.items.count)" : nil, showsChevron: true) { show(.options) }
                                 .accessibilityIdentifier("planner.options")
                         }
                         OBCListRow(icon: model.activity == .hiking ? "figure.hiking" : "bicycle", label: "Activity", value: model.activity.name,

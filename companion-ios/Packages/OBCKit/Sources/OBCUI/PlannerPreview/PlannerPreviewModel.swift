@@ -625,19 +625,25 @@ public final class PlannerPreviewModel {
         return try await service.options(points: state.coordinates, activity: activity, preference: preset.preference, release: selected)
     }
 
-    /// Takes a route option as one undo step: its preset, and its via as a shaping point after the start. Refuses an
-    /// option from another routing revision.
+    /// The plan's own route; nil while it is routing.
+    var routePath: PlannedPath? { path }
+
+    /// Takes a route option as one undo step: its preset, and its via as a shaping point after the start.
+    /// `replacingVia` first takes away the via that an earlier option of the same set added. Refuses an option from
+    /// another routing revision.
     @discardableResult
-    func useRouteOption(_ option: RouteOption, revision: Int) -> Bool {
+    func useRouteOption(_ option: RouteOption, revision: Int, replacingVia: Bool = false) -> Bool {
         guard revision == routingRevision else { return false }
         edit { next in
             next.preset = PlannerPreviewPreset(option.preference)
+            if replacingVia { next.points.removeAll { $0.id == Self.optionViaID } }
             if let via = option.via {
-                next.points.insert(.init(place: .init(id: UUID().uuidString, name: Self.shapeName, coordinate: via), kind: .shape), at: 1)
+                next.points.insert(.init(place: .init(id: Self.optionViaID, name: Self.shapeName, coordinate: via), kind: .shape), at: 1)
             }
         }
         return true
     }
+    static let optionViaID = "route-option-via"
 
     /// The editor state of a plan. Pass and detour points have no kind of their own here: a pass is a
     /// shaping point and a detour a stop.
