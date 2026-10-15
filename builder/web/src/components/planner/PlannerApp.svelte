@@ -34,7 +34,7 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, overnightCandidates, dragPointOut,
         orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
@@ -901,7 +901,8 @@
     }
 
     function changeTrip(change: Partial<Trip>, description: string) {
-        edit(change, description);
+        if (change.mode === 'trip' && trip.mode === 'route') commit(routeToTrip(trip, session.line), description);
+        else edit(change, description);
         if (!('mode' in change)) return;
         night = 1;
         expandedDay = null;

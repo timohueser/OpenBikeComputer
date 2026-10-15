@@ -1,4 +1,4 @@
-import { movingSecondsAt, type RoutingLine } from './routing';
+import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
 import { cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
@@ -284,6 +284,12 @@ function fixedNights(trip: Trip, stops: Stop[]): Map<number, number> {
     return fixed;
 }
 
+// Riding time measures an even day, because it includes the climbing. Without a timed line, distance does.
+function effortScale(line: RoutingLine | undefined): { at: (progress: number) => number; progress: (effort: number) => number } {
+    if (!line || !(line.seconds > 0)) return { at: progress => progress, progress: effort => effort };
+    return { at: progress => movingSecondsAt(line, progress) / line.seconds, progress: effort => progressAtSeconds(line, effort * line.seconds) };
+}
+
 function nightCount(trip: Trip): number {
     return Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
 }
@@ -300,14 +306,15 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const hi = after === undefined ? 1 : fixed.get(after)!;
     const daysBefore = night - (before ?? 0);
     const daysAfter = (after ?? count) - night;
-    const dayFraction = (hi - lo) / (daysBefore + daysAfter);
-    const center = Math.max(0, Math.min(1, lo + dayFraction * daysBefore));
+    const effort = effortScale(line), start = effort.at(lo);
+    const dayEffort = (effort.at(hi) - start) / (daysBefore + daysAfter);
+    const center = Math.max(0, Math.min(1, effort.progress(start + dayEffort * daysBefore)));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
     const allowance = trip.limit > 0 && total > 0 ? trip.limit / total : Infinity;
     const feasibleFrom = Math.max(lo, hi - daysAfter * allowance);
     const feasibleTo = Math.min(hi, lo + daysBefore * allowance);
-    const from = Math.max(feasibleFrom, center - .2 * dayFraction);
-    const to = Math.min(feasibleTo, center + .2 * dayFraction);
+    const from = Math.max(feasibleFrom, effort.progress(start + dayEffort * (daysBefore - .2)));
+    const to = Math.min(feasibleTo, effort.progress(start + dayEffort * (daysBefore + .2)));
     if (from > to + 1e-9) return { from: center, to: center, center, blocked: true };
     return { from, to: Math.max(from, to), center, blocked: false };
 }
@@ -329,6 +336,7 @@ function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number;
     const count = nightCount(trip);
     const fixed = fixedNights(trip, layout.stops);
     if (provisionalEnd) fixed.set(provisionalEnd.night, provisionalEnd.progress);
+    const effort = effortScale(layout.line);
     const boundaries = [0];
     for (let i = 1; i < count; i++) {
         if (fixed.has(i)) {
@@ -337,8 +345,8 @@ function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number;
         }
         let next = i + 1;
         while (next < count && !fixed.has(next)) next++;
-        const end = next < count ? fixed.get(next)! : 1;
-        boundaries.push(boundaries[i - 1] + (end - boundaries[i - 1]) / (next - i + 1));
+        const start = effort.at(boundaries[i - 1]), end = effort.at(next < count ? fixed.get(next)! : 1);
+        boundaries.push(effort.progress(start + (end - start) / (next - i + 1)));
     }
     boundaries.push(1);
     return boundaries.slice(1).map((to, i) => {
@@ -449,6 +457,14 @@ export function overnightCandidates(trip: Trip, line: RoutingLine | undefined, n
             return { place, distance, ascent, from, to };
         })
         .sort((a, b) => a.distance - b.distance);
+}
+
+/** A route as a trip. Without day decisions it gets one day for each started distance target, at least two; pinned
+ * nights, dragged day ends and rest days keep their day count. */
+export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
+    if (trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length) return { ...trip, mode: 'trip' };
+    const { distance } = planView(trip, line).summary;
+    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / (trip.limit || 50))), trip.limit);
 }
 
 export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Trip['budget'], target: number, limit: number): Trip {

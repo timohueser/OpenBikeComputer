@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -134,6 +134,13 @@ describe('planning modes', () => {
         const restored: Trip = { ...single, mode: 'trip' };
         expect(view(restored).itinerary).toEqual(view(trip).itinerary);
         expect(restored.points).toEqual(trip.points);
+        expect(routeToTrip(single, testLine(single))).toEqual(restored);
+    });
+
+    it('gives a route without day decisions one day per started distance target, at least two', () => {
+        const route: Trip = { ...testTrip(), mode: 'route', days: 3, limit: 50 };
+        const days = (limit: number) => routeToTrip({ ...route, limit }, testLine(route)).days;
+        expect([days(50), days(20), days(500)]).toEqual([2, 5, 2]);
     });
 });
 
@@ -210,6 +217,15 @@ describe('provisional day ends', () => {
         const trip = { ...testTrip(), days: 4 };
         return setSplit(trip, testLine(trip), night, progress);
     };
+    it('divides the riding time evenly, so a slow half holds more of the day than its distance', () => {
+        const trip = { ...testTrip(), days: 2 }, line = testLine(trip), km = view(trip).total;
+        // The first half takes twice as long per kilometre, so half of the riding time is done at 3/8 of the distance.
+        const slow: RoutingLine = { ...line, coordinates: [line.coordinates[0], along(.5), line.coordinates[1]], elevation: [null, null, null],
+            elapsed: [0, km * 240, km * 360], seconds: km * 360 };
+        expect(planView(trip, slow).days[0].to).toBeCloseTo(.375, 6);
+        expect(overnightWindow(trip, slow, 1).center).toBeCloseTo(.375, 6);
+    });
+
     it('holds a dragged day end while the free nights re-balance around it', () => {
         const trip = split(2, .7);
         const days = view(trip).days;
