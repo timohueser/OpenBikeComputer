@@ -336,13 +336,14 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         /// A numbered disc in the network colour, or a small dot; magenta when selected.
+        /// The image is 44 pt for the tap target; MapLibre picks the marker nearest the tap among overlapping ones.
         static func routeImage(number: Int?, rank: Int, selected: Bool, traits: UITraitCollection) -> UIImage {
             let color = selected ? UIColor(OBCTheme.route).resolvedColor(with: traits)
                 : PlannerPreviewNetworkStyle.color(rank: rank, traits: traits).withAlphaComponent(1)
             let surface = UIColor(OBCTheme.surface).resolvedColor(with: traits)
-            let size: CGFloat = number == nil ? 14 : 28
-            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
-                let disc = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2))
+            let size: CGFloat = number == nil ? 14 : 28, inset = (44 - size) / 2
+            return UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
+                let disc = UIBezierPath(ovalIn: CGRect(x: inset + 1, y: inset + 1, width: size - 2, height: size - 2))
                 (number == nil || selected ? color : surface).setFill(); disc.fill()
                 (number == nil ? surface : color).setStroke(); disc.lineWidth = number == nil ? 1.5 : 2; disc.stroke()
                 guard let number else { return }
@@ -350,7 +351,7 @@ struct PlannerPreviewMap: UIViewRepresentable {
                     .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
                     .foregroundColor: selected ? surface : UIColor(OBCTheme.ink).resolvedColor(with: traits)])
                 let bounds = text.size()
-                text.draw(at: CGPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2))
+                text.draw(at: CGPoint(x: (44 - bounds.width) / 2, y: (44 - bounds.height) / 2))
             }
         }
 
