@@ -145,6 +145,15 @@ class Wiki(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not a bz2, gzip or tar file"):
             next(dumps.lines(unknown))
 
+    def test_an_open_dump_tells_how_far_its_decompressor_read(self):
+        path = self.root / "pages.sql.gz"
+        path.write_bytes(gzip.compress(b"page\n" * 1000))
+        for which in (shutil.which, lambda _: None):
+            with patch("tools.wiki.dumps.shutil.which", which), dumps.opened(path) as stream:
+                stream.read()
+                self.assertEqual(dumps.share(path), 1)
+            self.assertIsNone(dumps.share(path))
+
     def test_sql_redirects_item_sitelinks_and_language_links_resolve_without_api(self):
         self.subjects(dict(osm="n1", wikidata="Q90"), dict(osm="n2", wikipedia="ja:CastleJA"), dict(osm="n3", wikidata="Q999"),
                       dict(osm="n4", wikipedia="de:Burg"), dict(osm="n5", wikipedia="en:Unlinked"))
