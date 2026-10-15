@@ -6,24 +6,22 @@
 </script>
 
 <script lang="ts">
-    import { onMount, type Snippet } from 'svelte';
+    import { onMount, tick, type Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
     import PlaceContent from './PlaceContent.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type OvernightCandidate, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        kind, trip, line, days, overnightNote = '', detailsError = '', dayLabels, night, point, place, coordinate, candidates, legMode,
-        onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onSelectPlace, onStay, onAddVisit, onRename, onKind, onRemove, children,
+        kind, trip, line, days, detailsError = '', dayLabels, night, point, place, coordinate, legMode,
+        onClose, onEndpoint, onRoutes, onAddHere, onLegMode, onInsert, onLoop, onLoopStart, onPick, onChooseNight, onStay, onAddVisit, onRename, onKind, onRemove, children,
     }: {
-        overnightNote?: string;
         detailsError?: string;
         kind: CalloutKind;
         trip: Trip;
@@ -38,7 +36,6 @@
         place?: Place;
         /** Where a place callout would pin the overnight. */
         coordinate?: Coordinate | null;
-        candidates: OvernightCandidate[];
         legMode: LegMode;
         onEndpoint?: (kind: 'start' | 'finish') => void;
         /** "Signed routes from here" on a place or a map point. */
@@ -52,7 +49,8 @@
         /** "Start the loop here" on the line of a loop. */
         onLoopStart?: () => void;
         onPick: () => void;
-        onSelectPlace: (place: Place) => void;
+        /** Opens the towns to sleep in for the night of this day end. */
+        onChooseNight: () => void;
         onStay: (ridingDay: number) => void;
         onAddVisit: (place: Place) => void;
         onRename: (label: string) => void;
@@ -82,6 +80,7 @@
     let root: HTMLDivElement;
     let opener: HTMLElement | null = null;
     let renaming = $state(false);
+    let renameButton = $state<HTMLButtonElement>();
     // svelte-ignore state_referenced_locally
     let sleepDay = $state(night);
 
@@ -109,11 +108,6 @@
         if (event.key !== 'Escape' || (event.target as HTMLElement).closest('input, select')) return;
         event.stopPropagation();
         close();
-    }
-
-    function candidateDay(candidate: OvernightCandidate) {
-        const over = dayOverTarget(trip, candidate, candidate.ascent);
-        return { distance: candidate.distance, ascent: candidate.ascent, over: over.km > 0 || over.climb > 0 };
     }
 
     function rename(label: string) {
@@ -158,11 +152,7 @@
         {/if}
     {:else if kind === 'dayend'}
         <h2>Day {dayLabels[night]} ends here for now</h2>
-        {#if overnightNote}<p class="hint" role="status">{overnightNote}</p>{/if}
-        {#if candidates.length}<div class="column-head"><small>Day {dayLabels[night]} would be</small></div>{/if}
-        {#each candidates as candidate (candidate.place.id)}
-            <PlaceRow place={candidate.place} day={candidateDay(candidate)} onSelect={onSelectPlace} />
-        {/each}
+        <button type="button" class="secondary" onclick={onChooseNight}>Choose where to sleep</button>
         <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
         <p class="hint">Drag the marker along the route to move the day end.</p>
     {:else if kind === 'place'}
@@ -209,7 +199,7 @@
         <div class="title">
             <h2>{point.kind === 'via' ? 'Shaping point' : point.label}</h2>
             {#if point.kind !== 'via'}
-                <button type="button" class="icon" aria-label="Rename point" aria-expanded={renaming} onclick={() => renaming = !renaming}><Icon name="pencil" size={15} /></button>
+                <button type="button" class="icon" bind:this={renameButton} aria-label="Rename point" aria-expanded={renaming} onclick={() => renaming = !renaming}><Icon name="pencil" size={15} /></button>
             {/if}
         </div>
         {#if renaming}
@@ -218,7 +208,12 @@
                 onchange={(event) => rename(event.currentTarget.value)}
                 onkeydown={(event) => {
                     if (event.key === 'Enter') rename(event.currentTarget.value);
-                    if (event.key === 'Escape') renaming = false;
+                    if (event.key === 'Escape') {
+                        // Removing a focused input may fire its change event; the old value keeps the cancelled name out.
+                        event.currentTarget.value = point.label;
+                        renaming = false;
+                    }
+                    if (!renaming) tick().then(() => renameButton?.focus());
                 }} />
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
@@ -339,15 +334,6 @@
         background: var(--panel);
         color: var(--ink);
         font-size: 14px;
-    }
-    .column-head {
-        display: flex;
-        justify-content: flex-end;
-        padding-right: 23px;
-    }
-    .column-head small {
-        font-size: 11px;
-        color: var(--ink-soft);
     }
     .hint {
         margin: 4px 0 0;

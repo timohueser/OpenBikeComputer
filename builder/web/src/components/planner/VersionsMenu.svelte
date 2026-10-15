@@ -1,7 +1,7 @@
 <script lang="ts">
     import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import { newVersion, versionSummary, type Version } from '../../lib/planner/versions';
+    import { newVersion, savedWhen, versionSummary, versionTitle, type Version } from '../../lib/planner/versions';
     import type { Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
@@ -34,16 +34,8 @@
         return minutes < 1 ? 'just now' : minutes < 60 ? `${minutes} min ago` : `at ${when(new Date(time).toISOString())}`;
     }
 
-    function when(iso: string) {
-        const at = new Date(iso);
-        const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(iso).setHours(0, 0, 0, 0)) / 86400000);
-        const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-        return `${day} ${at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
-    }
-
-    function title(version: Version) {
-        return version.name ?? when(version.at);
-    }
+    const when = (iso: string) => savedWhen(iso, now);
+    const title = (version: Version) => versionTitle(version, now);
 
     async function startNaming(what: 'new' | 'latest') {
         now = Date.now();
@@ -72,6 +64,8 @@
             return;
         } finally { busy = false; }
         naming = null;
+        await tick();
+        root.querySelector<HTMLElement>(what === 'new' ? '.save' : '.name-start')?.focus();
     }
 
     async function toggle() {
@@ -90,6 +84,7 @@
     }
 
     async function remove(id: string) {
+        const index = versions.findIndex(v => v.id === id);
         busy = true;
         try {
             await onChange(versions.filter(v => v.id !== id));
@@ -97,6 +92,9 @@
         } catch {
             error = 'Could not delete the version. Try again.';
         } finally { busy = false; }
+        await tick();
+        const rows = [...root.querySelectorAll<HTMLElement>('.delete')];
+        (rows[Math.min(index, rows.length - 1)] ?? root.querySelector<HTMLElement>('.more'))?.focus();
     }
 
     function outside(event: PointerEvent) {

@@ -57,6 +57,22 @@ test('the POI builder retains contact aliases and descriptions for named and unn
   } finally {db?.close();connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
+test('shelters that are no place to sleep leave the shelter kind; a picnic roof becomes a rest place',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-shelters-'));
+  const shelter=(object_id,shelter_type,name)=>({object_type:'N',object_id,centroid:[8,48],osm_key:'amenity',osm_value:'shelter',
+    ...(name?{name:{name}}:{}),extra:shelter_type?{shelter_type}:{}});
+  const records=[shelter(1,'basic_hut'),shelter(2,'public_transport'),shelter(3,'public_transport','Church'),
+    shelter(4,'picnic_shelter','Barbecue site'),shelter(5,undefined,'Forest hut'),shelter(6,'gazebo')];
+  let connection;
+  try {
+    connection=writePlaces(directory,records);
+    assert.deepEqual(connection.prepare('SELECT kind,name FROM places ORDER BY id').all().map(row=>({...row})),[
+      {kind:'shelter',name:'shelter'},{kind:'public_transport_shelter',name:'Church'},{kind:'picnic_site',name:'Barbecue site'},
+      {kind:'shelter',name:'Forest hut'},{kind:'picnic_site',name:'picnic site'},
+    ]);
+  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
 test('Swiss places keep the German canton name that selects cantonal holidays',()=>{
   const directory=mkdtempSync(join(tmpdir(),'obc-cantons-'));
   const records=[

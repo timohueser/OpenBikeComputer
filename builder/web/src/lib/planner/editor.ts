@@ -1,4 +1,4 @@
-import { movingSecondsAt, type RoutingLine } from './routing';
+import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
 import { cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
@@ -67,6 +67,8 @@ export interface Trip {
     splits?: Record<number, number>;
     /** Climb per day in metres; 0 or absent means no target. */
     climbTarget?: number;
+    /** Where the rider sleeps: the kind of place the suggested nights look for. Absent means either. */
+    sleep?: 'camping' | 'hotel' | 'either';
 }
 /** Figures of a day or of the whole route. Ascent and descent count known heights only. Without a routed line, the
  * climb is 0 and the hours follow the activity's pace. */
@@ -284,11 +286,19 @@ function fixedNights(trip: Trip, stops: Stop[]): Map<number, number> {
     return fixed;
 }
 
+// Riding time measures an even day, because it includes the climbing. Without a timed line, distance does.
+function effortScale(line: RoutingLine | undefined): { at: (progress: number) => number; progress: (effort: number) => number } {
+    if (!line || !(line.seconds > 0)) return { at: progress => progress, progress: effort => effort };
+    return { at: progress => movingSecondsAt(line, progress) / line.seconds, progress: effort => progressAtSeconds(line, effort * line.seconds) };
+}
+
 function nightCount(trip: Trip): number {
     return Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
 }
 
-export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number): { from: number; to: number; center: number; blocked: boolean } {
+/** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it and
+ * the distance target of the days before and after. */
+export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number, width = .2): { from: number; to: number; center: number; blocked: boolean } {
     const { stops, total } = planView(trip, line);
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
@@ -300,14 +310,15 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const hi = after === undefined ? 1 : fixed.get(after)!;
     const daysBefore = night - (before ?? 0);
     const daysAfter = (after ?? count) - night;
-    const dayFraction = (hi - lo) / (daysBefore + daysAfter);
-    const center = Math.max(0, Math.min(1, lo + dayFraction * daysBefore));
+    const effort = effortScale(line), start = effort.at(lo);
+    const dayEffort = (effort.at(hi) - start) / (daysBefore + daysAfter);
+    const center = Math.max(0, Math.min(1, effort.progress(start + dayEffort * daysBefore)));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
     const allowance = trip.limit > 0 && total > 0 ? trip.limit / total : Infinity;
     const feasibleFrom = Math.max(lo, hi - daysAfter * allowance);
     const feasibleTo = Math.min(hi, lo + daysBefore * allowance);
-    const from = Math.max(feasibleFrom, center - .2 * dayFraction);
-    const to = Math.min(feasibleTo, center + .2 * dayFraction);
+    const from = Math.max(feasibleFrom, effort.progress(start + dayEffort * (daysBefore - width)));
+    const to = Math.min(feasibleTo, effort.progress(start + dayEffort * (daysBefore + width)));
     if (from > to + 1e-9) return { from: center, to: center, center, blocked: true };
     return { from, to: Math.max(from, to), center, blocked: false };
 }
@@ -329,6 +340,7 @@ function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number;
     const count = nightCount(trip);
     const fixed = fixedNights(trip, layout.stops);
     if (provisionalEnd) fixed.set(provisionalEnd.night, provisionalEnd.progress);
+    const effort = effortScale(layout.line);
     const boundaries = [0];
     for (let i = 1; i < count; i++) {
         if (fixed.has(i)) {
@@ -337,8 +349,9 @@ function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number;
         }
         let next = i + 1;
         while (next < count && !fixed.has(next)) next++;
-        const end = next < count ? fixed.get(next)! : 1;
-        boundaries.push(boundaries[i - 1] + (end - boundaries[i - 1]) / (next - i + 1));
+        const start = effort.at(boundaries[i - 1]), end = effort.at(next < count ? fixed.get(next)! : 1);
+        // A stretch without riding time, such as a transfer, can put the even point before the previous end.
+        boundaries.push(Math.max(boundaries[i - 1], effort.progress(start + (end - start) / (next - i + 1))));
     }
     boundaries.push(1);
     return boundaries.slice(1).map((to, i) => {
@@ -426,29 +439,13 @@ export function dayOverTarget(trip: Trip, day: Pick<Day, 'distance'>, ascent: nu
     };
 }
 
-export interface OvernightCandidate {
-    place: Place;
-    distance: number;
-    ascent: number;
-    from: number;
-    to: number;
-}
-
-/** The three places nearest the suggested day end, each with its predicted day, shortest day first. */
-export function overnightCandidates(trip: Trip, line: RoutingLine | undefined, night: number, places: Place[]): OvernightCandidate[] {
-    const { coordinates, days } = planView(trip, line);
-    if (trip.mode === 'route' || night < 1 || night >= days.length) return [];
-    const { center } = overnightWindow(trip, line, night);
-    return places
-        .filter(place => place.category !== 'water')
-        .map(place => ({ place, progress: nearestProgress(coordinates, place.coordinate) }))
-        .sort((a, b) => Math.abs(a.progress - center) - Math.abs(b.progress - center))
-        .slice(0, 3)
-        .map(({ place, progress }) => {
-            const { distance, ascent, from, to } = provisionalDays(trip, line, night, progress)[night - 1];
-            return { place, distance, ascent, from, to };
-        })
-        .sort((a, b) => a.distance - b.distance);
+/** A route as a trip. A calculated route without day decisions gets one day for each started distance target, at least
+ * two. Pinned nights, dragged day ends, rest days, a route still calculating or no distance target keep the day count. */
+export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
+    const decided = trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length;
+    if (decided || !line || !(trip.limit > 0)) return { ...trip, mode: 'trip' };
+    const { distance } = planView(trip, line).summary;
+    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / trip.limit)), trip.limit);
 }
 
 export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Trip['budget'], target: number, limit: number): Trip {
@@ -490,6 +487,15 @@ export function removeRestDay(trip: Trip, index: number): Trip {
     const restAfter = trip.restAfter ?? [];
     if (!Number.isInteger(index) || index < 0 || index >= restAfter.length) return trip;
     return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), restNames: restAfter.flatMap((_,i)=>i===index?[]:[trip.restNames?.[i]??'']), target: trip.budget === 'days' ? Math.max(1, trip.target - 1) : trip.target };
+}
+
+/** Pins several nights on one line, the latest first: each new point then lies after the nights still to pin, so they
+ * find their legs among the points before it, which still match the line. */
+export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { night: number; coordinate: Coordinate; label: string; placeKind?: string }[]): Trip {
+    return [...nights].sort((a, b) => b.night - a.night).reduce((next, { night, coordinate, label, placeKind }) => {
+        const pinned = pinNight(next, line, night, coordinate, label);
+        return pinned === next ? next : { ...pinned, points: pinned.points.map(p => p.id === `night-${night}` ? { ...p, placeKind } : p) };
+    }, trip);
 }
 
 export function pinNight(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string, sourceId?: string): Trip {
@@ -589,8 +595,8 @@ export function routeLegsAround(trip: Trip, id: string): Trip {
 }
 
 function nearestLegEnd(trip: Trip, line: RoutingLine | undefined, coordinate: Coordinate): string {
-    const { coordinates, stops } = planView(trip, line);
-    const distance = nearestProgress(coordinates, coordinate) * stops.at(-1)!.distance;
+    const { coordinates, stops, total } = planView(trip, line);
+    const distance = nearestProgress(coordinates, coordinate) * total;
     // The start ends no leg, so a point at or before it joins the first leg.
     return (stops.slice(1).find(stop => stop.distance >= distance) ?? stops.at(-1)!).point.id;
 }

@@ -37,6 +37,8 @@ final class OBCNativeMapView: MLNMapView {
     private let noticeText = UILabel()
     private var availability = NativeMapLoadState.loading
     private var strokes: [MapStroke]?
+    /// MapLibre keeps the line pattern of a layer id that a solid line held, so each draw takes new ids.
+    private var strokeGeneration = 0
     private var refreshViewport: (() -> Void)?
 
     init() {
@@ -226,6 +228,7 @@ final class OBCNativeMapView: MLNMapView {
         installPOIImages(style)
         guard force || strokes != lines else { return }
         strokes = lines
+        strokeGeneration += 1
         for layer in style.layers where layer.identifier.hasPrefix("obc-line-") { style.removeLayer(layer) }
         for source in style.sources where source.identifier.hasPrefix("obc-line-") { style.removeSource(source) }
         var groups: [[MapStroke]] = []
@@ -242,7 +245,7 @@ final class OBCNativeMapView: MLNMapView {
                 return MLNPolyline(coordinates: &coordinates, count: UInt(coordinates.count))
             }
             let shape = MLNShapeCollection(shapes: shapes)
-            let id = "obc-line-\(index)"
+            let id = "obc-line-\(strokeGeneration)-\(index)"
             let source = MLNShapeSource(identifier: id, shape: shape, options: [.simplificationTolerance: 0.375])
             style.addSource(source)
             if line.cased {

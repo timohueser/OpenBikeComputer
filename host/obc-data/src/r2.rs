@@ -429,10 +429,10 @@ pub fn refuse_older_publish(bucket: &Bucket) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether a release of `obc data` writes `key`: `release.json`, `lock.json`, a pointer, or a key
-/// under `objects/`, `releases/` or `sources/`.
+/// Whether `obc data` writes `key`: `release.json`, `lock.json`, `planner/next.json`, a pointer, or
+/// a key under `objects/`, `releases/` or `sources/`.
 pub fn owned(key: &str) -> bool {
-    ["release.json", "lock.json"].contains(&key)
+    ["release.json", "lock.json", crate::release::NEXT].contains(&key)
         || crate::release::POINTERS.contains(&key)
         || ["objects/", "releases/", "sources/"].iter().any(|prefix| key.starts_with(prefix))
 }

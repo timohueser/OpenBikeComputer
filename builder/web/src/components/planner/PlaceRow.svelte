@@ -5,12 +5,10 @@
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import type { Place } from '../../lib/planner/editor';
 
-    let { place, detail = '', day = null, selected = false, wrapDetail = false, hovered = false, onHover, onSelect }: {
+    let { place, detail = '', selected = false, wrapDetail = false, hovered = false, onHover, onSelect }: {
         place: Place;
         /** Extra facts after the kind, such as the km mark. */
         detail?: string;
-        /** The predicted day if the rider sleeps here. */
-        day?: { distance: number; ascent: number; over: boolean } | null;
         selected?: boolean;
         wrapDetail?: boolean;
         hovered?: boolean;
@@ -27,9 +25,6 @@
         {#if detail}<span class="detail">{detail}</span>{/if}
         {#if wrapDetail && place.hoursStatus}<OpeningStatus value={place.hoursStatus} />{/if}
     </span>
-    {#if day}
-        <span class="figure" class:over={day.over}>≈ {day.distance.toFixed(1)} km<small>↑ {day.ascent} m</small></span>
-    {/if}
     <Icon name="chevron" size={13} />
 </button>
 
@@ -84,16 +79,4 @@
     .wrapDetail > :global(svg) { margin-top: 8px; }
     .wrapDetail strong { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
     .wrapDetail .name small { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
-    .figure {
-        flex: none;
-        text-align: right;
-        font: 600 14px var(--sans);
-        font-variant-numeric: tabular-nums;
-    }
-    .figure small {
-        margin-top: 2px;
-    }
-    .over {
-        color: var(--coral);
-    }
 </style>

@@ -28,13 +28,14 @@
     import { placeCallout } from "../../lib/planner/callout-placement";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
+    import { divergence } from "../../lib/planner/route-options";
 
     let {
         segments = [], gaps = [], coordinates = [], highlightedCoordinates = [], points = [], selectedId = null, hoveredId = null, callout = null,
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -42,6 +43,9 @@
         signedHovered?: number | null;
         /** The plan draws in a quiet tone and takes no edits, as behind the Routes view. */
         planMuted?: boolean;
+        /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
+         * colours; a letter marks each line where they part. */
+        compare?: { line: Coordinate[]; letter: string } | null;
         /** After each map move and tile load. */
         onIdle?: () => void;
         onSignedRoute?: (id: number) => void;
@@ -244,6 +248,10 @@
         };
     }
 
+    function compareData() {
+        return lineData(compare ? [lineFeature(compare.line)] : []);
+    }
+
     function highlightData() {
         return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
     }
@@ -271,6 +279,9 @@
         map.addLayer({ id: "trip-gap", type: "line", source: "trip", filter: ["==", ["get", "leg"], "gap"], paint: { "line-color": dark ? "#bdb47e" : "#5c5a2e", "line-width": 3, "line-dasharray": [1, 0.8] } });
         map.addLayer({ id: "trip-line", type: "line", source: "trip", filter: ["!", ["in", ["get", "leg"], ["literal", ["gap", "transfer"]]]], layout: round, paint: { "line-color": ["get", "color"], "line-width": 4 } });
         map.addLayer({ id: "trip-transfer", type: "line", source: "trip", filter: ["==", ["get", "leg"], "transfer"], paint: { "line-color": dark ? "#8f8a6e" : "#9a9681", "line-width": 3, "line-dasharray": [2, 2] } });
+        map.addSource("compare", { type: "geojson", data: compareData() });
+        map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
+        map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
         const panel = dark ? "#201f17" : "#ffffff";
@@ -288,13 +299,16 @@
 
     function syncRouteVisibility() {
         if (!map?.getLayer("trip-line")) return;
+        const quiet = planMuted || !!compare;
         for (const id of ["trip-line", "trip-casing", "trip-casing-drawn", "trip-gap", "trip-transfer", "trip-highlight"]) {
-            map.setLayoutProperty(id, "visibility", showRoute && (!planMuted || id === "trip-line") ? "visible" : "none");
+            map.setLayoutProperty(id, "visibility", showRoute && (!quiet || id === "trip-line") ? "visible" : "none");
         }
         // Magenta stays for the selected signed route, so the muted plan takes the amber token.
-        const amber = getComputedStyle(container).getPropertyValue("--amber").trim() || "#f4a81d";
-        map.setPaintProperty("trip-line", "line-color", planMuted ? amber : ["get", "color"]);
+        const token = (name: string, fallback: string) => getComputedStyle(container).getPropertyValue(name).trim() || fallback;
+        map.setPaintProperty("trip-line", "line-color", planMuted ? token("--amber", "#f4a81d") : compare ? token("--route", "#cc2a93") : ["get", "color"]);
         map.setPaintProperty("trip-line", "line-opacity", planMuted ? 0.6 : 1);
+        map.setPaintProperty("trip-line", "line-width", compare ? 3 : 4);
+        map.setPaintProperty("trip-line", "line-dasharray", compare ? [0, 2] : undefined);
     }
 
     function syncTerrainAndOverlays() {
@@ -558,6 +572,18 @@
     $effect(() => { const options = { ...mapOverlays }; const mode = accessMode; if (ready) { overlaySelection = null; overOverlay = false; overlayLayer?.set(options, mode); } });
     $effect(() => { void [showRoute, planMuted]; if (ready) syncRouteVisibility(); });
     $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
+    $effect(() => { void compare; if (ready) (map?.getSource("compare") as GeoJSONSource | undefined)?.setData(compareData()); });
+    const letters: maplibregl.Marker[] = [];
+    $effect(() => {
+        const marks = compare ? [{ text: compare.letter, at: divergence(compare.line, coordinates) }, { text: "A", at: divergence(coordinates, compare.line) }] : [];
+        if (!map) return;
+        for (const marker of letters.splice(0)) marker.remove();
+        for (const { text, at } of marks) {
+            if (!at) continue;
+            const element = Object.assign(document.createElement("div"), { className: `planner-map-letter${text === "A" ? " current" : ""}`, textContent: text });
+            letters.push(new maplibregl.Marker({ element }).setLngLat(at).addTo(map));
+        }
+    });
     $effect(() => { const id = signedHovered; if (ready) signedLayer?.hover(id); });
     const routesShown = $derived(!!signedRoutes);
     $effect(() => { const faded = routesShown; if (ready) overlayLayer?.fade(faded); });
@@ -643,6 +669,12 @@
         waypoint: "M6 21V3m0 1c4-3 8 3 12 0v9c-4 3-8-3-12 0",
         detour: "M8 5 3 10l5 5M3 10h11a5 5 0 0 1 0 10h-2",
     };
+    // The start plays and the finish waves a chequered flag, as in the iPhone planner. A loop has only its start.
+    const endpointIcons = {
+        start: '<path d="M9 6.5v11l9-5.5z" fill="currentColor" />',
+        finish: '<path d="M6 21V4h13v9H6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />'
+            + '<path d="M6 4h4.3v4.5H6zm8.7 0H19v4.5h-4.3zm-4.4 4.5h4.4V13h-4.4z" fill="currentColor" />',
+    };
 
     function routeProgress(marker: maplibregl.Marker) {
         const at = marker.getLngLat();
@@ -668,14 +700,16 @@
             button.draggable = false;
             button.className = `planner-map-pin ${point.kind} ${point.appearance ?? ""}${draggable ? " draggable" : ""}`;
             if (point.color) button.style.setProperty("--pin-color", point.color);
-            button.setAttribute("aria-label", point.label);
+            button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
             button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
             if (point.kind === "place" && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
                 button.append(markerIcon(pointIcons[point.kind]));
+            } else if (point.kind === "start" || point.kind === "finish") {
+                button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" draggable="false">${endpointIcons[point.kind]}</svg>`;
             } else {
-                button.textContent = point.markerLabel ?? (point.kind === "start" ? "A" : point.kind === "finish" ? "B" : point.kind === "night" ? String(nightNumber) : "");
+                button.textContent = point.markerLabel ?? (point.kind === "night" ? String(nightNumber) : "");
             }
             button.addEventListener("click", (event) => { event.stopPropagation(); onPointSelect?.(point.id); });
             button.addEventListener('mouseenter', () => onPointHover?.(point.id));
@@ -743,6 +777,12 @@
             onplan={id => { const at = overlaySelection!.coordinate; overlaySelection = null; onPlanRoute?.(id, at); }}
             onuse={() => { const coordinate = overlaySelection!.coordinate; overlaySelection = null; onEmptyClick?.(coordinate); }} />
     {/if}
+    {#if compare}
+        <div class="compare-key" aria-hidden="true">
+            <span><svg width="26" height="6"><path d="M2 3H24" class="option" /></svg>{compare.letter} · Preview</span>
+            <span><svg width="26" height="6"><path d="M2 3H24" class="current" /></svg>A · Your route</span>
+        </div>
+    {/if}
     {#if overlayStatus && !failure && !overlaySelection}
         <div class="overlay-status" role="status">{overlayStatus}{#if overlayRetry}<button onclick={() => overlayLayer?.retry()}>Retry</button>{/if}</div>
     {/if}
@@ -763,10 +803,18 @@
     .popup-storage { display: none; }
     .overlay-status { position: absolute; left: 12px; bottom: 34px; max-width: calc(100% - 80px); padding: 7px 10px; border-radius: 6px; color: var(--ink); background: var(--panel); font-size: 12px; }
     .overlay-status button { margin-left: 8px; border: 0; background: none; color: var(--link); font: inherit; text-decoration: underline; cursor: pointer; }
+    .compare-key { position: absolute; left: 12px; top: 12px; display: flex; gap: 14px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 12px var(--sans); }
+    .compare-key span { display: flex; align-items: center; gap: 6px; }
+    .compare-key path { stroke-width: 4; stroke-linecap: round; }
+    .compare-key .option { stroke: var(--ink); }
+    .compare-key .current { stroke: var(--route); stroke-width: 3; stroke-dasharray: 0 6; }
     .map-status { position: absolute; bottom: 32px; left: 12px; right: 12px; padding: 10px 12px; background: var(--panel, white); color: var(--ink, #1c1b14); border: 1px solid var(--line-strong, #bcb9aa); font-size: 13px; }
     .map-status button { color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
     :global(.planner-map-pin) { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 2px solid var(--panel, #fff); border-radius: 50%; background: #a4501e; color: #fff; font: 700 13px var(--sans, sans-serif); cursor: pointer; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); }
     :global(.planner-map-pin.draggable) { cursor: grab; }
+    :global(.planner-map-pin:is(.start, .finish)) { color: var(--ink, #1c1b14); background: var(--panel, #fff); border: 1.5px solid var(--ink-soft, #5c5a2e); }
+    :global(.planner-map-pin.finish) { border-radius: 7px; }
+    :global(.planner-map-pin:is(.start, .finish) svg) { width: 16px; height: 16px; }
     :global(.planner-map-pin.via) { width: 20px; height: 20px; background: var(--route, #cc2a93); }
     :global(.planner-map-pin.pass) { width: 22px; height: 22px; background: var(--panel, #fff); border: 3px solid var(--route, #cc2a93); }
     :global(.planner-map-pin.marker) { width: 24px; height: 24px; background: #e7ecdf; border-color: var(--ink-soft, #5c5a2e); color: #1c1b14; }
@@ -788,6 +836,8 @@
     :global(.planner-map-pin.highlighted) { outline: 3px solid var(--ink, #1c1b14); outline-offset: 3px; }
     :global(.planner-map-pin:hover) { filter: brightness(1.08); }
     :global(.planner-map-pin:focus-visible) { outline: 3px solid var(--amber, #f4a81d); outline-offset: 3px; }
+    :global(.planner-map-letter) { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--panel, #fff); background: var(--ink, #1c1b14); font: 700 12px var(--sans, sans-serif); box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
+    :global(.planner-map-letter.current) { background: var(--route, #cc2a93); }
     :global(.planner-map-note) { padding: 2px 8px; border-radius: 6px; color: var(--ink, #1c1b14); background: var(--panel, #fff); font: 600 12px/20px var(--sans, sans-serif); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: var(--planner-shadow, 0 6px 18px rgba(28, 27, 20, .12)); pointer-events: none; }
     :global(.planner-hover-dot) { width: 12px; height: 12px; border: 3px solid var(--panel, #fff); border-radius: 50%; background: var(--ink, #1c1b14); pointer-events: none; }
     :global(.planner-insert-dot) { width: 14px; height: 14px; border: 2.5px solid var(--route, #cc2a93); border-radius: 50%; background: var(--panel, #fff); pointer-events: none; }

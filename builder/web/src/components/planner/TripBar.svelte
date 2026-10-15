@@ -126,7 +126,7 @@
         .ride { grid-column: 1; grid-row: 2; }
         .actions { grid-column: 2; grid-row: 1 / span 2; }
     }
-    @media (max-width: 700px) {
+    @media (max-width: 760px) {
         .trip-bar { grid-template-columns: minmax(0, 1fr); }
         .trip-name h1 { flex: 1; }
         .ride { flex-wrap: wrap; }

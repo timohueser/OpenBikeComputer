@@ -18,7 +18,7 @@ public struct PlannerPreviewSave {
 
 /// The map-first planner uses the same points, search, and drawer interactions in every build.
 public struct PlannerPreviewView: View {
-    private enum Panel: Identifiable { case planning, stops, preferences, days, results, place, routes, route, leg; var id: Self { self } }
+    private enum Panel: Identifiable { case planning, stops, preferences, days, results, place, routes, route, leg, options; var id: Self { self } }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
     @State private var search: PlannerPlaceSearch
@@ -69,6 +69,7 @@ public struct PlannerPreviewView: View {
     @State private var searchRoutesPlace: PlannerPreviewPlace?
     @State private var finder = PlannerRouteFinder()
     @State private var namer = PlannerPlaceNamer()
+    @State private var routeOptions = PlannerRouteOptions()
     @State private var filtersShown = false
     @State private var routeContentHeight: CGFloat = 320
     @State private var routeEnds: (start: String?, finish: String?) = (nil, nil)
@@ -103,7 +104,8 @@ public struct PlannerPreviewView: View {
 
     public var body: some View {
         GeometryReader { geometry in
-            PlannerPreviewMap(coordinates: model.geometry, routeLine: model.routeLine, pins: routesOpen ? finder.pins : pins,
+            PlannerPreviewMap(coordinates: model.geometry, routeLine: model.routeLine,
+                              pins: routesOpen ? finder.pins : panel == .options ? pins + routeOptions.pins(model) : pins,
                               selectedID: panel == .leg ? Self.legPinID : panel == .place ? editingPointID ?? selectedPlace?.id
                                 : panel == .route ? finder.detail.map { "route-\($0.route.id)" } : nil,
                               cursor: cursor, bottomInset: sheetHeight + geometry.safeAreaInsets.bottom,
@@ -115,7 +117,9 @@ public struct PlannerPreviewView: View {
                               release: model.release, source: model.service,
                               hiddenCategories: hiddenCategories, highlightedCategories: highlightedCategories,
                               onPlace: selectResult, onLayerStatus: { layerStatus = $0 },
-                              strokes: routesOpen ? finder.strokes(plan: model.geometry) : planStrokes, focus: routesOpen ? finder.focus : nil,
+                              strokes: routesOpen ? finder.strokes(plan: model.geometry)
+                                : panel == .options ? routeOptions.strokes(model) ?? planStrokes : planStrokes,
+                              focus: routesOpen ? finder.focus : nil,
                               namer: namer, onIdle: nameRouteEnds)
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .topTrailing) { if !layersShown { mapTools.padding(12) } }
@@ -219,9 +223,8 @@ public struct PlannerPreviewView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                     .disabled(!model.canUndo).accessibilityLabel("Undo route change")
-                    .contextMenu {
-                        Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.disabled(!model.canRedo)
-                    }
+                Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(!model.canRedo).accessibilityLabel("Redo route change")
                 Button("Save", action: beginSave)
                     .fontWeight(.semibold).disabled(!model.canSave).accessibilityIdentifier("planner.save")
             }
@@ -249,6 +252,13 @@ public struct PlannerPreviewView: View {
             nameRouteEnds()
         }
         .onChange(of: routesFit) { if routesOpen { fraction = nil; fitRevision += 1 } }
+        .task(id: panel == .options ? model.routingRevision : nil) {
+            guard panel == .options else { return }
+            if model.offersRouteOptions { await routeOptions.load(model) } else { returnToPlanning() }
+        }
+        // A preview never outlives its panel or its plan.
+        .onChange(of: panel) { if panel != .options { routeOptions.cancel() } }
+        .onChange(of: model.routingRevision) { routeOptions.cancel() }
         .task(id: network) {
             attributionShown = network != .none
             guard attributionShown else { return }
@@ -287,6 +297,16 @@ public struct PlannerPreviewView: View {
                 Text("Signed routes near \(finder.start?.name ?? "the start")").font(.headline).lineLimit(1)
                 Spacer(minLength: 4)
                 doneButton(action: returnToPlanning)
+            } else if drawerPosition != .collapsed && panel == .options {
+                Text("Route options").font(.headline).lineLimit(1)
+                Spacer(minLength: 4)
+                if routeOptions.preview != nil {
+                    Button("Cancel") { routeOptions.cancel() }
+                        .foregroundStyle(OBCTheme.tint).frame(minHeight: 44).fixedSize(horizontal: true, vertical: false)
+                        .accessibilityIdentifier("planner.options.cancel")
+                } else {
+                    doneButton(action: returnToPlanning)
+                }
             } else if drawerPosition != .collapsed && panel != .planning {
                 if panel == .place, let results, results.action == nil {
                     // The way back to the list this place came from.
@@ -353,6 +373,12 @@ public struct PlannerPreviewView: View {
                         OBCListRow(icon: "point.topleft.down.to.point.bottomright.curvepath", label: "Route points",
                                    value: model.points.isEmpty ? nil : "\(model.points.count)", showsChevron: true) { show(.stops) }
                             .accessibilityIdentifier("planner.points")
+                        if model.offersRouteOptions {
+                            OBCListRow(icon: "arrow.triangle.branch", label: "Route options",
+                                       value: routeOptions.isCurrent(model) && !routeOptions.items.isEmpty
+                                        ? "\(routeOptions.items.count)" : nil, showsChevron: true) { show(.options) }
+                                .accessibilityIdentifier("planner.options")
+                        }
                         OBCListRow(icon: model.activity == .hiking ? "figure.hiking" : "bicycle", label: "Activity", value: model.activity.name,
                                    showsChevron: true, showsDivider: false) {
                             show(.preferences)
@@ -411,6 +437,8 @@ public struct PlannerPreviewView: View {
                 }.scrollBounceBehavior(.basedOnSize)
                 PlannerRoutePlanFoot(finder: finder, onPlan: planSignedRoute).padding(.horizontal, 16).padding(.vertical, 8)
             }
+        case .options:
+            PlannerRouteOptionsPanel(options: routeOptions, model: model)
         case .stops:
             PlannerPreviewPoints(model: model, onEdit: editPoint, onAdd: startSearch,
                 onReverse: { search.showAction("reverse"); panel = .results },
@@ -582,15 +610,16 @@ public struct PlannerPreviewView: View {
                 ForEach(model.activities, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
             VStack(spacing: 0) {
-                ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in
+                ForEach(Array(PlannerPreviewPreset.allCases.filter { $0.applies(to: model.activity) }.enumerated()), id: \.element) { index, preset in
                     if index > 0 { Divider().overlay(OBCTheme.hairline) }
                     Button { model.setPreset(preset) } label: {
                         HStack {
                             Text(preset.title)
                             Spacer()
-                            if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold) }
+                            if model.preset == preset { Image(systemName: "checkmark").fontWeight(.semibold).accessibilityHidden(true) }
                         }.frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    .accessibilityAddTraits(model.preset == preset ? .isSelected : [])
                 }
             }
         }
@@ -766,7 +795,7 @@ public struct PlannerPreviewView: View {
 
     private func show(_ panel: Panel) {
         layersShown = false; infoShown = false
-        if panel == .stops || panel == .results { self.panel = panel; drawerPosition = .open }
+        if [.stops, .results, .options].contains(panel) { self.panel = panel; drawerPosition = .open }
         else { editor = panel }
     }
 
@@ -928,7 +957,8 @@ public struct PlannerPreviewView: View {
         let old = model.hasRoute ? model.routeTitle : nil, depth = model.undoDepth
         model.planSignedRoute(plan, loop: route.loop, name: route.title,
                               startName: routeEnds.start ?? plan.points.first.flatMap(namer.name(near:)),
-                              finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)))
+                              finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)),
+                              preset: PlannerPreviewPreset(rawValue: route.preference.rawValue) ?? .balanced)
         // The same route planned again is no new undo step.
         if model.undoDepth > depth { replaced = old.map { ($0, model.undoDepth) } }
         returnToPlanning(); fitRevision += 1

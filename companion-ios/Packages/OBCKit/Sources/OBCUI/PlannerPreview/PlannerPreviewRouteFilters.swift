@@ -10,6 +10,7 @@ struct PlannerRouteFiltersPage: View {
     let onClose: () -> Void
     @State private var draft: PlannerRouteFilters
     @State private var count: Int?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(finder: PlannerRouteFinder, activity: RouteActivity, onClose: @escaping () -> Void) {
         self.finder = finder; self.activity = activity; self.onClose = onClose
@@ -82,7 +83,7 @@ struct PlannerRouteFiltersPage: View {
         }
     }
 
-    /// Two number fields; an empty field is no limit.
+    /// Two number fields; an empty field is no limit. Accessibility text sizes stack them.
     private func bounds(_ label: String, unit: String, value: Binding<RouteBounds>, divider: Bool = true) -> some View {
         func field(_ placeholder: String, _ end: WritableKeyPath<RouteBounds, Double?>) -> some View {
             TextField(placeholder, text: Binding(
@@ -92,15 +93,20 @@ struct PlannerRouteFiltersPage: View {
                     value.wrappedValue[keyPath: end] = number.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
                 }))
                 .keyboardType(.numberPad).multilineTextAlignment(.center).font(.body.monospacedDigit())
-                .frame(width: 64, height: 36).background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
+                .padding(.horizontal, 8).frame(minWidth: 64, minHeight: 44).fixedSize(horizontal: true, vertical: false)
+                .background(OBCTheme.fill, in: RoundedRectangle(cornerRadius: OBCTheme.radiusSmall))
                 .accessibilityLabel("\(label) \(placeholder), \(unit)")
         }
+        let stacked = dynamicTypeSize.isAccessibilitySize
+        let pair = stacked ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
         return OBCListRow(label: label, showsDivider: divider) {
             HStack(spacing: 6) {
-                field("from", \.from)
-                Text("–").foregroundStyle(OBCTheme.secondary)
-                field("to", \.to)
-                Text(unit).font(.subheadline).foregroundStyle(OBCTheme.secondary).frame(width: 24, alignment: .leading)
+                pair {
+                    field("from", \.from)
+                    if !stacked { Text("–").foregroundStyle(OBCTheme.secondary).accessibilityHidden(true) }
+                    field("to", \.to)
+                }
+                Text(unit).font(.subheadline).foregroundStyle(OBCTheme.secondary).frame(minWidth: 24, alignment: .leading)
             }
         }
     }
@@ -143,13 +149,21 @@ struct PlannerGradeRange: View {
             }.onEnded { _ in movesLower = nil })
         }
         .frame(height: 40)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Hardest part")
-        .accessibilityValue(PlannerRoutesText.reading(range, mtb: mtb).0)
-        .accessibilityAdjustableAction { direction in
-            let upper = min(3, max(range.lowerBound, range.upperBound + (direction == .increment ? 1 : -1)))
-            range = range.lowerBound...upper
+        .accessibilityChildren {
+            HStack(spacing: 0) {
+                end("Minimum difficulty", lower: true)
+                end("Maximum difficulty", lower: false)
+            }
         }
+    }
+
+    private func end(_ label: String, lower: Bool) -> some View {
+        Rectangle()
+            .accessibilityLabel(label)
+            .accessibilityValue(PlannerRoutesText.grade(lower ? range.lowerBound : range.upperBound, mtb: mtb))
+            .accessibilityAdjustableAction { direction in
+                range = PlannerRouteFilters.step(range, lower: lower, by: direction == .increment ? 1 : -1)
+            }
     }
 }
 #endif

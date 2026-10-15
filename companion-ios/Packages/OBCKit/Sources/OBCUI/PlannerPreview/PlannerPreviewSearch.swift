@@ -230,7 +230,7 @@ struct PlannerOpenBadge: View {
                 .font(.system(.caption2, weight: .semibold))
                 .foregroundStyle(OBCTheme.surface)
                 .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(open ? OBCTheme.day3 : OBCTheme.danger, in: Capsule())
+                .background(open ? OBCTheme.open : OBCTheme.danger, in: Capsule())
                 .accessibilityLabel(open ? "Open now" : "Closed now")
         }
     }
