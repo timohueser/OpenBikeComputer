@@ -2,7 +2,7 @@
     import type { Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import { category, kindLabel } from '../../lib/planner/search/presentation';
-    import { proposalTitle, stopCounts } from '../../lib/planner/stops';
+    import { proposalTitle, stopCounts, suits } from '../../lib/planner/stops';
     import type { Day } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 
@@ -22,7 +22,7 @@
     const [earlier, later] = $derived(pinned ? [undefined, undefined] : nights.neighbours(day.number));
     const found = $derived(nights.found(day.number));
     const icon = $derived(pinned?.placeKind ? ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[category(pinned.placeKind)] ?? 'moon' : 'moon');
-    const towns = $derived(found?.state === 'ready' ? found.stops.length : 0);
+    const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, nights.sleep)).length : 0);
     const wanted = $derived(nights.sleep === 'camping' ? 'campsite' : nights.sleep === 'hotel' ? 'hotel' : 'town with a place to sleep');
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
         : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);

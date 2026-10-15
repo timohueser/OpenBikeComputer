@@ -112,8 +112,8 @@
 {#if !focused}
     {#if nights.sleep === 'camping' && nights.campsites}
         <div class="keep">
-            <p><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>Keep them, or choose each night yourself.</small></p>
-            <button type="button" class="keep-all" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
+            <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>{nights.campsites === 1 ? 'Keep it' : 'Keep them'}, or choose each night yourself.</small></p>
+            <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
         </div>
     {:else}
         <p class="hint">Choose where to sleep each night. Open a day for its stops.</p>

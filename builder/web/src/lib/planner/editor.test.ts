@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -29,6 +29,15 @@ describe('overnight edits', () => {
         expect(orderedRoutePoints(converted).map(point => point.id)).toEqual(['start', 'night-1', 'finish']);
         const straight = setLegMode(converted, 'night-1', 'straight');
         expect(pinNight(straight, undefined, 1, along(.4), 'Other camp').points.find(point => point.id === 'night-1')?.leg).toBe('straight');
+    });
+
+    it('pins several nights on one line, each in the leg it lies in', () => {
+        const trip: Trip = { ...testTrip(), days: 4, routeOrder: ['via'],
+            points: [...testTrip().points, { id: 'via', kind: 'via', label: 'Bern', coordinate: along(.5) }] };
+        const camps = [[1, .3], [2, .6], [3, .8]].map(([night, at]) => ({ night, coordinate: along(at), label: `Camp ${night}`, placeKind: 'campsite' }));
+        const pinned = pinNights(trip, testLine(trip), camps);
+        expect(orderedRoutePoints(pinned).map(point => point.id)).toEqual(['start', 'night-1', 'via', 'night-2', 'night-3', 'finish']);
+        expect(pinned.points.filter(point => point.kind === 'night').map(point => point.placeKind)).toEqual(['campsite', 'campsite', 'campsite']);
     });
 
     it('adds a riding day for a final overnight without exceeding the shared limit', () => {

@@ -489,6 +489,15 @@ export function removeRestDay(trip: Trip, index: number): Trip {
     return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), restNames: restAfter.flatMap((_,i)=>i===index?[]:[trip.restNames?.[i]??'']), target: trip.budget === 'days' ? Math.max(1, trip.target - 1) : trip.target };
 }
 
+/** Pins several nights on one line, the latest first: each new point then lies after the nights still to pin, so they
+ * find their legs among the points before it, which still match the line. */
+export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { night: number; coordinate: Coordinate; label: string; placeKind?: string }[]): Trip {
+    return [...nights].sort((a, b) => b.night - a.night).reduce((next, { night, coordinate, label, placeKind }) => {
+        const pinned = pinNight(next, line, night, coordinate, label);
+        return pinned === next ? next : { ...pinned, points: pinned.points.map(p => p.id === `night-${night}` ? { ...p, placeKind } : p) };
+    }, trip);
+}
+
 export function pinNight(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string, sourceId?: string): Trip {
     if (!Number.isInteger(night) || night < 1 || night >= maxRidingDays) return trip;
     const id = `night-${night}`;
@@ -586,8 +595,8 @@ export function routeLegsAround(trip: Trip, id: string): Trip {
 }
 
 function nearestLegEnd(trip: Trip, line: RoutingLine | undefined, coordinate: Coordinate): string {
-    const { coordinates, stops } = planView(trip, line);
-    const distance = nearestProgress(coordinates, coordinate) * stops.at(-1)!.distance;
+    const { coordinates, stops, total } = planView(trip, line);
+    const distance = nearestProgress(coordinates, coordinate) * total;
     // The start ends no leg, so a point at or before it joins the first leg.
     return (stops.slice(1).find(stop => stop.distance >= distance) ?? stops.at(-1)!).point.id;
 }

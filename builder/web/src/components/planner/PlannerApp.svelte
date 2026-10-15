@@ -36,7 +36,7 @@
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
-        orderedRoutePoints, pinNight, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
+        orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
         type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -265,7 +265,8 @@
     // The route list follows the points of the trip, also while their new line is calculated.
     const stops = $derived(session.stale ? planView(trip, undefined).stops : view.stops);
     const visualStops = $derived(view.stops);
-    const days = $derived(view.days);
+    // A suggested night is not a day end the rider moved.
+    const days = $derived(view.days.map(day => day.split && trip.splits?.[day.number] === undefined ? { ...day, split: false } : day));
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
@@ -303,7 +304,7 @@
         around: night => {
             if (proposals.has(night)) return proposals.get(night);
             const end = days[night - 1].to * total;
-            const stop = readyStops(night).filter(stop => Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
+            const stop = readyStops(night).filter(stop => suits(stop, sleep) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
             return stop && proposal(stop, sleep);
         },
         neighbours: night => {
@@ -842,16 +843,9 @@
     }
 
     function keepCampsites() {
-        // The latest night first: each new point then lies after the nights still to pin, so they find their leg on the line.
-        const kept = [...proposals].filter(([, p]) => p.campsite).sort(([a], [b]) => b - a);
-        let next = trip;
-        for (const [number, { campsite }] of kept) {
-            const pinned = pinNight(next, session.line, number, campsite!.place.coordinate, campsite!.place.label);
-            if (pinned === next) continue;
-            pinned.points.find(p => p.night === number)!.placeKind = campsite!.place.placeKind;
-            next = pinned;
-        }
-        if (next !== trip) commit(next, kept.length === 1 ? `Night ${dayLabels[kept[0][0]]} at ${kept[0][1].campsite!.place.label}` : `${kept.length} campsites kept`);
+        const camps = [...proposals].flatMap(([night, { campsite }]) => campsite ? [{ night, coordinate: campsite.place.coordinate, label: campsite.place.label, placeKind: campsite.place.placeKind }] : []);
+        const next = pinNights(trip, session.line, camps);
+        if (next !== trip) commit(next, camps.length === 1 ? `Night ${dayLabels[camps[0].night]} at ${camps[0].label}` : 'Suggested campsites kept');
     }
 
     function stopChoosing() {
@@ -1210,7 +1204,7 @@
                         {#if calloutKind}
                             {#key selectedId}
                                 <MapCallout
-                                    kind={calloutKind} {trip} line={session.line} {days} {dayLabels} {night} {legMode}
+                                    kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {dayLabels} {night} {legMode}
                                     onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} {detailsError}
                                     onRoutes={config.routes ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
                                         : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
