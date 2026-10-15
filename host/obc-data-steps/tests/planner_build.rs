@@ -54,6 +54,7 @@ fn wiki(store: &Store) -> String {
         inputs: Vec::new(),
         files: vec![LayerFile { path: common.name.clone(), size: common.size, sha256: common.sha256.clone() }],
         scope: None,
+        languages: Vec::new(),
         licence: None,
         attribution: None,
         machine: "test".into(),

@@ -733,6 +733,7 @@ pub(crate) mod tests {
             inputs: Vec::new(),
             files: paths.iter().map(|path| file(path)).collect(),
             scope: None,
+            languages: Vec::new(),
             licence: None,
             attribution: None,
             machine: "test".into(),

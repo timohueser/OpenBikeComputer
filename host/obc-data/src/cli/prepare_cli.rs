@@ -26,12 +26,15 @@ use crate::target::Target;
 pub struct PrepareArgs {
     /// The prepared source, as `data/sources.toml` names it.
     id: String,
-    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. Not for `prod`.
+    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki` accepts a region.
     #[arg(long, conflicts_with = "bbox")]
     region: Option<String>,
-    /// Only a box: west,south,east,north in degrees. Not for `prod`.
+    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki` accepts a region.
     #[arg(long = "box", allow_hyphen_values = true)]
     bbox: Option<String>,
+    /// Wiki article languages, joined by commas; all supported languages by default.
+    #[arg(long, value_delimiter = ',', num_args = 1)]
+    languages: Vec<String>,
     /// The target that gets the version.
     #[arg(long, default_value = PROD)]
     to: String,
@@ -61,6 +64,7 @@ pub(super) struct Asked<'a> {
     /// `--region` and `--box`.
     pub scope: (Option<&'a str>, Option<&'a str>),
     pub expect: Option<&'a str>,
+    pub languages: &'a [String],
 }
 
 /// The review of a prepare. Its id names the decisions, so `--expect ID` starts a prepare only when
@@ -68,8 +72,8 @@ pub(super) struct Asked<'a> {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PrepareReview {
     /// The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-    /// version, the format, the revision, the scope, `publish_text` and the source, version and
-    /// params of each input.
+    /// version, the format, the revision, the scope, the languages, `publish_text` and each planned
+    /// input, including archive paths, URLs, sizes and object identities.
     pub id: String,
     pub source: String,
     pub target: String,
@@ -85,6 +89,7 @@ pub struct PrepareReview {
     pub revision: u32,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
+    pub languages: Vec<String>,
     pub inputs: Vec<PreparedInput>,
     /// The files of the version, at most; `null` when the producer cannot tell before the run.
     pub files: Option<u64>,
@@ -108,8 +113,10 @@ pub struct PreparedInput {
     /// `null` for the newest version upstream.
     pub version: Option<String>,
     pub params: Vec<(String, String)>,
-    /// The size of its files that the store records; `null` when the store has no record.
+    /// Input bytes from local files, upstream metadata or the store; `null` when unknown.
     pub bytes: Option<u64>,
+    /// Archive bytes absent on this machine; null for other source inputs.
+    pub download_bytes: Option<u64>,
 }
 
 /// Estimates from the newest version that the target lists; `null` without one.
@@ -151,8 +158,12 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     super::api::writable(&args.to, &target, true)?;
     let (http, today) = (Http::new(), crate::date::format(crate::date::today()));
     let context = Context { root, store: &store, http: &http, prepared };
-    let asked =
-        Asked { id: &args.id, scope: (args.region.as_deref(), args.bbox.as_deref()), expect: args.expect.as_deref() };
+    let asked = Asked {
+        id: &args.id,
+        scope: (args.region.as_deref(), args.bbox.as_deref()),
+        expect: args.expect.as_deref(),
+        languages: &args.languages,
+    };
     let print = |done: &Done| {
         println!(
             "{}@{} on {}: {} files, {}, manifest {}; this run uploaded {}",
@@ -174,6 +185,9 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     review.args = ["source", "prepare", &args.id, "--to", &args.to].map(String::from).into();
     args.region.iter().for_each(|region| review.args.extend(["--region".into(), region.clone()]));
     args.bbox.iter().for_each(|bbox| review.args.extend(["--box".into(), bbox.clone()]));
+    if !review.languages.is_empty() {
+        review.args.extend(["--languages".into(), review.languages.join(",")]);
+    }
     review.args.extend(["--expect".into(), review.id.clone()]);
     if args.dry_run {
         return print_review(&review, json);
@@ -195,6 +209,7 @@ struct Planned<'a> {
     scope: Option<Scope>,
     /// Whether the run starts a new version, and resumes none.
     fresh: bool,
+    made: prepared::Plan,
 }
 
 /// Find the producer of the source, its version and its scope, and review the work.
@@ -223,7 +238,7 @@ fn plan<'a>(
     update_cli::select(root, asked.scope, &mut settings)?;
     let scope = (!settings.region.is_empty())
         .then(|| Scope { region: settings.region.clone(), definitions: settings.definitions.clone() });
-    if scope.is_some() && name == PROD {
+    if scope.is_some() && name == PROD && id != "wiki" {
         return Err(Code::Usage
             .error(format!(
                 "a version of a region or a box is not for `{PROD}`, whose versions every target reads; nothing changed"
@@ -232,6 +247,7 @@ fn plan<'a>(
                 "Prepare the region for another target, such as `--to local`, or all of `{id}` for `{PROD}`."
             )));
     }
+    let languages = producer.languages(asked.languages).map_err(|e| Code::Usage.error(e))?;
     let listed = prepared::versions(target, id)?;
     let newest = listed.iter().map(|listed| listed.version.as_str()).max();
     // A run never writes a key of a complete version. When the manifest of a stopped version is
@@ -254,9 +270,33 @@ fn plan<'a>(
             .error(format!("{id}@{version} is complete on `{name}`; nothing changed"))
             .fix("The next version starts on the next day, by UTC."));
     }
-    let made = producer.plan(&source, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
+    let plan_path = prepared::job_dir(store, name, id, &version).join("state/plan.json");
+    let made: prepared::Plan = if !fresh && plan_path.is_file() {
+        let selection = plan_path.parent().unwrap().parent().unwrap().join("selection.json");
+        let expected = serde_json::to_vec(&(&scope, &languages)).expect("selection serializes");
+        if std::fs::read(selection).map_err(|e| e.to_string())? != expected {
+            return Err(Code::Usage.error(
+                "a run for another region or language selection stopped; resume it with its original selection",
+            ));
+        }
+        serde_json::from_slice(&std::fs::read(plan_path).map_err(|e| e.to_string())?)
+            .map_err(|e| Code::InvalidData.error(e.to_string()))?
+    } else {
+        producer
+            .plan(&prepared::Planning { store, http: context.http }, &source, scope.as_ref(), &languages)
+            .map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?
+    };
     let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
-    for (wanted, known) in made.inputs {
+    for input in &made.inputs {
+        let (wanted, known) = (&input.wanted, input.bytes);
+        let download_bytes = input.archive.as_ref().map(|archive| {
+            if std::fs::metadata(&archive.path).is_ok_and(|m| Some(m.len()) == known) {
+                0
+            } else {
+                known.unwrap_or(0)
+            }
+        });
+        store_bytes += download_bytes.unwrap_or(0);
         let bytes = match &wanted.version {
             // A file on this machine that the producer reads in place, such as a dump.
             _ if known.is_some() => known,
@@ -281,18 +321,27 @@ fn plan<'a>(
             let version = wanted.version.as_deref().unwrap_or("newest");
             unknown.push(format!("{}@{version}", wanted.source));
         }
-        inputs.push(PreparedInput { source: wanted.source, version: wanted.version, params: wanted.params, bytes });
+        inputs.push(PreparedInput {
+            source: wanted.source.clone(),
+            version: wanted.version.clone(),
+            params: wanted.params.clone(),
+            bytes,
+            download_bytes,
+        });
     }
     let journaled = if fresh { Vec::new() } else { journaled };
     let done = Downloads { files: journaled.len() as u64, bytes: journaled.iter().map(|file| file.size).sum() };
     let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
     if let Some(newest) = listed.last() {
         let manifest = prepared::manifest(target, id, &newest.version)?;
-        (cost.wall_ms, cost.peak_rss_bytes) =
-            manifest.map_or((None, None), |m| (Some(m.cost.wall_ms), m.cost.peak_rss_bytes));
-        cost.store_bytes += newest.bytes;
-        cost.upload_bytes = Some(newest.bytes.saturating_sub(done.bytes));
+        if let Some(manifest) = manifest.filter(|m| m.scope == scope && m.languages == languages) {
+            cost.wall_ms = Some(manifest.cost.wall_ms);
+            cost.peak_rss_bytes = manifest.cost.peak_rss_bytes;
+            cost.store_bytes += newest.bytes;
+            cost.upload_bytes = Some(newest.bytes.saturating_sub(done.bytes));
+        }
     }
+
     let mut machine = MachineCheck::this(store)?;
     if let Some((peak, memory)) = cost.peak_rss_bytes.zip(machine.memory_bytes).filter(|(peak, memory)| peak > memory) {
         machine.refusals.push(format!(
@@ -302,6 +351,14 @@ fn plan<'a>(
         ));
     }
     machine.refusals.extend(update_cli::disk_refusal(&machine, cost.store_bytes));
+    let archive_bytes = inputs.iter().filter_map(|input| input.download_bytes).sum();
+    let directories: BTreeSet<_> =
+        made.inputs.iter().filter_map(|input| input.archive.as_ref()?.path.parent()).collect();
+    for directory in directories {
+        if let Err(reason) = crate::store::check_free(directory, archive_bytes) {
+            machine.refusals.push(reason);
+        }
+    }
     for read in std::iter::once(id).chain(inputs.iter().map(|input| input.source.as_str())) {
         let credential = sources.iter().find(|source| source.id == read).and_then(|s| s.credential.as_ref());
         if let Some(credential) = credential.filter(|credential| !credential.present()) {
@@ -316,8 +373,9 @@ fn plan<'a>(
         "format": producer.format(),
         "revision": producer.revision(),
         "scope": scope,
+        "languages": languages,
         "publish_text": source.publish_text,
-        "inputs": inputs.iter().map(|input| (&input.source, &input.version, &input.params)).collect::<Vec<_>>(),
+        "inputs": made.inputs,
     });
     let canonical = serde_json::to_vec(&crate::engine::sorted(decisions)).expect("the decisions are JSON");
     let review = PrepareReview {
@@ -330,6 +388,7 @@ fn plan<'a>(
         format: producer.format(),
         revision: producer.revision(),
         scope: scope.clone(),
+        languages,
         inputs,
         files: made.files,
         publish_text: source.publish_text,
@@ -339,7 +398,7 @@ fn plan<'a>(
         stale,
         args: Vec::new(),
     };
-    Ok(Planned { review, producer, source, sources, scope, fresh })
+    Ok(Planned { review, producer, source, sources, scope, fresh, made })
 }
 
 /// The layers of each target that read a version of `id` older than `version`. Every target reads
@@ -419,7 +478,7 @@ fn make(
     planned: Planned,
     (run, held): (&mut Run, &Held),
 ) -> Result<Done, Error> {
-    let Planned { review, producer, source, sources, scope, fresh } = planned;
+    let Planned { review, producer, source, sources, scope, fresh, made } = planned;
     let (id, version) = (source.id.as_str(), review.version.as_str());
     let (label, again) = (format!("source `{id}` on `{name}`"), format!("obc data source prepare {id} --to {name}"));
     let lock = (label.as_str(), again.as_str());
@@ -469,7 +528,9 @@ fn make(
         target: (name, target),
     };
     let (files, inputs, uploaded) = {
-        let mut job = Job::open(opening, (id, version), scope.clone(), run)?;
+        let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
+        crate::store::write_atomic(&job.state.join("plan.json"), &serde_json::to_vec(&made).expect("plan serializes"))?;
+        job.plan = made;
         producer.prepare(&mut job).map_err(|e| Code::RunFailed.error(format!("{id}@{version}: {e}")))?;
         (job.files().cloned().collect::<Vec<_>>(), job.reads(), job.uploaded)
     };
@@ -485,6 +546,7 @@ fn make(
         inputs,
         files,
         scope,
+        languages: review.languages.clone(),
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
         machine: crate::machine(),
@@ -504,6 +566,9 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     let mut rows = Vec::new();
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
+    if !review.languages.is_empty() {
+        rows.push(vec!["  languages".into(), review.languages.join(", ")]);
+    }
     rows.push(vec!["  version".into(), format!("format {}, revision {}", review.format, review.revision)]);
     if let Some(files) = review.files {
         rows.push(vec!["  files".into(), format!("up to {files}")]);
@@ -519,7 +584,10 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
         rows.push(vec!["  list".into(), "the manifest is on the target: the run only lists the version".into()]);
     }
     for input in &review.inputs {
-        let size = input.bytes.map_or("size unknown".into(), runs::bytes);
+        let mut size = input.bytes.map_or("size unknown".into(), runs::bytes);
+        if let Some(download) = input.download_bytes {
+            size += &if download == 0 { " cached".into() } else { format!(" to download ({})", runs::bytes(download)) };
+        }
         let version = input.version.as_deref().unwrap_or("newest");
         rows.push(vec!["  input".into(), format!("{} {}", runs::fetched(&input.source, version, &input.params), size)]);
     }
@@ -616,8 +684,14 @@ mod tests {
             1
         }
 
-        fn plan(&self, _: &Source, _: Option<&Scope>) -> Result<prepared::Plan, String> {
-            Ok(prepared::Plan { inputs: vec![(head(), None)], files: Some(3) })
+        fn plan(
+            &self,
+            _: &prepared::Planning,
+            _: &Source,
+            _: Option<&Scope>,
+            _: &[String],
+        ) -> Result<prepared::Plan, String> {
+            Ok(prepared::Plan { inputs: vec![(head(), None).into()], files: Some(3) })
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {
@@ -946,6 +1020,65 @@ mod tests {
         prepare(&fixture, "local", "2026-10-01", boxed()).unwrap();
         let manifest = prepared::manifest(&local, "sample", "2026-10-01").unwrap().unwrap();
         assert_eq!(manifest.scope.map(|scope| scope.region), Some("box".into()));
+    }
+
+    #[test]
+    fn a_regional_wiki_review_and_resume_pin_the_languages() {
+        struct Wiki;
+        impl Prepared for Wiki {
+            fn name(&self) -> &'static str {
+                "wiki"
+            }
+            fn format(&self) -> u32 {
+                1
+            }
+            fn revision(&self) -> u32 {
+                1
+            }
+            fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
+                Ok(requested.to_vec())
+            }
+            fn plan(
+                &self,
+                context: &prepared::Planning,
+                source: &Source,
+                scope: Option<&Scope>,
+                languages: &[String],
+            ) -> Result<prepared::Plan, String> {
+                Sample(1).plan(context, source, scope, languages)
+            }
+            fn prepare(&self, job: &mut Job) -> Result<(), String> {
+                Sample(1).prepare(job)
+            }
+        }
+        let (fixture, prod, _) = setup("wiki-selection");
+        let root = fixture.root();
+        let registry = root.join("data/sources.toml");
+        fs::write(&registry, fs::read_to_string(&registry).unwrap().replace("id = \"sample\"", "id = \"wiki\""))
+            .unwrap();
+        let http = Http::new();
+        let context = Context { root: &root, store: &fixture.store, http: &http, prepared: &[&Wiki] };
+        let languages = ["en".into(), "de".into()];
+        let asked = Asked { id: "wiki", scope: (None, Some("7,47,8,48")), languages: &languages, ..Default::default() };
+        let review = plan(&context, ("prod", &prod), &asked, "2026-10-01").unwrap().review;
+        assert_eq!(review.languages, languages);
+        assert_eq!(review.scope.as_ref().unwrap().region, "box");
+        let english = Asked { languages: &languages[..1], ..asked };
+        let other = plan(&context, ("prod", &prod), &english, "2026-10-01").unwrap().review;
+        assert_ne!(review.id, other.id);
+        assert!(check(&other, Some(&review.id)).is_err());
+        write(&root.join("fail-c.txt"), "");
+        let mut run = Run::create(&fixture.store, ["source", "prepare", "wiki"]).unwrap();
+        assert!(super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).is_err());
+        fs::remove_file(root.join("fail-c.txt")).unwrap();
+        let error = super::prepare(&context, ("prod", &prod), &english, "2026-10-01", &mut run).unwrap_err();
+        assert!(error.message.contains("another region or language selection"), "{}", error.message);
+        super::prepare(&context, ("prod", &prod), &asked, "2026-10-01", &mut run).unwrap();
+        let manifest = prepared::manifest(&prod, "wiki", "2026-10-01").unwrap().unwrap();
+        assert_eq!(manifest.languages, languages);
+        assert_eq!(manifest.scope, review.scope);
+        let changed = plan(&context, ("prod", &prod), &english, "2026-10-02").unwrap().review;
+        assert_eq!(changed.cost.wall_ms, None, "another selection has no measured cost");
     }
 
     #[test]

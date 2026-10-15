@@ -276,6 +276,7 @@ fn get(
             .map(|file| file.sha256.as_str())
             .or(version.filter(|_| source.version == VersionScheme::Digest)),
         modified_by,
+        ..Expect::default()
     };
     eprintln!("obc data: fetching {url}");
     let got = http.download(store, url, &expect)?;
@@ -550,6 +551,52 @@ pub(crate) mod tests {
         assert_eq!((file.sha256.as_str(), file.size), (sha256_hex(&body).as_str(), 100_000));
         assert_eq!(hash_file(&store.object(&file.sha256)).unwrap().0, file.sha256);
         assert_eq!(store.snapshot("land", "2026-10-05").unwrap().as_ref(), Some(&snapshot));
+    }
+
+    #[test]
+    fn archive_authorization_stays_on_its_configured_origin() {
+        let (url, log) = serve(|_, _| whole(b"ok"));
+        let origin = url.split("/data/").next().unwrap();
+        let client = quick().with_bearer(origin, "private-token".into());
+        client.text(&url, "text/plain").unwrap();
+        assert_eq!(header(&log.lock().unwrap()[0], "authorization"), Some("Bearer private-token"));
+        let (elsewhere, seen) = serve(|_, _| whole(b"elsewhere"));
+        client.text(&elsewhere, "text/plain").unwrap();
+        assert!(header(&seen.lock().unwrap()[0], "authorization").is_none());
+    }
+
+    #[test]
+    fn an_archive_resumes_a_stopped_run_and_enforces_its_reviewed_identity() {
+        let scratch = Scratch::new("archive-download");
+        let path = scratch.0.join("wiki.json.gz");
+        let (url, log) = serve(|_, _| {
+            let mut reply = whole(b"def");
+            reply.status = 206;
+            reply.headers.push(("Content-Range", "bytes 3-5/6".into()));
+            reply
+        });
+        std::fs::write(path.with_extension("part"), b"abc").unwrap();
+        std::fs::write(path.with_extension("validator"), b"\"v1\"").unwrap();
+        let expect = Expect { etag: Some("\"v1\""), bytes: Some(6), ..Expect::default() };
+        let result = quick().download_to(&path, &url, &expect).unwrap();
+        assert_eq!(std::fs::read(&result.object).unwrap(), b"abcdef");
+        assert_eq!(result.sha256, sha256_hex(b"abcdef"));
+        assert!(!path.with_extension("part").exists());
+        assert_eq!(header(&log.lock().unwrap()[0], "range"), Some("bytes=3-"));
+        assert_eq!(header(&log.lock().unwrap()[0], "if-match"), Some("\"v1\""));
+        quick().download_to(&path, &url, &expect).unwrap();
+        assert_eq!(log.lock().unwrap().len(), 1, "a completed archive is not downloaded again");
+        let wrong_digest = Expect { sha256: Some("wrong"), ..expect };
+        assert!(quick().download_to(&path, &url, &wrong_digest).unwrap_err().contains("SHA-256"));
+
+        let changed = scratch.0.join("changed.gz");
+        let (url, _) = serve(|_, _| whole(b"abcdef"));
+        let wrong_identity = Expect { etag: Some("\"different\""), ..expect };
+        assert!(quick().download_to(&changed, &url, &wrong_identity).unwrap_err().contains("changed since review"));
+        assert!(!changed.exists());
+        let wrong_size = Expect { bytes: Some(5), ..expect };
+        assert!(quick().download_to(&changed, &url, &wrong_size).unwrap_err().contains("size changed"));
+        assert!(!changed.exists());
     }
 
     #[test]

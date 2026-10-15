@@ -33,6 +33,11 @@ holds the facts of every OSM subject in geographic shards, so a region reads onl
 its cells and asks Wikimedia nothing. Exact OSM links identify subjects. A new version of `wiki`
 rebuilds the content and what reads it; a new layer revision rebuilds outputs from the same shards.
 
+A prepared wiki version can cover one region and selected article languages. This limits photo
+acquisition to the subjects of that region. Large input archives still cover the world, but
+preparation reads them in place and retains the selected content. The version records these
+choices so another machine can identify what it contains.
+
 The device keeps short articles, photos and credits in its map. Planner detail views keep
 articles and source links, then load credited photos online. Routing packages carry photo
 references without image payloads. An unavailable photo leaves useful text available.

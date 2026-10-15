@@ -82,6 +82,7 @@ fn wiki(store: &Store, dir: &Path) -> String {
         inputs: Vec::new(),
         files: vec![LayerFile { path: "common.tar.zst".into(), size, sha256: sha256.clone() }],
         scope: None,
+        languages: Vec::new(),
         licence: None,
         attribution: None,
         machine: "test".into(),

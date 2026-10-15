@@ -44,7 +44,7 @@
 
 {#if route.prepare && id}
     {#key `${id}|${route.prepare}`}
-        <Prepare {id} to={route.prepare} kind={targets.find((target) => target.target === route.prepare)?.kind ?? null} />
+        <Prepare {id} to={route.prepare} region={targets.find((target) => target.target === route.prepare)?.region ?? ""} kind={targets.find((target) => target.target === route.prepare)?.kind ?? null} />
     {/key}
 {:else if id}
     <div class="title">

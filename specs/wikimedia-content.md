@@ -147,14 +147,21 @@ Both projections derive from the same selected inputs and policy.
 
 ## The `wiki` source
 
-The prepared source `wiki` ([obc-data](obc-data.md#wiki)) holds the compact facts of every OSM
-subject: an object with a `wikidata` or `wikipedia` tag. Its version has these files:
+The prepared source `wiki` ([obc-data](obc-data.md#wiki)) holds the compact facts of each OSM
+subject in the selected coverage: an object with a `wikidata` or `wikipedia` tag. Its version has these files:
 
 | Path | Holds |
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
 | `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
 | `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
+
+The version manifest records its coverage and article languages. Regional preparation selects
+subjects from the regional OSM extract before it asks Commons. An article in an excluded
+language is a `missing` fact with `reason: "language_not_prepared"`. This means that the version
+excludes it, not that Wikipedia lacks it. It supplies no text or lead-image candidate. Subject
+identity still uses the supported-language order; incomplete canonical identity proof remains
+unresolved work.
 
 A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
 content of a step names them. A fact that two shards need is in both, with the same bytes. A
