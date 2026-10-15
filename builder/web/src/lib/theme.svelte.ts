@@ -1,6 +1,7 @@
 const KEY = "obc-theme";
 type Theme = "light" | "dark";
-export const appearance = $state({ dark: false });
+// The page's inline script sets the theme before the first paint, so the store starts from it.
+export const appearance = $state({ dark: typeof document !== "undefined" && document.documentElement.dataset.theme === "dark" });
 let preference: Theme | null = null;
 
 function savedTheme(): Theme | null {

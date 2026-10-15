@@ -23,6 +23,8 @@
     let sleep = $state<Sleep>('either');
     let form = $state<HTMLFormElement>();
     let trigger = $state<HTMLButtonElement>();
+    // The button that opened the form, such as a day's Edit target; focus returns to it while it is still shown.
+    let opener: HTMLElement | null = null;
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
@@ -38,6 +40,7 @@
         if (!editing) return;
         // The form starts from the trip once per opening; later trip edits must not reset what the rider typed.
         untrack(() => {
+            opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             budget = trip.budget;
             target = trip.target;
             limit = trip.limit;
@@ -60,7 +63,7 @@
     async function close() {
         editing = false;
         await tick();
-        trigger?.focus();
+        (opener?.isConnected ? opener : trigger)?.focus();
     }
 </script>
 
