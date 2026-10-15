@@ -6,7 +6,9 @@ import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
 
-export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
+/** The surfaces in the order of `surface_m` (`specs/route-api.md`). */
+export const SURFACES = ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'] as const;
+export type Surface = typeof SURFACES[number];
 
 export interface RouteTotals {
     distance_m: number;

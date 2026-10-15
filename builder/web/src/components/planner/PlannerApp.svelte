@@ -13,6 +13,8 @@
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
     import WaysList from './WaysList.svelte';
+    import CompareProfile from './CompareProfile.svelte';
+    import { optionLetter } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -23,7 +25,7 @@
     import { addDays, type DataLayer } from '../../lib/planner/layers/data-layer';
     import type { OverlayOptions } from '../../lib/planner/route-overlays';
     import SignedRoutes from './SignedRoutes.svelte';
-    import { ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
+    import { presetName, ridingProfiles, type BikeType } from '../../lib/planner/riding-profiles';
     import { RouteFinder, recordLine, type RouteStart } from '../../lib/planner/route-finder.svelte';
     import { planTrip, routeBase, type RoutePlan } from '../../lib/planner/signed-route-plan';
     import type { CatalogRecord } from '../../lib/planner/signed-routes';
@@ -79,8 +81,9 @@
     const currentRoute = $derived(session.stale ? undefined : shown.line);
     const visualRoute = $derived(shown.line);
     const routingStatus = $derived(!hasEndpoints ? 'Choose a start and finish' : session.routeError || 'Calculating route…');
-    function pickRoute(route: EngineRoute) {
-        if (session.pickAlternative(route)) afterEdit('Route preference changed');
+    function useOption(route: EngineRoute, name: string) {
+        const preset = presetName(route.profile);
+        if (session.pickAlternative(route)) afterEdit(name === preset ? `Using ${preset}` : `Using ${name} · ${preset} preset`);
     }
     $effect(() => {
         if (fitPlan && currentRoute && map) {
@@ -93,9 +96,16 @@
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
     let list = $state<'plan' | 'ways'>('plan');
-    const needsAlternatives = $derived(!!session.line?.primary && !session.alternatives);
-    // A label edit keeps the line, so it does not cancel the request.
-    $effect(() => { if (list === 'ways' && !session.dragging && session.line) return untrack(() => session.findAlternatives()); });
+    const options = $derived(session.routeOptions);
+    // A label edit keeps the line, so it does not request the options again.
+    $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
+    // The previewed option and the current route; the map and the drawer show them until the rider leaves the list.
+    const comparison = $derived.by(() => {
+        const option = session.compared;
+        if (!option || options.state !== 'ready') return null;
+        return { option, current: options.routes[0], letter: optionLetter(options.routes.indexOf(option)) };
+    });
+    $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
     let searching = $state(false);
     let planEditing = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
@@ -932,6 +942,7 @@
             else undo();
         }
         if (event.key === 'Escape') {
+            session.previewOption(null);
             if (!selectedId && !picking && !drawing && focusedDay) showAllDays();
             clearSelection();
             drawing = null;
@@ -1026,12 +1037,12 @@
                 {#if !focusedDay && visualRoute}
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: session.alternatives ? `Route options · ${session.alternatives.routes.length}` : 'Route options' }]} />
+                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: options.state === 'ready' && options.routes.length > 1 ? `Route options · ${options.routes.length - 1}` : 'Route options' }]} />
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if list === 'ways'}
-                        <WaysList status={needsAlternatives ? session.alternativesStatus || 'Open Route options to find alternatives.' : ''} routes={session.alternatives?.routes ?? []} choiceId={session.alternatives?.choice ?? ''} onPick={pickRoute} />
+                        <WaysList {options} previewId={session.compared?.id ?? null} places={session.optionPlaces} onPreview={id => session.previewOption(id)} onApply={useOption} onRetry={() => session.findAlternatives()} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={shown.trip} line={visualRoute} {itinerary} {days} overnightNote={overnightContext ? overnightNote : ''} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
@@ -1062,7 +1073,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.geometry, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
@@ -1130,6 +1141,8 @@
                 <Profile lineData={finder.preview} walking={bike === 'hiking'} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} total={previewKm} {theme}
                     days={[{ number: 1, from: 0, to: 1, pinned: undefined }]} dayLabels={{ 1: 1 }}
                     activeNight={0} band={null} onNight={() => {}} onDayEndDrag={() => {}} onHover={() => {}} />
+            {:else if comparison}
+                <CompareProfile option={comparison.option} current={comparison.current} letter={comparison.letter} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
             {:else if routesOpen || !visualRoute}
                 <section class="empty-profile" aria-label="Elevation profile" style:height={`${drawerHeight}px`}>
                     <DrawerTitle title="Elevation & surface" open={profileOpen} onToggle={() => profileOpen = !profileOpen} />
