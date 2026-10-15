@@ -18,8 +18,11 @@ pub struct Expect<'a> {
     /// The latest `Last-Modified` day, `YYYY-MM-DD`. A response without the header counts as
     /// modified today.
     pub modified_by: Option<&'a str>,
+    pub etag: Option<&'a str>,
+    pub bytes: Option<u64>,
 }
 
+#[derive(Debug)]
 pub struct Downloaded {
     pub object: PathBuf,
     pub sha256: String,
@@ -76,6 +79,7 @@ fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
 
 pub struct Http {
     agent: ureq::Agent,
+    bearer: Option<(String, String)>,
     backoff: Duration,
     bytes_per_second: Option<u64>,
     requests: AtomicU64,
@@ -110,6 +114,7 @@ impl Http {
             .build();
         Self {
             agent: config.into(),
+            bearer: None,
             backoff: Duration::ZERO,
             bytes_per_second: None,
             requests: AtomicU64::new(0),
@@ -136,11 +141,68 @@ impl Http {
             .build();
         Self {
             agent: config.into(),
+            bearer: None,
             backoff,
             bytes_per_second: None,
             requests: AtomicU64::new(0),
             transferred: AtomicU64::new(0),
         }
+    }
+
+    /// Authorize only requests to this HTTPS origin. Redirects strip authorization by default.
+    pub fn with_bearer(mut self, origin: &str, token: String) -> Self {
+        self.bearer = Some((format!("{}/", origin.trim_end_matches('/')), token));
+        self
+    }
+
+    fn authorize(
+        &self,
+        url: &str,
+        request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        match &self.bearer {
+            Some((origin, token)) if url.starts_with(origin) => {
+                request.header("authorization", format!("Bearer {token}"))
+            }
+            _ => request,
+        }
+    }
+
+    /// Size and strong object identity from headers only.
+    pub fn headers(&self, url: &str) -> Result<(u64, Option<String>), String> {
+        let response = self
+            .authorize(url, self.agent.head(url))
+            .config()
+            .timeout_global(Some(SMALL))
+            .build()
+            .call()
+            .map_err(|e| no_answer("HEAD", url, e))?;
+        if !response.status().is_success() {
+            return Err(format!("HEAD {url}: HTTP {}", response.status().as_u16()));
+        }
+        let bytes = header(&response, "content-length")
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| format!("HEAD {url}: no Content-Length"))?;
+        let etag = header(&response, "etag").filter(|v| !v.starts_with("W/"));
+        Ok((bytes, etag))
+    }
+
+    /// A small JSON POST. Errors omit the response body, which can contain credentials.
+    pub fn post_json(&self, url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+        let mut response = self
+            .agent
+            .post(url)
+            .header("content-type", "application/json")
+            .config()
+            .timeout_global(Some(SMALL))
+            .max_redirects(0)
+            .build()
+            .send(body)
+            .map_err(|_| format!("POST {url}: request failed"))?;
+        if !response.status().is_success() {
+            return Err(format!("POST {url}: HTTP {}", response.status().as_u16()));
+        }
+        response.body_mut().read_to_vec().map_err(|_| format!("POST {url}: invalid response"))
     }
 
     /// Bound the transfer rate of this serial downloader.
@@ -181,7 +243,12 @@ impl Http {
 
     /// The status and the body of a small answer, also of one that is no success.
     pub fn answer(&self, url: &str, accept: &str) -> Result<(u16, Vec<u8>), String> {
-        let request = self.agent.get(url).header("accept", accept).config().timeout_global(Some(SMALL)).build();
+        let request = self
+            .authorize(url, self.agent.get(url))
+            .header("accept", accept)
+            .config()
+            .timeout_global(Some(SMALL))
+            .build();
         let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
         let status = response.status().as_u16();
         match response.body_mut().read_to_vec() {
@@ -219,11 +286,44 @@ impl Http {
         }
         let part = store.partial(&format!("{}.part", key(url)));
         let validator = store.partial(&format!("{}.validator", key(url)));
-        let partial = part.parent().unwrap_or(store.root());
+        let (sha256, size) = self.transfer(url, &part, &validator, expect)?;
+        let object = store.insert(&part, &sha256)?;
+        Ok(Downloaded { object, sha256, size })
+    }
+
+    /// Download an archive in place. Keep its partial file across stopped runs.
+    pub fn download_to(&self, path: &Path, url: &str, expect: &Expect) -> Result<Downloaded, String> {
+        let parent = path.parent().ok_or("archive has no parent directory")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .map_err(|e| e.to_string())?;
+        lock.lock().map_err(|e| e.to_string())?;
+        if path.is_file() {
+            let (sha256, size) = store::hash_file(path)?;
+            if expect.bytes.is_some_and(|want| want != size) || expect.sha256.is_some_and(|want| want != sha256) {
+                return Err("cached archive differs from the expected size or SHA-256".into());
+            }
+            return Ok(Downloaded { object: path.into(), sha256, size });
+        }
+        let part = path.with_extension("part");
+        let validator = path.with_extension("validator");
+        let have = fs::metadata(&part).map_or(0, |m| m.len());
+        store::check_free(parent, expect.bytes.unwrap_or(0).saturating_sub(have))?;
+        let (sha256, size) = self.transfer(url, &part, &validator, expect)?;
+        fs::rename(&part, path).map_err(|e| e.to_string())?;
+        Ok(Downloaded { object: path.into(), sha256, size })
+    }
+
+    fn transfer(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(String, u64), String> {
+        let partial = part.parent().ok_or("download path has no parent")?;
         fs::create_dir_all(partial).map_err(|e| format!("{}: {e}", partial.display()))?;
         let mut failures = 0;
         loop {
-            let (why, grew, delay) = match self.attempt(url, &part, &validator, expect) {
+            let (why, grew, delay) = match self.attempt(url, part, validator, expect) {
                 Ok(()) => break,
                 Err(Failure::Final(why)) => return Err(why),
                 Err(Failure::Retry(why)) => (why, false, Duration::ZERO),
@@ -237,14 +337,17 @@ impl Http {
             eprintln!("obc data: {why} — retrying");
             std::thread::sleep(delay.max(self.backoff * 2u32.pow(failures - 1)));
         }
-        let _ = fs::remove_file(&validator);
-        let (sha256, size) = store::hash_file(&part)?;
+        let _ = fs::remove_file(validator);
+        let (sha256, size) = store::hash_file(part)?;
         if let Some(want) = expect.sha256.filter(|want| *want != sha256) {
-            let _ = fs::remove_file(&part);
+            let _ = fs::remove_file(part);
             return Err(format!("{url}: the SHA-256 is {sha256}, not {want}"));
         }
-        let object = store.insert(&part, &sha256)?;
-        Ok(Downloaded { object, sha256, size })
+        if expect.bytes.is_some_and(|want| want != size) {
+            let _ = fs::remove_file(part);
+            return Err(format!("{url}: downloaded size differs from the reviewed input"));
+        }
+        Ok((sha256, size))
     }
 
     fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
@@ -252,9 +355,14 @@ impl Http {
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
-        let resume = have > 0 && (saved.is_some() || expect.sha256.is_some());
+        let resume = have > 0
+            && (saved.is_some() || expect.sha256.is_some())
+            && expect.etag.is_none_or(|want| saved.as_deref() == Some(want));
         // The bytes as upstream stores them: a decoded body has no ranges and another digest.
-        let mut request = self.agent.get(url).header("accept-encoding", "identity");
+        let mut request = self.authorize(url, self.agent.get(url)).header("accept-encoding", "identity");
+        if let Some(etag) = expect.etag {
+            request = request.header("if-match", etag);
+        }
         if resume {
             request = request.header("range", format!("bytes={have}-"));
             if let Some(saved) = &saved {
@@ -264,6 +372,11 @@ impl Http {
         self.requests.fetch_add(1, Ordering::Relaxed);
         let mut response = request.call().map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
         let status = response.status().as_u16();
+        if response.status().is_success()
+            && expect.etag.is_some_and(|want| header(&response, "etag").as_deref() != Some(want))
+        {
+            return Err(Failure::Final(format!("{url}: upstream object changed since review; review again")));
+        }
         let modified_by = |response: &ureq::http::Response<_>| {
             let modified = header(response, "last-modified").and_then(|value| date::from_http(&value));
             let modified = modified.unwrap_or_else(|| date::format(date::today()));
@@ -304,6 +417,9 @@ impl Http {
             }
             _ => return Err(Failure::Final(format!("GET {url}: HTTP {status}"))),
         };
+        if expect.bytes.is_some_and(|want| total.is_some_and(|total| total != want)) {
+            return Err(Failure::Final(format!("{url}: upstream size changed since review")));
+        }
         let needed = total.map_or(0, |total| total.saturating_sub(if append { have } else { 0 }));
         store::check_free(part, needed).map_err(Failure::Final)?;
         let file = OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(part);
@@ -319,12 +435,25 @@ impl Http {
         let mut grew = false;
         let started = std::time::Instant::now();
         let mut received = 0u64;
+        let mut reported = started;
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
             stopped(url)?;
             let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;
+            }
+            let current = received + read as u64 + if append { have } else { 0 };
+            if expect.bytes.is_some_and(|want| current > want) {
+                return Err(Failure::Final(format!("{url}: download exceeds its reviewed size")));
+            }
+            if expect.bytes.is_some() && reported.elapsed() >= Duration::from_secs(30) {
+                eprintln!(
+                    "obc data: {url}: {} / {} downloaded",
+                    crate::engine::runs::bytes(current),
+                    crate::engine::runs::bytes(expect.bytes.unwrap_or(0))
+                );
+                reported = std::time::Instant::now();
             }
             file.write_all(&buffer[..read]).map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
             grew = true;

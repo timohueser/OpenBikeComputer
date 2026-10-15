@@ -356,21 +356,24 @@ def article(raw: dict, language: str) -> dict:
                                     html_sha256=hashlib.sha256(html.encode()).hexdigest()))
 
 
-def want(db, work: Path, selected: list[str]):
+def want(db, work: Path, selected: list[str], languages=LANGUAGES):
     """The article titles of the selected subjects, and the titles of the `wikipedia` tags that no
     item sitelink names."""
     if not complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     # The article imports keep only what this selection wants, so it never changes in one work directory.
-    scan(db, work, "selected", hashlib.sha256(json.dumps(sorted(set(selected))).encode()).hexdigest(), (), lambda _: None)
+    scan(db, work, "selected", hashlib.sha256(json.dumps([sorted(set(selected)), sorted(languages)]).encode()).hexdigest(), (), lambda _: None)
     for qid in selected:
         value = fact(db, "entity", qid)
         for language in LANGUAGES if value and value["status"] == "present" else ():
             if link := value["entity"]["sitelinks"].get(language + "wiki"):
+                if language not in languages:
+                    put(db, dict(kind="article", key=f"{language}:{link['title']}", status="missing", reason="language_not_prepared"))
+                    continue
                 db.execute("INSERT INTO wanted VALUES(?,?,1) ON CONFLICT(language,title) DO UPDATE SET article=1", (language, link["title"]))
     for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL"):
         language, title = tag.split(":", 1)
-        if language in LANGUAGES and not fact(db, "link", "wikipedia:" + tag):
+        if language in languages and not fact(db, "link", "wikipedia:" + tag):
             db.execute("INSERT OR IGNORE INTO wanted VALUES(?,?,0)", (language, title.replace("_", " ")))
     db.commit()
 

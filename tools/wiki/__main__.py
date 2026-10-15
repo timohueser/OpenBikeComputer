@@ -12,7 +12,7 @@ Each step resumes in its work directory. The producer runs them in this order:
 
 `inputs.json` gives each dump that the producer reads in place, as `{"path": PATH, "sha256": HEX}`:
 `{"wikidata": DUMP, "wikidata_pages": DUMP, "wikidata_redirects": DUMP, "wikipedia": {LANG: DUMP},
-"langlinks": {LANG: DUMP}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
+"langlinks": {LANG: DUMP}, "languages": [LANG]}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
 others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
 `candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
 QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
@@ -64,7 +64,7 @@ def main() -> int:
     elif args.step == "candidates":
         catalog.candidates(db, args.out)
     elif args.step == "articles":
-        catalog.want(db, args.work, json.loads(args.selected.read_bytes()))
+        catalog.want(db, args.work, json.loads(args.selected.read_bytes()), inputs["languages"])
         for language, spec in inputs.get("langlinks", {}).items():
             catalog.sql(db, args.work, "langlinks:" + language, *source("langlinks:" + language, spec))
         for language in reversed(LANGUAGES):

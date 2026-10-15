@@ -205,7 +205,8 @@ fn prepared(mut rest: &[&str]) -> bool {
             ["--dry-run"] => return true,
             ["--expect", id] | ["--expect", id, "--yes"] => return !id.starts_with('-'),
             [flag, value, more @ ..]
-                if ["--region", "--box", "--to"].contains(flag) && (*flag == "--box" || !value.starts_with('-')) =>
+                if ["--region", "--box", "--to", "--languages"].contains(flag)
+                    && (*flag == "--box" || !value.starts_with('-')) =>
             {
                 rest = more
             }
@@ -420,6 +421,7 @@ mod tests {
             &["router", "prod"],
             &["serve", "local", "--detach"],
             &["source", "prepare", "wiki", "--to", "prod", "--dry-run"],
+            &["source", "prepare", "wiki", "--region", "europe/dach", "--languages", "en,de", "--dry-run"],
             &[
                 "source",
                 "prepare",
