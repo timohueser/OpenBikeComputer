@@ -17,6 +17,12 @@ struct PlannerRouteFilters: Equatable {
     /// Grade indices of the hardest part: T1–T4 for hiking, S0–S3 for mountain bike. Other activities have no difficulty filter.
     var hardest = 0...2
     var sort = RouteSort.nearest
+
+    /// `range` with one end moved by `delta` grades, inside the four grades and never past the other end.
+    static func step(_ range: ClosedRange<Int>, lower: Bool, by delta: Int) -> ClosedRange<Int> {
+        lower ? min(max(0, range.lowerBound + delta), range.upperBound)...range.upperBound
+            : range.lowerBound...max(min(3, range.upperBound + delta), range.lowerBound)
+    }
 }
 
 /// The Routes view state. It outlives the view, so "Find another route" finds the filters and the list again.
@@ -150,7 +156,7 @@ final class PlannerRouteFinder {
         guard case .ready(let plan) = plan, let route = detail?.route, preview?.plan != plan else { return }
         let points = plan.requestPoints(loop: route.loop)
         let turnarounds = plan.turnarounds.filter { $0 > 0 && $0 < points.count - 1 }
-        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: .balanced,
+        guard let path = try? await service.route(points: points, turnarounds: turnarounds, activity: activity, preference: route.preference,
                                                   release: release), self.plan == .ready(plan) else { return }
         preview = (plan, path, PlannerPreviewGrade(routePoints: path.points))
     }

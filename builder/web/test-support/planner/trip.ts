@@ -24,5 +24,5 @@ export function testLine(trip: Trip): RoutingLine {
     const stops = points.map((point, i) => ({ id: point.id, distance: km[ends[i]] }));
     return { profile: 'touring', coordinates, stops,
         elevation: coordinates.map(() => null), elapsed: km.map(d => d * 240), seconds: km.at(-1)! * 240, edges: {},
-        unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+        unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
 }

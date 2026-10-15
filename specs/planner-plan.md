@@ -34,13 +34,14 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `mode` | Optional `route` or `trip` |
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
-| `preset` | Optional preset: `Balanced`, `Shorter` or `Less climbing` |
+| `preset` | Optional preset: `Balanced`, `Shorter`, `Less climbing`, `Technical` (`mtb` only) or `Alpine` (`hiking` only) |
 | `startDate` | Optional valid calendar date in `YYYY-MM-DD` form |
 | `loop` | Optional `true`; the start also ends the route |
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |
 | `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
 | `climbTarget` | Optional finite non-negative number |
+| `sleep` | Optional `camping`, `hotel`, or `either`: the kind of place the suggested nights look for. Absent means `either`. |
 
 Each point has a unique non-empty string `id`, a string `label`, and a two-number
 `coordinate` in longitude/latitude order.

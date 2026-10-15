@@ -36,8 +36,8 @@ not live closures.
 With `--countries`, the builder also writes `route-catalog.json`, the signed
 routes in the format of [the catalog contract](../../specs/route-catalog.md). It
 prints a JSON report: the counts, the dropped relations by reason and the
-shaping points. The catalog needs the `touring`, `road`, `gravel`, `mtb` and
-`hiking` profiles. Name the region's countries, so that the catalog can omit
+shaping points. The catalog needs the `touring`, `road`, `gravel`,
+`mtb/technical` and `hiking/alpine` profiles. Name the region's countries, so that the catalog can omit
 route marks in France. When France is the only country, no record has a route
 mark. A region with France and another country fails. The builder checks these
 options before the import.
@@ -87,12 +87,12 @@ explicit tags.
 
 ## Profiles
 
-Pass `--profiles all` to prepare all 21 metrics, or supply comma-separated IDs.
+Pass `--profiles all` to prepare all 17 metrics, or supply comma-separated IDs.
 Rebuild packages after changing the profile code. Rider validation is required.
 
 | Road profile | Preference |
 | --- | --- |
-| `road` | BRouter fastbike road classes, turns and downhill costs |
+| `road` | BRouter fastbike surfaces, traffic stress, turns and downhill costs; trunk roads cost 10 times more |
 | `road/shorter` | Same road suitability; no terrain penalty; lower turn cost |
 | `road/less-climbing` | Additional uphill cost above the slope threshold |
 
@@ -104,19 +104,26 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 
 | Adaptation | Behavior |
 | --- | --- |
-| Missing surface | Use highway context; no universal unknown-surface penalty |
+| Missing surface | Use highway and track-grade context; no universal unknown-surface penalty |
 | Explicit poor surface | Apply a minimum cost even on a paved road class |
 | Smoothness | Apply gravel-profile dry-surface multipliers |
+| Traffic | Speed limit, lane count and cycle tracks or lanes in the travel direction; no measured traffic |
 | Elevation | Filtered fractional heights; 1.5% slope threshold; additive costs |
 | BRouter elevation buffer | Not reproduced; no path-dependent state in the graph |
 | Estimated traffic, forest and noise | Not inferred from BRouter's derived data |
 | Access | Importer rules; restricted access is not a soft penalty |
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
+| Steps and via ferrata | Cycling profiles never use steps; no profile uses a via ferrata |
 
-Touring, gravel, MTB and hiking use separate surface and road-class tables.
-Each has shorter and less-climbing variants. Shorter ignores road class, climb
-preferences and signed cycle routes but keeps surface preferences. Access rules
-apply to every variant.
+Touring, gravel, MTB and hiking use separate surface and road-class tables, and
+add smoothness, track grade, trail grade and traffic. Hiking also adds trail
+visibility. Each has shorter and less-climbing variants. Shorter ignores climb
+preferences and signed cycle routes but keeps road and surface preferences.
+A signed cycle route discounts only the preference above the physical and
+traffic cost, in the direction that its member role gives. Access rules apply
+to every variant. MTB permits S2 at most and `mtb/technical` every grade; hiking
+permits T2 at most and `hiking/alpine` T4. Alternatives keep the difficulty
+limit of the request.
 
 The package includes geometry, snap cells, a shared directed graph, profile
 costs and snap bits, possible closures, and compressed landmark bounds. A

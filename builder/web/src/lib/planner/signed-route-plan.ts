@@ -23,14 +23,16 @@ export function joinedPlan(stages: RoutePlan[]): RoutePlan | null {
 }
 
 /**
- * The empty plan that a signed route fills: named after the route, with the Balanced preset of an activity that rides
- * its kind, which the shaping points of the catalog reproduce.
+ * The empty plan that a signed route fills: named after the route, with an activity that rides its kind, which the shaping
+ * points of the catalog reproduce. A route harder than T2 or S2 needs the Alpine or Technical preset (`specs/route-catalog.md`).
  */
 export function routeBase(route: CatalogRecord, trip: Trip): Trip {
     const bike = trip.bike ?? 'touring';
     const activity: BikeType = route.kind === 'hiking' || route.kind === 'foot' ? 'hiking' : route.kind === 'mtb' ? 'mtb'
         : ['road', 'gravel', 'touring'].includes(bike) ? bike : 'touring';
-    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset: 'Balanced', startDate: trip.startDate };
+    const hardest = route.hardest ?? 0;
+    const preset = activity === 'hiking' && hardest > 1 ? 'Alpine' : activity === 'mtb' && hardest > 2 ? 'Technical' : 'Balanced';
+    return { ...emptyTrip(trip.mode), name: route.name ?? route.ref, bike: activity, preset, startDate: trip.startDate };
 }
 
 /** A plan of `base` that follows `plan`, from the route's own start. At a turnaround the route turns back. A loop plan ends at its start. */

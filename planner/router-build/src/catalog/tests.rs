@@ -78,10 +78,7 @@ fn grid(relations: Vec<Relation>) -> (Package<Memory>, Data) {
         }
     }
     graph.osm.relations = relations.into_iter().map(|r| (r.id, r)).collect();
-    let profiles: Vec<_> = Profile::presets()
-        .into_iter()
-        .filter(|p| ["touring", "road", "gravel", "mtb", "hiking"].contains(&p.name.as_str()))
-        .collect();
+    let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
     let mut objects = HashMap::new();
     let manifest =
         crate::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], &profiles, vec![], "test".into(), |bytes| {
@@ -149,7 +146,9 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
     assert_eq!(trail["cells"], json!(["9-256-255"]));
     let via = trail["via"].as_array().unwrap().len();
     assert!(via > 0);
-    // The figures are the route engine's totals for the plan, as a client routes it.
+    // The figures are the route engine's totals for the plan, as a client routes it. The T3 member
+    // makes the client choose the alpine preset.
+    assert_eq!(trail["hardest"], json!(2));
     let line: Vec<i64> = trail["line_udeg"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
     let mut vertices = vec![[line[0], line[1]]];
     for pair in line[2..].chunks(2) {
@@ -162,7 +161,7 @@ fn catalog_shapes_routes_patches_short_gaps_and_joins_stages() -> Result<(), Str
         .map(|k| [vertices[k][0] as i32, vertices[k][1] as i32])
         .collect();
     let mut router = Router::new(Selection::whole(package.fork()), 768 << 20);
-    let routed = router.route(&shape::request("hiking", &plan, vec![]), &control()).unwrap().totals();
+    let routed = router.route(&shape::request("hiking/alpine", &plan, vec![]), &control()).unwrap().totals();
     assert!(routed.ascent_m > 0);
     assert_eq!(
         [&trail["length_m"], &trail["ascent_m"], &trail["descent_m"]],

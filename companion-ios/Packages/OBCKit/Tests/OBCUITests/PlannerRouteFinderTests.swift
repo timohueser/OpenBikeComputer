@@ -89,4 +89,13 @@ struct PlannerRouteFinderTests {
         #expect(finder.offline && finder.status == .ready && finder.matches.isEmpty)
         #expect(Set(await cells.asked) == ["9-267-178"])
     }
+
+    @Test func aDifficultyEndStopsAtTheOtherEndAndTheGradeScale() {
+        #expect(PlannerRouteFilters.step(1...2, lower: true, by: 1) == 2...2)
+        #expect(PlannerRouteFilters.step(2...2, lower: true, by: 1) == 2...2)
+        #expect(PlannerRouteFilters.step(2...2, lower: false, by: -1) == 2...2)
+        #expect(PlannerRouteFilters.step(0...2, lower: true, by: -1) == 0...2)
+        #expect(PlannerRouteFilters.step(0...3, lower: false, by: 1) == 0...3)
+        #expect(PlannerRouteFilters.step(1...2, lower: false, by: 1) == 1...3)
+    }
 }

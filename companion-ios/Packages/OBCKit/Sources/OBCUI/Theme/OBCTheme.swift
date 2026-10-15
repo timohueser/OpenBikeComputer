@@ -58,8 +58,10 @@ public enum OBCTheme {
     public static let day3 = Color(day: 0x3B8A3F, tent: 0x6CC47A)
     /// The fourth trip day: the device's violet, tuned.
     public static let day4 = Color(day: 0x5B2FB0, tent: 0xA070F0)
-    /// Failures and destructive actions.
+    /// Failures and destructive actions. Also the fill of a "Closed" badge under `surface` text.
     public static let danger = Color(day: 0xB0301C, tent: 0xF28B6E)
+    /// The fill of an "Open" badge under `surface` text: at least 4.5:1 in both appearances.
+    public static let open = Color(day: 0x2F7D33, tent: 0x6CC47A)
 
     // MARK: Sketch
     /// The ground under a drawn track sketch.
