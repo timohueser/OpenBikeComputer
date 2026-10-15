@@ -2,15 +2,17 @@
     import { tick } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import DayRow from './DayRow.svelte';
-    import type { Day, ItineraryDay, OvernightCandidate, Place, RoutePoint, Trip } from '../../lib/planner/editor';
+    import NightNode from './NightNode.svelte';
+    import StopPicker from './StopPicker.svelte';
+    import { orderedRoutePoints, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        trip, line, itinerary, days, theme, overnightNote = '', expandedDay, changing, candidates, conflicts, selectedId, revealId, hoveredId = null, onHover,
-        onToggle, onOverview, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
+        trip, line, itinerary, days, theme, expandedDay, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
+        onToggle, onOverview, onInspect, onShowEnd, onEditTarget, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
-        overnightNote?: string;
         trip: Trip;
         /** The line of the trip, once it is calculated. */
         line?: RoutingLine;
@@ -19,8 +21,7 @@
         theme: 'light' | 'dark';
         /** Riding number of the open day. */
         expandedDay: number | null;
-        changing: boolean;
-        candidates: OvernightCandidate[];
+        nights: NightChoices;
         conflicts: [RoutePoint, RoutePoint][];
         selectedId: string | null;
         hoveredId?: string | null;
@@ -31,9 +32,6 @@
         onOverview: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: (day: Day) => void;
-        onSelectPlace: (place: Place) => void;
-        onPick: () => void;
-        onChangeOvernight: (changing: boolean) => void;
         onEditTarget: () => void;
         onShowConflict: (points: [RoutePoint, RoutePoint]) => void;
         onAddRest: (afterRidingDay: number) => void;
@@ -49,6 +47,11 @@
     const ridingDays = $derived(itinerary.filter(day => !day.rest));
     const scale = $derived(Math.max(trip.limit, ...days.map(day => day.distance)) || 1);
     const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
+    const ends = $derived(orderedRoutePoints(trip));
+    const suggested = $derived(Object.fromEntries(days.flatMap(day => {
+        const town = day.pinned ? undefined : nights.around(day.number);
+        return town ? [[day.number, `Around ${town.name}`]] : [];
+    })));
 
     $effect(() => {
         expandedDay;
@@ -93,8 +96,22 @@
         </div>
     </nav>
 {/if}
-<div class="itinerary" bind:this={root}>
-    {#if !focused}<p class="hint">Open a day to plan its stops and overnight.</p>{/if}
+{#snippet towns(night: number)}
+    {@const window = nights.window(night)}
+    {#if line && window}
+        <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {theme} found={nights.found(night)} {window} stopId={nights.stopId}
+            date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
+            onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)} />
+    {:else}
+        <p class="hint">The towns to sleep in appear when the route is ready.</p>
+    {/if}
+{/snippet}
+
+{#if !focused}<p class="hint">Choose where to sleep each night. Open a day for its stops.</p>{/if}
+<div class="itinerary" class:ladder={!focused} bind:this={root}>
+    {#if !focused}
+        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon path="M8 5v14l11-7z" size={11} /></span><div><strong>{ends[0]?.label}</strong><small>Start</small></div></div>
+    {/if}
     {#key expandedDay}
     {#each visible as day (`${day.number}-${day.rest}`)}
         {#if day.rest}
@@ -121,21 +138,27 @@
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
             <DayRow
-                {trip} {line} {day} {days} {theme} {scale} {changing} {selectedId} {revealId} {hoveredId} {onHover} {calendar}
+                {trip} {line} {day} {days} {theme} {scale} {selectedId} {revealId} {hoveredId} {onHover} {calendar} {suggested}
                 expanded={expandedDay === day.ridingNumber}
-                candidates={expandedDay === day.ridingNumber ? candidates : []}
+                choosing={expandedDay === day.ridingNumber && nights.choosing === day.ridingNumber}
                 conflict={conflict ? calendar[conflict[0].night!] : null}
                 onToggle={() => openDay(day.ridingNumber)}
-                {onInspect} {onSelectPlace} {onPick} {overnightNote} {onChangeOvernight} {onEditTarget}
+                {onInspect} {onEditTarget} onChange={() => nights.choose(day.ridingNumber)}
                 onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
-            />
+            >{#snippet picker()}{@render towns(day.ridingNumber)}{/snippet}</DayRow>
+            {#if !focused && day.ridingNumber < days.length}
+                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights}>{@render towns(day.ridingNumber)}</NightNode>
+            {/if}
             {#if focused && day.ridingNumber < days.length && !trip.restAfter?.includes(day.ridingNumber)}
                 <button type="button" class="add-rest" onclick={() => onAddRest(day.ridingNumber)}><Icon name="plus" size={13} />Add rest day</button>
             {/if}
         {/if}
     {/each}
     {/key}
+    {#if !focused}
+        <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon name="flag" size={12} /></span><div><strong>{trip.loop ? ends[0]?.label : ends.at(-1)?.label}</strong><small>Finish</small></div></div>
+    {/if}
 </div>
 
 <style>
@@ -163,6 +186,65 @@
         flex-direction: column;
         gap: 4px;
         padding: 4px 8px 16px;
+    }
+    /* One rail joins start, days, nights and finish, through the centre of their marks. */
+    .ladder {
+        position: relative;
+        gap: 0;
+    }
+    .ladder::before {
+        content: "";
+        position: absolute;
+        top: 26px;
+        bottom: 38px;
+        left: 27px;
+        width: 2px;
+        border-radius: 1px;
+        background: var(--line);
+    }
+    .ladder :global(.day:not(.expanded)) {
+        border-bottom: 0;
+    }
+    .ladder :global(.badge),
+    .ladder :global(.night) {
+        position: relative;
+        z-index: 1;
+    }
+    .ladder > :global(.night),
+    .ladder > :global(.towns),
+    .endpoint {
+        padding-left: 8px;
+    }
+    .endpoint {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 44px;
+    }
+    .end-mark {
+        position: relative;
+        z-index: 1;
+        width: 24px;
+        height: 24px;
+        flex: none;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--ink);
+        color: var(--panel);
+    }
+    .endpoint strong,
+    .endpoint small {
+        display: block;
+    }
+    .endpoint strong {
+        font: 600 14px/1.3 var(--sans);
+        overflow-wrap: anywhere;
+    }
+    .endpoint small {
+        margin-top: 2px;
+        font-size: 13px;
+        color: var(--ink-soft);
     }
     button {
         border: 0;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -14,10 +14,6 @@ const meridian = view(testTrip()).coordinates;
 const along = (fraction: number) => coordinateAt(meridian, fraction);
 // A pinned night on the calculated line of the trip.
 const pin = (trip: Trip, night: number, coordinate: Coordinate, label: string) => pinNight(trip, testLine(trip), night, coordinate, label);
-const places: Place[] = ([[.2, 'camp', 'Orchard camp'], [.3, 'hotel', 'Canal-side rooms'], [.37, 'camp', 'Willow camp'],
-    [.46, 'hotel', 'Village inn'], [.47, 'water', 'Water stop'], [.56, 'camp', 'Meadow camp']] as const)
-    .map(([fraction, category, label], index) => ({ id: `${category}-${index}`, kind: 'place', category, label, description: '', coordinate: along(fraction) }));
-
 describe('overnight edits', () => {
     it('keeps the incoming leg when replacing an overnight or converting a visit', () => {
         const drawing: Coordinate[] = [[7.3, 47.7], [7.1, 47.6]];
@@ -261,13 +257,6 @@ describe('provisional day ends', () => {
         expect(view(pinned).days[1].split).toBe(false);
         expect(applyBudget(trip, testLine(trip), 'days', 4, 50).splits).toEqual(trip.splits);
         expect(applyBudget(trip, testLine(trip), 'days', 5, 50).splits).toBeUndefined();
-    });
-
-    it('offers three overnight candidates without water, shortest predicted day first', () => {
-        const candidates = overnightCandidates(testTrip(), testLine(testTrip()), 1, places);
-        expect(candidates).toHaveLength(3);
-        expect(candidates.every(c => c.place.category !== 'water')).toBe(true);
-        expect(candidates.map(c => c.distance)).toEqual([...candidates.map(c => c.distance)].sort((a, b) => a - b));
     });
 });
 

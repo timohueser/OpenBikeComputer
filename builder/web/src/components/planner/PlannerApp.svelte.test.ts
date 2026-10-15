@@ -61,7 +61,8 @@ beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
         if (!_url.startsWith(testConfig.search)) throw new Error('Routing service offline');
         const input = JSON.parse(String(init.body));
-        return {ok:true,json:async () => ({type:'places',request:input.request ?? {type:'places',what:['campsite']},results:[{source:tilePlace.id,name:tilePlace.label,kind:'campsite',lon:tilePlace.coordinate[0],lat:tilePlace.coordinate[1],precision:'place',distance:0}]})};
+        return {ok:true,json:async () => ({type:'places',request:input.request ?? {type:'places',what:['campsite']},results:[{source:tilePlace.id,name:tilePlace.label,kind:'campsite',city:'Tile town',lon:tilePlace.coordinate[0],lat:tilePlace.coordinate[1],precision:'place',distance:0,
+            position:{along:distance.at(-1)! * .25,distance:.1}}]})};
     }));
     vi.stubGlobal('localStorage', { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) });
     vi.mocked(corridorPlaces).mockResolvedValue([tilePlace]);
@@ -201,12 +202,14 @@ describe('planner app transitions', () => {
     it('sends no overnight query when the map pans', async () => {
         stored.set('trip', JSON.stringify({ ...JSON.parse(stored.get('trip')!), mode: 'trip' }));
         await startApp(); await tick();
-        const overnight = () => bodies().filter(body => body.q === 'sleep').length;
+        const overnight = () => bodies().filter(body => body.request?.what?.includes?.('sleep')).length;
         button('Open day 1: Basel to Overnight to choose').click(); await tick();
-        await vi.waitFor(() => expect(overnight()).toBe(1));
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
+        const sent = overnight();
+        expect(sent).toBeGreaterThan(0);
         button('Pan map').click(); await tick();
         button('Pan map').click(); await tick();
-        expect(overnight()).toBe(1);
+        expect(overnight()).toBe(sent);
     });
 
     it('links row and map hover in both directions and searches the map after point inspection', async () => {
@@ -357,9 +360,8 @@ describe('planner app transitions', () => {
         await tick();
         button('Open day 1: Basel to Overnight to choose').click();
         await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain(tilePlace.label));
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
         const choices = document.querySelector('.choose')!.textContent;
-        expect(choices).not.toContain('≈ 0.0 km');
         const profile = document.querySelector('.elevation');
         const requests = vi.mocked(fetch).mock.calls.length;
         button('Pan map').click(); await tick();
@@ -386,7 +388,7 @@ describe('planner app transitions', () => {
             .mockImplementation(() => new Promise(resolve => finish = resolve));
         await startApp();
         await vi.waitFor(() => button('Open day 1: Basel to Overnight to choose').click()); await tick();
-        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain(tilePlace.label));
+        await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
         const profile = document.querySelector('.elevation');
         button(`Map place: ${tilePlace.label}`).click(); await tick();
         button('Stay here').click(); await tick();

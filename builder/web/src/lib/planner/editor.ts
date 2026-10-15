@@ -294,7 +294,9 @@ function nightCount(trip: Trip): number {
     return Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
 }
 
-export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number): { from: number; to: number; center: number; blocked: boolean } {
+/** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it and
+ * the distance target of the days before and after. */
+export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number, width = .2): { from: number; to: number; center: number; blocked: boolean } {
     const { stops, total } = planView(trip, line);
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
@@ -313,8 +315,8 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const allowance = trip.limit > 0 && total > 0 ? trip.limit / total : Infinity;
     const feasibleFrom = Math.max(lo, hi - daysAfter * allowance);
     const feasibleTo = Math.min(hi, lo + daysBefore * allowance);
-    const from = Math.max(feasibleFrom, effort.progress(start + dayEffort * (daysBefore - .2)));
-    const to = Math.min(feasibleTo, effort.progress(start + dayEffort * (daysBefore + .2)));
+    const from = Math.max(feasibleFrom, effort.progress(start + dayEffort * (daysBefore - width)));
+    const to = Math.min(feasibleTo, effort.progress(start + dayEffort * (daysBefore + width)));
     if (from > to + 1e-9) return { from: center, to: center, center, blocked: true };
     return { from, to: Math.max(from, to), center, blocked: false };
 }
@@ -433,31 +435,6 @@ export function dayOverTarget(trip: Trip, day: Pick<Day, 'distance'>, ascent: nu
         km: trip.limit > 0 ? Math.max(0, day.distance - trip.limit) : 0,
         climb: trip.climbTarget ? Math.max(0, ascent - trip.climbTarget) : 0,
     };
-}
-
-export interface OvernightCandidate {
-    place: Place;
-    distance: number;
-    ascent: number;
-    from: number;
-    to: number;
-}
-
-/** The three places nearest the suggested day end, each with its predicted day, shortest day first. */
-export function overnightCandidates(trip: Trip, line: RoutingLine | undefined, night: number, places: Place[]): OvernightCandidate[] {
-    const { coordinates, days } = planView(trip, line);
-    if (trip.mode === 'route' || night < 1 || night >= days.length) return [];
-    const { center } = overnightWindow(trip, line, night);
-    return places
-        .filter(place => place.category !== 'water')
-        .map(place => ({ place, progress: nearestProgress(coordinates, place.coordinate) }))
-        .sort((a, b) => Math.abs(a.progress - center) - Math.abs(b.progress - center))
-        .slice(0, 3)
-        .map(({ place, progress }) => {
-            const { distance, ascent, from, to } = provisionalDays(trip, line, night, progress)[night - 1];
-            return { place, distance, ascent, from, to };
-        })
-        .sort((a, b) => a.distance - b.distance);
 }
 
 /** A route as a trip. A calculated route without day decisions gets one day for each started distance target, at least
