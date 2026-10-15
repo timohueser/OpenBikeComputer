@@ -82,7 +82,8 @@ def failed_jobs(run_id: int) -> list[dict]:
 
 
 def job_log(job_id: int) -> str:
-    return gh("api", f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs")
+    # gh 2.102 refuses a log with escape sequences without the flag; `clean` removes them.
+    return gh("api", "--allow-escape-sequences", f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs")
 
 
 def render(run: dict, jobs: Sequence[dict], lines: int) -> Iterable[str]:
