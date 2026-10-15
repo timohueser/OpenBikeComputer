@@ -22,7 +22,9 @@
     const [earlier, later] = $derived(pinned ? [undefined, undefined] : nights.neighbours(day.number));
     const found = $derived(nights.found(day.number));
     const icon = $derived(pinned?.placeKind ? ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[category(pinned.placeKind)] ?? 'moon' : 'moon');
-    const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load' : 'No town with a place to sleep nearby');
+    const towns = $derived(found?.state === 'ready' ? found.stops.length : 0);
+    const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
+        : towns ? `No town at the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : 'No town with a place to sleep nearby');
 </script>
 
 <div class="night" class:chosen={!!pinned} class:open {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
@@ -42,7 +44,8 @@
             <button type="button" class="icon" disabled={!later} aria-label={later ? `Move night ${label} to ${later.name}` : 'No later town'} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
         </span>
     {/if}
-    <button type="button" class="choose" aria-expanded={open} onclick={() => nights.choose(open ? null : day.number)}>{open ? 'Close' : pinned ? 'Change' : 'Choose'}</button>
+    <button type="button" class="choose" aria-expanded={open} aria-label={`${open ? 'Close' : pinned ? 'Change' : 'Choose'} night ${label}`}
+        onclick={() => nights.choose(open ? null : day.number)}>{open ? 'Close' : pinned ? 'Change' : 'Choose'}</button>
 </div>
 {#if open}
     <div class="towns">{@render children()}</div>

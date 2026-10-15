@@ -56,7 +56,7 @@
 </script>
 
 <div class="card">
-    <button type="button" class="back" onclick={onBack}><Icon name="back" size={15} />All towns</button>
+    <button type="button" class="back" onclick={onBack} {@attach node => node.focus({ preventScroll: true })}><Icon name="back" size={15} />All towns</button>
     <header>
         <h3>{stop.name}</h3>
         <p>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}</p>

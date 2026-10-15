@@ -22,6 +22,8 @@ describe('stops', () => {
             ['Bräunlingen', 51, 51, ['Lindenhof']],
             ['Donaueschingen', 64.2, 64.2, ['Riedsee-Camping']],
         ]);
+        const valley = groupStops(['A', 'B', 'C', 'D', 'E'].map((name, i) => place(name, 'guest_house', name, 10 + i * 2)), []);
+        expect(valley.map(s => s.name)).toEqual(['A', 'E']);
         expect(stops[0].shop.map(p => p.place.label)).toEqual(['Schmidts Markt']);
         expect(stops[0].food.map(p => p.place.label)).toEqual(['Löwen']);
         expect(stops[2].food.map(p => p.place.label)).toEqual(['Restaurant am Riedsee']);

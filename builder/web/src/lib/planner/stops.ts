@@ -21,7 +21,8 @@ export interface Stop {
 }
 
 /** Places to sleep further apart along the route than this belong to different stops, unless they are in the same
- * town and no further apart than `townGap`. */
+ * town and no further apart than `townGap`. A stop of places in different towns spans at most `townGap`, so a valley of
+ * villages does not chain into one stop. */
 const stopGap = 2.5, townGap = 6;
 /** Food, shops and water count for a stop within this distance of its places, along and off the route. */
 const serviceReach = 1.5;
@@ -38,7 +39,7 @@ export function groupStops(sleep: SearchPlace[], services: SearchPlace[]): Stop[
     for (const place of places) {
         const group = groups.at(-1);
         const gap = group ? place.km - group.at(-1)!.km : Infinity;
-        if (gap <= stopGap || (gap <= townGap && !!place.place.locality && group!.some(p => p.place.locality === place.place.locality))) group!.push(place);
+        if ((gap <= stopGap && place.km - group![0].km <= townGap) || (gap <= townGap && !!place.place.locality && group!.some(p => p.place.locality === place.place.locality))) group!.push(place);
         else groups.push([place]);
     }
     return groups.map(group => {

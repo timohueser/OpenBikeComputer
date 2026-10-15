@@ -96,12 +96,13 @@
         </div>
     </nav>
 {/if}
-{#snippet towns(night: number)}
+{#snippet towns(night: number, cancel = false)}
     {@const window = nights.window(night)}
     {#if line && window}
         <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {theme} found={nights.found(night)} {window} stopId={nights.stopId}
             date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
-            onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)} />
+            onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
+            onCancel={cancel ? () => nights.choose(null) : undefined} />
     {:else}
         <p class="hint">The towns to sleep in appear when the route is ready.</p>
     {/if}
@@ -146,7 +147,7 @@
                 {onInspect} {onEditTarget} onChange={() => nights.choose(day.ridingNumber)}
                 onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
-            >{#snippet picker()}{@render towns(day.ridingNumber)}{/snippet}</DayRow>
+            >{#snippet picker()}{@render towns(day.ridingNumber, !!days[day.ridingNumber - 1].pinned)}{/snippet}</DayRow>
             {#if !focused && day.ridingNumber < days.length}
                 <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights}>{@render towns(day.ridingNumber)}</NightNode>
             {/if}

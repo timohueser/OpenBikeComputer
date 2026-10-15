@@ -6,48 +6,65 @@ export type NightStops = { state: 'loading' } | { state: 'ready'; stops: Stop[] 
 
 const along = (from: number, to: number) => ({ scope: 'route', along: { ref: 'start', from: { value: Math.round(from * 10) / 10, unit: 'km' }, to: { value: Math.round(to * 10) / 10, unit: 'km' } } });
 
-/** The stops along stretches of one route: one search for places to sleep and one for food, shops and water per stretch.
- * A stretch keeps its answer while the route stays the same. */
+/** The key of the stretch `[from, to]` km of the route that `route` names. */
+export const stretchKey = (route: string, [from, to]: [number, number]) => `${route}|${from.toFixed(1)}-${to.toFixed(1)}`;
+
+// Answers kept for stretches no longer wanted, so Undo and a step back do not search again.
+const kept = 40;
+
+/** The stops along stretches of routes: one search for places to sleep and one for food, shops and water per stretch. */
 export class StopFinder {
     found = $state.raw<Record<string, NightStops>>({});
-    private route = '';
     private aborts = new Map<string, AbortController>();
+    private wanted: { route: string; context: SearchContext; stretches: [number, number][] } | null = null;
 
-    /** Searches the stretch `[from, to]` km of the route that `context` describes; `route` names that route. */
-    find(route: string, context: SearchContext, [from, to]: [number, number]): string {
-        const key = `${from.toFixed(1)}-${to.toFixed(1)}`;
-        if (route !== this.route) this.reset(route);
-        if (this.found[key] || this.aborts.has(key)) return key;
-        const abort = new AbortController();
-        this.aborts.set(key, abort);
-        this.found = { ...this.found, [key]: { state: 'loading' } };
-        const where = along(from, to);
-        Promise.all([
-            searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where }),
-            searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply', 'water'], where }),
-        ]).then(([sleep, services]) => {
-            if (abort.signal.aborted) return;
+    /** Searches the `stretches` of `route` not yet found, along the route that `context` describes, and stops the
+     * searches of other stretches. */
+    want(route: string, context: SearchContext, stretches: [number, number][]): void {
+        this.wanted = { route, context, stretches };
+        const keys = new Set(stretches.map(stretch => stretchKey(route, stretch)));
+        let found = this.found;
+        for (const [key, abort] of this.aborts) {
+            if (keys.has(key)) continue;
+            abort.abort();
             this.aborts.delete(key);
-            this.found = { ...this.found, [key]: { state: 'ready', stops: groupStops(sleep.results ?? [], services.results ?? []) } };
-        }, () => {
-            if (abort.signal.aborted) return;
-            this.aborts.delete(key);
-            this.found = { ...this.found, [key]: { state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' } };
-        });
-        return key;
+            const { [key]: _, ...rest } = found;
+            found = rest;
+        }
+        for (const stretch of stretches) {
+            const key = stretchKey(route, stretch);
+            if (!found[key]) {
+                found = { ...found, [key]: { state: 'loading' } };
+                this.search(key, context, stretch);
+            }
+        }
+        const old = Object.keys(found).filter(key => !keys.has(key));
+        const drop = new Set(old.slice(0, Math.max(0, old.length - kept)));
+        if (drop.size) found = Object.fromEntries(Object.entries(found).filter(([key]) => !drop.has(key)));
+        if (found !== this.found) this.found = found;
     }
 
-    /** Forgets a failed stretch, so the next `find` searches it again. */
+    /** Searches a failed stretch again. */
     retry(key: string): void {
         const { [key]: _, ...rest } = this.found;
         this.found = rest;
+        if (this.wanted) this.want(this.wanted.route, this.wanted.context, this.wanted.stretches);
     }
 
-    private reset(route: string): void {
-        for (const abort of this.aborts.values()) abort.abort();
-        this.aborts.clear();
-        this.route = route;
-        this.found = {};
+    private search(key: string, context: SearchContext, [from, to]: [number, number]): void {
+        const abort = new AbortController();
+        this.aborts.set(key, abort);
+        const where = along(from, to);
+        const settle = (answer: NightStops) => {
+            if (abort.signal.aborted) return;
+            this.aborts.delete(key);
+            this.found = { ...this.found, [key]: answer };
+        };
+        Promise.all([
+            searchPlaces('', context, 80, abort.signal, { type: 'places', what: ['sleep'], where }),
+            searchPlaces('', context, 100, abort.signal, { type: 'places', what: ['food', 'resupply', 'water'], where }),
+        ]).then(([sleep, services]) => settle({ state: 'ready', stops: groupStops(sleep.results ?? [], services.results ?? []) }),
+            () => settle({ state: 'error', message: 'Places to sleep could not load. Check your connection and retry.' }));
     }
 }
 

@@ -39,6 +39,8 @@
     const longest = $derived(Math.max(1e-9, ...rows.map(({ days }) => days[0].hours + days[1].hours)));
     const open = $derived(stops.find(stop => stop.id === stopId));
     const services = ['food', 'shop', 'water'] as const;
+    // The town whose card closed, so its button takes the focus back.
+    let returnTo: string | null = null;
 
     function duration(hours: number) {
         const minutes = Math.round(hours * 60);
@@ -48,7 +50,7 @@
 
 {#if open}
     <StopCard stop={open} days={daysAround(trip, line, night, open.km)} {labels} {theme} {date} elevation={elevationAt(open.km)}
-        onBack={() => onOpen(null)} {onEndHere} {onStay} {onSelectPlace} />
+        onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
         <p class="lead">Towns with somewhere to sleep between km {Math.round(window[0])} and {Math.round(window[1])}. Each bar shows day {labels[0]} and day {labels[1]}.</p>
@@ -57,7 +59,7 @@
                 <ul aria-label={`Towns for night ${labels[0]}`}>
                     {#each rows as { stop, days } (stop.id)}
                         <li>
-                            <button type="button" class="town" onclick={() => onOpen(stop.id)}
+                            <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
                                 aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <span class="name">
                                     <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
