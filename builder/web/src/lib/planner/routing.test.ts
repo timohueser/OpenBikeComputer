@@ -3,7 +3,7 @@ import { calculateLine, profileId, regionProfiles, requestAlternatives, requestR
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
-import { presetName, presetNames, servedPresets, type BikeType } from './riding-profiles';
+import { presetName, servedPresets, type BikeType } from './riding-profiles';
 import { surfaceRuns, surfaceWindow } from './surface-data';
 import { planView, removeRoutePoint, setEndpoint, type RoutePoint, type Trip } from './editor';
 import { cumulative, type Coordinate } from './geo';
@@ -30,11 +30,11 @@ function trip(): Trip {
 afterEach(() => vi.unstubAllGlobals());
 describe('routing integration', () => {
     it('offers the presets of the profiles that the region serves, each with its own profile ID', async () => {
-        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing'];
+        const profiles = ['gravel', 'gravel/shorter', 'hiking/less-climbing', 'mtb/technical'];
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ package: 'test', profiles }) }));
         const served = await regionProfiles();
-        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('road', served), servedPresets('road', undefined)])
-            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], [], presetNames]);
+        expect([servedPresets('gravel', served), servedPresets('hiking', served), servedPresets('mtb', served), servedPresets('road', served), servedPresets('road', undefined)])
+            .toEqual([['Balanced', 'Shorter'], ['Less climbing'], ['Technical'], [], ['Balanced', 'Shorter', 'Less climbing']]);
         for (const id of profiles) expect(profileId({ ...trip(), bike: id.split('/')[0] as BikeType, preset: presetName(id) })).toBe(id);
         expect(profileId({ ...trip(), bike: 'road', preset: 'Quieter' })).toBe('road');
     });

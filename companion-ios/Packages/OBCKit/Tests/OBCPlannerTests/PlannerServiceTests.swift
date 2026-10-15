@@ -34,6 +34,7 @@ struct PlannerServiceTests {
     @Test func eachActivityNamesItsRoutingProfile() {
         #expect(RouteActivity.allCases.map { RoutePreference.balanced.profile(for: $0) } == ["road", "gravel", "mtb", "touring", "hiking"])
         #expect(RoutePreference.lessClimbing.profile(for: .hiking) == "hiking/less-climbing")
+        #expect(RoutePreference.technical.profile(for: .mtb) == "mtb/technical")
         #expect(BikeType.allCases.allSatisfy { RouteActivity($0).bikeType == $0 } && RouteActivity.hiking.bikeType == nil)
     }
     /// The route is the straight line through the request points. A leg position names its point.

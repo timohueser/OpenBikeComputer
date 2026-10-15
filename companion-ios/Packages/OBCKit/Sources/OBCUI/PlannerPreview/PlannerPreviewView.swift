@@ -610,7 +610,7 @@ public struct PlannerPreviewView: View {
                 ForEach(model.activities, id: \.self) { Text($0.name).tag($0) }
             }.pickerStyle(.segmented)
             VStack(spacing: 0) {
-                ForEach(Array(PlannerPreviewPreset.allCases.enumerated()), id: \.element) { index, preset in
+                ForEach(Array(PlannerPreviewPreset.allCases.filter { $0.applies(to: model.activity) }.enumerated()), id: \.element) { index, preset in
                     if index > 0 { Divider().overlay(OBCTheme.hairline) }
                     Button { model.setPreset(preset) } label: {
                         HStack {
@@ -957,7 +957,8 @@ public struct PlannerPreviewView: View {
         let old = model.hasRoute ? model.routeTitle : nil, depth = model.undoDepth
         model.planSignedRoute(plan, loop: route.loop, name: route.title,
                               startName: routeEnds.start ?? plan.points.first.flatMap(namer.name(near:)),
-                              finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)))
+                              finishName: routeEnds.finish ?? plan.points.last.flatMap(namer.name(near:)),
+                              preset: PlannerPreviewPreset(rawValue: route.preference.rawValue) ?? .balanced)
         // The same route planned again is no new undo step.
         if model.undoDepth > depth { replaced = old.map { ($0, model.undoDepth) } }
         returnToPlanning(); fitRevision += 1
