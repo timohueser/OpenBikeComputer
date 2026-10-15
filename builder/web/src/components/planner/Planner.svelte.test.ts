@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addRestDay, planView, type Place } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
-import type { Stop } from '../../lib/planner/stops';
+import { proposal, type Stop } from '../../lib/planner/stops';
 import Itinerary from './Itinerary.svelte';
 import Profile from './PlannerProfile.svelte';
 import MapCallout from './MapCallout.svelte';
@@ -120,10 +120,14 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, sleep: 'either', found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+        campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), ...choices };
 }
+
+const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
+    sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
 
 function itineraryProps(expandedDay: number | null) {
     const trip = addRestDay(testTrip(), 1), line = testLine(trip);
@@ -151,11 +155,9 @@ describe('planner day views', () => {
 
     it('names the town at a suggested night and lists its towns with both days when the night is chosen', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
-        const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
-            sleep: [{ place: { id: `${name}-camp`, kind: 'place', category: 'camp', placeKind: 'campsite', label: `${name} camping`, description: '', coordinate: [7.6, 47.2], locality: name }, km, off: .2 }] });
         const stops = [town('Laufen', total * .2), town('Bern', total * .45)];
         const open = vi.fn();
-        props.nights = nightChoices({ choosing: 1, around: () => stops[1], found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
+        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], 'either'), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
@@ -166,6 +168,18 @@ describe('planner day views', () => {
         expect(open).toHaveBeenCalledWith('Laufen');
         expect(document.body.textContent).toContain('Start');
         expect(document.body.textContent).toContain('Finish');
+    });
+
+    it('names a camping night by its campsite and keeps every suggested campsite at once', async () => {
+        const props = itineraryProps(null), keepCampsites = vi.fn();
+        props.nights = nightChoices({ sleep: 'camping', around: () => proposal(town('Laufen', 20), 'camping'), campsites: 2, keepCampsites });
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await tick();
+
+        const night = document.querySelector('.night')!;
+        expect([night.querySelector('strong')?.textContent, night.querySelector('small')?.textContent]).toEqual(['Laufen camping', 'Suggested.Laufen · 0.2 km off the route']);
+        button('Keep both').click();
+        expect(keepCampsites).toHaveBeenCalledOnce();
     });
 
     it('keeps calendar labels separate from riding-day navigation and the finish', async () => {

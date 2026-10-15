@@ -79,6 +79,13 @@ afterEach(async () => {
 /** The JSON bodies that the page posted, in order; a GET such as the routing region has none. */
 const bodies = () => vi.mocked(fetch).mock.calls.flatMap(([, init]) => init?.body ? [JSON.parse(String(init.body))] : []);
 
+// A day's label names its suggested night once the towns arrive.
+const dayButton = (day: number) => {
+    const found = document.querySelector<HTMLButtonElement>(`button[aria-label^="Open day ${day}:"]`);
+    if (!found) throw new Error(`Missing button: Open day ${day}`);
+    return found;
+};
+
 function button(label: string, scope: ParentNode = document) {
     const found = [...scope.querySelectorAll('button')].find(button => (button.getAttribute('aria-label') ?? button.textContent?.trim()) === label);
     if (!found) throw new Error(`Missing button: ${label}`);
@@ -174,7 +181,7 @@ describe('planner app transitions', () => {
             { source: 'fuxxbau', name: 'Fuxxbau', kind: 'restaurant', lon: 8.088, lat: 48.279, precision: 'place', distance: 0 },
         ] }) })));
         await startApp(); await tick();
-        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        dayButton(1).click(); await tick();
         await search('Fuxxbau', 'Fuxxbau');
         button('Map place: Fuxxbau').click(); await tick();
         const select = document.querySelector<HTMLSelectElement>('.callout select')!;
@@ -203,7 +210,7 @@ describe('planner app transitions', () => {
         stored.set('trip', JSON.stringify({ ...JSON.parse(stored.get('trip')!), mode: 'trip' }));
         await startApp(); await tick();
         const overnight = () => bodies().filter(body => body.request?.what?.includes?.('sleep')).length;
-        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        dayButton(1).click(); await tick();
         await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
         const sent = overnight();
         expect(sent).toBeGreaterThan(0);
@@ -358,7 +365,7 @@ describe('planner app transitions', () => {
     it('restores the focused day after a different-day search', async () => {
         await startApp();
         await tick();
-        button('Open day 1: Basel to Overnight to choose').click();
+        dayButton(1).click();
         await tick();
         await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
         const choices = document.querySelector('.choose')!.textContent;
@@ -369,7 +376,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.choose')!.textContent).toBe(choices);
         button('All days').click(); await tick();
         expect(document.querySelector('.elevation')).toBe(profile);
-        button('Open day 1: Basel to Overnight to choose').click(); await tick();
+        dayButton(1).click(); await tick();
         expect(fetch).toHaveBeenCalledTimes(requests);
         await search('campsites day 2');
         button('Clear search').click();
@@ -387,7 +394,7 @@ describe('planner app transitions', () => {
             .mockImplementationOnce(async (...args) => line = await measured(...args))
             .mockImplementation(() => new Promise(resolve => finish = resolve));
         await startApp();
-        await vi.waitFor(() => button('Open day 1: Basel to Overnight to choose').click()); await tick();
+        await vi.waitFor(() => dayButton(1).click()); await tick();
         await vi.waitFor(() => expect(document.querySelector('.choose')?.textContent).toContain('Tile town'));
         const profile = document.querySelector('.elevation');
         button(`Map place: ${tilePlace.label}`).click(); await tick();

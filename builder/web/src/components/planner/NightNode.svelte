@@ -2,7 +2,7 @@
     import type { Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import { category, kindLabel } from '../../lib/planner/search/presentation';
-    import { stopCounts } from '../../lib/planner/stops';
+    import { proposalTitle, stopCounts } from '../../lib/planner/stops';
     import type { Day } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 
@@ -23,8 +23,12 @@
     const found = $derived(nights.found(day.number));
     const icon = $derived(pinned?.placeKind ? ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[category(pinned.placeKind)] ?? 'moon' : 'moon');
     const towns = $derived(found?.state === 'ready' ? found.stops.length : 0);
+    const wanted = $derived(nights.sleep === 'camping' ? 'campsite' : nights.sleep === 'hotel' ? 'hotel' : 'town with a place to sleep');
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
-        : towns ? `No town at the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : 'No town with a place to sleep nearby');
+        : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
+    const detail = $derived(!around ? status
+        : nights.sleep === 'camping' && around.campsite ? `${around.stop.name} · ${around.campsite.off < .15 ? 'on the route' : `${around.campsite.off.toFixed(1)} km off the route`}`
+        : around.campsite ? `${around.campsite.place.label} · ${stopCounts(around.stop)}` : stopCounts(around.stop));
 </script>
 
 <div class="night" class:chosen={!!pinned} class:open {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
@@ -34,8 +38,8 @@
             <strong>{pinned.label}</strong>
             <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
         {:else}
-            <strong>{around ? `Around ${around.name}` : `Night ${label}`}</strong>
-            <small><span class="sr-only">Suggested. </span>{around ? stopCounts(around) : status}</small>
+            <strong>{around ? proposalTitle(around, nights.sleep) : `Night ${label}`}</strong>
+            <small><span class="sr-only">Suggested. </span>{detail}</small>
         {/if}
     </div>
     {#if !pinned && !open}

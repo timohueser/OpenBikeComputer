@@ -6,6 +6,7 @@
     import StopPicker from './StopPicker.svelte';
     import { orderedRoutePoints, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
+    import { proposalTitle } from '../../lib/planner/stops';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
@@ -49,8 +50,8 @@
     const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const ends = $derived(orderedRoutePoints(trip));
     const suggested = $derived(Object.fromEntries(days.flatMap(day => {
-        const town = day.pinned ? undefined : nights.around(day.number);
-        return town ? [[day.number, `Around ${town.name}`]] : [];
+        const around = day.pinned ? undefined : nights.around(day.number);
+        return around ? [[day.number, proposalTitle(around, nights.sleep)]] : [];
     })));
 
     $effect(() => {
@@ -108,7 +109,16 @@
     {/if}
 {/snippet}
 
-{#if !focused}<p class="hint">Choose where to sleep each night. Open a day for its stops.</p>{/if}
+{#if !focused}
+    {#if nights.sleep === 'camping' && nights.campsites}
+        <div class="keep">
+            <p><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>Keep them, or choose each night yourself.</small></p>
+            <button type="button" class="keep-all" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
+        </div>
+    {:else}
+        <p class="hint">Choose where to sleep each night. Open a day for its stops.</p>
+    {/if}
+{/if}
 <div class="itinerary" class:ladder={!focused} bind:this={root}>
     {#if !focused}
         <div class="endpoint"><span class="end-mark" aria-hidden="true"><Icon path="M8 5v14l11-7z" size={11} /></span><div><strong>{ends[0]?.label}</strong><small>Start</small></div></div>
@@ -181,6 +191,13 @@
     .day-picker { gap: 2px; }
     select { height: 34px; padding: 0 4px; border: 0; border-radius: 6px; color: var(--ink); background: var(--panel); font: 600 14px var(--sans); }
     .hint { margin: 4px 8px 8px; font-size: 13px; color: var(--ink-soft); }
+    .keep { display: flex; align-items: center; gap: 12px; margin: 4px 8px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
+    .keep p { flex: 1; min-width: 0; margin: 0; }
+    .keep strong, .keep small { display: block; }
+    .keep strong { font: 600 14px/1.3 var(--sans); }
+    .keep small { margin-top: 2px; font-size: 13px; color: var(--ink-soft); }
+    .keep-all { flex: none; min-height: 32px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--amber); color: var(--on-amber); font: inherit; font-weight: 600; cursor: pointer; }
+    .keep-all:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
     .itinerary {
         display: flex;

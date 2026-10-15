@@ -1,5 +1,5 @@
 import type { Place } from './editor';
-import { groupStops, type Stop } from './stops';
+import { groupStops, type Proposal, type Sleep, type Stop } from './stops';
 import { searchPlaces, type SearchContext } from './search/types';
 
 export type NightStops = { state: 'loading' } | { state: 'ready'; stops: Stop[] } | { state: 'error'; message: string };
@@ -77,10 +77,15 @@ export interface NightChoices {
     stopId: string | null;
     found(night: number): NightStops | undefined;
     window(night: number): [number, number] | null;
-    /** The town at the suggested end of a day that is not pinned. */
-    around(night: number): Stop | undefined;
-    /** The towns before and after the suggested end. */
+    /** Where the rider sleeps, for the whole trip. */
+    sleep: Sleep;
+    /** The suggestion for a night that is not pinned: the proposal, or the town at a day end the rider set. */
+    around(night: number): Proposal | undefined;
+    /** The towns before and after the suggestion that suit the rider. */
     neighbours(night: number): [Stop | undefined, Stop | undefined];
+    /** The suggested nights with a campsite. */
+    campsites: number;
+    keepCampsites(): void;
     /** The date of the night, when the trip has a start date. */
     date(night: number): string | undefined;
     elevationAt(km: number): number | null;

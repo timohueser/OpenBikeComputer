@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop } from './stops';
+import { groupStops, stopWindow, daysAround, evenStop, proposeNights } from './stops';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -38,5 +38,21 @@ describe('stops', () => {
         expect([before.distance / total, after.distance / total]).toEqual([expect.closeTo(.4, 6), expect.closeTo(.6, 6)]);
         const stops = groupStops([place('Early', 'hotel', 'A', total * .3), place('Middle', 'campsite', 'B', total * .52)], []);
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
+    });
+
+    it('proposes each open night at the nearest stop that suits the rider, evening out the days left after it', () => {
+        const trip = testTrip(), line = testLine(trip);
+        const stops = groupStops([
+            place('Krone', 'hotel', 'Early', 30), place('Linde', 'hotel', 'Middle', 35), place('Adler', 'hotel', 'Middle', 35.5),
+            place('Seecamping', 'campsite', 'Middle', 37), place('Waldcamping', 'campsite', 'Late', 55), place('Post', 'hotel', 'Later', 59),
+        ], []);
+        const nights = (sleep: 'camping' | 'hotel' | 'either', of = trip, offered = stops) => [...proposeNights(of, line, () => offered, sleep)]
+            .map(([night, p]) => [night, p.stop.name, p.campsite?.place.label, p.km]);
+        expect(nights('camping')).toEqual([[1, 'Middle', 'Seecamping', 37], [2, 'Late', 'Waldcamping', 55]]);
+        expect(nights('hotel')).toEqual([[1, 'Early', undefined, 30], [2, 'Later', undefined, 59]]);
+        // Either ends the day in the town and names its campsite.
+        expect(nights('either', trip, stops.slice(1))[0]).toEqual([1, 'Middle', 'Seecamping', 35.5]);
+        // A night the rider set stays theirs.
+        expect(nights('hotel', { ...trip, splits: { 1: .4 } })).toEqual([[2, 'Later', undefined, 59]]);
     });
 });

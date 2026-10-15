@@ -1,5 +1,5 @@
 import { overnightWindow, planView, provisionalDays, type Day, type Place, type Trip } from './editor';
-import type { RoutingLine } from './routing';
+import { movingSecondsAt, type RoutingLine } from './routing';
 import { asPlace } from './search/presentation';
 import type { SearchPlace } from './search/types';
 
@@ -91,4 +91,53 @@ export function evenStop(stops: Stop[], trip: Trip, line: RoutingLine | undefine
     const { total } = planView(trip, line);
     const center = overnightWindow(trip, line, night).center * total;
     return [...stops].sort((a, b) => Math.abs(a.km - center) - Math.abs(b.km - center))[0];
+}
+
+export type Sleep = NonNullable<Trip['sleep']>;
+
+/** A suggested night: a stop, its campsite unless the rider sleeps in hotels, and where the day ends, in km. A camping
+ * night ends at its campsite. */
+export interface Proposal { stop: Stop; campsite?: StopPlace; km: number }
+
+export function proposal(stop: Stop, sleep: Sleep): Proposal {
+    const campsite = sleep === 'hotel' ? undefined : stop.sleep.find(p => p.place.category === 'camp');
+    return { stop, campsite, km: sleep === 'camping' && campsite ? campsite.km : stop.km };
+}
+
+/** How the ladder names a suggested night: by the campsite of a camping night, else by its town. */
+export const proposalTitle = (p: Proposal, sleep: Sleep) => sleep === 'camping' && p.campsite ? p.campsite.place.label : `Around ${p.stop.name}`;
+
+/** Whether a stop has the kind of place the rider sleeps in. */
+export const suits = (stop: Stop, sleep: Sleep) => sleep === 'either' || stop.sleep.some(p => p.place.category === (sleep === 'camping' ? 'camp' : 'hotel'));
+
+/** A stop for every night that is neither pinned nor set by the rider, night by night: of the stops that suit the rider,
+ * the one nearest an even share of the riding time left before the next fixed night. A night without one keeps its even
+ * end. */
+export function proposeNights(trip: Trip, line: RoutingLine | undefined, stopsOf: (night: number) => Stop[], sleep: Sleep): Map<number, Proposal> {
+    const proposals = new Map<number, Proposal>();
+    const { total, days } = planView(trip, line);
+    if (!line || !total) return proposals;
+    const effort = (km: number) => line.seconds > 0 ? movingSecondsAt(line, km / total) : km;
+    const pinned = new Set(trip.points.filter(p => p.kind === 'night').map(p => p.night));
+    let planned = trip;
+    for (let night = 1; night < days.length; night++) {
+        if (pinned.has(night) || trip.splits?.[night] !== undefined) continue;
+        const window = overnightWindow({ ...planned, limit: 0 }, line, night, .5);
+        if (window.blocked) continue;
+        const even = effort(window.center * total);
+        const best = stopsOf(night).filter(stop => suits(stop, sleep)).map(stop => proposal(stop, sleep))
+            .filter(p => p.km >= window.from * total && p.km <= window.to * total)
+            .sort((a, b) => Math.abs(effort(a.km) - even) - Math.abs(effort(b.km) - even))[0];
+        if (!best) continue;
+        proposals.set(night, best);
+        planned = withProposals(planned, line, new Map([[night, best]]));
+    }
+    return proposals;
+}
+
+/** The trip with each proposed night as its day end. */
+export function withProposals(trip: Trip, line: RoutingLine | undefined, proposals: Map<number, Proposal>): Trip {
+    const { total } = planView(trip, line);
+    if (!proposals.size || !total) return trip;
+    return { ...trip, splits: { ...Object.fromEntries([...proposals].map(([night, p]) => [night, p.km / total])), ...trip.splits } };
 }

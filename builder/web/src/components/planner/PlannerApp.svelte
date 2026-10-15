@@ -49,7 +49,7 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { stopWindow, type Stop } from '../../lib/planner/stops';
+    import { proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Sleep, type Stop } from '../../lib/planner/stops';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
@@ -231,7 +231,34 @@
         profileOpen = next > DRAWER_CLOSED;
         if (profileOpen) profileHeight = next;
     }
-    const view = $derived(planView(shown.trip, shown.line));
+    const multi = $derived(trip.mode !== 'route');
+    // The days of the trip without its suggested nights. The towns are searched around their ends, and the suggestions
+    // then move them. A drag preview changes the line but not the trip, so they follow the line of the trip.
+    const evenDays = $derived(planView(trip, session.line).days);
+    // An open day lists the towns of its night until that night is pinned; the ladder lists the night the rider opened.
+    const pickerNight = $derived(!multi || !currentRoute || searching || list !== 'plan' ? null
+        : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
+        : choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
+    // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
+    const stopWindows = $derived.by(() => {
+        const line = session.line;
+        if (!multi || !line) return {} as Record<number, [number, number]>;
+        return Object.fromEntries(evenDays.slice(0, -1).flatMap(day => {
+            const window = !day.pinned || day.number === pickerNight ? stopWindow(trip, line, day.number) : null;
+            return window ? [[day.number, window]] : [];
+        })) as Record<number, [number, number]>;
+    });
+    const routeKey = $derived(routingKey(trip));
+    $effect(() => {
+        const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
+        if (!session.dragging) untrack(() => stopFinder.want(route, context, stretches));
+    });
+    const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
+    const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
+    const sleep = $derived(trip.sleep ?? 'either');
+    const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops, sleep) : new Map<number, Proposal>());
+    const planned = $derived(withProposals(shown.trip, shown.line, proposals));
+    const view = $derived(planView(planned, shown.line));
     const coordinates = $derived(view.coordinates);
     const lengths = $derived(cumulative(coordinates));
     const total = $derived(view.total);
@@ -239,7 +266,6 @@
     const stops = $derived(session.stale ? planView(trip, undefined).stops : view.stops);
     const visualStops = $derived(view.stops);
     const days = $derived(view.days);
-    const multi = $derived(trip.mode !== 'route');
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
@@ -248,11 +274,6 @@
         points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
-    const activeDay = $derived(days[Math.min(night - 1, days.length - 1)]);
-    // An open day lists the towns of its night until that night is pinned; the ladder lists the night the rider opened.
-    const pickerNight = $derived(!multi || !currentRoute || searching || list !== 'plan' ? null
-        : expandedDay !== null ? (night < days.length && (!activeDay?.pinned || choosingNight === night) ? night : null)
-        : choosingNight !== null && choosingNight < days.length ? choosingNight : null);
     const closures = $derived(closureStretches(visualRoute));
     const alpine = $derived(alpineStretches(visualRoute));
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
@@ -264,22 +285,6 @@
         if (shownStretch) map?.fitCoordinates(shownStretch.coordinates);
     }
     const stepLabel = (stretches: Stretch[]) => shownIndex(stretches) < 0 ? 'Show' : shownIndex(stretches) + 1 < stretches.length ? 'Next' : 'Hide';
-    // Towns are searched for every night still to choose, so the ladder can name the town at each suggested end.
-    // A drag preview changes the line but not the trip, so the stretches follow the line of the trip.
-    const stopWindows = $derived.by(() => {
-        const line = session.line;
-        if (!multi || !line || list !== 'plan' || searching) return {} as Record<number, [number, number]>;
-        return Object.fromEntries(days.slice(0, -1).flatMap(day => {
-            const window = !day.pinned || day.number === pickerNight ? stopWindow(trip, line, day.number) : null;
-            return window ? [[day.number, window]] : [];
-        })) as Record<number, [number, number]>;
-    });
-    const routeKey = $derived(routingKey(trip));
-    $effect(() => {
-        const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
-        if (!session.dragging) untrack(() => stopFinder.want(route, context, stretches));
-    });
-    const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
     // The ladder and an open day light up the stretch whose towns they list.
     const nightBand = $derived.by(() => {
         const window = pickerNight !== null ? stopWindows[pickerNight] : undefined;
@@ -287,7 +292,6 @@
     });
     const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
         : shownStretch && (shownIndex(closures) >= 0 || shownIndex(alpine) >= 0) ? shownStretch.coordinates : []);
-    const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
@@ -295,14 +299,19 @@
         get stopId() { return stopId; },
         found: nightStops,
         window: night => stopWindows[night] ?? null,
+        get sleep() { return sleep; },
         around: night => {
+            if (proposals.has(night)) return proposals.get(night);
             const end = days[night - 1].to * total;
-            return readyStops(night).filter(stop => Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
+            const stop = readyStops(night).filter(stop => Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
+            return stop && proposal(stop, sleep);
         },
         neighbours: night => {
-            const end = nights.around(night)?.km ?? days[night - 1].to * total, stops = readyStops(night);
+            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, sleep));
             return [stops.filter(stop => stop.km < end - .5).at(-1), stops.find(stop => stop.km > end + .5)];
         },
+        get campsites() { return [...proposals.values()].filter(p => p.campsite).length; },
+        keepCampsites: () => keepCampsites(),
         date: night => trip.startDate ? addDays(trip.startDate, (dayLabels[night] ?? night) - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
         choose: night => { choosingNight = night; stopId = null; clearSelection(); if (night !== null) showNightArea(night); },
@@ -822,14 +831,27 @@
     // A day end dropped within 2 km of a town with somewhere to sleep moves to that town.
     function moveDayEnd(number: number, progress: number) {
         const km = progress * total;
-        const town = readyStops(number).filter(stop => Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
-        commit(setSplit(trip, session.line, number, town && total ? town.km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
+        const town = readyStops(number).filter(stop => suits(stop, sleep) && Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
+        commit(setSplit(trip, session.line, number, town && total ? proposal(town, sleep).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
     }
 
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
-        commit(setSplit(trip, session.line, number, stop.km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
+        commit(setSplit(trip, session.line, number, proposal(stop, sleep).km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
         stopId = null;
+    }
+
+    function keepCampsites() {
+        // The latest night first: each new point then lies after the nights still to pin, so they find their leg on the line.
+        const kept = [...proposals].filter(([, p]) => p.campsite).sort(([a], [b]) => b - a);
+        let next = trip;
+        for (const [number, { campsite }] of kept) {
+            const pinned = pinNight(next, session.line, number, campsite!.place.coordinate, campsite!.place.label);
+            if (pinned === next) continue;
+            pinned.points.find(p => p.night === number)!.placeKind = campsite!.place.placeKind;
+            next = pinned;
+        }
+        if (next !== trip) commit(next, kept.length === 1 ? `Night ${dayLabels[kept[0][0]]} at ${kept[0][1].campsite!.place.label}` : `${kept.length} campsites kept`);
     }
 
     function stopChoosing() {
@@ -972,8 +994,8 @@
         clearSelection();
     }
 
-    function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number) {
-        commit({ ...applyBudget(trip, session.line, budget, target, limit), climbTarget: climb || undefined }, 'Day plan updated');
+    function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number, sleep: Sleep) {
+        commit({ ...applyBudget(trip, session.line, budget, target, limit), climbTarget: climb || undefined, sleep: sleep === 'either' ? undefined : sleep }, 'Day plan updated');
         night = Math.min(night, trip.days);
         if (expandedDay !== null) expandedDay = night;
     }
@@ -1131,7 +1153,7 @@
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
                 {#if currentRoute && (!focusedDay || planEditing)}
-                    <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
+                    <PlanLine {trip} dayCount={itinerary.length} distance={view.summary.distance} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
                 {#if !focusedDay && visualRoute}
                     <div class="list-switch">
@@ -1151,7 +1173,7 @@
                             previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
-                            trip={shown.trip} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
+                            trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}

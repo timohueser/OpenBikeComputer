@@ -67,6 +67,8 @@ export interface Trip {
     splits?: Record<number, number>;
     /** Climb per day in metres; 0 or absent means no target. */
     climbTarget?: number;
+    /** Where the rider sleeps: the kind of place the suggested nights look for. Absent means either. */
+    sleep?: 'camping' | 'hotel' | 'either';
 }
 /** Figures of a day or of the whole route. Ascent and descent count known heights only. Without a routed line, the
  * climb is 0 and the hours follow the activity's pace. */
