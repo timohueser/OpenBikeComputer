@@ -106,7 +106,7 @@ pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
                 || k.starts_with("wikipedia:")
                 || matches!(
                     k.as_str(),
-                    "opening_hours" | "website" | "phone" | "cuisine" | "population" | "ele" | "wikidata" | "wikipedia"
+                    "opening_hours" | "website" | "phone" | "cuisine" | "population" | "ele" | "wikidata" | "wikipedia" | "shelter_type"
                 )
         })
         .map(|(k, v)| (k.as_str(), v.as_str()))
