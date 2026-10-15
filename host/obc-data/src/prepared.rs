@@ -435,14 +435,20 @@ impl<'a> Job<'a> {
         self.run.check_stop(self.store)
     }
 
-    /// Run `command`, a program of the producer, in the repository root, and wait for it.
+    /// Run `command`, a program of the producer, in the repository root, and wait for it. Its
+    /// error names the program, the arguments before the first option, and its last error line.
     pub fn program(&self, command: &mut Command) -> Result<(), String> {
         self.run.check_stop(self.store)?;
         // The program stops when this process does, so no orphan writes into a later run.
         command.current_dir(self.root).env("OBC_PARENT_PID", std::process::id().to_string());
-        let program = command.get_program().to_string_lossy().into_owned();
-        let status = command.status().map_err(|e| format!("cannot start `{program}`: {e}"))?;
-        status.success().then_some(()).ok_or_else(|| format!("`{program}` failed: {status}"))
+        let program = Path::new(command.get_program()).file_name().unwrap_or_default().to_string_lossy();
+        let args = command.get_args().map(|arg| arg.to_string_lossy()).take_while(|arg| !arg.starts_with("--"));
+        let name = std::iter::once(program).chain(args).collect::<Vec<_>>().join(" ");
+        let mut child =
+            command.stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
+        let errors = crate::engine::copy_errors(&mut child);
+        let status = child.wait().map_err(|e| format!("wait for `{name}`: {e}"))?;
+        crate::engine::ended(&name, status, errors)
     }
 
     /// Upload the files `paths` of `work` to the target in one call, record each, and delete them
