@@ -303,6 +303,8 @@ data *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
+    # A release build after a change takes minutes; in a terminal, cargo shows its progress.
+    if [[ -t 2 ]]; then _run cargo build --release --locked -p obc-data-steps; fi
     _run cargo run --release --quiet --locked -p obc-data-steps -- "$@"
 
 # Bake the published cell catalog. `obc bake` processes every Geofabrik region in data/regions/;
