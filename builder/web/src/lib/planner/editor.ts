@@ -346,7 +346,8 @@ function splitDays(trip: Trip, layout: Layout, provisionalEnd?: { night: number;
         let next = i + 1;
         while (next < count && !fixed.has(next)) next++;
         const start = effort.at(boundaries[i - 1]), end = effort.at(next < count ? fixed.get(next)! : 1);
-        boundaries.push(effort.progress(start + (end - start) / (next - i + 1)));
+        // A stretch without riding time, such as a transfer, can put the even point before the previous end.
+        boundaries.push(Math.max(boundaries[i - 1], effort.progress(start + (end - start) / (next - i + 1))));
     }
     boundaries.push(1);
     return boundaries.slice(1).map((to, i) => {
@@ -459,12 +460,13 @@ export function overnightCandidates(trip: Trip, line: RoutingLine | undefined, n
         .sort((a, b) => a.distance - b.distance);
 }
 
-/** A route as a trip. Without day decisions it gets one day for each started distance target, at least two; pinned
- * nights, dragged day ends and rest days keep their day count. */
+/** A route as a trip. A calculated route without day decisions gets one day for each started distance target, at least
+ * two. Pinned nights, dragged day ends, rest days, a route still calculating or no distance target keep the day count. */
 export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
-    if (trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length) return { ...trip, mode: 'trip' };
+    const decided = trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length;
+    if (decided || !line || !(trip.limit > 0)) return { ...trip, mode: 'trip' };
     const { distance } = planView(trip, line).summary;
-    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / (trip.limit || 50))), trip.limit);
+    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / trip.limit)), trip.limit);
 }
 
 export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Trip['budget'], target: number, limit: number): Trip {

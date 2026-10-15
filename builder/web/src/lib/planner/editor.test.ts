@@ -141,6 +141,7 @@ describe('planning modes', () => {
         const route: Trip = { ...testTrip(), mode: 'route', days: 3, limit: 50 };
         const days = (limit: number) => routeToTrip({ ...route, limit }, testLine(route)).days;
         expect([days(50), days(20), days(500)]).toEqual([2, 5, 2]);
+        expect(routeToTrip(route, undefined).days).toBe(3);
     });
 });
 
