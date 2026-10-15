@@ -156,6 +156,11 @@ class Wiki(unittest.TestCase):
         self.assertEqual(catalog.fact(self.db, "link", "wikipedia:ja:CastleJA")["identity"], "Q1")
         self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q999")["status"], "missing")
 
+    def test_a_title_cut_inside_a_character_does_not_stop_the_import(self):
+        data = sql("langlinks", "ll_from ll_lang ll_title", b"(1,'bn','\xe0\xa6\xb8\xe0'),\n(1,'de','Burg')")
+        self.assertEqual(list(dumps.rows(BytesIO(data), "langlinks", ("ll_lang", "ll_title"))),
+                         [["bn", "\u09b8\ufffd"], ["de", "Burg"]])
+
     def test_a_redirect_to_an_item_missing_from_the_dump_is_missing(self):
         self.subjects(dict(osm="n1", wikidata="Q90"))
         self.db.execute("INSERT INTO redirects VALUES('Q90','Q1')")
