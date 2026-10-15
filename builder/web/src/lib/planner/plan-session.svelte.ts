@@ -108,6 +108,10 @@ export class PlanSession {
         return options.state === 'ready' && this.previewId !== options.choice ? options.routes.find(route => route.id === this.previewId) : undefined;
     });
 
+    /** The lines of the saved versions by routing key, or the message of a failed calculation. */
+    versionLines = $state.raw<Record<string, RoutingLine | string>>({});
+    private versionsRequest?: AbortController;
+
     private readonly legs = new LegCache();
     private library?: PlanLibrary;
     // The calculation in flight, or the one that failed, so a label edit neither restarts nor clears it.
@@ -142,6 +146,7 @@ export class PlanSession {
         this.cancelPreview();
         this.request?.abort.abort();
         this.optionsRequest?.abort.abort();
+        this.versionsRequest?.abort();
         void this.library?.close();
     }
 
@@ -167,10 +172,11 @@ export class PlanSession {
         return this.canRedo && this.travel(this.at + 1);
     }
 
-    /** Restores a saved version as one Undo step; false when it is not a valid plan. */
+    /** Restores a saved version as one Undo step; false when it is not a valid plan. A known line skips its calculation. */
     restore(saved: Trip): boolean {
         if (!isTrip(saved)) return false;
-        this.commit(saved);
+        const line = this.versionLines[routingKey(saved)];
+        this.commit(saved, typeof line === 'object' ? line : undefined);
         return true;
     }
 
@@ -232,6 +238,23 @@ export class PlanSession {
      * plan stay as they are. */
     previewOption(id: string | null): void {
         this.previewId = id;
+    }
+
+    /** Calculates the lines of the saved versions that have none, and with `retry` the failed ones. One request runs at a
+     * time; the lines of other plans' versions are dropped when it answers. */
+    findVersionLines(retry = false): void {
+        const saved = new Map(this.versions.filter(v => isTrip(v.trip)).map(v => [routingKey(v.trip), v.trip] as const));
+        const missing = [...saved].filter(([key]) => this.versionLines[key] === undefined || (retry && typeof this.versionLines[key] === 'string'));
+        if (!missing.length || this.versionsRequest) return;
+        const abort = this.versionsRequest = new AbortController();
+        void Promise.all(missing.map(([key, trip]) => (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
+            line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const))).then(found => {
+            if (abort.signal.aborted) return;
+            this.versionsRequest = undefined;
+            const lines: Record<string, RoutingLine | string> = { ...this.versionLines, ...Object.fromEntries(found) };
+            const kept = new Set(this.versions.filter(v => isTrip(v.trip)).map(v => routingKey(v.trip)));
+            this.versionLines = Object.fromEntries(Object.entries(lines).filter(([key]) => kept.has(key)));
+        });
     }
 
     /** Applies one of the alternatives to the trip they were found for, as one Undo step: a corridor becomes one shaping

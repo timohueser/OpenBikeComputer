@@ -1,8 +1,8 @@
+import { planView, type Trip } from './editor';
 import { coordinateAt, cumulative, routeDistance, type Coordinate } from './geo';
 import { profileAscent, type ProfileLine } from './profile-data';
 import { presetName } from './riding-profiles';
-import { SURFACES, type EngineRoute } from './routing';
-import { UNPAVED } from './search/segments';
+import { unpavedMetres, type EngineRoute, type RoutingLine } from './routing';
 
 /** The rider's current route first, then the other options in the order of the answer. Letter A is the current route. */
 export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[] {
@@ -20,34 +20,52 @@ export function optionName(route: EngineRoute, places: Record<string, string>): 
     return reasonNames[route.reason] ?? presetName(route.profile);
 }
 
-export const unpavedKm = (route: EngineRoute) => route.totals.surface_m.reduce((sum, m, i) => UNPAVED.includes(SURFACES[i]) ? sum + m : sum, 0) / 1000;
-export const elevationComplete = (route: EngineRoute) => route.totals.unknown_elevation_m === 0;
-
-const profiles = new WeakMap<EngineRoute, ProfileLine>();
-/** The heights along `route`, one object for each route, so its profile samples are computed once. */
-export function routeProfile(route: EngineRoute): ProfileLine {
-    let line = profiles.get(route);
-    if (!line) profiles.set(route, line = { coordinates: route.geometry, elevation: route.elevation });
-    return line;
+/** One row of a comparison, a route option or a saved version, with the figures that the list compares. */
+export interface Compared {
+    id: string;
+    name: string;
+    /** A short line under the name, such as the preset of your route. */
+    detail?: string;
+    /** The line and its heights, for the map and the profile. */
+    line: ProfileLine;
+    km: number;
+    /** Metres of climb, measured on the heights; null when some heights are unknown, as the climb is then a lower bound. */
+    climb: number | null;
+    unpavedKm: number;
+    unknownSurfaceKm: number;
 }
 
-/** Metres of climb, measured on the heights as the route summary does: the service's total rounds each piece. */
-export const climbM = (route: EngineRoute) => profileAscent(0, 1, routeProfile(route));
+const profiles = new WeakMap<EngineRoute, ProfileLine>();
 
-const km = (metres: number) => (Math.abs(metres) / 1000).toFixed(1);
+/** A route of the route service as a row. One line object for each route, so its profile samples are computed once. */
+export function routeRow(route: EngineRoute, name: string): Compared {
+    let line = profiles.get(route);
+    if (!line) profiles.set(route, line = { coordinates: route.geometry, elevation: route.elevation });
+    const { totals } = route;
+    return { id: route.id, name, line, km: totals.distance_m / 1000, climb: totals.unknown_elevation_m ? null : profileAscent(0, 1, line),
+        unpavedKm: unpavedMetres(totals) / 1000, unknownSurfaceKm: totals.surface_m[0] / 1000 };
+}
 
-/** How `route` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
- * Climb stays out when either route has incomplete elevation, as its ascent is then a lower bound; unpaved stays out
- * when it rounds to nothing. */
-export function difference(route: EngineRoute, current: EngineRoute): string {
-    const metres = route.totals.distance_m - current.totals.distance_m;
-    const parts = [Number(km(metres)) ? `${km(metres)} km ${metres < 0 ? 'shorter' : 'longer'}` : 'Same distance'];
-    if (elevationComplete(route) && elevationComplete(current)) {
-        const climb = Math.round(climbM(route) - climbM(current));
+/** A plan and its calculated line as a row, with the distance and climb of the route summary. */
+export function lineRow(id: string, name: string, trip: Trip, line: RoutingLine): Compared {
+    const { summary } = planView(trip, line);
+    return { id, name, line, km: summary.distance, climb: line.unknownElevationKm ? null : summary.ascent, unpavedKm: line.unpavedKm,
+        unknownSurfaceKm: line.unknownSurfaceKm };
+}
+
+const tenths = (km: number) => Math.abs(km).toFixed(1);
+
+/** How `row` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
+ * Climb stays out when either climb is unknown; unpaved stays out when it rounds to nothing. */
+export function difference(row: Compared, current: Compared): string {
+    const km = row.km - current.km;
+    const parts = [Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : 'Same distance'];
+    if (row.climb !== null && current.climb !== null) {
+        const climb = Math.round(row.climb - current.climb);
         parts.push(climb ? `${Math.abs(climb)} m ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
     }
-    const unpaved = (unpavedKm(route) - unpavedKm(current)) * 1000;
-    if (Number(km(unpaved))) parts.push(`${km(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
+    const unpaved = row.unpavedKm - current.unpavedKm;
+    if (Number(tenths(unpaved))) parts.push(`${tenths(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
     return parts.join(' · ');
 }
 

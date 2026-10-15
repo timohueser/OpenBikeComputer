@@ -5,6 +5,7 @@ import type { Coordinate } from './geo';
 import { PlanLibrary } from './library';
 import { PlanSession } from './plan-session.svelte';
 import { newVersion } from './versions';
+import { routingKey } from './routing';
 import type { AnswerRoute } from './route-answer';
 import { routeService } from '../../../test-support/planner/route-service';
 
@@ -191,6 +192,30 @@ describe('plan session', () => {
         const { view, request } = JSON.parse(routes.places.mock.calls[0][1].body as string);
         expect([(view[0] + view[2]) / 2, (view[1] + view[3]) / 2].map(n => n.toFixed(6))).toEqual(via.map(n => n.toFixed(6)));
         expect(request).toEqual({ type: 'places', what: ['town'], radius: { value: 3, unit: 'km' } });
+    });
+
+    it('calculates each saved version once, a failed one again on retry, and restores a version with its line', async () => {
+        const routes = service();
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        const valley = moved(plan, 8.2), ridge = moved(plan, 8.3);
+        await session.saveVersions([newVersion(valley, undefined, 'Valley'), newVersion(ridge, undefined, 'Ridge')]);
+        routes.fetch.mockResolvedValueOnce({ ok: false, json: async () => ({ code: 'no_path', message: 'No legal route.' }) });
+        session.findVersionLines();
+        await vi.waitFor(() => expect(Object.values(session.versionLines)).toHaveLength(2));
+        expect(Object.values(session.versionLines).filter(line => line === 'No legal route.')).toHaveLength(1);
+        const requests = routes.fetch.mock.calls.length;
+        session.findVersionLines();
+        expect(routes.fetch).toHaveBeenCalledTimes(requests);
+        session.findVersionLines(true);
+        await vi.waitFor(() => expect(Object.values(session.versionLines).every(line => typeof line === 'object')).toBe(true));
+        expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
+        expect(session.restore(valley)).toBe(true);
+        expect(session.line).toBe(session.versionLines[routingKey(valley)]);
+        expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
+        session.close();
     });
 
     it('duplicates a plan that is not open with the versions saved for it', async () => {
