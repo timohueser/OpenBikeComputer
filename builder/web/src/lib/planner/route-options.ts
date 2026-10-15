@@ -34,21 +34,21 @@ export function routeProfile(route: EngineRoute): ProfileLine {
 /** Metres of climb, measured on the heights as the route summary does: the service's total rounds each piece. */
 export const climbM = (route: EngineRoute) => profileAscent(0, 1, routeProfile(route));
 
-/** A minus sign for less, and ±0 when the difference rounds to nothing. */
-export function signed(value: number, digits = 0): string {
-    const text = Math.abs(value).toFixed(digits);
-    return Number(text) === 0 ? '±0' : `${value < 0 ? '−' : '+'}${text}`;
-}
+const km = (metres: number) => (Math.abs(metres) / 1000).toFixed(1);
 
-/** How `route` differs from the current route: km, m of climb and km unpaved. Climb is null when either route has
- * incomplete elevation, as its ascent is then a lower bound. */
-export function difference(route: EngineRoute, current: EngineRoute): { distance: string; climb: string | null; unpaved: string } {
-    const a = current.totals, b = route.totals;
-    return {
-        distance: signed((b.distance_m - a.distance_m) / 1000, 1),
-        climb: elevationComplete(route) && elevationComplete(current) ? signed(climbM(route) - climbM(current)) : null,
-        unpaved: signed(unpavedKm(route) - unpavedKm(current), 1),
-    };
+/** How `route` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
+ * Climb stays out when either route has incomplete elevation, as its ascent is then a lower bound; unpaved stays out
+ * when it rounds to nothing. */
+export function difference(route: EngineRoute, current: EngineRoute): string {
+    const metres = route.totals.distance_m - current.totals.distance_m;
+    const parts = [Number(km(metres)) ? `${km(metres)} km ${metres < 0 ? 'shorter' : 'longer'}` : 'Same distance'];
+    if (elevationComplete(route) && elevationComplete(current)) {
+        const climb = Math.round(climbM(route) - climbM(current));
+        parts.push(climb ? `${Math.abs(climb)} m ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
+    }
+    const unpaved = (unpavedKm(route) - unpavedKm(current)) * 1000;
+    if (Number(km(unpaved))) parts.push(`${km(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
+    return parts.join(' · ');
 }
 
 /** The middle of the longest stretch of `line` more than 50 m from `other`, where the map marks the line with its letter.

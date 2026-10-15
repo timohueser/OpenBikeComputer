@@ -16,10 +16,11 @@ describe('route options', () => {
 
     it('compares every option with the current route, which leads the list', () => {
         expect(optionOrder([balanced, shorter, corridor], 'b')).toEqual([shorter, balanced, corridor]);
-        expect(difference(shorter, balanced)).toEqual({ distance: '−5.5', climb: '−237', unpaved: '±0' });
-        expect(difference(balanced, shorter)).toEqual({ distance: '+5.5', climb: '+237', unpaved: '±0' });
-        expect(difference(corridor, balanced)).toEqual({ distance: '−0.6', climb: '−20', unpaved: '+0.1' });
-        expect(difference(shorter, route('d', 'primary', 'touring', 30, 900, 2.4, 120)).climb).toBeNull();
+        expect(difference(shorter, balanced)).toBe('5.5 km shorter · 237 m less climbing');
+        expect(difference(balanced, shorter)).toBe('5.5 km longer · 237 m more climbing');
+        expect(difference(corridor, balanced)).toBe('0.6 km shorter · 20 m less climbing · 0.1 km more unpaved');
+        expect(difference(route('e', 'smoother', 'touring', 30.72, 906, 2.4), balanced)).toBe('Same distance · same climbing');
+        expect(difference(shorter, route('d', 'primary', 'touring', 30, 900, 2.4, 120))).toBe('4.8 km shorter');
     });
 
     it('names options by their reason, and a corridor by its settlement or as another way', () => {

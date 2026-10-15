@@ -31,7 +31,7 @@
 
     function label(route: EngineRoute, index: number): string {
         const d = index ? difference(route, rows[0]) : null, climb = elevationComplete(route) ? `${climbM(route)} m` : 'incomplete';
-        return `${optionLetter(index)}, ${index ? optionName(route, places) : 'Your route'}: ${km(route.totals.distance_m)} km${d ? ` (${d.distance})` : ''}, climb ${climb}${d?.climb ? ` (${d.climb})` : ''}, unpaved ${unpavedKm(route).toFixed(1)} km${d ? ` (${d.unpaved})` : ''}`;
+        return `${optionLetter(index)}, ${index ? optionName(route, places) : 'Your route'}: ${km(route.totals.distance_m)} km, climb ${climb}, unpaved ${unpavedKm(route).toFixed(1)} km${d ? `. ${d}` : ''}`;
     }
 
     /** Ends the preview, or applies the option, and focuses the checked radio: then the rider's current route. */
@@ -68,6 +68,7 @@
         <div role="radiogroup" aria-label="Route options" tabindex="-1" bind:this={group} onkeydown={escape}>
             {#each rows as route, index (route.id)}
                 {@const d = index ? difference(route, rows[0]) : null}
+                {@const notes = [route.totals.surface_m[0] ? `${km(route.totals.surface_m[0])} km unknown surface` : '', elevationComplete(route) ? '' : 'Elevation incomplete'].filter(Boolean)}
                 <div class="option" class:previewed={route === previewed}>
                     <button type="button" role="radio" aria-checked={route === checked} tabindex={route === checked ? 0 : -1} aria-label={label(route, index)}
                         onclick={() => onPreview(index ? route.id : null)} onkeydown={event => key(event, index)}>
@@ -75,13 +76,13 @@
                         <span class="name">
                             <strong>{index ? optionName(route, places) : 'Your route'}</strong>
                             {#if !index}<small>{presetName(route.profile)}</small>{:else if route === previewed}<small>Previewing</small>{/if}
-                            {#if route.totals.surface_m[0]}<small>{km(route.totals.surface_m[0])} km unknown surface</small>{/if}
-                            {#if !elevationComplete(route)}<small>Elevation incomplete</small>{/if}
                         </span>
                         <span class="value">{km(route.totals.distance_m)} km</span>
                         <span class="value">{elevationComplete(route) ? `${climbM(route)} m` : '–'}</span>
                         <span class="value quiet">{unpavedKm(route).toFixed(1)} km</span>
-                        {#if d}<span class="difference">{d.distance}</span><span class="difference">{d.climb ?? ''}</span><span class="difference">{d.unpaved}</span>{/if}
+                        {#if d || notes.length}
+                            <span class="detail">{#if d}<span class="difference">{d}</span>{/if}{#if notes.length}<small>{notes.join(' · ')}</small>{/if}</span>
+                        {/if}
                     </button>
                     {#if route === previewed}
                         <div class="actions">
@@ -169,7 +170,6 @@
         color: var(--panel);
     }
     .name {
-        grid-row: span 2;
         min-width: 0;
     }
     strong,
@@ -184,22 +184,22 @@
         font: 400 12px var(--sans);
         color: var(--ink-soft);
     }
-    .value,
-    .difference {
+    .value {
         text-align: right;
+        font: 700 13px var(--mono);
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
-    }
-    .value {
-        font: 700 13px var(--mono);
     }
     .value.quiet {
         font-weight: 400;
     }
+    .detail {
+        grid-column: 2 / -1;
+        margin-top: 4px;
+    }
     .difference {
-        margin-top: 2px;
-        font: 400 12px var(--mono);
-        color: var(--ink-soft);
+        display: block;
+        font: 400 13px var(--sans);
     }
     .actions {
         display: flex;
