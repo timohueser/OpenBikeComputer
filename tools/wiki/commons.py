@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import time
 
 from ..landmark_capture import Capture, batches, digest
 from . import catalog
@@ -28,8 +29,9 @@ def title(prefix: str, name: str) -> str:
     return title
 
 
-def keep(db, kind: str, results):
-    """Each `(key, fact or reason)` of `results`, committed every thousand."""
+def keep(db, kind: str, results, total: int):
+    """Each `(key, fact or reason)` of the `total` of `results`, committed and counted every thousand."""
+    start = time.monotonic()
     for count, (key, value) in enumerate(results, 1):
         if isinstance(value, dict):
             catalog.put(db, value)
@@ -37,6 +39,7 @@ def keep(db, kind: str, results):
             catalog.fail(db, kind, key, value)
         if count % 1000 == 0:
             db.commit()
+            print(f"commons {kind}: {count} of {total}{catalog.progress(start, count / total)}", flush=True)
     db.commit()
 
 
@@ -60,15 +63,18 @@ def acquire(db, work: Path, requests: dict):
                     wanted["commons"].add(key)
                     db.execute("INSERT OR IGNORE INTO uses VALUES(?,?,?)", (subject, "commons", key))
     db.commit()
-    keep(db, "category", ((key, category_members(fetch, key)) for key in sorted(wanted["category"]) if not catalog.fact(db, "category", key)))
-    keep(db, "commons", commons_metadata(fetch, [key for key in sorted(wanted["commons"]) if not catalog.fact(db, "commons", key)]))
+    categories = [key for key in sorted(wanted["category"]) if not catalog.fact(db, "category", key)]
+    keep(db, "category", ((key, category_members(fetch, key)) for key in categories), len(categories))
+    files = [key for key in sorted(wanted["commons"]) if not catalog.fact(db, "commons", key)]
+    keep(db, "commons", commons_metadata(fetch, files), len(files))
     media = set()
     for subject, key in db.execute("SELECT subject, key FROM uses WHERE kind='commons'").fetchall():
         value = catalog.fact(db, "commons", key)
         if value and value["status"] == "present":
             media.add(f"M{value['pageid']}")
             db.execute("INSERT OR IGNORE INTO uses VALUES(?,?,?)", (subject, "mediainfo", f"M{value['pageid']}"))
-    keep(db, "mediainfo", mediainfo(fetch, [key for key in sorted(media) if not catalog.fact(db, "mediainfo", key)]))
+    media = [key for key in sorted(media) if not catalog.fact(db, "mediainfo", key)]
+    keep(db, "mediainfo", mediainfo(fetch, media), len(media))
     photos(db, capture, work, sorted(wanted["file"]))
 
 
@@ -101,7 +107,8 @@ def photos(db, capture: Capture, work: Path, titles: list[str]):
             pending[key] = pinned
         else:
             catalog.fail(db, "file", key, "Commons file has no standard 500 px thumbnail")
-    for chunk in batches(sorted(pending)):
+    chunks, start = list(batches(sorted(pending))), time.monotonic()
+    for number, chunk in enumerate(chunks, 1):
         prefix = "photos/" + digest(encoded([(key, pending[key]["revision"]) for key in chunk]))
 
         def check(phase):
@@ -138,3 +145,5 @@ def photos(db, capture: Capture, work: Path, titles: list[str]):
                                      asset=dict(path=f"assets/{outcome['sha256']}", sha256=outcome["sha256"], bytes=outcome["bytes"],
                                                 url=thumbnail(current), input="thumbnail500")))
         db.commit()
+        if number % 20 == 0:
+            print(f"commons file: {number} of {len(chunks)} batches{catalog.progress(start, number / len(chunks))}", flush=True)

@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import time
 from urllib.parse import urlencode
 
 from ..landmark_capture import LANGUAGES, MAX_JSON_SOURCE, MAX_LOCALE_DEPTH, MAX_LOCALES
@@ -87,9 +88,10 @@ def complete(db, name: str) -> str | None:
     return row[0] if row else None
 
 
-def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None):
+def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None, source: Path | None = None):
     """Run import `name` over `rows` once. A finished import with the same input is not repeated;
-    an interrupted one starts again; a changed input never resumes."""
+    an interrupted one starts again; a changed input never resumes. The progress of an import of
+    the dump `source` tells the share of it read and the time left."""
     previous = db.execute("SELECT sha256,complete FROM imports WHERE id=?", (name,)).fetchone()
     if previous and previous[0] != digest:
         raise ValueError(f"{name}: input changed; use a new work directory")
@@ -97,17 +99,31 @@ def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None
         return
     db.execute("INSERT OR REPLACE INTO imports VALUES(?,?,0)", (name, digest))
     db.commit()
-    count = 0
+    count, start = 0, time.monotonic()
     for count, row in enumerate(rows, 1):
         record(row)
         if count % 100000 == 0:
             db.commit()
-            print(f"{name}: {count} records", flush=True)
+            print(f"{name}: {count} records{progress(start, source and dumps.share(source))}", flush=True)
             if shutil.disk_usage(work).free < dumps.RESERVE:
                 raise ValueError(f"{name}: import reached the disk reserve")
     done()
     db.execute("UPDATE imports SET complete=1 WHERE id=?", (name,))
     db.commit()
+
+
+def progress(start: float, share: float | None) -> str:
+    """The share done of a task that started at `start`, its time so far, and the estimated rest."""
+    elapsed = time.monotonic() - start
+    if not share:
+        return f", {span(elapsed)}"
+    share = min(share, 1)
+    return f", {share:.0%} done, {span(elapsed)}, about {span(elapsed * (1 - share) / share)} left"
+
+
+def span(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
 
 
 def parsed(path: Path, keep):
@@ -250,7 +266,7 @@ def wikidata(db, work: Path, path: Path, digest: str):
         if subject:
             put(db, entity(raw))
 
-    scan(db, work, "wikidata:1", digest, parsed(path, first), keep)
+    scan(db, work, "wikidata:1", digest, parsed(path, first), keep, source=path)
     if complete(db, "wikidata:2"):
         return
     targets = graph(db)
@@ -287,7 +303,7 @@ def wikidata(db, work: Path, path: Path, digest: str):
                              revision=value["revision"], proof=value["entity"].get("redirects", {})))
 
     scan(db, work, "wikidata:2", digest, parsed(path, lambda line: (item := ITEM.search(line, 0, 256)) is not None
-                                                  and item[1].decode() in needed), second, done)
+                                                  and item[1].decode() in needed), second, done, source=path)
 
 
 def sql(db, work: Path, name: str, path: Path, digest: str):
@@ -307,7 +323,7 @@ def sql(db, work: Path, name: str, path: Path, digest: str):
         elif table == "langlinks" and row[1] in LANGUAGES:
             db.execute("INSERT OR REPLACE INTO langlinks VALUES(?,?,?,?)", (name.removeprefix("langlinks:"), *row))
 
-    scan(db, work, name, digest, dumps.tuples(path, table, columns), record)
+    scan(db, work, name, digest, dumps.tuples(path, table, columns), record, source=path)
 
 
 class Proof(HTMLParser):
@@ -410,7 +426,7 @@ def articles(db, work: Path, language: str, path: Path, digest: str):
             if kept and not fact(db, "article", key) and not failed(db, "article", key):
                 put(db, dict(kind="article", key=key, status="missing", proof=dict(requested=key, complete_snapshots={name: digest})))
 
-    scan(db, work, name, digest, parsed(path, lambda line: any(text(title) in wanted for title in NAME.findall(line))), record, done)
+    scan(db, work, name, digest, parsed(path, lambda line: any(text(title) in wanted for title in NAME.findall(line))), record, done, source=path)
 
 
 def links(db):

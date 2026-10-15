@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import bz2
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import re
 import shutil
@@ -17,6 +18,9 @@ RECORD = 128 * 1024 * 1024
 COMPRESSIONS = ((b"BZh", "lbzip2", bz2.open), (b"\x1f\x8b", "pigz", gzip.open))
 TOKEN = re.compile(r"\s*('(?:[^'\\]|\\.)*'|NULL|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[(),;])")
 ESCAPES = {"0": "\0", "n": "\n", "r": "\r", "t": "\t", "b": "\b", "Z": "\x1a"}
+# The source file of each open dump. Its decompressor reads through this descriptor, so the offset
+# of the descriptor is how far the read is.
+SOURCES = {}
 
 
 def sha(path: Path) -> str:
@@ -47,18 +51,30 @@ def compression(path: Path):
 def opened(path: Path):
     """The decompressed bytes of `path`. lbzip2 and pigz decompress in parallel where present."""
     tool, module = compression(path)
-    if tool and shutil.which(tool):
-        process = subprocess.Popen([tool, "-dc", str(path)], stdout=subprocess.PIPE)
+    with path.open("rb") as source:
+        SOURCES[path] = source
         try:
-            yield process.stdout
+            if tool and shutil.which(tool):
+                process = subprocess.Popen([tool, "-dc"], stdin=source, stdout=subprocess.PIPE)
+                try:
+                    yield process.stdout
+                finally:
+                    process.stdout.close()
+                    code = process.wait()
+                if code:
+                    raise ValueError(f"{tool} could not decompress {path.name}")
+            else:
+                with module(source, "rb") if tool else nullcontext(source) as stream:
+                    yield stream
         finally:
-            process.stdout.close()
-            code = process.wait()
-        if code:
-            raise ValueError(f"{tool} could not decompress {path.name}")
-    else:
-        with module(path, "rb") as stream:
-            yield stream
+            del SOURCES[path]
+
+
+def share(path: Path) -> float | None:
+    """The share of `path` that its open dump has read, or None when it is not open."""
+    if source := SOURCES.get(path):
+        return os.lseek(source.fileno(), 0, os.SEEK_CUR) / max(1, path.stat().st_size)
+    return None
 
 
 def lines(path: Path):
