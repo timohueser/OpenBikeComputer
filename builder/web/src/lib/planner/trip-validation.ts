@@ -40,6 +40,7 @@ export function isTrip(value: unknown): value is Trip {
         || typeof value.budget !== 'string' || !['days', 'distance', 'hours'].includes(value.budget)
         || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
         || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
+        || (value.sleep !== undefined && !['camping', 'hotel', 'either'].includes(value.sleep as string))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
         || (value.name !== undefined && typeof value.name !== 'string')
         || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)

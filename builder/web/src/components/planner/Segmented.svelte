@@ -1,3 +1,15 @@
+<script module lang="ts">
+    /** Arrow keys choose the next or previous radio of a radio group, wrapping at the ends, and focus it. */
+    export function radioKey(event: KeyboardEvent, index: number, count: number, choose: (index: number) => void): void {
+        const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+        if (!step) return;
+        event.preventDefault();
+        const next = (index + step + count) % count;
+        choose(next);
+        (event.currentTarget as HTMLElement).closest('[role="radiogroup"]')?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus();
+    }
+</script>
+
 <script lang="ts" generics="T extends string">
     import Icon from './PlannerIcon.svelte';
 
@@ -13,15 +25,6 @@
 
     // A radio group keeps one tab stop, also when no option matches.
     const stop = $derived(options.some(option => option.value === value) ? value : options[0]?.value);
-
-    function key(event: KeyboardEvent, index: number) {
-        const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
-        if (!step) return;
-        event.preventDefault();
-        const next = (index + step + options.length) % options.length;
-        onChange(options[next].value);
-        ((event.currentTarget as HTMLElement).parentElement!.children[next] as HTMLElement).focus();
-    }
 </script>
 
 <div class="segmented" class:compact class:grid={columns > 0} style:grid-template-columns={columns > 0 ? `repeat(${columns}, 1fr)` : undefined} role="radiogroup" aria-label={label}>
@@ -32,7 +35,7 @@
             aria-checked={value === option.value}
             tabindex={stop === option.value ? 0 : -1}
             onclick={() => onChange(option.value)}
-            onkeydown={(event) => key(event, index)}
+            onkeydown={(event) => radioKey(event, index, options.length, next => onChange(options[next].value))}
         >
             {#if option.icon}<Icon name={option.icon} size={15} />{/if}{option.label}
         </button>

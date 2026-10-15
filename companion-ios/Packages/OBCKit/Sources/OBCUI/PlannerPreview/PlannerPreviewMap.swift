@@ -9,8 +9,8 @@ struct PlannerPreviewMapPin: Identifiable, Equatable {
     /// A `stop` sits on the route line, so it draws as a disc like the start; a `place` is a
     /// candidate off the line and hangs from a stem.
     /// `route` is the start of a signed route: numbered when it is listed, a dot otherwise.
-    /// `night` ends a day and shows the day's number.
-    enum Kind: Equatable { case start, finish, stop, shape, night(Int), marker, place, route(number: Int?, rank: Int) }
+    /// `night` ends a day and shows the day's number. `option` is the letter of a route option.
+    enum Kind: Equatable { case start, finish, stop, shape, night(Int), marker, place, route(number: Int?, rank: Int), option(String, yours: Bool) }
     let id: String
     let title: String
     let coordinate: Coordinate
@@ -287,6 +287,11 @@ struct PlannerPreviewMap: UIViewRepresentable {
                 view.image = Self.routeImage(number: number, rank: rank, selected: selected, traits: traits)
                 return
             }
+            if case .option(let letter, let yours) = kind {
+                view.centerOffset = .zero
+                view.image = Self.letterImage(letter, yours: yours, traits: traits)
+                return
+            }
             let stemmed = kind == .marker || (kind == .place && !pin.pin.isAmbient)
             view.centerOffset = CGVector(dx: 0, dy: stemmed ? -12 : 0)
             view.image = UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
@@ -336,13 +341,14 @@ struct PlannerPreviewMap: UIViewRepresentable {
         }
 
         /// A numbered disc in the network colour, or a small dot; magenta when selected.
+        /// The image is 44 pt for the tap target; MapLibre picks the marker nearest the tap among overlapping ones.
         static func routeImage(number: Int?, rank: Int, selected: Bool, traits: UITraitCollection) -> UIImage {
             let color = selected ? UIColor(OBCTheme.route).resolvedColor(with: traits)
                 : PlannerPreviewNetworkStyle.color(rank: rank, traits: traits).withAlphaComponent(1)
             let surface = UIColor(OBCTheme.surface).resolvedColor(with: traits)
-            let size: CGFloat = number == nil ? 14 : 28
-            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
-                let disc = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: size - 2, height: size - 2))
+            let size: CGFloat = number == nil ? 14 : 28, inset = (44 - size) / 2
+            return UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
+                let disc = UIBezierPath(ovalIn: CGRect(x: inset + 1, y: inset + 1, width: size - 2, height: size - 2))
                 (number == nil || selected ? color : surface).setFill(); disc.fill()
                 (number == nil ? surface : color).setStroke(); disc.lineWidth = number == nil ? 1.5 : 2; disc.stroke()
                 guard let number else { return }
@@ -350,7 +356,21 @@ struct PlannerPreviewMap: UIViewRepresentable {
                     .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
                     .foregroundColor: selected ? surface : UIColor(OBCTheme.ink).resolvedColor(with: traits)])
                 let bounds = text.size()
-                text.draw(at: CGPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2))
+                text.draw(at: CGPoint(x: (44 - bounds.width) / 2, y: (44 - bounds.height) / 2))
+            }
+        }
+
+        /// A disc as in the Route options list: A in the route colour, an option in ink.
+        static func letterImage(_ letter: String, yours: Bool, traits: UITraitCollection) -> UIImage {
+            let surface = UIColor(OBCTheme.surface).resolvedColor(with: traits)
+            return UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
+                let disc = UIBezierPath(ovalIn: CGRect(x: 9, y: 9, width: 26, height: 26))
+                UIColor(yours ? OBCTheme.route : OBCTheme.ink).resolvedColor(with: traits).setFill(); disc.fill()
+                surface.setStroke(); disc.lineWidth = 2; disc.stroke()
+                let text = NSAttributedString(string: letter, attributes: [
+                    .font: UIFont.systemFont(ofSize: 13, weight: .bold), .foregroundColor: surface])
+                let bounds = text.size()
+                text.draw(at: CGPoint(x: (44 - bounds.width) / 2, y: (44 - bounds.height) / 2))
             }
         }
 

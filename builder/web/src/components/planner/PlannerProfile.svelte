@@ -5,7 +5,7 @@
     import Segmented from './Segmented.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
+    import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import type { Day } from '../../lib/planner/editor';
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
@@ -42,26 +42,8 @@
 
     const samples = $derived(profileSamples(lineData));
     const known = $derived(samples.flatMap(s => s.height === null ? [] : [s.height]));
-    const low = $derived(known.length ? Math.floor(known.reduce((a, b) => Math.min(a, b), Infinity) / 100) * 100 : 0);
-    const high = $derived(known.length ? Math.max(low + 100, Math.ceil(known.reduce((a, b) => Math.max(a, b), -Infinity) / 100) * 100) : 100);
-    const paths = $derived.by(() => {
-        const runs: { line: string; area: string }[] = [];
-        let path = '', first = 0, last = 0;
-        function close() {
-            if (path) runs.push({ line: path, area: `${path}L${last} 105L${first} 105Z` });
-            path = '';
-        }
-        for (const sample of samples) {
-            if (sample.height === null) { close(); continue; }
-            last = sample.progress * 1000;
-            if (!path) first = last;
-            path += `${path ? 'L' : 'M'}${last} ${105 - (sample.height - low) / (high - low) * 100}`;
-        }
-        close();
-        return runs;
-    });
-    const line = $derived(paths.map(run => run.line).join(' '));
-    const area = $derived(paths.map(run => run.area).join(' '));
+    const { low, high } = $derived(heightRange(samples));
+    const { line, area } = $derived(profilePaths(samples, low, high));
     let hover = $state<number | null>(null);
     let gradeChoice = $state<boolean | null>(null);
     const showGrade = $derived(gradeChoice ?? singleRoute);

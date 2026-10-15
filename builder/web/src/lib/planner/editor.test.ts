@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -14,10 +14,6 @@ const meridian = view(testTrip()).coordinates;
 const along = (fraction: number) => coordinateAt(meridian, fraction);
 // A pinned night on the calculated line of the trip.
 const pin = (trip: Trip, night: number, coordinate: Coordinate, label: string) => pinNight(trip, testLine(trip), night, coordinate, label);
-const places: Place[] = ([[.2, 'camp', 'Orchard camp'], [.3, 'hotel', 'Canal-side rooms'], [.37, 'camp', 'Willow camp'],
-    [.46, 'hotel', 'Village inn'], [.47, 'water', 'Water stop'], [.56, 'camp', 'Meadow camp']] as const)
-    .map(([fraction, category, label], index) => ({ id: `${category}-${index}`, kind: 'place', category, label, description: '', coordinate: along(fraction) }));
-
 describe('overnight edits', () => {
     it('keeps the incoming leg when replacing an overnight or converting a visit', () => {
         const drawing: Coordinate[] = [[7.3, 47.7], [7.1, 47.6]];
@@ -33,6 +29,15 @@ describe('overnight edits', () => {
         expect(orderedRoutePoints(converted).map(point => point.id)).toEqual(['start', 'night-1', 'finish']);
         const straight = setLegMode(converted, 'night-1', 'straight');
         expect(pinNight(straight, undefined, 1, along(.4), 'Other camp').points.find(point => point.id === 'night-1')?.leg).toBe('straight');
+    });
+
+    it('pins several nights on one line, each in the leg it lies in', () => {
+        const trip: Trip = { ...testTrip(), days: 4, routeOrder: ['via'],
+            points: [...testTrip().points, { id: 'via', kind: 'via', label: 'Bern', coordinate: along(.5) }] };
+        const camps = [[1, .3], [2, .6], [3, .8]].map(([night, at]) => ({ night, coordinate: along(at), label: `Camp ${night}`, placeKind: 'campsite' }));
+        const pinned = pinNights(trip, testLine(trip), camps);
+        expect(orderedRoutePoints(pinned).map(point => point.id)).toEqual(['start', 'night-1', 'via', 'night-2', 'night-3', 'finish']);
+        expect(pinned.points.filter(point => point.kind === 'night').map(point => point.placeKind)).toEqual(['campsite', 'campsite', 'campsite']);
     });
 
     it('adds a riding day for a final overnight without exceeding the shared limit', () => {
@@ -134,6 +139,14 @@ describe('planning modes', () => {
         const restored: Trip = { ...single, mode: 'trip' };
         expect(view(restored).itinerary).toEqual(view(trip).itinerary);
         expect(restored.points).toEqual(trip.points);
+        expect(routeToTrip(single, testLine(single))).toEqual(restored);
+    });
+
+    it('gives a route without day decisions one day per started distance target, at least two', () => {
+        const route: Trip = { ...testTrip(), mode: 'route', days: 3, limit: 50 };
+        const days = (limit: number) => routeToTrip({ ...route, limit }, testLine(route)).days;
+        expect([days(50), days(20), days(500)]).toEqual([2, 5, 2]);
+        expect(routeToTrip(route, undefined).days).toBe(3);
     });
 });
 
@@ -210,6 +223,15 @@ describe('provisional day ends', () => {
         const trip = { ...testTrip(), days: 4 };
         return setSplit(trip, testLine(trip), night, progress);
     };
+    it('divides the riding time evenly, so a slow half holds more of the day than its distance', () => {
+        const trip = { ...testTrip(), days: 2 }, line = testLine(trip), km = view(trip).total;
+        // The first half takes twice as long per kilometre, so half of the riding time is done at 3/8 of the distance.
+        const slow: RoutingLine = { ...line, coordinates: [line.coordinates[0], along(.5), line.coordinates[1]], elevation: [null, null, null],
+            elapsed: [0, km * 240, km * 360], seconds: km * 360 };
+        expect(planView(trip, slow).days[0].to).toBeCloseTo(.375, 6);
+        expect(overnightWindow(trip, slow, 1).center).toBeCloseTo(.375, 6);
+    });
+
     it('holds a dragged day end while the free nights re-balance around it', () => {
         const trip = split(2, .7);
         const days = view(trip).days;
@@ -244,13 +266,6 @@ describe('provisional day ends', () => {
         expect(view(pinned).days[1].split).toBe(false);
         expect(applyBudget(trip, testLine(trip), 'days', 4, 50).splits).toEqual(trip.splits);
         expect(applyBudget(trip, testLine(trip), 'days', 5, 50).splits).toBeUndefined();
-    });
-
-    it('offers three overnight candidates without water, shortest predicted day first', () => {
-        const candidates = overnightCandidates(testTrip(), testLine(testTrip()), 1, places);
-        expect(candidates).toHaveLength(3);
-        expect(candidates.every(c => c.place.category !== 'water')).toBe(true);
-        expect(candidates.map(c => c.distance)).toEqual([...candidates.map(c => c.distance)].sort((a, b) => a - b));
     });
 });
 

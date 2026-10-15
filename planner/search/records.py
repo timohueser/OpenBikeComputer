@@ -18,8 +18,20 @@ def names(d):
                       'name:nl', 'alt_name', 'loc_name', 'short_name', 'official_name', 'int_name'])
 
 
+# OSM shelters that are no place to sleep. A roof over a picnic table is a rest place; a bus shelter, field shelter
+# and the like leave the place kinds.
+REST_SHELTERS = {'picnic_shelter', 'gazebo', 'pavilion', 'pergola', 'roof', 'sun_shelter'}
+OTHER_SHELTERS = {'public_transport', 'field_shelter', 'smoking', 'changing_rooms', 'parking', 'wildlife_hide'}
+
+
 def category(p):
     k, v = p['osm_key'], p['osm_value']
+    if v == 'shelter':
+        shelter = p.get('extra', {}).get('shelter_type')
+        if shelter in REST_SHELTERS:
+            return 'picnic_site'
+        if shelter in OTHER_SHELTERS:
+            return f'{shelter}_shelter'
     if k == 'mountain_pass':
         return 'pass'
     if v == 'yes':

@@ -5,8 +5,11 @@ import { config } from './map-data';
 import { releaseFetch } from './release';
 import { decodeRoutes } from './route-answer';
 import type { LegCache } from './route-legs';
+import { UNPAVED } from './search/segments';
 
-export type Surface = 'Unknown' | 'Paved' | 'Compacted' | 'Gravel' | 'Dirt' | 'Rough';
+/** The surfaces in the order of `surface_m` (`specs/route-api.md`). */
+export const SURFACES = ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'] as const;
+export type Surface = typeof SURFACES[number];
 
 export interface RouteTotals {
     distance_m: number;
@@ -16,6 +19,9 @@ export interface RouteTotals {
     unknown_elevation_m: number;
     pushing_m: number;
 }
+
+/** Metres on the surfaces that search and the route options count as unpaved. */
+export const unpavedMetres = (totals: RouteTotals) => totals.surface_m.reduce((sum, m, i) => UNPAVED.includes(SURFACES[i]) ? sum + m : sum, 0);
 /** `start` and `end` are opaque road positions (`specs/route-api.md`). */
 export interface RouteLeg {
     from_index: number;
@@ -78,6 +84,8 @@ export interface RoutingLine {
     primary?: EngineRoute;
     profile: string;
     unknownSurfaceKm: number;
+    /** Ridden kilometres on gravel, dirt or rough surfaces, from the route service's totals. */
+    unpavedKm: number;
     pushingKm: number;
     unroutedKm: number;
     /** Ridden kilometres whose ascent is unknown; a transfer is not ridden, so it never counts. */
@@ -172,7 +180,7 @@ export function routingKey(trip: Trip): string {
 export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCache): Promise<RoutingLine> {
     const points = orderedRoutePoints(trip);
     if (points.length < 2) throw new Error('Choose a start and finish to calculate a route.');
-    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
+    const result: RoutingLine = { coordinates: [], elevation: [], elapsed: [], edges: {}, stops: [], seconds: 0, profile: profileId(trip), unknownSurfaceKm: 0, unpavedKm: 0, pushingKm: 0, unroutedKm: 0, unknownElevationKm: 0 };
     // Seconds per kilometre on a manual leg or connector.
     const pace = 3600 / ridingProfiles[trip.bike ?? 'touring'].kmh;
     let distance = 0;
@@ -252,6 +260,7 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         const start = append(route.geometry, route.elevation, route.elapsed, route.edges);
         const lengths = cumulative(route.geometry);
         result.unknownSurfaceKm += route.totals.surface_m[0] / 1000;
+        result.unpavedKm += unpavedMetres(route.totals) / 1000;
         result.pushingKm += route.totals.pushing_m / 1000;
         result.unknownElevationKm += route.totals.unknown_elevation_m / 1000;
         for (let leg = 0; leg < route.legs.length; leg++) {
@@ -261,6 +270,16 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
         i = until + 1;
     }
     return result;
+}
+
+/** The progress at which `seconds` of riding are done: the inverse of `movingSecondsAt`. */
+export function progressAtSeconds(line: RoutingLine, seconds: number): number {
+    const lengths = cumulative(line.coordinates), total = lengths.at(-1) ?? 0;
+    const i = firstIndex(line.elapsed.length, index => line.elapsed[index] >= seconds);
+    if (!total || i === 0) return 0;
+    if (i === line.elapsed.length) return 1;
+    const share = (seconds - line.elapsed[i - 1]) / (line.elapsed[i] - line.elapsed[i - 1] || 1);
+    return (lengths[i - 1] + share * (lengths[i] - lengths[i - 1])) / total;
 }
 
 export function movingSecondsAt(line: RoutingLine, progress: number): number {

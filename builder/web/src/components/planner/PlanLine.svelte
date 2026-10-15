@@ -1,36 +1,51 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
+    import Segmented from './Segmented.svelte';
     import { maxRidingDays, type Trip } from '../../lib/planner/editor';
+    import type { Sleep } from '../../lib/planner/stops';
 
-    let { trip, dayCount, editing = $bindable(false), onApply }: {
+    let { trip, dayCount, distance, editing = $bindable(false), onApply }: {
         trip: Trip;
         /** Calendar days, rest days included. */
         dayCount: number;
+        /** Ridden kilometres of the trip. */
+        distance: number;
         editing?: boolean;
-        onApply: (budget: Trip['budget'], target: number, limit: number, climb: number) => void;
+        onApply: (budget: Trip['budget'], target: number, limit: number, climb: number, sleep: Sleep) => void;
     } = $props();
+    const sleepOptions: { value: Sleep; label: string }[] = [{ value: 'camping', label: 'Camping' }, { value: 'hotel', label: 'Hotel' }, { value: 'either', label: 'Either' }];
+    const sleepLabels: Record<Sleep, string> = { camping: 'Camping', hotel: 'Hotel', either: 'Camping or hotel' };
 
     let budget = $state<Trip['budget']>('days');
     let target = $state(3);
     let limit = $state(50);
     let climb = $state(0);
+    let sleep = $state<Sleep>('either');
     let form = $state<HTMLFormElement>();
+    let trigger = $state<HTMLButtonElement>();
+    // The button that opened the form, such as a day's Edit target; focus returns to it while it is still shown.
+    let opener: HTMLElement | null = null;
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
+        sleepLabels[trip.sleep ?? 'either'],
         ...(trip.limit > 0 ? [`${trip.limit} km/day target`] : []),
         ...(trip.climbTarget ? [`${trip.climbTarget} m/day climb target`] : []),
     ].join(' · '));
+    const ridingDays = $derived(target - (trip.restAfter?.length ?? 0));
+    const perDay = $derived(budget === 'days' && distance > 0 && ridingDays >= 1 ? distance / ridingDays : 0);
     const valid = $derived(Number.isFinite(target) && target >= 1 && Number.isFinite(limit) && limit >= 0 && Number.isFinite(climb) && climb >= 0);
 
     $effect(() => {
         if (!editing) return;
         // The form starts from the trip once per opening; later trip edits must not reset what the rider typed.
         untrack(() => {
+            opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             budget = trip.budget;
             target = trip.target;
             limit = trip.limit;
             climb = trip.climbTarget ?? 0;
+            sleep = trip.sleep ?? 'either';
         });
         tick().then(() => form?.querySelector('select')?.focus());
     });
@@ -41,8 +56,14 @@
 
     function apply() {
         if (!valid) return;
-        onApply(budget, target, limit, climb);
+        onApply(budget, target, limit, climb, sleep);
+        void close();
+    }
+
+    async function close() {
         editing = false;
+        await tick();
+        (opener?.isConnected ? opener : trigger)?.focus();
     }
 </script>
 
@@ -51,14 +72,14 @@
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>
-        <button type="button" class="planner-action" onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
+        <button type="button" class="planner-action" bind:this={trigger} onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
     </p>
 {:else}
     <!-- Escape bubbles from the fields; the form closes the editor in place. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <form class="plan-editor" bind:this={form} aria-label="Day plan"
         onsubmit={(event) => { event.preventDefault(); apply(); }}
-        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); editing = false; } }}>
+        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); void close(); } }}>
         <label class="wide">
             <span>Split the trip by</span>
             <span class="pair">
@@ -73,6 +94,11 @@
                 </span>
             </span>
         </label>
+        {#if perDay}<p class="target-help">About {Math.round(perDay)} km a day.</p>{/if}
+        <div class="wide">
+            <span class="field-label">Where you sleep</span>
+            <Segmented label="Where you sleep" options={sleepOptions} value={sleep} onChange={value => sleep = value} />
+        </div>
         <p class="target-help">Daily targets flag longer or steeper days.</p>
         <label>
             <span>Distance target</span>
@@ -84,7 +110,7 @@
         </label>
         <p class="help">0 means no target.</p>
         <div class="buttons">
-            <button type="button" class="quiet" onclick={() => editing = false}>Cancel</button>
+            <button type="button" class="quiet" onclick={close}>Cancel</button>
             <button type="submit" class="primary" disabled={!valid}>Apply</button>
         </div>
     </form>
@@ -169,6 +195,7 @@
         color: var(--ink-faint);
         pointer-events: none;
     }
+    .field-label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--ink-soft); }
     .target-help { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--ink-soft); }
     .help {
         grid-column: 1 / -1;
