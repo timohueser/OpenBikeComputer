@@ -132,7 +132,9 @@ pub struct Manifest {
     pub files: Vec<LayerFile>,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
-    /// Article languages included in this version; empty for a source without articles.
+    /// Article languages included in this version; empty for a source without articles. A manifest
+    /// of a version made before the field has none.
+    #[serde(default)]
     pub languages: Vec<String>,
     /// The licence and the credit of the source in `data/sources.toml`.
     pub licence: Option<String>,
