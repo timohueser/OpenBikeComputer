@@ -111,15 +111,30 @@ it("shows the prepared versions of each target and the chips of a family", async
     }
 });
 
-it("Start of a prepare posts exactly the args of its review, with --yes for an R2 target", async () => {
+it("a wiki review pins the region and languages, and changing them hides Start", async () => {
     const { shown, posted, status } = screen("#/sources/wiki/prepare?to=prod", false);
     try {
+        await vi.waitFor(() => expect(button("Review preparation")).toBeDefined());
+        expect(posted()).toEqual([]);
+        const area = document.querySelector<HTMLInputElement>('input[placeholder="europe/dach"]')!;
+        area.value = "europe/dach";
+        area.dispatchEvent(new Event("input", { bubbles: true }));
+        for (const code of ["fr", "es"]) document.querySelector<HTMLInputElement>(`input[value="${code}"]`)!.click();
+        flushSync();
+        button("Review preparation").click();
         await vi.waitFor(() => expect(text()).toContain(`Review ${review.id}`));
-        expect(posted()).toEqual([["source", "prepare", "wiki", "--to", "prod", "--dry-run"]]);
-        expect(text()).toContain("When it finishes · prod: device/landmarks and planner/search stale");
+        const args = ["source", "prepare", "wiki", "--to", "prod", "--region", "europe/dach", "--languages", "en,de", "--dry-run"];
+        expect(posted()).toEqual([args]);
+        expect(text()).toContain("Coverage · europe/dach · Languages · English and German");
         expect(text()).toContain("Files · counted by the run · text published");
         expect(button("Start").disabled, "the kind of the target is not known yet").toBe(true);
         status.output = example as Status;
+        flushSync();
+        const german = document.querySelector<HTMLInputElement>('input[value="de"]')!;
+        german.click();
+        flushSync();
+        expect(button("Start")).toBeUndefined();
+        german.click();
         flushSync();
         button("Start").click();
         await vi.waitFor(() => expect(location.hash).toBe("#/runs/2026-10-12-120000"));

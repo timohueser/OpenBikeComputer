@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from tools.wiki import catalog, commons, dumps, shards, subjects
 from tools.wiki.__main__ import main as wiki_main
-from tools.wiki.facts import encoded
+from tools.wiki.facts import encoded, mediainfo
 
 TOOLS = shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) and shutil.which("zstd") or os.environ.get("CI")
 
@@ -112,6 +112,23 @@ class Wiki(unittest.TestCase):
         self.assertEqual(link["proof"]["aliases"], [{"from": "Old Castle", "to": "Castle"}])
         self.assertIsNone(catalog.fact(self.db, "article", "en:Old Castle"))
 
+    def test_unselected_article_languages_are_explicit_omissions_and_not_photo_inputs(self):
+        self.subjects(dict(osm="n1", wikidata="Q1"))
+        self.wikidata(self.dump([entity("Q1", sitelinks={
+            "enwiki": {"site": "enwiki", "title": "Castle"},
+            "dewiki": {"site": "dewiki", "title": "Burg"},
+        })]))
+        catalog.want(self.db, self.work, ["Q1"], ["en"])
+        self.assertEqual(self.db.execute("SELECT language, title FROM wanted").fetchall(), [("en", "Castle")])
+        self.assertEqual(catalog.fact(self.db, "article", "de:Burg"), dict(
+            kind="article", key="de:Burg", status="missing", reason="language_not_prepared"))
+        wiki = self.root / "en.tar.gz"
+        archive(wiki, [page()])
+        catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+        self.assertEqual(catalog.fact(self.db, "article", "en:Castle")["status"], "present")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            catalog.want(self.db, self.work, ["Q1"], ["en", "de"])
+
     def test_store_objects_without_a_suffix_are_read_by_their_first_bytes(self):
         self.subjects(dict(osm="n1", wikidata="Q1"))
         objects = self.root / "objects"
@@ -147,6 +164,11 @@ class Wiki(unittest.TestCase):
         self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q90")["identity"], "Q1")
         self.assertEqual(catalog.fact(self.db, "link", "wikipedia:ja:CastleJA")["identity"], "Q1")
         self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q999")["status"], "missing")
+
+    def test_a_title_cut_inside_a_character_does_not_stop_the_import(self):
+        data = sql("langlinks", "ll_from ll_lang ll_title", b"(1,'bn','\xe0\xa6\xb8\xe0'),\n(1,'de','Burg')")
+        self.assertEqual(list(dumps.rows(BytesIO(data), "langlinks", ("ll_lang", "ll_title"))),
+                         [["bn", "\u09b8\ufffd"], ["de", "Burg"]])
 
     def test_a_redirect_to_an_item_missing_from_the_dump_is_missing(self):
         self.subjects(dict(osm="n1", wikidata="Q90"))
@@ -288,6 +310,11 @@ class Wiki(unittest.TestCase):
                        for path in (self.root / "facts").rglob("*.json")})
         self.assertEqual(found, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q2"), ("entity", "Q3"),
                                  ("entity", "Q4"), ("entity", "Q5")})
+
+    def test_a_file_without_statements_depicts_nothing(self):
+        raw = {"entities": {"M1": {"id": "M1", "lastrevid": 5, "type": "mediainfo", "statements": []}}}
+        ((key, value),) = mediainfo(lambda url: raw, ["M1"])
+        self.assertEqual((key, value["status"], value["statements"]), ("M1", "present", {"P180": []}))
 
     def test_a_busy_commons_leaves_its_mark_for_the_producer(self):
         requests = self.root / "requests.json"

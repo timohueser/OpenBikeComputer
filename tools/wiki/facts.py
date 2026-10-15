@@ -185,7 +185,8 @@ def mediainfo(fetch, ids: list[str]):
             elif "missing" in value:
                 yield key, dict(kind="mediainfo", key=key, status="missing", proof=value)
             elif value.get("id") == key and value.get("lastrevid"):
-                depicts = value.get("statements", value.get("claims", {})).get("P180", [])
+                # Wikibase writes the statements of a file without statements as an empty list.
+                depicts = (value.get("statements") or value.get("claims") or {}).get("P180", [])
                 yield key, dict(kind="mediainfo", key=key, status="present", identity=key, revision=value["lastrevid"],
                                 statements={"P180": [{field: statement[field] for field in ("mainsnak", "rank", "qualifiers") if field in statement} for statement in depicts]})
             else:

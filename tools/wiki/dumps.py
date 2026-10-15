@@ -125,7 +125,8 @@ def rows(stream, table: str, columns: tuple[str, ...]):
             raw = raw[len(prefix):]
         elif not active:
             continue
-        line = raw.decode().rstrip()
+        # MediaWiki cuts binary title columns at 255 bytes, also inside a UTF-8 character.
+        line = raw.decode(errors="replace").rstrip()
         position, row, end = 0, None, len(line)
         while position < end:
             token = TOKEN.match(line, position)

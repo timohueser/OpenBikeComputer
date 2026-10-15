@@ -221,7 +221,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `follower/<target>/` | A store of its own with the objects of the releases that [`obc data serve`](#serve) follows, and nothing else |
-| `prepared/<target>/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `scope.json`, the region of the run; `journal.jsonl`, the files that it uploaded and the source versions that it read; and `work/`, the files that it did not upload yet |
+| `prepared/<target>/<id>/<version>/` | The work of a [prepare](#prepare) that is not complete: `selection.json`, `[scope, languages]` of the run; `journal.jsonl`, the files that it uploaded and the source versions that it read; and `work/`, the files that it did not upload yet |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -1363,6 +1363,7 @@ is compact JSON with the keys of each object in byte order:
   "files": [{"path": "common.tar.zst", "sha256": "<sha256>", "size": 1048576}],
   "format": 1,
   "inputs": [{"digest": "<digest>", "source": "wikidata", "version": "2026-10-01"}],
+  "languages": ["en", "de"],
   "licence": "<SPDX expression>",
   "machine": "<machine>",
   "revision": 1,
@@ -1381,6 +1382,7 @@ is compact JSON with the keys of each object in byte order:
 | `inputs` | Each source version that the prepare read, sorted by source and version, with the [digest](#keys) of the files that it read |
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
+| `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
 | `cost` | The wall time of the last run of the version, and the peak memory of its process or of the largest program that it ran (`null` when the system does not report it) |
@@ -1392,7 +1394,7 @@ is compact JSON with the keys of each object in byte order:
 1. The version is the UTC date when its first run starts. A run keeps its work in
    `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the target
-   lacks its key. A resume with another region refuses. When the manifest of a stopped version is
+   lacks its key. A resume with another region or language selection refuses. When the manifest of a stopped version is
    on the target and names the files of its journal, its run stopped after the manifest: the run
    only adds the version to `versions.json`, and the review says `listing`. Another stopped version
    that is not newer than the newest complete version on the target, or whose manifest is on the
@@ -1402,14 +1404,14 @@ is compact JSON with the keys of each object in byte order:
 2. The review names the version, the inputs with the size of their files in the store or on
    this machine (`unknown` lists an input whose size neither knows), the files of the version at
    most (`files`, `null` when the producer cannot tell before the run), the files
-   that earlier runs uploaded, the cost from the manifest of the newest version that the target
-   lists, the bytes that go into the store and to the target, the check of this machine as in the
+   that earlier runs uploaded, the cost from the newest version that the target lists, only when its scope and languages match, the bytes that go into the store and to the target, the check of this machine as in the
    [review](#review) of an update, which also refuses when the source or an input has a
    `credential` that is not on the machine, and for each target that reads the versions of this target the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
    first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-   version, the format, the revision, the scope, `publish_text` and the source, version and params
-   of each input. For an R2 target, the prepare starts only with `--expect ID`, and asks first or needs `--yes`.
+   version, the format, the revision, the scope, the languages, `publish_text` and each planned
+   input, including its archive path, URL, size and object identity. For an R2 target, the prepare
+   starts only with `--expect ID`, and asks first or needs `--yes`.
 3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
    of a target. It makes the review again under the lock, and refuses a review that is not
    `--expect`.
@@ -1424,8 +1426,8 @@ is compact JSON with the keys of each object in byte order:
    run of the version wrote stays when it names the same files. Then a conditional write adds the
    version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
-`--region` and `--box` make a version of that region only. Such a version is not for `prod`, whose
-versions every target reads. `obc data runs RUN --stop` stops a run, and the same command resumes
+`--region` and `--box` make a version of that region only. `wiki` can publish a regional version
+to `prod`; other prepared sources restrict regional versions to other targets. `obc data runs RUN --stop` stops a run, and the same command resumes
 it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stopped run left.
 
 #### Read
@@ -1496,20 +1498,40 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
 The producer `wiki`, format 1, makes the Wikimedia facts and the article text of the OSM subjects
 in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source):
 
-- It reads the dumps in the directory that `OBC_WIKI_DUMPS` names, its `credential`, in place: no
-  copy goes into the store. Of each kind it takes the newest day: `wikidata-<day>-all.json.bz2`,
-  `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each content language
+- It reads cached archives in place. `OBC_WIKI_DUMPS` overrides the default `wiki-dumps/` in the
+  store. Of each kind it reuses the newest cached day: `wikidata-<day>-all.json.bz2`,
+  `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each selected article language
   `<lang>wiki-<day>-langlinks.sql.gz` and the Wikimedia Enterprise HTML
-  `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`, and `planet-<yymmdd>.osm.pbf`. A kind
-  without a file refuses. The review names each with `file=` and its size. The manifest names
-  `wikidata`, `wikipedia` and `osm-planet` at the days of their dumps, with the
+  `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`. A preparation without a region, or with
+  a box, reads `planet-<yymmdd>.osm.pbf`. One Geofabrik area reads
+  `<area>-<yymmdd>.osm.pbf` under the dump directory, such as `europe/dach-261009.osm.pbf`.
+  The path of the area supplies the subdirectories. This extract selects the regional subjects
+  before article selection or Commons acquisition. For a missing kind, the review discovers a
+  completed upstream version through metadata only. SQL jobs must be `done`; Wikidata JSON must
+  have a checksum entry. Wikipedia HTML uses the Enterprise Snapshot API. The review shows each
+  file, date, size and bytes to download. It does not download archives. Start downloads missing
+  archives serially, with Range resume and the reviewed size and ETag, then prepares the source.
+  A changed remote identity refuses. The archive becomes visible only after the download ends.
+  Credentials stay in the local environment and private token cache. No review or manifest holds
+  them. The manifest names
+  `wikidata`, `wikipedia` and `osm-planet` or `geofabrik-extracts` at the days of their dumps, with the
   [digest](#keys) of the SHA-256 of the files.
-- The first run of a version pins each dump with its path, size, modification time and SHA-256,
+- `--languages en,de` selects article languages from `specs/content-languages.json`. Without
+  the flag, all supported languages are selected. Unknown or empty codes refuse; duplicates
+  are removed and codes have supported order. The review, its id and the manifest keep the
+  selection. Only selected languages require HTML and language-link dumps. An excluded article
+  is a `missing` fact with `reason: "language_not_prepared"`; it supplies no lead-image candidate.
+  The identity order for a page without a Wikidata item stays the supported-language order.
+  Without the dumps that prove its canonical identity, its link stays unresolved.
+- Start saves the reviewed input plan before it downloads. A resume uses this plan, including
+  the URLs, sizes and object identities. The review ID covers these decisions, but not whether
+  the download has since completed. After acquisition, the run pins each dump with its path, size,
+  modification time and SHA-256,
   and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
   or `publish_text` changed; the fix deletes the work of the version, so the next run starts a
   new one. A dump of the pinned size with another modification time is the pinned dump when its
-  SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. The review of a
-  resume lists the newest dumps, not the pinned ones. A row without `publish_text` refuses.
+  SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. A row without
+  `publish_text` refuses.
 - `python -m tools.wiki` runs the steps: `subjects` lists the OSM objects with a `wikidata` or
   `wikipedia` tag, `import` reads the Wikidata dump twice, `candidates` gives the classes, the
   subjects and the peaks, `articles` reads the language links and the HTML, and `shards` writes
@@ -1519,8 +1541,8 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
   choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
   says.
-- A version of a region keeps the subjects whose box meets the box of the region; a region
-  without a box refuses.
+- A box keeps the subjects whose box meets it. A Geofabrik scope accepts one area and reads
+  its extract. Other scopes refuse.
 - The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
   target to `shards`, which does not write them again.
 - With `publish_text = false`, each article in the shards is a fact with its key and the status
@@ -3600,12 +3622,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "id": {
-          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, `publish_text` and the source, version and\nparams of each input.",
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, the languages, `publish_text` and each planned\ninput, including archive paths, URLs, sizes and object identities.",
           "type": "string"
         },
         "inputs": {
           "items": {
             "$ref": "#/$defs/PreparedInput"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
           },
           "type": "array"
         },
@@ -3667,6 +3695,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "format",
         "revision",
         "scope",
+        "languages",
         "inputs",
         "files",
         "publish_text",
@@ -3731,7 +3760,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "PreparedInput": {
       "properties": {
         "bytes": {
-          "description": "The size of its files that the store records; `null` when the store has no record.",
+          "description": "Input bytes from local files, upstream metadata or the store; `null` when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "download_bytes": {
+          "description": "Archive bytes absent on this machine; null for other source inputs.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3770,7 +3808,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "source",
         "version",
         "params",
-        "bytes"
+        "bytes",
+        "download_bytes"
       ],
       "type": "object"
     },
