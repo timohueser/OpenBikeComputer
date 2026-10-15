@@ -58,6 +58,14 @@ more than 200 m away. A trip has at most 14 days, the limit of the plan format: 
 add a 15th file and says so in one line. Add to trip and Group into trip keep each route's line as
 a drawn leg.
 
+### From a map app
+
+The rider shares a place from Google Maps or Apple Maps with OBC. The app asks for the bike type,
+with the last one first, and gets the phone's position meanwhile. Then the planner opens on a
+route from "My location" to the place. Without a position, the planner shows only the place, and
+the rider sets the start. A place outside the map region gets a message, not a failed route. A new
+route saved from the planner opens its page, so Send to device is one tap.
+
 ### Days in the planner
 
 "Edit" on the trip page opens the planner on the trip's plan. A night is a route point that ends a

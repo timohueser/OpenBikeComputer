@@ -167,6 +167,20 @@ Suche an den Server nach Abschnitt 7.1 gesendet, um Ergebnisse in der Nähe zu o
 Er wird nicht gespeichert. Die Einwilligung kann jederzeit durch die Browsereinstellung
 für Standortfreigaben mit Wirkung für die Zukunft widerrufen werden.
 
+### 7.3 Standort in der iPhone-App
+
+Die iPhone-App nutzt den Standort nur, wenn ein Ort aus einer Karten-App mit ihr geteilt wird,
+und erst nachdem iOS nachgefragt hat. Das ist die Einwilligung nach Art. 6 Abs. 1 lit. a DSGVO
+und § 25 Abs. 1 TDDDG. Die App liest die Position einmal und nutzt sie als Start der Route zum
+geteilten Ort. Berechnet die App die Route online, sendet sie die Position als Wegpunkt an den
+Server nach Abschnitt 7.1. Deckt eine installierte Offline-Karte die Route ab, bleibt die
+Position auf dem Telefon. Die App speichert die Position nicht, außer als Start einer Route, die
+gespeichert wird. Die Einwilligung kann jederzeit in den iOS-Einstellungen unter Datenschutz &
+Sicherheit › Ortungsdienste mit Wirkung für die Zukunft widerrufen werden.
+
+Um einen Kurzlink aus Google Maps oder Apple Maps zu lesen, ruft die App den Link einmal auf.
+Google beziehungsweise Apple erhält dabei die IP-Adresse und den Link.
+
 ## 8. Verifikationskonsole
 
 Die Verifikationskonsole unter `releases.openbikecomputer.com` dient den Maintainern des
