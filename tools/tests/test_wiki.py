@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from tools.wiki import catalog, commons, dumps, shards, subjects
 from tools.wiki.__main__ import main as wiki_main
-from tools.wiki.facts import encoded
+from tools.wiki.facts import encoded, mediainfo
 
 TOOLS = shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) and shutil.which("zstd") or os.environ.get("CI")
 
@@ -144,6 +144,15 @@ class Wiki(unittest.TestCase):
         unknown.write_text("[\n" + json.dumps(entity("Q1")) + "\n]\n")
         with self.assertRaisesRegex(ValueError, "not a bz2, gzip or tar file"):
             next(dumps.lines(unknown))
+
+    def test_an_open_dump_tells_how_far_its_decompressor_read(self):
+        path = self.root / "pages.sql.gz"
+        path.write_bytes(gzip.compress(b"page\n" * 1000))
+        for which in (shutil.which, lambda _: None):
+            with patch("tools.wiki.dumps.shutil.which", which), dumps.opened(path) as stream:
+                stream.read()
+                self.assertEqual(dumps.share(path), 1)
+            self.assertIsNone(dumps.share(path))
 
     def test_sql_redirects_item_sitelinks_and_language_links_resolve_without_api(self):
         self.subjects(dict(osm="n1", wikidata="Q90"), dict(osm="n2", wikipedia="ja:CastleJA"), dict(osm="n3", wikidata="Q999"),
@@ -301,6 +310,11 @@ class Wiki(unittest.TestCase):
                        for path in (self.root / "facts").rglob("*.json")})
         self.assertEqual(found, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q2"), ("entity", "Q3"),
                                  ("entity", "Q4"), ("entity", "Q5")})
+
+    def test_a_file_without_statements_depicts_nothing(self):
+        raw = {"entities": {"M1": {"id": "M1", "lastrevid": 5, "type": "mediainfo", "statements": []}}}
+        ((key, value),) = mediainfo(lambda url: raw, ["M1"])
+        self.assertEqual((key, value["status"], value["statements"]), ("M1", "present", {"P180": []}))
 
     def test_a_busy_commons_leaves_its_mark_for_the_producer(self):
         requests = self.root / "requests.json"

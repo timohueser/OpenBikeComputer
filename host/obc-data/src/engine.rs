@@ -6,6 +6,7 @@
 pub mod changes;
 pub mod plan;
 mod process;
+pub(crate) use process::{copy_errors, ended};
 pub use process::{peak_rss, python_executable, run_child};
 
 pub mod runs;

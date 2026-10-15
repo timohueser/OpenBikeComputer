@@ -466,7 +466,7 @@ esac
 
         fs::write(root.join("fail-articles"), "").unwrap();
         let (done, calls) = prepare(&sources);
-        assert!(done.is_err());
+        assert!(done.unwrap_err().ends_with("`sh tools.sh articles` failed: exit status: 1"));
         assert_eq!(calls, "subjects\nimport\ncandidates\narticles\n");
 
         // A newer dump lands: the version keeps the dumps of its first run.

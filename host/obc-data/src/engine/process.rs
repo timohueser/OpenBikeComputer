@@ -1,10 +1,11 @@
 //! Running a step and measuring what it cost.
 
 use std::cell::Cell;
-use std::io::{ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::Instant;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use super::Request;
 
@@ -47,6 +48,41 @@ pub fn run_child(command: &mut Command) -> Result<ExitStatus, String> {
     Ok(status)
 }
 
+/// Copy the standard error of `child`, which a command pipes, to that of this process on a thread.
+/// When the pipe closes, the receiver gets the last line that is not blank.
+pub fn copy_errors(child: &mut Child) -> Receiver<String> {
+    let (send, receive) = mpsc::channel();
+    if let Some(errors) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut last = String::new();
+            for line in BufReader::new(errors).split(b'\n') {
+                let Ok(line) = line else { break };
+                let mut log = std::io::stderr().lock();
+                let _ = log.write_all(&line).and_then(|()| log.write_all(b"\n"));
+                let text = String::from_utf8_lossy(&line);
+                if !text.trim().is_empty() {
+                    last = text.trim().to_string();
+                }
+            }
+            let _ = send.send(last);
+        });
+    }
+    receive
+}
+
+/// Wait until the copy of `errors` ends, and give the error of the program `name` that ended
+/// with `status`, with its last error line, such as a Python exception. A program that a signal
+/// ended gets no line: what it wrote last is not why it ended. A grandchild that keeps the pipe
+/// open delays this by two seconds at most.
+pub fn ended(name: &str, status: ExitStatus, errors: Receiver<String>) -> Result<(), String> {
+    let last = errors.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    match status.code() {
+        _ if status.success() => Ok(()),
+        Some(_) if !last.is_empty() => Err(format!("`{name}` failed ({status}): {last}")),
+        _ => Err(format!("`{name}` failed: {status}")),
+    }
+}
+
 /// The interpreter of a Python step: the system Python that `uv python find` selects for the
 /// project, offline, with an explicit `UV_PYTHON` request when set.
 pub fn python_executable(root: &Path) -> Result<PathBuf, String> {
@@ -85,9 +121,10 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
 pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {
     let mut command = command(root, argv, python)?;
     let program = &argv[0];
-    command.stdin(Stdio::piped()).stdout(std::io::stderr());
+    command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
     let start = Instant::now();
     let mut child = command.spawn().map_err(|e| format!("cannot start `{program}`: {e}"))?;
+    let errors = copy_errors(&mut child);
     let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
     // A step that does not read its request closes the pipe; its exit status tells the rest.
     let unwritten = match child.stdin.take().map(|mut stdin| stdin.write_all(&json)) {
@@ -95,9 +132,7 @@ pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Res
         _ => None,
     };
     let (status, cpu_ms, peak_rss_bytes) = wait(child)?;
-    if !status.success() {
-        return Err(format!("`{}` failed: {status}", argv.join(" ")));
-    }
+    ended(&argv.join(" "), status, errors)?;
     if let Some(e) = unwritten {
         return Err(format!("cannot write the request to `{program}`: {e}"));
     }
@@ -180,6 +215,21 @@ mod tests {
         let usage =
             in_process(|| run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)).unwrap();
         assert!(usage.peak_rss_bytes.unwrap() > 600 << 20, "{:?}", usage.peak_rss_bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_program_names_the_last_line_that_it_wrote_to_standard_error() {
+        let ended_by = |script: &str| {
+            let mut child = Command::new("sh").args(["-c", script]).stderr(Stdio::piped()).spawn().unwrap();
+            let errors = copy_errors(&mut child);
+            let status = child.wait().unwrap();
+            ended("sh", status, errors).unwrap_err()
+        };
+        let failed = ended_by("echo working >&2; echo 'ValueError: boom' >&2; echo >&2; exit 3");
+        assert_eq!(failed, "`sh` failed (exit status: 3): ValueError: boom");
+        let stopped = ended_by("echo 'a warning' >&2; kill -TERM $$");
+        assert_eq!(stopped, "`sh` failed: signal: 15 (SIGTERM)");
     }
 
     #[test]
