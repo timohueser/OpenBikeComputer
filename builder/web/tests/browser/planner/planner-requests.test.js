@@ -47,12 +47,15 @@ test('a planning session stays inside the request budget', async ({ page }) => {
   phase('load');
   const lastBasemap = Math.max(...['basemap', 'glyphs', 'sprites'].map(kind => order.lastIndexOf(kind)));
   expect(firstDetail(), `load order: ${order.join(' ')}`).toBeGreaterThan(lastBasemap);
-  const { x, y, width, height } = await canvas.boundingBox();
-  const at = (fx, fy) => [x + width * fx, y + height * fy];
+  // The map shrinks when the elevation drawer opens for the first route, so each position is measured when it is used.
+  const at = async (fx, fy) => {
+    const { x, y, width, height } = await canvas.boundingBox();
+    return [x + width * fx, y + height * fy];
+  };
 
   // Once a route crosses the middle of the map, a press there grabs the route line instead of the map.
   const drag = async (dx, dy, [fx, fy] = [0.5, 0.97]) => {
-    const [cx, cy] = at(fx, fy);
+    const [cx, cy] = await at(fx, fy);
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     await page.mouse.move(cx + dx, cy + dy, { steps: 8 });
@@ -60,14 +63,14 @@ test('a planning session stays inside the request budget', async ({ page }) => {
     await idle();
   };
   const zoom = async delta => {
-    await page.mouse.move(...at(0.5, 0.5));
+    await page.mouse.move(...await at(0.5, 0.5));
     await page.mouse.wheel(0, delta);
     await idle();
   };
   const callout = page.getByRole('dialog', { name: 'Map details' });
   const addPoint = async (fx, fy, choice) => {
     if (await callout.isVisible()) await callout.getByRole('button', { name: 'Close' }).click();
-    await page.mouse.click(...at(fx, fy));
+    await page.mouse.click(...await at(fx, fy));
     await page.getByRole('button', { name: choice }).click();
     await idle();
   };

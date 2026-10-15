@@ -64,6 +64,8 @@
             return;
         } finally { busy = false; }
         naming = null;
+        await tick();
+        root.querySelector<HTMLElement>(what === 'new' ? '.save' : '.name-start')?.focus();
     }
 
     async function toggle() {
@@ -82,6 +84,7 @@
     }
 
     async function remove(id: string) {
+        const index = versions.findIndex(v => v.id === id);
         busy = true;
         try {
             await onChange(versions.filter(v => v.id !== id));
@@ -89,6 +92,9 @@
         } catch {
             error = 'Could not delete the version. Try again.';
         } finally { busy = false; }
+        await tick();
+        const rows = [...root.querySelectorAll<HTMLElement>('.delete')];
+        (rows[Math.min(index, rows.length - 1)] ?? root.querySelector<HTMLElement>('.more'))?.focus();
     }
 
     function outside(event: PointerEvent) {

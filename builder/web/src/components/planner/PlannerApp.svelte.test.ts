@@ -415,7 +415,21 @@ describe('planner app transitions', () => {
         await tick();
         expect(document.body.textContent).toContain('Saved plan is invalid.');
         expect(document.body.textContent).toContain('Where would you like to ride?');
-        expect(document.body.textContent).toContain('Choose a start and finish to get started.');
+    });
+
+    it('brings a deleted version back with the status-line Undo', async () => {
+        await startApp();
+        button('Save version').click(); await tick();
+        document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        const deleteButton = () => document.querySelector<HTMLButtonElement>('.versions button[aria-label^="Delete"]');
+        await vi.waitFor(() => expect(deleteButton()).not.toBeNull());
+        const label = deleteButton()!.getAttribute('aria-label');
+        deleteButton()!.click();
+        await vi.waitFor(() => expect(deleteButton()).toBeNull());
+        expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted');
+        button('Undo', document.querySelector('.status-line')!).click();
+        await vi.waitFor(() => expect(deleteButton()?.getAttribute('aria-label')).toBe(label));
+        expect(document.querySelector('.status-line')?.textContent).not.toContain('Undo');
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

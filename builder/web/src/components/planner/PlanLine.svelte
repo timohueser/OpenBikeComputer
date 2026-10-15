@@ -22,6 +22,9 @@
     let climb = $state(0);
     let sleep = $state<Sleep>('either');
     let form = $state<HTMLFormElement>();
+    let trigger = $state<HTMLButtonElement>();
+    // The button that opened the form, such as a day's Edit target; focus returns to it while it is still shown.
+    let opener: HTMLElement | null = null;
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
@@ -37,6 +40,7 @@
         if (!editing) return;
         // The form starts from the trip once per opening; later trip edits must not reset what the rider typed.
         untrack(() => {
+            opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             budget = trip.budget;
             target = trip.target;
             limit = trip.limit;
@@ -53,7 +57,13 @@
     function apply() {
         if (!valid) return;
         onApply(budget, target, limit, climb, sleep);
+        void close();
+    }
+
+    async function close() {
         editing = false;
+        await tick();
+        (opener?.isConnected ? opener : trigger)?.focus();
     }
 </script>
 
@@ -62,14 +72,14 @@
 {:else if !editing}
     <p class="plan-line">
         <span>{summary}</span>
-        <button type="button" class="planner-action" onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
+        <button type="button" class="planner-action" bind:this={trigger} onclick={() => editing = true} aria-label="Edit day plan">Edit plan</button>
     </p>
 {:else}
     <!-- Escape bubbles from the fields; the form closes the editor in place. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <form class="plan-editor" bind:this={form} aria-label="Day plan"
         onsubmit={(event) => { event.preventDefault(); apply(); }}
-        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); editing = false; } }}>
+        onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); void close(); } }}>
         <label class="wide">
             <span>Split the trip by</span>
             <span class="pair">
@@ -100,7 +110,7 @@
         </label>
         <p class="help">0 means no target.</p>
         <div class="buttons">
-            <button type="button" class="quiet" onclick={() => editing = false}>Cancel</button>
+            <button type="button" class="quiet" onclick={close}>Cancel</button>
             <button type="submit" class="primary" disabled={!valid}>Apply</button>
         </div>
     </form>
