@@ -8,8 +8,9 @@
         label: string;
         /** Your route first, then the routes it is compared with. */
         rows: Compared[];
-        /** Shown instead of the rows while they are not known, with Retry when `retry` is given. */
+        /** Shown instead of the rows while they are not known. */
         status: string | null;
+        /** Offers Retry after the status or the note. */
         retry?: () => void;
         /** The line under the rows. */
         note: string;
@@ -43,11 +44,11 @@
         group?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus();
     }
 
-    // Retry replaces its button with the loading state, so the state keeps the focus.
+    // Retry replaces its button with the loading state, so the state, or else the list, keeps the focus.
     async function again() {
         retry?.();
         await tick();
-        statusBox?.focus();
+        (statusBox ?? group)?.focus();
     }
 
     function escape(event: KeyboardEvent) {
@@ -94,6 +95,7 @@
             {/each}
         </div>
         <p class="note">{note}</p>
+        {#if retry}<button type="button" class="planner-action" onclick={again}>Retry</button>{/if}
     </div>
 {:else}
     <div class="ways state" role="status" tabindex="-1" bind:this={statusBox}>
@@ -227,7 +229,7 @@
     .state:focus {
         outline: none;
     }
-    .state .planner-action {
+    .ways > .planner-action {
         margin-top: 8px;
     }
     .sr-only {

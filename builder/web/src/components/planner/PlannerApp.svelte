@@ -100,19 +100,21 @@
     const options = $derived(session.routeOptions);
     // A label edit keeps the line, so it does not request the options again.
     $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
-    $effect(() => { if (list === 'versions') { void session.versions; untrack(() => session.findVersionLines()); } });
+    // An answer can leave versions saved meanwhile without a line, so each answer asks again; a failure waits for Retry.
+    $effect(() => { if (list === 'versions') { void [session.versions, session.versionLines]; untrack(() => session.findVersionLines()); } });
     const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
         stale: 'Your plan changed. Finding route options for it…' };
     const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
         i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
     // Your route, then each saved version once its line is known. A version in an older plan format is left out.
+    const validVersions = $derived(session.versions.filter(version => isTrip(version.trip)));
     const versionList = $derived.by(() => {
-        const valid = session.versions.filter(version => isTrip(version.trip));
-        if (!currentRoute) return { rows: [], status: 'Calculating your route…', note: '' };
-        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save version keeps this plan, so you can compare it later.', note: '' };
+        const valid = validVersions;
+        if (!currentRoute) return { rows: [], status: session.routeError || 'Calculating your route…', note: '', failed: false };
+        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save version keeps this plan, so you can compare it later.', note: '', failed: false };
         const lines = valid.map(version => session.versionLines[routingKey(version.trip)]);
-        if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '' };
-        const rows: Compared[] = [{ ...lineRow('current', 'Your route', trip, currentRoute), detail: presetName(currentRoute.profile) }];
+        if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '', failed: false };
+        const rows: Compared[] = [{ ...lineRow('current', 'Your route', shown.trip, currentRoute), detail: presetName(currentRoute.profile) }];
         const failed = valid.filter((version, i) => {
             const line = lines[i]!;
             if (typeof line === 'string') return true;
@@ -120,7 +122,7 @@
             return false;
         });
         const missing = failed.length ? ` ${failed.length === 1 ? 'One version' : `${failed.length} versions`} could not be calculated: ${lines.find(line => typeof line === 'string')}` : '';
-        return { rows, status: null, note: `Differences compare with your route. Restore is one undo step.${missing}` };
+        return { rows, status: null, note: `Differences compare with your route. Restore is one undo step.${missing}`, failed: failed.length > 0 };
     });
     let versionPreview = $state<string | null>(null);
     // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
@@ -1074,7 +1076,7 @@
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
                             options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: options.state === 'ready' && options.routes.length > 1 ? `Route options · ${options.routes.length - 1}` : 'Route options' },
-                                { value: 'versions', label: session.versions.length ? `Versions · ${session.versions.length}` : 'Versions' }]} />
+                                { value: 'versions', label: validVersions.length ? `Versions · ${validVersions.length}` : 'Versions' }]} />
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
@@ -1084,6 +1086,7 @@
                             note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
                     {:else if list === 'versions'}
                         <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Restore"
+                            retry={versionList.failed ? () => session.findVersionLines(true) : undefined}
                             previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary

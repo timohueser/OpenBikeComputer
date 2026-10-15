@@ -194,7 +194,7 @@ describe('plan session', () => {
         expect(request).toEqual({ type: 'places', what: ['town'], radius: { value: 3, unit: 'km' } });
     });
 
-    it('calculates each saved version once, again after a failure, and restores a version with its line', async () => {
+    it('calculates each saved version once, a failed one again on retry, and restores a version with its line', async () => {
         const routes = service();
         const session = new PlanSession();
         await session.start(new IDBFactory());
@@ -208,6 +208,8 @@ describe('plan session', () => {
         expect(Object.values(session.versionLines).filter(line => line === 'No legal route.')).toHaveLength(1);
         const requests = routes.fetch.mock.calls.length;
         session.findVersionLines();
+        expect(routes.fetch).toHaveBeenCalledTimes(requests);
+        session.findVersionLines(true);
         await vi.waitFor(() => expect(Object.values(session.versionLines).every(line => typeof line === 'object')).toBe(true));
         expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
         expect(session.restore(valley)).toBe(true);

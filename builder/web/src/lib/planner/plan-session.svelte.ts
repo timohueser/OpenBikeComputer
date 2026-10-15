@@ -240,17 +240,20 @@ export class PlanSession {
         this.previewId = id;
     }
 
-    /** Calculates the lines of the saved versions that have none, after a failure again. One request runs at a time. */
-    findVersionLines(): void {
-        const lines = this.versionLines;
-        const missing = new Map(this.versions.filter(v => isTrip(v.trip)).map(v => [routingKey(v.trip), v.trip] as const).filter(([key]) => typeof lines[key] !== 'object'));
-        if (!missing.size || this.versionsRequest) return;
+    /** Calculates the lines of the saved versions that have none, and with `retry` the failed ones. One request runs at a
+     * time; the lines of other plans' versions are dropped when it answers. */
+    findVersionLines(retry = false): void {
+        const saved = new Map(this.versions.filter(v => isTrip(v.trip)).map(v => [routingKey(v.trip), v.trip] as const));
+        const missing = [...saved].filter(([key]) => this.versionLines[key] === undefined || (retry && typeof this.versionLines[key] === 'string'));
+        if (!missing.length || this.versionsRequest) return;
         const abort = this.versionsRequest = new AbortController();
-        void Promise.all([...missing].map(([key, trip]) => this.calculate(trip, abort.signal).then(
+        void Promise.all(missing.map(([key, trip]) => (this.lines.get(key) ? Promise.resolve(this.lines.get(key)!) : this.calculate(trip, abort.signal)).then(
             line => [key, line] as const, error => [key, error instanceof Error ? error.message : 'Routing is unavailable.'] as const))).then(found => {
             if (abort.signal.aborted) return;
             this.versionsRequest = undefined;
-            this.versionLines = { ...this.versionLines, ...Object.fromEntries(found) };
+            const lines: Record<string, RoutingLine | string> = { ...this.versionLines, ...Object.fromEntries(found) };
+            const kept = new Set(this.versions.filter(v => isTrip(v.trip)).map(v => routingKey(v.trip)));
+            this.versionLines = Object.fromEntries(Object.entries(lines).filter(([key]) => kept.has(key)));
         });
     }
 
