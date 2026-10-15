@@ -272,6 +272,16 @@ export async function calculateLine(trip: Trip, signal: AbortSignal, legs: LegCa
     return result;
 }
 
+/** The progress at which `seconds` of riding are done: the inverse of `movingSecondsAt`. */
+export function progressAtSeconds(line: RoutingLine, seconds: number): number {
+    const lengths = cumulative(line.coordinates), total = lengths.at(-1) ?? 0;
+    const i = firstIndex(line.elapsed.length, index => line.elapsed[index] >= seconds);
+    if (!total || i === 0) return 0;
+    if (i === line.elapsed.length) return 1;
+    const share = (seconds - line.elapsed[i - 1]) / (line.elapsed[i] - line.elapsed[i - 1] || 1);
+    return (lengths[i - 1] + share * (lengths[i] - lengths[i - 1])) / total;
+}
+
 export function movingSecondsAt(line: RoutingLine, progress: number): number {
     const lengths = cumulative(line.coordinates);
     const distance = progress * (lengths.at(-1) ?? 0);

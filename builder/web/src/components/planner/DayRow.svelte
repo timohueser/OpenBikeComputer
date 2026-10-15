@@ -1,18 +1,17 @@
 <script lang="ts">
+    import type { Snippet } from 'svelte';
     import type { Attachment } from 'svelte/attachments';
     import Icon from './PlannerIcon.svelte';
-    import PlaceRow from './PlaceRow.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel } from '../../lib/planner/search/presentation';
-    import { dayOverTarget, dayStops, planView, type ItineraryDay, type OvernightCandidate, type Place, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayOverTarget, dayStops, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
-        trip, line, day, days, theme, overnightNote = '', scale, expanded, changing, candidates, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
-        onToggle, onInspect, onShowEnd, onSelectPlace, onPick, onChangeOvernight, onEditTarget, onShowConflict,
+        trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
+        onToggle, onInspect, onShowEnd, onChange, onEditTarget, onShowConflict, picker, suggested = {},
     }: {
-        overnightNote?: string;
         trip: Trip;
         line?: RoutingLine;
         day: ItineraryDay;
@@ -21,8 +20,8 @@
         /** Kilometres the full length bar stands for. */
         scale: number;
         expanded: boolean;
-        changing: boolean;
-        candidates: OvernightCandidate[];
+        /** The towns to sleep in show for this day. */
+        choosing: boolean;
         /** The calendar day whose overnight this day ends before. */
         conflict: number | null;
         selectedId: string | null;
@@ -35,20 +34,22 @@
         onToggle: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: () => void;
-        onSelectPlace: (place: Place) => void;
-        onPick: () => void;
-        onChangeOvernight: (changing: boolean) => void;
+        /** Opens the towns again for a pinned night. */
+        onChange: () => void;
         onEditTarget: () => void;
         onShowConflict: () => void;
+        picker?: Snippet;
+        /** The suggested night of each riding day by number, such as "Around Engen", where no night is pinned. */
+        suggested?: Record<number, string>;
     } = $props();
 
     const riding = $derived(day.ridingNumber);
     const last = $derived(riding === days.length);
     const previous = $derived(days[riding - 2]);
-    const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? `Day ${calendar[riding - 1]} overnight`);
+    const start = $derived(riding === 1 ? trip.points.find(p => p.kind === 'start')!.label : previous?.pinned?.label ?? suggested[riding - 1] ?? `Day ${calendar[riding - 1]} overnight`);
     const view = $derived(planView(trip, line));
     const finish = $derived(view.stops.at(-1)!.point);
-    const end = $derived(last ? finish.label : day.pinned?.label ?? 'Overnight to choose');
+    const end = $derived(last ? finish.label : day.pinned?.label ?? suggested[riding] ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const over = $derived(dayOverTarget(trip, day, day.ascent));
@@ -58,7 +59,6 @@
         ...(over.km > 0 ? [confirmed ? `${over.km.toFixed(1)} km over target` : `≈ ${Math.max(1, Math.round(over.km))} km over target`] : []),
         ...(over.climb > 0 ? [`${confirmed ? '' : '≈ '}↑ ${over.climb} m over target`] : []),
     ]);
-    const choosing = $derived(!last && (!day.pinned || changing));
     const stops = $derived(expanded ? dayStops(trip, line, day) : []);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
@@ -70,11 +70,6 @@
     function duration(hours: number) {
         const minutes = Math.round(hours * 60);
         return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-    }
-
-    function candidateDay(candidate: OvernightCandidate) {
-        const excess = dayOverTarget(trip, candidate, candidate.ascent);
-        return { distance: candidate.distance, ascent: candidate.ascent, over: excess.km > 0 || excess.climb > 0 };
     }
 
     function reveal(id: string): Attachment {
@@ -96,7 +91,7 @@
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
-            <strong>{start} → {end}</strong>
+            <strong>Day {day.number}</strong>
             <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? day.ascent : '—'} m</span> · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
@@ -133,25 +128,16 @@
                 <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{day.distance.toFixed(1)} km</small></button>
             {/if}
             <p class="help">{stops.length ? 'Click the map to add a stop. Drag the route to reshape it.' : 'No stops yet. Click the map to add one.'}</p>
-            {#if choosing}
+            {#if choosing && !last}
                 <div class="choose">
                     <div class="choose-head">
                         <h3>Where to sleep</h3>
                         <button type="button" class="planner-action" onclick={onShowEnd}>Show area</button>
                     </div>
-                    <p class="help">Estimated distance and climb if you stay here.</p>
-                    {#each candidates as candidate (candidate.place.id)}
-                        <PlaceRow place={candidate.place} day={candidateDay(candidate)} selected={selectedId === candidate.place.id} onSelect={onSelectPlace} />
-                    {:else}
-                        <p class="help" role="status">{overnightNote || 'No suggested places here. Pick a spot on the map.'}</p>
-                    {/each}
-                    <div class="choose-actions">
-                        <button type="button" class="planner-action" onclick={onPick}>Pick another spot on the map</button>
-                        {#if day.pinned}<button type="button" class="planner-action quiet" onclick={() => onChangeOvernight(false)}>Cancel</button>{/if}
-                    </div>
+                    {@render picker?.()}
                 </div>
             {:else if day.pinned && !last}
-                <button type="button" class="planner-action change" onclick={() => onChangeOvernight(true)}>Change overnight</button>
+                <button type="button" class="planner-action change" onclick={onChange}>Change overnight</button>
             {/if}
         </div>
     {/if}
@@ -354,12 +340,7 @@
         align-items: baseline;
         justify-content: space-between;
         gap: 8px;
-    }
-    .choose-actions {
-        display: flex;
-        justify-content: space-between;
-        margin-top: 4px;
-        font-size: 13px;
+        margin-bottom: 6px;
     }
     .change {
         margin-top: 4px;

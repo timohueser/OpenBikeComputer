@@ -41,6 +41,7 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
 | `climbTarget` | Optional finite non-negative number |
+| `sleep` | Optional `camping`, `hotel`, or `either`: the kind of place the suggested nights look for. Absent means `either`. |
 
 Each point has a unique non-empty string `id`, a string `label`, and a two-number
 `coordinate` in longitude/latitude order.
