@@ -16,6 +16,8 @@ struct RootView: View {
     @State private var onboardingUpload: UploadRequest?
     @State private var setupRouteError: String?
     @State private var importModel: ImportFlowModel
+    /// A place shared from a map app, on its way to the planner.
+    @State private var sharedPlace: SharedPlaceFlowModel
     /// The line the "Make a trip" sheet leaves; it shows once the sheet has gone.
     @State private var joinNotice: String?
     /// The foreground-only link policy: a real background transition suspends the link, after
@@ -71,7 +73,8 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture. Untouched in every ordinary run.
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        placeName: (@Sendable (Coordinate) async -> String?)? = nil
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
+        currentLocation: @escaping @Sendable () async -> Coordinate? = { await CurrentLocation.fix() }
     ) {
         self.transport = transport
         self.bondStore = bondStore
@@ -122,6 +125,7 @@ struct RootView: View {
             library: library,
             lastBikeType: lastBikeType
         ))
+        _sharedPlace = State(initialValue: SharedPlaceFlowModel(locate: currentLocation, lastBikeType: lastBikeType))
         _reachability = State(initialValue: ReachabilityStore(reachability))
         // The runner is the same type the background refresh runs, so the sheet and the
         // notification cannot disagree about what is worth raising.
@@ -134,6 +138,25 @@ struct RootView: View {
     }
 
     var body: some View {
+        root
+            // The bike type for a place shared from a map app. The planner opens once the sheet has gone.
+            .obcChoiceSheet(
+                sharedPlaceTitle,
+                isPresented: sharedPlaceShown,
+                message: "Choose a bike type for the route.",
+                actions: bikeTypeActions,
+                onDismiss: { sharedPlace.proceed() }
+            )
+            .alert(sharedPlace.notice ?? "", isPresented: Binding(
+                get: { sharedPlace.notice != nil }, set: { if !$0 { sharedPlace.notice = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            }
+            .onChange(of: sharedPlace.seed) { openSharedPlace() }
+    }
+
+    /// Split from `body` for the type-checker, as the presentation pieces below are.
+    private var root: some View {
         LaunchFlowView(model: launchModel, setup: {
             OnboardingFlowView(
                 progress: onboarding, firmware: onboardingFirmware, library: mainModel,
@@ -190,7 +213,14 @@ struct RootView: View {
             ],
             onDismiss: { importModel.proceed(using: plannerSource) }
         )
-        .overlay { if let planning = importModel.planning { planningCover(planning) } }
+        .overlay {
+            if let planning = importModel.planning {
+                progressCover(planning.of == 1 ? "Planning on roads…" : "Planning file \(planning.file) of \(planning.of)…",
+                              id: "import.planning", onCancel: { importModel.cancelPlanning() })
+            } else if sharedPlace.isWaiting {
+                progressCover("Finding the place…", id: "sharedPlace.waiting", onCancel: { sharedPlace.cancel() })
+            }
+        }
         .onChange(of: importModel.landed?.id) {
             guard let file = importModel.landed else { return }
             importModel.landed = nil
@@ -286,7 +316,9 @@ struct RootView: View {
             switch phase {
             case .pairing: onboarding.begin()
             case .setup: mainModel.start()
-            case .main: startLibraryServices()
+            case .main:
+                startLibraryServices()
+                openSharedPlace()
             default: break
             }
         }
@@ -328,6 +360,8 @@ struct RootView: View {
             launchModel.openPairingLink()
         } else if url.isFileURL {
             importModel.receive(url)
+        } else if let text = SharedPlaceFlowModel.sharedText(in: url) {
+            sharedPlace.receive(text, using: plannerSource)
         }
     }
 
@@ -431,18 +465,18 @@ struct RootView: View {
         )
     }
 
-    private func planningCover(_ planning: (file: Int, of: Int)) -> some View {
+    private func progressCover(_ title: String, id: String, onCancel: @escaping () -> Void) -> some View {
         ZStack {
             OBCTheme.page.ignoresSafeArea()
             VStack(spacing: 20) {
-                ProgressView(planning.of == 1 ? "Planning on roads…" : "Planning file \(planning.file) of \(planning.of)…")
-                Button("Cancel") { importModel.cancelPlanning() }
+                ProgressView(title)
+                Button("Cancel", action: onCancel)
                     .buttonStyle(.obcGhost)
-                    .accessibilityIdentifier("import.cancelPlanning")
+                    .accessibilityIdentifier("\(id).cancel")
             }
             .padding(.horizontal, 32)
         }
-        .accessibilityIdentifier("import.planning")
+        .accessibilityIdentifier(id)
     }
 
     /// One imported file: saved at once, then its detail opens. During setup it goes to the device instead.
@@ -517,6 +551,36 @@ struct RootView: View {
         )
     }
 
+    // MARK: Shared-place presentation pieces
+
+    private var sharedPlaceTitle: String {
+        sharedPlace.pending?.name.map { "Route to \($0)" } ?? "Route to the shared place"
+    }
+
+    /// Presentation binding for the bike-type sheet. A dismissal without a choice drops the share
+    /// in `proceed()`.
+    private var sharedPlaceShown: Binding<Bool> {
+        Binding(
+            get: { sharedPlace.pending != nil },
+            set: { if !$0 { sharedPlace.pending = nil } }
+        )
+    }
+
+    /// The last bike type first, as the amber action.
+    private var bikeTypeActions: [OBCSheetAction] {
+        guard let preferred = sharedPlace.pending?.bikeType else { return [] }
+        return ([preferred] + BikeType.allCases.filter { $0 != preferred }).map { bikeType in
+            OBCSheetAction(bikeType.name, role: bikeType == preferred ? .primary : .normal) { sharedPlace.choose(bikeType) }
+        }
+    }
+
+    /// The planner on a shared place, once the main screen is up.
+    private func openSharedPlace() {
+        guard launchModel.phase == .main, let seed = sharedPlace.seed else { return }
+        sharedPlace.seed = nil
+        path = [.plannerTo(seed)]
+    }
+
     // MARK: Detail destinations
 
     @ViewBuilder
@@ -527,6 +591,13 @@ struct RootView: View {
                 onSave: { savePlannerPreview($0, bikeType: $0.bikeType) },
                 onClose: { path.removeAll() },
                 sample: sample, source: plannerSource
+            )
+        case .plannerTo(let seed):
+            PlannerPreviewView(
+                seed: seed,
+                onSave: { savePlannerPreview($0, bikeType: $0.bikeType) },
+                onClose: { path.removeAll() },
+                source: plannerSource
             )
         case .editRoute(let id):
             if let plan = mainModel.plannedPlan(for: id) {
@@ -752,7 +823,8 @@ struct RootView: View {
     }
 
     /// A nil bike type takes the type of the route the plan came from, else the last bike type, as
-    /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route.
+    /// an import does. `replacing` saves the changes to that route; else the plan lands as a new route
+    /// and its detail opens, where Send is one tap.
     /// A plan with nights is a trip: it saves as one, or replaces the route it edits with one, and
     /// the trip page opens.
     private func savePlannerPreview(_ saved: PlannerPreviewSave, bikeType: BikeType?,
@@ -788,7 +860,7 @@ struct RootView: View {
         }
         mainModel.addImportedRoute(record)
         mainModel.searchText = ""
-        path.removeAll()
+        path = [.route(id: record.id)]
     }
 
     /// "Save changes" writes the plan into the trip it edits; "Save as copy" makes a new trip and
@@ -811,6 +883,8 @@ struct RootView: View {
 /// Library destinations carry ids so a rename mid-stack reads the live summary.
 enum MainDestination: Hashable {
     case planner(sample: Bool)
+    /// The planner on a route to a shared place.
+    case plannerTo(PlannerPreviewSeed)
     /// The planner on a saved route's plan.
     case editRoute(id: RouteID)
     case route(id: RouteID)

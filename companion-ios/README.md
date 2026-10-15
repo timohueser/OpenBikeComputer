@@ -65,7 +65,8 @@ header says how to keep your edit out of git.
 Debug uses `MockTransport` by default. The authoritative launch arguments are in
 `OBCMock/MockLaunchOptions.swift`, and the scenario presets in `OBCMock/Scenario.swift`. Useful
 entry points: `-OBCScenario`, `-OBCFixtures`, `-OBCConnection`, `-OBCImportSample`,
-`-OBCShowDevPanel`, `-OBCShowUIGallery`.
+`-OBCShowDevPanel`, `-OBCShowUIGallery`. To share a place with a running simulator, use
+`xcrun simctl openurl booted 'openbikecomputer://place?text=Freiburg'`.
 
 `-OBCHideMockHUD`, `-OBCDisableAnimations` and `-OBCHoldConfirmations` make automated captures
 deterministic. Website captures come from `scripts/capture-website-screenshots.sh`. **Wait for an

@@ -121,6 +121,19 @@ public struct PlannerPreviewLegHit: Equatable, Sendable {
     public let coordinate: Coordinate
 }
 
+/// A route to a place from outside the planner, such as a map app's share. Without a start, the
+/// planner opens on the finish alone, and the rider sets the start.
+public struct PlannerPreviewSeed: Hashable, Sendable {
+    public let start: Coordinate?
+    public let finish: Coordinate
+    public let finishName: String
+    public let activity: RouteActivity
+
+    public init(start: Coordinate?, finish: Coordinate, finishName: String, activity: RouteActivity) {
+        self.start = start; self.finish = finish; self.finishName = finishName; self.activity = activity
+    }
+}
+
 /// Editing intent is reversible. Geometry comes from the published route service.
 @MainActor @Observable
 public final class PlannerPreviewModel {
@@ -138,6 +151,8 @@ public final class PlannerPreviewModel {
         var loop = false
         /// The title of a plan from a signed route.
         var name: String?
+        /// The one point is the finish, and a new start goes before it.
+        var awaitsStart = false
         /// Where a new stop goes: before the finish, or at the end of a loop.
         var stopEnd: Int { loop || points.count < 2 ? points.count : points.count - 1 }
         /// The route points in ride order; a loop ends at its start again.
@@ -172,6 +187,16 @@ public final class PlannerPreviewModel {
         self.service = service
         state = Self.state(plan)
         isTrip = plan.mode == .trip
+    }
+
+    /// Opens a route to `seed`'s finish without an undo step.
+    public init(seed: PlannerPreviewSeed, service: any PlannerDataSource = PlannerService.shared) {
+        self.service = service
+        let finish = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: seed.finishName, coordinate: seed.finish))
+        let start = seed.start.map { PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: Self.myLocationName, coordinate: $0)) }
+        state.points = (start.map { [$0] } ?? []) + [finish]
+        state.awaitsStart = start == nil
+        state.activity = seed.activity
     }
 
     /// The plan is a trip's: it saves as a trip even with one day.
@@ -280,10 +305,13 @@ public final class PlannerPreviewModel {
 
     public var points: [PlannerPreviewPoint] { state.points }
     public var markers: [PlannerPreviewPoint] { state.markers }
-    public var start: PlannerPreviewPlace? { points.first?.place }
+    public var start: PlannerPreviewPlace? { state.awaitsStart ? nil : points.first?.place }
     /// A loop's finish is its start.
-    public var finish: PlannerPreviewPlace? { isLoop ? start : points.count > 1 ? points.last?.place : nil }
+    public var finish: PlannerPreviewPlace? {
+        state.awaitsStart ? points.first?.place : isLoop ? start : points.count > 1 ? points.last?.place : nil
+    }
     public var isLoop: Bool { state.loop }
+    public func isStart(_ id: String) -> Bool { start != nil && id == points.first?.id }
     /// The start, and the finish of a plan that is not a loop. Only the other points have a kind.
     public func isEndpoint(_ id: String) -> Bool { id == points.first?.id || (!isLoop && id == points.last?.id) }
     public var activity: RouteActivity { state.activity }
@@ -412,7 +440,10 @@ public final class PlannerPreviewModel {
     public func newRoute() { edit { $0 = State() } }
     public func loadSample() { edit { $0 = Self.sampleState } }
     public func setStart(_ place: PlannerPreviewPlace) {
-        edit { if $0.points.isEmpty { $0.points.append(Self.newPoint(place, in: $0)) } else { $0.points[0].place = place } }
+        edit {
+            if $0.awaitsStart || $0.points.isEmpty { $0.points.insert(Self.newPoint(place, in: $0), at: 0) }
+            else { $0.points[0].place = place }
+        }
     }
     /// In a loop, a new finish opens the loop: the route ends there instead of at the start.
     public func setFinish(_ place: PlannerPreviewPlace) {
@@ -806,6 +837,7 @@ public final class PlannerPreviewModel {
         // A loop needs a point to ride to before it returns.
         // A plan with fewer than two points is no longer the signed route it was named after.
         if next.points.count < 2 { next.loop = false; next.name = nil }
+        if next.points.count != 1 { next.awaitsStart = false }
         let stops = next.points.dropFirst().prefix(max(0, next.stopEnd - 1))
         next.nights = next.nights.filter { id in stops.contains { $0.id == id && $0.kind == .visit } }
         // A leg keeps its line only while it joins the same two points at the same places. A moved
@@ -831,7 +863,7 @@ public final class PlannerPreviewModel {
             state.legs[id] = leg.drawn.map { .init(mode: .routed, drawn: $0) }
         }
     }
-    static let startName = "Start", shapeName = "Shaping point", mapPointName = "Map point"
+    static let startName = "Start", shapeName = "Shaping point", mapPointName = "Map point", myLocationName = "My location"
     private static func newPoint(_ place: PlannerPreviewPlace, kind: PlannerPreviewPointKind = .visit, in state: State) -> PlannerPreviewPoint {
         let id = (state.points + state.markers).contains { $0.id == place.id } ? UUID().uuidString : place.id
         return .init(place: place, kind: kind, id: id)

@@ -14,7 +14,7 @@ struct PlannerPreviewPoints: View {
             Section {
                 ForEach(Array(model.points.enumerated()), id: \.element.id) { index, point in
                     Button { onEdit(point) } label: {
-                        row(point, role: role(at: index), symbol: index == 0 ? "play.fill" : model.isEndpoint(point.id) ? "flag.checkered" : point.kind.symbol)
+                        row(point, role: role(at: index), symbol: model.isStart(point.id) ? "play.fill" : model.isEndpoint(point.id) ? "flag.checkered" : point.kind.symbol)
                     }
                     .buttonStyle(.plain)
                     .moveDisabled(model.isLoop && index == 0)
@@ -60,7 +60,7 @@ struct PlannerPreviewPoints: View {
 
     private func role(at index: Int) -> String {
         let point = model.points[index]
-        if index == 0 { return model.isLoop ? "Start and finish" : "Start" }
+        if model.isStart(point.id) { return model.isLoop ? "Start and finish" : "Start" }
         if model.isEndpoint(point.id) { return "Finish" }
         if let night = model.nights.firstIndex(where: { $0.id == point.id }) { return "End of day \(night + 1)" }
         return point.kind.title
