@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from './geo';
-import { difference, divergence, optionName, optionOrder } from './route-options';
+import { difference, divergence, optionName, optionOrder, routeRow } from './route-options';
 import type { EngineRoute } from './routing';
 
 function route(id: string, reason: string, profile: string, km: number, climb: number, unpavedKm: number, unknownElevation = 0, via?: Coordinate): EngineRoute {
@@ -16,11 +16,12 @@ describe('route options', () => {
 
     it('compares every option with the current route, which leads the list', () => {
         expect(optionOrder([balanced, shorter, corridor], 'b')).toEqual([shorter, balanced, corridor]);
-        expect(difference(shorter, balanced)).toBe('5.5 km shorter · 237 m less climbing');
-        expect(difference(balanced, shorter)).toBe('5.5 km longer · 237 m more climbing');
-        expect(difference(corridor, balanced)).toBe('0.6 km shorter · 20 m less climbing · 0.1 km more unpaved');
-        expect(difference(route('e', 'smoother', 'touring', 30.72, 906, 2.4), balanced)).toBe('Same distance · same climbing');
-        expect(difference(shorter, route('d', 'primary', 'touring', 30, 900, 2.4, 120))).toBe('4.8 km shorter');
+        const row = (r: EngineRoute) => routeRow(r, r.id), base = row(balanced);
+        expect(difference(row(shorter), base)).toBe('5.5 km shorter · 237 m less climbing');
+        expect(difference(base, row(shorter))).toBe('5.5 km longer · 237 m more climbing');
+        expect(difference(row(corridor), base)).toBe('0.6 km shorter · 20 m less climbing · 0.1 km more unpaved');
+        expect(difference(row(route('e', 'smoother', 'touring', 30.72, 906, 2.4)), base)).toBe('Same distance · same climbing');
+        expect(difference(row(shorter), row(route('d', 'primary', 'touring', 30, 900, 2.4, 120)))).toBe('4.8 km shorter');
     });
 
     it('names options by their reason, and a corridor by its settlement or as another way', () => {

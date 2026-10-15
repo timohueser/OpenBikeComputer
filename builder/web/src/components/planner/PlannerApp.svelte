@@ -12,9 +12,9 @@
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
-    import WaysList from './WaysList.svelte';
+    import CompareList from './CompareList.svelte';
     import CompareProfile from './CompareProfile.svelte';
-    import { optionLetter } from '../../lib/planner/route-options';
+    import { lineRow, optionLetter, optionName, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -32,6 +32,7 @@
     import LibraryPanel from './PlanLibrary.svelte';
     import type { Plan } from '../../lib/planner/library';
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
+    import { isTrip } from '../../lib/planner/trip-validation';
     import {
         addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, overnightCandidates, dragPointOut,
@@ -51,10 +52,10 @@
     import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import type { Version } from '../../lib/planner/versions';
+    import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
-    import type { EngineRoute, RoutingLine } from '../../lib/planner/routing';
+    import { routingKey, type EngineRoute, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureNote, closureStretches, type Stretch } from '../../lib/planner/route-closures';
@@ -95,17 +96,52 @@
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
-    let list = $state<'plan' | 'ways'>('plan');
+    let list = $state<'plan' | 'ways' | 'versions'>('plan');
     const options = $derived(session.routeOptions);
     // A label edit keeps the line, so it does not request the options again.
     $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
-    // The previewed option and the current route; the map and the drawer show them until the rider leaves the list.
+    $effect(() => { if (list === 'versions') { void session.versions; untrack(() => session.findVersionLines()); } });
+    const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
+        stale: 'Your plan changed. Finding route options for it…' };
+    const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
+        i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
+    // Your route, then each saved version once its line is known. A version in an older plan format is left out.
+    const versionList = $derived.by(() => {
+        const valid = session.versions.filter(version => isTrip(version.trip));
+        if (!currentRoute) return { rows: [], status: 'Calculating your route…', note: '' };
+        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save version keeps this plan, so you can compare it later.', note: '' };
+        const lines = valid.map(version => session.versionLines[routingKey(version.trip)]);
+        if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '' };
+        const rows: Compared[] = [{ ...lineRow('current', 'Your route', trip, currentRoute), detail: presetName(currentRoute.profile) }];
+        const failed = valid.filter((version, i) => {
+            const line = lines[i]!;
+            if (typeof line === 'string') return true;
+            rows.push({ ...lineRow(version.id, versionTitle(version), version.trip, line), detail: version.name ? `Saved ${savedWhen(version.at)}` : undefined });
+            return false;
+        });
+        const missing = failed.length ? ` ${failed.length === 1 ? 'One version' : `${failed.length} versions`} could not be calculated: ${lines.find(line => typeof line === 'string')}` : '';
+        return { rows, status: null, note: `Differences compare with your route. Restore is one undo step.${missing}` };
+    });
+    let versionPreview = $state<string | null>(null);
+    // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
     const comparison = $derived.by(() => {
-        const option = session.compared;
-        if (!option || options.state !== 'ready') return null;
-        return { option, current: options.routes[0], letter: optionLetter(options.routes.indexOf(option)) };
+        const [rows, id] = list === 'ways' ? [optionRows, session.compared?.id] : list === 'versions' ? [versionList.rows, versionPreview] : [[], null];
+        const index = rows.findIndex(row => row.id === id);
+        return index > 0 ? { option: rows[index], current: rows[0], letter: optionLetter(index) } : null;
     });
     $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
+    $effect(() => { if (list !== 'versions' || searching || routesOpen) versionPreview = null; });
+
+    function useOptionRow(row: Compared) {
+        const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
+        if (route) useOption(route, row.name);
+    }
+
+    function restoreRow(row: Compared) {
+        const version = session.versions.find(v => v.id === row.id);
+        versionPreview = null;
+        if (version) restoreVersion(version.trip, row.name);
+    }
     let searching = $state(false);
     let planEditing = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
@@ -1037,12 +1073,18 @@
                 {#if !focusedDay && visualRoute}
                     <div class="list-switch">
                         <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: options.state === 'ready' && options.routes.length > 1 ? `Route options · ${options.routes.length - 1}` : 'Route options' }]} />
+                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: options.state === 'ready' && options.routes.length > 1 ? `Route options · ${options.routes.length - 1}` : 'Route options' },
+                                { value: 'versions', label: session.versions.length ? `Versions · ${session.versions.length}` : 'Versions' }]} />
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if list === 'ways'}
-                        <WaysList {options} previewId={session.compared?.id ?? null} places={session.optionPlaces} onPreview={id => session.previewOption(id)} onApply={useOption} onRetry={() => session.findAlternatives()} />
+                        <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
+                            retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
+                            note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
+                    {:else if list === 'versions'}
+                        <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Restore"
+                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={shown.trip} line={visualRoute} {itinerary} {days} overnightNote={overnightContext ? overnightNote : ''} {theme} {expandedDay} {candidates} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
@@ -1073,7 +1115,7 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.geometry, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}

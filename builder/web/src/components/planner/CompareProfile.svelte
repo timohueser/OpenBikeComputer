@@ -1,14 +1,13 @@
 <script lang="ts">
     import DrawerTitle from './DrawerTitle.svelte';
     import { heightRange, profilePaths, profileSamples } from '../../lib/planner/profile-data';
-    import { routeProfile } from '../../lib/planner/route-options';
-    import type { EngineRoute } from '../../lib/planner/routing';
+    import type { Compared } from '../../lib/planner/route-options';
 
     let { option, current, letter, height, open, onToggle }: {
-        /** The previewed option, which the profile fills. */
-        option: EngineRoute;
+        /** The previewed route, which the profile fills. */
+        option: Compared;
         /** The rider's current route, letter A, as a dotted line. */
-        current: EngineRoute;
+        current: Compared;
         letter: string;
         height: number;
         open: boolean;
@@ -16,14 +15,13 @@
     } = $props();
 
     // One distance scale: the longer route spans the plot.
-    const km = (route: EngineRoute) => route.totals.distance_m / 1000;
-    const longest = $derived(Math.max(km(option), km(current)) || 1);
-    const optionSamples = $derived(profileSamples(routeProfile(option)));
-    const currentSamples = $derived(profileSamples(routeProfile(current)));
+    const longest = $derived(Math.max(option.km, current.km) || 1);
+    const optionSamples = $derived(profileSamples(option.line));
+    const currentSamples = $derived(profileSamples(current.line));
     const { low, high } = $derived(heightRange(optionSamples, currentSamples));
-    const optionPath = $derived(profilePaths(optionSamples, low, high, km(option) / longest));
-    const currentPath = $derived(profilePaths(currentSamples, low, high, km(current) / longest));
-    const ends = $derived([{ letter, route: option }, { letter: 'A', route: current }]);
+    const optionPath = $derived(profilePaths(optionSamples, low, high, option.km / longest));
+    const currentPath = $derived(profilePaths(currentSamples, low, high, current.km / longest));
+    const ends = $derived([{ letter, row: option }, { letter: 'A', row: current }]);
 </script>
 
 <section class="elevation" style:height={`${height}px`} aria-label="Elevation profile">
@@ -35,14 +33,14 @@
         <div class="plot">
             <span class="height" style:top="5%">{high} m</span>
             <span class="height" style:top="94%">{low} m</span>
-            <svg viewBox="0 0 1000 112" preserveAspectRatio="none" role="img" aria-label={`Elevation of option ${letter}, filled, and of your route A, dotted, on one distance scale.`}>
+            <svg viewBox="0 0 1000 112" preserveAspectRatio="none" role="img" aria-label={`Elevation of ${letter}, filled, and of your route A, dotted, on one distance scale.`}>
                 <path d="M0 25H1000M0 65H1000M0 105H1000" class="grid" />
                 <path d={optionPath.area} class="fill" />
                 <path d={optionPath.line} class="option" />
                 <path d={currentPath.line} class="current" />
             </svg>
             {#each ends as end, i (end.letter)}
-                <span class="end" class:current={i === 1} style:left={`${km(end.route) / longest * 100}%`} style:top={`${i * 18}px`}>{end.letter} {km(end.route).toFixed(1)} km</span>
+                <span class="end" class:current={i === 1} style:left={`${end.row.km / longest * 100}%`} style:top={`${i * 18}px`}>{end.letter} {end.row.km.toFixed(1)} km</span>
             {/each}
         </div>
         <div class="axis"><span>0 km</span><span>{longest.toFixed(1)} km</span></div>
