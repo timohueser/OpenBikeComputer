@@ -47,6 +47,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
+# The empty `wiki` shard of the planner build test.
+zstd = "0.13"
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }
 # The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.

@@ -77,8 +77,7 @@ impl Prepared for TerrainReference {
             }
             tiles.retain(|tile| inside.contains(tile));
         }
-        if let Some(scope) = job.scope.clone() {
-            let inside = scope_tiles(job, &scope)?;
+        if let Some(inside) = job.scope.clone().map(|scope| scope_tiles(job, &scope)).transpose()?.flatten() {
             tiles.retain(|tile| inside.contains(tile));
         }
         let marks = job.state.join("tiles");
@@ -185,8 +184,9 @@ fn regions(scope: &Scope) -> Result<(obc_data::regions::Regions, String), String
     Ok((settings.regions()?, scope.region.clone()))
 }
 
-/// The archive tiles of the region of `scope`: the box or the polygons of the areas of each part.
-fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String> {
+/// The archive tiles of the region of `scope`: the box or the polygons of the areas of each part;
+/// `None` for the planet, which holds every tile.
+fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<Option<BTreeSet<CellId>>, String> {
     let (regions, id) = regions(scope)?;
     let mut tiles = BTreeSet::new();
     for part in regions.leaves(&id)? {
@@ -197,10 +197,11 @@ fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String>
                     tiles.extend(area_tiles(job, area)?);
                 }
             }
+            Area::Planet => return Ok(None),
             Area::Union { .. } => {}
         }
     }
-    Ok(tiles)
+    Ok(Some(tiles))
 }
 
 #[cfg(test)]

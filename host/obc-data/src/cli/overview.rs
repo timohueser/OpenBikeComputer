@@ -120,6 +120,7 @@ fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
     for part in regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf)) {
         match &part.area {
             Area::Box { bbox } => boxes.push(*bbox),
+            Area::Planet => boxes.push(Bbox::WORLD),
             Area::Geofabrik { areas } => match index() {
                 Ok(Some(index)) => {
                     for path in areas {

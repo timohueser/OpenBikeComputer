@@ -155,6 +155,9 @@ impl Planner {
         let region = regions.get(id).ok_or_else(|| Unplanned::Failed(format!("no region `{id}`")))?;
         // A region without a time zone, such as a box, gives the times of the search and the sun in UTC.
         let time_zone = region.time_zone.as_deref().unwrap_or("UTC");
+        if crate::region_sources::planet(regions, id)? {
+            return Err(invalid("the planner does not build the planet yet: its services do not scale to it".into()));
+        }
         let on = |layer: &str| inputs.settings.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
         let glo30 = version(inputs, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
@@ -624,6 +627,8 @@ mod tests {
     use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
+    /// The day of the version of `wiki` in the store.
+    const DAY: &str = "2026-10-01";
 
     /// The inputs of `region` with `layers` on, whose serving release reads each source without
     /// params of the planner at `1`, and the canopy at `v1.11`.
@@ -632,11 +637,14 @@ mod tests {
         let read = read.into_iter().chain(BASEMAP_SOURCES).map(|source| (source, "1")).chain([("hansen-gfc", "v1.11")]);
         let serving = read.map(|(source, version)| ((source.to_string(), Vec::new()), version.to_string())).collect();
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Inputs {
+        let mut inputs = Inputs {
             settings: Settings { region: region.into(), layers, ..Settings::default() },
             serving,
             ..Inputs::default()
-        }
+        };
+        // The version of `wiki` that [`store`] has.
+        inputs.resolved.insert((obc_pack::step::WIKI.into(), Vec::new()), crate::device::tests::wiki(DAY).0);
+        inputs
     }
 
     /// `inputs` with the version `2026-10-01` for each fetch of the optional layers that the steps
@@ -662,16 +670,18 @@ mod tests {
             region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
             region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
+            region("planet", "kind = \"planet\"\n"),
         ])
         .unwrap()
     }
 
     /// A store with what the step list of `AREA` reads: its `.poly`, a box near Freiburg; the
-    /// tile list, which names the two squares west of 8°; the land polygons; and the extract of
-    /// each of `days`.
+    /// tile list, which names the two squares west of 8°; the land polygons; a version of `wiki`;
+    /// and the extract of each of `days`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
         crate::device::tests::with_index(&store);
+        crate::device::tests::wiki_in(&store, DAY);
         let area = [("area".to_string(), AREA.to_string())];
         let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
@@ -812,6 +822,8 @@ mod tests {
             intermediate,
             [
                 "planner/source/europe/test",
+                "device/landmark-content",
+                "device/peak-content",
                 "planner/osm",
                 "planner/terrain",
                 "planner/routing",
@@ -884,6 +896,8 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         let result = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store);
         assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("no country")));
+        let result = Planner.steps(&root(), &inputs("planet", &[]), &regions(), &store);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("planet")), "before a fetch");
         // A newer index names the country of the area.
         let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
             "properties":{"id":"test","name":"Test","parent":null,"iso3166-1:alpha2":["DE"],
@@ -940,7 +954,7 @@ mod tests {
         // the map leaves split `device/osm` again. A read of the own layer is exempt: a new version
         // of the layer bakes both steps. The reads below bake their step again on such a machine:
         // the POI database is large, and its grid holds it in another form; the landmark and
-        // peak content stays private until the wiki is a prepared source.
+        // peak content is compiled again from the `wiki` shards, which the target holds.
         let mut unheld = Vec::new();
         for step in &steps {
             for input in &step.inputs {
@@ -961,6 +975,44 @@ mod tests {
             ("planner/places", "planner/search/pois"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
+    }
+
+    /// A new version of `wiki` rebuilds the landmarks and what reads them, such as the search of
+    /// the planner, and nothing of the maps, the terrain or the routing.
+    #[test]
+    fn a_new_wiki_version_stales_the_landmarks_and_the_search() {
+        use obc_data::engine::state::{state, Environment, Newer, Verdict};
+        let temp = temp("planner-wiki");
+        let store = store(&temp, &[DAY]);
+        crate::device::tests::with_model_areas(&store);
+        let mut inputs = inputs(AREA, &[]);
+        let listed = |inputs: &Inputs| {
+            let mut steps = Planner.steps(&root(), inputs, &regions(), &store).unwrap().steps;
+            let device = Device.steps_with_tool(&root(), inputs, &regions(), &store, Ok(())).unwrap().steps;
+            steps.extend(device.into_iter().filter(|step| !step.name.ends_with("-content")));
+            steps
+        };
+        let declared = |step: &Step| (step.name.clone(), crate::device::tests::declared(step, step.layer.format));
+        let release = listed(&inputs).iter().map(declared).collect();
+        let newer = crate::device::tests::wiki_in(&store, "2026-11-01");
+        inputs.resolved.insert((obc_pack::step::WIKI.into(), Vec::new()), newer.clone());
+        let environment = Environment { release, newer: Newer::new() };
+        let states = state(&Store::at(temp.0.join("empty")), &listed(&inputs), &environment).unwrap();
+        let stale: Vec<(&str, &str)> = states
+            .iter()
+            .filter(|layer| layer.state != Verdict::Ok)
+            .map(|layer| (layer.layer.as_str(), layer.text.as_deref().unwrap()))
+            .collect();
+        let show = obc_data::prepared::show;
+        let cause = format!("wiki {} → {}", show(&crate::device::tests::wiki(DAY).0), show(&newer));
+        let expected = [
+            ("device/landmarks", cause.as_str()),
+            ("planner/search", "follows device/landmarks"),
+            ("device/catalog", "follows device/landmarks"),
+            ("planner/places", "follows planner/search"),
+            ("planner/index", "follows planner/places"),
+        ];
+        assert_eq!(stale, expected);
     }
 
     #[test]

@@ -13,6 +13,7 @@ export type Region = { id: string; name: string; countries: string[] } & (
     | { kind: "geofabrik"; areas: string[] }
     | { kind: "box"; box: Bbox }
     | { kind: "union"; union: string[] }
+    | { kind: "planet" }
 );
 
 export interface Areas {

@@ -1,9 +1,22 @@
-//! A temporary compiler view over compact source pins; no response replica enters the Store.
+//! A temporary compiler view over the compact facts of the `wiki` source.
 use super::*;
+
+/// The facts that a view needs and the version lacks, by kind: a reader takes each as no content,
+/// unlike a fact with the status `missing`, which Wikimedia confirmed.
+pub type Absent = BTreeMap<&'static str, u64>;
 
 /// A file of `files` that holds one fact.
 fn fact_file(name: &str) -> bool {
-    name.starts_with("content/") && !name.starts_with("content/manifest/") && !name.starts_with("content/assets/")
+    name.starts_with("content/") && !name.starts_with("content/assets/")
+}
+
+fn lacks(absent: &mut Absent, kind: &'static str) {
+    *absent.entry(kind).or_default() += 1;
+}
+
+/// The counts of `absent` as text: `article 2, entity 1`.
+pub fn absent_text(absent: &Absent) -> String {
+    absent.iter().map(|(kind, count)| format!("{kind} {count}")).collect::<Vec<_>>().join(", ")
 }
 
 pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(String, String), Value>, String> {
@@ -107,9 +120,10 @@ pub fn lead_image(fact: &Value) -> Option<String> {
     assets::commons_lead_image(&scraper::Html::parse_fragment(fact["lead_html"].as_str()?))
 }
 
-pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<(), String> {
+pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<Absent, String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let facts = facts(files)?;
+    let mut absent = Absent::new();
     let mut sources = Vec::new();
     let mut paths = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
@@ -164,7 +178,12 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
     let mut places = Vec::new();
     let mut aliases = BTreeMap::new();
     for id in ids {
-        let entity = subject(&facts, id).ok_or_else(|| format!("missing shared subject: {id}"))?;
+        let Some(entity) = subject(&facts, id) else {
+            if !facts.contains_key(&("entity".into(), id.clone())) {
+                lacks(&mut absent, "entity");
+            }
+            continue;
+        };
         let canonical = string(&entity, "id")?.to_owned();
         if canonical != *id {
             aliases.insert(id.clone(), canonical.clone());
@@ -177,7 +196,10 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
                 continue;
             };
             let key = ("article".into(), format!("{language}:{title}"));
-            let Some(article) = facts.get(&key) else { return Err(format!("missing shared article: {}", key.1)) };
+            let Some(article) = facts.get(&key) else {
+                lacks(&mut absent, "article");
+                continue;
+            };
             if article["status"] == "present" {
                 articles.push(serde_json::json!({"language":language,"title":article["title"],"path":paths[&key],"revision":article["revision"],"url":article["url"],"compact":true,"requested_title":title,"aliases":article["aliases"]}));
             }
@@ -204,7 +226,10 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
         let mut listings = Vec::new();
         for category in categories(&fact["entity"]) {
             let key = ("category".into(), category.clone());
-            let listing = facts.get(&key).ok_or_else(|| format!("missing bounded category fact: {category}"))?;
+            let Some(listing) = facts.get(&key) else {
+                lacks(&mut absent, "category");
+                continue;
+            };
             if listing["status"] != "present" {
                 continue;
             }
@@ -218,7 +243,8 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
         for (filename, source, language) in candidates {
             let key = ("commons".into(), format!("File:{}", filename.replace('_', " ")));
             let Some(metadata) = facts.get(&key) else {
-                return Err(format!("missing shared Commons metadata: {}", key.1));
+                lacks(&mut absent, "commons");
+                continue;
             };
             if metadata["status"] == "present" {
                 let mut image = serde_json::json!({"filename":filename,"metadata_path":paths[&key],"source":source,"language":language});
@@ -249,16 +275,24 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
         }
         places.push(serde_json::json!({"qid":canonical,"entity_path":paths.get(&("entity".into(),id.clone())).or_else(||paths.get(&("entity".into(),canonical.clone()))),"articles":articles,"images":images,"commons_categories":listings}));
     }
-    fs::write(root.join("manifest.json"),serde_json::to_vec(&serde_json::json!({"schema":2,"sources":sources,"places":places,"aliases":aliases,"coverage":{"entity_coverage_complete":true,"asset_phase_complete":true}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+    fs::write(root.join("manifest.json"),serde_json::to_vec(&serde_json::json!({"schema":2,"sources":sources,"places":places,"aliases":aliases,"coverage":{"entity_coverage_complete":true,"asset_phase_complete":true}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    Ok(absent)
 }
 
-pub fn landmark_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<(), String> {
+pub fn landmark_view(
+    files: &BTreeMap<String, std::path::PathBuf>,
+    root: &Path,
+    ids: &[String],
+) -> Result<Absent, String> {
     let facts = facts(files)?;
     let chosen = selected(&facts, ids);
-    view(files, root, &chosen.iter().cloned().collect::<Vec<_>>())?;
+    let mut absent = view(files, root, &chosen.iter().cloned().collect::<Vec<_>>())?;
     let mut omissions = Vec::new();
     for id in ids.iter().filter(|id| !chosen.contains(*id)) {
-        let fact = facts.get(&("entity".into(), id.clone())).ok_or_else(|| format!("missing shared entity: {id}"))?;
+        let Some(fact) = facts.get(&("entity".into(), id.clone())) else {
+            lacks(&mut absent, "entity");
+            continue;
+        };
         let reason =
             if fact["status"] == "missing" { "confirmed_missing_entity" } else { "policy_exclusion_or_no_category" };
         omissions.push(serde_json::json!({"qid":id,"asset":"site","reason":reason}));
@@ -268,10 +302,11 @@ pub fn landmark_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, 
         serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     manifest["omissions"] = serde_json::json!(omissions);
     manifest["coverage"]["candidate_identities"] = serde_json::json!(ids.len());
-    fs::write(path, serde_json::to_vec(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    fs::write(path, serde_json::to_vec(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(absent)
 }
 
-pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> Result<(), String> {
+pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> Result<Absent, String> {
     let source: peaks::SummitSource =
         serde_json::from_slice(&fs::read(root.join("summits.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
@@ -286,14 +321,15 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
             links.entry(string(&value, "key")?.to_owned()).or_insert_with(|| name.clone());
         }
     }
-    let mut ids = BTreeSet::new();
+    let (mut ids, mut absent) = (BTreeSet::new(), Absent::new());
     let mut resolutions = Vec::new();
     for summit in &source.summits {
         for kind in ["wikidata", "wikipedia"] {
             let Some(tag) = summit.tags.get(kind) else { continue };
             let key = format!("{kind}:{tag}");
             let Some(fact) = facts.get(&("link".into(), key.clone())) else {
-                return Err(format!("missing link fact: {key}"));
+                lacks(&mut absent, "link");
+                continue;
             };
             let path = links.get(&key).cloned().ok_or("missing link file")?;
             if fact["status"] == "present" {
@@ -302,7 +338,9 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
             resolutions.push(serde_json::json!({"node_id":summit.node_id,"kind":kind,"path":path,"status":if fact["status"] == "present" {"resolved"} else {"confirmed_missing"}}));
         }
     }
-    view(files, root, &ids.into_iter().collect::<Vec<_>>())?;
+    for (kind, count) in view(files, root, &ids.into_iter().collect::<Vec<_>>())? {
+        *absent.entry(kind).or_default() += count;
+    }
     let manifest_path = root.join("manifest.json");
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -311,63 +349,8 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
         serde_json::json!({"path":"summits.json","sha256":hash(&data),"bytes":data.len(),"url":"osm:regional-summits"}),
     );
     manifest["peaks"] = serde_json::json!({"summits_path":"summits.json","resolutions":resolutions});
-    fs::write(manifest_path, serde_json::to_vec(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
-/// Publish compact facts and their pins; conversion pixels stay in source snapshots locally.
-pub fn bundles(files: &BTreeMap<String, std::path::PathBuf>, output: &Path) -> Result<(), String> {
-    let mut entries = BTreeMap::new();
-    for (_, path) in files.iter().filter(|(name, _)| name.starts_with("content/manifest/")) {
-        let manifest: Value =
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        for pin in manifest["records"].as_array().ok_or("shared manifest records missing")? {
-            if pin["kind"] == "file" {
-                continue;
-            }
-            let kind = string(pin, "kind")?;
-            let digest = string(pin, "sha256")?;
-            let name = format!("content/{kind}/{digest}.json");
-            let path = files.get(&name).ok_or("bundle fact is not in the compile inputs")?;
-            let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
-            if hash(data.as_bytes()) != digest {
-                return Err("bundle fact digest changed".into());
-            }
-            let mut pin = pin.clone();
-            pin.as_object_mut().unwrap().remove("path");
-            entries
-                .insert((kind.to_owned(), string(&pin, "key")?.to_owned()), serde_json::json!({"pin":pin,"data":data}));
-        }
-    }
-    fs::create_dir_all(output).map_err(|e| e.to_string())?;
-    if entries.is_empty() {
-        return Ok(());
-    }
-    let mut records = Vec::new();
-    let mut bytes = 64usize;
-    let mut index = 0;
-    for entry in entries.into_values() {
-        let size = serde_json::to_vec(&entry).map_err(|e| e.to_string())?.len() + 1;
-        if size + 64 > MAX_JSON_SOURCE as usize {
-            return Err("compact fact exceeds publication bundle limit".into());
-        }
-        if bytes + size > MAX_JSON_SOURCE as usize {
-            write_bundle(output, index, &records)?;
-            index += 1;
-            records.clear();
-            bytes = 64;
-        }
-        records.push(entry);
-        bytes += size;
-    }
-    write_bundle(output, index, &records)
-}
-
-fn write_bundle(output: &Path, index: usize, records: &[Value]) -> Result<(), String> {
-    fs::write(
-        output.join(format!("{index:04}.json")),
-        serde_json::to_vec(&serde_json::json!({"schema":1,"records":records})).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    fs::write(manifest_path, serde_json::to_vec(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(absent)
 }
 
 #[cfg(test)]
@@ -455,6 +438,40 @@ mod tests {
     }
 
     #[test]
+    fn a_fact_that_the_version_lacks_is_no_content_and_is_counted() {
+        let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-absent");
+        let mut files = BTreeMap::new();
+        let claim = |value: Value| json!([{"mainsnak": {"datavalue": {"value": value}}}]);
+        let claims = json!({"P31": claim(json!({"id": "Q23413"})), "P373": claim(json!("Castle")),
+                            "P18": claim(json!("Hill.jpg"))});
+        let castle = json!({"id": "Q1", "sitelinks": {"enwiki": {"title": "Castle"}}, "claims": claims});
+        pin(&root, &mut files, json!({"kind":"entity","key":"Q1","identity":"Q1","status":"present","entity":castle}));
+        let class = json!({"id": "Q23413", "claims": {}});
+        pin(
+            &root,
+            &mut files,
+            json!({"kind":"entity","key":"Q23413","identity":"Q23413","status":"present","entity":class}),
+        );
+        // Q7 is newer than the version; the castle has no article, category or Commons fact.
+        let absent = landmark_view(&files, &root.join("landmarks"), &["Q1".into(), "Q7".into()]).unwrap();
+        assert_eq!(absent, Absent::from([("article", 1), ("category", 1), ("commons", 1), ("entity", 1)]));
+
+        let view = root.join("peaks");
+        fs::create_dir_all(&view).unwrap();
+        let tags = [("natural", "peak"), ("name", "Testhorn"), ("wikidata", "Q8")];
+        let tags = tags.map(|(key, value)| (key.to_string(), value.to_string())).into();
+        let summit = peaks::Summit { node_id: 1, latitude: 0.0, longitude: 0.0, tags };
+        let source = peaks::SummitSource { schema: 1, osm_sha256: "0".repeat(64), summits: vec![summit] };
+        fs::write(view.join("summits.json"), serde_json::to_vec(&source).unwrap()).unwrap();
+        assert_eq!(peak_view(&files, &view).unwrap(), Absent::from([("link", 1)]));
+        let boundary = root.join("boundary.json");
+        fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]]]}"#).unwrap();
+        let peaks = peaks::compile(&view.join("manifest.json"), &boundary, &root.join("compiled"), false).unwrap();
+        assert!(peaks.records.is_empty(), "the summit stays an OSM summit");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_summit_finds_its_link_fact_by_the_kind_in_the_fact_and_not_by_the_file_name() {
         let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-peak-links");
         let mut files = BTreeMap::new();
@@ -482,39 +499,6 @@ mod tests {
             {"node_id": 1, "kind": "wikipedia", "path": missing["path"], "status": "confirmed_missing"},
         ]);
         assert_eq!(manifest["peaks"]["resolutions"], resolutions);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn source_publication_has_compact_provenance_and_excludes_conversion_inputs() {
-        let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-bundle");
-        let mut files = BTreeMap::new();
-        let entity = pin(
-            &root,
-            &mut files,
-            json!({"kind":"entity","key":"Q1","identity":"Q1","revision":7,"status":"present","entity":{"id":"Q1"}}),
-        );
-        let pixels = pin(
-            &root,
-            &mut files,
-            json!({"kind":"file","key":"File:Image.jpg","status":"present","asset":{"path":"assets/private.jpg","sha256":"pixels"}}),
-        );
-        let manifest = root.join("manifest.json");
-        fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"records":[entity.clone(),pixels]})).unwrap())
-            .unwrap();
-        files.insert(format!("content/manifest/{}.json", hash(&fs::read(&manifest).unwrap())), manifest);
-        let output = root.join("bundles");
-        bundles(&files, &output).unwrap();
-        let data = fs::read(output.join("0000.json")).unwrap();
-        let bundle: Value = serde_json::from_slice(&data).unwrap();
-        assert_eq!(bundle["records"].as_array().unwrap().len(), 1);
-        let record = &bundle["records"][0];
-        assert_eq!(hash(record["data"].as_str().unwrap().as_bytes()), entity["sha256"]);
-        assert_eq!(record["pin"]["revision"], 7);
-        assert!(!String::from_utf8(data).unwrap().contains("private.jpg"));
-        for source in ["wikidata", "wikipedia", "commons"] {
-            assert!(!obc_data::sources::embedded(source).copied());
-        }
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -3,7 +3,7 @@
 //! with `/` between its parts.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::engine::link;
 use crate::fetch::http::{self, Http};
 use crate::r2;
 use crate::store::{durable, sha256_hex, Lock, Store};
@@ -294,26 +295,6 @@ impl Target {
             .collect();
         listed.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(listed)
-    }
-}
-
-/// Give `path`, which must not exist, the bytes of `file`: a hard link, or on another file system
-/// a copy under a [`part`] name that is then linked. Nothing opens an existing file for writing:
-/// it can be a link to an object of the store.
-pub(crate) fn link(file: &Path, path: &Path) -> std::io::Result<()> {
-    match fs::hard_link(file, path) {
-        Err(e) if e.kind() == ErrorKind::CrossesDevices => {
-            let part = part(path);
-            let _ = fs::remove_file(&part);
-            let copied = OpenOptions::new().write(true).create_new(true).open(&part).and_then(|mut part| {
-                std::io::copy(&mut File::open(file)?, &mut part)?;
-                part.sync_all()
-            });
-            let linked = copied.and_then(|()| fs::hard_link(&part, path));
-            let _ = fs::remove_file(&part);
-            linked
-        }
-        linked => linked,
     }
 }
 

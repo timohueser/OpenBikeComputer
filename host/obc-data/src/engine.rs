@@ -94,7 +94,8 @@ impl Client {
         }
     }
 
-    pub(crate) fn sorted(&self) -> Self {
+    /// The client with its paths sorted and without duplicates, as a release records it.
+    pub fn sorted(&self) -> Self {
         match self {
             Self::Paths(paths) => {
                 let mut paths = paths.clone();
@@ -492,9 +493,27 @@ pub fn pass(request: &Request) -> Result<(), String> {
     };
     let output = request.output.join(path);
     // The output is the same object as the input, so a link saves a copy.
-    fs::hard_link(file, &output)
-        .or_else(|_| fs::copy(file, &output).map(drop))
-        .map_err(|e| format!("{}: {e}", output.display()))
+    link(file, &output).map_err(|e| format!("{}: {e}", output.display()))
+}
+
+/// Give `path`, which must not exist, the bytes of `file`: a hard link, or on another file system
+/// a copy under a [`crate::target::part`] name that is then linked. Nothing opens an existing file
+/// for writing: it can be a link to an object of the store.
+pub fn link(file: &Path, path: &Path) -> std::io::Result<()> {
+    match fs::hard_link(file, path) {
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            let part = crate::target::part(path);
+            let _ = fs::remove_file(&part);
+            let copied = fs::OpenOptions::new().write(true).create_new(true).open(&part).and_then(|mut part| {
+                std::io::copy(&mut fs::File::open(file)?, &mut part)?;
+                part.sync_all()
+            });
+            let linked = copied.and_then(|()| fs::hard_link(&part, path));
+            let _ = fs::remove_file(&part);
+            linked
+        }
+        linked => linked,
+    }
 }
 
 #[cfg(unix)]
