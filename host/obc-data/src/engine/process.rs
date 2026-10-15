@@ -49,36 +49,37 @@ pub fn run_child(command: &mut Command) -> Result<ExitStatus, String> {
 }
 
 /// Copy the standard error of `child`, which a command pipes, to that of this process on a thread.
-/// The receiver gets each line that is not blank.
+/// When the pipe closes, the receiver gets the last line that is not blank.
 pub fn copy_errors(child: &mut Child) -> Receiver<String> {
     let (send, receive) = mpsc::channel();
     if let Some(errors) = child.stderr.take() {
         std::thread::spawn(move || {
+            let mut last = String::new();
             for line in BufReader::new(errors).split(b'\n') {
                 let Ok(line) = line else { break };
-                let line = String::from_utf8_lossy(&line);
-                let _ = writeln!(std::io::stderr().lock(), "{line}");
-                if !line.trim().is_empty() {
-                    let _ = send.send(line.trim().to_string());
+                let mut log = std::io::stderr().lock();
+                let _ = log.write_all(&line).and_then(|()| log.write_all(b"\n"));
+                let text = String::from_utf8_lossy(&line);
+                if !text.trim().is_empty() {
+                    last = text.trim().to_string();
                 }
             }
+            let _ = send.send(last);
         });
     }
     receive
 }
 
 /// Wait until the copy of `errors` ends, and give the error of the program `name` that ended
-/// with `status`, with its last error line, such as a Python exception. A grandchild that keeps
-/// the pipe open delays it by two seconds at most.
+/// with `status`, with its last error line, such as a Python exception. A program that a signal
+/// ended gets no line: what it wrote last is not why it ended. A grandchild that keeps the pipe
+/// open delays this by two seconds at most.
 pub fn ended(name: &str, status: ExitStatus, errors: Receiver<String>) -> Result<(), String> {
-    let (deadline, mut last) = (Instant::now() + Duration::from_secs(2), None);
-    while let Ok(line) = errors.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        last = Some(line);
-    }
-    match last {
+    let last = errors.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    match status.code() {
         _ if status.success() => Ok(()),
-        Some(last) => Err(format!("`{name}` failed ({status}): {last}")),
-        None => Err(format!("`{name}` failed: {status}")),
+        Some(_) if !last.is_empty() => Err(format!("`{name}` failed ({status}): {last}")),
+        _ => Err(format!("`{name}` failed: {status}")),
     }
 }
 
@@ -219,11 +220,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failed_program_names_the_last_line_that_it_wrote_to_standard_error() {
-        let script = "echo working >&2; echo 'ValueError: boom' >&2; echo >&2; exit 3";
-        let mut child = Command::new("sh").args(["-c", script]).stderr(Stdio::piped()).spawn().unwrap();
-        let errors = copy_errors(&mut child);
-        let status = child.wait().unwrap();
-        assert_eq!(ended("sh", status, errors).unwrap_err(), "`sh` failed (exit status: 3): ValueError: boom");
+        let ended_by = |script: &str| {
+            let mut child = Command::new("sh").args(["-c", script]).stderr(Stdio::piped()).spawn().unwrap();
+            let errors = copy_errors(&mut child);
+            let status = child.wait().unwrap();
+            ended("sh", status, errors).unwrap_err()
+        };
+        let failed = ended_by("echo working >&2; echo 'ValueError: boom' >&2; echo >&2; exit 3");
+        assert_eq!(failed, "`sh` failed (exit status: 3): ValueError: boom");
+        let stopped = ended_by("echo 'a warning' >&2; kill -TERM $$");
+        assert_eq!(stopped, "`sh` failed: signal: 15 (SIGTERM)");
     }
 
     #[test]
