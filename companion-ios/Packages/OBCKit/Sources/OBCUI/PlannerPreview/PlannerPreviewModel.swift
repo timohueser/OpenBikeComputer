@@ -47,6 +47,18 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
 public enum PlannerPreviewPreset: String, CaseIterable, Sendable {
     case balanced, shorter, lessClimbing, technical, alpine
     public var title: String { self == .lessClimbing ? "Less climbing" : rawValue.capitalized }
+    public init(_ preference: RoutePreference) {
+        switch preference {
+        case .balanced: self = .balanced; case .shorter: self = .shorter; case .lessClimbing: self = .lessClimbing
+        case .technical: self = .technical; case .alpine: self = .alpine
+        }
+    }
+    public var preference: RoutePreference {
+        switch self {
+        case .balanced: .balanced; case .shorter: .shorter; case .lessClimbing: .lessClimbing
+        case .technical: .technical; case .alpine: .alpine
+        }
+    }
     public func applies(to activity: RouteActivity) -> Bool {
         switch self { case .technical: activity == .mtb; case .alpine: activity == .hiking; default: true }
     }
@@ -191,10 +203,7 @@ public final class PlannerPreviewModel {
             guard revision == routingRevision else { return }
             release = selected
             guard hasRoute else { return }
-            guard let preference = RoutePreference(rawValue: preset == .lessClimbing ? "less-climbing" : preset.rawValue) else {
-                throw PlannerFailure.invalidData
-            }
-            let result = try await path(key, preference: preference, release: selected)
+            let result = try await path(key, preference: key.preset.preference, release: selected)
             try Task.checkCancellation()
             guard revision == routingRevision else { return }
             path = result
@@ -614,6 +623,41 @@ public final class PlannerPreviewModel {
             }
         }
     }
+
+    // MARK: Route options
+
+    /// The route is one routed run through the route points, so a route option can replace it.
+    public var offersRouteOptions: Bool {
+        hasRoute && state.coordinates.count <= 64 && state.turnarounds.isEmpty && state.legs.values.allSatisfy { $0.mode == .routed }
+    }
+
+    /// The route of the plan, then its alternatives, for this ``routingRevision``.
+    func routeOptions() async throws -> [RouteOption] {
+        let selected: PlannerRelease
+        if let release { selected = release } else { selected = try await service.release() }
+        release = selected
+        return try await service.options(points: state.coordinates, activity: activity, preference: preset.preference, release: selected)
+    }
+
+    /// The plan's own route; nil while it is routing.
+    var routePath: PlannedPath? { path }
+
+    /// Takes a route option as one undo step: its preset, and its via as a shaping point after the start.
+    /// `replacingVia` first takes away the via that an earlier option of the same set added. Refuses an option from
+    /// another routing revision.
+    @discardableResult
+    func useRouteOption(_ option: RouteOption, revision: Int, replacingVia: Bool = false) -> Bool {
+        guard revision == routingRevision else { return false }
+        edit { next in
+            next.preset = PlannerPreviewPreset(option.preference)
+            if replacingVia { next.points.removeAll { $0.id == Self.optionViaID } }
+            if let via = option.via {
+                next.points.insert(.init(place: .init(id: Self.optionViaID, name: Self.shapeName, coordinate: via), kind: .shape), at: 1)
+            }
+        }
+        return true
+    }
+    static let optionViaID = "route-option-via"
 
     /// The editor state of a plan. Pass and detour points have no kind of their own here: a pass is a
     /// shaping point and a detour a stop.
