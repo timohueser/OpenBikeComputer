@@ -18,6 +18,8 @@ struct RootView: View {
     @State private var importModel: ImportFlowModel
     /// A place shared from a map app, on its way to the planner.
     @State private var sharedPlace: SharedPlaceFlowModel
+    /// The text of a share that waits for the firmware update screen to close.
+    @State private var heldShare: String?
     /// The line the "Make a trip" sheet leaves; it shows once the sheet has gone.
     @State private var joinNotice: String?
     /// The foreground-only link policy: a real background transition suspends the link, after
@@ -125,7 +127,9 @@ struct RootView: View {
             library: library,
             lastBikeType: lastBikeType
         ))
-        _sharedPlace = State(initialValue: SharedPlaceFlowModel(locate: currentLocation, lastBikeType: lastBikeType))
+        _sharedPlace = State(initialValue: SharedPlaceFlowModel(
+            locate: currentLocation, placeName: placeName, lastBikeType: lastBikeType
+        ))
         _reachability = State(initialValue: ReachabilityStore(reachability))
         // The runner is the same type the background refresh runs, so the sheet and the
         // notification cannot disagree about what is worth raising.
@@ -145,6 +149,7 @@ struct RootView: View {
                 isPresented: sharedPlaceShown,
                 message: "Choose a bike type for the route.",
                 actions: bikeTypeActions,
+                id: sharedPlace.shares,
                 onDismiss: { sharedPlace.proceed() }
             )
             .alert(sharedPlace.notice ?? "", isPresented: Binding(
@@ -153,6 +158,10 @@ struct RootView: View {
                 Button("OK", role: .cancel) {}
             }
             .onChange(of: sharedPlace.seed) { openSharedPlace() }
+            .onChange(of: path) {
+                receiveHeldShare()
+                openSharedPlace()
+            }
     }
 
     /// Split from `body` for the type-checker, as the presentation pieces below are.
@@ -361,7 +370,8 @@ struct RootView: View {
         } else if url.isFileURL {
             importModel.receive(url)
         } else if let text = SharedPlaceFlowModel.sharedText(in: url) {
-            sharedPlace.receive(text, using: plannerSource)
+            heldShare = text
+            receiveHeldShare()
         }
     }
 
@@ -574,9 +584,22 @@ struct RootView: View {
         }
     }
 
-    /// The planner on a shared place, once the main screen is up.
+    /// A share is a new intent: it clears the stack. Over a firmware update it waits until that
+    /// screen closes, so the transfer is not stranded.
+    private func receiveHeldShare() {
+        guard let text = heldShare, !path.contains(.firmwareUpdate) else { return }
+        heldShare = nil
+        path.removeAll()
+        // A popped screen's sheet, such as the planner's drawer, is still up in this update and
+        // blocks the bike-type sheet, so the share opens it one main-actor turn later.
+        let flow = sharedPlace, source = plannerSource
+        Task { flow.receive(text, using: source) }
+    }
+
+    /// The planner on a shared place, once the main screen is up and no firmware update is open.
     private func openSharedPlace() {
-        guard launchModel.phase == .main, let seed = sharedPlace.seed else { return }
+        guard launchModel.phase == .main, !path.contains(.firmwareUpdate),
+              let seed = sharedPlace.seed else { return }
         sharedPlace.seed = nil
         path = [.plannerTo(seed)]
     }

@@ -398,6 +398,7 @@ triggers = [
   "companion-ios/scripts/capture-website-screenshots.sh",
   "companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift",
   "companion-ios/OBCCompanion/**",
+  "companion-ios/OBCShare/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Sources/**",

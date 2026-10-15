@@ -7,6 +7,7 @@ import OBCDomain
 final class CurrentLocation: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<Coordinate?, Never>?
+    private var timeout: Task<Void, Never>?
 
     /// Nil when the rider declines, or when no fix arrives within ten seconds.
     static func fix() async -> Coordinate? {
@@ -14,11 +15,7 @@ final class CurrentLocation: NSObject, CLLocationManagerDelegate {
     }
 
     private func locate() async -> Coordinate? {
-        let timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
-            self?.finish(nil)
-        }
-        defer { timeout.cancel() }
+        defer { timeout?.cancel() }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
@@ -32,10 +29,17 @@ final class CurrentLocation: NSObject, CLLocationManagerDelegate {
     }
 
     /// Runs again on every authorization change, so the fix starts once the rider answers the prompt.
+    /// The ten seconds start with the request, so a slow answer to the prompt does not drop the fix.
     private func start(_ status: CLAuthorizationStatus) {
         switch status {
         case .notDetermined: manager.requestWhenInUseAuthorization()
-        case .authorizedWhenInUse, .authorizedAlways: manager.requestLocation()
+        case .authorizedWhenInUse, .authorizedAlways:
+            manager.requestLocation()
+            timeout?.cancel()
+            timeout = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                self?.finish(nil)
+            }
         default: finish(nil)
         }
     }

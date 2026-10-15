@@ -66,8 +66,8 @@ public enum SharedPlace: Equatable, Sendable {
         let labels = host.split(separator: ".")
         guard labels.contains("google"), labels.first == "maps" || path.hasPrefix("/maps") else { return nil }
         let segments = path.split(separator: "/")
-        let name = segments.firstIndex(of: "place").flatMap { $0 + 1 < segments.endIndex ? decode(segments[$0 + 1]) : nil }
-        let text = query["q"] ?? query["query"]
+        let name = segment(after: "place", in: segments)
+        let text = query["q"] ?? query["query"] ?? segment(after: "search", in: segments)
         // `!3d…!4d…` is the place itself; `@lat,lon` is only the map viewport.
         let pinned = path.firstMatch(of: #/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/#).flatMap { coordinate($0.1, $0.2) }
         let viewport = path.firstMatch(of: #/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/#).flatMap { coordinate($0.1, $0.2) }
@@ -87,6 +87,11 @@ public enum SharedPlace: Equatable, Sendable {
               let longitude = Double(longitude.trimmingCharacters(in: .whitespaces)) else { return nil }
         let position = Coordinate(latitude: latitude, longitude: longitude)
         return position.isValidGeographic ? position : nil
+    }
+
+    /// The decoded path segment after `key`, such as the name in `/maps/place/<name>`.
+    private static func segment(after key: Substring, in segments: [Substring]) -> String? {
+        segments.firstIndex(of: key).flatMap { $0 + 1 < segments.endIndex ? decode(segments[$0 + 1]) : nil }
     }
 
     /// Form decoding: `+` is a space, so it is replaced before `%2B` turns into a literal plus.
@@ -111,8 +116,8 @@ public struct UnresolvedSharedLink: Error, Equatable, Sendable {
     public let url: URL
 }
 
-/// Expands short links by reading redirect `Location` headers one hop at a time, never fetching the
-/// final page (Google sends EU visitors to a consent page).
+/// Expands short links one redirect at a time, and stops at the first `Location` that parses as a
+/// place (Google sends EU visitors on to a consent page).
 public struct SharedPlaceResolver: Sendable {
     private let session: URLSession
 
@@ -125,7 +130,8 @@ public struct SharedPlaceResolver: Sendable {
     public func resolve(_ place: SharedPlace) async throws -> SharedPlace {
         guard case .shortLink(var url, let name) = place else { return place }
         for _ in 0..<5 {
-            let (_, response) = try await session.data(for: URLRequest(url: url), delegate: NoRedirects())
+            let request = URLRequest(url: url, timeoutInterval: 10)
+            let (_, response) = try await session.data(for: request, delegate: NoRedirects())
             guard let location = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Location"),
                   let next = URL(string: location, relativeTo: url)?.absoluteURL else { break }
             switch SharedPlace.place(from: next, name: name) {

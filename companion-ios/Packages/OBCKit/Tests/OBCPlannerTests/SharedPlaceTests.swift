@@ -23,6 +23,8 @@ struct SharedPlaceTests {
         ("https://maps.google.com/?q=47.99468,7.84970", .coordinate(cafe, name: nil)),
         ("https://www.google.com/maps/search/?api=1&query=47.9,7.8", .coordinate(Coordinate(latitude: 47.9, longitude: 7.8), name: nil)),
         ("https://www.google.com/maps?q=Titisee", .query("Titisee")),
+        ("https://www.google.com/maps/search/47.99,+7.85?entry=tts", .coordinate(Coordinate(latitude: 47.99, longitude: 7.85), name: nil)),
+        ("https://www.google.com/maps/search/Titisee", .query("Titisee")),
         ("https://consent.google.com/m?continue=https://www.google.com/maps/place/Caf%25C3%25A9%2BAtlantik/data%3D!4m2!3d47.99468!4d7.84970%3Fentry%3Dttu&gl=DE&hl=de",
          .coordinate(cafe, name: "Café Atlantik")),
         ("Titisee\n  Hinterzarten  \n", .query("Titisee, Hinterzarten")),

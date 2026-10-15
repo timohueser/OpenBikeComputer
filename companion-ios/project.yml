@@ -203,9 +203,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.companion.share
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
-        # Apple has no supported API that opens the containing app, and the responder-chain call
-        # to `UIApplication.open` is extension-unavailable at compile time.
-        APPLICATION_EXTENSION_API_ONLY: NO
 
   # ─────────────────────────────────────────────── device shell (the Rust host on a phone)
   #

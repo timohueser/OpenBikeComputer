@@ -125,12 +125,15 @@ public struct PlannerPreviewLegHit: Equatable, Sendable {
 /// planner opens on the finish alone, and the rider sets the start.
 public struct PlannerPreviewSeed: Hashable, Sendable {
     public let start: Coordinate?
+    /// The start's name, such as its locality; nil reads "My location".
+    public let startName: String?
     public let finish: Coordinate
     public let finishName: String
     public let activity: RouteActivity
 
-    public init(start: Coordinate?, finish: Coordinate, finishName: String, activity: RouteActivity) {
-        self.start = start; self.finish = finish; self.finishName = finishName; self.activity = activity
+    public init(start: Coordinate?, startName: String? = nil, finish: Coordinate, finishName: String, activity: RouteActivity) {
+        self.start = start; self.startName = startName
+        self.finish = finish; self.finishName = finishName; self.activity = activity
     }
 }
 
@@ -193,7 +196,9 @@ public final class PlannerPreviewModel {
     public init(seed: PlannerPreviewSeed, service: any PlannerDataSource = PlannerService.shared) {
         self.service = service
         let finish = PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: seed.finishName, coordinate: seed.finish))
-        let start = seed.start.map { PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: Self.myLocationName, coordinate: $0)) }
+        let start = seed.start.map {
+            PlannerPreviewPoint(place: .init(id: UUID().uuidString, name: seed.startName ?? Self.myLocationName, coordinate: $0))
+        }
         state.points = (start.map { [$0] } ?? []) + [finish]
         state.awaitsStart = start == nil
         state.activity = seed.activity

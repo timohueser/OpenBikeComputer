@@ -19,8 +19,6 @@ final class ShareViewController: UIViewController {
         if let url = await load(URL.self, from: providers) { parts.append(url.absoluteString) }
         if let text = await load(String.self, from: providers) { parts.append(text) }
         parts = parts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        // A map app often sends the same link as a URL and in its text.
-        if parts.count == 2, parts[1].contains(parts[0]) { parts.removeFirst() }
         guard !parts.isEmpty, let url = Self.appLink(parts.joined(separator: "\n")) else {
             extensionContext?.cancelRequest(withError: CocoaError(.userCancelled))
             return

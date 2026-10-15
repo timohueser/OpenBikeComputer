@@ -11,6 +11,9 @@ public final class SharedPlaceFlowModel {
     /// The share that waits for the bike type: the place name, when the share has one, and the
     /// default type. Nil closes the sheet.
     public var pending: (name: String?, bikeType: BikeType)?
+    /// Counts the shares, so a second share replaces the question on an open sheet. It stays when
+    /// the sheet closes, so the sheet does not change while it animates out.
+    public private(set) var shares = 0
     /// The bike type is chosen, and the place or the position is still on its way.
     public private(set) var isWaiting = false
     /// A planner to open. The composition root opens it and clears this.
@@ -18,7 +21,7 @@ public final class SharedPlaceFlowModel {
     /// One plain line about a share that cannot open the planner, for an alert.
     public var notice: String?
 
-    @ObservationIgnored private var start: Task<Coordinate?, Never>?
+    @ObservationIgnored private var start: Task<(coordinate: Coordinate, name: String?)?, Never>?
     @ObservationIgnored private var finish: Task<(coordinate: Coordinate, name: String), any Error>?
     /// The choice made on the sheet; it runs once the sheet has gone.
     @ObservationIgnored private var chosen: BikeType?
@@ -26,15 +29,19 @@ public final class SharedPlaceFlowModel {
 
     /// The rider's position, or nil when it is declined or unavailable.
     private let locate: @Sendable () async -> Coordinate?
+    /// Names the start, such as with its locality.
+    private let placeName: (@Sendable (Coordinate) async -> String?)?
     private let resolve: @Sendable (SharedPlace) async throws -> SharedPlace
     private let lastBikeType: LastBikeTypeStore
 
     public init(
         locate: @escaping @Sendable () async -> Coordinate?,
+        placeName: (@Sendable (Coordinate) async -> String?)? = nil,
         resolve: @escaping @Sendable (SharedPlace) async throws -> SharedPlace = { try await SharedPlaceResolver().resolve($0) },
         lastBikeType: LastBikeTypeStore = LastBikeTypeStore()
     ) {
         self.locate = locate
+        self.placeName = placeName
         self.resolve = resolve
         self.lastBikeType = lastBikeType
     }
@@ -54,9 +61,14 @@ public final class SharedPlaceFlowModel {
             notice = Self.noPlace
             return
         }
+        shares += 1
         pending = (place.name, lastBikeType.value)
-        let locate = self.locate, resolve = self.resolve
-        start = Task { await locate() }
+        let locate = self.locate, placeName = self.placeName, resolve = self.resolve
+        start = Task {
+            guard let position = await locate() else { return nil }
+            let name = await placeName?(position)
+            return (position, name)
+        }
         finish = Task { try await Self.destination(of: place, resolve: resolve, using: source) }
     }
 
@@ -81,7 +93,8 @@ public final class SharedPlaceFlowModel {
                 let place = try await finish.value
                 let position = await start.value
                 guard !Task.isCancelled else { return }
-                self?.seed = PlannerPreviewSeed(start: position, finish: place.coordinate, finishName: place.name,
+                self?.seed = PlannerPreviewSeed(start: position?.coordinate, startName: position?.name,
+                                                finish: place.coordinate, finishName: place.name,
                                                 activity: RouteActivity(bikeType))
             } catch {
                 guard !Task.isCancelled else { return }
@@ -106,7 +119,9 @@ public final class SharedPlaceFlowModel {
         of place: SharedPlace, resolve: @Sendable (SharedPlace) async throws -> SharedPlace, using source: any PlannerDataSource
     ) async throws -> (coordinate: Coordinate, name: String) {
         let resolved: SharedPlace
-        do { resolved = try await resolve(place) } catch {
+        do { resolved = try await resolve(place) } catch is UnresolvedSharedLink {
+            throw SharedPlaceProblem(errorDescription: noPlace)
+        } catch {
             throw SharedPlaceProblem(errorDescription: "The map link could not be opened. Check your connection and share the place again.")
         }
         let found: (coordinate: Coordinate, name: String)
@@ -114,15 +129,23 @@ public final class SharedPlaceFlowModel {
         case .coordinate(let coordinate, let name):
             found = (coordinate, name ?? place.name ?? "Shared place")
         case .query(let text):
-            guard let first = try await source.search(PlannerSearchQuery(text: text), release: source.release()).first else {
-                throw SharedPlaceProblem(errorDescription: noPlace)
+            // A whole-world view, so the online search answers and not the first offline map. Without a
+            // connection, the search without a view lets the offline maps answer.
+            let release = try await source.release()
+            let places: [PlannerPlace]
+            do {
+                places = try await source.search(PlannerSearchQuery(text: text, view: [-180, -90, 180, 90]), release: release)
+            } catch {
+                try Task.checkCancellation()
+                places = try await source.search(PlannerSearchQuery(text: text), release: release)
             }
+            guard let first = places.first else { throw SharedPlaceProblem(errorDescription: noPlace) }
             found = (first.coordinate, first.name)
         case .shortLink:
             throw SharedPlaceProblem(errorDescription: noPlace)
         }
-        // A map covers a box, and a point has no area. Both arguments, so an offline map is the
-        // provider's choice.
+        // A map covers a box, and a point has no area. `mapRelease(bounds:)` without `allowNetwork:`
+        // binds statically to the protocol-extension default, which bypasses `LocalFirstPlanner`.
         let at = found.coordinate
         let box = [at.longitude - 1e-5, at.latitude - 1e-5, at.longitude + 1e-5, at.latitude + 1e-5]
         guard try await source.mapRelease(bounds: box, allowNetwork: true).contains(at) else {
