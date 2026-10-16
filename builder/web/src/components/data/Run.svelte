@@ -71,6 +71,7 @@
         <h1>{title(view.args)}</h1>
         <span class="soft">{facts}</span>
         <span class="grow"></span>
+        {#if target && view.args.includes("--plan")}<a class="primary" href="#/{target}/review?plan={encodeURIComponent(id)}">Open the plan</a>{/if}
         {#if live && stopping === "no"}
             <button type="button" class="stop" onclick={() => (stopping = "ask")}>Stop…</button>
         {/if}
