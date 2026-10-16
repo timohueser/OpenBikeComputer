@@ -66,7 +66,7 @@
         {/each}
     </div>
     <span class="grow"></span>
-    {#if target}<a class="primary" href="#/{target.target}/review">Review update of {target.target}</a>{/if}
+    {#if target}<a class="primary" href="#/{target.target}/review">Plan update of {target.target}</a>{/if}
 </div>
 
 {#if target}

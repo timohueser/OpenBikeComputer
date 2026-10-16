@@ -197,7 +197,7 @@ pub fn command(root: &Path, prepared: &[&dyn Prepared], args: PrepareArgs, json:
     let dry_run = format!("obc data source prepare {} --to {} --dry-run`", args.id, args.to);
     let question = format!("Publish {}@{} to `{}`", review.source, review.version, args.to);
     super::api::approved(&target, (asked.expect.is_some(), args.yes), (&what, &dry_run, &question))?;
-    super::api::start(&store, &review.args, &review.id, json)
+    super::api::start(&store, &review.args, Some(&review.id), json)
 }
 
 /// What a prepare decides before it changes anything.

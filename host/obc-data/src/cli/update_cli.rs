@@ -59,9 +59,12 @@ pub struct UpdateArgs {
     /// Show the review, and change nothing.
     #[arg(long)]
     dry_run: bool,
-    /// Start only when the review has this id, as `--dry-run` showed it.
+    /// Start only when the review has this id, as `--dry-run` or `--plan` showed it.
     #[arg(long, value_name = "ID", conflicts_with = "dry_run")]
     expect: Option<String>,
+    /// Plan the update in a run: fetch what the plan reads, write its review, and bake nothing.
+    #[arg(long, conflicts_with_all = ["dry_run", "expect"])]
+    plan: bool,
     /// Start also when the format of a layer changes: its readers need new data.
     #[arg(long)]
     accept_format_change: bool,
@@ -71,8 +74,8 @@ pub struct UpdateArgs {
 }
 
 impl UpdateArgs {
-    /// The arguments after `obc data` that start the update of `review`.
-    fn args(&self, review: &Review) -> Vec<String> {
+    /// The arguments after `obc data` of the update with these settings.
+    fn settings(&self) -> Vec<String> {
         let mut args: Vec<String> = ["update", &self.target].map(String::from).into();
         let mut flag = |name: &str, value: &str| args.extend([format!("--{name}"), value.to_string()]);
         self.region.iter().for_each(|region| flag("region", region));
@@ -83,7 +86,13 @@ impl UpdateArgs {
         if !self.only.is_empty() {
             flag("only", &self.only.join(","));
         }
-        flag("expect", &review.id);
+        args
+    }
+
+    /// The arguments after `obc data` that start the update of `review`.
+    fn args(&self, review: &Review) -> Vec<String> {
+        let mut args = self.settings();
+        args.extend(["--expect".into(), review.id.clone()]);
         if review.layers.iter().any(|layer| layer.format.is_some()) {
             args.push("--accept-format-change".into());
         }
@@ -144,15 +153,22 @@ pub fn command(
     let asked =
         Asked { only: args.only.clone(), expect: args.expect.clone(), accept_format_change: args.accept_format_change };
     let code = (products, producers);
+    if args.plan {
+        let work = |run: &mut Run| plan(root, &store, &http, target, code, edit, &args, run);
+        if let Some(done) = super::api::detached(&store, work, |review| review::print(review, false)) {
+            return done;
+        }
+        let mut start = args.settings();
+        start.push("--plan".into());
+        return super::api::start(&store, &start, None, json);
+    }
     let work = |run: &mut Run| update(root, &store, &http, target, code, edit, &asked, None, run);
     if let Some(done) = super::api::detached(&store, work, print) {
         return done;
     }
     let mut prepared = prepare(root, &store, &http, target, code, edit, &args.only, None, None)?;
     prepared.review.args = args.args(&prepared.review);
-    prepared.review.optional =
-        products.iter().flat_map(|product| product.optional()).map(|layer| layer.to_string()).collect();
-    prepared.review.optional.sort();
+    prepared.review.optional = optional(products);
     if args.dry_run {
         return review::print(&prepared.review, json);
     }
@@ -161,15 +177,46 @@ pub fn command(
     let dry_run = format!("obc data update {} --dry-run` with the same flags", args.target);
     let question = format!("Publish review {} to `{}`, which serves riders", prepared.review.id, args.target);
     super::api::approved(target.1, (asked.expect.is_some(), args.yes), (&what, &dry_run, &question))?;
-    super::api::start(&store, &prepared.review.args, &prepared.review.id, json)
+    super::api::start(&store, &prepared.review.args, Some(&prepared.review.id), json)
+}
+
+/// The optional layers of `products`, sorted.
+fn optional(products: &[&dyn Product]) -> Vec<String> {
+    let mut optional: Vec<String> =
+        products.iter().flat_map(|product| product.optional()).map(|layer| layer.to_string()).collect();
+    optional.sort();
+    optional
+}
+
+/// Plan the update of `target` in `run`: fetch what its listing reads, and write the review to
+/// `runs/<id>/review.json`, where `runs RUN` gives it. It takes no lock: it writes nothing to the
+/// target, and a download locks its own file in the store. It bakes nothing.
+#[allow(clippy::too_many_arguments)]
+fn plan(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    target: (&str, &Target),
+    code: (&[&dyn Product], &[&dyn Producer]),
+    edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
+    args: &UpdateArgs,
+    run: &mut Run,
+) -> Result<Review, Error> {
+    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
+    prepared.review.args = args.args(&prepared.review);
+    prepared.review.optional = optional(code.0);
+    let file = store.run(run.id()).join(runs::REVIEW);
+    let bytes = serde_json::to_vec(&prepared.review).expect("a review serializes");
+    crate::store::write_atomic(&file, &bytes).map_err(|e| Code::Failed.error(e))?;
+    Ok(prepared.review)
 }
 
 /// What `obc data update --json` writes: the run that it started.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Started {
     pub run: String,
-    /// The id of the review that the run does.
-    pub review: String,
+    /// The id of the review that the run does; `null` for `--plan`, whose run makes the review.
+    pub review: Option<String>,
 }
 
 /// Write what an update did.
@@ -1251,6 +1298,37 @@ pub(super) mod tests {
         let refused = update(&fixture, &target, |_| Ok(())).unwrap_err();
         assert_eq!(refused.code, Code::InvalidData, "{}", refused.message);
         assert!(refused.fix.contains("local.old"), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_plan_run_writes_the_review_that_its_view_gives_and_bakes_nothing() {
+        let fixture = fixture("update-plan");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let args = UpdateArgs {
+            target: "local".into(),
+            region: None,
+            bbox: None,
+            add: Vec::new(),
+            remove: Vec::new(),
+            refresh: Vec::new(),
+            only: Vec::new(),
+            dry_run: false,
+            expect: None,
+            plan: true,
+            accept_format_change: false,
+            yes: false,
+        };
+        let mut run = Run::create(&fixture.store, ["update", "local", "--plan"]).unwrap();
+        let id = run.id().to_string();
+        let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
+        let planned =
+            plan(&root, &fixture.store, &Http::new(), ("local", &target), (&products, &[]), region, &args, &mut run);
+        let review = crate::cli::api::finish_run(run, planned).unwrap();
+        assert_eq!(review.args, ["update", "local", "--expect", &review.id]);
+        let view = runs::view(&fixture.store, &id).unwrap();
+        assert_eq!(view.review.unwrap()["id"], review.id.as_str());
+        assert!(release::serving(&target).unwrap().is_none(), "a plan bakes nothing");
     }
 
     #[test]

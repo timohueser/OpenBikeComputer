@@ -25,12 +25,24 @@ export function runAt(hash: string): string | null {
 
 /** What a target screen shows: `#/TARGET`; its review `#/TARGET/review`, which `?only=LAYER,…` and
  *  `?refresh=SOURCE=DAYS` set; or the review that resumes a run, `#/TARGET/resume/RUN`. */
-export function targetAt(hash: string): { review: boolean; resume: string | null; only: string | null; refresh: string | null } {
+export function targetAt(hash: string): {
+    review: boolean;
+    resume: string | null;
+    only: string | null;
+    refresh: string | null;
+    plan: string | null;
+} {
     const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
     const [, second, run] = path.split("/");
     const resume = second === "resume" && run ? run : null;
     const params = new URLSearchParams(query);
-    return { review: second === "review" || !!resume, resume, only: params.get("only"), refresh: params.get("refresh") };
+    return {
+        review: second === "review" || !!resume,
+        resume,
+        only: params.get("only"),
+        refresh: params.get("refresh"),
+        plan: params.get("plan"),
+    };
 }
 
 /** What the Sources screen shows: the list `#/sources`, a source `#/sources/ID`, or the review of a

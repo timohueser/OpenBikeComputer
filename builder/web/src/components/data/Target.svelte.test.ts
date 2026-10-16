@@ -44,16 +44,16 @@ function screen(hash: string, stale: boolean, list: RunList = { runs: [] }) {
 
 const button = (label: string) => [...document.querySelectorAll("button")].find((button) => button.textContent === label)!;
 
-it("two status polls with the same target start one review", async () => {
+it("the update screen and two status polls run no command until the person plans", async () => {
     const posted = server();
     const { query, screen: target } = screen("#/local/review", false);
     try {
-        await vi.waitFor(() => expect(document.body.textContent).toContain(`Review ${review.id}`));
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Plan update on"));
         query.output = status(false);
         query.output = status(false);
         flushSync();
         await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(posted()).toEqual([["update", "local", "--dry-run"]]);
+        expect(posted()).toEqual([]);
     } finally {
         await unmount(target);
     }
@@ -62,7 +62,7 @@ it("two status polls with the same target start one review", async () => {
 it("a live run locks the update and the rollback, and only a confirm posts --yes", async () => {
     const posted = server();
     const live = screen("#/prod", false);
-    expect(document.body.textContent).toContain("Review update: locked");
+    expect(document.body.textContent).toContain("Plan update: locked");
     expect(button("Roll back to 2c91…").disabled).toBe(true);
     expect(document.querySelector('a[href="#/runs/2026-10-12-093112"]')?.textContent).toBe("Watch the run");
     await unmount(live.screen);
@@ -102,11 +102,12 @@ it("the coverage colours the leaves of the chosen tiled layer by their state", a
     }
 });
 
-it("a link from a source sets the refresh flag of the review", async () => {
-    const posted = server();
+it("a link from a source sets the refresh flag of the plan", async () => {
+    server();
     const { screen: target } = screen(`#/local/review?refresh=${encodeURIComponent("geofabrik-extracts=14")}`, false);
+    const shown = () => [...document.querySelectorAll("code")].map((code) => code.textContent);
     try {
-        await vi.waitFor(() => expect(posted()).toEqual([["update", "local", "--refresh", "geofabrik-extracts=14", "--dry-run"]]));
+        await vi.waitFor(() => expect(shown()).toContain("obc data update local --refresh geofabrik-extracts=14 --plan"));
     } finally {
         await unmount(target);
     }
