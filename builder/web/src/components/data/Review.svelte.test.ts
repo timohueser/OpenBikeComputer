@@ -86,6 +86,26 @@ it("a running plan shows its fetches and its log, and an edit makes the plan out
     }
 });
 
+it("a plan whose run gives the settings back in another order is the plan of these settings", async () => {
+    // The page edits in its own order; `obc data update` gives the settings back in its order.
+    const args = ["update", "local", "--region", "dach", "--refresh", "wiki=30", "--plan"];
+    const posted = server({ ...planned, args });
+    const screen = mount(Review, { target: document.body, props: { ...props, flags: [["--refresh", "wiki=30"]] } });
+    try {
+        await vi.waitFor(() => expect(button("Germany, Austria and Switzerland")).toBeDefined());
+        button("Germany, Austria and Switzerland").click();
+        await vi.waitFor(() => expect(shown()).toContain("obc data update local --refresh wiki=30 --region dach --plan"));
+        button("Plan update on laptop").click();
+        await vi.waitFor(() => expect(document.body.textContent).toContain(`Plan ${review.id}`));
+        expect(posted()).toEqual([["update", "local", "--refresh", "wiki=30", "--region", "dach", "--plan"]]);
+        expect(document.body.textContent).not.toContain("The settings changed since this plan.");
+        document.querySelector<HTMLInputElement>(".gate input")!.click();
+        await vi.waitFor(() => expect(button("Start bake on laptop").disabled).toBe(false));
+    } finally {
+        await unmount(screen);
+    }
+});
+
 it("a target without a region plans only after the area picker names one", async () => {
     const posted = server();
     const screen = mount(Review, { target: document.body, props: { ...props, layers: [], area: null } });

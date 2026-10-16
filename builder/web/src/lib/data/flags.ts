@@ -14,6 +14,11 @@ export function flagsOf(args: readonly string[]): Flags {
     return flags;
 }
 
+/** `flags` in the order in which `obc data update` gives them back in the arguments of its run. */
+export function canonical(flags: Flags): Flags {
+    return [...flags].sort(([a], [b]) => SETTINGS.indexOf(a) - SETTINGS.indexOf(b));
+}
+
 /** `flags` without the flags that `old` matches, and with `flag` last when there is one. */
 export function edit(flags: Flags, old: (flag: string, value: string) => boolean, flag?: [string, string]): Flags {
     return [...flags.filter(([name, value]) => !old(name, value)), ...(flag ? [flag] : [])];

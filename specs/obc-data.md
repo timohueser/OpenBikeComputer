@@ -1227,8 +1227,8 @@ its bakes and the checks of the products read:
 
 The review of an update says what it does before it changes a target. `--dry-run` writes the
 review and creates no run. `--plan` makes the review in a detached run, as [Runs](#runs) says: the
-run holds the lock of the target, logs each fetch with its progress and each product that it plans,
-writes the review to `runs/<id>/review.json`, and bakes nothing. `runs RUN` gives that review. To
+run logs each fetch with its progress and each product that it plans, writes the review to
+`runs/<id>/review.json`, and bakes nothing. It takes no lock: it writes nothing to the target. `runs RUN` gives that review. To
 list the steps, an update fetches what the step lists need, which can be bulk data. It fetches into
 the store only, and it never writes to the target.
 
