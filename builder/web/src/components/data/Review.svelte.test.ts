@@ -8,7 +8,7 @@ import status from "../../../test-support/data/status.json";
 import type { Review as ReviewShape, RunView, Status } from "../../lib/data/shapes";
 import Review from "./Review.svelte";
 
-const review = example as ReviewShape;
+const review = example as unknown as ReviewShape;
 const planned = plannedExample as unknown as RunView;
 const layers = (status as Status).targets.find(({ target }) => target === "local")!.layers!;
 const area = (status as Status).targets.find(({ target }) => target === "local")!.area;
@@ -187,6 +187,32 @@ it("a format change names what happens to each reader, and the map draws the cel
         expect(document.body.textContent).toContain("device/terrain · terrain-reference/de has no version");
     } finally {
         await unmount(screen);
+    }
+});
+
+it("counts the params of a fetch, and says which costs are unknown", async () => {
+    server();
+    const some = mount(Review, { target: document.body, props: { ...props, plan: planned.id } });
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain("1 of 3 bakes have no estimate"));
+        expect(document.body.textContent).toContain("at least");
+        expect(document.body.textContent).toContain("osm 2026-10-11 (europe/germany/baden-wuerttemberg, ");
+    } finally {
+        await unmount(some);
+    }
+    const tiles = (...names: string[]) => names.map((name) => ["tile", name] as [string, string]);
+    const fetches = [
+        { source: "copernicus-glo-30", version: "2022-05-09", params: tiles("N47_E007", "N47_E008"), files: [], bytes: null },
+        { source: "copernicus-glo-30", version: "2022-05-09", params: tiles("N48_E008"), files: [], bytes: null },
+    ];
+    const cost = { ...review.cost, unknown: { ...review.cost.unknown, estimate: review.bakes.map(({ step }) => step) } };
+    server({ ...planned, review: { ...review, fetches, cost } });
+    const none = mount(Review, { target: document.body, props: { ...props, plan: planned.id } });
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain("copernicus-glo-30 2022-05-09 (3 tiles)"));
+        expect(document.body.textContent).toContain("time, memory and store size unknown: none of the 3 bakes ran on this machine before");
+    } finally {
+        await unmount(none);
     }
 });
 
