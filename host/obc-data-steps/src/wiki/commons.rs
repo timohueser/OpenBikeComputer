@@ -354,7 +354,9 @@ fn candidates(files: &Files, ids: &[String], requests: &mut Requests) -> Result<
             .extend(claims.filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str()).map(String::from));
         for (language, _) in &languages {
             let Some(title) = entity["sitelinks"][format!("{language}wiki")]["title"].as_str() else { continue };
-            request.commons.extend(present("article", format!("{language}:{title}")).and_then(shared::lead_image));
+            request
+                .commons
+                .extend(present("article", format!("{language}:{title}")).as_ref().and_then(shared::lead_image));
         }
         for category in shared::categories(&entity) {
             let members = present("category", category).map(|fact| fact["members"].clone()).unwrap_or_default();
@@ -394,7 +396,7 @@ pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
 
 /// The identities that the link tags of `summit` name. A tag without a link fact gives none, and the
 /// compile of the summit counts it as absent and refuses it.
-fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> Vec<String> {
+fn linked(summit: &Summit, facts: &shared::Facts) -> Vec<String> {
     let identity = |kind: &str| {
         let fact = facts.get(&("link".to_string(), format!("{kind}:{}", summit.tags.get(kind)?)))?;
         fact["identity"].as_str().filter(|_| fact["status"] == "present").map(String::from)
