@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { edit, flagsOf, planArgs, type Flags } from "../../lib/data/flags";
+    import { canonical, edit, flagsOf, planArgs, type Flags } from "../../lib/data/flags";
     import { followers } from "../../lib/data/graph";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { leafSquare } from "../../lib/data/leaf";
@@ -45,7 +45,6 @@
     let stopPolling = () => {};
     $effect(() => {
         if (!run) return;
-        void run.refresh();
         stopPolling = run.poll(2_000);
         return () => stopPolling();
     });
@@ -63,7 +62,8 @@
         if (view && !edited) flags = flagsOf(view.args);
     });
     const review = $derived(view?.state === "ok" ? (view.review as Review | null) : null);
-    const outdated = $derived(!!view && JSON.stringify(flagsOf(view.args)) !== JSON.stringify(flags));
+    // The run gives the settings back in the order of `obc data update`, not in the order of the edits.
+    const outdated = $derived(!!view && JSON.stringify(flagsOf(view.args)) !== JSON.stringify(canonical(flags)));
     const formats = $derived(review?.layers.filter((layer) => layer.format) ?? []);
     // The cells that bake, and those that the release drops.
     const leaves = (of: (layer: Review["layers"][number]) => string[]) => [...new Set(review?.layers.flatMap(of))];
@@ -186,7 +186,7 @@
     <Action
         label={view ? "Plan again" : `Plan update on ${machine}`}
         args={planArgs(name, flags)}
-        disabled={!placed || live || !!locked}
+        disabled={!placed || live || (!!planned && !view) || !!locked}
         ondone={planning}
     />
     {#if run?.error}<Failure error={run.error} />{/if}

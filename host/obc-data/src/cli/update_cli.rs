@@ -188,8 +188,9 @@ fn optional(products: &[&dyn Product]) -> Vec<String> {
     optional
 }
 
-/// Plan the update of `target` in `run`: fetch what its listing reads, with the target locked, and
-/// write the review to `runs/<id>/review.json`, where `runs RUN` gives it. It bakes nothing.
+/// Plan the update of `target` in `run`: fetch what its listing reads, and write the review to
+/// `runs/<id>/review.json`, where `runs RUN` gives it. It takes no lock: it writes nothing to the
+/// target, and a download locks its own file in the store. It bakes nothing.
 #[allow(clippy::too_many_arguments)]
 fn plan(
     root: &Path,
@@ -201,15 +202,13 @@ fn plan(
     args: &UpdateArgs,
     run: &mut Run,
 ) -> Result<Review, Error> {
-    locked(target, run, |run, _| {
-        let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
-        prepared.review.args = args.args(&prepared.review);
-        prepared.review.optional = optional(code.0);
-        let file = store.run(run.id()).join(runs::REVIEW);
-        let bytes = serde_json::to_vec(&prepared.review).expect("a review serializes");
-        crate::store::write_atomic(&file, &bytes).map_err(|e| Code::Failed.error(e))?;
-        Ok(prepared.review)
-    })
+    let mut prepared = prepare(root, store, http, target, code, edit, &args.only, None, Some(run))?;
+    prepared.review.args = args.args(&prepared.review);
+    prepared.review.optional = optional(code.0);
+    let file = store.run(run.id()).join(runs::REVIEW);
+    let bytes = serde_json::to_vec(&prepared.review).expect("a review serializes");
+    crate::store::write_atomic(&file, &bytes).map_err(|e| Code::Failed.error(e))?;
+    Ok(prepared.review)
 }
 
 /// What `obc data update --json` writes: the run that it started.
