@@ -22,15 +22,18 @@ class BasemapTest(unittest.TestCase):
                 bundle.addfile(info, io.BytesIO(pom))
 
             def package(argv, *, cwd, check):
-                self.assertEqual(argv[:4], ["mvn", "-B", "-q", "package"])
-                self.assertIn("-DskipTests", argv)
                 self.assertTrue(check)
+                if argv == ["mvn", "-B", "-q", "dependency:go-offline"]:
+                    return
+                # Every download happens before `package`, which runs offline.
+                self.assertEqual(argv[:5], ["mvn", "-B", "-q", "-o", "package"])
+                self.assertIn("-DskipTests", argv)
                 (cwd / "target").mkdir()
                 (cwd / "target/protomaps-basemap-HEAD-with-deps.jar").write_bytes(b"prepared jar")
 
             with patch.object(tool.subprocess, "run", side_effect=package) as run:
                 tool.prepare(archive, jar)
-            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_count, 2)
             self.assertEqual(jar.read_bytes(), b"prepared jar")
             self.assertEqual(set(root.iterdir()), {archive, jar})
             for version in ("0.10.2-SNAPSHOT", "LATEST", "[0.10.2,0.11.0)"):
