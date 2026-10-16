@@ -47,6 +47,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --region ID` | Name the region of a target, bake and switch |
 | `obc data update local` | Bake what is stale, keep the rest, switch, in a run that closing the terminal does not stop |
 | `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
+| `obc data update local --region dach --plan` | Plan the update in a run: fetch what the plan reads, with progress, and bake nothing. `obc data runs RUN` gives the review |
 | `obc data update local --expect ID` | Start the update only when its review still has this id |
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
@@ -78,6 +79,9 @@ in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test 
 
 On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
 `loginctl enable-linger USER` is set for the user.
+
+On the page of a target, open **Plan update**, choose the area, then **Plan update on MACHINE**.
+The plan run shows each download, then the plan. **Start bake** runs that plan.
 
 On the Wiki page, select `europe/dach` and article languages, then **Review preparation**.
 The review shows cached archives, missing downloads and their sizes. **Start** downloads missing
