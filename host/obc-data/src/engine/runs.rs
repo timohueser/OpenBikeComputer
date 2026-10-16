@@ -139,6 +139,8 @@ impl std::fmt::Display for Phase {
 /// The status file and the log file of a run.
 const STATUS: &str = "status.json";
 const LOG: &str = "log";
+/// The review that a run of `update --plan` wrote.
+pub const REVIEW: &str = "review.json";
 /// The file whose presence stops a run: `obc data runs RUN --stop` writes it.
 const STOP: &str = "stop";
 
@@ -999,6 +1001,9 @@ pub struct View {
     pub log: Vec<String>,
     /// The path of that log on the machine of the run.
     pub log_path: String,
+    /// The review that a run of `update --plan` wrote, as `update --dry-run` writes it; `null`
+    /// for another run, and until the plan is done.
+    pub review: Option<serde_json::Value>,
 }
 
 /// How many lines of the log a [`View`] gives.
@@ -1100,7 +1105,8 @@ pub fn view(store: &Store, id: &str) -> Result<View, String> {
             .find_map(|run| run.steps.iter().find(|earlier| earlier.step == step.step && !earlier.reused)?.wall_ms);
     }
     let path = store.run(id).join(LOG);
-    Ok(View { status, log: tail(&path), log_path: path.display().to_string() })
+    let review = fs::read(store.run(id).join(REVIEW)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    Ok(View { status, log: tail(&path), log_path: path.display().to_string(), review })
 }
 
 /// The last [`TAIL`] lines of the log at `path`, from its last bytes only. The output of a step

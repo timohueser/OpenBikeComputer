@@ -171,7 +171,8 @@ export interface Review {
 /** What `update --json` writes: the run that it started. */
 export interface Started {
     run: string;
-    review: string;
+    /** `null` for `--plan`, whose run makes the review. */
+    review: string | null;
 }
 
 /** The run that holds the lock of a target, from its `lock.json`. A run on another machine shows
@@ -240,12 +241,16 @@ export interface RunView extends RunSummary {
     layers: { layer: string; total: number; done: number; leaves_done: string[]; leaves_baking: string[]; started: string | null }[];
     /** The releases that it switched its target to. */
     switched: string[];
+    /** Each fetch that it started; `bytes` is `null` while it runs and when it failed. */
+    fetches: { source: string; version: string; params: [string, string][]; bytes: number | null; error: string | null }[];
     /** `kept` names the steps whose layers the store keeps for the next update. */
     error: { code: string; message: string; fix: string; kept: string[] } | null;
     /** The last lines of its log. */
     log: string[];
     /** The path of the log on the machine of the run. */
     log_path: string;
+    /** The review that a run of `update --plan` wrote; `null` for another run and until the plan is done. */
+    review: Review | null;
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
@@ -335,6 +340,7 @@ export function short(id: string): string {
 
 /** What a person calls a run: `update local` of `update local --region freiburg --expect ID`. */
 export function title(args: readonly string[]): string {
+    if (args[0] === "update" && args.includes("--plan")) return `plan ${args[1]}`;
     return args.filter((arg) => !arg.startsWith("-")).slice(0, 2).join(" ");
 }
 

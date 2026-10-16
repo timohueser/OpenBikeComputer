@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`../../../test-support/data/${name}.json`, import.meta.url), 'utf8'));
-const [status, running, failed, review] = [fixture('status'), fixture('run-running'), fixture('run-failed'), fixture('review')];
+const [status, running, failed, planned] = [fixture('status'), fixture('run-running'), fixture('run-failed'), fixture('run-planned')];
 const elsewhere = status.targets.find(target => target.lock).lock.run;
 const ANSWERS = {
   '[]': status,
@@ -14,16 +14,16 @@ const ANSWERS = {
   [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--region', 'europe/dach', '--languages', 'en,de', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
-  [JSON.stringify(['update', 'local', '--dry-run'])]: review,
-  [JSON.stringify(['update', 'local', '--add', 'sun', '--dry-run'])]: review,
+  [JSON.stringify(['runs', planned.id])]: planned,
 };
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
   ['#/', 'Select a layer'],
   ['#/prod', 'Router · serves'],
   ['#/local', 'Serve local'],
-  ['#/local/review', `Review ${review.id}`],
-  [`#/local/resume/${failed.id}`, 'This review resumes run'],
+  ['#/local/review', 'Choose what local serves'],
+  [`#/local/review?plan=${planned.id}`, `Plan ${planned.review.id}`],
+  [`#/local/resume/${failed.id}`, 'These settings resume run'],
   ['#/sources', 'Each external dataset'],
   ['#/sources/wiki', 'Prepared versions'],
   ['#/sources/terrain-reference', 'preparing on hetzner-bake-1'],

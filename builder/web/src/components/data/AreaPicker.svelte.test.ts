@@ -21,8 +21,8 @@ it("a click on the map ticks the smallest Geofabrik area whose bounds hold the p
         // The map has no size here, so its centre, 49° N 9° E, is under every point: Baden-Württemberg,
         // Germany and Europe hold it.
         document.querySelector(".leaflet-container")!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 0, clientY: 0 }));
-        await vi.waitFor(() => expect(button("Review 1 area").disabled).toBe(false));
-        button("Review 1 area").click();
+        await vi.waitFor(() => expect(button("Use 1 area").disabled).toBe(false));
+        button("Use 1 area").click();
         expect(apply).toHaveBeenCalledWith("--region", "europe/germany/baden-wuerttemberg");
     } finally {
         await unmount(screen);

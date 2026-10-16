@@ -405,12 +405,14 @@ impl Http {
             if expect.bytes.is_some_and(|want| current > want) {
                 return Err(Failure::Final(format!("{url}: download exceeds its reviewed size")));
             }
-            if expect.bytes.is_some() && reported.elapsed() >= Duration::from_secs(30) {
-                eprintln!(
-                    "obc data: {url}: {} / {} downloaded",
-                    crate::engine::runs::bytes(current),
-                    crate::engine::runs::bytes(expect.bytes.unwrap_or(0))
-                );
+            if reported.elapsed() >= Duration::from_secs(30) {
+                let done = crate::engine::runs::bytes(current);
+                match expect.bytes.or(total) {
+                    Some(whole) => {
+                        eprintln!("obc data: {url}: {done} / {} downloaded", crate::engine::runs::bytes(whole))
+                    }
+                    None => eprintln!("obc data: {url}: {done} downloaded"),
+                }
                 reported = std::time::Instant::now();
             }
             file.write_all(&buffer[..read]).map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;

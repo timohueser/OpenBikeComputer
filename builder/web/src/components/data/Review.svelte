@@ -1,21 +1,23 @@
 <script lang="ts">
-    import { command } from "../../lib/data/cli";
-    import { edit, reviewArgs, type Flags } from "../../lib/data/flags";
+    import { onMount } from "svelte";
+    import { edit, flagsOf, planArgs, type Flags } from "../../lib/data/flags";
     import { followers } from "../../lib/data/graph";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { leafSquare } from "../../lib/data/leaf";
-    import { count, list, short, size, span, type Layer, type Review, type Router, type Started, type Target } from "../../lib/data/shapes";
+    import { count, list, short, size, span, type Layer, type Review, type Router, type RunView, type Started, type Target } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import AreaPicker from "./AreaPicker.svelte";
     import Failure from "./Failure.svelte";
 
-    // The review of an update of target `name`. An edit runs `--dry-run` again with its flags.
-    // Start runs exactly the args of the review that the screen shows. `locked` names the run that
-    // holds the lock of the target. `router` answers for an R2 target.
+    // The update of target `name` in three steps: settings, a plan run, and the bake of that plan.
+    // The plan is a run of `update --plan`: it fetches what the plan reads, with progress, and its
+    // view gives the review. Start runs exactly the args of that review. `plan` is the run of the
+    // URL; `locked` names the run that holds the lock of the target; `router` answers for R2.
     let {
         name,
         kind,
         flags: initial,
+        plan: initialPlan = null,
         machine,
         locked,
         layers,
@@ -25,6 +27,7 @@
         name: string;
         kind: Target["kind"];
         flags: Flags;
+        plan?: string | null;
         machine: string;
         locked: string | null;
         layers: Layer[];
@@ -34,15 +37,33 @@
 
     // svelte-ignore state_referenced_locally
     let flags = $state(initial);
-    // `name` is a string, so a status poll with the same target starts no new review.
-    const query = $derived(new CliQuery<Review>(reviewArgs(name, flags)));
-    $effect(() => void query.refresh());
-    // The last review stays while the next one comes, but only a current review starts.
-    let last = $state<Review | null>(null);
+    let edited = $state(false);
+    // svelte-ignore state_referenced_locally
+    let planned = $state<string | null>(initialPlan);
+    const run = $derived(planned ? new CliQuery<RunView>(["runs", planned]) : null);
+    let now = $state(Date.now());
+    let stopPolling = () => {};
     $effect(() => {
-        if (query.output) last = query.output;
+        if (!run) return;
+        void run.refresh();
+        stopPolling = run.poll(2_000);
+        return () => stopPolling();
     });
-    const review = $derived(query.output ?? last);
+    onMount(() => {
+        const tick = setInterval(() => (now = Date.now()), 1_000);
+        return () => clearInterval(tick);
+    });
+    const view = $derived(run?.output ?? null);
+    const live = $derived(view?.state === "running" || view?.state === "starting");
+    $effect(() => {
+        if (view && !live) stopPolling();
+    });
+    // A plan from the URL brings its settings, until the screen edits them.
+    $effect(() => {
+        if (view && !edited) flags = flagsOf(view.args);
+    });
+    const review = $derived(view?.state === "ok" ? (view.review as Review | null) : null);
+    const outdated = $derived(!!view && JSON.stringify(flagsOf(view.args)) !== JSON.stringify(flags));
     const formats = $derived(review?.layers.filter((layer) => layer.format) ?? []);
     // The cells that bake, and those that the release drops.
     const leaves = (of: (layer: Review["layers"][number]) => string[]) => [...new Set(review?.layers.flatMap(of))];
@@ -57,23 +78,34 @@
     // `obc data update` asks before it changes an R2 target; the page asks with this screen.
     const start = $derived(review ? [...review.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
     const blocked = $derived(
-        !!locked || !query.output || !!query.output.machine.refusals.length || (formats.length > 0 && accepted !== query.output.id),
+        !!locked || !review || outdated || !!review.machine.refusals.length || (formats.length > 0 && accepted !== review.id),
     );
+    const placed = $derived(!!area || flags.some(([flag]) => flag === "--region" || flag === "--box"));
 
     const only = $derived(flags.find(([flag]) => flag === "--only")?.[1] ?? "");
     const scopes = $derived([
         ...new Set([...layers.filter((layer) => layer.state === "stale").map((layer) => layer.layer), ...(only ? [only] : [])]),
     ]);
     let refresh = $state("");
-    const setArea = (flag: "--region" | "--box", value: string) => (flags = edit(flags, (old) => old === "--region" || old === "--box", [flag, value]));
+    /** Edit the settings; the same settings again change nothing. */
+    function change(next: Flags) {
+        if (JSON.stringify(next) === JSON.stringify(flags)) return;
+        flags = next;
+        edited = true;
+    }
+    const setArea = (flag: "--region" | "--box", value: string) => change(edit(flags, (old) => old === "--region" || old === "--box", [flag, value]));
     const setRefresh = () => {
         const source = refresh.trim().split("=")[0];
-        flags = edit(flags, (flag, value) => flag === "--refresh" && value.split("=")[0] === source, ["--refresh", refresh.trim()]);
+        change(edit(flags, (flag, value) => flag === "--refresh" && value.split("=")[0] === source, ["--refresh", refresh.trim()]));
         refresh = "";
     };
     const setLayer = (layer: string, on: boolean) =>
-        (flags = edit(flags, (flag, value) => (flag === "--add" || flag === "--remove") && value === layer, [on ? "--add" : "--remove", layer]));
-    const setScope = (layer: string) => (flags = edit(flags, (flag) => flag === "--only", layer ? ["--only", layer] : undefined));
+        change(edit(flags, (flag, value) => (flag === "--add" || flag === "--remove") && value === layer, [on ? "--add" : "--remove", layer]));
+    const setScope = (layer: string) => change(edit(flags, (flag) => flag === "--only", layer ? ["--only", layer] : undefined));
+    function planning(started: Started) {
+        planned = started.run;
+        history.replaceState(null, "", `#/${name}/review?plan=${encodeURIComponent(started.run)}`);
+    }
     function scope(names: string): string {
         const after = names.split(",").flatMap((layer) => followers(layers, layer));
         return `Only ${names.replaceAll(",", ", ")}${after.length ? `, and ${list([...new Set(after)])} that follow` : ""}`;
@@ -88,12 +120,14 @@
         if (cost.unknown.estimate.length) parts.push(`no estimate for ${list(cost.unknown.estimate)}`);
         return parts.join(" · ");
     }
+    const area_of = (params: [string, string][]) => params.map(([, value]) => value).join(", ");
 </script>
 
+
 <section class="card" aria-labelledby="edits">
-    <h2 id="edits">Settings of this update</h2>
-    <p class="soft">An edit makes a new review. The page keeps edits as flags: <code>{command(query.args)}</code></p>
-    {#if review && scopes.length}
+    <h2 id="edits">1 · Settings</h2>
+    <p class="soft">Choose what {name} serves. Nothing runs until you plan.</p>
+    {#if scopes.length}
         <label class="title">
             What to update
             <select value={only} onchange={(event) => setScope(event.currentTarget.value)}>
@@ -132,7 +166,7 @@
         {/if}
         <form class="title" onsubmit={(event) => (event.preventDefault(), setRefresh())}>
             <label>Refresh <input bind:value={refresh} placeholder="wiki=30 or wiki=manual" required /></label>
-            <button type="submit">Review this policy</button>
+            <button type="submit">Use this policy</button>
             <span class="soft">
                 {#each Object.entries(review.settings.refresh) as [source, days], i (source)}{i ? " · " : ""}{source}: {days === "manual"
                         ? "manual"
@@ -142,14 +176,49 @@
     {/if}
 </section>
 
-{#if query.error}<Failure error={query.error} />{/if}
-
-{#if review}
-    {#if !query.output}
-        <p class={query.error ? "missing" : "soft"} role="status">
-            {query.error ? "This review is out of date: the review of the new settings failed." : "Reviewing the new settings…"}
-        </p>
+<section class="card" aria-labelledby="plan">
+    <h2 id="plan">2 · Plan</h2>
+    <p class="soft">
+        The plan fetches what it needs to list the steps, such as the OSM extract of the area, and then shows what the update downloads, bakes and
+        costs. It changes nothing on {name}. A first plan of an area can download several GB; the next plans reuse them.
+    </p>
+    {#if !placed}<p class="missing">Choose an area first.</p>{/if}
+    <Action
+        label={view ? "Plan again" : `Plan update on ${machine}`}
+        args={planArgs(name, flags)}
+        disabled={!placed || live || !!locked}
+        ondone={planning}
+    />
+    {#if run?.error}<Failure error={run.error} />{/if}
+    {#if view && (live || !review)}
+        <div class="progress" class:running={live}>
+            <div class="title">
+                <b>{live ? "Planning" : `The plan ${view.state}`}</b>
+                <span class="soft">{span(live ? now - Date.parse(view.started) : (view.wall_ms ?? 0))}</span>
+                <span class="grow"></span>
+                <a href="#/runs/{planned}">Run {planned}</a>
+                {#if live}<Action label="Stop" args={["runs", planned!, "--stop"]} ondone={() => void run?.refresh()} />{/if}
+            </div>
+            {#if view.fetches.length}
+                <ul>
+                    {#each view.fetches as fetch, i (i)}
+                        <li>
+                            {fetch.source}{fetch.params.length ? ` (${area_of(fetch.params)})` : ""} · {fetch.error
+                                ? `✗ ${fetch.error}`
+                                : fetch.bytes === null
+                                  ? "fetching…"
+                                  : `${size(fetch.bytes)} in the store`}
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+            {#if view.log.length}<pre>{view.log.slice(-8).join("\n")}</pre>{/if}
+            {#if view.error}<Failure error={view.error} />{/if}
+        </div>
     {/if}
+</section>
+
+{#if review && !live}
     {#if formats.length}
         <section class="card format" aria-labelledby="formats">
             <h2 id="formats">
@@ -170,8 +239,9 @@
         </section>
     {/if}
 
-    <section class="card review" class:old={!query.output} aria-labelledby="review">
-        <h2 id="review">Review {review.id}: update {name} on {machine}</h2>
+    <section class="card review" class:old={outdated} aria-labelledby="review">
+        <h2 id="review">Plan {review.id}: update {name} on {machine}</h2>
+        {#if outdated}<p class="missing">The settings changed since this plan. Plan again to start.</p>{/if}
         <p><b>Fetch</b> · {fetched(review)}</p>
         {#if review.sources.length}
             <p><b>Sources</b> · {list(review.sources.map(({ source, from, to }) => `${source} ${from ?? "new"} → ${to}`))}</p>
@@ -225,18 +295,16 @@
                 <b>Router</b> · {router ? (reason ? `✗ ${reason}` : "serves the release of now") : "asking…"}. The run waits at Router ready, at
                 most 24 hours, until the router serves the new release; {name} does not change before.
             </p>
-            <p><b>Publishes review {review.id} to {name}, which serves riders.</b></p>
+            <p><b>Publishes plan {review.id} to {name}, which serves riders.</b></p>
         {/if}
         <Action
-            label="Start on {machine}"
+            label="Start bake on {machine}"
             args={start}
             disabled={blocked}
             ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
         />
         <p class="soft">The run keeps going when you close this page or the SSH tunnel.</p>
     </section>
-{:else if !query.error}
-    <p class="soft">Reviewing the update of {name}…</p>
 {/if}
 
 <style>
@@ -246,6 +314,21 @@
     }
     .old {
         opacity: 0.5;
+    }
+    .progress {
+        display: grid;
+        gap: 8px;
+        padding: 12px 16px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+    }
+    .progress.running {
+        border-color: var(--running);
+    }
+    pre {
+        margin: 0;
+        overflow-x: auto;
+        font-size: 12px;
     }
     select {
         min-height: 40px;

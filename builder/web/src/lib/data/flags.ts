@@ -1,5 +1,5 @@
-// The settings of an update are flags of `obc data update`. The page keeps the edits of a review as
-// these flags and sends them with the next `--dry-run`: it has no other way to change settings.
+// The settings of an update are flags of `obc data update`. The page keeps the edits of the settings
+// as these flags and sends them with the next `--plan`: it has no other way to change settings.
 
 const SETTINGS = ["--region", "--box", "--add", "--remove", "--refresh", "--only"];
 
@@ -22,4 +22,9 @@ export function edit(flags: Flags, old: (flag: string, value: string) => boolean
 /** The review of an update of `target` with `flags`. */
 export function reviewArgs(target: string, flags: Flags): string[] {
     return ["update", target, ...flags.flat(), "--dry-run"];
+}
+
+/** The run that plans an update of `target` with `flags`. */
+export function planArgs(target: string, flags: Flags): string[] {
+    return ["update", target, ...flags.flat(), "--plan"];
 }

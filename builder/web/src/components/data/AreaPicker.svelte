@@ -25,7 +25,9 @@
     const all = $derived(areas.output?.areas ?? []);
     const found = $derived.by(() => {
         const words = query.trim().toLowerCase();
-        return words ? all.filter((area) => area.id.includes(words) || area.name.toLowerCase().includes(words)).slice(0, 40) : [];
+        const hits = words ? all.filter((area) => area.id.includes(words) || area.name.toLowerCase().includes(words)).slice(0, 40) : [];
+        // A ticked area stays in the list, also one that a click on the map picked.
+        return [...all.filter((area) => ticked.includes(area.id) && !hits.includes(area)), ...hits];
     });
     const drawn = $derived(Object.values(box).every(Number.isFinite));
     const chosen = $derived.by(() => {
@@ -72,7 +74,7 @@
             {/each}
         </div>
         <button type="button" disabled={!ticked.length} onclick={() => apply("--region", ticked.join(","))}
-            >Review {ticked.length} {ticked.length === 1 ? "area" : "areas"}</button
+            >Use {ticked.length} {ticked.length === 1 ? "area" : "areas"}</button
         >
     {/if}
 {:else}
@@ -81,7 +83,7 @@
         {#each ["west", "south", "east", "north"] as const as side (side)}
             <label>{side[0].toUpperCase() + side.slice(1)} <input type="number" step="any" required bind:value={box[side]} /></label>
         {/each}
-        <button type="submit">Review this box</button>
+        <button type="submit">Use this box</button>
     </form>
     <p class="soft">The Fetch line of the review names the extract that the box reads.</p>
 {/if}

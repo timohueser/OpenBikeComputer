@@ -1226,8 +1226,11 @@ its bakes and the checks of the products read:
 ### Review
 
 The review of an update says what it does before it changes a target. `--dry-run` writes the
-review and creates no run. To list the steps, an update fetches what the step lists need, which
-can be bulk data. It fetches into the store only, and it never writes to the target.
+review and creates no run. `--plan` makes the review in a detached run, as [Runs](#runs) says: the
+run holds the lock of the target, logs each fetch with its progress and each product that it plans,
+writes the review to `runs/<id>/review.json`, and bakes nothing. `runs RUN` gives that review. To
+list the steps, an update fetches what the step lists need, which can be bulk data. It fetches into
+the store only, and it never writes to the target.
 
 - `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
   [State of a layer](#state-of-a-layer), `named` by `--only`, `off`, or `unheld` as
@@ -1635,7 +1638,7 @@ checks of the last hour. A target that serves nothing has the next command
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
-| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
+| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --plan \| --expect ID] [--accept-format-change] [--yes] [--json]` | The [update](#update) of a target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. `--plan` makes the review in a run and changes nothing; with `--json`, it writes the run and a `null` review id. Else it starts a detached run, as [Runs](#runs) says, and writes its log until it ends: the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did. With `--json`, it writes the run and the review id |
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data router TARGET [--json]` | For an R2 target, asks the follower once, as [Router ready](#router-ready) says, for the planner release of the serving release and of the rollback. Writes each answer, and the release that `planner/next.json` names. Changes nothing. Refuses a `dir` target |
 | `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
@@ -1646,7 +1649,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data runs [--json]` | Every run in the store, newest first: id, arguments, state, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, and the last 50 lines of its log with its path |
+| `obc data runs RUN [--json]` | One run: its status, with the users of each step and its time in the last run that built it, the last 50 lines of its log with its path, and the review of a run of `update --plan` |
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
 | `obc data serve [TARGET] [--detach] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target its origin on the network and how each app opens it. With `--detach`, it serves in a detached [run](#runs) and writes `{run}`; `runs RUN --stop` stops it. That run does not hold the store for [Clean](#clean) |
@@ -1676,8 +1679,8 @@ addition:
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
   runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data sources`, `obc data runs`, `obc data runs RUN`,
-  `obc data runs RUN --stop`, `obc data router TARGET`, `obc data serve TARGET --detach`, `obc data update TARGET` with settings flags and then `--dry-run`
-  or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
+  `obc data runs RUN --stop`, `obc data router TARGET`, `obc data serve TARGET --detach`, `obc data update TARGET` with settings flags and then `--dry-run`,
+  `--plan` or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
   `--expect ID` (with `--yes`), `obc data clean`, and `obc data clean --apply --yes`.
@@ -4908,8 +4911,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What `obc data update --json` writes: the run that it started.",
       "properties": {
         "review": {
-          "description": "The id of the review that the run does.",
-          "type": "string"
+          "description": "The id of the review that the run does; `null` for `--plan`, whose run makes the review.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run": {
           "type": "string"
@@ -5688,6 +5694,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "review": {
+          "description": "The review that a run of `update --plan` wrote, as `update --dry-run` writes it; `null`\nfor another run, and until the plan is done."
+        },
         "started": {
           "default": "",
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
@@ -5740,7 +5749,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "bytes_built",
         "error",
         "log",
-        "log_path"
+        "log_path",
+        "review"
       ],
       "type": "object"
     }

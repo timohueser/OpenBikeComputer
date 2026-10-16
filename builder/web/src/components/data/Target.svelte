@@ -101,11 +101,11 @@
     <a href="#/{name}">Back to {name}</a>
     {#if resumed?.error}<Failure error={resumed.error} />{/if}
     {#if !route.resume}
-        {#key `${route.only}|${route.refresh}`}
-            <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} area={target.area} router={router?.output ?? null} />
+        {#key `${route.only}|${route.refresh}|${route.plan}`}
+            <Review {name} kind={target.kind} flags={only} plan={route.plan} {machine} {locked} layers={target.layers ?? []} area={target.area} router={router?.output ?? null} />
         {/key}
     {:else if resumed?.output}
-        <p class="soft">This review resumes run <a href="#/runs/{route.resume}">{route.resume}</a> with its settings.</p>
+        <p class="soft">These settings resume run <a href="#/runs/{route.resume}">{route.resume}</a>. Plan them to continue.</p>
         <Review
             {name}
             kind={target.kind}
@@ -216,9 +216,9 @@
                 {/if}
                 {#if target.drift.length}<p class="missing">These keys differ from the serving release: {target.drift.join(", ")}</p>{/if}
                 {#if locked}
-                    <span class="primary locked" aria-disabled="true">Review update: locked</span>
+                    <span class="primary locked" aria-disabled="true">Plan update: locked</span>
                 {:else}
-                    <a class="primary" href="#/{name}/review{ticked.length ? `?only=${encodeURIComponent(ticked.join(','))}` : ''}">Review update</a>
+                    <a class="primary" href="#/{name}/review{ticked.length ? `?only=${encodeURIComponent(ticked.join(','))}` : ''}">Plan update</a>
                     {#if ticked.length}<code>{command(reviewArgs(name, [["--only", ticked.join(",")]]))}</code>{/if}
                 {/if}
             </section>
