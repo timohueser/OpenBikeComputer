@@ -898,11 +898,23 @@ pub(super) fn select(
                     return Err(usage(format!("`{area}` is no region of data/regions/ and no Geofabrik path")));
                 }
                 let id = if areas.len() == 1 { areas[0].clone() } else { "areas".into() };
+                // Geofabrik's index names no country for some areas, such as `europe/dach`: an area
+                // takes the countries of the region of data/regions/ that reads only it.
+                let preset = |area: &String| {
+                    presets.iter().find(|region| region.area == Area::Geofabrik { areas: vec![area.clone()] })
+                };
+                let mut countries: Vec<String> = Vec::new();
+                for code in areas.iter().filter_map(preset).flat_map(|region| &region.countries) {
+                    if !countries.contains(code) {
+                        countries.push(code.clone());
+                    }
+                }
+                let time_zone = match &areas[..] {
+                    [area] => preset(area).and_then(|region| region.time_zone.clone()),
+                    _ => None,
+                };
                 let area = Area::Geofabrik { areas: areas.clone() };
-                defined(
-                    settings,
-                    Region { id, name: areas.join(" + "), area, countries: Vec::new(), time_zone: None },
-                )?;
+                defined(settings, Region { id, name: areas.join(" + "), area, countries, time_zone })?;
             }
         }
     }
@@ -1239,6 +1251,19 @@ pub(super) mod tests {
         let refused = update(&fixture, &target, |_| Ok(())).unwrap_err();
         assert_eq!(refused.code, Code::InvalidData, "{}", refused.message);
         assert!(refused.fix.contains("local.old"), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_geofabrik_area_takes_the_countries_of_the_region_that_reads_only_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut settings = Settings::default();
+        select(&root, (Some("europe/dach"), None), &mut settings).unwrap();
+        let regions = settings.regions().unwrap();
+        let region = regions.get("europe/dach").unwrap();
+        assert_eq!(
+            (region.countries.as_slice(), region.time_zone.as_deref()),
+            (&["DE", "AT", "CH", "LI"].map(String::from)[..], Some("Europe/Berlin"))
+        );
     }
 
     #[test]
