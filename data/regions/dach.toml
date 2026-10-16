@@ -1,5 +1,6 @@
 name = "Germany, Austria and Switzerland"
-kind = "union"
-union = ["europe/germany", "europe/austria", "europe/switzerland"]
+kind = "geofabrik"
+# One extract instead of the three country extracts. Geofabrik's index names no country for it.
+areas = ["europe/dach"]
 countries = ["DE", "AT", "CH", "LI"]
 time_zone = "Europe/Berlin"
