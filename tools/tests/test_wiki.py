@@ -241,6 +241,13 @@ class Wiki(unittest.TestCase):
         catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
         self.assertTrue(catalog.complete(self.db, "wikipedia:en"))
         self.assertEqual(catalog.fact(self.db, "article", "en:Castle")["status"], "present")
+        # A raised revision reads the same input again, once.
+        with patch.dict(catalog.REVISIONS, {"wikipedia": catalog.REVISIONS["wikipedia"] + 1}):
+            self.assertIsNone(catalog.complete(self.db, "wikipedia:en"))
+            with patch.object(catalog, "article", wraps=catalog.article) as read:
+                catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+                catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+            self.assertEqual(read.call_count, 1)
         changed = self.dump([entity("Q1")])
         with self.assertRaisesRegex(ValueError, "input changed"):
             catalog.wikidata(self.db, self.work, changed, dumps.sha(changed))
