@@ -108,10 +108,47 @@ struct Source {
     bytes: u64,
     url: String,
 }
+
+/// The sources of a snapshot with an index by path: the view of a region lists millions, and the
+/// compiler finds one for each file that it reads.
+struct Sources {
+    list: Vec<Source>,
+    by_path: std::collections::HashMap<String, usize>,
+}
+
+impl From<Vec<Source>> for Sources {
+    fn from(list: Vec<Source>) -> Self {
+        let mut by_path = std::collections::HashMap::with_capacity(list.len());
+        for (index, source) in list.iter().enumerate() {
+            by_path.entry(source.path.clone()).or_insert(index);
+        }
+        Sources { list, by_path }
+    }
+}
+
+impl<'de> Deserialize<'de> for Sources {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Vec::<Source>::deserialize(deserializer)?.into())
+    }
+}
+
+impl std::ops::Deref for Sources {
+    type Target = [Source];
+    fn deref(&self) -> &[Source] {
+        &self.list
+    }
+}
+
+impl Sources {
+    /// The first source with `path`.
+    fn get(&self, path: &str) -> Option<&Source> {
+        self.by_path.get(path).map(|&index| &self.list[index])
+    }
+}
 #[derive(Deserialize)]
 struct Snapshot {
     schema: u32,
-    sources: Vec<Source>,
+    sources: Sources,
     places: Vec<Value>,
     #[serde(default)]
     aliases: BTreeMap<String, String>,
@@ -261,12 +298,11 @@ fn file_digest(path: &Path) -> Result<String, String> {
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing {key}"))
 }
-fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Result<Vec<u8>, String> {
+fn read_pinned(root: &Path, sources: &Sources, path: &str, limit: u64) -> Result<Vec<u8>, String> {
     if Path::new(path).components().any(|part| !matches!(part, Component::Normal(_))) {
         return Err(format!("source path must be relative: {path}"));
     }
-    let source =
-        sources.iter().find(|source| source.path == path).ok_or_else(|| format!("unregistered source: {path}"))?;
+    let source = sources.get(path).ok_or_else(|| format!("unregistered source: {path}"))?;
     if source.bytes > limit {
         return Err(format!("source exceeds byte limit: {path}"));
     }
@@ -293,7 +329,7 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
 /// capture keeps is one the compiler can read.
 const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
 
-fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
+fn json_pinned(root: &Path, sources: &Sources, path: &str) -> Result<Value, String> {
     let value: Value = serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
         .map_err(|e| format!("invalid source {path}: {e}"))?;
     if value["kind"] == "entity" {
@@ -666,7 +702,7 @@ pub struct PreparedArticle {
 /// The pinned capture one article preparation reads, and the directory it writes a photo to.
 struct Inputs<'a> {
     root: &'a Path,
-    sources: &'a [Source],
+    sources: &'a Sources,
     locales: &'a BTreeMap<String, Value>,
     output: &'a Path,
     /// Only a compile a capture drives asks for originals. A production compile holds every
@@ -682,7 +718,7 @@ struct Inputs<'a> {
 /// and its title has to be one of the entity's own P373 claims, so a capture cannot widen the pool.
 fn category_members(
     root: &Path,
-    sources: &[Source],
+    sources: &Sources,
     place: &Value,
     categories: &[String],
     snapshot_schema: u32,
@@ -902,7 +938,7 @@ fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
     }
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let mut registered = BTreeSet::new();
-    for source in &snapshot.sources {
+    for source in snapshot.sources.iter() {
         if !registered.insert(&source.path) {
             return Err(format!("duplicate source: {}", source.path));
         }
@@ -911,7 +947,7 @@ fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
     Ok((snapshot, raw))
 }
 
-fn load_locales(root: &Path, sources: &[Source]) -> Result<BTreeMap<String, Value>, String> {
+fn load_locales(root: &Path, sources: &Sources) -> Result<BTreeMap<String, Value>, String> {
     let mut locales = BTreeMap::new();
     for source in sources.iter().filter(|s| s.path.starts_with("locales/")) {
         let raw = json_pinned(root, sources, &source.path)?;

@@ -136,7 +136,7 @@ fn wikipedia(value: &str) -> Option<(&str, &str)> {
 /// never participate in article identity.
 fn identity(
     root: &Path,
-    sources: &[Source],
+    sources: &Sources,
     summit: &Summit,
     resolution: &Resolution,
 ) -> Result<(String, Option<Value>), String> {
@@ -324,7 +324,7 @@ pub fn compile(
             entity
         } else {
             let path = format!("entities/{id}.json");
-            if !snapshot.sources.iter().any(|s| s.path == path) {
+            if snapshot.sources.get(&path).is_none() {
                 omit("entity_acquisition_failed".into());
                 continue;
             }
