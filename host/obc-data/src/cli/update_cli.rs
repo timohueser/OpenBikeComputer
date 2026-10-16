@@ -1512,7 +1512,7 @@ pub(super) mod tests {
             );
             prepared.unwrap().review
         };
-        let roomy = MachineCheck { memory_bytes: None, store_free_bytes: Some(u64::MAX / 2), refusals: Vec::new() };
+        let roomy = MachineCheck { store_free_bytes: Some(u64::MAX / 2), ..MachineCheck::default() };
         let unknown = checked(region, &roomy).cost.unknown;
         assert_eq!(unknown.estimate, ["test/upper", "test/join", "test/count"]);
         let first = update(&fixture, &target, region).unwrap();
