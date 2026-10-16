@@ -52,7 +52,7 @@ name rather than on a timeout.
 ## The map
 
 `sim/desktop/assets/grimsel-demo.obcm`, whose sources, producer and digests are pinned in
-`fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is assembled at run time and the
+`fixtures/sources/ride-assistant/grimsel-demo-v20.json`. Nothing is assembled at run time and the
 digest is checked before the first byte moves.
 
 Its length is exactly 19,715 whole **card blocks**. The flat store lays an object out over 512-byte

@@ -1,5 +1,6 @@
 //! Streaming regional OSM import.
 use crate::{country::Country, source, source::Oneway, Graph};
+use obc_places::routing::access::{self, Barrier};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
@@ -117,14 +118,10 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
 
 /// The modes that pass a barrier, or `None` for a barrier the router does not know.
 fn barrier(value: Option<&str>) -> Option<u8> {
-    match value {
-        None
-        | Some(
-            "no" | "entrance" | "bollard" | "gate" | "lift_gate" | "swing_gate" | "cycle_barrier" | "toll_booth"
-            | "border_control" | "cattle_grid" | "kerb" | "block" | "chain" | "height_restrictor",
-        ) => Some(BIKE | FOOT | PUSH),
-        Some("stile" | "kissing_gate" | "turnstile") => Some(FOOT),
-        Some(_) => None,
+    match access::barrier(value) {
+        Barrier::Open => Some(BIKE | FOOT | PUSH),
+        Barrier::FootOnly => Some(FOOT),
+        Barrier::Unknown => None,
     }
 }
 

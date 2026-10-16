@@ -38,7 +38,7 @@ use obc_elevation::{ElevationSource, ELE_DEADBAND_M};
 use obc_formats::bike::BikeType;
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
-use obc_map_scene::{cos_lat, ground_dist_m};
+use obc_map_scene::{cos_lat, ground_dist_m, ground_dist_m_cl};
 use obc_map_scene::{BBox, M_PER_DEG};
 use obc_reader::{NavEdgeCandidate, NavEdgePosition, NavEdgeSnap, NavTileCache, Reader};
 
@@ -108,8 +108,8 @@ pub enum NavError {
 }
 
 /// Nodes the fixed A\* scratch tracks, open and closed together. One 24-byte [`NavEntry`] plus one
-/// 2-byte heap slot each: 1536 nodes is 39 936 B, under the device's 40 kB nav budget. The same
-/// value on every target, so the sim's plannable range is the device's.
+/// 2-byte heap slot each: 1536 nodes is 39 936 B of the device's 40 kB nav budget. The same value
+/// on every target, so the sim's plannable range is the device's.
 pub const NAV_MAX_NODES: usize = 1536;
 
 const META_OCCUPIED: u16 = 1 << 15;
@@ -119,9 +119,9 @@ const META_POS_MASK: u16 = 0x3FFF;
 /// `heap_pos` sentinel: not queued.
 const HEAP_NONE: u16 = 0x3FFF;
 
-/// One tracked node. `repr(C)` pins the 24-byte size the [`NAV_MAX_NODES`] budget counts. `g` and
-/// `h` are meters and saturate at 65 535; a saturated cost only makes its node maximally
-/// unattractive, so the ordering is never wrong.
+/// One tracked node. `repr(C)` pins the 24-byte size the [`NAV_MAX_NODES`] budget counts. `g` is
+/// weighted meters. `h` is not stored: [`NavScratch::f`] derives it from the coordinate, which is
+/// what leaves room for a `u32` `g`.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct NavEntry {
@@ -129,8 +129,7 @@ struct NavEntry {
     lon: i32,
     lat: i32,
     edge_used: u32,
-    g: u16,
-    h: u16,
+    g: u32,
     /// The predecessor's table slot index, not a node id. Slots never move, so the emit
     /// chain-walk is direct indexing.
     came_from: u16,
@@ -140,19 +139,7 @@ struct NavEntry {
 
 impl NavEntry {
     /// All-zero, so a `static NavScratch` lands in `.bss` and a zeroed slot reads as free.
-    const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, h: 0, came_from: 0, meta: 0 };
-
-    /// The priority `f = g + eps*h`. The ratio comes from the owning [`NavScratch`] rather than a
-    /// const, so a [`NAV_EPSILON_LADDER`] retry can re-order the same heap at a greedier rung. A
-    /// zeroed scratch reads `0/0` and degrades to plain-`g` ordering instead of dividing by zero;
-    /// every search re-seeds a real rung first.
-    #[inline]
-    fn f(&self, eps_num: u32, eps_den: u32) -> u32 {
-        if eps_den == 0 {
-            return self.g as u32;
-        }
-        (self.g as u32).saturating_add(eps_num * self.h as u32 / eps_den)
-    }
+    const EMPTY: NavEntry = NavEntry { node_id: 0, lon: 0, lat: 0, edge_used: 0, g: 0, came_from: 0, meta: 0 };
 
     #[inline]
     fn occupied(&self) -> bool {
@@ -168,12 +155,6 @@ impl NavEntry {
     fn set_heap_pos(&mut self, pos: u16) {
         self.meta = (self.meta & !META_POS_MASK) | (pos & META_POS_MASK);
     }
-}
-
-/// Saturate a `u32` meter figure into the entry's `u16` cost field.
-#[inline]
-fn sat16(m: u32) -> u16 {
-    m.min(u16::MAX as u32) as u16
 }
 
 /// A fixed per-request preference. Highway/access prohibitions and the saved profile stay unchanged.
@@ -283,10 +264,13 @@ pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     /// Occupied table slots, also the bound for the emitted predecessor chain.
     used: u16,
     heap_len: u16,
-    /// The current search's [`NAV_EPSILON_LADDER`] rung, set by [`NavPlanner::reseed`] before any
-    /// heap operation runs.
+    /// The current search's [`NAV_EPSILON_LADDER`] rung and goal, set by [`NavPlanner::reseed`]
+    /// before any heap operation runs.
     eps_num: u16,
     eps_den: u16,
+    goal: (i32, i32),
+    /// The goal latitude's cosine, so `h` costs no trigonometry per heap comparison.
+    goal_cl: f32,
 }
 
 // Slot indices (heap positions and `came_from`) are 14-bit, with `HEAP_NONE` as the sentinel.
@@ -298,7 +282,16 @@ const _: () = assert!(core::mem::size_of::<NavEntry>() == 24, "the slimmed 24-by
 impl<const N: usize> NavScratch<N> {
     pub const fn new() -> Self {
         assert!(N > 0 && N < HEAP_NONE as usize);
-        NavScratch { entries: [NavEntry::EMPTY; N], heap: [0; N], used: 0, heap_len: 0, eps_num: 0, eps_den: 0 }
+        NavScratch {
+            entries: [NavEntry::EMPTY; N],
+            heap: [0; N],
+            used: 0,
+            heap_len: 0,
+            eps_num: 0,
+            eps_den: 0,
+            goal: (0, 0),
+            goal_cl: 0.0,
+        }
     }
 
     /// Allocate a zeroed `NavScratch` directly on the heap, never on the stack. The table is tens
@@ -332,7 +325,6 @@ impl<const N: usize> NavScratch<N> {
                     lat,
                     edge_used: 0,
                     g: 0,
-                    h: 0,
                     came_from: 0,
                     meta: META_OCCUPIED | HEAP_NONE,
                 };
@@ -354,11 +346,26 @@ impl<const N: usize> NavScratch<N> {
         self.entries[self.heap[b] as usize].set_heap_pos(b as u16);
     }
 
+    /// The priority `f = g + eps*h` of the entry in heap slot `pos`, with `h` the ground distance
+    /// to the goal. The ratio comes from the scratch rather than a const, so a
+    /// [`NAV_EPSILON_LADDER`] retry can re-order the same heap at a greedier rung. A zeroed scratch
+    /// reads `0/0` and degrades to plain-`g` ordering instead of dividing by zero; every search
+    /// re-seeds a real rung first.
+    #[inline]
+    fn f(&self, pos: usize) -> u32 {
+        let e = &self.entries[self.heap[pos] as usize];
+        if self.eps_den == 0 {
+            return e.g;
+        }
+        let h = ground_dist_m_cl((e.lon, e.lat), self.goal, self.goal_cl) as u32;
+        e.g.saturating_add(u32::from(self.eps_num) * h / u32::from(self.eps_den))
+    }
+
     fn sift_up(&mut self, mut pos: usize) {
-        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
+        let key = self.f(pos);
         while pos > 0 {
             let parent = (pos - 1) / 2;
-            if self.entries[self.heap[pos] as usize].f(en, ed) >= self.entries[self.heap[parent] as usize].f(en, ed) {
+            if key >= self.f(parent) {
                 break;
             }
             self.heap_swap(pos, parent);
@@ -368,19 +375,17 @@ impl<const N: usize> NavScratch<N> {
 
     fn sift_down(&mut self, mut pos: usize) {
         let len = self.heap_len as usize;
-        let (en, ed) = (self.eps_num as u32, self.eps_den as u32);
+        let key = self.f(pos);
         loop {
             let (l, r) = (2 * pos + 1, 2 * pos + 2);
-            let mut min = pos;
-            if l < len
-                && self.entries[self.heap[l] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
-            {
-                min = l;
-            }
-            if r < len
-                && self.entries[self.heap[r] as usize].f(en, ed) < self.entries[self.heap[min] as usize].f(en, ed)
-            {
-                min = r;
+            let (mut min, mut min_key) = (pos, key);
+            for child in [l, r] {
+                if child < len {
+                    let child_key = self.f(child);
+                    if child_key < min_key {
+                        (min, min_key) = (child, child_key);
+                    }
+                }
             }
             if min == pos {
                 return;
@@ -723,12 +728,13 @@ impl NavPlanner {
     fn reseed<const N: usize>(&mut self, scratch: &mut NavScratch<N>) -> Result<(), NavError> {
         scratch.reset();
         let (num, den) = NAV_EPSILON_LADDER[self.rung];
-        debug_assert!(den != 0, "an ε rung denominator must be non-zero (NavEntry::f divides by it)");
+        debug_assert!(den != 0, "an ε rung denominator must be non-zero (NavScratch::f divides by it)");
         scratch.eps_num = num as u16;
         scratch.eps_den = den as u16;
+        scratch.goal = self.goal_c;
+        scratch.goal_cl = cos_lat(self.goal_c.1);
         self.table_full = false;
         let (si, _) = scratch.entry(self.start_id, self.start_c.0, self.start_c.1)?;
-        scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
         scratch.entries[si].came_from = si as u16;
         scratch.heap_push(si);
         Ok(())
@@ -867,7 +873,6 @@ impl NavPlanner {
                             raw_a,
                             partial_ascent(start.ascent_ba, raw_a, start.length_m),
                             start.way_kind,
-                            self.goal_c,
                             &self.mult,
                         );
                         let raw_b = start.length_m.saturating_sub(start.from_a_m);
@@ -880,7 +885,6 @@ impl NavPlanner {
                             raw_b,
                             partial_ascent(start.ascent_ab, raw_b, start.length_m),
                             start.way_kind,
-                            self.goal_c,
                             &self.mult,
                         );
                         if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
@@ -899,7 +903,6 @@ impl NavPlanner {
                                 raw,
                                 ascent,
                                 start.way_kind,
-                                self.goal_c,
                                 &self.mult,
                             );
                         }
@@ -915,7 +918,6 @@ impl NavPlanner {
                         scratch,
                         tiles,
                         idx,
-                        self.goal_c,
                         &self.mult,
                         self.corridor.as_ref(),
                         &mut self.table_full,
@@ -941,7 +943,6 @@ impl NavPlanner {
                                 raw,
                                 partial_ascent(ascent, raw, goal.length_m),
                                 goal.way_kind,
-                                self.goal_c,
                                 &self.mult,
                             );
                         }
@@ -1261,12 +1262,13 @@ pub fn plan_detour<const N: usize>(
 }
 
 #[inline]
-fn partial_ascent(total: u16, partial_m: u32, length_m: u32) -> u16 {
-    let rounded = u64::from(total) * u64::from(partial_m) + u64::from(length_m / 2);
-    rounded.checked_div(u64::from(length_m)).unwrap_or(0).min(u64::from(u16::MAX)) as u16
+fn partial_ascent(total: Option<u16>, partial_m: u32, length_m: u32) -> Option<u16> {
+    let rounded = u64::from(total?) * u64::from(partial_m) + u64::from(length_m / 2);
+    Some(rounded.checked_div(u64::from(length_m)).unwrap_or(0).min(u64::from(u16::MAX)) as u16)
 }
 
-/// Relax one synthetic partial-edge adjacency used by an exact projected start or goal.
+/// Relax one synthetic partial-edge adjacency used by an exact projected start or goal. A direction
+/// without an ascent is closed by a one-way rule and relaxes nothing.
 #[allow(clippy::too_many_arguments)]
 fn relax_virtual_edge<const N: usize>(
     scratch: &mut NavScratch<N>,
@@ -1275,13 +1277,14 @@ fn relax_virtual_edge<const N: usize>(
     target_coord: (i32, i32),
     edge_id: u32,
     raw_cost_m: u32,
-    ascent_m: u16,
+    ascent_m: Option<u16>,
     way_kind: u8,
-    goal_c: (i32, i32),
     mult: &ProfileMult,
 ) -> bool {
-    let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind) else { return false };
-    let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
+    let Some(weighted) = ascent_m.and_then(|ascent_m| mult.edge_cost(raw_cost_m, ascent_m, way_kind)) else {
+        return false;
+    };
+    let tentative = scratch.entries[from].g.saturating_add(weighted);
     match scratch.entry(target_id, target_coord.0, target_coord.1) {
         Ok((j, false)) => {
             if tentative < scratch.entries[j].g {
@@ -1302,7 +1305,6 @@ fn relax_virtual_edge<const N: usize>(
         Ok((j, true)) => {
             let entry = &mut scratch.entries[j];
             entry.g = tentative;
-            entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
             entry.came_from = from as u16;
             entry.edge_used = edge_id;
             scratch.heap_push(j);
@@ -1327,7 +1329,6 @@ fn settle<const N: usize>(
     scratch: &mut NavScratch<N>,
     tiles: &mut NavTileCache,
     idx: usize,
-    goal_c: (i32, i32),
     mult: &ProfileMult,
     corridor: Option<&Corridor>,
     table_full: &mut bool,
@@ -1342,8 +1343,11 @@ fn settle<const N: usize>(
                 return;
             }
             for nb in n.neighbors() {
-                // A forbidden class is skipped, never relaxed, so the graph stays whole for the
-                // other profiles.
+                // A forbidden class or a direction a one-way rule closes is skipped, never
+                // relaxed, so the graph stays whole for the other profiles and directions.
+                if !nb.rideable {
+                    continue;
+                }
                 let Some(weighted) = mult.edge_cost(nb.cost_m, nb.ascent_m, nb.way_kind) else {
                     continue;
                 };
@@ -1351,7 +1355,7 @@ fn settle<const N: usize>(
                 if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
                     continue;
                 }
-                let tentative = sat16((settled.g as u32).saturating_add(weighted));
+                let tentative = settled.g.saturating_add(weighted);
                 match scratch.entry(nb.id, nb.lon, nb.lat) {
                     Ok((j, false)) => {
                         if tentative < scratch.entries[j].g {
@@ -1375,7 +1379,6 @@ fn settle<const N: usize>(
                     Ok((j, true)) => {
                         let e = &mut scratch.entries[j];
                         e.g = tentative;
-                        e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
                         e.came_from = idx as u16;
                         e.edge_used = nb.edge_id;
                         scratch.heap_push(j);
@@ -1435,7 +1438,7 @@ fn snap_candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use super::{sat16, ProfileMult};
+    use super::ProfileMult;
 
     #[test]
     fn objectives_keep_bans_suitability_and_distance_lower_bound() {
@@ -1473,7 +1476,6 @@ mod tests {
         let got = p.edge_cost(u32::from(u16::MAX), u16::MAX, 0xFF).expect("255 is not forbidden");
         assert_eq!(got, 16_645_890 + 16_711_425);
         assert!(got < u32::MAX / 64, "the worst legal edge must stay far inside u32");
-        assert_eq!(sat16(u32::from(u16::MAX).saturating_add(got)), u16::MAX);
     }
 
     #[test]

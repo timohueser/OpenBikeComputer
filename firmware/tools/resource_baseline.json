@@ -34,7 +34,7 @@
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
-        "arena_nav": 97448,
+        "arena_nav": 97464,
         "arena_places": 129148,
         "terrain": 2152,
         "terrain_window": 24,
@@ -122,6 +122,12 @@
         "build": "cargo build --release --locked --features resource-report on the pinned aarch64-apple-darwin host, rustc 1.96.0 (App 58,440 B)",
         "changes": "flat_ride_delta +4 B over 566 B: the ride footer grows from 150 B to 154 B to keep the effort limits in force at the ride start. App +256 B over 58,184 B: each of the 32 resident ride catalog entries keeps its ride's 4 B limits for the detail's zones, and the u64 object id rounds the entry from 112 B to 120 B. All other named allocations and ceilings are unchanged.",
         "verification": "One head build compared with the recorded baseline; no base rebuild. On the shipping link of the same head the board guards passed: 315,736 B linked resident inside the band, residual main stack 43,688 B, poll frame 9,864 B, init_idle frame 1,856 B."
+      },
+      "_device_route_cost_allocation_measurement": {
+        "source_commit": "claude/device-oneway-barriers head",
+        "build": "cargo build --release --locked --features resource-report on aarch64-apple-darwin",
+        "changes": "arena_nav +16 B: NavScratch keeps the goal and its latitude cosine (12 B, aligned to 16 B in the arena), so the search derives h from coordinates and the 24 B entry holds a u32 cost. All other named allocations and ceilings are unchanged.",
+        "verification": "One head build compared with the recorded baseline; no base rebuild and no device flash. Board guards passed on the shipping link: 316,872 B linked resident, residual main stack 42,552 B, largest poll frame 9,760 B."
       },
       "_sound_cues_allocation_measurement": {
         "source_commit": "a6485a93 on claude/sound-s7-alerts, merged with develop at fac1d7cc",

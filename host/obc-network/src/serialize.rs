@@ -3,10 +3,10 @@ use crate::nav::{polyline_len_m, NavGraph};
 use obc_elevation::ElevationSource;
 use obc_formats::obcm::{
     nav_edge_id, settlement_class_of, BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FILLER, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN,
-    NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CHUNK_SIZE,
-    POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID, SUMMIT_CATEGORY_ID,
-    SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
+    NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_ASCENT_MASK,
+    NAV_NEIGHBOR_LEN, NAV_NEIGHBOR_NO_RIDE, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M,
+    NAV_SNAP_RECORD_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
+    SETTLEMENT_CATEGORY_ID, SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
 };
 use obc_map_core::serialize::{
     densify, emit_nav_section, emit_poi_section, pack_profile_table, NavBody, NavProfile, PoiBytes,
@@ -14,6 +14,7 @@ use obc_map_core::serialize::{
 use obc_map_core::tree::{flatten_tree, FlattenTree, TreeWalk};
 use obc_map_scene::ground_dist_m;
 use obc_places::metadata::{table_row, Poi};
+use obc_places::routing::{NO_RIDE_BACKWARD, NO_RIDE_FORWARD};
 use std::io;
 
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
@@ -449,6 +450,7 @@ struct WorkEdge {
     polyline: Vec<(i32, i32)>,
     cost_m: u32,
     kind: u8,
+    no_ride: u8,
 }
 
 /// One interior lookup anchor. It is deliberately not a graph node: the coordinate only gets the
@@ -661,7 +663,14 @@ pub fn serialize_nav_section(
         let span_ok = (a.0 as i64 - z.0 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA
             && (a.1 as i64 - z.1 as i64).abs() <= NAV_MAX_NEIGHBOR_DELTA;
         if poly.len() <= NAV_MAX_EDGE_PTS && span_ok {
-            edges.push(WorkEdge { a: e.a, b: e.b, polyline: poly, cost_m: e.length_m, kind: e.kind });
+            edges.push(WorkEdge {
+                a: e.a,
+                b: e.b,
+                polyline: poly,
+                cost_m: e.length_m,
+                kind: e.kind,
+                no_ride: e.no_ride,
+            });
             continue;
         }
         // Walk the long polyline in pieces bounded by both the chunk point cap and the i16 endpoint
@@ -690,7 +699,7 @@ pub fn serialize_nav_section(
                 id
             };
             let cost_m = polyline_len_m(&piece);
-            edges.push(WorkEdge { a: from, b: to, polyline: piece, cost_m, kind: e.kind });
+            edges.push(WorkEdge { a: from, b: to, polyline: piece, cost_m, kind: e.kind, no_ride: e.no_ride });
             from = to;
             start = end;
         }
@@ -735,10 +744,12 @@ pub fn serialize_nav_section(
     let mut adj: Vec<Vec<WireNeighbor>> = (0..coords.len()).map(|_| Vec::new()).collect();
     let mut truncated = 0usize;
     for ((e, &edge_id), &(ascent_ab, ascent_ba, _)) in edges.iter().zip(&edge_ids).zip(&edge_facts) {
-        // The two entries of an edge differ in exactly one field: `a->b` books the climb of riding
-        // the polyline forwards, `b->a` the climb of riding it backwards. A self-loop writes the
-        // forward one only, matching its single entry.
-        let mut push = |from: u32, to: u32, ascent_m: u16| {
+        // The two entries of an edge differ only in `Ascent M`: `a->b` books the climb of riding
+        // the polyline forwards, `b->a` the climb of riding it backwards, each with the no-ride
+        // flag when a one-way rule closes that direction. A self-loop writes the forward one only,
+        // matching its single entry.
+        let mut push = |from: u32, to: u32, ascent_m: u16, closed: bool| {
+            let ascent_m = ascent_m.min(NAV_NEIGHBOR_ASCENT_MASK) | if closed { NAV_NEIGHBOR_NO_RIDE } else { 0 };
             let list = &mut adj[from as usize];
             if list.len() >= NAV_MAX_DEGREE {
                 truncated += 1;
@@ -747,9 +758,9 @@ pub fn serialize_nav_section(
             let (lon, lat) = coords[to as usize];
             list.push(WireNeighbor { id: to, lat, lon, edge_id, cost_m: e.cost_m, way_kind: e.kind, ascent_m });
         };
-        push(e.a, e.b, ascent_ab);
+        push(e.a, e.b, ascent_ab, e.no_ride & NO_RIDE_FORWARD != 0);
         if e.a != e.b {
-            push(e.b, e.a, ascent_ba);
+            push(e.b, e.a, ascent_ba, e.no_ride & NO_RIDE_BACKWARD != 0);
         }
     }
     if truncated > 0 {

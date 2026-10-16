@@ -1,9 +1,9 @@
 {
   "schema": 3,
-  "package": "sim-assistant-meiringen",
+  "package": "sim-assistant-west-cork",
   "archive": {
-    "bytes": 34580069,
-    "sha256": "57d6c24d8b23c3a7fba4959f77314a6c869f6a3907c32654dee46e2afccd6ed8"
+    "bytes": 2471238,
+    "sha256": "c476e20f7ca6c04fc59c2edeb0861abc174294e31aa6318cf2eaaa16ea98600c"
   },
   "producer": {
     "source_commit": "e0a047c6c",
@@ -14,39 +14,30 @@
     }
   },
   "bounds_lon_lat": [
-    8.1,
-    46.5,
-    8.4,
-    46.8
+    -9.9,
+    51.43,
+    -9.5,
+    51.65
   ],
   "source_packages": {
     "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
     "assistant-terrain": "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
     "assistant-replays": "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574",
-    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
-    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+    "assistant-wiki": "d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1"
   },
   "source_pbf": {
-    "path": "switzerland.osm.pbf",
-    "bytes": 545916978,
-    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
+    "path": "west-cork.osm.pbf",
+    "bytes": 2995373,
+    "sha256": "1c4a40f4887b23854e618ad3c5e38777e034941014b042046dafe494896876d5"
   },
   "map": {
-    "bytes": 49726505,
-    "sha256": "fcc1a55e7c62d1116b57be26a7d919f13e835d5e2a2de94ceabe8d94ee3cc529",
-    "obcm_version": 19,
+    "bytes": 4821401,
+    "sha256": "9a955b5b93598b21c65a65235de05413f3c62596a9132a93d881c3817f15e304",
+    "obcm_version": 20,
     "format_upgrade": {
-      "input_sha256": "74ae2223de9d7df4d6d77281a184c1d8919c73a60193cbf2d12df457a928efe4",
-      "input_obcm_version": 18,
-      "dark_skin": {
-        "path": "builder/presets/skins/dusk.json",
-        "sha256": "fe43ef070a97c603d9c6d9d1bc64168d5dffaa0570dc07848b7439a9b1c32f41"
-      },
-      "policy": "Geographic payload and existing offsets are unchanged. The v19 header selects the authored Dusk table appended by the pinned transformer.",
-      "transformer": {
-        "sha256": "621670bb9bebb031d7d0df259c1de68d2c0da5d66dd7442d9fd364d6a00ab52e",
-        "name": "upgrade_obcm_v18_to_v19.py"
-      }
+      "input_sha256": "1d541f33e8ad145b280ab14140319a45fb63b7b499488e341b73b0f98ff4cdc7",
+      "input_obcm_version": 19,
+      "policy": "Only the header version byte changes. A v19 navigation section reads as v20 with every direction rideable, so the map carries no one-way rules or bike-blocking barriers until it is next packed from source."
     }
   },
   "land_source": {
@@ -86,15 +77,15 @@
     ]
   },
   "network": "No download during production: the pinned source packages, the Geofabrik extract and the land polygons were all read from the local caches.",
-  "recipe": "python3 fixtures/build-assistant-package.py meiringen",
+  "recipe": "python3 fixtures/build-assistant-package.py west-cork",
   "packaged_build": {
-    "bytes": 13362,
-    "sha256": "d72469d7f26bb122d20adfca8f516eff9545328926d8c52510c27c839271a2b2",
+    "bytes": 3493,
+    "sha256": "ef2f1f19465f70ac9a310a5bbd931d511d22d267978595f6532230681fd6677c",
     "note": "The packaged build.json holds the bake commands, executable digests and content counts."
   },
   "terrain": {
-    "bytes": 8388704,
-    "sha256": "91bc764ce3bd7ad774e1c0bb899c9f32245247d5e248332546e1230af811fa49",
+    "bytes": 2097200,
+    "sha256": "0f7ccc2d45537ac81c3c3e39db30c484abdeb9ee2a2563b5a1fd642dcceb3c3e",
     "policy": "Byte-identical embedded terrain to the prior registered map."
   }
 }

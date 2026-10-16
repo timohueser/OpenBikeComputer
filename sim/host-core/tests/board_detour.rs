@@ -99,7 +99,7 @@ fn map_with_hours(hours: Option<obc_places::hours::Schedule>) -> Vec<u8> {
     let edges = coords
         .windows(2)
         .enumerate()
-        .map(|(i, p)| Edge { a: i as u32, b: i as u32 + 1, polyline: p.to_vec(), length_m: 1600, kind: 0 })
+        .map(|(i, p)| Edge { a: i as u32, b: i as u32 + 1, polyline: p.to_vec(), length_m: 1600, kind: 0, no_ride: 0 })
         .collect();
     let bbox = (0, 0, 1_000_000, 1_000_000);
     let lods = [obc_draw::serialize::LodLayer {

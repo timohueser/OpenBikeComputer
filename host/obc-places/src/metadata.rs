@@ -539,6 +539,7 @@ mod tests {
             node_ids: vec![10, 20],
             coords: vec![(7_800_000, 48_000_000), (7_800_010, 48_000_000)],
             kind: 1,
+            no_ride: 0,
         }];
         resolve_approaches(&mut pois, &ways, &obc_map_core::config::default_profiles());
         assert!(pois[0].metadata.approach.is_some());

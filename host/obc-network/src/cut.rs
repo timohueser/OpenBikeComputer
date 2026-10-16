@@ -32,6 +32,7 @@ struct PreparedWay {
     /// µdeg `(lon, lat)`, parallel to `keys`.
     coords: Vec<(i32, i32)>,
     kind: u8,
+    no_ride: u8,
 }
 
 /// The whole extract's routable ways, cut-ready: boundary vertices inserted, junction touch counts
@@ -104,7 +105,7 @@ pub fn prepare_nav(ways: &[RoutableWay], log2: u32, progress: &Progress) -> Resu
         for o in owners {
             cells.entry(o).or_default().push(idx);
         }
-        prepared.push(PreparedWay { keys, coords, kind: w.kind });
+        prepared.push(PreparedWay { keys, coords, kind: w.kind, no_ride: w.no_ride });
     }
     progress.log(format!("nav cut: {inserted} boundary junction(s) inserted across {} routable way(s)", ways.len()));
     if unconverged > 0 {
@@ -226,6 +227,7 @@ impl NavCut {
                             keys: w.keys[s..=k].to_vec(),
                             coords: w.coords[s..=k].to_vec(),
                             kind: w.kind,
+                            no_ride: w.no_ride,
                         });
                         start = None;
                     }
@@ -233,7 +235,12 @@ impl NavCut {
                 }
             }
             if let Some(s) = start {
-                runs.push(CutRun { keys: w.keys[s..].to_vec(), coords: w.coords[s..].to_vec(), kind: w.kind });
+                runs.push(CutRun {
+                    keys: w.keys[s..].to_vec(),
+                    coords: w.coords[s..].to_vec(),
+                    kind: w.kind,
+                    no_ride: w.no_ride,
+                });
             }
         }
         runs
@@ -365,6 +372,7 @@ mod tests {
             node_ids: nodes.iter().map(|(id, _)| *id).collect(),
             coords: nodes.iter().map(|(_, c)| *c).collect(),
             kind: 7,
+            no_ride: 0,
         }
     }
 

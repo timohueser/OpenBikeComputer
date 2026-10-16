@@ -93,6 +93,7 @@ fn way(id_base: i64, kind: u8, pts: &[(i64, i64)]) -> RoutableWay {
         node_ids: (0..pts.len() as i64).map(|k| id_base + k).collect(),
         coords: pts.iter().map(|&(lat, lon)| (lon as i32, lat as i32)).collect(),
         kind,
+        no_ride: 0,
     }
 }
 

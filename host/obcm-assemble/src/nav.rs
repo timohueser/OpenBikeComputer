@@ -783,8 +783,9 @@ pub(crate) fn merge_profiled(
         for &(own_node, lat, lon, at) in &records {
             let record = NavNodeRecord::parse(&chunks[at..]).expect("validated node record");
             for neighbor in record.neighbors() {
+                // The wire `Ascent M` word travels whole, so a direction's no-ride flag goes with it.
                 let (nbr_id, edge_id, cost_m, way_kind, ascent_m) =
-                    (neighbor.id, neighbor.edge_id, neighbor.cost_m, neighbor.way_kind, neighbor.ascent_m);
+                    (neighbor.id, neighbor.edge_id, neighbor.cost_m, neighbor.way_kind, neighbor.ascent_word());
                 // The second sighting carries the other direction's ascent, which nothing else in
                 // the file states, so it is read rather than skipped.
                 if let Some(&index) = cell_edges.get(&edge_id) {
