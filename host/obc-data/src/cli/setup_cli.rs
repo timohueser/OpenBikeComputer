@@ -81,7 +81,7 @@ struct Spec {
     install: [&'static str; 2],
 }
 
-const TOOLS: [Spec; 8] = [
+const TOOLS: [Spec; 9] = [
     Spec {
         name: "Rust",
         needed_for: "every Rust baker",
@@ -122,7 +122,14 @@ const TOOLS: [Spec; 8] = [
         needed_for: "planner/basemap",
         version: &["java", "--version"],
         minimum: Some(21),
-        install: ["brew install openjdk@21", "sudo apt install openjdk-21-jre-headless"],
+        install: ["brew install openjdk@21", "sudo apt install openjdk-21-jdk-headless"],
+    },
+    Spec {
+        name: "Maven",
+        needed_for: "building the planner/basemap tool",
+        version: &["mvn", "--version"],
+        minimum: None,
+        install: ["brew install maven", "sudo apt install maven"],
     },
     Spec {
         name: "Node 22+",
@@ -142,7 +149,18 @@ const TOOLS: [Spec; 8] = [
 
 /// The jobs and the tools that each needs. A credential that a job needs is in [`setup`].
 const DEVICE: [&str; 3] = ["Rust", "C compiler", "osmium-tool"];
-const PLANNER: [&str; 6] = ["Rust", "C compiler", "osmium-tool", "GEOS", "uv", "Java 21+"];
+const PLANNER: [&str; 7] = ["Rust", "C compiler", "osmium-tool", "GEOS", "uv", "Java 21+", "Maven"];
+
+/// The tools that the planner steps need and this machine lacks.
+pub(super) fn planner_missing() -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let tools = tools(&std::env::var_os("PATH").unwrap_or_default(), home.as_deref());
+    tools
+        .into_iter()
+        .filter(|tool| PLANNER.contains(&tool.name.as_str()) && tool.state != Readiness::Ready)
+        .map(|tool| tool.name)
+        .collect()
+}
 
 pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
@@ -348,7 +366,7 @@ mod tests {
         let java = if cfg!(target_os = "macos") {
             "brew install openjdk@21"
         } else {
-            "sudo apt install openjdk-21-jre-headless"
+            "sudo apt install openjdk-21-jdk-headless"
         };
         assert_eq!(tool("osmium-tool"), (Readiness::Ready, "osmium version 1.17.0"));
         assert_eq!(tool("Node 22+"), (Readiness::Ready, "v22.1.0"));
@@ -357,5 +375,7 @@ mod tests {
             (Readiness::Missing, format!("openjdk 17.0.2 2022-01-18; needs 21 or newer: {java}").as_str())
         );
         assert_eq!(tool("GEOS"), (Readiness::Missing, "obc doctor --install"));
+        let maven = if cfg!(target_os = "macos") { "brew install maven" } else { "sudo apt install maven" };
+        assert_eq!(tool("Maven"), (Readiness::Missing, maven));
     }
 }
