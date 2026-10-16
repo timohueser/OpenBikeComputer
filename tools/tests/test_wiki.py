@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from tools.wiki import catalog, commons, dumps, shards, subjects
 from tools.wiki.__main__ import main as wiki_main
-from tools.wiki.facts import encoded, mediainfo
+from tools.wiki.facts import commons_metadata, encoded, mediainfo, title_batches
 
 TOOLS = shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) and shutil.which("zstd") or os.environ.get("CI")
 
@@ -310,6 +310,19 @@ class Wiki(unittest.TestCase):
                        for path in (self.root / "facts").rglob("*.json")})
         self.assertEqual(found, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q2"), ("entity", "Q3"),
                                  ("entity", "Q4"), ("entity", "Q5")})
+
+    def test_commons_metadata_follows_category_pages_and_keeps_urls_short(self):
+        info = dict(timestamp="2026-01-01T00:00:00Z", sha1="ab", thumburl="t", thumbwidth=500)
+        first = {"continue": {"clcontinue": "1|B"}, "query": {"pages": [
+            dict(pageid=1, title="File:A.jpg", revisions=[{"revid": 3}], imageinfo=[info], categories=[{"title": "Category:A"}]),
+            dict(pageid=2, title="File:B.jpg", revisions=[{"revid": 4}], imageinfo=[info])]}}
+        # A continued response repeats no completed property of a page.
+        second = {"query": {"pages": [dict(pageid=1, title="File:A.jpg", categories=[{"title": "Category:B"}]),
+                                      dict(pageid=2, title="File:B.jpg")]}}
+        facts = dict(commons_metadata(lambda url: second if "clcontinue" in url else first, ["File:A.jpg", "File:B.jpg"]))
+        self.assertEqual(facts["File:A.jpg"]["categories"], ["Category:A", "Category:B"])
+        self.assertEqual(facts["File:B.jpg"]["status"], "present")
+        self.assertEqual([len(chunk) for chunk in title_batches(["File:" + "x" * 2900] * 3 + ["File:A.jpg"] * 60)], [2, 50, 11])
 
     def test_a_file_without_statements_depicts_nothing(self):
         raw = {"entities": {"M1": {"id": "M1", "lastrevid": 5, "type": "mediainfo", "statements": []}}}
