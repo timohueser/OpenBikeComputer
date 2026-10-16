@@ -4,12 +4,15 @@ from __future__ import annotations
 from html import escape
 from html.parser import HTMLParser
 import json
+from urllib.parse import quote
 
 try:
-    from ..landmark_capture import LANGUAGES, PHOTO_FALLBACK, api, batches
+    from ..landmark_capture import BATCH, LANGUAGES, PHOTO_FALLBACK, api, batches
 except ImportError:
-    from landmark_capture import LANGUAGES, PHOTO_FALLBACK, api, batches
+    from landmark_capture import BATCH, LANGUAGES, PHOTO_FALLBACK, api, batches
 
+# Commons answers HTTP 414 to a URL of much more than 8 KB.
+TITLE_BYTES = 6000
 CLAIMS = {"P31", "P279", "P625", "P17", "P131", "P37", "P18", "P373", "P4291", "P8592", "P5252"}
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
@@ -131,10 +134,24 @@ def resolved_pages(raw: dict, requested: list[str]) -> list[tuple[str, dict | No
     return result
 
 
+def title_batches(titles: list[str]):
+    """Batches of at most `BATCH` titles whose encoded names fit in one URL."""
+    chunk, size = [], 0
+    for title in titles:
+        length = len(quote(title)) + 3
+        if chunk and (len(chunk) == BATCH or size + length > TITLE_BYTES):
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(title)
+        size += length
+    if chunk:
+        yield chunk
+
+
 def commons_metadata(fetch, titles: list[str]):
     """Yield each normalised `File:` title with its `commons` fact, or with the reason it has none.
     `fetch(url)` returns the API response or `None`. Category pagination must finish."""
-    for chunk in batches(titles):
+    for chunk in title_batches(titles):
         params = dict(action="query", formatversion=2, titles="|".join(chunk), redirects=1, prop="imageinfo|revisions|categories", rvprop="ids|timestamp", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, iiurlwidth=500, cllimit="max", uselang="en")
         raw = fetch(api("commons.wikimedia.org", **params))
         continuation, seen = (raw or {}).get("continue", {}), set()
@@ -151,7 +168,8 @@ def commons_metadata(fetch, titles: list[str]):
             previous = {page["pageid"]: page for page in raw["query"]["pages"]}
             for page in following.get("query", {}).get("pages", []):
                 old = previous.get(page.get("pageid"))
-                if old is None or old.get("revisions") != page.get("revisions") or old.get("imageinfo") != page.get("imageinfo"):
+                # A continued page repeats only what is not complete, such as its categories.
+                if old is None or any(field in page and page[field] != old.get(field) for field in ("revisions", "imageinfo")):
                     raw = None
                     break
                 old.setdefault("categories", []).extend(page.get("categories", []))
