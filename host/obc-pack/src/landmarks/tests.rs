@@ -37,6 +37,7 @@ fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
             {"path":captures[1].0,"continuation":continuation}
         ]
     }]});
+    let sources = Sources::from(sources);
     let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
     assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg"]);
     let bounded = json!({"commons_categories":[{"title":"Category:Example","complete":false,"limit":100,
@@ -66,6 +67,7 @@ fn commons_category_rejects_missing_or_unconsumed_pages() {
         }]})
     };
     let unconsumed = listing(json!([{"path":path,"continuation":null}]));
+    let sources = Sources::from(Vec::from(sources));
     assert!(category_members(&root, &sources, &unconsumed, &["Category:Example".into()], 2)
         .unwrap_err()
         .contains("unconsumed"));
@@ -115,6 +117,7 @@ fn commons_category_rejects_a_page_after_the_terminal_response() {
             {"path":captures[1].0,"continuation":null}
         ]
     }]});
+    let sources = Sources::from(sources);
     assert!(category_members(&root, &sources, &place, &["Category:Example".into()], 2)
         .unwrap_err()
         .contains("page follows a terminal response"));
@@ -167,6 +170,7 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
                 sha256: hash(&raw),
             },
         ];
+        let sources = Sources::from(Vec::from(sources));
         let result = assets::photo(&root, &sources, &capture, &allowed, "Q1");
         if let Some(error) = error {
             assert_eq!(result.unwrap_err(), error);
@@ -198,6 +202,7 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
         bytes: bytes.len() as u64,
         sha256: hash(&bytes),
     });
+    let sources = Sources::from(sources);
     assert_eq!(
         assets::photo(&root, &sources, &capture, &allowed, "Q1").unwrap_err(),
         "photo_thumbnail_revision_unverified"
@@ -208,8 +213,10 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
     metadata["query"]["pages"]["1"]["imageinfo"][0]["sha1"] = json!("1111111111111111111111111111111111111111");
     let changed = serde_json::to_vec(&metadata).unwrap();
     fs::write(root.join("after.json"), &changed).unwrap();
-    sources[2].bytes = changed.len() as u64;
-    sources[2].sha256 = hash(&changed);
+    let mut list = sources.list;
+    list[2].bytes = changed.len() as u64;
+    list[2].sha256 = hash(&changed);
+    let sources = Sources::from(list);
     assert_eq!(assets::photo(&root, &sources, &proven, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
     fs::remove_dir_all(root).unwrap();
 }

@@ -252,14 +252,15 @@ pub struct Source {
     pub publish_text: Option<bool>,
 }
 
-/// The Wikimedia API captures, which a target does not copy.
-const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+/// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares: a
+/// target keeps no copy of them.
+pub(crate) const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
     /// give the bytes to others. A prepared version is on a target already.
     pub fn copied(&self) -> bool {
-        self.redistribute && self.fetch.kind != FetchKind::Prepared && !NOT_COPIED.contains(&self.id.as_str())
+        self.redistribute && self.fetch.kind != FetchKind::Prepared && !WIKI_INPUTS.contains(&self.id.as_str())
     }
 
     /// The prepared source `terrain-reference/<key>` of the national terrain model `dtm-<key>`, with

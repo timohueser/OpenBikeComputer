@@ -28,10 +28,10 @@ only when its bytes change.
 
 ## Shared landmark and peak content
 
-Landmarks and peaks use the same acquired Wikimedia facts and selection policy. Exact OSM
-links identify subjects. A subject can serve several regions without another download.
-Source revisions identify acquired bytes; a new layer revision rebuilds outputs from retained inputs.
-Pinned compilation works offline. Freshness checks remain separate network work.
+Landmarks and peaks use the same Wikimedia facts and selection policy. The prepared source `wiki`
+holds the facts of every OSM subject in geographic shards, so a region reads only the shards of
+its cells and asks Wikimedia nothing. Exact OSM links identify subjects. A new version of `wiki`
+rebuilds the content and what reads it; a new layer revision rebuilds outputs from the same shards.
 
 A prepared wiki version can cover one region and selected article languages. This limits photo
 acquisition to the subjects of that region. Large input archives still cover the world, but
@@ -43,10 +43,12 @@ articles and source links, then load credited photos online. Routing packages ca
 references without image payloads. An unavailable photo leaves useful text available.
 Landmarks are selectable route stops. Peaks keep their summit coordinates and separate device collection.
 
-An absent optional article or photo does not block a map. A failed source request remains
-unresolved work and blocks the update. This distinction prevents server pressure from appearing
-as missing content. The [shared content contract](src:specs/wikimedia-content.md) defines
-identity, retained inputs and selection outcomes.
+An absent optional article or photo does not block a map, and a fact that the version of `wiki`
+lacks is no content. A failed request while the version is prepared remains unresolved work, so
+server pressure does not appear as missing content. Without a version of `wiki`, the content
+layers block until a person prepares one. The
+[shared content contract](src:specs/wikimedia-content.md) defines identity, retained inputs and
+selection outcomes.
 
 ## Targets and releases
 

@@ -1,5 +1,5 @@
 //! The Commons rounds of `wiki`: the metadata and the 500 px thumbnails of the photos that the
-//! compilers choose for the selected subjects, asked as `device/shared_content.rs` asks a region.
+//! compilers choose for the selected subjects.
 //! Round 0 names the categories of the subjects, round 1 the metadata of their photo candidates,
 //! and round 2 the files that the compilers choose. A thumbnail that fails the checks of the
 //! compilers makes them choose another file, so round 2 repeats for the subjects with new files
@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use obc_data::prepared::Job;
-use obc_data::store::write_atomic;
+use obc_data::store::{hash_file, write_atomic};
 use obc_pack::landmarks::peaks::{self, Summit, SummitSource};
 use obc_pack::landmarks::shared;
 use serde::{Deserialize, Serialize};
@@ -71,11 +71,30 @@ type Ask<'a> = dyn FnMut(u32, Option<&BTreeSet<String>>, &mut Requests) -> Resul
 /// Run the rounds. `wait` is the first wait after "Wikimedia is busy"; it doubles up to two hours.
 /// Gives the number of subjects whose compile failed.
 pub(super) fn rounds(job: &Job, step: &Step, wait: Duration, pin: &Pin) -> Result<usize, String> {
+    restart(&job.state)?;
     let selection: Selection = read_json(&job.state.join("selection.json"))?;
     let peaks = summits(&job.state.join("subjects.ndjson"))?;
     let asking = Asking { job, step, pin, landmarks: &selection.landmarks, peaks: &peaks };
     let mut ask = |round, again: Option<&BTreeSet<String>>, requests: &mut Requests| asking.ask(round, again, requests);
     repeat(&job.state, selection.requests, &mut ask, &mut |file| commons(job, step, file, wait))
+}
+
+/// Start the rounds again when the finished imports changed since they started, as after a parser
+/// fix: their compiles read the facts of those imports. `rounds.json` keeps the SHA-256 of the
+/// `work/imports.json` that `tools.wiki articles` wrote.
+fn restart(state: &Path) -> Result<(), String> {
+    let imports = hash_file(&state.join("work/imports.json"))?.0;
+    let file = state.join("rounds.json");
+    if fs::read_to_string(&file).is_ok_and(|kept| kept == imports) {
+        return Ok(());
+    }
+    for entry in fs::read_dir(state).map_err(|e| format!("{}: {e}", state.display()))?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "failed.json" || (name.starts_with("requests-") && name.ends_with(".json")) {
+            fs::remove_file(entry.path()).map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    write_atomic(&file, imports.as_bytes())
 }
 
 /// Run the rounds in `state`, from the requests of round 0. `requests-<round>.json` keeps what
@@ -183,14 +202,16 @@ impl Asking<'_, '_> {
                 summits.iter().map(|summit| [summit.tags.get("wikidata"), summit.tags.get("wikipedia")]).collect();
             let files = self.facts(&[], &links)?;
             let facts = shared::facts(&files)?;
-            let linked: Vec<(Summit, Vec<String>)> = summits.iter().map(|summit| linked(summit, &facts)).collect();
+            let linked: Vec<(&Summit, Vec<String>)> =
+                summits.iter().map(|summit| (summit, linked(summit, &facts))).collect();
             if round == 1 {
                 let ids: Vec<String> = linked.into_iter().flat_map(|(_, ids)| ids).collect();
                 candidates(&files, &ids, requests)?;
                 continue;
             }
-            let summits: Vec<Summit> =
-                linked.into_iter().filter(|(_, ids)| ids.iter().any(asked)).map(|(summit, _)| summit).collect();
+            // `summits()` gives only linked summits, so round 2 compiles each one and an absent link fact fails.
+            let compiled = |(_, ids): &(&Summit, Vec<String>)| again.is_none() || ids.iter().any(asked);
+            let summits: Vec<Summit> = linked.into_iter().filter(compiled).map(|(summit, _)| summit.clone()).collect();
             if summits.is_empty() {
                 continue;
             }
@@ -234,9 +255,11 @@ impl Asking<'_, '_> {
 }
 
 /// The files that the compilers choose for `items`, in `requests`. When the compile of the chunk
-/// fails, each item compiles alone: an item that fails alone has no photo in this version, and
-/// `failed` gets its `name` and error. When more than half the items of a chunk of more than one
-/// fail, the run stops, as for an I/O error: the cause is in the code or the data, not one subject.
+/// fails, its halves compile, down to single items: an item that fails alone has no photo in this
+/// version, and `failed` gets its `name` and error. A compile reads the facts of the whole chunk,
+/// so halving finds a few failing items in far fewer compiles than one compile per item. When more
+/// than half the items of a chunk of more than one fail, the run stops, as for an I/O error: the
+/// cause is in the code or the data, not one subject.
 fn chosen<T>(
     items: &[T],
     requests: &mut Requests,
@@ -248,11 +271,8 @@ fn chosen<T>(
         Ok(asked) => asked,
         Err(error) => {
             let (mut asked, mut errors) = (Vec::new(), Vec::new());
-            for item in items {
-                match compile(std::slice::from_ref(item))? {
-                    Ok(more) => asked.extend(more),
-                    Err(error) => errors.push((name(item), error)),
-                }
+            for half in items.chunks(items.len().div_ceil(2)) {
+                halved(half, &compile, &name, &mut asked, &mut errors)?;
             }
             if items.len() > 1 && errors.len() * 2 > items.len() {
                 let (count, total) = (errors.len(), items.len());
@@ -271,22 +291,51 @@ fn chosen<T>(
     Ok(())
 }
 
+/// Compile `items`, and on a failure each half again, down to single items.
+fn halved<T>(
+    items: &[T],
+    compile: &impl Fn(&[T]) -> Compiled,
+    name: &impl Fn(&T) -> String,
+    asked: &mut Vec<(String, String)>,
+    errors: &mut Vec<Failure>,
+) -> Result<(), String> {
+    match compile(items)? {
+        Ok(more) => asked.extend(more),
+        Err(error) if items.len() == 1 => errors.push((name(&items[0]), error)),
+        Err(_) => {
+            for half in items.chunks(items.len().div_ceil(2)) {
+                halved(half, compile, name, asked, errors)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The files that the landmark compiler chooses for `ids`, over `view` and `out`.
 fn landmark_photos(
     files: &Files,
     [view, out, world]: [&Path; 3],
     ids: &[String],
 ) -> Result<Vec<(String, String)>, String> {
-    shared::view(files, view, ids)?;
+    complete(shared::view(files, view, ids)?)?;
     let asked = obc_pack::landmarks::photo_requests(&view.join("manifest.json"), world, out, None)?;
     Ok(asked.requests.into_iter().map(|request| (request.qid, request.filename)).collect())
 }
 
 /// The files that the peak compiler chooses for the summits in `view/summits.json`.
 fn peak_photos(files: &Files, [view, out, world]: [&Path; 3]) -> Result<Vec<(String, String)>, String> {
-    shared::peak_view(files, view)?;
+    complete(shared::peak_view(files, view)?)?;
     let content = peaks::compile(&view.join("manifest.json"), world, out, true)?;
     Ok(content.photo_requests.into_iter().map(|request| (request.qid, request.filename)).collect())
+}
+
+/// Refuse a compile over facts that the export lacks. The export reads the database of the version,
+/// so in the producer an absent fact is a fault, not a subject without content.
+fn complete(absent: shared::Absent) -> Result<(), String> {
+    match absent.is_empty() {
+        true => Ok(()),
+        false => Err(format!("the export lacks facts: {}", shared::absent_text(&absent))),
+    }
 }
 
 /// The metadata that round 1 asks for: the P18 files, the lead images of the articles and the
@@ -305,7 +354,9 @@ fn candidates(files: &Files, ids: &[String], requests: &mut Requests) -> Result<
             .extend(claims.filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str()).map(String::from));
         for (language, _) in &languages {
             let Some(title) = entity["sitelinks"][format!("{language}wiki")]["title"].as_str() else { continue };
-            request.commons.extend(present("article", format!("{language}:{title}")).and_then(shared::lead_image));
+            request
+                .commons
+                .extend(present("article", format!("{language}:{title}")).as_ref().and_then(shared::lead_image));
         }
         for category in shared::categories(&entity) {
             let members = present("category", category).map(|fact| fact["members"].clone()).unwrap_or_default();
@@ -328,7 +379,14 @@ pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
             continue;
         };
         let (Some(longitude), Some(latitude)) = (value["box"][0].as_f64(), value["box"][1].as_f64()) else { continue };
-        let tags = serde_json::from_value(tags.clone()).map_err(|e| e.to_string())?;
+        let mut tags: BTreeMap<String, String> = serde_json::from_value(tags.clone()).map_err(|e| e.to_string())?;
+        // The link tags that `subjects` kept: the export has a link fact of each.
+        for kind in ["wikidata", "wikipedia"] {
+            match value[kind].as_str() {
+                Some(link) => tags.insert(kind.into(), link.into()),
+                None => tags.remove(kind),
+            };
+        }
         if peaks::is_summit(&tags) {
             summits.push(Summit { node_id, latitude, longitude, tags });
         }
@@ -336,19 +394,14 @@ pub(super) fn summits(subjects: &Path) -> Result<Vec<Summit>, String> {
     Ok(summits)
 }
 
-/// `summit` with the link tags that have a fact only, and the identities that they link.
-fn linked(summit: &Summit, facts: &BTreeMap<(String, String), Value>) -> (Summit, Vec<String>) {
-    let mut tags = summit.tags.clone();
-    let mut ids = Vec::new();
-    for kind in ["wikidata", "wikipedia"] {
-        let Some(tag) = tags.get(kind) else { continue };
-        match facts.get(&("link".to_string(), format!("{kind}:{tag}"))) {
-            None => drop(tags.remove(kind)),
-            Some(fact) if fact["status"] == "present" => ids.extend(fact["identity"].as_str().map(String::from)),
-            Some(_) => {}
-        }
-    }
-    (Summit { tags, ..*summit }, ids)
+/// The identities that the link tags of `summit` name. A tag without a link fact gives none, and the
+/// compile of the summit counts it as absent and refuses it.
+fn linked(summit: &Summit, facts: &shared::Facts) -> Vec<String> {
+    let identity = |kind: &str| {
+        let fact = facts.get(&("link".to_string(), format!("{kind}:{}", summit.tags.get(kind)?)))?;
+        fact["identity"].as_str().filter(|_| fact["status"] == "present").map(String::from)
+    };
+    ["wikidata", "wikipedia"].into_iter().filter_map(identity).collect()
 }
 
 /// Remove each folder, so that it is new and empty.
@@ -417,20 +470,32 @@ mod tests {
         let compile = |ids: &[&str]| -> Compiled {
             match ids {
                 ["Q2"] => Ok(Err("invalid source summit".into())),
+                ["Q4"] => Ok(complete(shared::Absent::from([("link", 1)])).map(|()| Vec::new())),
                 [id] => Ok(Ok(vec![(id.to_string(), format!("{id}.jpg"))])),
                 _ => Ok(Err("the chunk fails".into())),
             }
         };
         let (mut requests, mut failed) = (Requests::new(), Vec::new());
-        chosen(&["Q1", "Q2", "Q3"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
+        chosen(&["Q1", "Q2", "Q3", "Q4"], &mut requests, &mut failed, |id| id.to_string(), compile).unwrap();
         assert_eq!(requests.keys().collect::<Vec<_>>(), ["Q1", "Q3"]);
-        assert_eq!(failed, [("Q2".to_string(), "invalid source summit".to_string())]);
+        let failure = |id: &str, error: &str| (id.to_string(), error.to_string());
+        let lacks = failure("Q4", "the export lacks facts: link 1");
+        assert_eq!(failed, [failure("Q2", "invalid source summit"), lacks], "a subject without its facts fails");
 
         let stopped = chosen(&["Q1", "Q2", "Q2"], &mut requests, &mut failed, |id| id.to_string(), compile);
         assert!(stopped.unwrap_err().contains("2 of the 3 subjects of a chunk fails"));
+        // One failing subject of 500 costs about 2 × log2(500) compiles, not 500.
+        let compiles = std::cell::Cell::new(0);
+        let one = |ids: &[u32]| -> Compiled {
+            compiles.set(compiles.get() + 1);
+            Ok(if ids.contains(&7) { Err("bad".into()) } else { Ok(Vec::new()) })
+        };
+        let mut lone = Vec::new();
+        chosen(&(0..500).collect::<Vec<u32>>(), &mut Requests::new(), &mut lone, u32::to_string, one).unwrap();
+        assert_eq!((lone, compiles.get()), (vec![failure("7", "bad")], 19));
         let io = |_: &[&str]| -> Compiled { Err("No space left on device".into()) };
         let stopped = chosen(&["Q1"], &mut requests, &mut failed, |id| id.to_string(), io).unwrap_err();
-        assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 1));
+        assert_eq!((stopped.as_str(), failed.len()), ("No space left on device", 2));
     }
 
     #[test]

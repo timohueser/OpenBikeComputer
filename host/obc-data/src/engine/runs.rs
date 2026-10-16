@@ -88,7 +88,6 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         resolved: String,
-        acquisition: Option<serde_json::Value>,
         /// The size of the files that the fetch gave, downloaded or found in the store.
         bytes: u64,
         wall_ms: u64,
@@ -98,7 +97,6 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         error: String,
-        acquisition: Option<serde_json::Value>,
     },
     StepStarted {
         step: String,
@@ -332,7 +330,7 @@ impl Run {
                 status.fetch(source, version, params);
                 line
             }
-            Event::FetchFinished { source, version, params, resolved, acquisition, bytes: size, wall_ms } => {
+            Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms } => {
                 let line = format!(
                     "{} fetched {resolved} in {}, {}",
                     fetched(&source, &version, &params),
@@ -342,13 +340,12 @@ impl Run {
                 status.bytes_fetched += size;
                 let fetch = status.fetch(source, version, params);
                 (fetch.bytes, fetch.wall_ms, fetch.resolved) = (Some(size), Some(wall_ms), Some(resolved));
-                fetch.acquisition = acquisition;
                 line
             }
-            Event::FetchFailed { source, version, params, error, acquisition } => {
+            Event::FetchFailed { source, version, params, error } => {
                 let line = format!("{} fetch failed: {error}", fetched(&source, &version, &params));
                 let fetch = status.fetch(source, version, params);
-                (fetch.error, fetch.acquisition) = (Some(error), acquisition);
+                fetch.error = Some(error);
                 line
             }
             Event::StepStarted { step } => {
@@ -708,8 +705,7 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        let mut acquisition = None;
-        match fetch::fetch_recorded(root, store, http, request, names, Some(&mut acquisition)) {
+        match fetch::fetch_recorded(root, store, http, request, names) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -718,7 +714,6 @@ impl Run {
                     version,
                     params,
                     resolved: snapshot.version.clone(),
-                    acquisition,
                     bytes,
                     wall_ms,
                 })?;
@@ -726,7 +721,7 @@ impl Run {
             }
             Err(error) => {
                 let mut failed = format!("fetch {source}@{version}: {error}");
-                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error, acquisition }) {
+                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error }) {
                     failed += &format!("; the run could not record the failure: {journal}");
                 }
                 Err(failed)
@@ -931,8 +926,6 @@ pub struct RunFetch {
     pub source: String,
     pub version: String,
     pub resolved: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,

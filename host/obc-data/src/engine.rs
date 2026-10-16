@@ -95,7 +95,8 @@ impl Client {
         }
     }
 
-    pub(crate) fn sorted(&self) -> Self {
+    /// The client with its paths sorted and without duplicates, as a release records it.
+    pub fn sorted(&self) -> Self {
         match self {
             Self::Paths(paths) => {
                 let mut paths = paths.clone();

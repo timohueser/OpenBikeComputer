@@ -1,8 +1,8 @@
 # Shared Wikimedia content
 
-This contract defines acquired landmark and peak content. The regional capture and
-compiled device formats in [obc-data](obc-data.md) and [OBCM](OBCM_Spec.md) remain
-separate outputs. Shared acquisition uses the existing Store and source release pins. Normal preparation uses this shared boundary. Retained regional captures are read-only adoption inputs.
+This contract defines the landmark and peak content: the compact facts that the prepared source
+[`wiki`](#the-wiki-source) holds, and how the compilers read them. The compiled device formats in
+[obc-data](obc-data.md) and [OBCM](OBCM_Spec.md) are separate outputs.
 
 ## Policy owners
 
@@ -69,42 +69,21 @@ choose; other thumbnails are not published content.
 Full API envelopes, rejected image payloads and request logs are not permanent
 shared content. Required proofs and notices must survive compaction.
 
-The API/Store seam has three operations within the existing fetch machinery:
-
-1. Resolve explicit links to canonical subjects and retain the identity proofs.
-2. Acquire absent or stale entity, dependency, article and image inputs. Reuse
-   pins across regions. Retain each successful response before the next request.
-3. Compile a pinned subject set with regional OSM associations and compiler policy.
-   This operation makes no Wikimedia request. Missing pins fail preparation.
+The producer of `wiki` resolves explicit links to canonical subjects and retains the identity
+proofs. It acquires the entity, dependency, article and image inputs of the subjects that the
+compilers select, and retains each successful response before the next request. A region
+compiles from the shards of a `wiki` version, with its OSM associations and the compiler policy,
+and makes no Wikimedia request. A fact that the version lacks is no content; the step counts it.
 
 Acquisition returns confirmed present or confirmed missing facts. Transport
 failure, incomplete required identity, language-link or dependency pagination,
 and server pressure are unresolved work, never confirmed missing content. An
-interrupted or failed operation cannot publish a complete capture. The next run reuses its successful responses.
+interrupted or failed run of the producer publishes no version. The next run reuses its
+successful responses.
 
-### Acquisition adapter bytes
+### Compact facts
 
-`tools/wikimedia_acquire.py` is an adapter for a retained Store operation. Its
-caller supplies `--work`, `--out`, `--requests` and `--inputs` paths. It does not
-write Store objects or maintain a separate permanent index.
-
-The request object has `check_id`, a stable operation token, and `refresh`, a
-boolean. Optional arrays name `entities` by QID, `links` by
-`wikidata:<QID>` or `wikipedia:<language>:<title>`, `articles` by objects with
-`language` and `title`, and `commons`, `categories`
-and retained `files` by exact filename or category title. Entity acquisition
-includes the shared class closure and bounded locale dependencies.
-
-The input array contains admitted pin records. Each record has `kind`, `key`,
-`status`, `checked_at`, `path` and `sha256`. Present versioned facts also have
-`identity` and `revision`. `path` is the resolved Store object path. File inputs
-also have `asset_path`, the resolved image object path. The adapter verifies
-input digests before acquisition.
-
-The output `manifest.json` has `schema: 1`, `complete`, `records`, `assets` and
-`failures`. Output pin paths are relative to `--out`. Each compact JSON object
-repeats its kind, key, status, identity and revision where present. Check times
-stay in the manifest. A check without changed content keeps the content digest.
+Each compact JSON object repeats its kind, key, status, identity and revision where present.
 
 | Kind | Compact fact |
 | --- | --- |
@@ -122,9 +101,9 @@ describe its scope. Required metadata pagination must finish; a bounded category
 response may retain continuation without following it.
 
 An image asset has relative `path`, `sha256`, `bytes`, `url` and `input` fields.
-`input` is `thumbnail500` or a validated retained `original`. Source snapshots
-own the JSON facts and every asset they reference. Temporary request envelopes
-stay under `--work`. They are not source snapshot or publication outputs.
+`input` is `thumbnail500` or a validated retained `original`. The shards hold the
+JSON facts and every asset that they reference. Request envelopes stay in the work directory of
+the producer; no version holds them.
 
 An article pin records the resolved page's actual Wikidata item and alias proof.
 A redirect to another subject is a present source fact. Compilation rejects that
@@ -137,16 +116,6 @@ A thumbnail file fact retains `revision_before` and `revision_after` witnesses.
 Both match the canonical filename, file timestamp and SHA-1, required credit
 fields, and description revision when present. A retained thumbnail without both
 coherent witnesses does not become a shared file pin.
-
-The adapter returns a nonzero exit status for unresolved work. It retains each
-successful compact fact before another request. A retry with the same `check_id`
-reuses those successes. A new freshness check uses a new token. Compilation
-uses admitted pins and makes no Wikimedia requests.
-
-`--adopt` accepts a retained capture root. It validates source digests and article
-and image revision evidence without changing the capture. A response without a
-source revision remains capture evidence. It does not become a versioned shared
-pin. Missing revision information requires a bounded acquisition check.
 
 ## Selection and projections
 
@@ -201,15 +170,14 @@ the compilers read. A fact that the version lacks is no content. A member
 `content/assets/<sha256>` is the 500 px thumbnail of a photo that the compilers choose for a
 subject; the device cell steps convert it to the device format.
 
-The producer asks Commons in rounds, as a region asks: the categories of the subjects that the
-compilers select, then the metadata of their photo candidates (P18, the lead images of their
+The producer asks Commons in rounds: the categories of the subjects that the compilers select, then the metadata of their photo candidates (P18, the lead images of their
 articles and the members of their categories), then the thumbnails of the files that the
 compilers choose. A thumbnail that fails the checks of a compiler makes it choose another file,
 so the last round repeats for the subjects with new files until it asks no new file. Without
 published text, each article of the version is a fact with its key and the status `missing`: the
-compilers of the producer and of the readers see no article, and choose no lead image. Each round asks only for
-what the rounds before have not answered, with the
-limits of the acquisition adapter: one request at a time, at most four a second, `maxlag` 5,
+compilers of the producer and of the readers see no article, and choose no lead image. Each
+round asks only for what the rounds before have not answered, with these limits: one request at
+a time, at most four a second, `maxlag` 5,
 `Retry-After`, three backoffs on 429 and 503, and media at 3 MB/s. When Wikimedia is busy, the
 producer waits ten minutes, then twice as long each time up to two hours, and asks again. A
 subject whose compile fails alone has no photo in the version: the producer logs it and
@@ -227,31 +195,11 @@ and at most the file bound in `photo_policy.fallback` of `policy.json`.
 Continuation beyond that deliberate candidate bound is a complete bounded outcome.
 The record states the limit reached. Files require subject evidence and valid credits.
 
-The Store keeps inputs reachable from pinned releases, active plans and resumable
-operations under its existing retention rules. Compact shared records and final
-device assets use bounded publication bundles. Bundles retain their source pins
-and licence identities. Other thumbnails, full originals, rejected candidates
-and per-request logs are not R2 publication outputs. Cleanup follows Store
-reachability; content does not create an independent permanent history cache.
-
-Normal intermediate content layers publish `shared-content/` bundles of at most
-16 MiB, the existing compiler JSON input bound. Each bundle keeps exact compact
-fact bytes, their SHA-256 and source pins. Entity dependency facts, article aliases,
-Commons description metadata and MediaInfo statements remain reusable.
-Local image inputs are excluded. A target keeps no copy of the Wikimedia API
-captures; ownership for Store reachability does not select a source mirror.
-Final device images remain publication outputs of the device cell layers.
-
-A warm pinned bake needs no network. In the same Store, a transform rebuild reuses
-reachable local conversion inputs. A new machine can restore compact facts from
-publication bundles. It needs image acquisition when conversion pixels are absent.
-An available final device image does not promise an offline source-pixel rebuild.
-
-Expired identity inputs remain available for revision checks. A separate refresh
-stage checks those roots and their bounded dependencies. Unchanged revisions reuse
-content bytes. Fresh and missing identities use the ordinary acquisition stage.
-An explicit move carries refresh intent outside the identity key and uses a new
-operation check id. Failed source checks block preparation; they are not missing facts.
+A target holds the versions of `wiki`. A bake reads the shards of the version that its target
+reads, so a warm bake needs no network, and another machine gets the facts and the thumbnails
+from the target. A new version refreshes the facts: the content layers and the layers that read
+them bake again. Other thumbnails, full originals, rejected candidates and request logs are not
+published. The device cell layers publish the final device images.
 
 `Content.aliases` maps exact Wikidata aliases to canonical subject ids.
 `Content.wikipedia_aliases` maps proven `language:title` aliases of accepted article
@@ -261,9 +209,3 @@ Online photo credits omit device transform notices. A photo reference includes
 `file_identity`, `page_revision` and `file_revision`; incomplete provenance gives a
 source-page link. Consumers recheck that identity before displaying online photos.
 A mutable CDN URL is not a permanent certificate for future bytes.
-
-Operation fetch results report newly issued HTTP attempts and newly read response
-body bytes. API body bytes are counted before gzip decoding. Media body bytes
-are counted as the HTTP client reads them. These are payload bytes, not total
-network traffic. Cached and adopted historical totals remain unknown. The existing
-fetch `bytes` field reports retained output size and does not measure transfer.

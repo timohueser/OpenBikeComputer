@@ -19,7 +19,7 @@ fn attribution(
     Ok(Attribution { source_url, revision, license_url, original_notices })
 }
 
-pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: &Value) -> Result<Article, String> {
+pub(super) fn article(root: &Path, sources: &Sources, entity: &Value, capture: &Value) -> Result<Article, String> {
     if capture["compact"] == true {
         let raw = json_pinned(root, sources, string(capture, "path")?)?;
         let language = string(&raw, "language")?;
@@ -106,7 +106,7 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     let notices_selector = Selector::parse("#footer-info-copyright, .mw-parser-output .licensetpl, .mw-parser-output .attribution, .mw-parser-output .source-attribution").expect("fixed selector");
     let notices = document.select(&notices_selector).map(|item| item.inner_html()).collect::<Vec<_>>().join("\n");
     let url = string(capture, "url")?.to_owned();
-    if !sources.iter().any(|source| source.path == capture["html_path"] && source.url == url) {
+    if !capture["html_path"].as_str().and_then(|path| sources.get(path)).is_some_and(|source| source.url == url) {
         return Err("article_source_mismatch".into());
     }
     let attribution = attribution(url, revision.to_string(), license, notices)?;
@@ -192,7 +192,7 @@ pub(super) fn described(metadata: &Value) -> Result<(&Value, String), String> {
 
 /// The evidence is read apart from the photo itself: ranking has to order every candidate before
 /// the compiler asks any one of them for pixels.
-pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Result<Signals, String> {
+pub(super) fn signals(root: &Path, sources: &Sources, capture: &Value) -> Result<Signals, String> {
     let metadata = json_pinned(root, sources, string(capture, "metadata_path")?)?;
     let (page, filename) = described(&metadata)?;
     let categories = page["categories"]
@@ -223,7 +223,7 @@ pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Resul
 
 pub(super) fn photo(
     root: &Path,
-    sources: &[Source],
+    sources: &Sources,
     capture: &Value,
     allowed: &BTreeSet<String>,
     qid: &str,
@@ -236,7 +236,7 @@ pub(super) fn photo(
     let info = &page["imageinfo"][0];
     let attribution = photo_attribution(info)?;
     let input_path = string(capture, "path")?;
-    let source = sources.iter().find(|source| source.path == input_path).ok_or("photo_source_missing")?;
+    let source = sources.get(input_path).ok_or("photo_source_missing")?;
     let thumbnail = info.get("thumburl").and_then(Value::as_str).is_some_and(|url| source.url == url);
     if source.url != string(info, "url")? && !thumbnail {
         return Err("photo_identity_mismatch".into());

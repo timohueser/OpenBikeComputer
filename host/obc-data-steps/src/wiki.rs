@@ -348,13 +348,14 @@ mod tests {
         fs::write(&candidates, lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
         // The map takes a named peak as a summit, and an unnamed one not: no round asks for it.
         let subjects = temp.0.join("subjects.ndjson");
-        let peak =
-            |osm: &str, tags: Value| json!({"osm": osm, "peak": true, "box": [8.3, 46.5, 8.3, 46.5], "tags": tags});
-        let named = peak("n7", json!({"natural": "peak", "name": "Testhorn", "wikidata": "Q7"}));
+        let peak = |osm: &str, tags: Value| json!({"osm": osm, "wikidata": tags["wikidata"], "peak": true, "box": [8.3, 46.5, 8.3, 46.5], "tags": tags});
+        // `subjects` keeps no `wikipedia` link without a language: a summit takes the links it kept.
+        let named = peak("n7", json!({"natural": "peak", "name": "Testhorn", "wikidata": "Q7", "wikipedia": "Horn"}));
         let unnamed = peak("n8", json!({"natural": "peak", "wikidata": "Q8"}));
         fs::write(&subjects, format!("{named}\n{unnamed}\n")).unwrap();
         let summits = commons::summits(&subjects).unwrap();
         assert_eq!(summits.iter().map(|summit| summit.node_id).collect::<Vec<_>>(), [7]);
+        assert_eq!(summits[0].tags.get("wikipedia"), None);
         let selection = select(&candidates, &summits).unwrap();
         assert_eq!((selection.landmarks, selection.peaks), (["Q1".into()].into(), ["Q7".into()].into()));
         let categories: Vec<(&String, &BTreeSet<String>)> =
@@ -376,7 +377,8 @@ mod tests {
     "#;
 
     /// `tools.wiki` as a script that logs each step to `calls`: `fail-<step>` fails a step, `import`
-    /// keeps its inputs, `candidates` writes one castle, `commons` is busy once after `busy-once`,
+    /// keeps its inputs, `candidates` writes one castle, `articles` writes the file `imports` as its
+    /// finished imports, `commons` is busy once after `busy-once`,
     /// `facts` gives no fact, so the compile of the castle fails, and `shards` writes two shards
     /// that `done.json` does not name, and the index.
     const TOOLS: &str = r#"step=$1; shift; echo "$step" >> calls
@@ -389,7 +391,7 @@ subjects) echo '{"osm":"n1","wikidata":"Q1"}' > "$out" ;;
 import) cp "$inputs" inputs.seen ;;
 candidates) printf '%s\n' '{"class":{"kind":"entity","key":"Q23413","status":"present","entity":{"claims":{}}}}' \
     '{"subject":{"kind":"entity","key":"Q1","status":"present","entity":{"claims":{"P31":[{"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}]}}}}' > "$out" ;;
-articles) cp "$selected" selected.seen ;;
+articles) cp "$selected" selected.seen; mkdir -p "$work"; cp imports "$work/imports.json" 2>/dev/null || : > "$work/imports.json" ;;
 shards)
     cp "$done" done.seen; cp "$counts" counts.seen; echo "$*" > shards.args; mkdir -p "$out/cells"
     for shard in common.tar.zst cells/0300-0262.tar.zst; do grep -q "$shard" "$done" || echo "$shard" > "$out/$shard"; done
@@ -487,7 +489,7 @@ esac
             assert!(fs::read_to_string(root.join(format!("{step}.args"))).unwrap().contains("--no-text"), "{step}");
         }
         let counts: Value = read_json(&root.join("counts.seen")).unwrap();
-        assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no photo");
+        assert_eq!(counts, json!({"photo_compile_failures": 1}), "the castle has no facts");
         let Target::Dir(dir) = &target else { unreachable!() };
         let version = dir.join("sources/wiki/2026-10-01");
         for path in ["common.tar.zst", "cells/0300-0262.tar.zst", "index.json"] {
@@ -501,6 +503,12 @@ esac
         assert_eq!(calls, "import\narticles\ncommons\ncommons\ncommons\nshards\n");
         let done: BTreeMap<String, Value> = read_json(&root.join("done.seen")).unwrap();
         assert_eq!(done.keys().collect::<Vec<_>>(), ["cells/0300-0262.tar.zst", "common.tar.zst", "index.json"]);
+
+        // An import that reads its input again, as after a parser fix, starts the rounds again.
+        fs::write(root.join("imports"), r#"[["wikipedia:en","ab",2]]"#).unwrap();
+        let (done, calls) = prepare(&sources);
+        done.unwrap();
+        assert_eq!(calls, "import\narticles\ncommons\nfacts\ncommons\nfacts\ncommons\nshards\n");
 
         // A copy of a dump with another modification time is the same dump.
         let pages = fs::File::options().write(true).open(dumps.join("wikidatawiki-20260915-page.sql.gz")).unwrap();

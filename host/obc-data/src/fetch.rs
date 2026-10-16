@@ -6,18 +6,14 @@ pub mod http;
 pub mod osm;
 mod tools;
 pub mod upstream;
-pub mod wikimedia;
 
 pub use tools::basemap_jar;
-
-/// Where a fetch writes what it requested upstream, for the run journal.
-pub(crate) type Acquisition<'a> = &'a mut Option<serde_json::Value>;
 
 use std::path::{Path, PathBuf};
 
 use self::http::{Expect, Http};
 use crate::date;
-use crate::sources::{FetchKind, Registry, Source, VersionScheme};
+use crate::sources::{FetchKind, Registry, Source, VersionScheme, WIKI_INPUTS};
 use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
@@ -36,7 +32,7 @@ pub struct Request<'a> {
 /// holds the requested files, in the order of the request. A request with `params` is recorded,
 /// so a step input with the same params knows its files without the network.
 pub fn fetch(root: &Path, store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
-    fetch_recorded(root, store, http, request, &[], None)
+    fetch_recorded(root, store, http, request, &[])
 }
 
 /// [`fetch`], with the names of the files of a prepared version that a step reads: a fetch of a
@@ -47,10 +43,9 @@ pub(crate) fn fetch_recorded(
     http: &Http,
     request: &Request,
     names: &[String],
-    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let _using = store.using()?;
-    let snapshot = fetch_files(root, store, http, request, names, acquisition)?;
+    let snapshot = fetch_files(root, store, http, request, names)?;
     if !request.params.is_empty() {
         let files = snapshot.files.iter().map(|file| file.name.clone()).collect();
         let record = Requested { version: snapshot.version.clone(), params: request.params.clone(), files };
@@ -65,7 +60,6 @@ fn fetch_files(
     http: &Http,
     request: &Request,
     names: &[String],
-    acquisition: Option<Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
@@ -77,7 +71,11 @@ fn fetch_files(
         FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => {
             Err(format!("source `{}` is read through `terrain-reference/{}`", source.id, &source.id["dtm-".len()..]))
         }
-        FetchKind::Capture => capture::run(root, store, request, acquisition),
+        // Only the producer of `wiki` reads the Wikimedia sources, on the machine that prepares.
+        FetchKind::Capture if WIKI_INPUTS.contains(&source.id.as_str()) => {
+            Err(format!("source `{}` is read through `wiki`", source.id))
+        }
+        FetchKind::Capture => capture::run(root, store, request),
         FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
             source.id,
@@ -521,25 +519,6 @@ pub(crate) mod tests {
 
     fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         headers.iter().find(|(n, _)| n == name).map(|(_, value)| value.as_str())
-    }
-
-    #[test]
-    fn a_thumbnail_bracket_never_resumes_bytes_from_an_earlier_attempt() {
-        let scratch = Scratch::new("fresh-thumbnail");
-        let store = Store::at(&scratch.0);
-        let (url, log) = serve(|_, headers| {
-            assert!(header(headers, "range").is_none());
-            whole(b"current thumbnail")
-        });
-        let key = &sha256_hex(url.as_bytes())[..32];
-        std::fs::create_dir_all(store.partial("root").parent().unwrap()).unwrap();
-        std::fs::write(store.partial(&format!("{key}.part")), b"unproven old bytes").unwrap();
-        std::fs::write(store.partial(&format!("{key}.validator")), b"old validator").unwrap();
-        let http = quick();
-        let download = http.fresh_download(&store, &url).unwrap();
-        assert_eq!(std::fs::read(download.object).unwrap(), b"current thumbnail");
-        assert_eq!(log.lock().unwrap().len(), 1);
-        assert_eq!(http.metrics(), (1, 17));
     }
 
     pub(crate) fn quick() -> Http {
@@ -1223,36 +1202,6 @@ pub(crate) mod tests {
         let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&tooling_root(), &store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
-    }
-
-    /// A Wikimedia capture names its inputs by digest, so its params are the same on every
-    /// machine; only the `obc data` binary, which links the compiler, can select its places.
-    #[test]
-    fn regional_wikimedia_capture_never_acquires_missing_facts() {
-        let scratch = Scratch::new("wikimedia");
-        let store = Store::at(&scratch.0);
-        let mut wikidata = located(FetchKind::Capture, "https://example.org/wikidata");
-        wikidata.id = "wikidata".into();
-        let file = store.partial("poly");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, "poly").unwrap();
-        let poly = format!("sha256:{}", sha256_hex(b"poly"));
-        store.insert(&file, &sha256_hex(b"poly")).unwrap();
-        let params = |collection: &str, osm: &str| {
-            let pairs =
-                [("collection", collection), ("area", "europe/test"), ("osm", osm), ("poly", &poly), ("code", "0")];
-            pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
-        };
-        let fails = |params| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &wikidata, version: None, params },
-            )
-            .unwrap_err()
-        };
-        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("regional Wikimedia capture is read-only"));
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
