@@ -53,6 +53,29 @@ it("starts exactly the shown args with --expect, and only after the format chang
     }
 });
 
+it("a target without a region gets its first region from the area picker", async () => {
+    const fetch = vi.fn(async (_url: string, init: { body: string }) => {
+        const args: string[] = JSON.parse(init.body).args;
+        if (args[0] === "areas") return new Response(JSON.stringify({ exit: 0, output: areas }));
+        if (!args.includes("--region")) {
+            const error = { code: "usage", message: "target local has no region", fix: "Name one" };
+            return new Response(JSON.stringify({ exit: 2, output: { error } }));
+        }
+        return new Response(JSON.stringify({ exit: 0, output: review }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const screen = mount(Review, { target: document.body, props: { ...props, layers: [], area: null } });
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain("target local has no region"));
+        await vi.waitFor(() => button("Germany").click());
+        await vi.waitFor(() => expect(document.body.textContent).toContain(`Review ${review.id}`));
+        const reviews = fetch.mock.calls.map(([, init]) => JSON.parse(init.body).args).filter((args) => args[0] !== "areas");
+        expect(reviews.at(-1)).toEqual(["update", "local", "--region", "europe/germany", "--dry-run"]);
+    } finally {
+        await unmount(screen);
+    }
+});
+
 it("an edit becomes a flag of the next review", async () => {
     const posted = server();
     const screen = mount(Review, { target: document.body, props: { ...props, flags: [["--add", "sun"]] } });
