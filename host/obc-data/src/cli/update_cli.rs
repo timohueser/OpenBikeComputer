@@ -483,7 +483,19 @@ pub(super) fn prepare(
     let downloads = downloads(store, &listed.steps, &update, &copies);
     let machine = match machine {
         Some(machine) => machine.clone(),
-        None => MachineCheck::this(store)?,
+        None => {
+            let mut machine = MachineCheck::this(store)?;
+            let baked: BTreeSet<&str> = update.plan.builds().map(|build| build.step.as_str()).collect();
+            let python = listed.steps.iter().filter(|step| baked.contains(step.name.as_str()));
+            machine.python_missing = crate::engine::python_missing(
+                root,
+                python.filter_map(|step| match &step.run {
+                    crate::engine::Run::Python(argv) => Some(argv.as_slice()),
+                    _ => None,
+                }),
+            );
+            machine
+        }
     };
     let uploads = new_copies(store, &listed.steps, &update, serving.as_ref(), &sources)?;
     let mut review = review::review(review::Parts {

@@ -893,7 +893,8 @@ data. It contains no deployment probe, device catalogue snapshot or source mirro
 
 A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-groups
 --no-python-downloads --group <group> python <entry> --step` in the repository root.
-`uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
+`obc doctor --install` prepares the groups on a machine. A plan refuses to bake a step whose
+group does not start offline, and a capture fails before it starts. The fixed hash seed keeps the order
 of a set out of the bytes. A credit that it writes comes in its options.
 
 ### Service runtimes

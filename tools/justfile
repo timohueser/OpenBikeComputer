@@ -948,7 +948,7 @@ suites *args:
     source "{{lib}}"; obc_init
     _run uv run --locked --project "$OBC_ROOT" --group dev python "$OBC_TOOLS/test_plan.py" "$@"
 
-# --install fixes what it can: rustup targets, just, probe-rs, the venv, and GEOS / RISC-V
+# --install fixes what it can: rustup targets, just, probe-rs, the venv, the Python groups of obc data, and GEOS / RISC-V
 # gcc via scripts/.
 [doc("Check your toolchain and report what's missing. Args: [--install]")]
 [group('build')]
@@ -973,6 +973,9 @@ doctor *args:
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck uv       "uv (Python groups)"         'command -v uv'     'install uv, then run obc doctor --install'
     ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    # The Python steps of `obc data` run these groups offline; a group in the uv cache installs offline.
+    data_groups=(--no-default-groups --group planner-maps --group planner-climate --group planner-snow --group planner-sun --group planner-search --group terrain-reference)
+    ck pydata   "Python groups (obc data)"  'uv sync --locked --inexact --offline --no-python-downloads --project "$OBC_ROOT" "${data_groups[@]}"' 'obc doctor --install'
     if python3 "$OBC_TOOLS/fixtures.py" exists grimsel; then _ok "default sim scenario → grimsel"
     else _err "fixture catalog has no grimsel scenario"; MISSING+=(fixtures); fi
 
@@ -990,6 +993,7 @@ doctor *args:
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       venv)     _run uv sync --locked --inexact --project "$OBC_ROOT" --group builder ;;
+      pydata)   _run uv sync --locked --inexact --project "$OBC_ROOT" "${data_groups[@]}" ;;
       uv)       _err "install uv via your system package manager" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
