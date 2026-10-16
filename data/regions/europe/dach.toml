@@ -1,6 +1,0 @@
-name = "Germany, Austria, Switzerland"
-kind = "geofabrik"
-areas = ["europe/dach"]
-# Geofabrik's index names no country for this combined extract.
-countries = ["AT", "CH", "DE", "LI"]
-time_zone = "Europe/Berlin"

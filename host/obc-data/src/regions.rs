@@ -337,8 +337,9 @@ mod tests {
     #[test]
     fn the_checked_in_regions_load() {
         let regions = Regions::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
-        let dach = regions.leaves("dach").unwrap();
-        assert_eq!(dach, ["europe/austria", "europe/germany", "europe/switzerland"]);
+        let dach = regions.get("dach").unwrap();
+        assert_eq!(dach.area, Area::Geofabrik { areas: vec!["europe/dach".into()] });
+        assert_eq!(dach.countries, ["DE", "AT", "CH", "LI"]);
         assert_eq!(
             regions.get("europe/germany/baden-wuerttemberg").unwrap().area,
             Area::Geofabrik { areas: vec!["europe/germany/baden-wuerttemberg".into()] }
