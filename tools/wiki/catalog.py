@@ -28,8 +28,11 @@ QID = re.compile(r"Q[1-9][0-9]*")
 ITEM = re.compile(rb'"id":"(Q[1-9][0-9]*)"')
 SITELINK = re.compile(rb'"site":"([^"]+)","title":"((?:[^"\\]|\\.)*)"')
 NAME = re.compile(rb'"name":"((?:[^"\\]|\\.)*)"')
+# Raise the revision of an import kind in the change that changes what it keeps of the same input:
+# a work directory then reads that input again.
+REVISIONS = {"wikipedia": 2}
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, sha256 TEXT, complete INTEGER);
+CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, sha256 TEXT, complete INTEGER, revision INTEGER NOT NULL DEFAULT 1);
 -- One row per shard cell of a subject; cell '' is the common shard.
 CREATE TABLE IF NOT EXISTS subjects(osm TEXT, cell TEXT, wikidata TEXT, wikipedia TEXT, peak INTEGER, PRIMARY KEY(osm,cell)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS facts(kind TEXT, key TEXT, revision INTEGER, data BLOB, PRIMARY KEY(kind,key)) WITHOUT ROWID;
@@ -52,6 +55,9 @@ def connect(work: Path):
     db.execute("PRAGMA cache_size=-262144")
     db.execute("PRAGMA temp_store=FILE")
     db.executescript(SCHEMA)
+    # The imports of a work directory made before their revisions are revision 1.
+    if "revision" not in {row[1] for row in db.execute("PRAGMA table_info(imports)")}:
+        db.execute("ALTER TABLE imports ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
     return db
 
 
@@ -82,22 +88,27 @@ def failed(db, kind: str, key: str) -> bool:
     return db.execute("SELECT 1 FROM failures WHERE kind=? AND key=?", (kind, key)).fetchone() is not None
 
 
+def revision(name: str) -> int:
+    return REVISIONS.get(name.split(":")[0], 1)
+
+
 def complete(db, name: str) -> str | None:
-    """The SHA-256 of the input that import `name` finished with."""
-    row = db.execute("SELECT sha256 FROM imports WHERE id=? AND complete=1", (name,)).fetchone()
+    """The SHA-256 of the input that import `name` finished with, at its current revision."""
+    row = db.execute("SELECT sha256 FROM imports WHERE id=? AND complete=1 AND revision=?", (name, revision(name))).fetchone()
     return row[0] if row else None
 
 
 def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None, source: Path | None = None):
-    """Run import `name` over `rows` once. A finished import with the same input is not repeated;
-    an interrupted one starts again; a changed input never resumes. The progress of an import of
-    the dump `source` tells the share of it read and the time left."""
-    previous = db.execute("SELECT sha256,complete FROM imports WHERE id=?", (name,)).fetchone()
+    """Run import `name` over `rows` once. A finished import with the same input and revision is
+    not repeated; an interrupted one, or one of an older revision, starts again; a changed input
+    never resumes. The progress of an import of the dump `source` tells the share of it read and
+    the time left."""
+    previous = db.execute("SELECT sha256 FROM imports WHERE id=?", (name,)).fetchone()
     if previous and previous[0] != digest:
         raise ValueError(f"{name}: input changed; use a new work directory")
-    if previous and previous[1]:
+    if complete(db, name):
         return
-    db.execute("INSERT OR REPLACE INTO imports VALUES(?,?,0)", (name, digest))
+    db.execute("INSERT OR REPLACE INTO imports VALUES(?,?,0,?)", (name, digest, revision(name)))
     db.commit()
     count, start = 0, time.monotonic()
     for count, row in enumerate(rows, 1):
@@ -354,7 +365,9 @@ def article(raw: dict, language: str) -> dict:
         raise ValueError(f"snapshot article lacks revision-bound HTML or licence: {language}:{title}")
     proof = Proof()
     proof.feed(html.partition("</head>")[0])
-    match = re.fullmatch(rf"https://{re.escape(language)}\.wikipedia\.org/wiki/Special:Redirect/revision/([1-9][0-9]*)", proof.about or "")
+    # Newer Parsoid HTML writes a protocol-relative URL and the local name of Special:Redirect,
+    # such as `//de.wikipedia.org/wiki/Spezial:Weiterleitung/revision/N`.
+    match = re.fullmatch(rf"(?:https:)?//{re.escape(language)}\.wikipedia\.org/wiki/[^/:]+:[^/]+/revision/([1-9][0-9]*)", proof.about or "")
     if not match or proof.pageid != str(pageid):
         raise ValueError("rendered HTML has no matching page and revision proof")
     revision = int(match[1])
