@@ -150,7 +150,7 @@ export interface Review {
     sources: { source: string; from: string | null; to: string }[];
     /** The outputs that the release keeps by reference. */
     kept: number;
-    fetches: { source: string; version: string; bytes: number | null }[];
+    fetches: { source: string; version: string; params: [string, string][]; bytes: number | null }[];
     bakes: { step: string }[];
     downloads: { files: number; bytes: number };
     cost: {

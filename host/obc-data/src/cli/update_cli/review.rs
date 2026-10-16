@@ -148,13 +148,21 @@ pub struct MachineCheck {
     pub store_free_bytes: Option<u64>,
     /// Why this machine cannot do the update; empty when it can, or cannot tell.
     pub refusals: Vec<String>,
+    /// The tools that the planner steps need and this machine lacks, as `obc data setup` names them.
+    #[serde(skip)]
+    pub planner_missing: Vec<String>,
 }
 
 impl MachineCheck {
     /// This machine: its memory, and the free bytes of the disk of `store`.
     pub fn this(store: &Store) -> Result<Self, String> {
         let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
-        Ok(MachineCheck { memory_bytes: Limits::machine().memory_bytes, store_free_bytes: free, refusals: Vec::new() })
+        Ok(MachineCheck {
+            memory_bytes: Limits::machine().memory_bytes,
+            store_free_bytes: free,
+            refusals: Vec::new(),
+            planner_missing: crate::cli::setup_cli::planner_missing(),
+        })
     }
 }
 
@@ -374,7 +382,8 @@ pub fn review(parts: Parts) -> Review {
     }
     let own: Vec<&Build> = bakes.iter().filter(|build| !in_process.contains(build.step.as_str())).collect();
     let mut machine = machine.clone();
-    machine.refusals = refusals(&machine, &own, cost.store_bytes);
+    let planner = bakes.iter().any(|build| build.step.starts_with("planner/"));
+    machine.refusals = refusals(&machine, (&own, planner), cost.store_bytes);
 
     let changes_settings = serving.is_some_and(|serving| serving.settings != *settings);
     let switches = !changes.is_empty() || changes_settings;
@@ -410,10 +419,16 @@ pub fn review(parts: Parts) -> Review {
 }
 
 /// Why `machine` cannot bake `own`, the bakes that run in their own process, and write
-/// `store_bytes`. Only a child process has a peak of its own (`wait4`), so only such a bake can
-/// need more memory than the machine has.
-fn refusals(machine: &MachineCheck, own: &[&Build], store_bytes: u64) -> Vec<String> {
+/// `store_bytes`; with `planner`, also bake planner steps. Only a child process has a peak of its
+/// own (`wait4`), so only such a bake can need more memory than the machine has.
+fn refusals(machine: &MachineCheck, (own, planner): (&[&Build], bool), store_bytes: u64) -> Vec<String> {
     let mut refusals = Vec::new();
+    if planner && !machine.planner_missing.is_empty() {
+        refusals.push(format!(
+            "the planner steps need {}; `obc data setup` shows how to install them",
+            machine.planner_missing.join(", ")
+        ));
+    }
     if let Some(memory) = machine.memory_bytes {
         for build in own {
             if let Some(peak) =
@@ -586,5 +601,19 @@ fn size(bytes: u64) -> String {
     match bytes {
         bytes if bytes >= 1 << 30 => format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64),
         bytes => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_without_a_planner_tool_cannot_bake_planner_steps() {
+        let machine =
+            MachineCheck { planner_missing: vec!["Java 21+".into(), "Maven".into()], ..MachineCheck::default() };
+        let refused = refusals(&machine, (&[], true), 0);
+        assert_eq!(refused, ["the planner steps need Java 21+, Maven; `obc data setup` shows how to install them"]);
+        assert!(refusals(&machine, (&[], false), 0).is_empty(), "an update without planner steps");
     }
 }
