@@ -15,7 +15,7 @@ Each step resumes in its work directory. The producer runs them in this order:
 "langlinks": {LANG: DUMP}, "languages": [LANG]}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
 others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
 `candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
-QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
+QIDs whose articles the compilers read. `articles` writes `W/imports.json`, the finished imports. `done.json` gives the `sha256` and `bytes` of each shard
 that is published already, and `counts.json` the counts of the producer for the index.
 `requests.json` maps each subject that the compilers select to its Commons `categories`,
 `commons` and `files`; see `commons.acquire`. When Wikimedia is busy, `commons` stops and leaves
@@ -71,6 +71,7 @@ def main() -> int:
             if spec := inputs.get("wikipedia", {}).get(language):
                 catalog.articles(db, args.work, language, *source("wikipedia:" + language, spec))
         catalog.links(db)
+        catalog.finished(db, args.work)
     elif args.step == "facts":
         shards.export(db, args.out, json.loads(args.selected.read_bytes()), json.loads(args.requests.read_bytes()),
                       text=not args.no_text)
