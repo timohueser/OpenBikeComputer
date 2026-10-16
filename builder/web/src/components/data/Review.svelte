@@ -93,27 +93,28 @@
 <section class="card" aria-labelledby="edits">
     <h2 id="edits">Settings of this update</h2>
     <p class="soft">An edit makes a new review. The page keeps edits as flags: <code>{command(query.args)}</code></p>
-    {#if review}
-        {#if scopes.length}
-            <label class="title">
-                What to update
-                <select value={only} onchange={(event) => setScope(event.currentTarget.value)}>
-                    <option value="">Everything stale ({layers.filter((layer) => layer.state === "stale").length} layers)</option>
-                    {#each scopes as layer (layer)}<option value={layer}>{scope(layer)}</option>{/each}
-                </select>
-            </label>
+    {#if review && scopes.length}
+        <label class="title">
+            What to update
+            <select value={only} onchange={(event) => setScope(event.currentTarget.value)}>
+                <option value="">Everything stale ({layers.filter((layer) => layer.state === "stale").length} layers)</option>
+                {#each scopes as layer (layer)}<option value={layer}>{scope(layer)}</option>{/each}
+            </select>
+        </label>
+    {/if}
+    <!-- A target without a region has no review: its first region comes from this picker. -->
+    <fieldset class="area">
+        <legend>Area · {name} serves {area?.name ?? "no area"}</legend>
+        {#if cells.length}
+            <p>
+                <span class="running">■ {count(baking.length, "cell")} bake</span>{#if dropped.length}{" · "}<span class="missing"
+                        >■ {count(dropped.length, "cell")} go</span
+                    >{/if}
+            </p>
         {/if}
-        <fieldset class="area">
-            <legend>Area · {name} serves {area?.name ?? "no area"}</legend>
-            {#if cells.length}
-                <p>
-                    <span class="running">■ {count(baking.length, "cell")} bake</span>{#if dropped.length}{" · "}<span class="missing"
-                            >■ {count(dropped.length, "cell")} go</span
-                        >{/if}
-                </p>
-            {/if}
-            <AreaPicker region={review.settings.region} boxes={area?.boxes ?? []} {cells} apply={setArea} />
-        </fieldset>
+        <AreaPicker region={review?.settings.region ?? ""} boxes={area?.boxes ?? []} {cells} apply={setArea} />
+    </fieldset>
+    {#if review}
         {#if review.optional.length}
             <fieldset class="title">
                 <legend>Optional layers</legend>
