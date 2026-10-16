@@ -132,6 +132,9 @@ fn product_steps(
         false => product.steps(root, inputs, regions, store),
     };
     let name = product.name();
+    if !observe {
+        eprintln!("obc data: planning {name}");
+    }
     let (mut failure, earlier) = (None, inputs.fetch_failures.len());
     let mut listed = declarations(inputs);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.

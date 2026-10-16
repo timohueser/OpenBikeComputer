@@ -23,5 +23,6 @@
     "error": null,
     "log": ["10:44:02 device/map 0037-0032 done (2.1 s, 312 MB)", "10:44:02 device/map 0037-0033 done (1.8 s, 288 MB)", "10:44:03 planner/search records 4.2 M of 10.5 M", "10:44:04 device/map 0038-0033 baking"],
     "log_path": "/Users/rider/.cache/openbikecomputer/store/runs/2026-10-12-101500/log",
-    "switched": []
+    "switched": [],
+    "review": null
 }

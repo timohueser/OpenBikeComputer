@@ -215,12 +215,20 @@ pub(super) fn approved(
 
 /// Start the detached run of `args`, the arguments after `obc data` of the review `review`: write
 /// its run with `json`, else follow its log until it ends.
-pub(super) fn start(store: &crate::store::Store, args: &[String], review: &str, json: bool) -> Result<(), Error> {
+pub(super) fn start(
+    store: &crate::store::Store,
+    args: &[String],
+    review: Option<&str>,
+    json: bool,
+) -> Result<(), Error> {
     let run = runs::detach(store, args)?;
     if json {
-        return print_json(&super::update_cli::Started { run, review: review.into() });
+        return print_json(&super::update_cli::Started { run, review: review.map(String::from) });
     }
-    eprintln!("obc data: run {run} of review {review}");
+    match review {
+        Some(review) => eprintln!("obc data: run {run} of review {review}"),
+        None => eprintln!("obc data: run {run}"),
+    }
     super::runs_cli::follow(store, &run, false)
 }
 
@@ -416,13 +424,14 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 11] = [
+        const EXAMPLES: [(&str, &str); 12] = [
             ("areas.json", "Areas"),
             ("clean.json", "CleanPlan"),
             ("prepare-review.json", "PrepareReview"),
             ("review.json", "Review"),
             ("router.json", "Router"),
             ("run-failed.json", "View"),
+            ("run-planned.json", "View"),
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
             ("setup.json", "Setup"),

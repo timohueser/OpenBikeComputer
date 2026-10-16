@@ -175,13 +175,13 @@ fn refused(args: &[String]) -> Option<Error> {
 }
 
 /// Whether the words after `update TARGET` are settings flags with their values, then `--dry-run`
-/// for a review, or `--expect ID` that starts the update of a review, and with it
+/// for a review, `--plan` for the run that plans, or `--expect ID` that starts the update of a review, and with it
 /// `--accept-format-change` when the review changes a format and `--yes` for an R2 target.
 fn reviewed(mut rest: &[&str]) -> bool {
     const SETTINGS: [&str; 6] = ["--region", "--box", "--add", "--remove", "--refresh", "--only"];
     loop {
         match rest {
-            ["--dry-run"] => return true,
+            ["--dry-run"] | ["--plan"] => return true,
             ["--expect", id, end @ ..] => {
                 let end =
                     matches!(end, [] | ["--accept-format-change"] | ["--yes"] | ["--accept-format-change", "--yes"]);
@@ -384,6 +384,7 @@ mod tests {
             &["update", "local"],
             &["update", "local", "--yes"],
             &["update", "local", "--dry-run", "--expect", "4c1e"],
+            &["update", "local", "--plan", "--expect", "4c1e"],
             &["update", "local", "--expect"],
             &["update", "local", "--accept-format-change", "--expect", "4c1e"],
             &["update", "local", "--region", "--dry-run"],
@@ -437,6 +438,7 @@ mod tests {
             &["update", "local", "--dry-run"],
             &["update", "local", "--region", "freiburg", "--add", "sun", "--refresh", "wiki=30", "--dry-run"],
             &["update", "local", "--box", "-5,40,-4,41", "--only", "device/map", "--dry-run"],
+            &["update", "local", "--region", "dach", "--plan"],
             &["update", "local", "--region", "freiburg", "--expect", "4c1e"],
             &["update", "prod", "--expect", "4c1e", "--accept-format-change"],
             &["rollback", "local", "--expect", "2c91"],
