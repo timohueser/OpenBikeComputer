@@ -110,14 +110,39 @@
         const after = names.split(",").flatMap((layer) => followers(layers, layer));
         return `Only ${names.replaceAll(",", ", ")}${after.length ? `, and ${list([...new Set(after)])} that follow` : ""}`;
     }
+    /** One line for each source version: a source fetched per tile or area counts its params. */
     function fetched(review: Review): string {
         if (!review.fetches.length) return "nothing: the store has each source";
-        return list(review.fetches.map(({ source, version, bytes }) => `${source} ${version}${bytes === null ? "" : ` (${size(bytes)})`}`));
+        const lines = new Map<string, { params: [string, string][]; bytes: number | null }>();
+        for (const { source, version, params, bytes } of review.fetches) {
+            const key = `${source} ${version}`;
+            const line = lines.get(key);
+            if (!line) lines.set(key, { params: [...params], bytes });
+            else {
+                line.params.push(...params);
+                line.bytes = line.bytes === null || bytes === null ? null : line.bytes + bytes;
+            }
+        }
+        return list(
+            [...lines].map(([key, { params, bytes }]) => {
+                const names = [...new Set(params.map(([name]) => name))];
+                const what = names.length === 1 && params.length > 1 ? `${params.length} ${names[0]}s` : params.map(([, value]) => value).join(", ");
+                const about = [what, bytes === null ? "" : size(bytes)].filter(Boolean).join(", ");
+                return about ? `${key} (${about})` : key;
+            }),
+        );
     }
-    function cost({ cost }: Review): string {
-        const parts = [`about ${span(cost.wall_ms)} here`, `store ${size(cost.store_bytes)}`, `upload ${size(cost.upload_bytes)}`];
-        if (cost.peak_rss_bytes !== null) parts.splice(1, 0, `peak RAM ${size(cost.peak_rss_bytes)}`);
-        if (cost.unknown.estimate.length) parts.push(`no estimate for ${list(cost.unknown.estimate)}`);
+    /** The estimates of the bakes that ran here before; a bake that never ran has none. */
+    function cost({ cost, bakes }: Review): string {
+        const unknown = cost.unknown.estimate.length;
+        const upload = `upload ${size(cost.upload_bytes)}`;
+        if (bakes.length && unknown === bakes.length) {
+            return `time, memory and store size unknown: none of the ${bakes.length} bakes ran on this machine before · ${upload}`;
+        }
+        const least = unknown ? "at least " : "";
+        const parts = [`${least}${span(cost.wall_ms)} here`, `store ${least}${size(cost.store_bytes)}`, upload];
+        if (cost.peak_rss_bytes !== null) parts.splice(1, 0, `peak RAM ${least}${size(cost.peak_rss_bytes)}`);
+        if (unknown) parts.push(`${unknown} of ${bakes.length} bakes have no estimate`);
         return parts.join(" · ");
     }
     const area_of = (params: [string, string][]) => params.map(([, value]) => value).join(", ");
