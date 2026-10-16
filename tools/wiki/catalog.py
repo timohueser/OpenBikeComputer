@@ -354,7 +354,9 @@ def article(raw: dict, language: str) -> dict:
         raise ValueError(f"snapshot article lacks revision-bound HTML or licence: {language}:{title}")
     proof = Proof()
     proof.feed(html.partition("</head>")[0])
-    match = re.fullmatch(rf"https://{re.escape(language)}\.wikipedia\.org/wiki/Special:Redirect/revision/([1-9][0-9]*)", proof.about or "")
+    # Newer Parsoid HTML writes a protocol-relative URL and the local name of Special:Redirect,
+    # such as `//de.wikipedia.org/wiki/Spezial:Weiterleitung/revision/N`.
+    match = re.fullmatch(rf"(?:https:)?//{re.escape(language)}\.wikipedia\.org/wiki/[^/:]+:[^/]+/revision/([1-9][0-9]*)", proof.about or "")
     if not match or proof.pageid != str(pageid):
         raise ValueError("rendered HTML has no matching page and revision proof")
     revision = int(match[1])

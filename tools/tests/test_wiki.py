@@ -204,6 +204,12 @@ class Wiki(unittest.TestCase):
         self.assertIsNone(catalog.fact(self.db, "link", "wikipedia:en:Lonely"))
         self.assertIn("langlinks SQL", self.db.execute("SELECT reason FROM failures WHERE key='wikipedia:en:Lonely'").fetchone()[0])
 
+    def test_newer_html_proves_its_revision_with_a_local_special_page(self):
+        record = page(language="de", name="Burg", revision=12)
+        record["article_body"]["html"] = record["article_body"]["html"].replace(
+            "https://de.wikipedia.org/wiki/Special:Redirect/", "//de.wikipedia.org/wiki/Spezial:Weiterleitung/")
+        self.assertEqual(catalog.article(record, "de")["revision"], 12)
+
     def test_rendered_revision_owns_the_pin_and_a_wrong_page_proof_keeps_no_fact(self):
         declared = page()
         declared["version"]["identifier"] = 99
