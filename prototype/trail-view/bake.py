@@ -600,6 +600,31 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     return out
 
 
+def sharpen_summits(heights: np.ndarray, summits: list, half: float, rule: dict) -> np.ndarray:
+    """GLO-30 heights with mapped summits restored: GLO-30 rounds a peak down and its slopes out.
+    Within the region's reach_m of a peak with a surveyed height, the top rises to that height and
+    the ground falls away from it up to `steepen` times as fast, both easing back to GLO-30 at the
+    reach."""
+    px = 2 * half / SIZE
+    reach = rule["reach_m"]
+    out = heights.copy()
+    for x, y, ele in summits:
+        if max(abs(x), abs(y)) >= half:
+            continue
+        top = out[int((half - y) / px), int((x + half) / px)]
+        if ele <= top:
+            continue
+        i0, i1 = max(int((x - reach + half) / px), 0), min(int((x + reach + half) / px) + 1, SIZE)
+        j0, j1 = max(int((half - y - reach) / px), 0), min(int((half - y + reach) / px) + 1, SIZE)
+        cols = (np.arange(i0, i1) + 0.5) * px - half
+        rows = half - (np.arange(j0, j1) + 0.5) * px
+        t = np.clip(np.hypot(*np.meshgrid(cols - x, rows - y)) / reach, 0, 1)
+        window = out[j0:j1, i0:i1]
+        drop = np.maximum(top - window, 0)
+        out[j0:j1, i0:i1] = window + (1 - t) * (ele - top - drop * (rule["steepen"] - 1))
+    return out
+
+
 def wms_map(service: str, layer: str, fmt: str, bbox, px: int, path: Path, info: tuple[int, int] | None = None) -> Path:
     """One WMS 1.3.0 map of a WGS84 box (latitude first, as 1.3.0 states EPSG:4326), or the
     feature info at a pixel of that map."""
@@ -923,6 +948,18 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     def metres(way: dict) -> np.ndarray:
         return np.array(to_frame.transform([n["lon"] for n in way["geometry"]], [n["lat"] for n in way["geometry"]])).T
 
+    if not skip_peaks:
+        radius = HALF0_M * 2 ** (LEVELS - 1)
+        raw = overpass_peaks(lat, lon, radius)
+        xs, ys = to_frame.transform([r[1] for r in raw], [r[0] for r in raw])
+        peaks = [[round(x), round(y), elevation_tag(ele), name]
+                 for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
+        blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
+        (out / "peaks.json").write_bytes(blob)
+        sizes.append(("-", "peaks", len(blob)))
+    summits = [(x, y, ele) for x, y, ele, _ in json.loads((out / "peaks.json").read_text())
+               if ele is not None] if (out / "peaks.json").exists() else []
+
     ways = osm_ways(preset["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
     roads = [(metres(w), codes[surface]) for w in ways
@@ -982,7 +1019,10 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, "glo30", len(blob)))
             classes = class_level(k, frame, bbox, heights, work)
             if heights is glo30:
+                heights = sharpen_summits(heights, summits, half, region["summits"])
                 heights = sharpen_coast(heights, classes, half, region["cliffs"])
+                if k == 0:
+                    origin["glo30"] = float(heights[centre, centre].mean())
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
@@ -1063,16 +1103,6 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     credits = [CREDITS["glo30"]] + ([CREDITS[dtm]] if dtm else []) + [CREDITS["worldcover"], CREDITS["s2"]]
     credits += [geology[2]] if geology else []
     credits += [NLCM[1]] if habitats else []
-    if not skip_peaks:
-        radius = HALF0_M * 2 ** (LEVELS - 1)
-        raw = overpass_peaks(lat, lon, radius)
-        to_frame = Transformer.from_crs("EPSG:4326", CRS.from_proj4(frame), always_xy=True)
-        xs, ys = to_frame.transform([r[1] for r in raw], [r[0] for r in raw])
-        peaks = [[round(x), round(y), elevation_tag(ele), name]
-                 for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
-        blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
-        (out / "peaks.json").write_bytes(blob)
-        sizes.append(("-", "peaks", len(blob)))
     if (out / "peaks.json").exists():
         credits.append(CREDITS["osm"])
 

@@ -61,6 +61,8 @@ const ANIMAL_M = 0.95;
 const CREST_RADIUS_M = 1500;
 const CREST_ARM_M = 20;
 const CREST_DROP_M = 7;
+/** Crags from the DEM stand no nearer the eye than this, where they would hide the view. */
+const CRAG_CLEAR_M = 40;
 /** Crags along a crest, about this far apart and this tall. */
 const CRAG_SPACING_M = 5;
 const CRAG_HEIGHT_M: [number, number] = [2, 6];
@@ -425,7 +427,7 @@ export class NearField {
       for (let y = -CREST_RADIUS_M; y < CREST_RADIUS_M; y += CRAG_SPACING_M) {
         for (let x = -CREST_RADIUS_M; x < CREST_RADIUS_M; x += CRAG_SPACING_M) {
           const [cx, cy] = [x + (rand() - 0.5) * CRAG_SPACING_M, y + (rand() - 0.5) * CRAG_SPACING_M];
-          if (Math.hypot(cx, cy) > CREST_RADIUS_M || Math.hypot(cx, cy) < CLEAR_M) continue;
+          if (Math.hypot(cx, cy) > CREST_RADIUS_M || Math.hypot(cx, cy) < CRAG_CLEAR_M) continue;
           const c = h(cx, cy);
           const crest = [[1, 0], [0, 1], [0.7071, 0.7071], [0.7071, -0.7071]].some(
             ([dx, dy]) => c - h(cx + dx * CREST_ARM_M, cy + dy * CREST_ARM_M) > CREST_DROP_M && c - h(cx - dx * CREST_ARM_M, cy - dy * CREST_ARM_M) > CREST_DROP_M,

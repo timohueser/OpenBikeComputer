@@ -5,6 +5,7 @@
  "leaf": "mixed",
  "pack": "base",
  "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
+ "summits": { "reach_m": 150, "steepen": 1.6 },
  "look": {
   "snap": 0.4,
   "hazeKm": 35,
