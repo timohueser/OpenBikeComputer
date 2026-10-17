@@ -39,7 +39,7 @@ function build(name: RockName, seed: number): THREE.BufferGeometry {
     n.fromBufferAttribute(normal, i);
     const c = BODY[0].clone().lerp(BODY[1], smooth(-0.4, 0.4, n.z)).lerp(BODY[2], smooth(0.6, 0.95, n.z));
     const fleck = hash(p, seed);
-    if (n.z > 0.3 && fleck < 0.3) c.lerp(LICHEN[fleck < 0.12 ? 1 : 0], 0.55);
+    if (n.z > 0.3 && fleck < 0.18) c.lerp(LICHEN[fleck < 0.05 ? 1 : 0], 0.35);
     c.multiplyScalar(0.9 + 0.2 * hash(p, seed + 1));
     for (let j = 0; j < 3; j++) c.toArray(colour, (i + j) * 3);
   }
