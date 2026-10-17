@@ -199,8 +199,9 @@ function meadow(bake: Bake): number[] {
     for (let x = -GRASS_RADIUS_M; x < GRASS_RADIUS_M; x += 1) {
       const [tx, ty] = [x + random() - 0.5, y + random() - 0.5];
       if (Math.hypot(tx, ty) > GRASS_RADIUS_M || Math.hypot(tx, ty) < 1.5) continue;
-      const kind = bake.classes[(Math.floor((half0_m - ty) / px) * size + Math.floor((tx + half0_m) / px)) * 2];
-      if ((kind !== 2 && kind !== 3) || edge(tx, ty) < 0.2) continue;
+      const texel = Math.floor((half0_m - ty) / px) * size + Math.floor((tx + half0_m) / px);
+      const kind = bake.classes[texel * 2];
+      if ((kind !== 2 && kind !== 3) || edge(tx, ty) < 0.2 || bake.water[texel] > 64) continue;
       tufts.push(tx, ty, 0.25 + 0.25 * random(), random());
     }
   }

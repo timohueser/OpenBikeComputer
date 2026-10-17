@@ -29,9 +29,10 @@ export interface Meta {
   /** Levels k < dtm_levels carry a national DTM; `glo30` holds GLO-30 for the same levels. */
   dtm_levels: number;
   dtm: string | null;
-  /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces. */
+  /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces, k < water_levels OSM water. */
   s2_levels: number;
   road_levels: number;
+  water_levels: number;
   credits: string[];
   photo?: Photo;
 }
@@ -58,6 +59,8 @@ export interface Bake {
   classes: Uint8Array;
   /** RG8 per texel, k < road_levels: distance to the nearest road in 0.1 m, and its surface code. */
   roads: Uint8Array;
+  /** R8 per texel, k < water_levels: the share of the texel under OSM water, 0–255. */
+  water: Uint8Array;
   /** R8 per texel, k < dtm_levels: canopy height in 0.25 m. */
   canopy: Uint8Array;
   /** x, y, height, broadleaf (0 or 1) per tree, metres from the eye. */
@@ -74,7 +77,7 @@ async function unpack(url: string): Promise<{ data: ArrayBuffer; bytes: number }
   if (!response.ok) throw new Error(`${url}: ${response.status}`);
   const packed = await response.arrayBuffer();
   // A server that sends the file as Content-Encoding gzip hands over the bytes already unpacked.
-  const gzipped = new Uint8Array(packed, 0, 2).every((byte, i) => byte === [0x1f, 0x8b][i]);
+  const gzipped = packed.byteLength >= 2 && new Uint8Array(packed, 0, 2).every((byte, i) => byte === [0x1f, 0x8b][i]);
   const data = gzipped
     ? await new Response(new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
     : packed;
@@ -113,17 +116,18 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, roads, canopy, trees, buildings, peaks] = await Promise.all([
+  const [surface, glo30, classes, roads, water, canopy, trees, buildings, peaks] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
     layers(base, 'road', meta.road_levels),
+    layers(base, 'water', meta.water_levels),
     layers(base, 'canopy', meta.dtm_levels),
     unpack(`${base}trees.bin.gz`),
     fetch(`${base}buildings.json`).then((r) => r.json()),
     fetch(`${base}peaks.json`).then((r) => (r.ok ? r.json() : [])),
   ]);
-  const bytes = [...surface, ...glo30, classes, roads, canopy, trees].reduce((sum, level) => sum + level.bytes, 0);
+  const bytes = [...surface, ...glo30, classes, roads, water, canopy, trees].reduce((sum, level) => sum + level.bytes, 0);
   return {
     meta,
     base,
@@ -131,6 +135,7 @@ export async function loadBake(id: string): Promise<Bake> {
     glo30: glo30.map((level) => level.data),
     classes: classes.data,
     roads: roads.data,
+    water: water.data,
     canopy: canopy.data,
     trees: new Float32Array(trees.data),
     buildings,

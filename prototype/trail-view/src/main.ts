@@ -9,9 +9,6 @@ import { DECIDUOUS, foliage, ramps } from './palette';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
-// Colours are display values; nothing here is lit physically.
-THREE.ColorManagement.enabled = false;
-
 const element = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const stage = element('#stage');
 const frame = element('#frame');

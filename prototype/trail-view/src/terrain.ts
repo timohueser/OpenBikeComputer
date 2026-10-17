@@ -9,7 +9,7 @@ import type { Bake } from './bake';
 import type { Light } from './light';
 import { NearField } from './nearfield';
 import { ROADS, ROCK, SHORE } from './palette';
-import { fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
+import { deriveFragment, fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 
 const AZIMUTHS = 2048;
@@ -17,7 +17,9 @@ const WEDGES = 32;
 const PER_WEDGE = AZIMUTHS / WEDGES;
 const WEDGE_DEG = 360 / WEDGES;
 const R0 = 1;
-const R1 = 450_000;
+// The last level's inscribed circle, so every fragment has data and none is discarded: a
+// discard turns off the GPU's hidden-surface removal, and the terrain shader is costly.
+const R1 = 320_000;
 const RINGS = 1270;
 const Q = (R1 / R0) ** (1 / (RINGS - 1));
 
@@ -94,6 +96,7 @@ export class Terrain {
   private colour?: THREE.DataArrayTexture;
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
+  private water?: THREE.DataArrayTexture;
   readonly nearField: NearField;
   private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
     format: THREE.RedFormat,
@@ -105,6 +108,10 @@ export class Terrain {
   });
   private readonly shadowPass = new THREE.Scene();
   private shadowsStale = true;
+  /** Slope and openness per level texel of the active surface. */
+  private normals?: THREE.WebGLArrayRenderTarget;
+  private readonly derivePass = new THREE.Scene();
+  private surfaceStale = true;
 
   constructor() {
     const geometry = wedgeGeometries();
@@ -142,6 +149,10 @@ export class Terrain {
       roads: { value: null },
       roadLevels: { value: 0 },
       roadColours: { value: ROADS.map((hex) => new THREE.Color(hex)) },
+      normals: { value: null },
+      deriveLevel: { value: 0 },
+      waterMap: { value: null },
+      waterLevels: { value: 0 },
       softness: { value: 0.08 },
       gradient: { value: 0.35 },
       eyeAltitude: { value: 0 },
@@ -171,6 +182,7 @@ export class Terrain {
     sky.renderOrder = -1;
     this.far.add(sky);
     this.shadowPass.add(quad(material(fullscreenVertex, shadowFragment, true)));
+    this.derivePass.add(quad(material(fullscreenVertex, deriveFragment, true)));
     this.nearField = new NearField(u);
     this.near.add(this.nearField.trees, this.nearField.buildings);
     for (const [scene, wedge] of [
@@ -224,9 +236,21 @@ export class Terrain {
     this.roads = arrayTexture(bake.roads, size, bake.meta.road_levels, THREE.RGFormat, 'RG8');
     u.roads.value = this.roads;
     u.roadLevels.value = bake.meta.road_levels;
+    this.water?.dispose();
+    this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RedFormat, 'R8');
+    u.waterMap.value = this.water;
+    u.waterLevels.value = bake.meta.water_levels;
+    this.normals?.dispose();
+    this.normals = new THREE.WebGLArrayRenderTarget(size, size, levels, {
+      type: THREE.HalfFloatType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+    });
+    u.normals.value = this.normals.texture;
     this.nearField.set(bake);
     this.setColour(null, 0);
-    this.shadowsStale = true;
+    this.shadowsStale = this.surfaceStale = true;
   }
 
   /** One season's Sentinel-2 levels, or none: the class palette alone. */
@@ -249,7 +273,7 @@ export class Terrain {
     this.uniforms.glo30Only.value = glo30Only;
     this.uniforms.lift.value = lift;
     this.uniforms.eyeAltitude.value = eyeAltitude;
-    this.shadowsStale = true;
+    this.shadowsStale = this.surfaceStale = true;
   }
 
   setLight(light: Light): void {
@@ -274,9 +298,24 @@ export class Terrain {
     u.gradient.value = look.gradient;
   }
 
-  /** March every vertex toward the sun again, if the sun or the surface moved. */
+  /**
+   * Derive the slopes again if the surface changed, and march every vertex toward the sun again
+   * if the sun or the surface moved.
+   */
   shade(renderer: THREE.WebGLRenderer, camera: THREE.Camera): boolean {
-    if (!this.shadowsStale || !this.texture) return false;
+    if (!this.texture || !this.normals) return false;
+    if (this.surfaceStale) {
+      this.surfaceStale = false;
+      for (let k = 0; k < this.normals.depth; k++) {
+        this.uniforms.deriveLevel.value = k;
+        renderer.setRenderTarget(this.normals, k);
+        renderer.render(this.derivePass, camera);
+      }
+    }
+    if (!this.shadowsStale) {
+      renderer.setRenderTarget(null);
+      return false;
+    }
     this.shadowsStale = false;
     renderer.setRenderTarget(this.shadows);
     renderer.render(this.shadowPass, camera);

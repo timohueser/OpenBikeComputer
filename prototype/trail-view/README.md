@@ -29,6 +29,9 @@ uv run prototype/trail-view/bake.py hahnen
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
   to the nearest road edge. Trees stand within 1 km only where a DTM gives the canopy height
   (GLO-30 minus the DTM on tree pixels), so a GLO-30-only place has none.
+- Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
+  their `width` tag or a default, and water areas. The water levels hold the share of each pixel
+  under water, from a 4× finer grid. Streams count only off tree pixels.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
 - The photographs come from the `peak-view-photos` fixture package in
@@ -73,5 +76,8 @@ For an iPhone on the same Wi-Fi, run `npm run dev -- --host` and open the printe
   that the cast skyline at the photo's point shows what the photograph shows.
 - gdalwarp prints `ERROR 6: ... SetColorTable()` for every WorldCover level, because it copies the
   colour table into a float32 file. The values are correct.
+- Colours are linear once read: three's colour management converts every hex value, and the
+  shaders tone-map, grade and encode to sRGB in `finish()`. A colour that reaches the screen
+  without `finish()` is too dark.
 - The sun model is the planner's `sun.ts`, imported as `planner-sun`. `tsc` reads
   `src/planner-sun.d.ts` instead, because the planner's own imports need builder/web's packages.

@@ -92,8 +92,8 @@ vec3 sky(vec3 dir) {
 }
 `;
 
+/** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
 const COLOUR = /* glsl */ `
-${LEVELS}
 uniform sampler2DArray classes;
 uniform sampler2DArray s2;
 uniform float s2Levels;
@@ -102,6 +102,8 @@ uniform float snap;
 uniform sampler2DArray roads;
 uniform float roadLevels;
 uniform vec3 roadColours[6];
+uniform sampler2DArray waterMap;
+uniform float waterLevels;
 // Half a level sharper than the pixel footprint.
 const float DETAIL = -0.5;
 
@@ -117,6 +119,20 @@ float luma(vec3 c) {
   return dot(c, vec3(0.3, 0.59, 0.11));
 }
 
+// Dave Hoskins' hash and a smooth value noise over it.
+float hash(vec2 q) {
+  vec3 p3 = fract(q.xyx * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float noise(vec2 q) {
+  vec2 i = floor(q);
+  vec2 f = q - i;
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0)), f.x), f.y);
+}
+
 vec3 ramp(int index, float t) {
   vec3 a = ramps[index * 3];
   vec3 b = ramps[index * 3 + 1];
@@ -130,10 +146,12 @@ Ground groundOn(float k, vec2 p, float footprint) {
   bool seen = s.a > 0.5 / 255.0;
   float ndvi = seen ? (s.a * 255.0 - 1.0) / 127.0 - 1.0 : 0.45;
   float t = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);
-  // The four classes around p, each through its ramp, blended as a bilinear sample would be.
+  // The four classes around p, each through its ramp, blended as a bilinear sample would be. A
+  // wobble of up to half a texel turns WorldCover's 10 m stairs into brush edges.
   vec2 texel = uv * 1024.0 - 0.5;
-  ivec2 corner = ivec2(floor(texel));
-  vec2 f = texel - floor(texel);
+  vec2 brushed = texel + 0.45 * (vec2(noise(texel * 0.7), noise(texel * 0.7 + 31.0)) * 2.0 - 1.0);
+  ivec2 corner = ivec2(floor(brushed));
+  vec2 f = brushed - floor(brushed);
   vec3 palette = vec3(0.0);
   float water = 0.0;
   float tree = 0.0;
@@ -148,13 +166,15 @@ Ground groundOn(float k, vec2 p, float footprint) {
     water += w * cls.g;
     tree += index == 0 ? w : 0.0;
   }
+  // OSM water: rivers narrower than a WorldCover pixel, and lakes, as coverage from a finer grid.
+  if (k < waterLevels) water = max(water, smoothstep(0.4, 0.6, texture(waterMap, vec3(uv, k)).r));
   vec3 albedo = palette;
   float snow = 0.0;
   if (seen) {
     // The satellite gives chroma only: brightness comes from the palette and the sun, because
     // the mosaics carry their own shadows.
-    vec3 shown = min(s.rgb * 1.65, vec3(1.0));
-    vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-3));
+    vec3 shown = pow(min(s.rgb * 1.65, vec3(1.0)), vec3(2.2));
+    vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-4));
     albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, snap);
     vec3 refl = pow(s.rgb, vec3(2.2));
     float bright = smoothstep(0.28, 0.42, min(refl.r, min(refl.g, refl.b)));
@@ -171,11 +191,13 @@ Ground groundOn(float k, vec2 p, float footprint) {
     if (road > 0.0) {
       vec3 surface = vec3(0.0);
       float weight = 0.0;
+      ivec2 cell = ivec2(floor(texel));
+      vec2 h = texel - floor(texel);
       for (int j = 0; j < 4; j++) {
         ivec2 o = ivec2(j & 1, j >> 1);
-        int code = int(texelFetch(roads, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).g * 255.0 + 0.5);
+        int code = int(texelFetch(roads, ivec3(clamp(cell + o, ivec2(0), ivec2(1023)), int(k)), 0).g * 255.0 + 0.5);
         if (code == 0) continue;
-        float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+        float w = (o.x == 1 ? h.x : 1.0 - h.x) * (o.y == 1 ? h.y : 1.0 - h.y);
         surface += w * roadColours[code - 1];
         weight += w;
       }
@@ -207,53 +229,70 @@ ${HEIGHTS}
 ${SHADOW_AT}
 
 out vec3 vWorld;
-out vec3 vNormal;
-out float vInside;
 out float vShadow;
 
 void main() {
   vec2 p = (modelMatrix * vec4(position, 1.0)).xy;
-  float r = length(p);
-  float k = levelOf(p);
-  vInside = k < levels ? 1.0 : 0.0;
-  k = min(k, levels - 1.0);
-  // The normal at the mesh's own scale, over the curved surface, so it tilts with the local
-  // vertical at range.
-  float e = max(2.0 * half0 * exp2(k) / 1024.0, 0.0103 * r);
-  float dx = surfaceZ(k, p + vec2(e, 0.0)) - surfaceZ(k, p - vec2(e, 0.0));
-  float dy = surfaceZ(k, p + vec2(0.0, e)) - surfaceZ(k, p - vec2(0.0, e));
-  vNormal = normalize(vec3(-dx, -dy, 2.0 * e));
+  float k = min(levelOf(p), levels - 1.0);
   vWorld = vec3(p, surfaceZ(k, p));
   vShadow = shadowAt(p);
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }
 `;
 
-/** Light and air, the same for terrain, trees and buildings. */
+/**
+ * Linear light to the screen: a hue-keeping tone curve (Khronos PBR Neutral), then a grade that
+ * leans shadows cool and light warm, then sRGB.
+ */
+const FINISH = /* glsl */ `
+vec3 finish(vec3 c) {
+  float low = min(c.r, min(c.g, c.b));
+  c -= low < 0.08 ? low - 6.25 * low * low : 0.04;
+  float peak = max(c.r, max(c.g, c.b));
+  if (peak > 0.76) {
+    float top = 1.0 - 0.0576 / (peak - 0.52);
+    c *= top / peak;
+    c = mix(c, vec3(top), 1.0 - 1.0 / (0.15 * (peak - top) + 1.0));
+  }
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c += (1.0 - smoothstep(0.0, 0.25, l)) * vec3(-0.004, 0.0, 0.012) + smoothstep(0.4, 0.9, l) * vec3(0.01, 0.004, -0.008);
+  c = max(mix(vec3(l), c, 1.08), 0.0);
+  return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+`;
+
+/**
+ * Light and air, the same for terrain, trees and buildings, in linear light. Reads `curvature`,
+ * which the shader declares before it.
+ */
 const SHADE = /* glsl */ `
 ${SKY}
+${FINISH}
 uniform vec3 sunColour;
 uniform vec3 ambient;
 uniform float softness;
 uniform float gradient;
 uniform float night;
 uniform float eyeAltitude;
-uniform float curvature;
 uniform float hazeKm;
 uniform float hazeHeight;
 uniform float mistTop;
 
 // Three soft bands of sunlight, with some of the smooth term kept so a high sun still shows
-// relief. A face out of the sun keeps the cool sky light, never black.
-vec3 lightUp(vec3 albedo, vec3 n, float shadow) {
+// relief. A face out of the sun keeps the cool sky light, never black; open is how much of
+// the sky a hollow still sees.
+vec3 lightUp(vec3 albedo, vec3 n, float shadow, float open) {
   float lit = max(dot(n, sunDir), 0.0) * shadow;
   float band = 0.45 * smoothstep(0.03, 0.03 + softness, lit) + 0.55 * smoothstep(0.32, 0.32 + softness, lit);
-  return albedo * (ambient * (0.85 + 0.15 * n.z) + sunColour * mix(band, lit, gradient));
+  return albedo * (ambient * (0.85 + 0.15 * n.z) * open + sunColour * mix(band, lit, gradient));
 }
 
 vec3 atmosphere(vec3 c, vec3 world) {
   float d = length(world);
-  vec3 hazeColour = sky(normalize(vec3(world.xy, 0.0)));
+  // Haze lit from behind glows in the sun's colour, most of all when the sun is low.
+  float toward = max(dot(world / max(d, 1e-3), sunDir), 0.0);
+  vec3 hazeColour = sky(normalize(vec3(world.xy, 0.0)))
+    + sunColour * (0.12 + glow) * (0.25 * pow(toward, 6.0) + 0.6 * pow(toward, 40.0));
   // Height fog: the mean of exp(-altitude / H) along the sight line, over the eye's altitude
   // and the true altitude of the fragment.
   float a0 = eyeAltitude;
@@ -266,33 +305,47 @@ vec3 atmosphere(vec3 c, vec3 world) {
   c = mix(c, mix(hazeColour, vec3(dot(hazeColour, vec3(0.333)) * 1.15), 0.5), mist);
   // At night the eye loses colour and sees blue.
   c = mix(c, dot(c, vec3(0.3, 0.55, 0.15)) * vec3(0.7, 0.9, 1.5), 0.8 * night);
-  return min(c, 1.0);
+  return c;
 }
 `;
 
 export const terrainFragment = /* glsl */ `
+${LEVELS}
+uniform float curvature;
 ${SHADE}
 ${COLOUR}
+uniform sampler2DArray normals;
 uniform vec3 rock;
 uniform vec3 shore;
 
 in vec3 vWorld;
-in vec3 vNormal;
-in float vInside;
 in float vShadow;
 out vec4 colour;
 
+/**
+ * The normal from the derived slopes, at the level whose texel matches the pixel, so the levels
+ * act as its mip chain. The mesh's triangles at range are long along the view, and normals
+ * interpolated across them would smear slope into teeth down the fall line.
+ */
+vec3 groundNormal(vec2 p, float footprint, out float open) {
+  float kf = min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))), levels - 1.0);
+  float k = floor(kf);
+  vec4 slope = texture(normals, vec3(uvOn(k, p), k));
+  if (kf > k) slope = mix(slope, texture(normals, vec3(uvOn(k + 1.0, p), k + 1.0)), kf - k);
+  open = slope.b;
+  return normalize(vec3(-slope.rg, 1.0));
+}
+
 void main() {
-  // Derivatives before the discard, where every pixel of the quad still runs.
   float footprint = max(length(dFdx(vWorld.xy)), length(dFdy(vWorld.xy)));
-  if (vInside < 0.5) discard;
-  vec3 n = normalize(vNormal);
+  float open;
+  vec3 n = groundNormal(vWorld.xy, footprint, open);
   Ground g = groundAt(vWorld.xy, footprint);
   // Steep open ground is rock; trees and roads hold on to it.
   float steep = 1.0 - smoothstep(0.766, 0.809, n.z);
   vec3 albedo = mix(g.albedo, rock, steep * (1.0 - g.tree) * (1.0 - g.road));
   albedo = mix(albedo, ramps[18], g.snow);
-  vec3 c = lightUp(albedo, n, vShadow);
+  vec3 c = lightUp(albedo, n, vShadow, open);
 
   // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
   // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
@@ -304,7 +357,7 @@ void main() {
   vec3 body = mix(ramps[21], shore, 1.0 - smoothstep(0.5, 0.8, g.water)) * (ambient + 0.5 * sunColour * max(sunDir.z, 0.0));
   vec3 water = mix(body, sky(mirrored), fresnel) + 4.0 * sunColour * vShadow * pow(max(dot(mirrored, sunDir), 0.0), 400.0);
   c = mix(c, water, smoothstep(0.45, 0.55, g.water));
-  colour = vec4(atmosphere(c, vWorld), 1.0);
+  colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
 }
 `;
 
@@ -352,6 +405,7 @@ void main() {
 `;
 
 export const objectFragment = /* glsl */ `
+uniform float curvature;
 ${SHADE}
 in vec3 vWorld;
 in vec3 vNormal;
@@ -360,7 +414,34 @@ in vec3 vAlbedo;
 out vec4 colour;
 
 void main() {
-  colour = vec4(atmosphere(lightUp(vAlbedo, normalize(vNormal), vShadow), vWorld), 1.0);
+  colour = vec4(finish(atmosphere(lightUp(vAlbedo, normalize(vNormal), vShadow, 1.0), vWorld)), 1.0);
+}
+`;
+
+/**
+ * Per level texel: the drawn surface's slope east and north, and how open the ground is. open
+ * darkens a crease and lifts a crest a few texels across, like ink in a gully. The eye never
+ * moves, so this runs once per surface.
+ */
+export const deriveFragment = /* glsl */ `
+${HEIGHTS}
+uniform float deriveLevel;
+out vec4 colour;
+
+void main() {
+  float k = deriveLevel;
+  float e = 2.0 * half0 * exp2(k) / 1024.0;
+  vec2 uv = gl_FragCoord.xy / 1024.0;
+  vec2 p = vec2(uv.x - 0.5, 0.5 - uv.y) * 2.0 * e * 512.0;
+  float east = surfaceZ(k, p + vec2(e, 0.0));
+  float west = surfaceZ(k, p - vec2(e, 0.0));
+  float north = surfaceZ(k, p + vec2(0.0, e));
+  float south = surfaceZ(k, p - vec2(0.0, e));
+  float wide = 3.0 * e;
+  float around = surfaceZ(k, p + vec2(wide, 0.0)) + surfaceZ(k, p - vec2(wide, 0.0))
+    + surfaceZ(k, p + vec2(0.0, wide)) + surfaceZ(k, p - vec2(0.0, wide));
+  float open = clamp(1.0 - 1.5 * (0.25 * around - surfaceZ(k, p)) / wide, 0.6, 1.15);
+  colour = vec4((east - west) / (2.0 * e), (north - south) / (2.0 * e), open, 1.0);
 }
 `;
 
@@ -374,6 +455,7 @@ void main() {
 
 export const skyFragment = /* glsl */ `
 ${SKY}
+${FINISH}
 uniform mat4 inverseProjection;
 uniform mat4 cameraWorld;
 uniform vec3 sunColour;
@@ -383,11 +465,12 @@ out vec4 colour;
 void main() {
   vec4 view = inverseProjection * vec4(vNdc, 1.0, 1.0);
   vec3 dir = normalize((cameraWorld * vec4(view.xyz / view.w, 0.0)).xyz);
-  vec3 c = sky(dir);
-  // A sun disk about twice the real one.
+  float near = max(dot(dir, sunDir), 0.0);
+  // A halo around the sun, and a disk about twice the real one.
+  vec3 c = sky(dir) + sunColour * (0.06 * pow(near, 16.0) + 0.35 * pow(near, 900.0));
   float disk = smoothstep(0.0095, 0.0075, acos(clamp(dot(dir, sunDir), -1.0, 1.0)));
-  c = mix(c, min(sunColour * 1.4 + 0.25, vec3(1.0)), disk * step(0.001, dot(sunColour, vec3(1.0))));
-  colour = vec4(min(c, 1.0), 1.0);
+  c = mix(c, sunColour * 3.0 + 0.3, disk * step(0.001, dot(sunColour, vec3(1.0))));
+  colour = vec4(finish(c), 1.0);
 }
 `;
 

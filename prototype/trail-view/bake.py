@@ -97,6 +97,12 @@ TREE = CLASSES.index(10)
 ROAD_WIDTHS = {"main": 4.5, "road": 3.0, "gravel": 1.75, "dirt": 1.5, "grass": 1.25, "path": 0.6}
 ROAD_REACH_M = 20.5
 LEAF = {"needleleaved": 1, "broadleaved": 2, "mixed": 3}
+# OSM water on k < WATER_LEVELS (±10 km), as coverage from a 4× finer grid: rivers and canals
+# narrower than a WorldCover pixel, and lakes. Full widths for a waterway without a width tag.
+# Beyond, WorldCover's water class carries what is wide enough to see.
+WATER_LEVELS = 4
+WATERWAY_WIDTHS = {"river": 12.0, "canal": 8.0, "stream": 2.0}
+SUPERSAMPLE = 4
 
 GDAL_OPTIONS = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.vrt",
                 "GDAL_HTTP_MAX_RETRY": "4", "GDAL_HTTP_RETRY_DELAY": "5"}
@@ -352,20 +358,18 @@ def road_surface(tags: dict) -> str | None:
     return "road"
 
 
-def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
-    """RG8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road, and
-    that road's surface code."""
-    px = 2 * half / SIZE
-    distance = np.full((SIZE, SIZE), ROAD_REACH_M, np.float32)
-    surface = np.zeros((SIZE, SIZE), np.uint8)
-    widths = list(ROAD_WIDTHS.values())
-    for xy, code in roads:
-        width = widths[code - 1]
+def edge_distance(lines: list[tuple[np.ndarray, float]], half: float, size: int, reach: float):
+    """Over a size² grid on ±half: the distance to the nearest edge of the lines, each drawn at
+    its half-width, negative inside and at most `reach`; and that line's index + 1, 0 for none."""
+    px = 2 * half / size
+    distance = np.full((size, size), reach, np.float32)
+    nearest = np.zeros((size, size), np.int32)
+    for n, (xy, width) in enumerate(lines, 1):
         for (ax, ay), (bx, by) in zip(xy[:-1], xy[1:]):
-            i0 = max(int((min(ax, bx) - ROAD_REACH_M + half) / px), 0)
-            i1 = min(int((max(ax, bx) + ROAD_REACH_M + half) / px) + 1, SIZE)
-            j0 = max(int((half - max(ay, by) - ROAD_REACH_M) / px), 0)
-            j1 = min(int((half - min(ay, by) + ROAD_REACH_M) / px) + 1, SIZE)
+            i0 = max(int((min(ax, bx) - width - reach + half) / px), 0)
+            i1 = min(int((max(ax, bx) + width + reach + half) / px) + 1, size)
+            j0 = max(int((half - max(ay, by) - width - reach) / px), 0)
+            j1 = min(int((half - min(ay, by) + width + reach) / px) + 1, size)
             if i0 >= i1 or j0 >= j1:
                 continue
             x, y = np.meshgrid(-half + (np.arange(i0, i1) + 0.5) * px, half - (np.arange(j0, j1) + 0.5) * px)
@@ -374,8 +378,40 @@ def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
             d = np.hypot(x - ax - t * dx, y - ay - t * dy) - width
             closer = d < distance[j0:j1, i0:i1]
             distance[j0:j1, i0:i1][closer] = d[closer]
-            surface[j0:j1, i0:i1][closer] = code
+            nearest[j0:j1, i0:i1][closer] = n
+    return distance, nearest
+
+
+def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
+    """RG8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road, and
+    that road's surface code."""
+    widths = list(ROAD_WIDTHS.values())
+    distance, nearest = edge_distance([(xy, widths[code - 1]) for xy, code in roads], half, SIZE, ROAD_REACH_M)
+    surface = np.array([0] + [code for _, code in roads], np.uint8)[nearest]
     return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface], axis=-1)
+
+
+def water_field(rivers, streams, lakes, classes: np.ndarray, half: float) -> np.ndarray:
+    """R8: the share of each pixel under OSM water, 0–255. Streams count only off tree pixels,
+    because the canopy hides them."""
+    from rasterio.features import rasterize
+    from rasterio.transform import from_origin
+
+    fine = SIZE * SUPERSAMPLE
+    reach = 2 * half / fine
+
+    def coverage(wet: np.ndarray) -> np.ndarray:
+        return wet.reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
+
+    wet = edge_distance(rivers, half, fine, reach)[0] < 0
+    if lakes:
+        shapes = [({"type": "Polygon", "coordinates": [ring.tolist()]}, 1) for ring in lakes]
+        wet |= rasterize(shapes, out_shape=(fine, fine), transform=from_origin(-half, half, reach, reach),
+                         dtype=np.uint8).astype(bool)
+    water = coverage(wet)
+    if streams:
+        water = np.maximum(water, coverage(edge_distance(streams, half, fine, reach)[0] < 0) * (classes[..., 0] != TREE))
+    return np.round(water * 255).astype(np.uint8)
 
 
 def box_mean(a: np.ndarray, r: int) -> np.ndarray:
@@ -401,9 +437,9 @@ def sample(level: np.ndarray, half: float, x, y):
     return level[j, i]
 
 
-def scatter_trees(classes0, roads0, canopy0, leaf0, default_leaf: str) -> np.ndarray:
+def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -> np.ndarray:
     """float32 x, y, height, type (0 conifer, 1 broadleaf) for every tree within TREE_RADIUS_M:
-    jittered on tree pixels, outside the road buffers, as tall as the canopy says."""
+    jittered on tree pixels, outside the road buffers and water, as tall as the canopy says."""
     rng = np.random.default_rng(1)
     grid = np.arange(-TREE_RADIUS_M, TREE_RADIUS_M, TREE_SPACING_M) + TREE_SPACING_M / 2
     x, y = (axis.ravel() + rng.uniform(-0.4, 0.4, axis.size) * TREE_SPACING_M for axis in np.meshgrid(grid, grid))
@@ -411,7 +447,7 @@ def scatter_trees(classes0, roads0, canopy0, leaf0, default_leaf: str) -> np.nda
     edge = sample(roads0, half, x, y)[:, 0] / 10 - 5
     canopy = sample(canopy0, half, x, y)
     keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & (sample(classes0, half, x, y)[:, 0] == TREE)
-            & (edge > 1.5) & (canopy > 3))
+            & (edge > 1.5) & (sample(water0, half, x, y) < 64) & (canopy > 3))
     x, y, canopy = x[keep], y[keep], canopy[keep]
     leaf = sample(leaf0, half, x, y)
     leaf[leaf == 0] = LEAF[default_leaf]
@@ -485,6 +521,21 @@ def osm_ways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
 
 
+def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Waterways and water areas over the water levels, cached like `osm_ways`. Lakes mapped as
+    multipolygon relations are left to WorldCover, which sees anything that large."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_water.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        box = f"{s},{w},{n},{e}"
+        text = overpass(f'[out:json][timeout:600];(way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
+                        f'way["natural"="water"]({box});way["landuse"="reservoir"]({box}););out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+
+
 def elevation_tag(text: str) -> float | None:
     match = re.match(r"\s*(-?\d+(?:[.,]\d+)?)", text.replace("'", ""))
     return float(match.group(1).replace(",", ".")) if match else None
@@ -511,6 +562,16 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                if w["tags"].get("leaf_type") in LEAF and w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
           f"{sum('building' in w['tags'] for w in ways)} buildings", flush=True)
+    rivers, streams, lakes = [], [], []
+    for way in osm_water(preset["id"], lat, lon, to_wgs84):
+        tags, xy = way["tags"], metres(way)
+        closed = way["geometry"][0] == way["geometry"][-1]
+        if tags.get("waterway") in WATERWAY_WIDTHS and tags.get("tunnel") is None:
+            width = elevation_tag(tags.get("width", "")) or WATERWAY_WIDTHS[tags["waterway"]]
+            (streams if tags["waterway"] == "stream" else rivers).append((xy, width / 2))
+        elif closed and tags.get("waterway") != "stream":
+            lakes.append(xy)
+    print(f"  OSM water: {len(rivers)} rivers and canals, {len(streams)} streams, {len(lakes)} areas", flush=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -549,13 +610,18 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 blob = pack(road)
                 (out / f"road-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "road", len(blob)))
+            if k < WATER_LEVELS:
+                water = water_field(rivers, streams, lakes, classes, half)
+                blob = pack(water)
+                (out / f"water-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "water", len(blob)))
             if dtm and k < dtm_levels:
                 canopy = canopy_of(glo30, heights, classes, half)
                 blob = pack(np.round(canopy * 4).astype(np.uint8))
                 (out / f"canopy-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "canopy", len(blob)))
             if k == 0:
-                heights0, classes0, road0 = heights, classes, road
+                heights0, classes0, road0, water0 = heights, classes, road, water
                 canopy0 = canopy if dtm else None
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
@@ -572,7 +638,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
             print(f"  colour level {k}", flush=True)
 
     # Trees stand only where a DTM says how tall the canopy is: GLO-30 alone cannot.
-    trees = scatter_trees(classes0, road0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed")) \
+    trees = scatter_trees(classes0, road0, water0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed")) \
         if dtm else np.zeros((0, 4), np.float32)
     blob = pack(trees)
     (out / "trees.bin.gz").write_bytes(blob)
@@ -613,7 +679,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     above = preset.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, credits=credits)
+                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, credits=credits)
     if "photo_source" in preset:
         shutil.copyfile(preset["photo_source"], out / "photo.jpg")
         meta["photo"] = preset["photo"]
@@ -624,7 +690,8 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     for row in sizes:
         print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
     print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
-    season = sum(row[2] for row in sizes if row[1] in ("h", "class", "road", "canopy", "trees", "buildings", "peaks", "s2-q3"))
+    season = sum(row[2] for row in sizes
+                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 

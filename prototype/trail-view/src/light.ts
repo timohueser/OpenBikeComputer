@@ -36,21 +36,26 @@ interface Key {
   glow: number;
 }
 
-// Night, blue hour, alpenglow, golden hour and day. The sun keeps a red colour a few degrees
-// below the eye's horizon, because high peaks still see it there. Sun plus sky light stay near 1,
-// so a lit face does not wash out.
+// Night, blue hour, alpenglow, golden hour and day, in linear light once read. The sun keeps a
+// red colour a few degrees below the eye's horizon, because high peaks still see it there. By
+// day sun plus sky light stay near 1, so a lit face does not wash out, and shade keeps about a
+// third of it; toward sunset the sky light drops faster than the sun, so contrast rises.
 const KEYS: Key[] = [
-  { altitude: -18, zenith: '#0b1322', horizon: '#1a2438', sun: '#000000', ambient: '#4a5f96', glow: 0 },
-  { altitude: -9, zenith: '#1b2f52', horizon: '#4f5d8a', sun: '#000000', ambient: '#55689c', glow: 0.15 },
-  { altitude: -4, zenith: '#2c4a7a', horizon: '#b98a98', sun: '#3a1010', ambient: '#5f6c9a', glow: 0.5 },
-  { altitude: -1, zenith: '#3d5f93', horizon: '#f0a07c', sun: '#e05a40', ambient: '#646e98', glow: 0.9 },
-  { altitude: 3, zenith: '#4a75ad', horizon: '#f5bc8a', sun: '#e8904f', ambient: '#5f6d96', glow: 0.8 },
-  { altitude: 10, zenith: '#5486c4', horizon: '#eed6b4', sun: '#e6c08e', ambient: '#5b6d94', glow: 0.45 },
-  { altitude: 25, zenith: '#5a8fd0', horizon: '#c8dbeb', sun: '#dcd2bd', ambient: '#5a6f94', glow: 0.2 },
-  { altitude: 60, zenith: '#4f88d2', horizon: '#bcd4ea', sun: '#ddd6c6', ambient: '#5a6f94', glow: 0.1 },
+  { altitude: -18, zenith: '#0b1322', horizon: '#1a2438', sun: '#000000', ambient: '#2a3866', glow: 0 },
+  { altitude: -9, zenith: '#1b2f52', horizon: '#4f5d8a', sun: '#000000', ambient: '#3a4878', glow: 0.15 },
+  { altitude: -4, zenith: '#2c4a7a', horizon: '#c08a98', sun: '#401010', ambient: '#4a5482', glow: 0.6 },
+  { altitude: -1, zenith: '#3d5f93', horizon: '#f39a72', sun: '#e2563a', ambient: '#5a5f8c', glow: 1.1 },
+  { altitude: 3, zenith: '#4a75ad', horizon: '#f6b882', sun: '#ec8e48', ambient: '#68709a', glow: 1.0 },
+  { altitude: 10, zenith: '#5486c4', horizon: '#efd2a8', sun: '#eebc84', ambient: '#7a86a6', glow: 0.55 },
+  { altitude: 25, zenith: '#5a8fd0', horizon: '#c8dbeb', sun: '#dcd2bd', ambient: '#8795b0', glow: 0.2 },
+  { altitude: 60, zenith: '#4f88d2', horizon: '#bcd4ea', sun: '#ddd6c6', ambient: '#8a98b4', glow: 0.1 },
 ];
 
 const mix = (a: string, b: string, t: number) => new THREE.Color(a).lerp(new THREE.Color(b), t);
+
+// Sun and sky light on a face, over the keys: the palette holds display colours, and a face in
+// full daylight shows a little above its own colour.
+const DAYLIGHT = 1.3;
 
 /** The light at a place and time. `hour` is local wall-clock time in `timezone`. */
 export function lightAt(lat: number, lon: number, date: string, hour: number, timezone: string): Light {
@@ -69,11 +74,11 @@ export function lightAt(lat: number, lon: number, date: string, hour: number, ti
   return {
     sun,
     altitude: degrees,
-    sunColour: mix(a.sun, b.sun, t),
+    sunColour: mix(a.sun, b.sun, t).multiplyScalar(DAYLIGHT),
     zenith: mix(a.zenith, b.zenith, t),
     horizon: mix(a.horizon, b.horizon, t),
     glow: a.glow + (b.glow - a.glow) * t,
-    ambient: mix(a.ambient, b.ambient, t),
+    ambient: mix(a.ambient, b.ambient, t).multiplyScalar(DAYLIGHT),
     night: Math.min(Math.max((-4 - degrees) / 8, 0), 1),
   };
 }
