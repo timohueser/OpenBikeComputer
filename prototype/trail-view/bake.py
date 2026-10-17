@@ -139,8 +139,8 @@ ROCK_LEVELS = 3
 # colour word right after it ("margas blancas") overrides it, and variegated rock is drawn in
 # red, green and white bands.
 ROCKS = [
-    ("yeso", "#e2dccd"), ("calcaren", "#cdb88e"), ("caliza", "#c4bdb0"), ("dolom", "#b2a894"),
-    ("arenisca", "#c3a06c"), ("conglomerad", "#a99878"), ("marga", "#d2c4a4"), ("arcilla", "#b58a64"),
+    ("yeso", "#e2dccd"), ("calcaren", "#cdb88e"), ("caliza", "#d3c6a6"), ("dolom", "#b2a894"),
+    ("arenisca", "#c3a06c"), ("conglomerad", "#a99878"), ("marga", "#cbbd98"), ("arcilla", "#b58a64"),
     ("limo", "#c2a886"), ("pizarra", "#6e6a66"), ("granit", "#b5aba0"), ("cuarcita", "#bfb9ae"),
     ("esquisto", "#7b766c"), ("glacis", "#c2ad88"), ("coluvi", "#c2ad88"), ("aluvi", "#c2ad88"),
 ]
@@ -1020,6 +1020,9 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     for way in osm_water(preset["id"], lat, lon, to_wgs84):
         tags, xy = way["tags"], metres(way)
         closed = way["geometry"][0] == way["geometry"][-1]
+        # A rambla or a seasonal pond is a dry bed most of the year.
+        if tags.get("intermittent") == "yes" or tags.get("seasonal") == "yes":
+            continue
         if tags.get("waterway") in WATERWAY_WIDTHS and tags.get("tunnel") is None:
             width = elevation_tag(tags.get("width", "")) or WATERWAY_WIDTHS[tags["waterway"]]
             (streams if tags["waterway"] == "stream" else rivers).append((xy, width / 2))

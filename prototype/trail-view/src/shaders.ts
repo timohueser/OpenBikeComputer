@@ -660,7 +660,8 @@ void main() {
   // Swell rolls in as faint lighter bands, and the sun's path glints in sparks rather than a sheen.
   body *= 1.0 + 0.06 * sin(dot(vWorld.xy, vec2(0.8, 0.6)) / 9.0 + time * 0.9) * (1.0 - smoothstep(2.0, 8.0, footprint));
   float sparks = smoothstep(0.8, 0.86, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));
-  vec3 water = mix(body, sky(mirrored), 0.35 * fresnel)
+  // A lake lies still and mirrors the sky; the sea keeps its own colour.
+  vec3 water = mix(body, sky(mirrored), mix(0.45, 0.35 * fresnel, sea))
     + sunColour * shadow * (4.0 * pow(max(dot(mirrored, sunDir), 0.0), 400.0) + 2.5 * sparks * pow(max(dot(mirrored, sunDir), 0.0), 80.0));
   // Surf on the sea: a white rim at the shore, at least a pixel wide so a far coast keeps its line,
   // and broken crests rolling in. Shores open to the swell get a wide rim and crests far out;

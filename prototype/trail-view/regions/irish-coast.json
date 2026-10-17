@@ -8,32 +8,32 @@
  "pack": "irish-coast",
  "cliffs": { "reach_m": 35, "raise_m": 30 },
  "look": {
-  "ramps": { "grass": ["#8f8455", "#7c8c52", "#5f8748"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
-  "moor": { "colour": "#7e7152", "heather": "#6f5d63", "share": 0.3 },
+  "ramps": { "grass": ["#8a7f52", "#737443", "#5c7a43"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
+  "moor": { "colour": "#5d5538", "heather": "#6e4f63", "share": 0.3 },
   "habitats": {
-   "rock": "#77794c",
-   "heath": "#7e7152",
-   "bog": "#86704a",
-   "bracken": "#677338",
-   "rough": "#7f8250",
-   "pasture": "#5f8748",
+   "rock": "#7a7553",
+   "heath": "#5d5538",
+   "bog": "#6f5f3e",
+   "bracken": "#6a6e3a",
+   "rough": "#737040",
+   "pasture": "#5c7a43",
    "scrub": "#55652f",
    "hedge": "#3b5530",
    "sand": "#d6cba8",
    "saltmarsh": "#7c8a60"
   },
   "snap": 0.85,
-  "hazeKm": 25,
+  "hazeKm": 15,
   "grade": { "shadow": [-0.002, 0.002, 0.005], "light": [0.006, 0.004, -0.004], "saturation": 1.08 },
   "weather": {
-   "sunny": { "cover": 0.32, "base": 900, "dark": 0.4, "zenith": "#5d7fae", "horizon": "#a9bfd4", "grey": 0.35, "towers": 0.8 }
+   "sunny": { "cover": 0.42, "base": 900, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
   },
-  "outcrops": 0.55,
-  "rock": "#969489",
-  "cliff": "#6f716b",
+  "outcrops": 0.7,
+  "rock": "#8a8274",
+  "cliff": "#77705f",
   "snowline": 1100,
   "bedding": { "strike": 55, "dip": 65 },
-  "sea": { "deep": "#12385e", "shallow": "#1d6274" },
+  "sea": { "deep": "#2f4b66", "shallow": "#4d6b80" },
   "swell": 250
  }
 }

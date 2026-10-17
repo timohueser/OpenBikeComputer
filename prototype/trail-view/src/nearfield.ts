@@ -333,10 +333,10 @@ export class NearField {
       });
     this.materials = {
       tree: material(treeVertex),
-      plant: material(treeVertex, 0.7),
+      plant: material(treeVertex, 0.85),
       ownPlant: material(treeVertex, 0.35),
       moorPlant: material(treeVertex, 0.35, 1),
-      lushPlant: material(treeVertex, 0.7, -1),
+      lushPlant: material(treeVertex, 0.85, -1),
       building: material(buildingVertex),
     };
   }
@@ -415,6 +415,8 @@ export class NearField {
           const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
           const mapped = habitatAt(rx, ry) === 'rock' ? 0.9 : 0;
           const hard = 0.3 + 1.4 * hardnessAt(bake, rx, ry);
+          // Boulders do not lie on faces steeper than about 40°.
+          if (slope > 0.85) continue;
           const rocky = Math.max(outcrops * hard * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
           if (rand() > 0.55 * rocky) continue;
           const name: RockName = rand() < 0.7 - 0.4 * sea ? 'slab' : 'boulder';

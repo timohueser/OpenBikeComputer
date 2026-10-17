@@ -8,26 +8,22 @@
  "pack": "mediterranean",
  "look": {
   "ramps": {
-   "grass": ["#c4ab72", "#98955e", "#6c7444"],
+   "grass": ["#b39b68", "#8a7f50", "#6c7444"],
    "crop": ["#b8a37a", "#a49a6c", "#8a8a58"],
    "shrub": ["#7a7450", "#5a6139", "#45512f"],
-   "bare": ["#c8bda5", "#c2b8a0", "#b5ad92"],
+   "bare": ["#b5a07a", "#a89068", "#9c8862"],
    "built": ["#c9bfa9", "#bdb69a", "#a8a684"]
   },
   "snap": 0.6,
   "roads": ["#8a8680", "#a19c92", "#cdbf9f", "#c2ad88", "#a9a070", "#c7b591"],
-  "speckle": { "colour": "#4b5632", "share": 0.5, "size_m": 2.5 },
-  "hazeKm": 30,
+  "speckle": { "colour": "#57583a", "share": 0.45, "size_m": 2.5 },
+  "hazeKm": 80,
   "outcrops": 0.4,
-  "rock": "#c4bdad",
+  "rock": "#d3c6a6",
   "sea": { "deep": "#1b4f8a", "shallow": "#3aa4b4" },
-  "grade": {
-   "shadow": [-0.002, 0.0, 0.006],
-   "light": [0.012, 0.006, -0.006],
-   "saturation": 1.04
-  },
+  "grade": { "shadow": [-0.002, 0.0, 0.006], "light": [0.012, 0.006, -0.006], "saturation": 1.04 },
   "weather": {
-   "sunny": { "cover": 0.12, "zenith": "#4a7fc8", "horizon": "#b8cde0", "grey": 0.1 }
+   "sunny": { "cover": 0.06, "zenith": "#2a6cc4", "horizon": "#7fb2e6", "grey": 0.15 }
   }
  }
 }
