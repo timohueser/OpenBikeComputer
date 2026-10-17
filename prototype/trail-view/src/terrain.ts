@@ -14,6 +14,9 @@ import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shado
 import { CURVATURE } from './skyline';
 import type { Weather } from './weather';
 
+/** The grade where a kit sets none: shadows a little cool, light a little warm. */
+const GRADE = { shadow: [-0.004, 0, 0.012] as const, light: [0.01, 0.004, -0.008] as const, saturation: 1.08 };
+
 /** How far the clouds drift in an hour of the day, in metres east and north: slow enough for a day played in 30 s. */
 const DRIFT_PER_HOUR = [2000, 700];
 
@@ -210,6 +213,9 @@ export class Terrain {
       cloudDrift: { value: new THREE.Vector2() },
       wet: { value: 0 },
       towers: { value: 0 },
+      gradeShadow: { value: new THREE.Vector3() },
+      gradeLight: { value: new THREE.Vector3() },
+      saturation: { value: 1 },
       cloudMap: { value: this.cloudMap.texture },
       cloudReach: { value: CLOUD_REACH_M },
       rain: { value: 0 },
@@ -309,6 +315,10 @@ export class Terrain {
     u.heather.value.set(land.moor?.heather ?? ROCK);
     u.heatherShare.value = land.moor?.share ?? 0;
     u.outcrops.value = land.outcrops ?? 0;
+    const grade = land.grade ?? GRADE;
+    u.gradeShadow.value.set(...grade.shadow);
+    u.gradeLight.value.set(...grade.light);
+    u.saturation.value = grade.saturation;
     // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
     const { strike, dip } = land.bedding ?? { strike: 0, dip: 0 };
     const [toward, tilt] = [((strike + 90) * Math.PI) / 180, (dip * Math.PI) / 180];

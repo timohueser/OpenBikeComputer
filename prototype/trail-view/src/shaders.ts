@@ -347,6 +347,11 @@ void main() {
  * leans shadows cool and light warm, then sRGB.
  */
 const FINISH = /* glsl */ `
+// The grade: what shadows and light lean toward, and the saturation.
+uniform vec3 gradeShadow;
+uniform vec3 gradeLight;
+uniform float saturation;
+
 vec3 finish(vec3 c) {
   float low = min(c.r, min(c.g, c.b));
   c -= low < 0.08 ? low - 6.25 * low * low : 0.04;
@@ -357,8 +362,8 @@ vec3 finish(vec3 c) {
     c = mix(c, vec3(top), 1.0 - 1.0 / (0.15 * (peak - top) + 1.0));
   }
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  c += (1.0 - smoothstep(0.0, 0.25, l)) * vec3(-0.004, 0.0, 0.012) + smoothstep(0.4, 0.9, l) * vec3(0.01, 0.004, -0.008);
-  c = max(mix(vec3(l), c, 1.08), 0.0);
+  c += (1.0 - smoothstep(0.0, 0.25, l)) * gradeShadow + smoothstep(0.4, 0.9, l) * gradeLight;
+  c = max(mix(vec3(l), c, saturation), 0.0);
   return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 `;
@@ -557,7 +562,10 @@ void main() {
   // Mapped exposed rock is mostly slabs.
   rocky = max(rocky, 0.85 * g.bare);
   if (rocky > 0.0) {
-    vec3 cell = cells(vWorld.xy, 9.0);
+    // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
+    vec2 along = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) : vec2(1.0, 0.0);
+    float ribs = length(bedding.xy) > 0.01 ? 3.0 : 1.0;
+    vec3 cell = cells(vec2(dot(vWorld.xy, along) / ribs, dot(vWorld.xy, vec2(-along.y, along.x))), 7.0);
     float slab = step(cell.x, rocky) * smoothstep(0.1, 0.16, cell.y);
     vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.75, 1.0, smoothstep(0.16, 0.24, cell.y));
     // Close by, mapped bare rock is gravel between the slabs; the stones on it are models.

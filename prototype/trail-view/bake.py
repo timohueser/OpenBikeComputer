@@ -360,7 +360,28 @@ def class_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path) -> np
     index = lookup[np.where(raw == NODATA, 0, raw).astype(np.uint8)]
     # No tile is published over open sea.
     index[(index == UNKNOWN) & (heights <= 0.5)] = WATER
+    index = round_shores(index, half)
     return np.stack([index, np.where(index == WATER, 255, 0).astype(np.uint8)], axis=-1)
+
+
+def round_shores(index: np.ndarray, half: float) -> np.ndarray:
+    """Finer than WorldCover's pixels, its shores are stair-stepped: water by the majority within
+    half a pixel instead, and land that loses its water takes the nearest land class."""
+    r = round(WORLDCOVER_PX_M / 2 / (2 * half / SIZE))
+    if not r:
+        return index
+    index = index.copy()
+    water = box_mean((index == WATER).astype(np.float32), r) > 0.5
+    lost = (index == WATER) & ~water
+    index[water] = WATER
+    index[lost] = UNKNOWN
+    for _ in range(2 * r + 1):
+        for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            shifted = np.roll(index, step, axis=axis)
+            fill = lost & (index == UNKNOWN) & (shifted != UNKNOWN) & (shifted != WATER)
+            index[fill] = shifted[fill]
+    index[lost & (index == UNKNOWN)] = CLASSES.index(30)
+    return index
 
 
 def s2_items(bbox, work: Path) -> dict[int, list[Path]]:
@@ -515,6 +536,11 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float) -> np.n
     sea = water & (heights <= SEA_LEVEL_M)
     if not sea.any():
         return heights
+    # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
+    # the shore is sea, however high the DEM puts it.
+    reach = max(1, round(CLIFF_REACH_M * 4 / (2 * half / SIZE)))
+    for _ in range(reach):
+        sea |= grow(sea, np.logical_or) & water
     top, near = heights, sea
     for _ in range(max(1, round(CLIFF_REACH_M / (2 * half / SIZE)))):
         top, near = grow(top, np.maximum), grow(near, np.logical_or)

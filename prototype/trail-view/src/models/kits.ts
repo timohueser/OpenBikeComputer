@@ -2,6 +2,7 @@
 
 import type { Habitat } from '../bake';
 import type { Weather } from '../weather';
+import type { AnimalName } from './animals';
 import type { BuildingStyle } from './buildings';
 import type { PlantName } from './plants';
 import type { TreeName } from './trees';
@@ -32,6 +33,8 @@ export interface Land {
   snap?: number;
   /** The look's haze distance at sea level for this region, in km: washed Atlantic air sees far. */
   hazeKm?: number;
+  /** The colour grade: shadow and light tints added in linear light, and the saturation. */
+  grade?: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
   /** What the region's climate changes in each weather preset. */
   weather?: Partial<Record<'sunny' | 'cloudy' | 'rainy', Partial<Weather>>>;
   /** Colours for the habitats of a fine land cover map, where the bake has one; others keep the palette. */
@@ -55,6 +58,8 @@ export interface Kit {
   houses?: Partial<BuildingStyle>;
   /** The tree that stands in OSM orchards; without one, the kit's broadleaves do. */
   orchard?: TreeName;
+  /** Herds near the eye: how many groups of how many, on which habitats (on WorldCover grass without a map). */
+  herds?: { animal: AnimalName; groups: number; size: [number, number]; on: Habitat[] }[];
   land?: Land;
 }
 
@@ -131,6 +136,7 @@ export const KITS = {
       { tree: 'gorse', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 350], weight: 1 },
     ],
     ground: ['grass', 'heather', 'heather-bloom'],
+    herds: [{ animal: 'sheep', groups: 10, size: [2, 8], on: ['pasture', 'rough', 'heath', 'bog'] }],
     // Washed Atlantic headlands: bright grass, ochre moor and heather on poor ground, grey slabs
     // breaking through, a navy sea that turns turquoise at the rocks.
     land: {
@@ -154,6 +160,8 @@ export const KITS = {
       },
       snap: 0.85,
       hazeKm: 70,
+      // Washed and clean: cool teal shadows, a touch more colour.
+      grade: { shadow: [-0.006, 0.004, 0.016], light: [0.006, 0.004, -0.004], saturation: 1.1 },
       // Fair weather off the Atlantic is low cumulus with a deep blue between.
       weather: { sunny: { cover: 0.32, base: 900, dark: 0.4, zenith: '#5d7fae', horizon: '#a9bfd4', grey: 0.35, towers: 0.8 } },
       outcrops: 0.55,

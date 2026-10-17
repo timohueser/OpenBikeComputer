@@ -21,7 +21,7 @@
  {"id": "bantry", "name": "Bantry", "kit": "irish-coast", "lat": 51.67441, "lon": -9.43361, "heading": 295, "pitch": -5, "tz": "Europe/Dublin", "default_leaf": "mixed"},
  {"id": "sheeps-head-tip", "name": "Sheep's Head tip", "kit": "irish-coast", "lat": 51.5432, "lon": -9.844, "heading": 255, "pitch": -4, "tz": "Europe/Dublin", "default_leaf": "mixed"},
  {"id": "three-castle-head", "name": "Three Castle Head", "kit": "irish-coast", "lat": 51.48106, "lon": -9.82869, "heading": 347, "pitch": -6, "tz": "Europe/Dublin", "default_leaf": "mixed"},
- {"id": "mizen-head", "name": "Mizen Head", "kit": "irish-coast", "lat": 51.4508, "lon": -9.8165, "heading": 230, "pitch": -5, "tz": "Europe/Dublin", "default_leaf": "mixed"},
+ {"id": "mizen-head", "name": "Mizen Head", "kit": "irish-coast", "lat": 51.45114, "lon": -9.8137, "heading": 268, "pitch": -6, "tz": "Europe/Dublin", "default_leaf": "mixed"},
  {"id": "carrauntoohil", "name": "Carrauntoohil", "kit": "irish-coast", "lat": 51.99945, "lon": -9.74269, "heading": 30, "pitch": -6, "tz": "Europe/Dublin", "default_leaf": "mixed"},
  {"id": "pilchuck", "name": "Pilchuck lookout", "kit": "cascades", "lat": 48.0580, "lon": -121.7978, "eye_above_ground_m": 8, "dtm": "us", "tz": "America/Los_Angeles", "default_leaf": "needleleaved",
   "photo": {"url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Glacier_Peak_9173.JPG",

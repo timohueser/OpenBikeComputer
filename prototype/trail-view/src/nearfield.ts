@@ -13,6 +13,7 @@ import type { Kit } from './models/kits';
 import { lighthouse, ruin } from './models/landmarks';
 import { HEDGE, STONE } from './palette';
 import { plant, type PlantName } from './models/plants';
+import { animal, type AnimalName } from './models/animals';
 import { rock, type RockName } from './models/rocks';
 import { random } from './models/shape';
 import { LOD_RANGE_M, tree, type Lod, type Season, type TreeName } from './models/trees';
@@ -52,6 +53,10 @@ const ROCK_SPACING_M = 4;
 const ROCK_HEIGHT_M: [number, number] = [0.25, 1.3];
 /** Habitats of open ground: a fine land cover map that says so overrules a WorldCover tree pixel. */
 const TREELESS = new Set<Habitat>(['rock', 'heath', 'bog', 'bracken', 'rough', 'pasture', 'sand', 'saltmarsh']);
+/** Herds graze within this many metres, each spread over HERD_SPREAD_M; an animal stands this tall. */
+const HERD_RADIUS_M = 400;
+const HERD_SPREAD_M = 14;
+const ANIMAL_M = 0.95;
 /** Crags along a crest, about this far apart and this tall. */
 const CRAG_SPACING_M = 5;
 const CRAG_HEIGHT_M: [number, number] = [2, 6];
@@ -277,7 +282,7 @@ export class NearField {
   readonly buildings = new THREE.Group();
   /** Triangles the trees, plants and buildings add to a frame. */
   triangles = 0;
-  /** Instances by "tree|name|lod", "plant|name" or "rock|name". */
+  /** Instances by "tree|name|lod", "plant|name", "rock|name" or "animal|name". */
   private groups = new Map<string, Instances>();
   /** Whether a habitat map placed the moor and lush plants, so the shader need not check them. */
   private placedByMap = false;
@@ -409,6 +414,22 @@ export class NearField {
       }
     }
 
+    // Herds on their ground: a centre that fits, then each animal near it that also fits.
+    const grazes = (on: Habitat[], x: number, y: number) =>
+      Math.hypot(x, y) > CLEAR_M && !this.offGround(bake, x, y, px) && (habitats ? on.includes(habitatAt(x, y)) : classAt(x, y) === CLASS.grass);
+    for (const herd of kit.herds ?? []) {
+      for (let group = 0, tries = 0; group < herd.groups && tries < 400; tries++) {
+        const [hx, hy] = [(rand() * 2 - 1) * HERD_RADIUS_M, (rand() * 2 - 1) * HERD_RADIUS_M];
+        if (Math.hypot(hx, hy) > HERD_RADIUS_M || !grazes(herd.on, hx, hy)) continue;
+        group++;
+        const size = herd.size[0] + Math.floor(rand() * (herd.size[1] - herd.size[0] + 1));
+        for (let i = 0; i < size; i++) {
+          const [ax, ay] = [hx + (rand() - 0.5) * HERD_SPREAD_M, hy + (rand() - 0.5) * HERD_SPREAD_M];
+          if (grazes(herd.on, ax, ay)) add(`animal|${herd.animal}`, ax, ay, ANIMAL_M * (0.85 + 0.3 * rand()), rand() * 2 * Math.PI);
+        }
+      }
+    }
+
     // Mapped bare rock near the eye is strewn with small stones.
     if (habitats) {
       for (let y = -STONE_RADIUS_M; y < STONE_RADIUS_M; y += STONE_SPACING_M) {
@@ -478,7 +499,10 @@ export class NearField {
       if (what === 'plant' && season === 'winter') continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const model = this.model(key, leaves, () =>
-        what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod) : what === 'rock' ? rock(name as RockName) : plant(name as PlantName, leaves),
+        what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod)
+          : what === 'rock' ? rock(name as RockName)
+          : what === 'animal' ? animal(name as AnimalName)
+          : plant(name as PlantName, leaves),
       );
       const habitat = what === 'plant' && !this.placedByMap ? GROUND[name as PlantName].habitat : undefined;
       const material = what !== 'plant' ? this.materials.tree : habitat === 1 ? this.materials.moorPlant : habitat === -1 ? this.materials.lushPlant : this.materials.plant;
