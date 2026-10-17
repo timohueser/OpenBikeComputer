@@ -544,9 +544,14 @@ void main() {
   // A cliff spans few texels across and many metres up, so its fine slopes would streak down
   // the face; it takes its normal from coarser levels instead.
   float cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
-  if (cliff > 0.0) {
+  // How steep the land is a few texels across: a road cutting or a bank is steep only at the
+  // finest level, and stays vegetated.
+  float broad = 0.0;
+  if (n.z < 0.95) {
     float coarseOpen;
-    n = normalize(mix(n, groundNormal(vWorld.xy, footprint, 2.0, coarseOpen), cliff));
+    vec3 coarse = groundNormal(vWorld.xy, footprint, 2.0, coarseOpen);
+    broad = 1.0 - smoothstep(0.85, 0.95, coarse.z);
+    n = normalize(mix(n, coarse, cliff));
     open = mix(open, coarseOpen, cliff);
   }
   Ground g = groundAt(vWorld.xy, footprint);
@@ -576,7 +581,7 @@ void main() {
   // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
   // bare only where they are near cliffs.
   float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
-  float steep = 1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z);
+  float steep = (1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad;
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
@@ -662,8 +667,9 @@ void main() {
   // Swell rolls in as faint lighter bands, and the sun's path glints in sparks rather than a sheen.
   body *= 1.0 + 0.06 * sin(dot(vWorld.xy, vec2(0.8, 0.6)) / 9.0 + time * 0.9) * (1.0 - smoothstep(2.0, 8.0, footprint));
   float sparks = smoothstep(0.8, 0.86, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));
-  // A lake lies still and mirrors the sky; the sea keeps its own colour.
-  vec3 water = mix(body, sky(mirrored), mix(0.45, 0.35 * fresnel, sea))
+  // A lake lies still: dark seen from above, a mirror of the sky toward the horizon. The sea keeps
+  // its own colour.
+  vec3 water = mix(mix(body * 0.55, body, sea), sky(mirrored), mix(clamp(1.6 * fresnel, 0.0, 0.9), 0.35 * fresnel, sea))
     + sunColour * shadow * (4.0 * pow(max(dot(mirrored, sunDir), 0.0), 400.0) + 2.5 * sparks * pow(max(dot(mirrored, sunDir), 0.0), 80.0));
   // Surf on the sea: a white rim at the shore, at least a pixel wide so a far coast keeps its line,
   // and broken crests rolling in. Shores open to the swell get a wide rim and crests far out;

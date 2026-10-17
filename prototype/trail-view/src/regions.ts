@@ -63,6 +63,8 @@ export interface RegionLook {
   roads?: string[];
   /** Open water away from the shore, and the sea beside it. */
   sea: { deep: string; shallow: string };
+  /** Trees and shrubs keep this far from the sea, where wind and salt keep headlands bare. */
+  windswept_m?: number;
   /** The bearing the prevailing swell comes from, in degrees: shores open to it get the heavy surf. */
   swell?: number;
   /** The colour grade: shadow and light tints added in linear light, and the saturation. */

@@ -368,12 +368,23 @@ export class NearField {
     // Hawthorn leans downwind by design, so it keeps its heading.
     const heading = (name: TreeName) => (name === 'hawthorn' ? 0 : rand() * 2 * Math.PI);
 
+    // Within windswept_m of the sea, wind and salt keep the ground bare of trees and shrubs.
+    const windswept = look.windswept_m ?? 0;
+    const seaAt = (x: number, y: number) => {
+      const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), bake.meta.water_levels - 1);
+      const half = half0_m * 2 ** k;
+      const p = (2 * half) / size;
+      const i = Math.floor((half - y) / p) * size + Math.floor((x + half) / p);
+      return bake.classes[(k * size * size + i) * 2 + 1] > 127 && bake.surface[k][i] + eye_m < 2;
+    };
+    const exposed = (x: number, y: number) =>
+      windswept > 0 && [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * windswept, y + Math.cos((a * Math.PI) / 4) * windswept));
     const standing = pack.trees.filter((s) => s.cover === 'tree');
     const shrubs = pack.trees.filter((s) => s.cover === 'shrub');
     const { trees } = bake;
     for (let i = 0; i < trees.length; i += 4) {
       const [x, y, height] = [trees[i], trees[i + 1], trees[i + 2]];
-      if (Math.hypot(x, y) < CLEAR_M || TREELESS.has(habitatAt(x, y))) continue;
+      if (Math.hypot(x, y) < CLEAR_M || TREELESS.has(habitatAt(x, y)) || exposed(x, y)) continue;
       // Scrub on the map is gorse and thorn, not trees.
       if (habitatAt(x, y) === 'scrub' && shrubs.length) {
         const species = pick(shrubs).tree;
@@ -396,7 +407,7 @@ export class NearField {
       for (let y = -SHRUB_RADIUS_M; y < SHRUB_RADIUS_M; y += SHRUB_SPACING_M) {
         for (let x = -SHRUB_RADIUS_M; x < SHRUB_RADIUS_M; x += SHRUB_SPACING_M) {
           const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
-          const scrub = classAt(sx, sy) === CLASS.shrub || habitatAt(sx, sy) === 'scrub';
+          const scrub = (classAt(sx, sy) === CLASS.shrub || habitatAt(sx, sy) === 'scrub') && !exposed(sx, sy);
           if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M || !scrub) continue;
           if (this.offGround(bake, sx, sy, px)) continue;
           const species = pick(shrubs).tree;

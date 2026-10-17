@@ -29,11 +29,12 @@
    "sunny": { "cover": 0.42, "base": 900, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
   },
   "outcrops": 0.7,
-  "rock": "#8a8274",
-  "cliff": "#77705f",
+  "rock": "#8f8c83",
+  "cliff": "#78776f",
   "snowline": 1100,
   "bedding": { "strike": 55, "dip": 65 },
   "sea": { "deep": "#2f4b66", "shallow": "#4d6b80" },
-  "swell": 250
+  "swell": 250,
+  "windswept_m": 400
  }
 }
