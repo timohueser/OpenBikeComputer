@@ -66,7 +66,12 @@ anything else replaces. bake.py and the page (`src/regions.ts`) resolve the same
 | `tz`, `leaf`, `pack` | Time zone, default leaf type, the asset pack |
 | `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`), rock colour (`igme`) |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
-| `look` | Ramps per land cover class, moor, habitat colours, outcrops, rock, cliff, snowline, sea, swell, haze, grade, weather |
+| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, roads, snowline, sea, swell, haze, grade, weather |
+
+Generic rules take their numbers from the region; the data picks where they act. Geology
+descriptions (IGME in Spain) give rock colour and hardness: hard rock stands as outcrops and crags,
+soft marl and clay keep their scrub. A fine land cover map (NLCM in Ireland) overrules WorldCover
+where it has a habitat.
 
 A pack in `packs/<name>.json` extends `base` and lists trees by leaf type and elevation, ground
 plants, herds by habitat, and the house style. Regions share packs: the Vosges draw the Black
