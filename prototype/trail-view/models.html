@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Trail View models</title>
+    <style>
+      /* One canvas behind the sheet draws every turntable into its transparent view box. */
+      :root {
+        --sky-top: #86c3e0;
+        --sky-low: #f5dfba;
+        --card: rgba(255, 249, 238, 0.9);
+        --ink: #3b2c22;
+        --muted: #7b6553;
+        --chip: #f3e6d0;
+        --chip-on: #3d7d57;
+        --chip-on-ink: #fff8ec;
+        --focus: #2b5748;
+        --display: "Avenir Next Rounded", "Avenir Next", system-ui, sans-serif;
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: linear-gradient(180deg, var(--sky-top), var(--sky-low)) fixed;
+        color: var(--ink);
+        font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #gl { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      header, main { position: relative; padding: 0 max(16px, env(safe-area-inset-left, 0px)); }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem 1.25rem;
+        padding-block: 0.75rem;
+        background: var(--card);
+        box-shadow: 0 4px 18px rgba(59, 44, 34, 0.1);
+      }
+      h1 { margin: 0; font: 600 1.3rem/1.1 var(--display); }
+      h2 { margin: 1.5rem 0 0.5rem; font: 600 1.05rem/1.2 var(--display); }
+      .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+      .chips button {
+        font: 500 0.85rem/1 var(--display);
+        color: var(--ink);
+        background: var(--chip);
+        border: 0;
+        border-radius: 999px;
+        padding: 0.45rem 0.8rem;
+        cursor: pointer;
+      }
+      .chips button[aria-pressed="true"] { background: var(--chip-on); color: var(--chip-on-ink); }
+      .chips button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+      .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+      .species { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 16px 28px; }
+      .lods { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-content: start; }
+      h3 { grid-column: 1 / -1; margin: 0; font: 600 0.9rem/1.3 var(--display); }
+      .cell { display: grid; grid-template-rows: auto auto; border-radius: 14px; overflow: hidden; }
+      .view { aspect-ratio: 1; }
+      .label { background: var(--card); padding: 0.45rem 0.65rem 0.55rem; }
+      .label b { display: block; font: 600 0.9rem/1.2 var(--display); }
+      .label span { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+      main { padding-bottom: 2rem; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gl"></canvas>
+    <header>
+      <h1>Trail View models</h1>
+      <div class="chips" id="kits" role="group" aria-label="Region"></div>
+      <div class="chips" id="seasons" role="group" aria-label="Season"></div>
+    </header>
+    <main id="sheet"></main>
+    <script type="module" src="/src/models/turntable.ts"></script>
+  </body>
+</html>
