@@ -9,6 +9,7 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 Prepare Rust, Python with `uv`, GEOS and Osmium before an update, and a Java 21 JDK and Maven for
 the planner layers; `obc data` does not install them.
+`obc doctor --install` installs the Python groups that the steps run offline.
 `obc data setup` shows what this machine can do and the tools and credentials that it has.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.

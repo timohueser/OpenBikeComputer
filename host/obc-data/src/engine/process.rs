@@ -116,6 +116,28 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
     Ok(command)
 }
 
+/// The locked package groups of the Python steps `argvs` whose `uv run` does not start offline.
+/// A group that the uv cache holds installs here, as the step would install it.
+pub fn python_missing<'a>(root: &Path, argvs: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
+    let mut starts: Vec<&[String]> = argvs
+        .into_iter()
+        .filter_map(|argv| argv.iter().position(|arg| arg == "python").map(|end| &argv[..=end]))
+        .collect();
+    starts.sort();
+    starts.dedup();
+    let mut missing: Vec<String> = starts
+        .into_iter()
+        .filter(|start| {
+            let probe = command(root, start, true).map(|mut probe| probe.args(["-c", ""]).output());
+            !matches!(probe, Ok(Ok(output)) if output.status.success())
+        })
+        .flat_map(|start| start.windows(2).filter(|pair| pair[0] == "--group").map(|pair| pair[1].clone()))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
 /// Run the [`command`] `argv` in `root` with the request as JSON on standard input. Its standard
 /// output goes to standard error. The usage is that of the process and the children it waited for.
 pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {

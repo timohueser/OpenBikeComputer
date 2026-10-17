@@ -151,6 +151,9 @@ pub struct MachineCheck {
     /// The tools that the planner steps need and this machine lacks, as `obc data setup` names them.
     #[serde(skip)]
     pub planner_missing: Vec<String>,
+    /// The Python groups that the bakes need and this machine lacks.
+    #[serde(skip)]
+    pub python_missing: Vec<String>,
 }
 
 impl MachineCheck {
@@ -162,6 +165,7 @@ impl MachineCheck {
             store_free_bytes: free,
             refusals: Vec::new(),
             planner_missing: crate::cli::setup_cli::planner_missing(),
+            python_missing: Vec::new(),
         })
     }
 }
@@ -429,6 +433,12 @@ fn refusals(machine: &MachineCheck, (own, planner): (&[&Build], bool), store_byt
             machine.planner_missing.join(", ")
         ));
     }
+    if !machine.python_missing.is_empty() {
+        refusals.push(format!(
+            "the Python groups {} are not installed; `obc doctor --install` installs them",
+            machine.python_missing.join(", ")
+        ));
+    }
     if let Some(memory) = machine.memory_bytes {
         for build in own {
             if let Some(peak) =
@@ -609,11 +619,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_machine_without_a_planner_tool_cannot_bake_planner_steps() {
+    fn a_machine_without_a_tool_or_python_group_cannot_bake_the_steps_that_need_it() {
         let machine =
             MachineCheck { planner_missing: vec!["Java 21+".into(), "Maven".into()], ..MachineCheck::default() };
         let refused = refusals(&machine, (&[], true), 0);
         assert_eq!(refused, ["the planner steps need Java 21+, Maven; `obc data setup` shows how to install them"]);
         assert!(refusals(&machine, (&[], false), 0).is_empty(), "an update without planner steps");
+        let machine = MachineCheck { python_missing: vec!["planner-climate".into()], ..MachineCheck::default() };
+        assert_eq!(
+            refusals(&machine, (&[], false), 0),
+            ["the Python groups planner-climate are not installed; `obc doctor --install` installs them"]
+        );
     }
 }

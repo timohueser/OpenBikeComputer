@@ -270,24 +270,19 @@ fn parse_bbox(text: &str) -> Result<String, String> {
 }
 
 /// The interpreter of [`crate::engine::python_executable`], or `uv run` with it in the locked
-/// package group `group`.
+/// package group `group`. A missing group fails here, before the capture starts.
 pub(super) fn python(root: &Path, group: Option<&str>) -> Result<Command, String> {
     let executable = crate::engine::python_executable(root)?;
     let mut command = match group {
         None => Command::new(&executable),
         Some(group) => {
-            let mut command = Command::new("uv");
-            command.args([
-                "run",
-                "--locked",
-                "--offline",
-                "--no-default-groups",
-                "--no-python-downloads",
-                "--group",
-                group,
-                "python",
-            ]);
-            command.env("UV_PYTHON", &executable).env("UV_NO_SYNC", "0");
+            let argv = ["uv", "run", "--locked", "--offline", "--no-default-groups", "--no-python-downloads"];
+            let argv: Vec<String> = argv.into_iter().chain(["--group", group, "python"]).map(String::from).collect();
+            if !crate::engine::python_missing(root, [argv.as_slice()]).is_empty() {
+                return Err(format!("the Python group {group} is not installed; `obc doctor --install` installs it"));
+            }
+            let mut command = Command::new(&argv[0]);
+            command.args(&argv[1..]).env("UV_PYTHON", &executable).env("UV_NO_SYNC", "0");
             command
         }
     };
