@@ -19,6 +19,7 @@ import argparse
 from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
+import functools
 import gzip
 import json
 import math
@@ -490,6 +491,17 @@ def cdse_credentials():
                       AWS_REGION="default", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR")
 
 
+@functools.cache
+def laea_footprint(path):
+    """The bounds of raster `path` in EPSG:3035. Each chunk of a bake tests every file, and `transform_bounds` holds
+    the GIL while it sets up a new transform, so each file pays for it once."""
+    import rasterio
+    from rasterio.warp import transform_bounds
+
+    with rasterio.open(path) as src:
+        return transform_bounds(src.crs, "EPSG:3035", *src.bounds, densify_pts=100)
+
+
 def copernicus_planes(files, bounds, seasons):
     """Season planes on a 20 m LAEA grid around the bounds from Snow Phenology S2 rasters {season: {layer: [path]}}.
 
@@ -512,6 +524,9 @@ def copernicus_planes(files, bounds, seasons):
             # 65535 is no data and 420 inland water.
             layer = np.full(grid.shape, 65535, np.uint16)
             for path in files.get(season, {}).get(name, []):
+                west, south, east, north = laea_footprint(path)
+                if west >= extent[2] or east <= extent[0] or south >= extent[3] or north <= extent[1]:
+                    continue
                 with rasterio.open(path) as src:
                     window = from_bounds(*transform_bounds(grid.crs, src.crs, *extent, densify_pts=100), src.transform)
                     window, raster = window.round_offsets().round_lengths(), Window(0, 0, src.width, src.height)
