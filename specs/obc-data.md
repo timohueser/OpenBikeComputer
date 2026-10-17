@@ -676,7 +676,8 @@ process never started.
   A leaf is baked when one of its steps baked, and unchanged when all of its steps are.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
-  run, once. A detached run whose process finds it at its start does nothing more. A run that
+  run, once. The signal ends a step program. A Rust step that runs fails within seconds, at its
+  next `check_stop`. A detached run whose process finds it at its start does nothing more. A run that
   stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
   detached `serve`.
 

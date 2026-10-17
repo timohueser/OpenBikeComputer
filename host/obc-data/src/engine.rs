@@ -6,8 +6,8 @@
 pub mod changes;
 pub mod plan;
 mod process;
+pub use process::{check_stop, peak_rss, python_executable, run_child};
 pub(crate) use process::{copy_errors, ended};
-pub use process::{peak_rss, python_executable, run_child};
 
 pub mod runs;
 pub mod state;
@@ -15,6 +15,8 @@ pub mod state;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -619,7 +621,8 @@ fn reusable(store: &Store, key: &str) -> Result<Option<Receipt>, String> {
 }
 
 /// Reuse the layer of the prepared key, or run the step and record its layer. With `again`, run
-/// the step also when the store has the layer: its receipt replaces the stored one.
+/// the step also when the store has the layer: its receipt replaces the stored one. A Rust step
+/// fails at its next [`check_stop`] once `stop` is set.
 fn build_step(
     store: &Store,
     root: &Path,
@@ -627,6 +630,7 @@ fn build_step(
     mut receipt: Receipt,
     mut request: Request,
     again: bool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
     if let Some(mut stored) = reusable(store, &receipt.key)?.filter(|_| !again) {
@@ -637,7 +641,7 @@ fn build_step(
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
-    let result = execute(store, root, step, &request, &mut receipt);
+    let result = execute(store, root, step, &request, &mut receipt, stop);
     let removed = remove_dir(&work);
     result?;
     removed?;
@@ -646,10 +650,17 @@ fn build_step(
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
-fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
+fn execute(
+    store: &Store,
+    root: &Path,
+    step: &Step,
+    request: &Request,
+    receipt: &mut Receipt,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
-        Run::Rust(function) => process::in_process(|| function(request)),
+        Run::Rust(function) => process::in_process(Arc::clone(stop), || function(request)),
         Run::Command(argv) => process::run(root, argv, request, false),
         Run::Python(argv) => process::run(root, argv, request, true),
     }?;
