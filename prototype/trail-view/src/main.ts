@@ -9,7 +9,7 @@ import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
 import { regionAt, type Region } from './regions';
 import { WEATHERS, weatherLight } from './weather';
-import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
+import { BINS, CURVATURE, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
 const element = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -48,8 +48,12 @@ const state = {
   season: 'summer (15 Aug)',
   hour: 16,
   weather: 'sunny',
-  /** Metres the eye rises above the spot, to see it as a drone would. */
+  /** Metres the eye rises above the ground, to see as a drone would. */
   rise: 0,
+  /** Free movement, and metres east and north of the spot the eye has walked. */
+  walk: false,
+  x: 0,
+  y: 0,
   yaw: 0,
   pitch: 0,
   vfov: 60,
@@ -80,6 +84,7 @@ async function select(id: string): Promise<void> {
   if (selecting !== id) return;
   const { meta } = bake;
   const region = regionAt(meta.lat, meta.lon);
+  Object.assign(state, { x: 0, y: 0 });
   terrain.setBake(bake, region);
   const area = meta.size * meta.size;
   const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
@@ -190,6 +195,20 @@ function photoVfov(shot: Photo): number {
   return (2 * Math.atan(photo.naturalHeight / 2 / focal) * 180) / Math.PI;
 }
 
+/**
+ * The eye over (x, y), in the frame the terrain is drawn in: the spot's eye at the origin, and the
+ * drawn ground lowered by the rise. Off the spot, the eye stands as high over the ground there.
+ */
+function eyeAt(x: number, y: number): THREE.Vector3 {
+  if (!loaded || (x === 0 && y === 0)) return new THREE.Vector3();
+  const ground = active(loaded.ground);
+  const at = ground.at(x, y);
+  if (Number.isNaN(at)) return new THREE.Vector3(x, y, 0);
+  return new THREE.Vector3(x, y, at + loaded.bake.meta.eye_above_ground_m - CURVATURE * (x * x + y * y));
+}
+
+const moved = () => state.x !== 0 || state.y !== 0;
+
 function aim(): void {
   const shot = loaded?.bake.meta.photo;
   let roll = 0;
@@ -202,7 +221,8 @@ function aim(): void {
   camera.fov = state.vfov;
   const yaw = (state.yaw * Math.PI) / 180;
   const pitch = (state.pitch * Math.PI) / 180;
-  camera.lookAt(Math.sin(yaw) * Math.cos(pitch), Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch));
+  camera.position.copy(eyeAt(state.x, state.y));
+  camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch))));
   camera.rotateZ((roll * Math.PI) / 180);
 }
 
@@ -238,7 +258,7 @@ function render(): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, lines.width, lines.height);
   ctx.setTransform(renderer.getPixelRatio(), 0, 0, renderer.getPixelRatio(), 0, 0);
-  drawLines(ctx, camera, lines.clientWidth, lines.clientHeight, skylines(state.castSkyline, state.photoSkyline));
+  if (!moved()) drawLines(ctx, camera, lines.clientWidth, lines.clientHeight, skylines(state.castSkyline, state.photoSkyline));
   if (state.peaks) placeLabels(labels, camera, loaded.sighted);
   else labels.innerHTML = '';
   drawCompass(compass, camera, loaded.sighted, state.pitch);
@@ -255,13 +275,14 @@ let ticks = 0;
 
 /** Rain falls and the day plays frame by frame; everything else renders on demand. */
 function animate(now: number): void {
-  if (!playing && !WEATHERS[state.weather].rain) {
+  if (!playing && !WEATHERS[state.weather].rain && !(state.walk && held.size)) {
     animating = false;
     return;
   }
   const dt = Math.min((now - lastTick) / 1000, 0.1);
   lastTick = now;
   terrain.setTime(now / 1000);
+  walk(dt);
   if (playing) {
     state.hour += (dt * (DAY[1] - DAY[0])) / DAY_S;
     if (state.hour > DAY[1]) state.hour = DAY[0];
@@ -379,6 +400,42 @@ frame.addEventListener(
 );
 addEventListener('resize', layout);
 
+/**
+ * Free movement: W A S D (or the arrows) walk over the ground, Q and E lower and raise the eye,
+ * Shift runs. Keys held move the eye every frame.
+ */
+const held = new Set<string>();
+const WALK_M_S = 6;
+const RUN = 12;
+addEventListener('keydown', (event) => {
+  if (!state.walk || (event.target as HTMLElement).closest?.('.lil-gui')) return;
+  const key = event.key.toLowerCase();
+  if (!['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'].includes(key)) return;
+  event.preventDefault();
+  held.add(key);
+  unlock();
+  startAnimation();
+});
+addEventListener('keyup', (event) => held.delete(event.key.toLowerCase()));
+addEventListener('blur', () => held.clear());
+
+/** One frame's walk; returns whether the eye moved. */
+function walk(dt: number): boolean {
+  if (!state.walk || !held.size) return false;
+  const speed = WALK_M_S * (held.has('shift') ? RUN : 1) * dt;
+  const ahead = (held.has('w') || held.has('arrowup') ? 1 : 0) - (held.has('s') || held.has('arrowdown') ? 1 : 0);
+  const right = (held.has('d') || held.has('arrowright') ? 1 : 0) - (held.has('a') || held.has('arrowleft') ? 1 : 0);
+  const up = (held.has('e') ? 1 : 0) - (held.has('q') ? 1 : 0);
+  const yaw = (state.yaw * Math.PI) / 180;
+  state.x += (Math.sin(yaw) * ahead + Math.cos(yaw) * right) * speed;
+  state.y += (Math.cos(yaw) * ahead - Math.sin(yaw) * right) * speed;
+  if (up) {
+    state.rise = Math.max(0, state.rise + up * speed);
+    surfaceChanged();
+  }
+  return ahead !== 0 || right !== 0 || up !== 0;
+}
+
 /** Back-to-back frames of the current view, as a steady-state frame time. */
 function measure(): void {
   const frames = 60;
@@ -413,6 +470,14 @@ const play = gui.add({ play: () => {
   if (playing) startAnimation();
   else lightChanged();
 } }, 'play').name('play day');
+gui.add(state, 'walk').name('free movement (WASD, Q/E, shift)').listen().onChange((on: boolean) => {
+  if (on) unlock();
+  requestRender();
+});
+gui.add({ home: () => {
+  Object.assign(state, { x: 0, y: 0, rise: 0 });
+  surfaceChanged();
+} }, 'home').name('back to the spot');
 gui.add(state, 'trees').name('trees and plants').onChange((on: boolean) => {
   terrain.nearField.trees.visible = on;
   requestRender();

@@ -432,15 +432,17 @@ vec3 lightUp(vec3 albedo, vec3 n, float shadow, float open) {
   return albedo * (ambient * (0.85 + 0.15 * n.z) * open + sunColour * mix(band, lit, gradient));
 }
 
+// The haze between the eye (three's cameraPosition, the origin at the spot) and a point.
 vec3 atmosphere(vec3 c, vec3 world) {
-  float d = length(world);
+  vec3 view = world - cameraPosition;
+  float d = length(view);
   // Haze lit from behind glows in the sun's colour, most of all when the sun is low.
-  float toward = max(dot(world / max(d, 1e-3), sunDir), 0.0);
-  vec3 hazeColour = sky(normalize(vec3(world.xy, 0.0)))
+  float toward = max(dot(view / max(d, 1e-3), sunDir), 0.0);
+  vec3 hazeColour = sky(normalize(vec3(view.xy, 0.0)))
     + sunColour * (0.12 + glow) * (0.25 * pow(toward, 6.0) + 0.6 * pow(toward, 40.0));
   // Height fog: the mean of exp(-altitude / H) along the sight line, over the eye's altitude
   // and the true altitude of the fragment.
-  float a0 = eyeAltitude;
+  float a0 = eyeAltitude + cameraPosition.z;
   float a1 = eyeAltitude + world.z + curvature * dot(world.xy, world.xy);
   float mean = abs(a1 - a0) < 1.0 ? exp(-a0 / hazeHeight)
     : hazeHeight * (exp(-a0 / hazeHeight) - exp(-a1 / hazeHeight)) / (a1 - a0);
@@ -452,7 +454,7 @@ vec3 atmosphere(vec3 c, vec3 world) {
   float above = a1 - eyeAltitude - cloudBase;
   if (above > -40.0 && cloudCover > 0.0) {
     vec2 cloud = cloudOver(world.xy);
-    c = mix(c, cloudColour(world / max(d, 1e-3), cloud.y, sunColour, ambient), smoothstep(-40.0, 160.0, above) * cloud.x);
+    c = mix(c, cloudColour(view / max(d, 1e-3), cloud.y, sunColour, ambient), smoothstep(-40.0, 160.0, above) * cloud.x);
   }
   // At night the eye loses colour and sees blue.
   c = mix(c, dot(c, vec3(0.3, 0.55, 0.15)) * vec3(0.7, 0.9, 1.5), 0.8 * night);
@@ -607,7 +609,7 @@ void main() {
   // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
   // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
   // would really show is darker than the sky. A wet road mirrors the sky a little too.
-  vec3 dir = normalize(vWorld);
+  vec3 dir = normalize(vWorld - cameraPosition);
   vec3 up = normalize(vec3(2.0 * curvature * vWorld.xy, 1.0));
   vec3 mirrored = reflect(dir, up);
   float fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
@@ -801,8 +803,9 @@ void main() {
   // The view ray meets the cloud base, which drops away with the earth's curve, so the layer runs
   // on to the horizon and fades into the haze there.
   float across = curvature * dot(dir.xy, dir.xy);
-  float t = 2.0 * cloudBase / (dir.z + sqrt(dir.z * dir.z + 4.0 * across * cloudBase));
-  vec2 cloud = cloudAt(dir.xy * t);
+  float base = max(cloudBase - cameraPosition.z, 1.0);
+  float t = 2.0 * base / (dir.z + sqrt(dir.z * dir.z + 4.0 * across * base));
+  vec2 cloud = cloudAt(cameraPosition.xy + dir.xy * t);
   float seen = cloud.x * exp(-t / (hazeKm * 1500.0));
   c = mix(c, cloudColour(dir, cloud.y, sunColour, ambient), seen);
   if (towers > 0.0) {

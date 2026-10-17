@@ -514,10 +514,25 @@ export class Terrain {
     this.uniforms.inverseProjection.value.copy(camera.projectionMatrixInverse);
     this.uniforms.cameraWorld.value.copy(camera.matrixWorld);
     const span = azimuthSpan(camera);
+    const eye = camera.position;
+    const away = Math.hypot(eye.x, eye.y) > 1;
     let drawn = 0;
     for (const mesh of this.wedges) {
       const centre = (mesh.userData.wedge + 0.5) * WEDGE_DEG;
-      mesh.visible = !span || Math.abs(wrap(centre - span.mid)) <= span.half + WEDGE_DEG / 2 + 1;
+      if (!span) mesh.visible = true;
+      else if (!away) mesh.visible = Math.abs(wrap(centre - span.mid)) <= span.half + WEDGE_DEG / 2 + 1;
+      else {
+        // Off the spot, a wedge shows if any of its rays, out to its far rings, lies in the view
+        // as seen from the eye.
+        mesh.visible = false;
+        for (const edge of [0, 0.5, 1]) {
+          const azimuth = ((mesh.userData.wedge + edge) * WEDGE_DEG * Math.PI) / 180;
+          for (let r = R0; r < R1 && !mesh.visible; r *= 3) {
+            const bearing = (Math.atan2(r * Math.sin(azimuth) - eye.x, r * Math.cos(azimuth) - eye.y) * 180) / Math.PI;
+            mesh.visible = Math.abs(wrap(bearing - span.mid)) <= span.half + 2;
+          }
+        }
+      }
       if (mesh.visible) drawn++;
     }
     const objects = this.nearField.trees.visible || this.nearField.buildings.visible ? this.nearField.triangles : 0;
@@ -540,7 +555,7 @@ const wrap = (degrees: number) => ((((degrees + 180) % 360) + 360) % 360) - 180;
 /** The azimuths the view can see, or null when it holds the nadir or the zenith and so sees all. */
 function azimuthSpan(camera: THREE.PerspectiveCamera): { mid: number; half: number } | null {
   for (const pole of [-1, 1]) {
-    const ndc = new THREE.Vector3(0, 0, pole).applyMatrix4(camera.matrixWorldInverse);
+    const ndc = new THREE.Vector3(0, 0, pole).add(camera.position).applyMatrix4(camera.matrixWorldInverse);
     if (ndc.z >= 0) continue;
     ndc.applyMatrix4(camera.projectionMatrix);
     if (Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1) return null;
@@ -550,7 +565,7 @@ function azimuthSpan(camera: THREE.PerspectiveCamera): { mid: number; half: numb
   let low = 0;
   let high = 0;
   for (const [x, y] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [-1, 0], [1, 0]]) {
-    const ray = new THREE.Vector3(x, y, 0.5).unproject(camera);
+    const ray = new THREE.Vector3(x, y, 0.5).unproject(camera).sub(camera.position);
     const delta = wrap((Math.atan2(ray.x, ray.y) * 180) / Math.PI - yaw);
     low = Math.min(low, delta);
     high = Math.max(high, delta);

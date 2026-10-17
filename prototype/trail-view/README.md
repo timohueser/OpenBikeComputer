@@ -66,6 +66,9 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   shadows, wet ground and rain. "play day" sweeps 4:30 to 22:30 in 36 s, and the clouds drift
   with the hour.
 - Drag to look, scroll to change the field of view. Either one leaves the photo camera.
+- "free movement": W A S D or the arrows walk over the ground, Q and E lower and raise the eye,
+  Shift runs; "back to the spot" returns. Detail is made for the spot: plants stand within 60 m
+  of it, trees within 1 km, and the finest ground within 1.25 km.
 - "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border between
   the two. "align camera" moves a photograph's camera; "copy camera JSON" copies it for
   `presets.json`. Red is the skyline read off the photograph, cyan the skyline cast through the
