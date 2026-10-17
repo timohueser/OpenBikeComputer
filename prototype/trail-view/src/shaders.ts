@@ -569,7 +569,9 @@ void main() {
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0));
   // Mapped exposed rock is outcrops in turf, about a third rock.
   rocky = max(rocky, 0.35 * g.bare);
-  if (rocky > 0.0) {
+  // Slab cells only where a pixel can show them; past that, rock is its share of colour.
+  if (rocky > 0.0 && footprint >= 4.0) albedo = mix(albedo, stone * 0.92, 0.45 * rocky);
+  if (rocky > 0.0 && footprint < 4.0) {
     // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
     vec2 along = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) : vec2(1.0, 0.0);
     float ribs = length(bedding.xy) > 0.01 ? 3.0 : 1.0;
@@ -644,7 +646,6 @@ ${COLOUR}
 uniform float tie;
 // Plants that grow only on moor (1) or only off it (-1); 0 grows anywhere.
 uniform float habitat;
-uniform float time;
 in vec3 color;
 // x, y, height, heading.
 in vec4 tree;
@@ -657,9 +658,7 @@ out vec3 vAlbedo;
 void main() {
   vec2 p = tree.xy;
   mat2 turn = mat2(cos(tree.w), sin(tree.w), -sin(tree.w), cos(tree.w));
-  // Ground plants lean in gusts of wind that run across the ground, more at the tip.
-  vec2 sway = tie > 0.0 ? vec2(0.6, 0.35) * position.z * position.z * 0.12 * (sin(time * 1.7 - dot(p, vec2(0.21, 0.13))) + 0.6) : vec2(0.0);
-  vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + vec3(turn * position.xy * tree.z + sway * tree.z, position.z * tree.z);
+  vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + vec3(turn * position.xy, position.z) * tree.z;
   vNormal = vec3(turn * normal.xy, normal.z);
   vShadow = shadowAt(p);
   vAlbedo = color * tint;

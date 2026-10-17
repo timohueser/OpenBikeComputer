@@ -21,8 +21,13 @@ const labels = element('#labels');
 const compass = element('#compass');
 const status = element('#status');
 
+/**
+ * Pixels per CSS pixel at most. The terrain shader is bound by fill, and a painted look keeps its
+ * character a little softer: 1.5 on a 2× screen draws 44 % fewer pixels than 2.
+ */
+const MAX_PIXEL_RATIO = 1.5;
 const renderer = new THREE.WebGLRenderer({ canvas: element<HTMLCanvasElement>('#gl'), antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.autoClear = false;
 const camera = new THREE.PerspectiveCamera(60, 1, FAR_PASS.near, FAR_PASS.far);
 camera.up.set(0, 0, 1);
@@ -55,8 +60,6 @@ const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '�
 interface Loaded {
   bake: Bake;
   region: Region;
-  /** Whether the bake holds sea: water at sea level on the near levels. */
-  sea: boolean;
   ground: { dtm: Surface; glo30: Surface };
   sky: { dtm: Skyline; glo30: Skyline };
   sighted: Sighted[];
@@ -66,7 +69,6 @@ let loaded: Loaded | null = null;
 const glo30Only = () => !loaded?.bake.meta.dtm_levels || state.surface === GLO30;
 const active = <T>(pair: { dtm: T; glo30: T }) => (glo30Only() ? pair.glo30 : pair.dtm);
 const photoLocked = () => Boolean(state.photoCamera && loaded?.bake.meta.photo && photo.naturalWidth);
-
 
 let selecting = '';
 async function select(id: string): Promise<void> {
@@ -87,12 +89,11 @@ async function select(id: string): Promise<void> {
     : dtm;
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
-  loaded = { bake, region, sea: holdsSea(bake), ground: { dtm, glo30 }, sky, sighted: [] };
+  loaded = { bake, region, ground: { dtm, glo30 }, sky, sighted: [] };
   look.snap = region.look.snap;
   look.hazeKm = region.look.hazeKm;
   terrain.setLook(look);
   readout.region = region.chain.join(' › ');
-  startAnimation();
   const shot = meta.photo;
   const columns = shot?.columns;
   readout.rmsDtm = columns && meta.dtm_levels ? `${rms(sky.dtm, columns).toFixed(3)}°` : '–';
@@ -251,20 +252,10 @@ let animating = false;
 let lastTick = 0;
 let ticks = 0;
 
-/** Surf rolls where the bake holds sea. */
-const seaside = () => !!loaded?.sea;
 
-function holdsSea(bake: Bake): boolean {
-  const { size, water_levels, eye_m } = bake.meta;
-  for (let k = 0; k < water_levels; k++) {
-    for (let i = 0; i < size * size; i += 7) if (bake.classes[(k * size * size + i) * 2 + 1] > 127 && bake.surface[k][i] + eye_m < 2) return true;
-  }
-  return false;
-}
-
-/** Rain falls, surf rolls and the day plays frame by frame; everything else renders on demand. */
+/** Rain falls and the day plays frame by frame; everything else renders on demand. */
 function animate(now: number): void {
-  if (!playing && !WEATHERS[state.weather].rain && !seaside()) {
+  if (!playing && !WEATHERS[state.weather].rain) {
     animating = false;
     return;
   }
@@ -327,7 +318,7 @@ async function saveSideBySide(): Promise<void> {
     drawLines(ctx, camera, width, height, skylines(cast, true));
     ctx.restore();
   }
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
   layout();
   await save(out, `-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
@@ -483,7 +474,7 @@ tools.add({ measure }, 'measure').name('measure 60 frames');
 tools.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
 tools.add({ saveView }, 'saveView').name('save view');
 // For scripted checks from the console.
-Object.assign(window, { trailView: { gui, state, look, align, render, layout, terrain, loaded: () => loaded } });
+Object.assign(window, { trailView: { gui, state, look, align, render, layout, terrain, renderer, loaded: () => loaded } });
 
 terrain.setLook(look);
 select(state.preset).catch((error: Error) => (status.textContent = error.message));

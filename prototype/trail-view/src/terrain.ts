@@ -78,7 +78,7 @@ const probit = (p: number) => 4.91 * (p ** 0.14 - (1 - p) ** 0.14);
 const NOISE_MEAN = 0.486;
 const NOISE_SPREAD = 0.123;
 
-const AZIMUTHS = 2048;
+const AZIMUTHS = 1536;
 const WEDGES = 32;
 const PER_WEDGE = AZIMUTHS / WEDGES;
 const WEDGE_DEG = 360 / WEDGES;
@@ -86,14 +86,18 @@ const R0 = 1;
 // The last level's inscribed circle, so every fragment has data and none is discarded: a
 // discard turns off the GPU's hidden-surface removal, and the terrain shader is costly.
 const R1 = 320_000;
-const RINGS = 1270;
+const RINGS = 950;
 const Q = (R1 / R0) ** (1 / (RINGS - 1));
 
-/** The near pass draws rings out to here; the far pass starts here and its near plane hides the rest. */
+/**
+ * The near pass draws rings out to 3 km over the far pass, so the far pass starts just inside
+ * that: every far fragment nearer than this would be shaded only to be drawn over. Its near plane
+ * sits inside the nearest far ring's view depth at the corner of a wide view.
+ */
 const NEAR_RING = Math.ceil(Math.log(3_000 / R0) / Math.log(Q));
-const FAR_RING = Math.floor(Math.log(100 / R0) / Math.log(Q));
+const FAR_RING = Math.floor(Math.log(2_500 / R0) / Math.log(Q));
 export const NEAR_PASS = { near: 0.5, far: 6_000 };
-export const FAR_PASS = { near: 150, far: 500_000 };
+export const FAR_PASS = { near: 800, far: 500_000 };
 
 /** One wedge, in its own frame: azimuths 0 to 11.25° clockwise from north, and a centre fan. */
 function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeometry } {
