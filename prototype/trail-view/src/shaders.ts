@@ -92,6 +92,56 @@ vec3 sky(vec3 dir) {
 }
 `;
 
+/**
+ * One cloud layer at cloudBase above the eye, curved with the earth like the terrain: fair-weather
+ * cells about 2.5 km across with smaller lobes on their edges, drifting with the hour. Reads
+ * `curvature` and SKY's sunDir.
+ */
+const CLOUDS = /* glsl */ `
+uniform float cloudCover;
+// The noise value where cloud starts, so that cloudCover of the sky is under cloud.
+uniform float cloudEdge;
+uniform float cloudBase;
+uniform float cloudDark;
+uniform vec2 cloudDrift;
+
+float cloudHash(vec2 q) {
+  vec3 p3 = fract(q.xyx * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float cloudNoise(vec2 q) {
+  vec2 i = floor(q);
+  vec2 f = q - i;
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), f.x), mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0)), f.x), f.y);
+}
+
+// How much cloud there is above a point, and how thick it is there, both 0 to 1.
+vec2 cloudAt(vec2 xy) {
+  if (cloudCover <= 0.0) return vec2(0.0);
+  vec2 q = (xy + cloudDrift) / 2500.0;
+  float n = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 5; i++) {
+    n += a * cloudNoise(q);
+    q = q * 2.03 + 17.0;
+    a *= 0.5;
+  }
+  return vec2(smoothstep(cloudEdge - 0.04, cloudEdge + 0.06, n), smoothstep(cloudEdge, cloudEdge + 0.25, n));
+}
+
+// A cloud's underside: sky light, darker where it is thick; a low sun lights it from the side in
+// its own colour, and thin edges toward the sun glow.
+vec3 cloudColour(vec3 dir, float thick, vec3 sunLight, vec3 skyLight) {
+  float toward = max(dot(dir, sunDir), 0.0);
+  float low = 1.0 - smoothstep(-0.05, 0.3, sunDir.z);
+  return skyLight * (1.05 - cloudDark * thick) + sunLight * (0.25 + 0.4 * low) * (1.0 - 0.6 * thick)
+    + sunLight * pow(toward, 10.0) * (1.0 - thick) * 1.2;
+}
+`;
+
 /** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
 const COLOUR = /* glsl */ `
 uniform sampler2DArray classes;
@@ -267,6 +317,7 @@ vec3 finish(vec3 c) {
  */
 const SHADE = /* glsl */ `
 ${SKY}
+${CLOUDS}
 ${FINISH}
 uniform vec3 sunColour;
 uniform vec3 ambient;
@@ -279,6 +330,24 @@ uniform float hazeHeight;
 uniform float mistTop;
 uniform sampler2DShadow nearShadow;
 uniform mat4 nearShadowMatrix;
+// Wet ground is darker and its roads shine.
+uniform float wet;
+// The cloud layer drawn once per hour over cloudReach around the eye, for the ground's lookups.
+uniform sampler2D cloudMap;
+uniform float cloudReach;
+
+vec2 cloudOver(vec2 xy) {
+  if (max(abs(xy.x), abs(xy.y)) > cloudReach) return cloudAt(xy);
+  return texture(cloudMap, xy / (2.0 * cloudReach) + 0.5).rg;
+}
+
+// The share of sunlight that reaches a point through the layer, along the sun's ray.
+float cloudShadow(vec3 world) {
+  float below = cloudBase - world.z - curvature * dot(world.xy, world.xy);
+  if (cloudCover <= 0.0 || below <= 0.0 || sunDir.z <= 0.0) return 1.0;
+  vec2 cloud = cloudOver(world.xy + sunDir.xy / max(sunDir.z, 0.08) * below);
+  return 1.0 - cloud.x * (0.75 + 0.25 * cloud.y);
+}
 
 // Trees and buildings near the eye cast into a depth map from the sun. Outside it, 1. The
 // lookup starts a quarter metre off the surface, so a face does not shadow itself, and the GPU
@@ -317,6 +386,12 @@ vec3 atmosphere(vec3 c, vec3 world) {
   // Valley mist: a pale layer below its top, thicker with distance.
   float mist = clamp((mistTop - a1) / 150.0, 0.0, 1.0) * (1.0 - exp(-d / 1500.0));
   c = mix(c, mix(hazeColour, vec3(dot(hazeColour, vec3(0.333)) * 1.15), 0.5), mist);
+  // Ground above the cloud base stands in the cloud, where the layer is, and takes its colour.
+  float above = a1 - eyeAltitude - cloudBase;
+  if (above > -40.0 && cloudCover > 0.0) {
+    vec2 cloud = cloudOver(world.xy);
+    c = mix(c, cloudColour(world / max(d, 1e-3), cloud.y, sunColour, ambient), smoothstep(-40.0, 160.0, above) * cloud.x);
+  }
   // At night the eye loses colour and sees blue.
   c = mix(c, dot(c, vec3(0.3, 0.55, 0.15)) * vec3(0.7, 0.9, 1.5), 0.8 * night);
   return c;
@@ -358,17 +433,18 @@ void main() {
   // Steep open ground is rock; trees and roads hold on to it.
   float steep = 1.0 - smoothstep(0.766, 0.809, n.z);
   vec3 albedo = mix(g.albedo, rock, steep * (1.0 - g.tree) * (1.0 - g.road));
-  albedo = mix(albedo, ramps[18], g.snow);
-  float shadow = vShadow * nearShadowAt(vWorld, n);
+  albedo = mix(albedo, ramps[18], g.snow) * (1.0 - 0.3 * wet * (1.0 - g.snow));
+  float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   vec3 c = lightUp(albedo, n, shadow, open);
 
   // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
   // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
-  // would really show is darker than the sky.
+  // would really show is darker than the sky. A wet road mirrors the sky a little too.
   vec3 dir = normalize(vWorld);
   vec3 up = normalize(vec3(2.0 * curvature * vWorld.xy, 1.0));
   vec3 mirrored = reflect(dir, up);
   float fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
+  c += wet * g.road * fresnel * sky(mirrored);
   vec3 body = mix(ramps[21], shore, 1.0 - smoothstep(0.5, 0.8, g.water)) * (ambient + 0.5 * sunColour * max(sunDir.z, 0.0));
   vec3 water = mix(body, sky(mirrored), fresnel) + 4.0 * sunColour * shadow * pow(max(dot(mirrored, sunDir), 0.0), 400.0);
   c = mix(c, water, smoothstep(0.45, 0.55, g.water));
@@ -440,7 +516,8 @@ out vec4 colour;
 
 void main() {
   vec3 n = normalize(vNormal);
-  colour = vec4(finish(atmosphere(lightUp(vAlbedo, n, vShadow * nearShadowAt(vWorld, n), 1.0), vWorld)), 1.0);
+  float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
+  colour = vec4(finish(atmosphere(lightUp(vAlbedo * (1.0 - 0.2 * wet), n, shadow, 1.0), vWorld)), 1.0);
 }
 `;
 
@@ -489,10 +566,14 @@ void main() {
 
 export const skyFragment = /* glsl */ `
 ${SKY}
+uniform float curvature;
+${CLOUDS}
 ${FINISH}
 uniform mat4 inverseProjection;
 uniform mat4 cameraWorld;
 uniform vec3 sunColour;
+uniform vec3 ambient;
+uniform float hazeKm;
 in vec2 vNdc;
 out vec4 colour;
 
@@ -504,7 +585,61 @@ void main() {
   vec3 c = sky(dir) + sunColour * (0.06 * pow(near, 16.0) + 0.35 * pow(near, 900.0));
   float disk = smoothstep(0.0095, 0.0075, acos(clamp(dot(dir, sunDir), -1.0, 1.0)));
   c = mix(c, sunColour * 3.0 + 0.3, disk * step(0.001, dot(sunColour, vec3(1.0))));
+  // The view ray meets the cloud base, which drops away with the earth's curve, so the layer runs
+  // on to the horizon and fades into the haze there.
+  float across = curvature * dot(dir.xy, dir.xy);
+  float t = 2.0 * cloudBase / (dir.z + sqrt(dir.z * dir.z + 4.0 * across * cloudBase));
+  vec2 cloud = cloudAt(dir.xy * t);
+  float seen = cloud.x * exp(-t / (hazeKm * 1500.0));
+  c = mix(c, cloudColour(dir, cloud.y, sunColour, ambient), seen);
   colour = vec4(finish(c), 1.0);
+}
+`;
+
+/** The cloud layer over cloudReach around the eye, one texel per 78 m: cover and thickness. */
+export const cloudMapFragment = /* glsl */ `
+${SKY}
+uniform float curvature;
+${CLOUDS}
+uniform float cloudReach;
+out vec4 colour;
+
+void main() {
+  vec2 xy = (gl_FragCoord.xy / 1024.0 - 0.5) * 2.0 * cloudReach;
+  colour = vec4(cloudAt(xy), 0.0, 1.0);
+}
+`;
+
+/**
+ * Rain over the view: three layers of slanted streaks, nearer ones larger and faster, in the
+ * colour of the sky light.
+ */
+export const rainFragment = /* glsl */ `
+${FINISH}
+uniform float rain;
+uniform float time;
+uniform vec3 ambient;
+in vec2 vNdc;
+out vec4 colour;
+
+float rainHash(vec2 q) {
+  vec3 p3 = fract(q.xyx * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  vec2 uv = vNdc * 0.5 + 0.5;
+  float a = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float s = float(i);
+    vec2 q = vec2(uv.x * (140.0 - 40.0 * s) + uv.y * 5.0, uv.y * (5.0 - 1.2 * s) + time * (1.6 + 0.9 * s));
+    float h = rainHash(vec2(floor(q.x), s));
+    float y = fract(q.y + h * 13.0);
+    float x = fract(q.x) - 0.5;
+    a += smoothstep(0.0, 0.06, y) * smoothstep(0.3, 0.08, y) * smoothstep(0.14, 0.0, abs(x)) * step(0.6, h) * (0.5 + 0.3 * s);
+  }
+  colour = vec4(finish(ambient * 1.4), min(a, 1.0) * 0.3 * rain);
 }
 `;
 

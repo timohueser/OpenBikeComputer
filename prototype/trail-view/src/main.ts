@@ -8,6 +8,7 @@ import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './ov
 import { KITS, type KitName } from './models/kits';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
+import { WEATHERS, weatherLight } from './weather';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
@@ -41,6 +42,7 @@ const state = {
   buildings: true,
   season: 'summer (15 Aug)',
   hour: 16,
+  weather: 'sunny',
   yaw: 0,
   pitch: 0,
   vfov: 60,
@@ -138,12 +140,14 @@ function surfaceChanged(): void {
   layout();
 }
 
-function lightChanged(): void {
+function lightChanged(refreshShadows = true): void {
   if (!loaded) return;
   const { lat, lon, id } = loaded.bake.meta;
   const timezone = presetOf(id).tz;
+  const weather = WEATHERS[state.weather];
   const light = lightAt(lat, lon, SEASONS[state.season], state.hour, timezone);
-  terrain.setLight(light);
+  terrain.setLight(weatherLight(light, weather), refreshShadows);
+  terrain.setWeather(weather, state.hour);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
   readout.sun = `${clock(Math.round(state.hour * 60))} · altitude ${light.altitude.toFixed(1)}°, bearing ${bearing.toFixed(0)}°`;
   requestRender();
@@ -192,7 +196,7 @@ function aim(): void {
 
 let pending = false;
 function requestRender(): void {
-  if (pending) return;
+  if (pending || animating) return;
   pending = true;
   requestAnimationFrame(render);
 }
@@ -214,6 +218,7 @@ function render(): void {
     else renderer.clearDepth();
     renderer.render(scene, camera);
   }
+  if (WEATHERS[state.weather].rain) renderer.render(terrain.overlay, camera);
   const locked = photoLocked();
   photo.style.display = locked ? '' : 'none';
   photo.style.clipPath = `inset(0 ${(100 * (1 - state.wipe)).toFixed(2)}% 0 0)`;
@@ -225,6 +230,40 @@ function render(): void {
   if (state.peaks) placeLabels(labels, camera, loaded.sighted);
   else labels.innerHTML = '';
   drawCompass(compass, camera, loaded.sighted, state.pitch);
+}
+
+/** The played day runs from DAY[0] to DAY[1] o'clock in DAY_S seconds, and starts over. */
+const DAY = [4.5, 22.5];
+const DAY_S = 36;
+let playing = false;
+let animating = false;
+let lastTick = 0;
+let ticks = 0;
+
+/** Rain falls and the day plays frame by frame; everything else renders on demand. */
+function animate(now: number): void {
+  if (!playing && !WEATHERS[state.weather].rain) {
+    animating = false;
+    return;
+  }
+  const dt = Math.min((now - lastTick) / 1000, 0.1);
+  lastTick = now;
+  terrain.setTime(now / 1000);
+  if (playing) {
+    state.hour += (dt * (DAY[1] - DAY[0])) / DAY_S;
+    if (state.hour > DAY[1]) state.hour = DAY[0];
+    // The cast shadows follow the sun every third frame: they cost more than a frame.
+    lightChanged(++ticks % 3 === 0);
+  }
+  render();
+  requestAnimationFrame(animate);
+}
+
+function startAnimation(): void {
+  if (animating) return;
+  animating = true;
+  lastTick = performance.now();
+  requestAnimationFrame(animate);
 }
 
 function skylines(cast: boolean, photographed: boolean): Line[] {
@@ -288,7 +327,8 @@ async function save(canvas: HTMLCanvasElement, suffix: string): Promise<void> {
   const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
   const { id, dtm_levels, half0_m } = loaded!.bake.meta;
   const reach = glo30Only() ? 'glo30' : `dtm${(half0_m * 2 ** (dtm_levels - 1)) / 1000}km`;
-  const name = `${id}-${reach}-q${Object.keys(SEASONS).indexOf(state.season) + 1}${suffix}.png`;
+  const weather = state.weather === 'sunny' ? '' : `-${state.weather}`;
+  const name = `${id}-${reach}-q${Object.keys(SEASONS).indexOf(state.season) + 1}${weather}${suffix}.png`;
   const response = await fetch(`/__shot/${name}`, { method: 'POST', body: blob });
   readout.frame = response.ok ? `saved shots/${name}` : `saving failed: ${response.status}`;
 }
@@ -349,7 +389,17 @@ const gui = new GUI({ title: 'Trail View', width: 340 });
 const spots = Object.fromEntries(presets.map((p) => [`${KITS[p.kit as KitName].name} · ${p.name}`, p.id]));
 gui.add(state, 'preset', spots).name('spot').onChange(select);
 gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
-gui.add(state, 'hour', 0, 24, 0.05).name('time of day').onChange(lightChanged);
+gui.add(state, 'hour', 0, 24, 0.05).name('time of day').listen().onChange(() => lightChanged());
+gui.add(state, 'weather', Object.keys(WEATHERS)).onChange(() => {
+  lightChanged();
+  startAnimation();
+});
+const play = gui.add({ play: () => {
+  playing = !playing;
+  play.name(playing ? 'pause' : 'play day');
+  if (playing) startAnimation();
+  else lightChanged();
+} }, 'play').name('play day');
 gui.add(state, 'trees').name('trees and plants').onChange((on: boolean) => {
   terrain.nearField.trees.visible = on;
   requestRender();

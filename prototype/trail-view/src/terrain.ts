@@ -10,8 +10,22 @@ import type { Light } from './light';
 import type { Kit } from './models/kits';
 import { NearField } from './nearfield';
 import { ROADS, ROCK, SHORE } from './palette';
-import { deriveFragment, fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
+import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
+import type { Weather } from './weather';
+
+/** How far the clouds drift in an hour of the day, in metres east and north: slow enough for a day played in 30 s. */
+const DRIFT_PER_HOUR = [2000, 700];
+
+/** The cloud map covers this many metres around the eye, 1024 texels across. */
+const CLOUD_REACH_M = 40_000;
+
+/** The standard normal quantile, Tukey's lambda approximation. */
+const probit = (p: number) => 4.91 * (p ** 0.14 - (1 - p) ** 0.14);
+// Mean and spread of the cloud noise (five octaves of value noise), measured over 400,000
+// samples; with them a cover of 0.14, 0.62 or 0.97 puts 0.15, 0.61 or 0.97 of the sky under cloud.
+const NOISE_MEAN = 0.486;
+const NOISE_SPREAD = 0.123;
 
 const AZIMUTHS = 2048;
 const WEDGES = 32;
@@ -87,6 +101,8 @@ export interface Look {
 export class Terrain {
   readonly far = new THREE.Scene();
   readonly near = new THREE.Scene();
+  /** Drawn over both passes: the rain. */
+  readonly overlay = new THREE.Scene();
   /** Triangles one wedge draws over both passes. */
   private readonly perWedge: number;
   private readonly uniforms: Record<string, THREE.IUniform>;
@@ -113,6 +129,15 @@ export class Terrain {
   private normals?: THREE.WebGLArrayRenderTarget;
   private readonly derivePass = new THREE.Scene();
   private surfaceStale = true;
+  private look?: Look;
+  private weather?: Weather;
+  private readonly cloudMap = new THREE.WebGLRenderTarget(1024, 1024, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+  });
+  private readonly cloudPass = new THREE.Scene();
+  private cloudsStale = true;
 
   constructor() {
     const geometry = wedgeGeometries();
@@ -162,6 +187,16 @@ export class Terrain {
       hazeKm: { value: 35 },
       hazeHeight: { value: 2500 },
       mistTop: { value: 0 },
+      cloudCover: { value: 0 },
+      cloudEdge: { value: 1 },
+      cloudBase: { value: 2000 },
+      cloudDark: { value: 0 },
+      cloudDrift: { value: new THREE.Vector2() },
+      wet: { value: 0 },
+      cloudMap: { value: this.cloudMap.texture },
+      cloudReach: { value: CLOUD_REACH_M },
+      rain: { value: 0 },
+      time: { value: 0 },
       inverseProjection: { value: new THREE.Matrix4() },
       cameraWorld: { value: new THREE.Matrix4() },
     });
@@ -186,6 +221,10 @@ export class Terrain {
     this.far.add(sky);
     this.shadowPass.add(quad(material(fullscreenVertex, shadowFragment, true)));
     this.derivePass.add(quad(material(fullscreenVertex, deriveFragment, true)));
+    this.cloudPass.add(quad(material(fullscreenVertex, cloudMapFragment, true)));
+    const rain = material(fullscreenVertex, rainFragment, true);
+    rain.transparent = true;
+    this.overlay.add(quad(rain));
     this.nearField = new NearField(u);
     this.near.add(this.nearField.trees, this.nearField.buildings);
     for (const [scene, wedge] of [
@@ -279,9 +318,10 @@ export class Terrain {
     this.shadowsStale = this.surfaceStale = this.nearField.shadowsStale = true;
   }
 
-  setLight(light: Light): void {
+  /** The light; while the day plays, the shadows may follow the sun only every few frames. */
+  setLight(light: Light, refreshShadows = true): void {
     const u = this.uniforms;
-    if (!u.sunDir.value.equals(light.sun)) this.shadowsStale = this.nearField.shadowsStale = true;
+    if (refreshShadows && !u.sunDir.value.equals(light.sun)) this.shadowsStale = this.nearField.shadowsStale = true;
     u.sunDir.value.copy(light.sun);
     u.sunColour.value.copy(light.sunColour);
     u.ambient.value.copy(light.ambient);
@@ -291,10 +331,31 @@ export class Terrain {
     u.night.value = light.night;
   }
 
+  /** Seconds, for the falling rain. */
+  setTime(seconds: number): void {
+    this.uniforms.time.value = seconds;
+  }
+
+  /** The cloud layer, wet and rain; the clouds stand where the hour has drifted them. */
+  setWeather(weather: Weather, hour: number): void {
+    const u = this.uniforms;
+    this.weather = weather;
+    u.cloudCover.value = weather.cover;
+    u.cloudEdge.value = NOISE_MEAN + NOISE_SPREAD * probit(1 - weather.cover);
+    u.cloudBase.value = weather.base;
+    u.cloudDark.value = weather.dark;
+    u.cloudDrift.value.set(DRIFT_PER_HOUR[0] * hour, DRIFT_PER_HOUR[1] * hour);
+    u.wet.value = weather.wet;
+    u.rain.value = weather.rain;
+    this.cloudsStale = true;
+    if (this.look) this.setLook(this.look);
+  }
+
   setLook(look: Look): void {
     const u = this.uniforms;
+    this.look = look;
     u.snap.value = look.snap;
-    u.hazeKm.value = look.hazeKm;
+    u.hazeKm.value = look.hazeKm * (this.weather?.haze ?? 1);
     u.hazeHeight.value = look.hazeHeight;
     u.mistTop.value = look.mistTop;
     u.softness.value = look.softness;
@@ -308,6 +369,12 @@ export class Terrain {
   shade(renderer: THREE.WebGLRenderer, camera: THREE.Camera): boolean {
     if (!this.texture || !this.normals) return false;
     this.nearField.shade(renderer);
+    if (this.cloudsStale) {
+      this.cloudsStale = false;
+      renderer.setRenderTarget(this.cloudMap);
+      renderer.render(this.cloudPass, camera);
+      renderer.setRenderTarget(null);
+    }
     if (this.surfaceStale) {
       this.surfaceStale = false;
       for (let k = 0; k < this.normals.depth; k++) {

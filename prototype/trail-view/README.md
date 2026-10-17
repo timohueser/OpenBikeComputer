@@ -52,6 +52,9 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
 `http://localhost:5180/models.html` shows every model of a kit at each level of detail.
 
 - "spot" picks a place by region, "season" one day of the year, "time of day" the local hour.
+- "weather" is sunny, cloudy or rainy (`src/weather.ts`): one cloud layer above the eye, its
+  shadows, wet ground and rain. "play day" sweeps 4:30 to 22:30 in 36 s, and the clouds drift
+  with the hour.
 - Drag to look, scroll to change the field of view. Either one leaves the photo camera.
 - "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border between
   the two. "align camera" moves a photograph's camera; "copy camera JSON" copies it for
