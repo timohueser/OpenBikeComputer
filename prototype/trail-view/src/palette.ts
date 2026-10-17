@@ -5,6 +5,7 @@
  */
 
 import * as THREE from 'three';
+import type { Land } from './models/kits';
 
 type Ramp = [string, string, string];
 
@@ -57,24 +58,31 @@ export const DECIDUOUS: Record<string, number> = { needleleaved: 0.2, mixed: 0.5
 export const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
 
 export const ROCK = '#8c877d';
-export const SHORE = '#4f8088';
+/** Open water away from the shore, and beside it, where a kit does not say. */
+export const SEA = { deep: '#2c5874', shallow: '#4f8088' };
+/** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
+export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
+/** Dry-stone walls and hedges. */
+export const STONE = ['#9a958a', '#8a857a', '#a8a294'];
+export const HEDGE = ['#3f5a30', '#4a6434', '#36502c'];
 
 /** The 11 class ramps for a season, as 33 colours. */
-export function ramps(season: number, deciduous: number): THREE.Color[] {
-  const table = SEASONAL[season];
+export function ramps(season: number, deciduous: number, land?: Land): THREE.Color[] {
+  const table: Seasonal = { ...SEASONAL[season], ...land?.ramps };
+  const fixed: typeof FIXED = { ...FIXED, ...land?.ramps };
   const tree = table.needle.map((needle, i) => new THREE.Color(needle).lerp(new THREE.Color(table.broad[i]), deciduous));
   const order: (Ramp | THREE.Color[])[] = [
     tree,
-    FIXED.shrub,
+    fixed.shrub,
     table.grass,
     table.crop,
-    FIXED.built,
-    FIXED.bare,
-    FIXED.snow,
-    FIXED.water,
-    FIXED.wetland,
-    FIXED.mangrove,
-    FIXED.moss,
+    fixed.built,
+    fixed.bare,
+    fixed.snow,
+    fixed.water,
+    fixed.wetland,
+    fixed.mangrove,
+    fixed.moss,
   ];
   return order.flatMap((ramp) => ramp.map((colour) => (colour instanceof THREE.Color ? colour : new THREE.Color(colour))));
 }

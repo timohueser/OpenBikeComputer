@@ -1,15 +1,19 @@
 /**
  * What the near pass draws besides the terrain, from the place's kit: trees within 1 km at three
- * levels of detail, shrubs and ground plants near the eye, and OSM buildings as the kit's houses.
+ * levels of detail, shrubs, rocks and ground plants near the eye, OSM buildings as the kit's houses
+ * and landmarks, and OSM walls and hedges.
  * Where each object stands comes from the data; the kit decides what it looks like.
  */
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Bake, Building } from './bake';
+import { HABITATS, type Bake, type Building, type Habitat } from './bake';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import type { Kit } from './models/kits';
+import { lighthouse, ruin } from './models/landmarks';
+import { HEDGE, STONE } from './palette';
 import { plant, type PlantName } from './models/plants';
+import { rock, type RockName } from './models/rocks';
 import { random } from './models/shape';
 import { LOD_RANGE_M, tree, type Lod, type Season, type TreeName } from './models/trees';
 import { buildingVertex, depthFragment, objectFragment, treeVertex } from './shaders';
@@ -17,13 +21,17 @@ import { buildingVertex, depthFragment, objectFragment, treeVertex } from './sha
 /** WorldCover classes as the page's palette indexes them (CLASSES in bake.py). */
 const CLASS = { tree: 0, shrub: 1, grass: 2, crop: 3, bare: 5, moss: 10 } as const;
 
-/** Where each ground plant grows, how tall it stands, and the share of grid points it takes there. */
-const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share: number }> = {
-  grass: { on: [CLASS.grass, CLASS.crop], height: [0.25, 0.5], share: 1 },
+/**
+ * Where each ground plant grows, how tall it stands, and the share of grid points it takes there.
+ * In a kit with moor, heather also grows on grass that the satellite sees as moor, and grass only
+ * off it: the shader decides per plant from the same ground the terrain paints.
+ */
+const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share: number; habitat?: 1 | -1 }> = {
+  grass: { on: [CLASS.grass, CLASS.crop], height: [0.25, 0.5], share: 1, habitat: -1 },
   'alpine-flowers': { on: [CLASS.grass], height: [0.2, 0.35], share: 0.15 },
   fern: { on: [CLASS.tree], height: [0.5, 0.9], share: 0.3 },
-  heather: { on: [CLASS.shrub, CLASS.moss, CLASS.bare], height: [0.25, 0.45], share: 0.7 },
-  'heather-bloom': { on: [CLASS.shrub, CLASS.moss], height: [0.25, 0.45], share: 0.35 },
+  heather: { on: [CLASS.shrub, CLASS.moss, CLASS.bare], height: [0.2, 0.4], share: 0.4, habitat: 1 },
+  'heather-bloom': { on: [CLASS.shrub, CLASS.moss], height: [0.2, 0.4], share: 0.15, habitat: 1 },
   huckleberry: { on: [CLASS.tree], height: [0.4, 0.8], share: 0.25 },
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
@@ -35,6 +43,23 @@ const SHRUB_RADIUS_M = 500;
 const SHRUB_SPACING_M = 5;
 const SHRUB_SHARE = 0.5;
 const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
+/**
+ * Rocks on a jittered grid within this many metres, on open ground that is steep, on a ridge or
+ * by the sea, as many as the kit's outcrops say: the same ground the terrain paints with slabs.
+ */
+const ROCK_RADIUS_M = 400;
+const ROCK_SPACING_M = 4;
+const ROCK_HEIGHT_M: [number, number] = [0.25, 1.3];
+/** Habitats of open ground: a fine land cover map that says so overrules a WorldCover tree pixel. */
+const TREELESS = new Set<Habitat>(['rock', 'heath', 'bog', 'bracken', 'rough', 'pasture', 'sand', 'saltmarsh']);
+/** Crags along a crest, about this far apart and this tall. */
+const CRAG_SPACING_M = 5;
+const CRAG_HEIGHT_M: [number, number] = [2, 6];
+/** Small stones on a jittered grid within this many metres, on mapped bare rock. */
+const STONE_RADIUS_M = 60;
+const STONE_SPACING_M = 1.2;
+/** WorldCover classes of open, unfarmed ground, as the shader's `rough`. */
+const ROUGH = new Set<number>([CLASS.shrub, CLASS.grass, CLASS.bare, 8, CLASS.moss]);
 
 /** OSM building values that draw nothing, draw as a barn or shed, or draw as a block. */
 const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
@@ -53,6 +78,10 @@ const LARGEST_M2 = 2500;
 const FLAT_ROOF = '#7a766e';
 /** Beyond this, a house is too far for its windows to show. */
 const PLAIN_M = 400;
+/** Width and height of a dry-stone wall and of a hedge; both sink a little into the ground. */
+const WALL = { width: 0.6, height: 1.1, colours: STONE };
+const HEDGE_SIZE = { width: 1.2, height: 1.8, colours: HEDGE };
+const SUNK_M = 0.3;
 
 /**
  * Trees and buildings within this many metres cast into the near shadow map, 0.2 m a texel. The
@@ -148,6 +177,13 @@ function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometr
     const low = LOW.has(tag) || (kind === 'block' && !BLOCKS.has(tag));
     const wall = levels ? levels * STOREY_M : height ? 0.65 * height : low ? 7 : undefined;
     const seed = Math.floor(rand() * 1e6);
+    // Landmarks draw as themselves; bake.py names them in place of the building value.
+    if (tag === 'ruin' || tag === 'lighthouse') {
+      const tall = height ?? (tag === 'ruin' ? Math.min(14, 6 + 0.6 * Math.sqrt(area)) : 7);
+      const model = tag === 'ruin' ? ruin(fit.width, fit.depth, tall, seed) : lighthouse(fit.width, fit.depth, tall);
+      parts.push(model.rotateZ(fit.angle).translate(fit.x, fit.y, base - eye));
+      continue;
+    }
     if (area / (fit.width * fit.depth) < RECTANGULAR || area > LARGEST_M2) {
       const colour = new THREE.Color(kit.style.palette.render[seed % kit.style.palette.render.length]);
       parts.push(outlined(outline, base - eye, wall ?? 8, colour));
@@ -158,6 +194,59 @@ function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometr
     parts.push(building(kind, style, { width: fit.width, depth: fit.depth, wall, seed, plain }).rotateZ(fit.angle).translate(fit.x, fit.y, base - eye));
   }
   return parts.length ? mergeGeometries(parts) : null;
+}
+
+/** The bare ground's height above the eye at x, y, bilinear from the finest level that holds it. */
+function groundHeight(bake: Bake, x: number, y: number): number {
+  const { size, half0_m, levels } = bake.meta;
+  const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), levels - 1);
+  const half = half0_m * 2 ** k;
+  const px = (2 * half) / size;
+  const [u, v] = [(x + half) / px - 0.5, (half - y) / px - 0.5];
+  const [i, j] = [Math.min(Math.max(Math.floor(u), 0), size - 2), Math.min(Math.max(Math.floor(v), 0), size - 2)];
+  const [fu, fv] = [u - i, v - j];
+  const h = (di: number, dj: number) => bake.surface[k][(j + dj) * size + i + di];
+  return (h(0, 0) * (1 - fu) + h(1, 0) * fu) * (1 - fv) + (h(0, 1) * (1 - fu) + h(1, 1) * fu) * fv;
+}
+
+/** Flat-shaded triangles from positions and one colour per vertex. */
+function flat(position: number[], color: number[]): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+    .setAttribute('color', new THREE.Float32BufferAttribute(color, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** OSM walls and hedges as low boxes along their pieces, each end on the ground. */
+function walls(bake: Bake): THREE.BufferGeometry | null {
+  const position: number[] = [];
+  const color: number[] = [];
+  const rand = random(5);
+  const { walls } = bake;
+  for (let n = 0; n < walls.length; n += 5) {
+    const [x0, y0, x1, y1, kind] = walls.subarray(n, n + 5);
+    const length = Math.hypot(x1 - x0, y1 - y0);
+    // Crests stand as crags, which set() places.
+    if (kind === 2 || length < 0.1 || Math.min(Math.hypot(x0, y0), Math.hypot(x1, y1)) < CLEAR_M / 2) continue;
+    const { width, height, colours } = kind ? HEDGE_SIZE : WALL;
+    const [nx, ny] = [((y0 - y1) / length) * (width / 2), ((x1 - x0) / length) * (width / 2)];
+    const [g0, g1] = [groundHeight(bake, x0, y0) - SUNK_M, groundHeight(bake, x1, y1) - SUNK_M];
+    // Left and right, bottom and top, at each end.
+    const corner = (end: 0 | 1, side: number, top: boolean) =>
+      end ? [x1 + side * nx, y1 + side * ny, g1 + (top ? height : 0)] : [x0 + side * nx, y0 + side * ny, g0 + (top ? height : 0)];
+    const c = new THREE.Color(colours[Math.floor(rand() * colours.length)]);
+    const quad = (a: number[], b: number[], d: number[], e: number[]) => {
+      for (const v of [a, b, d, b, e, d]) {
+        position.push(...v);
+        color.push(c.r, c.g, c.b);
+      }
+    };
+    quad(corner(0, -1, false), corner(1, -1, false), corner(0, -1, true), corner(1, -1, true));
+    quad(corner(1, 1, false), corner(0, 1, false), corner(1, 1, true), corner(0, 1, true));
+    quad(corner(0, -1, true), corner(1, -1, true), corner(0, 1, true), corner(1, 1, true));
+  }
+  return position.length ? flat(position, color) : null;
 }
 
 /** One model drawn once per instance. */
@@ -188,12 +277,14 @@ export class NearField {
   readonly buildings = new THREE.Group();
   /** Triangles the trees, plants and buildings add to a frame. */
   triangles = 0;
-  /** Instances by "tree|name|lod" or "plant|name". */
+  /** Instances by "tree|name|lod", "plant|name" or "rock|name". */
   private groups = new Map<string, Instances>();
+  /** Whether a habitat map placed the moor and lush plants, so the shader need not check them. */
+  private placedByMap = false;
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
-  private readonly materials: Record<'tree' | 'plant' | 'building', THREE.ShaderMaterial>;
+  private readonly materials: Record<'tree' | 'plant' | 'moorPlant' | 'lushPlant' | 'building', THREE.ShaderMaterial>;
   /** Set when the sun, the spot, the season or the surface moved. */
   shadowsStale = true;
   private readonly shadowMap = new THREE.WebGLRenderTarget(SHADOW_SIZE, SHADOW_SIZE, { depthTexture: depthMap() });
@@ -205,17 +296,23 @@ export class NearField {
   constructor(uniforms: Record<string, THREE.IUniform>) {
     this.uniforms = uniforms;
     uniforms.nearShadow.value = this.shadowMap.depthTexture;
-    const material = (vertexShader: string, tie = 0) =>
+    const material = (vertexShader: string, tie = 0, habitat = 0) =>
       new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
         vertexShader,
         fragmentShader: objectFragment,
         // The shared uniform objects themselves, so light and look reach every object.
-        uniforms: { ...uniforms, tie: { value: tie } },
+        uniforms: { ...uniforms, tie: { value: tie }, habitat: { value: habitat } },
         // Thin leaves and blades show both faces; their normals stay as the model lifts them.
         side: THREE.DoubleSide,
       });
-    this.materials = { tree: material(treeVertex), plant: material(treeVertex, 0.7), building: material(buildingVertex) };
+    this.materials = {
+      tree: material(treeVertex),
+      plant: material(treeVertex, 0.7),
+      moorPlant: material(treeVertex, 0.35, 1),
+      lushPlant: material(treeVertex, 0.7, -1),
+      building: material(buildingVertex),
+    };
   }
 
   /** Place the bake's trees, shrubs, plants and buildings with the kit; setSeason draws them. */
@@ -224,6 +321,8 @@ export class NearField {
     const px = (2 * half0_m) / size;
     const texel = (x: number, y: number) => Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px);
     const classAt = (x: number, y: number) => bake.classes[texel(x, y) * 2];
+    const habitats = (bake.meta.habitat_levels ?? 0) > 0;
+    const habitatAt = (x: number, y: number): Habitat => (habitats ? HABITATS[bake.habitat[texel(x, y)]] : 'none');
     const rand = random(7);
     const groups = new Map<string, Instances>();
     const add = (key: string, x: number, y: number, height: number, heading: number) => {
@@ -238,10 +337,21 @@ export class NearField {
     const heading = (name: TreeName) => (name === 'hawthorn' ? 0 : rand() * 2 * Math.PI);
 
     const standing = kit.trees.filter((s) => s.cover === 'tree');
+    const shrubs = kit.trees.filter((s) => s.cover === 'shrub');
     const { trees } = bake;
     for (let i = 0; i < trees.length; i += 4) {
       const [x, y, height] = [trees[i], trees[i + 1], trees[i + 2]];
-      if (Math.hypot(x, y) < CLEAR_M) continue;
+      if (Math.hypot(x, y) < CLEAR_M || TREELESS.has(habitatAt(x, y))) continue;
+      // Scrub on the map is gorse and thorn, not trees.
+      if (habitatAt(x, y) === 'scrub' && shrubs.length) {
+        const species = pick(shrubs).tree;
+        add(`tree|${species}|${lodAt(Math.hypot(x, y))}`, x, y, SHRUB_HEIGHT_M[1] * (0.7 + 0.3 * rand()), heading(species));
+        continue;
+      }
+      if (trees[i + 3] > 1.5 && kit.orchard) {
+        add(`tree|${kit.orchard}|${lodAt(Math.hypot(x, y))}`, x, y, height, heading(kit.orchard));
+        continue;
+      }
       const leaf = trees[i + 3] > 0.5 ? 'broadleaved' : 'needleleaved';
       const elevation = bake.surface[0][texel(x, y)] + eye_m;
       const fits = standing.filter((s) => s.leaf === leaf && elevation >= s.elevation[0] && elevation <= s.elevation[1]);
@@ -250,12 +360,12 @@ export class NearField {
       add(`tree|${species}|${lodAt(Math.hypot(x, y))}`, x, y, height, heading(species));
     }
 
-    const shrubs = kit.trees.filter((s) => s.cover === 'shrub');
     if (shrubs.length) {
       for (let y = -SHRUB_RADIUS_M; y < SHRUB_RADIUS_M; y += SHRUB_SPACING_M) {
         for (let x = -SHRUB_RADIUS_M; x < SHRUB_RADIUS_M; x += SHRUB_SPACING_M) {
           const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
-          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || classAt(sx, sy) !== CLASS.shrub) continue;
+          const scrub = classAt(sx, sy) === CLASS.shrub || habitatAt(sx, sy) === 'scrub';
+          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || !scrub) continue;
           if (this.offGround(bake, sx, sy, px)) continue;
           const species = pick(shrubs).tree;
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
@@ -264,28 +374,84 @@ export class NearField {
       }
     }
 
+    const outcrops = kit.land?.outcrops ?? 0;
+    if (outcrops > 0) {
+      const h = (x: number, y: number) => groundHeight(bake, x, y);
+      const water = (x: number, y: number) => bake.classes[texel(x, y) * 2 + 1] > 127;
+      for (let y = -ROCK_RADIUS_M; y < ROCK_RADIUS_M; y += ROCK_SPACING_M) {
+        for (let x = -ROCK_RADIUS_M; x < ROCK_RADIUS_M; x += ROCK_SPACING_M) {
+          const [rx, ry] = [x + (rand() - 0.5) * ROCK_SPACING_M, y + (rand() - 0.5) * ROCK_SPACING_M];
+          const d = Math.hypot(rx, ry);
+          if (d > ROCK_RADIUS_M || d < CLEAR_M || !ROUGH.has(classAt(rx, ry)) || this.offGround(bake, rx, ry, px)) continue;
+          const slope = Math.hypot(h(rx + 3, ry) - h(rx - 3, ry), h(rx, ry + 3) - h(rx, ry - 3)) / 6;
+          const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
+          const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
+          const mapped = habitatAt(rx, ry) === 'rock' ? 0.9 : 0;
+          const rocky = Math.max(outcrops * Math.min(Math.max(1.4 * slope + 0.25 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
+          if (rand() > 0.35 * rocky) continue;
+          const name: RockName = rand() < 0.7 - 0.4 * sea ? 'slab' : 'boulder';
+          const height = ROCK_HEIGHT_M[0] + rand() ** 2 * (ROCK_HEIGHT_M[1] - ROCK_HEIGHT_M[0]) * (1 + sea);
+          add(`rock|${name}`, rx, ry, height, rand() * 2 * Math.PI);
+        }
+      }
+    }
+
+    // Crags along mapped aretes and ridges give back the knife edge the DEM rounds off.
+    const pieces = bake.walls;
+    for (let n = 0; n < pieces.length; n += 5) {
+      if (pieces[n + 4] !== 2) continue;
+      const [x0, y0, x1, y1] = pieces.subarray(n, n + 4);
+      for (let t = rand() * CRAG_SPACING_M; t < Math.hypot(x1 - x0, y1 - y0); t += CRAG_SPACING_M * (0.6 + 0.8 * rand())) {
+        const f = t / Math.hypot(x1 - x0, y1 - y0);
+        const [cx, cy] = [x0 + (x1 - x0) * f + (rand() - 0.5) * 3, y0 + (y1 - y0) * f + (rand() - 0.5) * 3];
+        if (Math.hypot(cx, cy) < CLEAR_M) continue;
+        add('rock|crag', cx, cy, CRAG_HEIGHT_M[0] + rand() * (CRAG_HEIGHT_M[1] - CRAG_HEIGHT_M[0]), Math.atan2(y1 - y0, x1 - x0) + (rand() - 0.5) * 0.8);
+      }
+    }
+
+    // Mapped bare rock near the eye is strewn with small stones.
+    if (habitats) {
+      for (let y = -STONE_RADIUS_M; y < STONE_RADIUS_M; y += STONE_SPACING_M) {
+        for (let x = -STONE_RADIUS_M; x < STONE_RADIUS_M; x += STONE_SPACING_M) {
+          const [sx, sy] = [x + (rand() - 0.5) * STONE_SPACING_M, y + (rand() - 0.5) * STONE_SPACING_M];
+          if (Math.hypot(sx, sy) < 1.5 || Math.hypot(sx, sy) > STONE_RADIUS_M || habitatAt(sx, sy) !== 'rock' || rand() > 0.5) continue;
+          add(`rock|${rand() < 0.5 ? 'slab' : 'boulder'}`, sx, sy, 0.08 + 0.25 * rand() ** 2, rand() * 2 * Math.PI);
+        }
+      }
+    }
+
     // The rarer plants first, so the common one does not take every spot.
     const ground = [...kit.ground].sort((a, b) => GROUND[a].share - GROUND[b].share);
+    const moor = !!kit.land?.moor;
+    // A habitat map settles moor here, once per plant; without one the shader asks the satellite.
+    const moorAt = (x: number, y: number) => ['heath', 'bog'].includes(habitatAt(x, y));
+    const grows = (name: PlantName, kind: number, x: number, y: number) => {
+      const { on, habitat } = GROUND[name];
+      if (habitatAt(x, y) === 'rock') return false;
+      if (habitats && moor && habitat) return (habitat === 1) === moorAt(x, y) && (on.includes(kind) || kind === CLASS.grass);
+      return on.includes(kind) || (moor && habitat === 1 && kind === CLASS.grass);
+    };
     for (let y = -GROUND_RADIUS_M; y < GROUND_RADIUS_M; y += 1) {
       for (let x = -GROUND_RADIUS_M; x < GROUND_RADIUS_M; x += 1) {
         const [gx, gy] = [x + rand() - 0.5, y + rand() - 0.5];
         if (Math.hypot(gx, gy) > GROUND_RADIUS_M || Math.hypot(gx, gy) < 1.5 || this.offGround(bake, gx, gy, px)) continue;
         const kind = classAt(gx, gy);
-        const name = ground.find((p) => GROUND[p].on.includes(kind) && rand() < GROUND[p].share);
+        const name = ground.find((p) => grows(p, kind, gx, gy) && rand() < GROUND[p].share);
         if (!name) continue;
         const [low, high] = GROUND[name].height;
         add(`plant|${name}`, gx, gy, low + rand() * (high - low), rand() * 2 * Math.PI);
       }
     }
     this.groups = groups;
+    this.placedByMap = habitats;
     this.evergreen = new Set(kit.trees.filter((s) => s.evergreen).map((s) => s.tree));
     this.shadowsStale = true;
 
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
-    const houses = town(bake.buildings, eye_m, kit);
-    if (houses) {
-      const mesh = new THREE.Mesh(houses, this.materials.building);
+    for (const geometry of [town(bake.buildings, eye_m, kit), walls(bake)]) {
+      if (!geometry) continue;
+      const mesh = new THREE.Mesh(geometry, this.materials.building);
       mesh.frustumCulled = false;
       this.buildings.add(mesh);
     }
@@ -299,7 +465,7 @@ export class NearField {
     const [fu, fv] = [u - i, v - j];
     const r = (di: number, dj: number) => bake.roads[((j + dj) * size + i + di) * 2] / 10 - 5;
     const edge = (r(0, 0) * (1 - fu) + r(1, 0) * fu) * (1 - fv) + (r(0, 1) * (1 - fu) + r(1, 1) * fu) * fv;
-    return edge < 0.2 || bake.water[Math.round(v) * size + Math.round(u)] > 64;
+    return edge < 0.2 || bake.water[(Math.round(v) * size + Math.round(u)) * 2] > 64;
   }
 
   /** Draw every group with the season's models; ground plants stay under the snow in winter. */
@@ -312,12 +478,14 @@ export class NearField {
       if (what === 'plant' && season === 'winter') continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const model = this.model(key, leaves, () =>
-        what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod) : plant(name as PlantName, leaves),
+        what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod) : what === 'rock' ? rock(name as RockName) : plant(name as PlantName, leaves),
       );
-      const mesh = new THREE.Mesh(forest(model, instances), what === 'tree' ? this.materials.tree : this.materials.plant);
+      const habitat = what === 'plant' && !this.placedByMap ? GROUND[name as PlantName].habitat : undefined;
+      const material = what !== 'plant' ? this.materials.tree : habitat === 1 ? this.materials.moorPlant : habitat === -1 ? this.materials.lushPlant : this.materials.plant;
+      const mesh = new THREE.Mesh(forest(model, instances), material);
       mesh.frustumCulled = false;
       // Ground plants are too small to cast a shadow worth their cost.
-      mesh.userData.casts = what === 'tree';
+      mesh.userData.casts = what !== 'plant';
       this.trees.add(mesh);
       this.triangles += (instances.length / 5) * ((model.index ?? model.getAttribute('position')).count / 3);
     }

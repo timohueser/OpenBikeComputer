@@ -5,11 +5,11 @@
  */
 
 import * as THREE from 'three';
-import type { Bake } from './bake';
+import { HABITATS, type Bake } from './bake';
 import type { Light } from './light';
 import type { Kit } from './models/kits';
 import { NearField } from './nearfield';
-import { ROADS, ROCK, SHORE } from './palette';
+import { ROADS, ROCK, SEA, VARIEGATED } from './palette';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 import type { Weather } from './weather';
@@ -114,6 +114,8 @@ export class Terrain {
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
   private water?: THREE.DataArrayTexture;
+  private rockMap?: THREE.DataArrayTexture;
+  private habitatMap?: THREE.DataArrayTexture;
   readonly nearField: NearField;
   private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
     format: THREE.RedFormat,
@@ -169,7 +171,18 @@ export class Terrain {
       ramps: { value: [] as THREE.Color[] },
       snap: { value: 0.4 },
       rock: { value: new THREE.Color(ROCK) },
-      shore: { value: new THREE.Color(SHORE) },
+      seaDeep: { value: new THREE.Color() },
+      seaShallow: { value: new THREE.Color() },
+      shoreReach: { value: 600 },
+      moorColour: { value: new THREE.Color() },
+      moorOn: { value: 0 },
+      heather: { value: new THREE.Color() },
+      heatherShare: { value: 0 },
+      outcrops: { value: 0 },
+      bedding: { value: new THREE.Vector3(0, 0, 1) },
+      habitatMap: { value: null },
+      habitatLevels: { value: 0 },
+      habitatPaint: { value: HABITATS.map(() => new THREE.Vector4()) },
       canopy: { value: null },
       canopyLevels: { value: 0 },
       roads: { value: null },
@@ -181,6 +194,9 @@ export class Terrain {
       deriveLevel: { value: 0 },
       waterMap: { value: null },
       waterLevels: { value: 0 },
+      rockMap: { value: null },
+      rockLevels: { value: 0 },
+      variegated: { value: VARIEGATED.map((hex) => new THREE.Color(hex)) },
       softness: { value: 0.08 },
       gradient: { value: 0.35 },
       eyeAltitude: { value: 0 },
@@ -193,6 +209,7 @@ export class Terrain {
       cloudDark: { value: 0 },
       cloudDrift: { value: new THREE.Vector2() },
       wet: { value: 0 },
+      towers: { value: 0 },
       cloudMap: { value: this.cloudMap.texture },
       cloudReach: { value: CLOUD_REACH_M },
       rain: { value: 0 },
@@ -279,9 +296,38 @@ export class Terrain {
     u.roads.value = this.roads;
     u.roadLevels.value = bake.meta.road_levels;
     this.water?.dispose();
-    this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RedFormat, 'R8');
+    this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RGFormat, 'RG8');
     u.waterMap.value = this.water;
     u.waterLevels.value = bake.meta.water_levels;
+    u.shoreReach.value = bake.meta.shore_reach_m;
+    const land = kit.land ?? {};
+    u.rock.value.set(land.rock ?? ROCK);
+    u.seaDeep.value.set(land.sea?.deep ?? SEA.deep);
+    u.seaShallow.value.set(land.sea?.shallow ?? SEA.shallow);
+    u.moorColour.value.set(land.moor?.colour ?? ROCK);
+    u.moorOn.value = land.moor ? 1 : 0;
+    u.heather.value.set(land.moor?.heather ?? ROCK);
+    u.heatherShare.value = land.moor?.share ?? 0;
+    u.outcrops.value = land.outcrops ?? 0;
+    // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
+    const { strike, dip } = land.bedding ?? { strike: 0, dip: 0 };
+    const [toward, tilt] = [((strike + 90) * Math.PI) / 180, (dip * Math.PI) / 180];
+    u.bedding.value.set(Math.sin(toward) * Math.sin(tilt), Math.cos(toward) * Math.sin(tilt), Math.cos(tilt));
+    const habitatLevels = land.habitats ? (bake.meta.habitat_levels ?? 0) : 0;
+    this.habitatMap?.dispose();
+    this.habitatMap = habitatLevels ? arrayTexture(bake.habitat, size, habitatLevels, THREE.RedFormat, 'R8') : undefined;
+    u.habitatMap.value = this.habitatMap ?? this.classes;
+    u.habitatLevels.value = habitatLevels;
+    HABITATS.forEach((name, i) => {
+      const hex = land.habitats?.[name];
+      const c = new THREE.Color(hex ?? '#000');
+      u.habitatPaint.value[i].set(c.r, c.g, c.b, hex ? 1 : 0);
+    });
+    const { rock_levels } = bake.meta;
+    this.rockMap?.dispose();
+    this.rockMap = rock_levels ? arrayTexture(bake.rock, size, rock_levels, THREE.RGBAFormat, 'SRGB8_ALPHA8') : undefined;
+    u.rockMap.value = this.rockMap ?? this.classes;
+    u.rockLevels.value = rock_levels;
     this.normals?.dispose();
     this.normals = new THREE.WebGLArrayRenderTarget(size, size, levels, {
       type: THREE.HalfFloatType,
@@ -346,6 +392,7 @@ export class Terrain {
     u.cloudDark.value = weather.dark;
     u.cloudDrift.value.set(DRIFT_PER_HOUR[0] * hour, DRIFT_PER_HOUR[1] * hour);
     u.wet.value = weather.wet;
+    u.towers.value = weather.towers ?? 0;
     u.rain.value = weather.rain;
     this.cloudsStale = true;
     if (this.look) this.setLook(this.look);

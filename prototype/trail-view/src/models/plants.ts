@@ -35,7 +35,7 @@ const HEATHER: Record<Season, Ramp> = {
 const HEATHER_BLOOM: Record<Season, [string, number]> = {
   winter: ['#7a5a3c', 0.3],
   spring: ['#7d9150', 0],
-  summer: ['#b04e96', 0.85],
+  summer: ['#9a5a8c', 0.8],
   autumn: ['#8a5a62', 0.5],
 };
 

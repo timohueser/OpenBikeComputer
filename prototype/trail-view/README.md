@@ -32,7 +32,16 @@ uv run prototype/trail-view/bake.py hahnen
   minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees stand 5 to 9 m.
 - Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
   their `width` tag or a default, and water areas. The water levels hold the share of each pixel
-  under water, from a 4× finer grid. Streams count only off tree pixels.
+  under water, from a 4× finer grid, and each water pixel's distance to land. Streams count only
+  off tree pixels.
+- A third cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges.
+- Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land drops
+  to sea level, and the land edge rises a little toward the cliff top.
+- Habitat levels (±5 km) come from the best open land cover map whose box holds the eye. Today
+  that is Ireland's National Land Cover Map 2018 only. Its feature service returns 2000 polygons
+  in about 75 s; they are cached in `_sources/nlcm/`.
+- In Spain, rock colour comes from IGME's 1:50 000 geological map: each unit's description picks
+  the colour, and variegated units are drawn in bands.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
 - The photographs come from the `peak-view-photos` fixture package in
@@ -63,12 +72,18 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   active surface.
 - The season (one day each, 2025) also picks the Sentinel-2 quarter and the palette.
 - The near field comes from the spot's kit in `src/models/kits.ts`: trees by leaf type and
-  elevation, ground plants by land cover within 60 m, and houses fitted to OSM footprints by
-  their `building` value and size. Ground plants take their hue from the ground under them.
+  elevation, ground plants by land cover within 60 m, rocks on steep ground, ridges, shores and
+  mapped bare rock, crags along mapped crests, and houses fitted to OSM footprints by their
+  `building` value and size. OSM ruins, castles and lighthouses draw as landmarks. Ground plants
+  take their hue from the ground under them.
+- A kit's `land` says how the region's ground reads: class ramps, moor (open ground that
+  Sentinel-2 sees as brown), colours per habitat, outcrops, rock colour and bedding, sea colours,
+  haze and its weather (for example cumulus on the horizon).
 - "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
   light bands; "copy look JSON" copies the values.
-- "Tools": "save side by side" and "save view" write PNGs to `~/.cache/obc/trail-view/shots/`, named
-  with the preset, the surface, the quarter and the clock time.
+- "Tools": "raise eye" lifts the eye as a drone would. "save side by side" and "save view" write
+  PNGs to `~/.cache/obc/trail-view/shots/`, named with the preset, the surface, the quarter and the
+  clock time.
 
 ## What will bite you
 
@@ -82,6 +97,7 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   that the cast skyline at the photo's point shows what the photograph shows.
 - Python checks certificates against the system trust store (`truststore`): Spain's IGN serves a
   chain whose root Python's own bundle lacks.
+- A coastal kit renders every frame, so its surf rolls. Frame times measured then are not idle.
 - A spot is only as good as what its eye sees. A point in forest, beside a house, just below a
   crest or on a broad dome hides the view; check the land cover and the line of sight first.
 - gdalwarp prints `ERROR 6: ... SetColorTable()` for every WorldCover level, because it copies the

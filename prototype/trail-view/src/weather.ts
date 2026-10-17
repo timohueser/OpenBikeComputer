@@ -22,6 +22,8 @@ export interface Weather {
   /** Wet ground, and rain over the view, 0–1. */
   wet: number;
   rain: number;
+  /** Cumulus towering along the horizon, 0–1: a maritime summer's fair weather. */
+  towers?: number;
 }
 
 export const WEATHERS: Record<string, Weather> = {

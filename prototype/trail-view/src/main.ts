@@ -5,7 +5,7 @@ import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
-import { KITS, type KitName } from './models/kits';
+import { KITS, type Kit, type KitName } from './models/kits';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
 import { WEATHERS, weatherLight } from './weather';
@@ -43,11 +43,14 @@ const state = {
   season: 'summer (15 Aug)',
   hour: 16,
   weather: 'sunny',
+  /** Metres the eye rises above the spot, to see it as a drone would. */
+  rise: 0,
   yaw: 0,
   pitch: 0,
   vfov: 60,
 };
-const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
+const DEFAULT_LOOK = { snap: 0.4, hazeKm: 35 };
+const look: Look = { ...DEFAULT_LOOK, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
 const readout = { sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
@@ -83,6 +86,11 @@ async function select(id: string): Promise<void> {
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
   loaded = { bake, ground: { dtm, glo30 }, sky, sighted: [] };
+  const land = (KITS[presetOf(id).kit as KitName] as Kit).land;
+  look.snap = land?.snap ?? DEFAULT_LOOK.snap;
+  look.hazeKm = land?.hazeKm ?? DEFAULT_LOOK.hazeKm;
+  terrain.setLook(look);
+  startAnimation();
   const shot = meta.photo;
   const columns = shot?.columns;
   readout.rmsDtm = columns && meta.dtm_levels ? `${rms(sky.dtm, columns).toFixed(3)}°` : '–';
@@ -119,7 +127,8 @@ async function seasonChanged(): Promise<void> {
   if (!loaded) return;
   const { bake } = loaded;
   const season = Object.keys(SEASONS).indexOf(state.season);
-  terrain.setPalette(ramps(season, DECIDUOUS[presetOf(bake.meta.id).default_leaf]));
+  const preset = presetOf(bake.meta.id);
+  terrain.setPalette(ramps(season, DECIDUOUS[preset.default_leaf], (KITS[preset.kit as KitName] as Kit).land));
   terrain.nearField.setSeason(SEASON_NAMES[season]);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
@@ -132,7 +141,7 @@ async function seasonChanged(): Promise<void> {
 
 function surfaceChanged(): void {
   if (!loaded) return;
-  const lift = active(loaded.ground).lift;
+  const lift = active(loaded.ground).lift + state.rise;
   terrain.setSurface(glo30Only(), lift, loaded.bake.meta.eye_m + lift);
   readout.eye = `${(loaded.bake.meta.eye_m + lift).toFixed(1)} m`;
   loaded.sighted = sightedPeaks(loaded.bake.peaks, active(loaded.ground), active(loaded.sky));
@@ -144,7 +153,7 @@ function lightChanged(refreshShadows = true): void {
   if (!loaded) return;
   const { lat, lon, id } = loaded.bake.meta;
   const timezone = presetOf(id).tz;
-  const weather = WEATHERS[state.weather];
+  const weather = { ...WEATHERS[state.weather], ...(KITS[presetOf(id).kit as KitName] as Kit).land?.weather?.[state.weather as 'sunny'] };
   const light = lightAt(lat, lon, SEASONS[state.season], state.hour, timezone);
   terrain.setLight(weatherLight(light, weather), refreshShadows);
   terrain.setWeather(weather, state.hour);
@@ -240,9 +249,12 @@ let animating = false;
 let lastTick = 0;
 let ticks = 0;
 
-/** Rain falls and the day plays frame by frame; everything else renders on demand. */
+/** Surf rolls on a kit's sea. */
+const seaside = () => !!loaded && !!(KITS[presetOf(loaded.bake.meta.id).kit as KitName] as Kit).land?.sea;
+
+/** Rain falls, surf rolls and the day plays frame by frame; everything else renders on demand. */
 function animate(now: number): void {
-  if (!playing && !WEATHERS[state.weather].rain) {
+  if (!playing && !WEATHERS[state.weather].rain && !seaside()) {
     animating = false;
     return;
   }
@@ -430,8 +442,8 @@ aligned.onChange(() => {
 });
 aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }, 'copy').name('copy camera JSON');
 const style = gui.addFolder('Look').close();
-style.add(look, 'snap', 0, 1, 0.01).name('palette snap');
-style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)');
+style.add(look, 'snap', 0, 1, 0.01).name('palette snap').listen();
+style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)').listen();
 style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)');
 style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)');
 style.add(look, 'softness', 0.005, 0.3, 0.005).name('band softness');
@@ -455,6 +467,7 @@ facts.add(readout, 'near').name('near field').listen().disable();
 facts.add(readout, 'triangles').name('triangles').listen().disable();
 facts.add(readout, 'frame').name('frame time').listen().disable();
 const tools = gui.addFolder('Tools').close();
+tools.add(state, 'rise', 0, 400, 5).name('raise eye (m)').onChange(surfaceChanged);
 tools.add({ measure }, 'measure').name('measure 60 frames');
 tools.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
 tools.add({ saveView }, 'saveView').name('save view');

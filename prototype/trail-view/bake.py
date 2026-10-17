@@ -120,6 +120,60 @@ NO_CANOPY_M = (5.0, 9.0)
 WATER_LEVELS = 4
 WATERWAY_WIDTHS = {"river": 12.0, "canal": 8.0, "stream": 2.0}
 SUPERSAMPLE = 4
+# The water levels' second byte: metres from water to the nearest land as sqrt(d / SHORE_REACH_M),
+# so the shallows near a shore keep their detail and open water reaches the deep colour.
+SHORE_REACH_M = 600.0
+# Where GLO-30 is the only elevation, a cliff coast is a 30 m slope into the sea. The sea beside land
+# stands at sea level, so the coast drops where WorldCover puts the water's edge; land this close
+# to it rises toward the highest ground within reach, by at most CLIFF_RAISE_M, where that is a
+# cliff's height. A larger raise lifts the edge to ground that only rises further inland.
+CLIFF_REACH_M = 15.0
+CLIFF_RAISE_M = 6.0
+CLIFF_MIN_M = 12.0
+SEA_LEVEL_M = 3.0
+
+# Geology for rock colour on k < ROCK_LEVELS: IGME's continuous 1:50 000 map, layer 1 is the
+# units' fill. Its colours are cartographic, so each unit's own lithology text picks the colour.
+GEOLOGY = {"es": ("https://mapas.igme.es/gis/services/Cartografia_Geologica/IGME_Geode_50/MapServer/WMSServer", "1",
+                  "GEODE 1:50 000 © IGME")}
+ROCK_LEVELS = 3
+# Words in a unit's description and the rock colour they mean, first match first. Variegated rock
+# is drawn in red, green and white bands.
+LITHOLOGY = [
+    ("abigarrad", "#a8604e", True), ("blanc", "#ddd6c4", False), ("yeso", "#e2dccd", False),
+    ("roj", "#a9583f", False), ("salm", "#c98c6e", False), ("verde", "#8f9884", False),
+    ("calcaren", "#cdb88e", False), ("caliza", "#c4bdb0", False), ("dolom", "#b2a894", False),
+    ("arenisca", "#c3a06c", False), ("conglomerad", "#a99878", False), ("marga", "#d2c4a4", False),
+    ("arcilla", "#b58a64", False), ("pizarra", "#6e6a66", False), ("granit", "#b5aba0", False),
+    ("cuarcita", "#bfb9ae", False), ("esquisto", "#7b766c", False),
+    ("glacis", "#c2ad88", False), ("coluvi", "#c2ad88", False), ("aluvi", "#c2ad88", False),
+]
+ROCK = "#b0a796"
+# Fine habitats for the ground mosaic on k < HABITAT_LEVELS, in one vocabulary whatever the source;
+# the page's region kit paints each. The source is the best open land cover whose box holds the eye.
+HABITATS = ("none", "rock", "heath", "bog", "bracken", "rough", "pasture", "scrub", "hedge", "sand", "saltmarsh", "built",
+            "water")
+HABITAT_LEVELS = 3
+# Ireland's National Land Cover Map 2018, mapped from 1 m imagery to 0.05 ha: (west, south, east, north),
+# the feature service, and its LEVEL_2_VALUE words for each habitat, the first match winning.
+NLCM = ((-10.7, 51.35, -5.9, 55.45),
+        "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0",
+        "National Land Cover Map 2018 © Tailte Éireann and EPA, CC BY 4.0")
+NLCM_WORDS = [("exposed rock", "rock"), ("heath", "heath"), ("bog", "bog"), ("peat", "bog"), ("fen", "bog"),
+              ("swamp", "bog"), ("bracken", "bracken"), ("wet grassland", "rough"), ("dry grassland", "rough"),
+              ("improved grassland", "pasture"), ("amenity grassland", "pasture"), ("scrub", "scrub"),
+              ("transitional forest", "scrub"), ("hedgerow", "hedge"), ("treeline", "hedge"), ("sand", "sand"),
+              ("coastal sediments", "sand"), ("mudflat", "sand"), ("saltmarsh", "saltmarsh"), ("artificial", "built"),
+              ("buildings", "built"), ("ways", "built"), ("bare soil", "built"), ("water", "water"),
+              ("lakes", "water"), ("rivers", "water")]
+# Burn order: broad covers first, so the small and linear ones they hold stay on top.
+HABITAT_ORDER = ("pasture", "rough", "heath", "bog", "bracken", "saltmarsh", "sand", "scrub", "water", "built", "rock", "hedge")
+
+# OSM features near the eye: walls and hedges within WALL_HALF_M, cut into pieces of at most
+# WALL_PIECE_M so each stands on the ground; orchard trees in rows ORCHARD_SPACING_M apart.
+WALL_HALF_M = 1500.0
+WALL_PIECE_M = 8.0
+ORCHARD_SPACING_M = 7.0
 
 GDAL_OPTIONS = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.vrt",
                 "GDAL_HTTP_MAX_RETRY": "4", "GDAL_HTTP_RETRY_DELAY": "5"}
@@ -408,9 +462,9 @@ def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
     return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface], axis=-1)
 
 
-def water_field(rivers, streams, lakes, classes: np.ndarray, half: float) -> np.ndarray:
-    """R8: the share of each pixel under OSM water, 0–255. Streams count only off tree pixels,
-    because the canopy hides them."""
+def water_field(rivers, streams, lakes, classes: np.ndarray, half: float, work: Path) -> np.ndarray:
+    """RG8: the share of each pixel under OSM water, 0–255, and its shore distance (SHORE_REACH_M).
+    Streams count only off tree pixels, because the canopy hides them."""
     from rasterio.features import rasterize
     from rasterio.transform import from_origin
 
@@ -428,7 +482,115 @@ def water_field(rivers, streams, lakes, classes: np.ndarray, half: float) -> np.
     water = coverage(wet)
     if streams:
         water = np.maximum(water, coverage(edge_distance(streams, half, fine, reach)[0] < 0) * (classes[..., 0] != TREE))
-    return np.round(water * 255).astype(np.uint8)
+    shore = shore_distance((classes[..., 1] == 255) | (water >= 0.5), half, work)
+    return np.stack([np.round(water * 255), np.round(np.sqrt(shore / SHORE_REACH_M) * 255)], axis=-1).astype(np.uint8)
+
+
+def shore_distance(water: np.ndarray, half: float, work: Path) -> np.ndarray:
+    """Metres from each water texel to the nearest land texel, at most SHORE_REACH_M; 0 on land."""
+    src, dst = work / "land.tif", work / "shore.tif"
+    with rasterio.open(src, "w", driver="GTiff", height=SIZE, width=SIZE, count=1, dtype="uint8",
+                       transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE)) as f:
+        f.write((~water).astype(np.uint8)[None])
+    subprocess.run(["gdal_proximity", "-q", str(src), str(dst), "-values", "1", "-distunits", "GEO", "-ot", "Float32",
+                    "-maxdist", str(SHORE_REACH_M), "-nodata", str(SHORE_REACH_M)], check=True)
+    with rasterio.open(dst) as f:
+        return np.minimum(f.read(1), SHORE_REACH_M) * water
+
+
+def grow(a: np.ndarray, op) -> np.ndarray:
+    """One 3×3 step of a filter: np.maximum for a max filter, np.logical_or for a dilation."""
+    out = a.copy()
+    out[1:] = op(out[1:], a[:-1])
+    out[:-1] = op(out[:-1], a[1:])
+    rows = out.copy()
+    out[:, 1:] = op(out[:, 1:], rows[:, :-1])
+    out[:, :-1] = op(out[:, :-1], rows[:, 1:])
+    return out
+
+
+def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float) -> np.ndarray:
+    """GLO-30 heights with cliff coasts made sheer (see CLIFF_REACH_M)."""
+    water = classes[..., 1] == 255
+    sea = water & (heights <= SEA_LEVEL_M)
+    if not sea.any():
+        return heights
+    top, near = heights, sea
+    for _ in range(max(1, round(CLIFF_REACH_M / (2 * half / SIZE)))):
+        top, near = grow(top, np.maximum), grow(near, np.logical_or)
+    rim = ~water & near & (top >= CLIFF_MIN_M)
+    out = heights.copy()
+    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + CLIFF_RAISE_M))
+    out[sea] = np.minimum(heights[sea], 0.0)
+    return out
+
+
+def wms_map(service: str, layer: str, fmt: str, bbox, px: int, path: Path, info: tuple[int, int] | None = None) -> Path:
+    """One WMS 1.3.0 map of a WGS84 box (latitude first, as 1.3.0 states EPSG:4326), or the
+    feature info at a pixel of that map."""
+    west, south, east, north = bbox
+    params = {"SERVICE": "WMS", "VERSION": "1.3.0", "REQUEST": "GetMap", "LAYERS": layer, "STYLES": "",
+              "CRS": "EPSG:4326", "BBOX": f"{south},{west},{north},{east}", "WIDTH": px, "HEIGHT": px, "FORMAT": fmt}
+    if info:
+        params.update(REQUEST="GetFeatureInfo", QUERY_LAYERS=layer, I=info[0], J=info[1], INFO_FORMAT="text/xml")
+    return http_download(f"{service}?{urllib.parse.urlencode(params)}", path)
+
+
+def onto_level(bands: np.ndarray, bbox, k: int, frame: str, size: int, resampling: str, work: Path) -> np.ndarray:
+    """uint8 bands over a WGS84 box, warped onto level k's grid at size² texels."""
+    half = HALF0_M * 2**k
+    src, dst = work / "wms.tif", work / "wms-warp.tif"
+    profile = {"driver": "GTiff", "height": bands.shape[1], "width": bands.shape[2], "count": bands.shape[0],
+               "dtype": "uint8", "crs": "EPSG:4326", "transform": rasterio.transform.from_bounds(*bbox, bands.shape[2], bands.shape[1])}
+    with rasterio.open(src, "w", **profile) as f:
+        f.write(bands)
+    # A fourth band is data here, not alpha.
+    subprocess.run(["gdalwarp", "-q", "-overwrite", "-nosrcalpha", "-t_srs", frame, "-te", str(-half), str(-half), str(half),
+                    str(half), "-ts", str(size), str(size), "-r", resampling, str(src), str(dst)], check=True)
+    with rasterio.open(dst) as f:
+        return f.read()
+
+
+def lithology(text: str) -> tuple[str, bool]:
+    lower = text.lower()
+    return next(((colour, banded) for word, colour, banded in LITHOLOGY if word in lower), (ROCK, False))
+
+
+def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> np.ndarray:
+    """RGBA8 on level k: the rock colour of the geological unit, and 255 where it is variegated.
+    The map's fill colours stand for units; hatching and antialiased edges are minor colours, which
+    take the nearest major one. `units` caches each fill colour's description across levels."""
+    service, layer, _ = GEOLOGY[key]
+    px = 2048
+    with rasterio.open(wms_map(service, layer, "image/png", bbox, px, work / f"geology-{k}.png")) as f:
+        rgb = f.read()[:3].astype(np.int64)
+    code = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+    values, counts = np.unique(code, return_counts=True)
+    # Black is the map's boundary lines and labels.
+    majors = values[(counts >= 0.002 * code.size) & (values != 0)]
+    label = np.full(code.shape, -1)
+    for i, value in enumerate(majors):
+        label[code == value] = i
+    for _ in range(16):
+        for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            shifted = np.roll(label, step, axis=axis)
+            fill = (label < 0) & (shifted >= 0)
+            label[fill] = shifted[fill]
+    label[label < 0] = int(np.argmax([np.sum(label == i) for i in range(len(majors))]))
+    colours = np.zeros((len(majors), 4), np.uint8)
+    for i, value in enumerate(majors):
+        if value not in units:
+            inside = label == i
+            for axis, step in ((0, 4), (0, -4), (1, 4), (1, -4)):
+                inside &= np.roll(label == i, step, axis=axis)
+            js, is_ = np.nonzero(inside if inside.any() else label == i)
+            j, x = js[len(js) // 2], is_[len(is_) // 2]
+            body = wms_map(service, layer, "image/png", bbox, px, work / f"info-{k}-{value}.xml", info=(int(x), int(j))).read_text()
+            match = re.search(r'DescripciónUnidadGeológica="([^"]*)"', body)
+            units[value] = match.group(1) if match else ""
+        colour, banded = lithology(units[value])
+        colours[i] = [int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16), 255 if banded else 0]
+    return np.moveaxis(onto_level(np.moveaxis(colours[label], -1, 0), bbox, k, frame, SIZE, "near", work), 0, -1)
 
 
 def box_mean(a: np.ndarray, r: int) -> np.ndarray:
@@ -472,6 +634,94 @@ def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -
     broad = np.where(leaf == 3, rng.random(leaf.size) < 0.5, leaf == 2)
     height = np.clip(canopy, NO_CANOPY_M[0], 45) * rng.uniform(0.8, 1.15, canopy.size)
     return np.stack([x, y, height, broad.astype(np.float32)], axis=-1).astype(np.float32)
+
+
+def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
+    """The land cover map's polygons over the habitat levels as WGS84 rings with their habitat,
+    cached like `osm_ways`. The service pages 2000 polygons at a time, slowly, so pages run three
+    at once."""
+    cached = SOURCES / "nlcm" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        query = {"where": "1=1", "geometry": f"{w},{s},{e},{n}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
+                 "spatialRel": "esriSpatialRelIntersects", "outFields": "LEVEL_2_VALUE", "outSR": 4326, "f": "json"}
+        get = lambda **extra: json.loads(urllib.request.urlopen(
+            f"{NLCM[1]}/query?{urllib.parse.urlencode({**query, **extra})}", timeout=600).read())
+        count = get(returnCountOnly="true", returnGeometry="false")["count"]
+        with ThreadPoolExecutor(3) as pool:
+            pages = pool.map(lambda offset: get(returnGeometry="true", resultOffset=offset, resultRecordCount=2000),
+                             range(0, count, 2000))
+            rows = [[f["geometry"]["rings"], f["attributes"]["LEVEL_2_VALUE"]] for page in pages for f in page["features"]
+                    if f.get("geometry")]
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(rows))
+    habitat = lambda value: next((h for word, h in NLCM_WORDS if word in (value or "").lower()), "none")
+    return [(rings, habitat(value)) for rings, value in json.loads(cached.read_text())]
+
+
+def habitat_level(polygons: list[tuple[list, str]], to_frame, half: float) -> np.ndarray:
+    """R8 on level k: the index into HABITATS of each texel, 0 where the map has none."""
+    from rasterio.features import rasterize
+
+    def frame(rings):
+        return [np.array(to_frame.transform(*np.array(ring).T)).T.tolist() for ring in rings]
+
+    shapes = [({"type": "Polygon", "coordinates": frame(rings)}, HABITATS.index(h))
+              for h in HABITAT_ORDER for rings, kind in polygons if kind == h]
+    if not shapes:
+        return np.zeros((SIZE, SIZE), np.uint8)
+    return rasterize(shapes, out_shape=(SIZE, SIZE), dtype=np.uint8,
+                     transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE))
+
+
+def orchard_trees(orchards: list[np.ndarray]) -> np.ndarray:
+    """float32 x, y, height, type 2 for orchard trees within TREE_RADIUS_M, in rows along each
+    orchard's longest edge."""
+    rng = np.random.default_rng(2)
+    rows = []
+    for ring in orchards:
+        if np.hypot(*ring.T).min() > TREE_RADIUS_M:
+            continue
+        edges = np.diff(ring, axis=0)
+        u = edges[np.argmax(np.hypot(*edges.T))]
+        u = u / np.hypot(*u)
+        v = np.array([-u[1], u[0]])
+        a, b = ring @ u, ring @ v
+        grid_u, grid_v = np.meshgrid(np.arange(a.min(), a.max(), ORCHARD_SPACING_M), np.arange(b.min(), b.max(), ORCHARD_SPACING_M))
+        points = np.outer(grid_u.ravel(), u) + np.outer(grid_v.ravel(), v)
+        inside = inside_ring(points, ring) & (np.hypot(*points.T) <= TREE_RADIUS_M)
+        for x, y in points[inside]:
+            rows.append([x, y, rng.uniform(3.5, 5.0), 2.0])
+    return np.array(rows, np.float32).reshape(-1, 4)
+
+
+def inside_ring(points: np.ndarray, ring: np.ndarray) -> np.ndarray:
+    """Even-odd rule for each point against a closed ring."""
+    x, y = points[:, 0][:, None], points[:, 1][:, None]
+    ax, ay, bx, by = ring[:-1, 0], ring[:-1, 1], ring[1:, 0], ring[1:, 1]
+    crosses = ((ay > y) != (by > y)) & (x < ax + (y - ay) * (bx - ax) / np.where(by == ay, 1e-9, by - ay))
+    return crosses.sum(axis=1) % 2 == 1
+
+
+def densify(xy: np.ndarray, step: float) -> np.ndarray:
+    """The line with extra vertices so no segment is longer than `step`."""
+    out = [xy[0]]
+    for a, b in zip(xy[:-1], xy[1:]):
+        n = max(1, int(np.ceil(np.hypot(*(b - a)) / step)))
+        out += [a + (b - a) * (i / n) for i in range(1, n + 1)]
+    return np.array(out)
+
+
+def wall_pieces(walls: list[tuple[np.ndarray, int]]) -> np.ndarray:
+    """float32 x0, y0, x1, y1, kind (0 wall, 1 hedge, 2 crest) for pieces within WALL_HALF_M."""
+    rows = []
+    for xy, kind in walls:
+        xy = densify(xy, WALL_PIECE_M)
+        for a, b in zip(xy[:-1], xy[1:]):
+            if max(np.abs(a).max(), np.abs(b).max()) <= WALL_HALF_M:
+                rows.append([*a, *b, kind])
+    return np.array(rows, np.float32).reshape(-1, 5)
 
 
 def leaf_grid(forests: list[tuple[np.ndarray, int]]) -> np.ndarray:
@@ -555,6 +805,29 @@ def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
 
 
+def osm_features(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Walls, hedges, orchards, aretes and ridges over the road levels, cached like `osm_ways`."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_features.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (ROAD_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        box = f"{s},{w},{n},{e}"
+        text = overpass(f'[out:json][timeout:600];('
+                        f'way["barrier"~"^(wall|retaining_wall|hedge)$"]({box});way["natural"~"^(arete|ridge)$"]({box});way["landuse"="orchard"]({box}););out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+
+
+def landmark(tags: dict) -> str:
+    """The building value, or the landmark it is: a lighthouse, or a ruined castle or tower."""
+    if tags.get("man_made") == "lighthouse":
+        return "lighthouse"
+    if tags.get("ruins") == "yes" or tags.get("historic") in ("castle", "tower", "ruins") or tags["building"] == "ruins":
+        return "ruin"
+    return tags["building"]
+
+
 def elevation_tag(text: str) -> float | None:
     match = re.match(r"\s*(-?\d+(?:[.,]\d+)?)", text.replace("'", ""))
     return float(match.group(1).replace(",", ".")) if match else None
@@ -591,6 +864,19 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         elif closed and tags.get("waterway") != "stream":
             lakes.append(xy)
     print(f"  OSM water: {len(rivers)} rivers and canals, {len(streams)} streams, {len(lakes)} areas", flush=True)
+    features = osm_features(preset["id"], lat, lon, to_wgs84)
+    tagged = lambda key, *values: [w for w in features if w["tags"].get(key) in values]
+    walls = [(metres(w), 1 if w["tags"]["barrier"] == "hedge" else 0) for w in tagged("barrier", "wall", "retaining_wall", "hedge")]
+    # Crests: the DEM rounds a knife-edge ridge off, so the page stands crags along it.
+    walls += [(metres(w), 2) for w in tagged("natural", "arete", "ridge")]
+    orchards = [metres(w) for w in tagged("landuse", "orchard") if w["geometry"][0] == w["geometry"][-1]]
+    print(f"  OSM features: {len(walls)} walls and hedges, "
+          f"{len(orchards)} orchards", flush=True)
+    geology = GEOLOGY.get(dtm)
+    units: dict[int, str] = {}
+    habitats = nlcm(preset["id"], lat, lon, to_wgs84) if NLCM[0][0] <= lon <= NLCM[0][2] and NLCM[0][1] <= lat <= NLCM[0][3] else []
+    if habitats:
+        print(f"  land cover: {len(habitats)} polygons", flush=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -617,10 +903,12 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 blob = encode(glo30)
                 (out / f"glo30-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "glo30", len(blob)))
+            classes = class_level(k, frame, bbox, heights, work)
+            if heights is glo30:
+                heights = sharpen_coast(heights, classes, half)
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
-            classes = class_level(k, frame, bbox, heights, work)
             blob = pack(classes)
             (out / f"class-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "class", len(blob)))
@@ -629,8 +917,16 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 blob = pack(road)
                 (out / f"road-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "road", len(blob)))
+            if geology and k < ROCK_LEVELS:
+                blob = pack(rock_level(dtm, k, frame, bbox, work, units))
+                (out / f"rock-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "rock", len(blob)))
+            if habitats and k < HABITAT_LEVELS:
+                blob = pack(habitat_level(habitats, to_frame, half))
+                (out / f"habitat-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "habitat", len(blob)))
             if k < WATER_LEVELS:
-                water = water_field(rivers, streams, lakes, classes, half)
+                water = water_field(rivers, streams, lakes, classes, half, work)
                 blob = pack(water)
                 (out / f"water-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "water", len(blob)))
@@ -658,7 +954,8 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, f"s2-q{q}", len(blob)))
             print(f"  colour level {k}", flush=True)
 
-    trees = scatter_trees(classes0, road0, water0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed"))
+    trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed"))
+    trees = np.concatenate([trees, orchard_trees(orchards)])
     blob = pack(trees)
     (out / "trees.bin.gz").write_bytes(blob)
     sizes.append(("-", "trees", len(blob)))
@@ -671,11 +968,15 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         # Level 0 holds ±1.25 km; past it a footprint takes its ground from level 1, not the edge.
         inner = np.abs(ring).max() < HALF0_M
         base = float(sample(heights0 if inner else heights1, HALF0_M * (1 if inner else 2), ring[:, 0], ring[:, 1]).min())
-        buildings.append([round(base, 1), tags["building"], elevation_tag(tags.get("building:levels", "")),
+        buildings.append([round(base, 1), landmark(tags), elevation_tag(tags.get("building:levels", "")),
                           elevation_tag(tags.get("height", "")), [round(float(v), 1) for v in ring[:-1].ravel()]])
     blob = json.dumps(buildings, separators=(",", ":")).encode()
     (out / "buildings.json").write_bytes(blob)
     sizes.append(("-", "buildings", len(blob)))
+
+    blob = pack(wall_pieces(walls))
+    (out / "walls.bin.gz").write_bytes(blob)
+    sizes.append(("-", "walls", len(blob)))
     print(f"  {len(trees)} trees, {len(buildings)} buildings", flush=True)
 
     ground = preset.get("ground_m", origin.get("dtm", origin["glo30"]))
@@ -683,6 +984,8 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
           f"GLO-30 {origin['glo30']:.1f} m")
 
     credits = [CREDITS["glo30"]] + ([CREDITS[dtm]] if dtm else []) + [CREDITS["worldcover"], CREDITS["s2"]]
+    credits += [geology[2]] if geology else []
+    credits += [NLCM[2]] if habitats else []
     if not skip_peaks:
         radius = HALF0_M * 2 ** (LEVELS - 1)
         raw = overpass_peaks(lat, lon, radius)
@@ -700,7 +1003,9 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     above = preset.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, credits=credits)
+                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
+                rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
+                credits=credits)
     if "photo_source" in preset:
         shutil.copyfile(preset["photo_source"], out / "photo.jpg")
         meta["photo"] = preset["photo"]
@@ -712,7 +1017,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
     print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
     season = sum(row[2] for row in sizes
-                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3"))
+                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3", "rock", "habitat", "walls"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 

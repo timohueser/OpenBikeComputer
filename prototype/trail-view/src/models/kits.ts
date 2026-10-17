@@ -1,5 +1,7 @@
 /** The regional kits: the trees, ground plants and buildings a place draws, as data. */
 
+import type { Habitat } from '../bake';
+import type { Weather } from '../weather';
 import type { BuildingStyle } from './buildings';
 import type { PlantName } from './plants';
 import type { TreeName } from './trees';
@@ -17,6 +19,33 @@ export interface Species {
   evergreen?: boolean;
 }
 
+/** How the ground itself reads in a region, beyond the WorldCover palette. */
+export interface Land {
+  /** Ramps that replace palette.ts's for these WorldCover classes, low NDVI to high. */
+  ramps?: Partial<Record<'shrub' | 'grass' | 'moss', [string, string, string]>>;
+  /**
+   * Moorland: open ground that Sentinel-2 sees brown rather than green, painted in its own
+   * colour with heather patches over a share of it. Heather plants grow there and grass does not.
+   */
+  moor?: { colour: string; heather: string; share: number };
+  /** The look's palette snap for this region: 1 paints the palette alone. */
+  snap?: number;
+  /** The look's haze distance at sea level for this region, in km: washed Atlantic air sees far. */
+  hazeKm?: number;
+  /** What the region's climate changes in each weather preset. */
+  weather?: Partial<Record<'sunny' | 'cloudy' | 'rainy', Partial<Weather>>>;
+  /** Colours for the habitats of a fine land cover map, where the bake has one; others keep the palette. */
+  habitats?: Partial<Record<Habitat, string>>;
+  /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */
+  outcrops?: number;
+  /** Cliffs and slabs. */
+  rock?: string;
+  /** The rock's bedding planes in degrees, so cliffs show their strata tilted as they are. */
+  bedding?: { strike: number; dip: number };
+  /** Open water away from the shore, and beside it. */
+  sea?: { deep: string; shallow: string };
+}
+
 export interface Kit {
   name: string;
   trees: Species[];
@@ -24,6 +53,9 @@ export interface Kit {
   style: BuildingStyle;
   /** What cottages and houses change from the style, where they differ from farms. */
   houses?: Partial<BuildingStyle>;
+  /** The tree that stands in OSM orchards; without one, the kit's broadleaves do. */
+  orchard?: TreeName;
+  land?: Land;
 }
 
 const BLACK_FOREST: Kit = {
@@ -34,6 +66,8 @@ const BLACK_FOREST: Kit = {
     { tree: 'european-beech', leaf: 'broadleaved', cover: 'tree', elevation: [200, 1100], weight: 5 },
   ],
   ground: ['grass', 'fern'],
+  // Stands in for apple and cherry trees, small and white in spring.
+  orchard: 'hawthorn',
   // Town and village houses have a plain steep gable; the half-hip belongs to the farms.
   houses: { name: 'Town house', pitch: [40, 48], hip: 0, eave: 0.5, verge: 0.4, timber: 'none', chimneys: 1 },
   style: {
@@ -97,6 +131,38 @@ export const KITS = {
       { tree: 'gorse', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 350], weight: 1 },
     ],
     ground: ['grass', 'heather', 'heather-bloom'],
+    // Washed Atlantic headlands: bright grass, ochre moor and heather on poor ground, grey slabs
+    // breaking through, a navy sea that turns turquoise at the rocks.
+    land: {
+      ramps: {
+        grass: ['#8f8455', '#7c8c52', '#5f8748'],
+        shrub: ['#7d5e48', '#86703f', '#6f7c3e'],
+        moss: ['#8a7a58', '#8a8a5a', '#7a8c56'],
+      },
+      moor: { colour: '#7e7152', heather: '#6e5266', share: 0.4 },
+      habitats: {
+        rock: '#8d8f88',
+        heath: '#7e7152',
+        bog: '#86704a',
+        bracken: '#6f8c3a',
+        rough: '#788a4e',
+        pasture: '#5f8748',
+        scrub: '#55652f',
+        hedge: '#3b5530',
+        sand: '#d6cba8',
+        saltmarsh: '#7c8a60',
+      },
+      snap: 0.85,
+      hazeKm: 70,
+      // Fair weather off the Atlantic is low cumulus with a deep blue between.
+      weather: { sunny: { cover: 0.32, base: 900, dark: 0.4, zenith: '#5d7fae', horizon: '#a9bfd4', grey: 0.35, towers: 0.8 } },
+      outcrops: 0.55,
+      rock: '#8d8f88',
+      // Old Red Sandstone of the south-west peninsulas: GSI bedrock structure points around
+      // Sheep's Head and Mizen give strike 38–64° and dip 50–80°.
+      bedding: { strike: 55, dip: 65 },
+      sea: { deep: '#0e3461', shallow: '#2a9a98' },
+    },
     style: {
       name: 'Irish cottage',
       pitch: [36, 44],
@@ -157,6 +223,8 @@ export const KITS = {
       { tree: 'gorse', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 1600], weight: 1 },
     ],
     ground: ['grass', 'heather'],
+    // Stands in for almond and olive trees.
+    orchard: 'hawthorn',
     style: {
       name: 'Village house',
       pitch: [18, 26],

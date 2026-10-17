@@ -33,9 +33,18 @@ export interface Meta {
   s2_levels: number;
   road_levels: number;
   water_levels: number;
+  /** The water levels' shore distance runs to this many metres. */
+  shore_reach_m: number;
+  /** Levels k < rock_levels carry a geological rock colour, k < habitat_levels a habitat (HABITATS). */
+  rock_levels: number;
+  habitat_levels?: number;
   credits: string[];
   photo?: Photo;
 }
+
+/** The habitats bake.py writes, in its order. */
+export const HABITATS = ['none', 'rock', 'heath', 'bog', 'bracken', 'rough', 'pasture', 'scrub', 'hedge', 'sand', 'saltmarsh', 'built', 'water'] as const;
+export type Habitat = (typeof HABITATS)[number];
 
 export interface Peak {
   /** Metres east and north of the eye. */
@@ -59,11 +68,17 @@ export interface Bake {
   classes: Uint8Array;
   /** RG8 per texel, k < road_levels: distance to the nearest road in 0.1 m, and its surface code. */
   roads: Uint8Array;
-  /** R8 per texel, k < water_levels: the share of the texel under OSM water, 0–255. */
+  /** RG8 per texel, k < water_levels: the share of the texel under OSM water, 0–255, and sqrt(shore distance / shore_reach_m). */
   water: Uint8Array;
+  /** RGBA8 per texel, k < rock_levels: the rock colour of the geological unit, sRGB, and 255 where it is variegated. */
+  rock: Uint8Array;
+  /** R8 per texel, k < habitat_levels: the index into HABITATS, 0 where the land cover has none. */
+  habitat: Uint8Array;
+  /** x0, y0, x1, y1, kind (0 wall, 1 hedge) per piece of wall or hedge. */
+  walls: Float32Array;
   /** R8 per texel, k < dtm_levels: canopy height in 0.25 m. */
   canopy: Uint8Array;
-  /** x, y, height, broadleaf (0 or 1) per tree, metres from the eye. */
+  /** x, y, height, type (0 conifer, 1 broadleaf, 2 orchard) per tree, metres from the eye. */
   trees: Float32Array;
   buildings: Building[];
   peaks: Peak[];
@@ -116,18 +131,21 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, roads, water, canopy, trees, buildings, peaks] = await Promise.all([
+  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
     layers(base, 'road', meta.road_levels),
     layers(base, 'water', meta.water_levels),
+    layers(base, 'rock', meta.rock_levels),
+    layers(base, 'habitat', meta.habitat_levels ?? 0),
     layers(base, 'canopy', meta.dtm_levels),
     unpack(`${base}trees.bin.gz`),
     fetch(`${base}buildings.json`).then((r) => r.json()),
+    unpack(`${base}walls.bin.gz`),
     fetch(`${base}peaks.json`).then((r) => (r.ok ? r.json() : [])),
   ]);
-  const bytes = [...surface, ...glo30, classes, roads, water, canopy, trees].reduce((sum, level) => sum + level.bytes, 0);
+  const bytes = [...surface, ...glo30, classes, roads, water, rock, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
   return {
     meta,
     base,
@@ -136,9 +154,12 @@ export async function loadBake(id: string): Promise<Bake> {
     classes: classes.data,
     roads: roads.data,
     water: water.data,
+    rock: rock.data,
+    habitat: habitat.data,
     canopy: canopy.data,
     trees: new Float32Array(trees.data),
     buildings,
+    walls: new Float32Array(walls.data),
     peaks: (peaks as [number, number, number | null, string][]).map(([x, y, ele, name]) => ({ x, y, ele, name })),
     bytes,
   };
