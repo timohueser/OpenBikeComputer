@@ -10,6 +10,8 @@ in a draft pull request from this branch.
 |---|---|
 | `bake.py` | Bakes one preset into `~/.cache/obc/trail-view/<preset>/` |
 | `presets.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
+| `regions/*.json` | Rulesets: where a region applies, its data sources and terrain rules, and its look |
+| `packs/*.json` | Asset packs: the trees, plants, herds and houses a region draws |
 | `index.html`, `src/` | The Vite + TypeScript + three.js page |
 
 ## Bake
@@ -52,6 +54,24 @@ uv run prototype/trail-view/bake.py hahnen
 - A place takes 5 to 12 minutes and about 100 MB, most of it the four Sentinel-2 quarters. A first
   bake in Baden-Württemberg or the US spends most of its time on the DTM.
 
+## Regions and packs
+
+A region is a ruleset in `regions/<name>.json`. It names the region it `extends` and the boxes it
+covers (`where`, as `[west, south, east, north]`); a spot takes the deepest region whose box holds
+it, so `world` › `ireland` › `irish-coast`. A region inherits all it does not say: objects merge,
+anything else replaces. bake.py and the page (`src/regions.ts`) resolve the same files.
+
+| Key | What it sets |
+|---|---|
+| `tz`, `leaf`, `pack` | Time zone, default leaf type, the asset pack |
+| `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`), rock colour (`igme`) |
+| `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
+| `look` | Ramps per land cover class, moor, habitat colours, outcrops, rock, cliff, snowline, sea, swell, haze, grade, weather |
+
+A pack in `packs/<name>.json` extends `base` and lists trees by leaf type and elevation, ground
+plants, herds by habitat, and the house style. Regions share packs: the Vosges draw the Black
+Forest's. A new place needs a region with a box; its models come from the pack it names.
+
 ## Open
 
 ```sh
@@ -59,7 +79,7 @@ cd prototype/trail-view && npm ci && npm run dev
 ```
 
 Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.json` runs the same.
-`http://localhost:5180/models.html` shows every model of a kit at each level of detail.
+`http://localhost:5180/models.html` shows every model of a pack at each level of detail.
 
 - "spot" picks a place by region, "season" one day of the year, "time of day" the local hour.
 - "weather" is sunny, cloudy or rainy (`src/weather.ts`): one cloud layer above the eye, its
@@ -74,14 +94,12 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   `presets.json`. Red is the skyline read off the photograph, cyan the skyline cast through the
   active surface.
 - The season (one day each, 2025) also picks the Sentinel-2 quarter and the palette.
-- The near field comes from the spot's kit in `src/models/kits.ts`: trees by leaf type and
+- The near field comes from the region's pack: trees by leaf type and
   elevation, ground plants by land cover within 60 m, rocks on steep ground, ridges, shores and
   mapped bare rock, crags along mapped crests, and houses fitted to OSM footprints by their
   `building` value and size. OSM ruins, castles and lighthouses draw as landmarks. Ground plants
   take their hue from the ground under them.
-- A kit's `land` says how the region's ground reads: class ramps, moor (open ground that
-  Sentinel-2 sees as brown), colours per habitat, outcrops, rock colour and bedding, sea colours,
-  haze and its weather (for example cumulus on the horizon).
+- "Readout" › "region" shows the chain of regions that applies, root first.
 - "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
   light bands; "copy look JSON" copies the values.
 - "Tools": "raise eye" lifts the eye as a drone would. "save side by side" and "save view" write
@@ -100,7 +118,6 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   that the cast skyline at the photo's point shows what the photograph shows.
 - Python checks certificates against the system trust store (`truststore`): Spain's IGN serves a
   chain whose root Python's own bundle lacks.
-- A coastal kit renders every frame, so its surf rolls. Frame times measured then are not idle.
 - A spot is only as good as what its eye sees. A point in forest, beside a house, just below a
   crest or on a broad dome hides the view; check the land cover and the line of sight first.
 - gdalwarp prints `ERROR 6: ... SetColorTable()` for every WorldCover level, because it copies the
