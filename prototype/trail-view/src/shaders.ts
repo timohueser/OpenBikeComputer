@@ -590,8 +590,10 @@ void main() {
   // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond,
   // denser in some stretches than others.
   if (speckle.x > 0.0) {
-    // Near the eye the pack's own bushes stand there instead.
+    // Near the eye the pack's own bushes stand there instead. Slopes facing north (here, the
+    // northern hemisphere) stay moister and carry more scrub than slopes facing the sun.
     float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0))
+      * (1.0 + clamp(4.0 * n.y, -0.5, 0.8))
       * smoothstep(40.0, 70.0, length(vWorld.xy - cameraPosition.xy));
     // One round bush in a share of the cells, so bushes stand apart rather than merging.
     vec3 bush = cells(vWorld.xy, speckle.y);

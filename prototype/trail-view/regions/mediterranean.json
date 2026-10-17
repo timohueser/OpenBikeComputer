@@ -23,7 +23,7 @@
   "sea": { "deep": "#1b4f8a", "shallow": "#3aa4b4" },
   "grade": { "shadow": [-0.002, 0.0, 0.006], "light": [0.012, 0.006, -0.006], "saturation": 1.04 },
   "weather": {
-   "sunny": { "cover": 0.06, "zenith": "#2a6cc4", "horizon": "#7fb2e6", "grey": 0.15 }
+   "sunny": { "cover": 0.06, "zenith": "#2a6cc4", "horizon": "#9cc3ea", "grey": 0.6 }
   }
  }
 }
