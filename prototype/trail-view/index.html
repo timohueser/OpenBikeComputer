@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Trail View prototype</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="stage">
+      <div id="frame">
+        <canvas id="gl"></canvas>
+        <img id="photo" alt="" />
+        <canvas id="lines"></canvas>
+        <div id="labels"></div>
+        <div id="compass"></div>
+      </div>
+      <div id="caption"><b>Estimated from map and satellite data. Not a photo.</b> <span id="credits"></span></div>
+      <div id="status"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

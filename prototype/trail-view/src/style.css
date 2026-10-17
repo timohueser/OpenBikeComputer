@@ -1,0 +1,132 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #16181b;
+  font: 12px/1.3 system-ui, sans-serif;
+  color: #fff;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+#frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+#frame > * {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#photo {
+  pointer-events: none;
+  border-right: 2px solid #fff;
+  box-sizing: border-box;
+}
+
+#lines,
+#labels {
+  pointer-events: none;
+}
+
+.peak {
+  position: absolute;
+  width: 0;
+  height: 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.8);
+  transform: translateY(-100%);
+}
+
+.peak span {
+  position: absolute;
+  bottom: 16px;
+  left: -2px;
+  transform-origin: left bottom;
+  transform: rotate(-50deg);
+  white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 0 2px #000;
+}
+
+.peak small {
+  opacity: 0.75;
+}
+
+#compass {
+  height: 22px;
+  bottom: auto;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+#compass i {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.6);
+  font-style: normal;
+  font-size: 10px;
+  text-indent: -20px;
+  text-align: center;
+}
+
+#compass i.major {
+  height: 8px;
+  width: 40px;
+  margin-left: -20px;
+  background: none;
+  border-left: 0;
+  text-indent: 0;
+  padding-top: 8px;
+}
+
+#compass i.major::before {
+  content: '';
+  position: absolute;
+  left: 20px;
+  top: 0;
+  width: 1px;
+  height: 7px;
+  background: #fff;
+}
+
+#compass b {
+  position: absolute;
+  bottom: 0;
+  margin-left: -3px;
+  border: 3px solid transparent;
+  border-bottom: 5px solid #ffb347;
+}
+
+#caption {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+#status {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 14px;
+  pointer-events: none;
+}

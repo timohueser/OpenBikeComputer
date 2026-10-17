@@ -46,6 +46,13 @@
       "runtimeArgs": ["run", "demo:coverage"],
       "cwd": "tools/verification",
       "port": 4180
+    },
+    {
+      "name": "trail-view",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "prototype/trail-view",
+      "port": 5180
     }
   ]
 }
