@@ -8,7 +8,6 @@
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
     import PlanLine from './PlanLine.svelte';
-    import Segmented from './Segmented.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
@@ -38,7 +37,7 @@
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
-        type Day, type LegMode, type Place, type PointKind, type RoutePoint, type Trip,
+        type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -50,8 +49,8 @@
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Sleep, type Stop } from '../../lib/planner/stops';
-    import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, routesPlaces } from '../../lib/planner/search/presentation';
+    import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
+    import { asPlace, category, routesPlaces } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
@@ -140,6 +139,11 @@
     function useOptionRow(row: Compared) {
         const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
         if (route) useOption(route, row.name);
+    }
+
+    function deleteRow(row: Compared) {
+        versionPreview = null;
+        changeVersions(session.versions.filter(v => v.id !== row.id)).catch(() => { message = 'Could not delete the version. Try again.'; });
     }
 
     function restoreRow(row: Compared) {
@@ -321,7 +325,9 @@
         keepCampsites: () => keepCampsites(),
         date: night => trip.startDate ? addDays(trip.startDate, (dayLabels[night] ?? night) - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
-        choose: night => { choosingNight = night; stopId = null; clearSelection(); if (night !== null) showNightArea(night); },
+        // The chosen night is the one a place callout and a map pick end, also in the ladder.
+        choose: number => { choosingNight = number; stopId = null; clearSelection(); if (number !== null) { night = number; showNightArea(number); } },
+        inspect: night => { const point = days[night - 1]?.pinned; if (point) inspectPoint(point); },
         open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(stop.sleep.map(p => p.place.coordinate)); },
         step: (night, direction) => {
             const stop = nights.neighbours(night)[direction < 0 ? 0 : 1];
@@ -370,22 +376,30 @@
         : highlightCandidates.length > highlightLimit ? `Showing ${highlightLimit} of ${highlightCandidates.length} highlighted places, nearest the route first`
         : '',
     );
-    const selectedPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
+    const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
+    const shownPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
+    // List searches leave out details such as the website and phone; they load per place id, and null means search has none.
+    let details = $state.raw<Record<string, SearchPlace | null>>({});
     let detailsError = $state('');
+    const detailsId = $derived(shownPlace?.id ?? selectedPoint?.placeId);
     $effect(() => {
-        const id = selectedId, place = mapPlace;
+        const id = detailsId;
         detailsError = '';
-        if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || place?.id !== id || place.detailsLoaded) return;
+        if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || untrack(() => id in details)) return;
+        const coordinate = untrack(() => (shownPlace ?? selectedPoint)!.coordinate);
         const abort = new AbortController();
-        placeDetails(id, place.coordinate, abort.signal).then(details => {
-            if (abort.signal.aborted) return;
-            mapPlace = { ...place, detailsLoaded: true, ...(details ? { website: details.website, phone: details.phone,
-                content: details.content, description: details.description || place.description, openingHours: details.opening_hours,
-                hoursStatus: details.hoursStatus, locality: details.city } : {}) };
+        placeDetails(id, coordinate, abort.signal).then(found => {
+            if (!abort.signal.aborted) details = { ...details, [id]: found ?? null };
         }).catch(() => { if (!abort.signal.aborted) detailsError = 'Place details are unavailable. Try selecting the place again.'; });
         return () => abort.abort();
     });
-    const selectedPoint = $derived(trip.points.find(p => p.id === selectedId));
+    const selectedPlace = $derived(shownPlace && withDetails(shownPlace, details[shownPlace.id]));
+    // A stop made from a mapped place shows that place, by its kind until its details arrive.
+    const pointPlace = $derived.by((): Place | undefined => {
+        const point = selectedPoint, found = point?.placeId && details[point.placeId];
+        return found ? asPlace(found) : point?.placeId && point.placeKind
+            ? { ...point, id: point.placeId, kind: 'place', category: category(point.placeKind), description: '' } : undefined;
+    });
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
         const pins: MapPoint[] = trip.points.map(p => ({
@@ -393,6 +407,8 @@
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
             color: multi && p.kind === 'night' ? dayColor(p.night!, theme) : undefined,
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
+            // A night at a mapped place shows the kind of place instead of its number.
+            category: multi && p.kind === 'night' && p.placeKind ? category(p.placeKind) : undefined,
             fixed: p.kind === 'night',
         }));
         const places = [...new Map([...visiblePlaces, ...(selectedPlace ? [selectedPlace] : [])].map(place => [place.id, place])).values()];
@@ -572,8 +588,10 @@
         afterEdit(description);
     }
 
+    // An edit ends a comparison, whose rows would be of the plan before it.
     function afterEdit(description: string) {
-        if (!hasEndpoints) { expandedDay = null; list = 'plan'; planEditing = false; hoverProgress = null; }
+        list = 'plan';
+        if (!hasEndpoints) { expandedDay = null; planEditing = false; hoverProgress = null; }
         message = description;
         statusUndo = null;
     }
@@ -849,7 +867,7 @@
     }
 
     function keepCampsites() {
-        const camps = [...proposals].flatMap(([night, { campsite }]) => campsite ? [{ night, coordinate: campsite.place.coordinate, label: campsite.place.label, placeKind: campsite.place.placeKind }] : []);
+        const camps = [...proposals].flatMap(([night, { campsite }]) => campsite ? [{ night, coordinate: campsite.place.coordinate, label: campsite.place.label, place: placeRef(campsite.place) }] : []);
         const next = pinNights(trip, session.line, camps);
         if (next !== trip) commit(next, camps.length === 1 ? `Night ${dayLabels[camps[0].night]} at ${camps[0].label}` : 'Suggested campsites kept');
     }
@@ -862,9 +880,8 @@
     function stayAt(sleepDay: number, place: Place) {
         // A place already on the route as a stop becomes the night, not a second point beside it.
         const source = trip.points.find(p => p.kind !== 'night' && p.coordinate[0] === place.coordinate[0] && p.coordinate[1] === place.coordinate[1]);
-        const next = pinNight(trip, session.line, sleepDay, place.coordinate, place.label, source?.id);
+        const next = pinNight(trip, session.line, sleepDay, place.coordinate, place.label, source?.id, placeRef(place));
         if (next === trip) return;
-        next.points.find(p => p.night === sleepDay)!.placeKind = place.placeKind;
         commit(next, `Night ${dayLabels[sleepDay]} at ${place.label}`);
         stopChoosing();
         clearSelection();
@@ -882,13 +899,20 @@
         const source = trip.points.find(p => p.id === pendingSource);
         const label = selectedPlace?.label ?? (source && !['via', 'pass'].includes(source.kind) ? source.label : 'Overnight spot');
         const current = trip;
-        const next = pinNight(current, session.line, sleepDay, coordinate, label, pendingSource ?? undefined);
+        const place = selectedPlace ? placeRef(selectedPlace) : { placeKind: source?.placeKind, placeId: source?.placeId };
+        const next = pinNight(current, session.line, sleepDay, coordinate, label, pendingSource ?? undefined, place);
         if (next === current) return;
-        next.points.find(p => p.night === sleepDay)!.placeKind = selectedPlace?.placeKind ?? source?.placeKind;
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
         if (autoCenter) map?.centerOn(coordinate);
+    }
+
+    const placeRef = (place: Place): PlaceRef => ({ placeKind: place.placeKind, placeId: place.id });
+
+    function withDetails(place: Place, found: SearchPlace | null | undefined): Place {
+        return found ? { ...place, website: found.website, phone: found.phone, content: found.content, description: found.description || place.description,
+            openingHours: found.opening_hours, hoursStatus: found.hoursStatus, locality: found.city } : place;
     }
 
     function newPoint(coordinate: Coordinate, kind: EditableKind, label?: string): RoutePoint {
@@ -910,7 +934,7 @@
     }
 
     function addVisit(place: Place) {
-        const point = newPoint(place.coordinate, 'waypoint', place.label);
+        const point = { ...newPoint(place.coordinate, 'waypoint', place.label), ...placeRef(place) };
         commit(addPointNear(trip, session.line, point), 'Visit added');
         clearSelection();
         selectedId = point.id;
@@ -935,11 +959,13 @@
     function chooseEndpoint(kind: 'start' | 'finish') {
         const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
         if (!coordinate) return;
+        const first = !hasEndpoints;
         commit(setEndpoint(trip, kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
         showRoute = true;
         clearSelection();
         exitSearch();
-        list = 'plan';
+        // The first route of a plan opens its options; later they stay one click away.
+        list = first && hasEndpoints ? 'ways' : 'plan';
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -1152,14 +1178,19 @@
                 {#if !focusedDay && alpine.length}
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
-                {#if currentRoute && (!focusedDay || planEditing)}
+                {#if currentRoute && list === 'plan' && (!focusedDay || planEditing)}
                     <PlanLine {trip} dayCount={itinerary.length} distance={view.summary.distance} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
-                {#if !focusedDay && visualRoute}
-                    <div class="list-switch">
-                        <Segmented compact label="List" value={list} onChange={(value) => list = value}
-                            options={[{ value: 'plan', label: multi ? 'Days' : 'Route' }, { value: 'ways', label: options.state === 'ready' && options.routes.length > 1 ? `Route options · ${options.routes.length - 1}` : 'Route options' },
-                                { value: 'versions', label: validVersions.length ? `Versions · ${validVersions.length}` : 'Versions' }]} />
+                {#if visualRoute && list !== 'plan'}
+                    <nav class="list-head" aria-label="Comparison">
+                        <button type="button" class="planner-action quiet" onclick={() => list = 'plan'}><Icon name="back" size={15} />{multi ? 'Days' : 'Route'}</button>
+                        <h2>{list === 'ways' ? 'Route options' : 'Saved versions'}</h2>
+                    </nav>
+                    {#if list === 'ways'}<p class="list-lead">Compare other ways from start to finish, or keep your route.</p>{/if}
+                {:else if visualRoute && !focusedDay}
+                    <div class="list-links">
+                        <button type="button" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options</button>
+                        {#if validVersions.length}<button type="button" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
@@ -1170,7 +1201,7 @@
                     {:else if list === 'versions'}
                         <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Restore"
                             retry={versionList.failed ? () => session.findVersionLines(true) : undefined}
-                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} />
+                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} onDelete={deleteRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
@@ -1211,7 +1242,7 @@
                             {#key selectedId}
                                 <MapCallout
                                     kind={calloutKind} trip={withProposals(trip, session.line, proposals)} line={session.line} {days} {dayLabels} {night} {legMode}
-                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPlace} coordinate={previewCoordinate} {detailsError}
+                                    onEndpoint={chooseEndpoint} point={selectedPoint} place={selectedPoint ? pointPlace : selectedPlace} coordinate={previewCoordinate} {detailsError}
                                     onRoutes={config.routes ? () => openRoutes(selectedPlace ? { coordinate: [...selectedPlace.coordinate], name: selectedPlace.label }
                                         : { coordinate: [...spot!.coordinate], near: map?.placeName(spot!.coordinate) }) : undefined}
                                     onClose={clearSelection}
@@ -1477,11 +1508,13 @@
     .closure-note span { flex: 1; }
     /* Clear of the map controls column, which reaches the bottom on a short map. */
     .layer-date { position: absolute; left: 16px; right: 68px; bottom: 34px; z-index: 2; }
-    .list-switch {
-        display: flex;
-        padding: 12px 16px 8px;
-        border-top: 1px solid var(--line);
-    }
+    .list-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px 4px; border-top: 1px solid var(--line); }
+    .list-head h2 { margin: 0; font: 600 15px var(--sans); }
+    .list-head :global(.planner-action) { gap: 4px; padding-left: 6px; }
+    .list-lead { margin: 4px 16px 0; font-size: 13px; color: var(--ink-soft); }
+    .list-links { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 16px 8px; border-top: 1px solid var(--line); }
+    .list-links button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13px; color: var(--ink-soft); }
+    .list-links button:hover { color: var(--ink); }
     .pane-scroll {
         flex: 1;
         min-height: 0;

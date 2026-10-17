@@ -33,6 +33,7 @@
         /** The riding day the rider works on. */
         night: number;
         point?: RoutePoint;
+        /** The place of a place callout, or the mapped place a point was made from. */
         place?: Place;
         /** Where a place callout would pin the overnight. */
         coordinate?: Coordinate | null;
@@ -120,6 +121,22 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="callout" bind:this={root} tabindex="-1" role="dialog" aria-label="Map details" onkeydown={key}>
     <button type="button" class="close" onclick={close} aria-label="Close"><Icon name="close" size={15} /></button>
+    {#snippet about(place: Place)}
+        {#if place.content}<PlaceContent content={place.content} name={place.label} />{/if}
+        {#if place.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
+        {#if website || place.website || phones.length}
+            <div class="contacts">
+                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>
+                {:else if place.website}<span>{place.website}</span>{/if}
+                {#each phones as phone}
+                    {@const link = phoneLink(phone)}
+                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
+                {/each}
+            </div>
+        {/if}
+        {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
+        {#if place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category)}<OpeningHours value={place.openingHours} />{/if}
+    {/snippet}
     {#snippet routes()}
         {#if onRoutes}<button type="button" class="secondary" onclick={onRoutes}><Icon name="diamond" size={15} />Signed routes from here</button>{/if}
     {/snippet}
@@ -162,20 +179,7 @@
                 {#if place}<p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>{/if}
             </div>
         </div>
-        {#if place?.content}<PlaceContent content={place.content} name={place.label} />{/if}
-        {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
-        {#if website || place?.website || phones.length}
-            <div class="contacts">
-                {#if website}<a href={website} target="_blank" rel="noopener noreferrer">Website</a>
-                {:else if place?.website}<span>{place.website}</span>{/if}
-                {#each phones as phone}
-                    {@const link = phoneLink(phone)}
-                    {#if link}<a href={link}>{phone}</a>{:else}<span>{phone}</span>{/if}
-                {/each}
-            </div>
-        {/if}
-        {#if detailsError}<p class="hint" role="status">{detailsError}</p>{/if}
-        {#if place && (place.openingHours || ['shop','food','pharmacy','hotel','bike'].includes(place.category))}<OpeningHours value={place.openingHours} />{/if}
+        {#if place}{@render about(place)}{/if}
         {#if place}{@render endpoints()}{/if}
         {#if place}{@render routes()}{/if}
         {#if sleeps}
@@ -215,6 +219,10 @@
                     }
                     if (!renaming) tick().then(() => renameButton?.focus());
                 }} />
+        {/if}
+        {#if place}
+            <p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>
+            {@render about(place)}
         {/if}
         {#if hasEndpoints && point.kind !== 'start' && point.kind !== 'finish'}
             <Segmented label="Point type" options={types} columns={types.length > 3 ? 2 : 0} value={point.kind === 'detour' ? 'waypoint' : point.kind as EditableKind} onChange={onKind} />

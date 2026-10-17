@@ -9,7 +9,7 @@ export interface MapPoint {
     kind: "start" | "finish" | "via" | "night" | "place" | "waypoint" | "detour" | "pass" | "marker" | "dayend";
     /** A `suggested` pin is not part of the route yet; a `moved` day end was dragged by the rider. */
     appearance?: "suggested" | "moved";
-    /** The place category a `place` pin shows. */
+    /** The place category a `place` or `night` pin shows. */
     category?: PlaceCategory;
     color?: string;
     markerLabel?: string;

@@ -90,6 +90,8 @@ export interface NightChoices {
     date(night: number): string | undefined;
     elevationAt(km: number): number | null;
     choose(night: number | null): void;
+    /** Shows the place of a pinned night on the map. */
+    inspect(night: number): void;
     open(id: string | null): void;
     step(night: number, direction: -1 | 1): void;
     endHere(night: number, stop: Stop): void;

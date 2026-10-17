@@ -12,6 +12,8 @@ export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
 export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
     placeKind?: string;
+    /** The search id of the mapped place the point was made from, such as `n123`; the point shows that place's details. */
+    placeId?: string;
     id: string;
     coordinate: Coordinate;
     label: string;
@@ -42,7 +44,6 @@ export type Place = RoutePoint & {
     website?: string;
     phone?: string;
     content?: import('./place-content').PlaceContent;
-    detailsLoaded?: boolean;
     hoursStatus?: import('./search/types').HoursStatus;
 };
 export interface Trip {
@@ -491,14 +492,15 @@ export function removeRestDay(trip: Trip, index: number): Trip {
 
 /** Pins several nights on one line, the latest first: each new point then lies after the nights still to pin, so they
  * find their legs among the points before it, which still match the line. */
-export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { night: number; coordinate: Coordinate; label: string; placeKind?: string }[]): Trip {
-    return [...nights].sort((a, b) => b.night - a.night).reduce((next, { night, coordinate, label, placeKind }) => {
-        const pinned = pinNight(next, line, night, coordinate, label);
-        return pinned === next ? next : { ...pinned, points: pinned.points.map(p => p.id === `night-${night}` ? { ...p, placeKind } : p) };
-    }, trip);
+export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { night: number; coordinate: Coordinate; label: string; place: PlaceRef }[]): Trip {
+    return [...nights].sort((a, b) => b.night - a.night).reduce((next, { night, coordinate, label, place }) => pinNight(next, line, night, coordinate, label, undefined, place), trip);
 }
 
-export function pinNight(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string, sourceId?: string): Trip {
+/** The mapped place a point stands for. */
+export type PlaceRef = Pick<RoutePoint, 'placeKind' | 'placeId'>;
+
+/** Pins night `night`. Without `place`, the night keeps the place of the point it replaces. */
+export function pinNight(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string, sourceId?: string, place?: PlaceRef): Trip {
     if (!Number.isInteger(night) || night < 1 || night >= maxRidingDays) return trip;
     const id = `night-${night}`;
     const source = trip.points.find(p => p.id === (sourceId ?? id));
@@ -509,7 +511,7 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
         points: trip.points.filter(p => p.id !== id && p.id !== sourceId),
         routeOrder: sourceId ? trip.routeOrder.filter(pointId => pointId !== id || pointId === sourceId).map(pointId => pointId === sourceId ? id : pointId) : trip.routeOrder,
     };
-    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined };
+    const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, ...place && { placeKind: place.placeKind, placeId: place.placeId } };
     const next = others.routeOrder.includes(id) ? { ...others, points: [...others.points, point] } : intoLeg(others, point, nearestLegEnd(others, line, coordinate));
     if (trip.splits?.[night] === undefined) return next;
     const { [night]: _, ...splits } = trip.splits;

@@ -34,10 +34,13 @@ describe('overnight edits', () => {
     it('pins several nights on one line, each in the leg it lies in', () => {
         const trip: Trip = { ...testTrip(), days: 4, routeOrder: ['via'],
             points: [...testTrip().points, { id: 'via', kind: 'via', label: 'Bern', coordinate: along(.5) }] };
-        const camps = [[1, .3], [2, .6], [3, .8]].map(([night, at]) => ({ night, coordinate: along(at), label: `Camp ${night}`, placeKind: 'campsite' }));
+        const camps = [[1, .3], [2, .6], [3, .8]].map(([night, at]) => ({ night, coordinate: along(at), label: `Camp ${night}`, place: { placeKind: 'campsite', placeId: `n${night}` } }));
         const pinned = pinNights(trip, testLine(trip), camps);
         expect(orderedRoutePoints(pinned).map(point => point.id)).toEqual(['start', 'night-1', 'via', 'night-2', 'night-3', 'finish']);
         expect(pinned.points.filter(point => point.kind === 'night').map(point => point.placeKind)).toEqual(['campsite', 'campsite', 'campsite']);
+        expect(pinned.points.filter(point => point.kind === 'night').map(point => point.placeId).sort()).toEqual(['n1', 'n2', 'n3']);
+        // A spot without a place replaces the campsite's details too.
+        expect(pinNight(pinned, undefined, 1, along(.31), 'Meadow', undefined, {}).points.find(point => point.id === 'night-1')?.placeId).toBeUndefined();
     });
 
     it('adds a riding day for a final overnight without exceeding the shared limit', () => {

@@ -4,7 +4,7 @@
     import Icon from './PlannerIcon.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
-    import { kindLabel } from '../../lib/planner/search/presentation';
+    import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { dayOverTarget, dayStops, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
@@ -103,7 +103,8 @@
     </span>
     </button>
     {/if}
-    {#if overParts.length}
+    <!-- In the list, the coloured distance and the bar show a day over its target. -->
+    {#if expanded && overParts.length}
         <p class="note">{overParts.join(' · ')} · <button type="button" class="planner-action" onclick={onEditTarget}>Edit target</button></p>
     {/if}
     {#if conflict !== null}
@@ -121,7 +122,7 @@
             {/each}
             {#if last || day.pinned}
                 <button type="button" class="stop end" class:chosen={hoveredId === endId} onmouseenter={() => onHover?.(endId)} onmouseleave={() => onHover?.(null)} onfocus={() => onHover?.(endId)} onblur={() => onHover?.(null)} class:flash={revealId === endId} onclick={onShowEnd} {@attach reveal(endId!)}>
-                    <Icon name={last ? 'flag' : 'camp'} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
+                    <Icon name={last ? 'flag' : sleepIcon(day.pinned?.placeKind)} size={15} /><span>{end}</span><small>{last ? 'Finish' : 'Pinned'}</small>
                 </button>
             {/if}
             {#if stops.length && !last && !day.pinned}

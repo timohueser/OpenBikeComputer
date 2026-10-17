@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
-    import { category, kindLabel } from '../../lib/planner/search/presentation';
+    import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { proposalTitle, stopCounts, suits } from '../../lib/planner/stops';
     import type { Day } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
@@ -21,7 +21,7 @@
     const around = $derived(pinned ? undefined : nights.around(day.number));
     const [earlier, later] = $derived(pinned ? [undefined, undefined] : nights.neighbours(day.number));
     const found = $derived(nights.found(day.number));
-    const icon = $derived(pinned?.placeKind ? ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[category(pinned.placeKind)] ?? 'moon' : 'moon');
+    const icon = $derived(sleepIcon(pinned?.placeKind));
     const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, nights.sleep)).length : 0);
     const wanted = $derived(nights.sleep === 'camping' ? 'campsite' : nights.sleep === 'hotel' ? 'hotel' : 'town with a place to sleep');
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
@@ -33,15 +33,17 @@
 
 <div class="night" class:chosen={!!pinned} class:open {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
     <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
-    <div class="text">
-        {#if pinned}
+    {#if pinned}
+        <button type="button" class="text" aria-label={`Show ${pinned.label}, night ${label}`} onclick={() => nights.inspect(day.number)}>
             <strong>{pinned.label}</strong>
             <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
-        {:else}
+        </button>
+    {:else}
+        <div class="text">
             <strong>{around ? proposalTitle(around, nights.sleep) : `Night ${label}`}</strong>
             <small><span class="sr-only">Suggested. </span>{detail}</small>
-        {/if}
-    </div>
+        </div>
+    {/if}
     {#if !pinned && !open}
         <span class="step">
             <button type="button" class="icon" disabled={!earlier} aria-label={earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
@@ -87,6 +89,15 @@
     .text {
         flex: 1;
         min-width: 0;
+    }
+    button.text {
+        margin: -4px 0 -4px -6px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        text-align: left;
+    }
+    button.text:hover {
+        background: var(--parchment-2);
     }
     strong,
     small {

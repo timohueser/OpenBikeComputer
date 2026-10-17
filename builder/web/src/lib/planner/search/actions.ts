@@ -88,8 +88,7 @@ export async function applyQueryChanges(
             'That day end crosses another day boundary. Choose a point between the adjacent day ends.',
           );
       } else {
-        trip = pinNight(trip, line, n, p.coordinate, p.label);
-        trip.points.find((point) => point.night === n)!.placeKind = p.kind;
+        trip = pinNight(trip, line, n, p.coordinate, p.label, undefined, { placeKind: p.kind, placeId: p.source });
       }
     } else if (change.op === 'split' || change.op === 'join') {
       const [from, to] = change.range!;
