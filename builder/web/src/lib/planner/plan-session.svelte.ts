@@ -29,12 +29,13 @@ function storageError(error: unknown): string {
     return error instanceof Error ? error.message : 'Could not save in this browser. Download your plan and try again.';
 }
 
-// A moved night keeps its number, and a moved marker takes the leg nearest to it. Moving a point routes its drawn legs again.
+// A moved night keeps its number, and a moved marker takes the leg nearest to it. A moved point no longer stands for its
+// mapped place. Moving a point routes its drawn legs again.
 function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coordinate: Coordinate): Trip {
     const point = trip.points.find(p => p.id === id);
     if (!point) return trip;
     if (point.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
-    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label };
+    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label, placeId: undefined, placeKind: undefined };
     return routeLegsAround({ ...trip, points: trip.points.map(p => p !== point ? p : p.kind === 'marker' ? anchorMarker(trip, line, moved) : moved) }, id);
 }
 

@@ -87,7 +87,7 @@
         </header>
         <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
-    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
+    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}${overParts.length ? ', over target' : ''}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">

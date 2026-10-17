@@ -39,7 +39,7 @@
         return `${optionLetter(index)}, ${row.name}: ${km(row.km)} km, climb ${row.climb === null ? 'incomplete' : `${row.climb} m`}, unpaved ${km(row.unpavedKm)} km${d}`;
     }
 
-    /** Ends the preview, or applies or deletes the row, and focuses the checked radio: then the rider's current route. */
+    /** Ends the preview, or applies or deletes the row, and focuses the checked radio while the list stays. */
     async function end(row?: Compared, apply = onApply) {
         if (row) apply(row);
         else onPreview(null);

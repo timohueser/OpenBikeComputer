@@ -50,7 +50,7 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Sleep, type Stop } from '../../lib/planner/stops';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces } from '../../lib/planner/search/presentation';
+    import { asPlace, category, routesPlaces, sleepCategory } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
@@ -100,7 +100,6 @@
         : routingStatus);
     let list = $state<'plan' | 'ways' | 'versions'>('plan');
     const options = $derived(session.routeOptions);
-    // A label edit keeps the line, so it does not request the options again.
     $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
     // An answer can leave versions saved meanwhile without a line, so each answer asks again; a failure waits for Retry.
     $effect(() => { if (list === 'versions') { void [session.versions, session.versionLines]; untrack(() => session.findVersionLines()); } });
@@ -136,9 +135,17 @@
     $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
     $effect(() => { if (list !== 'versions' || searching || routesOpen) versionPreview = null; });
 
+    let listLinks = $state<HTMLDivElement>();
+    /** An applied row ends its comparison, so the link that opens the comparison takes the focus. */
+    async function focusLink(which: typeof list) {
+        await tick();
+        (listLinks?.querySelector<HTMLElement>(`[data-list="${which}"]`) ?? listLinks?.querySelector<HTMLElement>('button'))?.focus();
+    }
+
     function useOptionRow(row: Compared) {
         const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
         if (route) useOption(route, row.name);
+        void focusLink('ways');
     }
 
     function deleteRow(row: Compared) {
@@ -150,6 +157,7 @@
         const version = session.versions.find(v => v.id === row.id);
         versionPreview = null;
         if (version) restoreVersion(version.trip, row.name);
+        void focusLink('versions');
     }
     let searching = $state(false);
     let planEditing = $state(false);
@@ -327,7 +335,6 @@
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
         // The chosen night is the one a place callout and a map pick end, also in the ladder.
         choose: number => { choosingNight = number; stopId = null; clearSelection(); if (number !== null) { night = number; showNightArea(number); } },
-        inspect: night => { const point = days[night - 1]?.pinned; if (point) inspectPoint(point); },
         open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(stop.sleep.map(p => p.place.coordinate)); },
         step: (night, direction) => {
             const stop = nights.neighbours(night)[direction < 0 ? 0 : 1];
@@ -383,7 +390,9 @@
     let detailsError = $state('');
     const detailsId = $derived(shownPlace?.id ?? selectedPoint?.placeId);
     $effect(() => {
+        // A new selection of the same place makes a new `mapPlace`, so a failed request runs again.
         const id = detailsId;
+        void mapPlace;
         detailsError = '';
         if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || untrack(() => id in details)) return;
         const coordinate = untrack(() => (shownPlace ?? selectedPoint)!.coordinate);
@@ -395,10 +404,10 @@
     });
     const selectedPlace = $derived(shownPlace && withDetails(shownPlace, details[shownPlace.id]));
     // A stop made from a mapped place shows that place, by its kind until its details arrive.
-    const pointPlace = $derived.by((): Place | undefined => {
-        const point = selectedPoint, found = point?.placeId && details[point.placeId];
-        return found ? asPlace(found) : point?.placeId && point.placeKind
-            ? { ...point, id: point.placeId, kind: 'place', category: category(point.placeKind), description: '' } : undefined;
+    const pointPlace = $derived.by(() => {
+        const point = selectedPoint;
+        return point?.placeId && point.placeKind ? withDetails({ ...point, id: point.placeId, kind: 'place', category: category(point.placeKind), description: '' },
+            details[point.placeId]) : undefined;
     });
     const previewCoordinate = $derived(selectedId === 'pending' ? pending : selectedPlace?.coordinate ?? null);
     const mapPoints = $derived.by(() => {
@@ -407,8 +416,8 @@
             kind: !multi && p.kind === 'night' ? 'waypoint' : p.kind,
             color: multi && p.kind === 'night' ? dayColor(p.night!, theme) : undefined,
             markerLabel: multi && p.kind === 'night' ? String(dayLabels[p.night!]) : undefined,
-            // A night at a mapped place shows the kind of place instead of its number.
-            category: multi && p.kind === 'night' && p.placeKind ? category(p.placeKind) : undefined,
+            // A night at a place to sleep shows its kind instead of its number.
+            category: multi && p.kind === 'night' ? sleepCategory(p.placeKind) : undefined,
             fixed: p.kind === 'night',
         }));
         const places = [...new Map([...visiblePlaces, ...(selectedPlace ? [selectedPlace] : [])].map(place => [place.id, place])).values()];
@@ -1002,6 +1011,7 @@
         const autoLabel = ['waypoint', 'detour'].includes(kind) && (point.kind === 'via' || point.autoLabel);
         const label = autoLabel ? coordinateName(point.coordinate) : point.label;
         const next = replacePoint(trip, session.line, point.id, { ...point, id, kind, night: undefined, label, autoLabel: autoLabel || undefined,
+            ...kind === 'via' && { placeId: undefined, placeKind: undefined },
             anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined });
         commit(next, 'Point type updated');
         selectedId = id;
@@ -1181,16 +1191,16 @@
                 {#if currentRoute && list === 'plan' && (!focusedDay || planEditing)}
                     <PlanLine {trip} dayCount={itinerary.length} distance={view.summary.distance} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
-                {#if visualRoute && list !== 'plan'}
-                    <nav class="list-head" aria-label="Comparison">
+                {#if list !== 'plan'}
+                    <header class="list-head">
                         <button type="button" class="planner-action quiet" onclick={() => list = 'plan'}><Icon name="back" size={15} />{multi ? 'Days' : 'Route'}</button>
                         <h2>{list === 'ways' ? 'Route options' : 'Saved versions'}</h2>
-                    </nav>
+                    </header>
                     {#if list === 'ways'}<p class="list-lead">Compare other ways from start to finish, or keep your route.</p>{/if}
                 {:else if visualRoute && !focusedDay}
-                    <div class="list-links">
-                        <button type="button" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options</button>
-                        {#if validVersions.length}<button type="button" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
+                    <div class="list-links" bind:this={listLinks}>
+                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options</button>
+                        {#if validVersions.length}<button type="button" data-list="versions" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>

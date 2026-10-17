@@ -432,7 +432,7 @@ describe('planner app transitions', () => {
         expect(document.querySelector('.status-line')?.textContent).not.toContain('Undo');
     });
 
-    it('loads the website and phone that a list leaves out, also for the night made from the place', async () => {
+    it('loads the website and phone that a list leaves out, also for a night made from the place', async () => {
         const camp = { source: 'n42', name: 'River camp', kind: 'campsite', city: '', region: '', lon: tilePlace.coordinate[0], lat: tilePlace.coordinate[1], precision: 'place', distance: 0 };
         vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
             const input = JSON.parse(String(init.body));
@@ -448,8 +448,11 @@ describe('planner app transitions', () => {
         expect(contacts()).toContain('href="tel:+49761123"');
         button('Stay here').click(); await tick();
         expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ kind: 'night', placeId: 'n42', placeKind: 'campsite' }));
-        button(`Map point: ${camp.name}`).click(); await tick();
-        expect(contacts()).toContain('href="https://camp.example/"');
+        // A reopened plan has no details yet, so the night asks for its place.
+        await unmount(app!);
+        await startApp();
+        button(`Map point: ${camp.name}`).click();
+        await vi.waitFor(() => expect(contacts()).toContain('href="https://camp.example/"'));
     });
 
     it('offers a place for the night the rider chose in the overview', async () => {
@@ -460,13 +463,18 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
-    it('opens the route options for the first route, and deletes a version from the comparison', async () => {
+    it('opens the route options when a plan first has a start and finish', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') }));
         await startApp();
         button('Pick map location').click(); await tick();
-        button('Finish here').click();
-        await vi.waitFor(() => expect(document.querySelector('.list-head h2')?.textContent).toBe('Route options'));
+        button('Finish here').click(); await tick();
+        expect(document.querySelector('.list-head h2')?.textContent).toBe('Route options');
         button('Days').click(); await tick();
+        expect(document.querySelector('.list-head')).toBeNull();
+    });
+
+    it('deletes a version from the comparison', async () => {
+        await startApp();
         button('Save version').click(); await tick();
         document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await vi.waitFor(() => expect(button('Compare versions · 1')).toBeDefined());
@@ -476,7 +484,8 @@ describe('planner app transitions', () => {
         versionRow().click(); await tick();
         button('Delete').click();
         await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted'));
-        expect(versionRow()).toBeUndefined();
+        expect(document.querySelector('.list-head h2')?.textContent).toBe('Saved versions');
+        expect(document.querySelector('.pane-scroll')?.textContent).toContain('No saved versions yet');
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

@@ -6,12 +6,14 @@
     import type { Day } from '../../lib/planner/editor';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 
-    let { day, label, nights, children }: {
+    let { day, label, nights, onShow, children }: {
         /** The riding day that ends at this night. */
         day: Day;
         /** Calendar number of the night. */
         label: number;
         nights: NightChoices;
+        /** Shows the place of a pinned night. */
+        onShow: () => void;
         /** The towns, shown while this night is chosen. */
         children: Snippet;
     } = $props();
@@ -34,7 +36,7 @@
 <div class="night" class:chosen={!!pinned} class:open {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
     <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
     {#if pinned}
-        <button type="button" class="text" aria-label={`Show ${pinned.label}, night ${label}`} onclick={() => nights.inspect(day.number)}>
+        <button type="button" class="text" onclick={onShow}>
             <strong>{pinned.label}</strong>
             <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
         </button>

@@ -20,6 +20,7 @@ const makePoint = (p: ResolvedPoint, kind: RoutePoint['kind']): RoutePoint => ({
   coordinate: p.coordinate,
   label: p.label,
   placeKind: p.kind,
+  placeId: p.source,
 });
 const presets: Record<string, string> = {
   balanced: 'Balanced',
