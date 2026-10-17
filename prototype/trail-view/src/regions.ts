@@ -38,6 +38,11 @@ export interface RegionLook {
    * colour with heather patches over a share of it. Heather plants grow there and grass does not.
    */
   moor?: { colour: string; heather: string; share: number };
+  /**
+   * Scattered bushes on open ground, too small for WorldCover: their colour, the share of ground
+   * they cover, and their size in metres. Far off they become their share of colour.
+   */
+  speckle?: { colour: string; share: number; size_m: number };
   /** Colours for the habitats of a fine land cover map, where the bake has one; others keep the palette. */
   habitats?: Partial<Record<Habitat, string>>;
   /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */

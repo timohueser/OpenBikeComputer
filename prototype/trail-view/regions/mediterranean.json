@@ -8,13 +8,14 @@
  "pack": "mediterranean",
  "look": {
   "ramps": {
-   "grass": ["#b7a676", "#a69c69", "#8b8c57"],
+   "grass": ["#c4ab72", "#98955e", "#6c7444"],
    "crop": ["#b8a37a", "#a49a6c", "#8a8a58"],
-   "shrub": ["#7a7450", "#5f6640", "#4c5a36"],
+   "shrub": ["#7a7450", "#5a6139", "#45512f"],
    "bare": ["#c8bda5", "#c2b8a0", "#b5ad92"],
    "built": ["#c9bfa9", "#bdb69a", "#a8a684"]
   },
-  "snap": 0.75,
+  "snap": 0.6,
+  "speckle": { "colour": "#4b5632", "share": 0.5, "size_m": 2.5 },
   "hazeKm": 30,
   "outcrops": 0.4,
   "rock": "#c4bdad",

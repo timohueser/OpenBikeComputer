@@ -233,6 +233,8 @@ export class Terrain {
       seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
       moorColour: { value: new THREE.Color() },
+      speckleColour: { value: new THREE.Color() },
+      speckle: { value: new THREE.Vector2() },
       moorOn: { value: 0 },
       heather: { value: new THREE.Color() },
       heatherShare: { value: 0 },
@@ -372,6 +374,8 @@ export class Terrain {
     u.seaShallow.value.set(land.sea.shallow);
     u.moorColour.value.set(land.moor?.colour ?? land.rock);
     u.moorOn.value = land.moor ? 1 : 0;
+    u.speckleColour.value.set(land.speckle?.colour ?? '#000');
+    u.speckle.value.set(land.speckle?.share ?? 0, land.speckle?.size_m ?? 1);
     u.heather.value.set(land.moor?.heather ?? land.rock);
     u.heatherShare.value = land.moor?.share ?? 0;
     u.outcrops.value = land.outcrops;

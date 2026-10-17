@@ -479,6 +479,9 @@ uniform vec3 seaDeep;
 uniform vec3 seaShallow;
 uniform vec3 heather;
 uniform float heatherShare;
+uniform vec3 speckleColour;
+// Share of open ground under scattered bushes, and their size in metres.
+uniform vec2 speckle;
 uniform float outcrops;
 uniform vec3 bedding;
 uniform float time;
@@ -531,6 +534,9 @@ vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
 
 void main() {
   float footprint = max(length(dFdx(vWorld.xy)), length(dFdy(vWorld.xy)));
+  // The pixel's size on the surface itself: on a slope facing the eye it is far larger than its
+  // map footprint, and texture finer than it shows as blotches.
+  float surfaceSize = max(length(dFdx(vWorld)), length(dFdy(vWorld)));
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
   // How flat the ground is at the pixel's own level: water lies only where it is.
@@ -567,7 +573,10 @@ void main() {
     hardness = banded > 0.5 ? 0.1 : unit.a * (255.0 / 200.0);
     stone = mix(unit.rgb, beds, banded);
   }
-  float steep = 1.0 - smoothstep(mix(0.766, 0.8, banded), mix(0.809, 0.88, banded), n.z);
+  // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
+  // bare only where they are near cliffs.
+  float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
+  float steep = 1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z);
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
@@ -577,6 +586,13 @@ void main() {
     float detail = 1.0 - smoothstep(0.4, 1.5, footprint);
     float crowns = detail > 0.0 ? mix(0.55, smoothstep(0.0, 0.45, cells(vWorld.xy, 6.0).y), detail) : 0.55;
     albedo *= mix(1.0, 0.42 + 0.48 * crowns, g.tree * (1.0 - g.road));
+  }
+  // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond,
+  // denser in some stretches than others.
+  if (speckle.x > 0.0) {
+    float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0));
+    float dots = smoothstep(1.0 - cover - 0.04, 1.0 - cover + 0.04, noise(vWorld.xy / speckle.y));
+    albedo = mix(albedo, speckleColour, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * speckle.y, 0.1 * speckle.y, surfaceSize)));
   }
   // Heather in patches over the moor.
   float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
