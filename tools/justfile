@@ -972,7 +972,9 @@ doctor *args:
     ck probe    "probe-rs (flashing)"       'command -v probe-rs' 'obc doctor --install'
     ck node     "node + npm (web builder)"  'command -v node && command -v npm' 'install Node 22+ (system package — needs sudo)'
     ck uv       "uv (Python groups)"         'command -v uv'     'install uv, then run obc doctor --install'
-    ck venv     "python venv (web builder)" '[[ -x "$OBC_ROOT/.venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
+    # uv reads a relative UV_PROJECT_ENVIRONMENT from the project root.
+    venv="${UV_PROJECT_ENVIRONMENT:-.venv}"; [[ "$venv" == /* ]] || venv="$OBC_ROOT/$venv"
+    ck venv     "python venv (web builder)" '[[ -x "$venv/bin/python" ]]' 'obc doctor --install (or run obc web)'
     # The Python steps of `obc data` run these groups offline; a group in the uv cache installs offline.
     data_groups=(--no-default-groups --group planner-maps --group planner-climate --group planner-snow --group planner-sun --group planner-search --group terrain-reference)
     ck pydata   "Python groups (obc data)"  'uv sync --locked --inexact --offline --no-python-downloads --project "$OBC_ROOT" "${data_groups[@]}"' 'obc doctor --install'
