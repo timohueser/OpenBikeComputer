@@ -14,8 +14,8 @@
    "rock": "#857a58",
    "heath": "#7e7152",
    "bog": "#86704a",
-   "bracken": "#6f8c3a",
-   "rough": "#788a4e",
+   "bracken": "#677338",
+   "rough": "#857f4f",
    "pasture": "#5f8748",
    "scrub": "#55652f",
    "hedge": "#3b5530",
@@ -23,8 +23,8 @@
    "saltmarsh": "#7c8a60"
   },
   "snap": 0.85,
-  "hazeKm": 70,
-  "grade": { "shadow": [-0.006, 0.004, 0.016], "light": [0.006, 0.004, -0.004], "saturation": 1.1 },
+  "hazeKm": 40,
+  "grade": { "shadow": [-0.002, 0.002, 0.005], "light": [0.006, 0.004, -0.004], "saturation": 1.08 },
   "weather": {
    "sunny": { "cover": 0.32, "base": 900, "dark": 0.4, "zenith": "#5d7fae", "horizon": "#a9bfd4", "grey": 0.35, "towers": 0.8 }
   },

@@ -401,8 +401,8 @@ export class NearField {
           const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
           const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
           const mapped = habitatAt(rx, ry) === 'rock' ? 0.9 : 0;
-          const rocky = Math.max(outcrops * Math.min(Math.max(1.4 * slope + 0.25 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
-          if (rand() > 0.35 * rocky) continue;
+          const rocky = Math.max(outcrops * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
+          if (rand() > 0.55 * rocky) continue;
           const name: RockName = rand() < 0.7 - 0.4 * sea ? 'slab' : 'boulder';
           const height = ROCK_HEIGHT_M[0] + rand() ** 2 * (ROCK_HEIGHT_M[1] - ROCK_HEIGHT_M[0]) * (1 + sea);
           add(`rock|${name}`, rx, ry, height, rand() * 2 * Math.PI);

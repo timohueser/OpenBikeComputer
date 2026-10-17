@@ -555,7 +555,9 @@ void main() {
     stone = mix(unit.rgb, beds, banded);
   }
   float steep = 1.0 - smoothstep(mix(0.766, 0.8, banded), mix(0.809, 0.88, banded), n.z);
-  vec3 albedo = g.albedo;
+  // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
+  vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
+    * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
   // Heather in patches over the moor.
   float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
   albedo = mix(albedo, heather, g.moor * (1.0 - g.road) * smoothstep(1.0 - heatherShare, 1.1 - heatherShare, patches));
@@ -662,7 +664,8 @@ void main() {
   // its own colour keeps only the shading from root to tip.
   if (tie > 0.0 || habitat != 0.0) {
     Ground g = groundAt(p, 0.5);
-    vAlbedo = mix(vAlbedo, g.albedo * clamp(luma(color) / 0.3, 0.4, 1.6) * tint, tie);
+    // Shaded from root to tip around the ground's own brightness, never much brighter than it.
+    vAlbedo = mix(vAlbedo, g.albedo * clamp(luma(color) / 0.3, 0.5, 1.2) * tint, tie);
     // Off its habitat a plant folds to a point under the ground.
     if (moorOn > 0.0 && habitat * (g.moor - 0.5) < 0.0) vWorld = vec3(p, vWorld.z - 50.0);
   }
