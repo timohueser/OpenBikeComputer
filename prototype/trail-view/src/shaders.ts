@@ -285,6 +285,8 @@ Ground groundOn(float k, vec2 p, float footprint) {
     }
     albedo = mix(albedo, paint.rgb / max(paint.a, 1e-4), paint.a * (1.0 - water));
     moor = mix(moor, wild, mapped);
+    // The map knows open ground from wood better than WorldCover's 10 m pixels.
+    tree *= 1.0 - mapped;
   }
 
   // A road paints where the distance to the nearest road edge is negative; the distance is linear
@@ -572,7 +574,8 @@ void main() {
   // Woodland seen from afar is crowns and the shade between them, darker than its leaves, not one
   // flat colour; past a few metres a pixel the pattern becomes its mean.
   if (g.tree > 0.0) {
-    float crowns = footprint < 4.0 ? smoothstep(0.02, 0.3, cells(vWorld.xy, 6.0).y) : 0.55;
+    float detail = 1.0 - smoothstep(0.4, 1.5, footprint);
+    float crowns = detail > 0.0 ? mix(0.55, smoothstep(0.0, 0.45, cells(vWorld.xy, 6.0).y), detail) : 0.55;
     albedo *= mix(1.0, 0.42 + 0.48 * crowns, g.tree * (1.0 - g.road));
   }
   // Heather in patches over the moor.
