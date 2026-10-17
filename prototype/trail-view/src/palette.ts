@@ -64,9 +64,12 @@ export const STONE = ['#9a958a', '#8a857a', '#a8a294'];
 export const HEDGE = ['#3f5a30', '#4a6434', '#36502c'];
 
 /** The 11 class ramps for a season, as 33 colours. */
+const SEASON_NAMES = ['winter', 'spring', 'summer', 'autumn'] as const;
+
 export function ramps(season: number, deciduous: number, land?: RegionLook): THREE.Color[] {
-  const table: Seasonal = { ...SEASONAL[season], ...land?.ramps };
-  const fixed: typeof FIXED = { ...FIXED, ...land?.ramps };
+  const own = { ...land?.ramps, ...land?.seasons?.[SEASON_NAMES[season]] };
+  const table: Seasonal = { ...SEASONAL[season], ...own };
+  const fixed: typeof FIXED = { ...FIXED, ...own };
   const tree = table.needle.map((needle, i) => new THREE.Color(needle).lerp(new THREE.Color(table.broad[i]), deciduous));
   const order: (Ramp | THREE.Color[])[] = [
     tree,

@@ -40,6 +40,8 @@ const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share:
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
 const CLEAR_M = 6;
+/** In winter, snow lies down to this far below a region's snowline. */
+const WINTER_SNOW_BELOW_M = 800;
 /** Ground plants on a jittered 1 m grid within this many metres, all of them within THIN_M. */
 const GROUND_RADIUS_M = 60;
 const THIN_M = 20;
@@ -305,6 +307,8 @@ export class NearField {
   triangles = 0;
   /** Instances by "tree|name|lod", "plant|name", "rock|name" or "animal|name". */
   private groups = new Map<string, Instances>();
+  /** Whether winter brings snow at the spot, which buries the ground plants. */
+  private snowyWinter = true;
   /** Whether a habitat map placed the moor and lush plants, so the shader need not check them. */
   private placedByMap = false;
   /** Species that keep their summer leaves all year. */
@@ -415,10 +419,12 @@ export class NearField {
           const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
           const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
           const mapped = habitatAt(rx, ry) === 'rock' ? 0.9 : 0;
-          const hard = 0.3 + 1.4 * hardnessAt(bake, rx, ry);
+          // Hard rock, karst above all, breaks through even where the ground is level.
+          const hardness = hardnessAt(bake, rx, ry);
+          const hard = 0.3 + 1.4 * hardness;
           // Boulders do not lie on faces steeper than about 40°.
           if (slope > 0.85) continue;
-          const rocky = Math.max(outcrops * hard * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
+          const rocky = Math.max(outcrops * hard * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea + 0.6 * (hardness - 0.5) - 0.05, 0), 1), mapped);
           if (rand() > 0.55 * rocky) continue;
           const name: RockName = rand() < 0.7 - 0.4 * sea ? 'slab' : 'boulder';
           const height = ROCK_HEIGHT_M[0] + rand() ** 2 * (ROCK_HEIGHT_M[1] - ROCK_HEIGHT_M[0]) * (1 + sea);
@@ -512,6 +518,8 @@ export class NearField {
     }
     this.groups = groups;
     this.placedByMap = habitats;
+    // Winter snow lies well below the snowline that holds out of season.
+    this.snowyWinter = eye_m > look.snowline - WINTER_SNOW_BELOW_M;
     this.evergreen = new Set(pack.trees.filter((s) => s.evergreen).map((s) => s.tree));
     this.shadowsStale = true;
 
@@ -543,7 +551,7 @@ export class NearField {
     this.triangles = 0;
     for (const [key, instances] of this.groups) {
       const [what, name, lod] = key.split('|');
-      if (what === 'plant' && season === 'winter') continue;
+      if (what === 'plant' && season === 'winter' && this.snowyWinter) continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const model = this.model(key, leaves, () =>
         what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod)

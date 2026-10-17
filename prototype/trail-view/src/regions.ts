@@ -25,6 +25,8 @@ export interface Species {
   evergreen?: boolean;
 }
 
+type Ramps = Partial<Record<'shrub' | 'grass' | 'crop' | 'bare' | 'built' | 'moss', [string, string, string]>>;
+
 /** How the ground, sea and air read in a region. */
 export interface RegionLook {
   /** Palette snap: 0 takes the ground's chroma from Sentinel-2, 1 paints the palette alone. */
@@ -32,7 +34,9 @@ export interface RegionLook {
   /** Haze distance at sea level, in km. */
   hazeKm: number;
   /** Ramps that replace palette.ts's for these WorldCover classes, low NDVI to high. */
-  ramps?: Partial<Record<'shrub' | 'grass' | 'crop' | 'bare' | 'built' | 'moss', [string, string, string]>>;
+  ramps?: Ramps;
+  /** Ramps for one season over `ramps`, as winter-green Mediterranean hills need. */
+  seasons?: Partial<Record<'winter' | 'spring' | 'summer' | 'autumn', Ramps>>;
   /**
    * Moorland: open ground that Sentinel-2 sees brown rather than green, painted in its own
    * colour with heather patches over a share of it. Heather plants grow there and grass does not.

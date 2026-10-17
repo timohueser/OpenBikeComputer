@@ -607,7 +607,7 @@ void main() {
   // each rock or turf, with turf between slabs and a dark rim round each. Too small to see past a
   // few metres a pixel, they become their share of rock colour.
   float rocky = outcrops * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
-    + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor - 0.3, 0.0, 1.0)
+    + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor + 0.8 * (hardness - 0.5) - 0.3, 0.0, 1.0)
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness);
   // Mapped exposed rock is outcrops in turf, about a third rock.
   rocky = max(rocky, 0.35 * g.bare);
