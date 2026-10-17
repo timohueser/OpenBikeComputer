@@ -40,8 +40,9 @@ const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share:
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
 const CLEAR_M = 6;
-/** Ground plants on a jittered 1 m grid within this many metres. */
+/** Ground plants on a jittered 1 m grid within this many metres, all of them within THIN_M. */
 const GROUND_RADIUS_M = 60;
+const THIN_M = 20;
 /** Shrub species on half the points of a jittered grid on shrubland within this many metres. */
 const SHRUB_RADIUS_M = 500;
 const SHRUB_SPACING_M = 5;
@@ -500,8 +501,13 @@ export class NearField {
         const kind = classAt(gx, gy);
         const name = ground.find((p) => grows(p, kind, gx, gy) && rand() < GROUND[p].share);
         if (!name) continue;
+        // Past THIN_M a share of the plants stands, a little larger, and the ground's own colour
+        // fills between them: from afar the count shows less than the cost.
+        const d = Math.hypot(gx, gy);
+        const keep = d < THIN_M ? 1 : Math.max(0.3, THIN_M / d);
+        if (rand() > keep) continue;
         const [low, high] = GROUND[name].height;
-        add(`plant|${name}`, gx, gy, low + rand() * (high - low), rand() * 2 * Math.PI);
+        add(`plant|${name}`, gx, gy, (low + rand() * (high - low)) / Math.sqrt(Math.sqrt(keep)), rand() * 2 * Math.PI);
       }
     }
     this.groups = groups;
