@@ -134,17 +134,18 @@ REGIONS = HERE / "regions"
 GEOLOGY = {"igme": ("https://mapas.igme.es/gis/services/Cartografia_Geologica/IGME_Geode_50/MapServer/WMSServer", "1",
                   "GEODE 1:50 000 © IGME")}
 ROCK_LEVELS = 3
-# Words in a unit's description and the rock colour they mean, first match first. Variegated rock
-# is drawn in red, green and white bands.
-LITHOLOGY = [
-    ("abigarrad", "#a8604e", True), ("blanc", "#ddd6c4", False), ("yeso", "#e2dccd", False),
-    ("roj", "#a9583f", False), ("salm", "#c98c6e", False), ("verde", "#8f9884", False),
-    ("calcaren", "#cdb88e", False), ("caliza", "#c4bdb0", False), ("dolom", "#b2a894", False),
-    ("arenisca", "#c3a06c", False), ("conglomerad", "#a99878", False), ("marga", "#d2c4a4", False),
-    ("arcilla", "#b58a64", False), ("pizarra", "#6e6a66", False), ("granit", "#b5aba0", False),
-    ("cuarcita", "#bfb9ae", False), ("esquisto", "#7b766c", False),
-    ("glacis", "#c2ad88", False), ("coluvi", "#c2ad88", False), ("aluvi", "#c2ad88", False),
+# Words in a unit's description: rocks with their colour, and colour words that tint the rock they
+# follow. A description names its main rock first, so the earliest rock word sets the colour, a
+# colour word right after it ("margas blancas") overrides it, and variegated rock is drawn in
+# red, green and white bands.
+ROCKS = [
+    ("yeso", "#e2dccd"), ("calcaren", "#cdb88e"), ("caliza", "#c4bdb0"), ("dolom", "#b2a894"),
+    ("arenisca", "#c3a06c"), ("conglomerad", "#a99878"), ("marga", "#d2c4a4"), ("arcilla", "#b58a64"),
+    ("limo", "#c2a886"), ("pizarra", "#6e6a66"), ("granit", "#b5aba0"), ("cuarcita", "#bfb9ae"),
+    ("esquisto", "#7b766c"), ("glacis", "#c2ad88"), ("coluvi", "#c2ad88"), ("aluvi", "#c2ad88"),
 ]
+COLOURS = [("abigarrad", "#a8604e"), ("blanc", "#ddd6c4"), ("roj", "#a9583f"), ("salm", "#c98c6e"), ("verde", "#8f9884")]
+COLOUR_AFTER = 3
 ROCK = "#b0a796"
 # Words for the rock itself and how hard it stands, 0 soft to 1 hard, first match first: hard
 # rock breaks through as outcrops and crags, marl and clay weather into smooth slopes and gullies.
@@ -686,10 +687,20 @@ def onto_level(bands: np.ndarray, bbox, k: int, frame: str, size: int, resamplin
 
 
 def lithology(text: str) -> tuple[str, bool, float]:
-    """The unit's rock colour, whether it is variegated, and its hardness."""
+    """The unit's rock colour, whether it is variegated, and its hardness, each from the earliest
+    word in the description that says so."""
     lower = text.lower()
-    colour, banded = next(((colour, banded) for word, colour, banded in LITHOLOGY if word in lower), (ROCK, False))
-    return colour, banded, next((hard for word, hard in HARDNESS if word in lower), 0.5)
+
+    def first(words):
+        found = [(lower.find(word), word, value) for word, value in words if word in lower]
+        return min(found) if found else None
+
+    rock = first(ROCKS)
+    colour = first(COLOURS)
+    hard = first(HARDNESS)
+    tint = colour if colour and (not rock or 0 <= colour[0] - rock[0] - len(rock[1]) <= COLOUR_AFTER) else None
+    hex_ = tint[2] if tint else rock[2] if rock else ROCK
+    return hex_, bool(tint and tint[1] == "abigarrad"), hard[2] if hard else 0.5
 
 
 def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> np.ndarray:
