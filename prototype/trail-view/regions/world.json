@@ -5,7 +5,7 @@
  "leaf": "mixed",
  "pack": "base",
  "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
- "summits": { "reach_m": 150, "steepen": 1.6 },
+ "summits": { "reach_m": 150, "max_cut_m": 20 },
  "relief": { "radius_m": 60, "amount": 0.5 },
  "look": {
   "snap": 0.4,

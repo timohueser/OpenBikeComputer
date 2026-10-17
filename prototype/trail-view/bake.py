@@ -617,27 +617,37 @@ def sharpen_relief(heights: np.ndarray, half: float, rule: dict) -> np.ndarray:
 
 
 def sharpen_summits(heights: np.ndarray, summits: list, half: float, rule: dict) -> np.ndarray:
-    """GLO-30 heights with mapped summits restored: GLO-30 rounds a peak down and its slopes out.
-    Within the region's reach_m of a peak with a surveyed height, the top rises to that height and
-    the ground falls away from it up to `steepen` times as fast, both easing back to GLO-30 at the
-    reach."""
+    """GLO-30 heights with mapped summits restored: GLO-30 rounds a peak down into a dome as wide as
+    its 30 m cells, which hides the drop from anyone standing on top. Within the region's reach_m of
+    a peak with a surveyed height, the top rises to that height and the ground falls away as a cone
+    toward the height found at the reach in each direction, never more than max_cut_m below GLO-30."""
     px = 2 * half / SIZE
     reach = rule["reach_m"]
     out = heights.copy()
     for x, y, ele in summits:
-        if max(abs(x), abs(y)) >= half:
-            continue
-        top = out[int((half - y) / px), int((x + half) / px)]
-        if ele <= top:
+        if max(abs(x), abs(y)) >= half - reach:
             continue
         i0, i1 = max(int((x - reach + half) / px), 0), min(int((x + reach + half) / px) + 1, SIZE)
         j0, j1 = max(int((half - y - reach) / px), 0), min(int((half - y + reach) / px) + 1, SIZE)
         cols = (np.arange(i0, i1) + 0.5) * px - half
         rows = half - (np.arange(j0, j1) + 0.5) * px
-        t = np.clip(np.hypot(*np.meshgrid(cols - x, rows - y)) / reach, 0, 1)
+        dx, dy = np.meshgrid(cols - x, rows - y)
+        d = np.hypot(dx, dy)
         window = out[j0:j1, i0:i1]
-        drop = np.maximum(top - window, 0)
-        out[j0:j1, i0:i1] = window + (1 - t) * (ele - top - drop * (rule["steepen"] - 1))
+        # Only peaks that stand above their surroundings, not a name on a slope.
+        if ele < window.max() - 15:
+            continue
+        # The ground at the reach straight out from the peak, bilinear.
+        u = (x + dx / np.maximum(d, 1e-6) * reach + half) / px - 0.5
+        v = (half - (y + dy / np.maximum(d, 1e-6) * reach)) / px - 0.5
+        ui, vi = np.clip(u.astype(int), 0, SIZE - 2), np.clip(v.astype(int), 0, SIZE - 2)
+        fu, fv = np.clip(u - ui, 0, 1), np.clip(v - vi, 0, 1)
+        rim = ((heights[vi, ui] * (1 - fu) + heights[vi, ui + 1] * fu) * (1 - fv)
+               + (heights[vi + 1, ui] * (1 - fu) + heights[vi + 1, ui + 1] * fu) * fv)
+        t = np.clip(d / reach, 0, 1)
+        cone = ele - t * (ele - rim)
+        shaped = np.maximum(cone, window - rule["max_cut_m"])
+        out[j0:j1, i0:i1] = np.where(d < reach, shaped, window)
     return out
 
 
