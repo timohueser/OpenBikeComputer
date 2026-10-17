@@ -560,6 +560,12 @@ void main() {
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
+  // Woodland seen from afar is crowns and the shade between them, darker than its leaves, not one
+  // flat colour; past a few metres a pixel the pattern becomes its mean.
+  if (g.tree > 0.0) {
+    float crowns = footprint < 4.0 ? smoothstep(0.02, 0.3, cells(vWorld.xy, 6.0).y) : 0.55;
+    albedo *= mix(1.0, 0.42 + 0.48 * crowns, g.tree * (1.0 - g.road));
+  }
   // Heather in patches over the moor.
   float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
   albedo = mix(albedo, heather, g.moor * (1.0 - g.road) * smoothstep(1.0 - heatherShare, 1.1 - heatherShare, patches));
