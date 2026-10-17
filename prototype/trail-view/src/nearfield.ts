@@ -67,7 +67,7 @@ const CREST_DROP_M = 7;
 const CRAG_CLEAR_M = 40;
 /** Crags along a crest, about this far apart and this tall. */
 const CRAG_SPACING_M = 5;
-const CRAG_HEIGHT_M: [number, number] = [2, 6];
+const CRAG_HEIGHT_M: [number, number] = [1.5, 3.5];
 /** Small stones on a jittered grid within this many metres, on mapped bare rock. */
 const STONE_RADIUS_M = 60;
 const STONE_SPACING_M = 1.2;
