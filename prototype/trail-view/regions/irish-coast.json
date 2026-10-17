@@ -30,6 +30,7 @@
   "outcrops": 0.55,
   "rock": "#8d8f88",
   "bedding": { "strike": 55, "dip": 65 },
-  "sea": { "deep": "#0e3461", "shallow": "#2a9a98" }
+  "sea": { "deep": "#0e3461", "shallow": "#2a9a98" },
+  "swell": 250
  }
 }

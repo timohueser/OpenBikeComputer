@@ -14,6 +14,57 @@ import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shado
 import { CURVATURE } from './skyline';
 import type { Weather } from './weather';
 
+/** Open water upwind beyond this counts as the open ocean. */
+const FETCH_M = 8000;
+
+/**
+ * Per water texel at sea level and level, 0–255: how far open water reaches toward the swell, up
+ * to FETCH_M, averaged over the swell's bearing and 45° to each side, since swell bends round
+ * headlands. Coarse levels first, so a fine level's walk continues past its edge on the next.
+ * Without a swell every shore counts as half exposed.
+ */
+function exposure(bake: Bake, swell: number | undefined): Uint8Array {
+  const { size, water_levels } = bake.meta;
+  const out = new Uint8Array(water_levels * size * size);
+  if (swell === undefined) return out.fill(128);
+  const sum = new Float32Array(out.length);
+  for (const bearing of [swell - 45, swell, swell + 45]) {
+    const fetch = fetchToward(bake, bearing);
+    for (let t = 0; t < sum.length; t++) sum[t] += fetch[t] / 3;
+  }
+  for (let t = 0; t < sum.length; t++) out[t] = Math.round((255 * sum[t]) / FETCH_M);
+  return out;
+}
+
+/** Metres of open sea from each sea texel toward a bearing, up to FETCH_M; 0 elsewhere. */
+function fetchToward(bake: Bake, bearing: number): Float32Array {
+  const { size, water_levels, half0_m, eye_m } = bake.meta;
+  const a = (bearing * Math.PI) / 180;
+  const [di, dj] = [Math.round(Math.sin(a)), Math.round(-Math.cos(a))];
+  const fetch = new Float32Array(water_levels * size * size);
+  for (let k = water_levels - 1; k >= 0; k--) {
+    const step = (Math.hypot(di, dj) * 2 * half0_m * 2 ** k) / size;
+    const base = k * size * size;
+    const coarser = (i: number, j: number) => {
+      if (k + 1 >= water_levels) return FETCH_M;
+      const [ci, cj] = [Math.round((i - size / 2) / 2 + size / 2), Math.round((j - size / 2) / 2 + size / 2)];
+      return fetch[(k + 1) * size * size + cj * size + ci];
+    };
+    for (let jj = 0; jj < size; jj++) {
+      const j = dj > 0 ? size - 1 - jj : jj;
+      for (let ii = 0; ii < size; ii++) {
+        const i = di > 0 ? size - 1 - ii : ii;
+        const t = base + j * size + i;
+        if (bake.classes[t * 2 + 1] < 128 || bake.surface[k][j * size + i] + eye_m > 2) continue;
+        const [ni, nj] = [i + di, j + dj];
+        const ahead = ni < 0 || nj < 0 || ni >= size || nj >= size ? coarser(ni, nj) : fetch[base + nj * size + ni];
+        fetch[t] = Math.min(FETCH_M, ahead + step);
+      }
+    }
+  }
+  return fetch;
+}
+
 /** How far the clouds drift in an hour of the day, in metres east and north: slow enough for a day played in 30 s. */
 const DRIFT_PER_HOUR = [2000, 700];
 
@@ -114,6 +165,7 @@ export class Terrain {
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
   private water?: THREE.DataArrayTexture;
+  private exposed?: THREE.DataArrayTexture;
   private rockMap?: THREE.DataArrayTexture;
   private habitatMap?: THREE.DataArrayTexture;
   readonly nearField: NearField;
@@ -193,6 +245,7 @@ export class Terrain {
       nearShadowMatrix: { value: new THREE.Matrix4() },
       deriveLevel: { value: 0 },
       waterMap: { value: null },
+      exposureMap: { value: null },
       waterLevels: { value: 0 },
       rockMap: { value: null },
       rockLevels: { value: 0 },
@@ -301,6 +354,9 @@ export class Terrain {
     this.water?.dispose();
     this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RGFormat, 'RG8');
     u.waterMap.value = this.water;
+    this.exposed?.dispose();
+    this.exposed = arrayTexture(exposure(bake, region.look.swell), size, bake.meta.water_levels, THREE.RedFormat, 'R8');
+    u.exposureMap.value = this.exposed;
     u.waterLevels.value = bake.meta.water_levels;
     u.shoreReach.value = bake.meta.shore_reach_m;
     const land = region.look;

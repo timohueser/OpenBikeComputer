@@ -48,6 +48,8 @@ export interface RegionLook {
   bedding?: { strike: number; dip: number };
   /** Open water away from the shore, and the sea beside it. */
   sea: { deep: string; shallow: string };
+  /** The bearing the prevailing swell comes from, in degrees: shores open to it get the heavy surf. */
+  swell?: number;
   /** The colour grade: shadow and light tints added in linear light, and the saturation. */
   grade: { shadow: [number, number, number]; light: [number, number, number]; saturation: number };
   /** What the climate changes in each weather preset. */

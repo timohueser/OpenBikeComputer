@@ -153,6 +153,7 @@ uniform sampler2DArray roads;
 uniform float roadLevels;
 uniform vec3 roadColours[6];
 uniform sampler2DArray waterMap;
+uniform sampler2DArray exposureMap;
 uniform float waterLevels;
 uniform float shoreReach;
 uniform vec3 moorColour;
@@ -172,6 +173,8 @@ struct Ground {
   float road;
   // Metres from water to the nearest land; 0 on land.
   float shore;
+  // How open the sea is to the swell, 0 sheltered to 1 the open ocean.
+  float exposure;
   // Share of open, unfarmed ground (shrub, grass, bare, wetland, moss), and how lush it is, 0–1.
   float rough;
   float lush;
@@ -236,7 +239,9 @@ Ground groundOn(float k, vec2 p, float footprint) {
   }
   // OSM water: rivers narrower than a WorldCover pixel, and lakes, as coverage from a finer grid.
   float shore = shoreReach;
+  float exposure = 0.5;
   if (k < waterLevels) {
+    exposure = texture(exposureMap, vec3(uv, k)).r;
     vec2 osm = texture(waterMap, vec3(uv, k)).rg;
     water = max(water, smoothstep(0.4, 0.6, osm.r));
     shore = osm.g * osm.g * shoreReach;
@@ -305,7 +310,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road * min(weight * 4.0, 1.0));
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, rough, t, moor, bare);
+  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, t, moor, bare);
 }
 
 /**
@@ -321,7 +326,7 @@ Ground groundAt(vec2 p, float footprint) {
   if (w <= 0.0 || k >= levels - 1.0) return a;
   Ground b = groundOn(k + 1.0, p, footprint);
   return Ground(mix(a.albedo, b.albedo, w), mix(a.water, b.water, w), mix(a.tree, b.tree, w), mix(a.snow, b.snow, w),
-                mix(a.road, b.road, w), mix(a.shore, b.shore, w), mix(a.rough, b.rough, w), mix(a.lush, b.lush, w),
+                mix(a.road, b.road, w), mix(a.shore, b.shore, w), mix(a.exposure, b.exposure, w), mix(a.rough, b.rough, w), mix(a.lush, b.lush, w),
                 mix(a.moor, b.moor, w), mix(a.bare, b.bare, w));
 }
 `;
@@ -607,10 +612,12 @@ void main() {
   vec3 water = mix(body, sky(mirrored), 0.35 * fresnel)
     + sunColour * shadow * (4.0 * pow(max(dot(mirrored, sunDir), 0.0), 400.0) + 2.5 * sparks * pow(max(dot(mirrored, sunDir), 0.0), 80.0));
   // Surf on the sea: a white rim at the shore, at least a pixel wide so a far coast keeps its line,
-  // and broken crests rolling in.
-  float rim = 1.0 - smoothstep(2.0, 5.0 + 3.0 * noise(vWorld.xy / 3.0), g.shore / max(footprint / 2.5, 1.0));
-  float crest = smoothstep(0.84, 0.94, fract(g.shore / 17.0 + time * 0.05)) * (1.0 - smoothstep(8.0, 55.0, g.shore))
-    * smoothstep(0.35, 0.6, noise(vWorld.xy / 6.0 + vec2(time * 0.2, 0.0))) * (1.0 - smoothstep(1.0, 4.0, footprint));
+  // and broken crests rolling in. Shores open to the swell get a wide rim and crests far out;
+  // sheltered ones a thin line.
+  float swell = smoothstep(0.05, 0.8, g.exposure);
+  float rim = 1.0 - smoothstep(1.5, (3.5 + 3.0 * noise(vWorld.xy / 3.0)) * (0.6 + 1.6 * swell), g.shore / max(footprint / 2.5, 1.0));
+  float crest = smoothstep(0.84, 0.94, fract(g.shore / 17.0 + time * 0.05)) * (1.0 - smoothstep(8.0, 15.0 + 70.0 * swell, g.shore))
+    * smoothstep(0.35, 0.6, noise(vWorld.xy / 6.0 + vec2(time * 0.2, 0.0))) * (1.0 - smoothstep(1.0, 4.0, footprint)) * (0.2 + 0.8 * swell);
   water = mix(water, vec3(0.85) * (ambient + sunColour * max(sunDir.z, 0.0) * shadow), sea * max(rim, crest));
   c = mix(c, water, smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, n.z));
   colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
