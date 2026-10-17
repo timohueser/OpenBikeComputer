@@ -23,7 +23,8 @@ uv run prototype/trail-view/bake.py hahnen
 - GLO-30 tiles come from `~/.cache/obcm/dem/` where they exist, else from the public COGs.
 - The national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
   `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
-  zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m in 3 km requests.
+  zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m, `fr` RGE ALTI at 2 m
+  and `es` MDT05 at 5 m, the last three in 3 km requests.
 - Third-party photographs download to `_sources/photos/`. They are never committed.
 - The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
@@ -79,6 +80,10 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
 - OSM tags volcanoes `natural=volcano`, not `natural=peak`; the peak query asks for both.
 - A photograph's own coordinates can be a place tag rather than where the camera stood. Check
   that the cast skyline at the photo's point shows what the photograph shows.
+- Python checks certificates against the system trust store (`truststore`): Spain's IGN serves a
+  chain whose root Python's own bundle lacks.
+- A spot is only as good as what its eye sees. A point in forest, beside a house, just below a
+  crest or on a broad dome hides the view; check the land cover and the line of sight first.
 - gdalwarp prints `ERROR 6: ... SetColorTable()` for every WorldCover level, because it copies the
   colour table into a float32 file. The values are correct.
 - Colours are linear once read: three's colour management converts every hex value, and the

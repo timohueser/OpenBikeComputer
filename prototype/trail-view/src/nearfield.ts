@@ -30,10 +30,11 @@ const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share:
 const CLEAR_M = 6;
 /** Ground plants on a jittered 1 m grid within this many metres. */
 const GROUND_RADIUS_M = 60;
-/** Shrub species on a jittered grid on shrubland within this many metres. */
+/** Shrub species on half the points of a jittered grid on shrubland within this many metres. */
 const SHRUB_RADIUS_M = 500;
 const SHRUB_SPACING_M = 5;
-const SHRUB_HEIGHT_M: [number, number] = [1, 2.2];
+const SHRUB_SHARE = 0.5;
+const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
 
 /** OSM building values that draw nothing, draw as a barn or shed, or draw as a block. */
 const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
@@ -143,7 +144,9 @@ function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometr
     const area = Math.abs(THREE.ShapeUtils.area(outline));
     const fit = rectangle(outline);
     const kind = kindOf(tag, area);
-    const wall = levels ? levels * STOREY_M : height ? 0.65 * height : LOW.has(tag) ? 7 : undefined;
+    // A large footprint without a kind is a hall or a barn more often than flats.
+    const low = LOW.has(tag) || (kind === 'block' && !BLOCKS.has(tag));
+    const wall = levels ? levels * STOREY_M : height ? 0.65 * height : low ? 7 : undefined;
     const seed = Math.floor(rand() * 1e6);
     if (area / (fit.width * fit.depth) < RECTANGULAR || area > LARGEST_M2) {
       const colour = new THREE.Color(kit.style.palette.render[seed % kit.style.palette.render.length]);
@@ -252,7 +255,8 @@ export class NearField {
       for (let y = -SHRUB_RADIUS_M; y < SHRUB_RADIUS_M; y += SHRUB_SPACING_M) {
         for (let x = -SHRUB_RADIUS_M; x < SHRUB_RADIUS_M; x += SHRUB_SPACING_M) {
           const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
-          if (Math.hypot(sx, sy) > SHRUB_RADIUS_M || classAt(sx, sy) !== CLASS.shrub || this.offGround(bake, sx, sy, px)) continue;
+          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || classAt(sx, sy) !== CLASS.shrub) continue;
+          if (this.offGround(bake, sx, sy, px)) continue;
           const species = pick(shrubs).tree;
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
           add(`tree|${species}|${lodAt(Math.hypot(sx, sy))}`, sx, sy, height, heading(species));

@@ -503,8 +503,8 @@ def overpass(query: str) -> str:
             with urllib.request.urlopen(request, timeout=900) as response:
                 return response.read().decode()
         except (urllib.error.HTTPError, TimeoutError) as error:
-            # Overpass answers 429 and 502 to 504, or not at all, when it is busy.
-            busy = isinstance(error, TimeoutError) or error.code in (429, 502, 503, 504)
+            # Overpass answers 429 and 500 to 504, or not at all, when it is busy.
+            busy = isinstance(error, TimeoutError) or error.code in (429, 500, 502, 503, 504)
             if not busy or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
