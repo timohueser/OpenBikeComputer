@@ -54,11 +54,14 @@ const glo30Only = () => !loaded?.bake.meta.dtm_levels || state.surface === GLO30
 const active = <T>(pair: { dtm: T; glo30: T }) => (glo30Only() ? pair.glo30 : pair.dtm);
 const photoLocked = () => Boolean(state.photoCamera && loaded?.bake.meta.photo && photo.naturalWidth);
 
+let selecting = '';
 async function select(id: string): Promise<void> {
+  selecting = id;
   status.textContent = `Loading ${id}…`;
   loaded = null;
   photo.removeAttribute('src');
   const bake = await loadBake(id);
+  if (selecting !== id) return;
   const { meta } = bake;
   terrain.setBake(bake);
   const dtm = surface(bake.surface, meta.size, meta.half0_m);
@@ -71,7 +74,9 @@ async function select(id: string): Promise<void> {
     readout.rmsGlo30 = `${rms(sky.glo30, meta.photo.columns).toFixed(3)}°`;
     readout.limit = `${meta.photo.rms_limit_deg.toFixed(2)}° (${meta.photo.columns.length} columns)`;
     photo.src = `${bake.base}${meta.photo.file}`;
-    await photo.decode();
+    // A newer selection clears the source, which rejects this decode.
+    await photo.decode().catch(() => undefined);
+    if (selecting !== id) return;
   } else {
     readout.rmsDtm = readout.rmsGlo30 = readout.limit = '–';
   }
