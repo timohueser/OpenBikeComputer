@@ -7,7 +7,22 @@ fn fact_file(name: &str) -> bool {
 }
 
 pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(String, String), Value>, String> {
+    Ok(read(files)?.0)
+}
+
+type Facts = BTreeMap<(String, String), Value>;
+
+/// A fact file: the kind and key of its fact, its digest and its length.
+struct Pin {
+    key: (String, String),
+    sha256: String,
+    bytes: usize,
+}
+
+/// The facts of `files` by kind and key, and the pin of each fact file by name.
+fn read(files: &BTreeMap<String, std::path::PathBuf>) -> Result<(Facts, BTreeMap<&str, Pin>), String> {
     let mut facts = BTreeMap::new();
+    let mut pins = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
         if Path::new(name).file_stem().and_then(|name| name.to_str()) != Some(hash(&bytes).as_str()) {
@@ -18,11 +33,12 @@ pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(S
             return Err("unresolved shared content".into());
         }
         let key = (string(&value, "kind")?.to_owned(), string(&value, "key")?.to_owned());
+        pins.insert(name.as_str(), Pin { key: key.clone(), sha256: hash(&bytes), bytes: bytes.len() });
         if facts.insert(key, value).is_some() {
             return Err("conflicting shared source facts".into());
         }
     }
-    Ok(facts)
+    Ok((facts, pins))
 }
 
 pub fn selected(facts: &BTreeMap<(String, String), Value>, ids: &[String]) -> BTreeSet<String> {
@@ -108,55 +124,68 @@ pub fn lead_image(fact: &Value) -> Option<String> {
 }
 
 pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<(), String> {
+    let (facts, pins) = read(files)?;
+    view_of(files, &facts, &pins, root, ids)
+}
+
+fn view_of(
+    files: &BTreeMap<String, std::path::PathBuf>,
+    facts: &Facts,
+    pins: &BTreeMap<&str, Pin>,
+    root: &Path,
+    ids: &[String],
+) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let facts = facts(files)?;
     let mut sources = Vec::new();
+    // Only a canonical entity alias or a proof can repeat a source path.
+    let mut repeatable = BTreeSet::new();
     let mut paths = BTreeMap::new();
-    for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
-        let value: Value =
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    for (&name, pin) in pins {
+        let (path, value, sha256, bytes) = (&files[name], &facts[&pin.key], &pin.sha256, pin.bytes);
         let relative = match value["kind"].as_str() {
-            Some("entity") => format!("classes/{}.json", string(&value, "key")?),
-            _ => name.clone(),
+            Some("entity") => format!("classes/{}.json", string(value, "key")?),
+            _ => name.to_owned(),
         };
         let target = root.join(&relative);
         fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
         fs::copy(path, &target).map_err(|e| e.to_string())?;
-        let bytes = fs::read(path).map_err(|e| e.to_string())?;
         if value["kind"] == "entity" {
-            let locale_path = format!("locales/{}.json", string(&value, "key")?);
+            let locale_path = format!("locales/{}.json", string(value, "key")?);
             let target = root.join(&locale_path);
             fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
             fs::copy(path, &target).map_err(|e| e.to_string())?;
-            sources.push(serde_json::json!({"path":locale_path,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:locale"}));
-            let alias = format!("entities/{}.json", string(&value, "key")?);
+            sources
+                .push(serde_json::json!({"path":locale_path,"sha256":sha256,"bytes":bytes,"url":"wikimedia:locale"}));
+            let alias = format!("entities/{}.json", string(value, "key")?);
             let target = root.join(&alias);
             fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
             fs::copy(path, &target).map_err(|e| e.to_string())?;
-            sources.push(
-                serde_json::json!({"path":alias,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:entity"}),
-            );
-            let canonical = value["identity"].as_str().unwrap_or(string(&value, "key")?);
-            if canonical != string(&value, "key")? && !facts.contains_key(&("entity".into(), canonical.into())) {
+            sources.push(serde_json::json!({"path":alias,"sha256":sha256,"bytes":bytes,"url":"wikimedia:entity"}));
+            let canonical = value["identity"].as_str().unwrap_or(string(value, "key")?);
+            if canonical != string(value, "key")? && !facts.contains_key(&("entity".into(), canonical.into())) {
                 let alias = format!("entities/{canonical}.json");
-                if !sources.iter().any(|source| source["path"] == alias) {
+                if repeatable.insert(alias.clone()) {
                     fs::copy(path, root.join(&alias)).map_err(|e| e.to_string())?;
-                    sources.push(serde_json::json!({"path":alias,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:entity"}));
+                    sources
+                        .push(serde_json::json!({"path":alias,"sha256":sha256,"bytes":bytes,"url":"wikimedia:entity"}));
                 }
             }
         }
-        sources.push(serde_json::json!({"path":relative,"sha256":hash(&bytes),"bytes":bytes.len(),"url":value["url"].as_str().unwrap_or("wikimedia:content")}));
-        paths.insert((string(&value, "kind")?.to_owned(), string(&value, "key")?.to_owned()), relative);
+        sources.push(serde_json::json!({"path":relative,"sha256":sha256,"bytes":bytes,"url":value["url"].as_str().unwrap_or("wikimedia:content")}));
+        paths.insert(pin.key.clone(), relative);
+    }
+    let mut assets = BTreeMap::new();
+    for fact in facts.values().filter(|fact| fact["kind"] == "file") {
+        if let Some(digest) = fact["asset"]["sha256"].as_str() {
+            assets.entry(digest).or_insert(fact);
+        }
     }
     for (name, path) in files.iter().filter(|(name, _)| name.starts_with("content/assets/")) {
         let target = root.join(name);
         fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
         fs::copy(path, &target).map_err(|e| e.to_string())?;
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
-        let file = facts
-            .values()
-            .find(|fact| fact["kind"] == "file" && fact["asset"]["sha256"] == hash(&bytes))
-            .ok_or("unregistered shared media asset")?;
+        let file = assets.get(hash(&bytes).as_str()).ok_or("unregistered shared media asset")?;
         sources.push(
             serde_json::json!({"path":name,"sha256":hash(&bytes),"bytes":bytes.len(),"url":file["asset"]["url"]}),
         );
@@ -164,7 +193,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
     let mut places = Vec::new();
     let mut aliases = BTreeMap::new();
     for id in ids {
-        let entity = subject(&facts, id).ok_or_else(|| format!("missing shared subject: {id}"))?;
+        let entity = subject(facts, id).ok_or_else(|| format!("missing shared subject: {id}"))?;
         let canonical = string(&entity, "id")?.to_owned();
         if canonical != *id {
             aliases.insert(id.clone(), canonical.clone());
@@ -237,7 +266,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
                             let target = root.join(&path);
                             fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
                             fs::write(target, &data).map_err(|e| e.to_string())?;
-                            if !sources.iter().any(|source| source["path"] == path) {
+                            if repeatable.insert(path.clone()) {
                                 sources.push(serde_json::json!({"path":path,"sha256":hash(&data),"bytes":data.len(),"url":"https://commons.wikimedia.org/w/api.php"}));
                             }
                             image[format!("{witness}_path")] = serde_json::json!(path);
@@ -253,9 +282,9 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
 }
 
 pub fn landmark_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<(), String> {
-    let facts = facts(files)?;
+    let (facts, pins) = read(files)?;
     let chosen = selected(&facts, ids);
-    view(files, root, &chosen.iter().cloned().collect::<Vec<_>>())?;
+    view_of(files, &facts, &pins, root, &chosen.iter().cloned().collect::<Vec<_>>())?;
     let mut omissions = Vec::new();
     for id in ids.iter().filter(|id| !chosen.contains(*id)) {
         let fact = facts.get(&("entity".into(), id.clone())).ok_or_else(|| format!("missing shared entity: {id}"))?;
@@ -275,17 +304,11 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
     let source: peaks::SummitSource =
         serde_json::from_slice(&fs::read(root.join("summits.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    let facts = facts(files)?;
+    let (facts, pins) = read(files)?;
     // The file of each link fact, by key: a summit finds its own at once. The kind is in the
     // fact, not in its file name.
-    let mut links = BTreeMap::new();
-    for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
-        let value: Value =
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if value["kind"] == "link" {
-            links.entry(string(&value, "key")?.to_owned()).or_insert_with(|| name.clone());
-        }
-    }
+    let links: BTreeMap<_, _> =
+        pins.iter().filter(|(_, pin)| pin.key.0 == "link").map(|(&name, pin)| (pin.key.1.as_str(), name)).collect();
     let mut ids = BTreeSet::new();
     let mut resolutions = Vec::new();
     for summit in &source.summits {
@@ -295,14 +318,14 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
             let Some(fact) = facts.get(&("link".into(), key.clone())) else {
                 return Err(format!("missing link fact: {key}"));
             };
-            let path = links.get(&key).cloned().ok_or("missing link file")?;
+            let path = *links.get(key.as_str()).ok_or("missing link file")?;
             if fact["status"] == "present" {
                 ids.insert(string(fact, "identity")?.to_owned());
             }
             resolutions.push(serde_json::json!({"node_id":summit.node_id,"kind":kind,"path":path,"status":if fact["status"] == "present" {"resolved"} else {"confirmed_missing"}}));
         }
     }
-    view(files, root, &ids.into_iter().collect::<Vec<_>>())?;
+    view_of(files, &facts, &pins, root, &ids.into_iter().collect::<Vec<_>>())?;
     let manifest_path = root.join("manifest.json");
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -448,9 +471,9 @@ mod tests {
             }));
         }
         let manifest: Value = serde_json::from_slice(&fs::read(mismatched.join("manifest.json")).unwrap()).unwrap();
-        let sources: Vec<Source> = serde_json::from_value(manifest["sources"].clone()).unwrap();
+        let sources = Sources::new(&mismatched, serde_json::from_value(manifest["sources"].clone()).unwrap()).unwrap();
         let synthetic = serde_json::json!({"id":"wiki-en-4","sitelinks":{"enwiki":{"title":"Old Castle"}}});
-        assert!(article(&mismatched, &sources, &synthetic, &manifest["places"][0]["articles"][0]).is_ok());
+        assert!(article(&sources, &synthetic, &manifest["places"][0]["articles"][0]).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 
