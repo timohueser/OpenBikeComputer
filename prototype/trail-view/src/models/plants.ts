@@ -136,14 +136,14 @@ function flowers(season: Season, rand: () => number): THREE.BufferGeometry {
   return merge(parts);
 }
 
-/** Nine fronds arching out of the crown; the edge steps in and out like the pinnae. */
+/** Nine fronds rising out of the crown like a shuttlecock, their tips nodding; the edge steps in and out like the pinnae. */
 function fern(season: Season, rand: () => number): THREE.BufferGeometry {
   const colour = byHeight(ramp(FERN[season]), 0.7);
   const width = (t: number) => 0.45 * smooth(0.02, 0.35, t) * (1 - t) ** 0.6 * (Math.round(t * 6) % 2 ? 0.6 : 1);
   const parts: THREE.BufferGeometry[] = [];
   for (let k = 0; k < 9; k++) {
     const a = (k / 9) * 2 * Math.PI + rand() * 0.5;
-    parts.push(paint(blade([0, 0, 0], a, 1.1 + 0.3 * rand(), 0.5 + 0.3 * rand(), 0.55, width, 6), colour));
+    parts.push(paint(blade([0, 0, 0], a, 1.1 + 0.3 * rand(), 0.3 + 0.35 * rand(), 0.5, width, 6), colour));
   }
   return merge(parts);
 }
