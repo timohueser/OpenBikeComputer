@@ -70,7 +70,7 @@ export interface Bake {
   roads: Uint8Array;
   /** RG8 per texel, k < water_levels: the share of the texel under OSM water, 0–255, and sqrt(shore distance / shore_reach_m). */
   water: Uint8Array;
-  /** RGBA8 per texel, k < rock_levels: the rock colour of the geological unit, sRGB, and 255 where it is variegated. */
+  /** RGBA8 per texel, k < rock_levels: the rock colour of the geological unit, sRGB; alpha 255 where it is variegated, else its hardness × 200. */
   rock: Uint8Array;
   /** R8 per texel, k < habitat_levels: the index into HABITATS, 0 where the land cover has none. */
   habitat: Uint8Array;

@@ -225,6 +225,15 @@ function groundHeight(bake: Bake, x: number, y: number): number {
   return (h(0, 0) * (1 - fu) + h(1, 0) * fu) * (1 - fv) + (h(0, 1) * (1 - fu) + h(1, 1) * fu) * fv;
 }
 
+/** How hard the rock stands at x, y on level 0 of the geological map, 0 to 1; 0.5 without one. */
+function hardnessAt(bake: Bake, x: number, y: number): number {
+  const { size, half0_m, rock_levels } = bake.meta;
+  if (!rock_levels || Math.max(Math.abs(x), Math.abs(y)) >= half0_m) return 0.5;
+  const px = (2 * half0_m) / size;
+  const alpha = bake.rock[(Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px)) * 4 + 3];
+  return alpha > 230 ? 0.1 : alpha / 200;
+}
+
 /** Flat-shaded triangles from positions and one colour per vertex. */
 function flat(position: number[], color: number[]): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry()
@@ -405,7 +414,8 @@ export class NearField {
           const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
           const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
           const mapped = habitatAt(rx, ry) === 'rock' ? 0.9 : 0;
-          const rocky = Math.max(outcrops * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
+          const hard = 0.3 + 1.4 * hardnessAt(bake, rx, ry);
+          const rocky = Math.max(outcrops * hard * Math.min(Math.max(1.4 * slope + 0.45 * ridge + 0.8 * sea - 0.05, 0), 1), mapped);
           if (rand() > 0.55 * rocky) continue;
           const name: RockName = rand() < 0.7 - 0.4 * sea ? 'slab' : 'boulder';
           const height = ROCK_HEIGHT_M[0] + rand() ** 2 * (ROCK_HEIGHT_M[1] - ROCK_HEIGHT_M[0]) * (1 + sea);

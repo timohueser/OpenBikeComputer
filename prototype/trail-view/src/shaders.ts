@@ -553,13 +553,16 @@ void main() {
   float strata = 0.86 + 0.22 * noise(vec2(bed / 9.0, dot(vWorld.xy, strike) / 120.0));
   vec3 stone = rock;
   float banded = 0.0;
+  // How hard the rock stands, 0 to 1, from the geological map; 0.5 without one.
+  float hardness = 0.5;
   float kr = floor(max(levelOf(vWorld.xy), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))));
   if (kr < rockLevels) {
     vec4 unit = texture(rockMap, vec3(uvOn(kr, vWorld.xy), kr));
     float across = (vWorld.x - vWorld.y) * 0.7071;
     float layer = 0.7 * noise(vec2(altitude / 4.0, across / 400.0)) + 0.3 * noise(vec2(across / 2.5, altitude / 30.0));
     vec3 beds = mix(mix(variegated[0], variegated[1], smoothstep(0.48, 0.53, layer)), variegated[2], smoothstep(0.58, 0.63, layer));
-    banded = unit.a;
+    banded = step(0.9, unit.a);
+    hardness = banded > 0.5 ? 0.1 : unit.a * (255.0 / 200.0);
     stone = mix(unit.rgb, beds, banded);
   }
   float steep = 1.0 - smoothstep(mix(0.766, 0.8, banded), mix(0.809, 0.88, banded), n.z);
@@ -580,7 +583,7 @@ void main() {
   // few metres a pixel, they become their share of rock colour.
   float rocky = outcrops * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor - 0.3, 0.0, 1.0)
-    * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0));
+    * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness);
   // Mapped exposed rock is outcrops in turf, about a third rock.
   rocky = max(rocky, 0.35 * g.bare);
   // Slab cells only where a pixel can show them; past that, rock is its share of colour.

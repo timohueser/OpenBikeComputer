@@ -146,6 +146,14 @@ LITHOLOGY = [
     ("glacis", "#c2ad88", False), ("coluvi", "#c2ad88", False), ("aluvi", "#c2ad88", False),
 ]
 ROCK = "#b0a796"
+# Words for the rock itself and how hard it stands, 0 soft to 1 hard, first match first: hard
+# rock breaks through as outcrops and crags, marl and clay weather into smooth slopes and gullies.
+HARDNESS = [
+    ("alternancia", 0.4), ("flysch", 0.4), ("abigarrad", 0.1), ("arcilla", 0.1), ("limo", 0.1),
+    ("yeso", 0.2), ("margos", 0.45), ("marga", 0.15), ("dolom", 1.0), ("cuarcita", 1.0),
+    ("granit", 1.0), ("caliza", 0.9), ("calcaren", 0.6), ("conglomerad", 0.7), ("arenisca", 0.6),
+    ("pizarra", 0.6), ("esquisto", 0.5), ("glacis", 0.05), ("coluvi", 0.05), ("aluvi", 0.05),
+]
 # Fine habitats for the ground mosaic on k < HABITAT_LEVELS, in one vocabulary whatever the source;
 # the page's region kit paints each. The source is the best open land cover whose box holds the eye.
 HABITATS = ("none", "rock", "heath", "bog", "bracken", "rough", "pasture", "scrub", "hedge", "sand", "saltmarsh", "built",
@@ -677,13 +685,16 @@ def onto_level(bands: np.ndarray, bbox, k: int, frame: str, size: int, resamplin
         return f.read()
 
 
-def lithology(text: str) -> tuple[str, bool]:
+def lithology(text: str) -> tuple[str, bool, float]:
+    """The unit's rock colour, whether it is variegated, and its hardness."""
     lower = text.lower()
-    return next(((colour, banded) for word, colour, banded in LITHOLOGY if word in lower), (ROCK, False))
+    colour, banded = next(((colour, banded) for word, colour, banded in LITHOLOGY if word in lower), (ROCK, False))
+    return colour, banded, next((hard for word, hard in HARDNESS if word in lower), 0.5)
 
 
 def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> np.ndarray:
-    """RGBA8 on level k: the rock colour of the geological unit, and 255 where it is variegated.
+    """RGBA8 on level k: the rock colour of the geological unit; alpha 255 where it is variegated,
+    else its hardness × 200.
     The map's fill colours stand for units; hatching and antialiased edges are minor colours, which
     take the nearest major one. `units` caches each fill colour's description across levels."""
     service, layer, _ = GEOLOGY[key]
@@ -714,8 +725,8 @@ def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> n
             body = wms_map(service, layer, "image/png", bbox, px, work / f"info-{k}-{value}.xml", info=(int(x), int(j))).read_text()
             match = re.search(r'DescripciónUnidadGeológica="([^"]*)"', body)
             units[value] = match.group(1) if match else ""
-        colour, banded = lithology(units[value])
-        colours[i] = [int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16), 255 if banded else 0]
+        colour, banded, hard = lithology(units[value])
+        colours[i] = [int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16), 255 if banded else round(200 * hard)]
     return np.moveaxis(onto_level(np.moveaxis(colours[label], -1, 0), bbox, k, frame, SIZE, "near", work), 0, -1)
 
 
