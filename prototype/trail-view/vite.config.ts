@@ -9,7 +9,11 @@ const BAKES = join(homedir(), '.cache/obc/trail-view');
 // /__shot/<name>.png writes a side-by-side into <bakes>/shots/.
 export default defineConfig({
   publicDir: BAKES,
-  server: { port: 5180, strictPort: true },
+  // The page uses the planner's sun model from the repository. An inline tsconfig keeps esbuild
+  // from reading builder/web's, which extends a package installed only there.
+  esbuild: { tsconfigRaw: '{}' },
+  resolve: { alias: { 'planner-sun': join(import.meta.dirname, '../../builder/web/src/lib/planner/layers/sun.ts') } },
+  server: { port: 5180, strictPort: true, fs: { allow: [join(import.meta.dirname, '../..')] } },
   plugins: [
     {
       name: 'save-shots',

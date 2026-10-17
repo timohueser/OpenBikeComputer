@@ -35,8 +35,9 @@ SOURCES = CACHE / "_sources"
 LEVELS = 9
 SIZE = 1024
 HALF0_M = 1250.0
-# The national DTM covers k ≤ 2, ±5 km, unless --dtm-levels says otherwise.
-DTM_LEVELS = 3
+# The national DTM covers k ≤ 3, ±10 km. The owner chose it after ±5 km put the Rigidalstock
+# ridge, 4.7 km from Brunni, into the blend toward GLO-30.
+DTM_LEVELS = 4
 # The height above the ground the Peak View photographs were taken from.
 PHONE_M = 1.6
 NODATA = -32768.0
@@ -248,7 +249,7 @@ def main() -> None:
     parser.add_argument("preset")
     parser.add_argument("--skip-peaks", action="store_true", help="keep the peaks.json of an earlier bake")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
-                        help=f"levels that take the national DTM (default {DTM_LEVELS}: ±5 km)")
+                        help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
     args = parser.parse_args()
     bake(load_preset(args.preset), args.skip_peaks, args.dtm_levels)
 

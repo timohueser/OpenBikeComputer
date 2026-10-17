@@ -1,7 +1,9 @@
 import GUI from 'lil-gui';
 import * as THREE from 'three';
 import presets from '../presets.json';
+import { clock } from 'planner-sun';
 import { loadBake, type Bake } from './bake';
+import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLines, placeLabels, type Line } from './overlay';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
@@ -35,12 +37,14 @@ const state = {
   photoSkyline: true,
   castSkyline: true,
   peaks: true,
+  season: 'summer (15 Aug)',
+  hour: 16,
   yaw: 0,
   pitch: 0,
   vfov: 60,
 };
-const look: Look = { ground: '#76825f', horizon: '#c4d2df', zenith: '#6d98cc', shade: 0.85, hazeKm: 45 };
-const readout = { dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
+const look: Look = { ground: '#6c7a4c', hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
+const readout = { sun: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
@@ -69,13 +73,18 @@ async function select(id: string): Promise<void> {
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
   loaded = { bake, ground: { dtm, glo30 }, sky, sighted: [] };
-  if (meta.photo) {
-    readout.rmsDtm = meta.dtm_levels ? `${rms(sky.dtm, meta.photo.columns).toFixed(3)}°` : '–';
-    readout.rmsGlo30 = `${rms(sky.glo30, meta.photo.columns).toFixed(3)}°`;
-    readout.limit = `${meta.photo.rms_limit_deg.toFixed(2)}° (${meta.photo.columns.length} columns)`;
-    photo.src = `${bake.base}${meta.photo.file}`;
-    // A newer selection clears the source, which rejects this decode.
-    await photo.decode().catch(() => undefined);
+  const shot = meta.photo;
+  if (shot) {
+    readout.rmsDtm = meta.dtm_levels ? `${rms(sky.dtm, shot.columns).toFixed(3)}°` : '–';
+    readout.rmsGlo30 = `${rms(sky.glo30, shot.columns).toFixed(3)}°`;
+    readout.limit = `${shot.rms_limit_deg.toFixed(2)}° (${shot.columns.length} columns)`;
+    // Only the photograph's size is needed. `decode()` waits for a rendered frame, which a hidden
+    // page never gets.
+    await new Promise((settled) => {
+      photo.addEventListener('load', settled, { once: true });
+      photo.addEventListener('error', settled, { once: true });
+      photo.src = `${bake.base}${shot.file}`;
+    });
     if (selecting !== id) return;
   } else {
     readout.rmsDtm = readout.rmsGlo30 = readout.limit = '–';
@@ -92,11 +101,23 @@ async function select(id: string): Promise<void> {
 function surfaceChanged(): void {
   if (!loaded) return;
   const lift = active(loaded.ground).lift;
-  terrain.setSurface(glo30Only(), lift);
+  terrain.setSurface(glo30Only(), lift, loaded.bake.meta.eye_m + lift);
   readout.eye = `${(loaded.bake.meta.eye_m + lift).toFixed(1)} m`;
+  lightChanged();
   loaded.sighted = sightedPeaks(loaded.bake.peaks, active(loaded.ground), active(loaded.sky));
   readout.peaks = `${loaded.sighted.length} of ${loaded.bake.peaks.length} named peaks sighted`;
   layout();
+}
+
+function lightChanged(): void {
+  if (!loaded) return;
+  const { lat, lon, id } = loaded.bake.meta;
+  const timezone = presets.find((p) => p.id === id)?.tz ?? 'UTC';
+  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, timezone);
+  terrain.setLight(light);
+  const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
+  readout.sun = `${clock(Math.round(state.hour * 60))} · altitude ${light.altitude.toFixed(1)}°, bearing ${bearing.toFixed(0)}°`;
+  requestRender();
 }
 
 /** The frame takes the photo's aspect while its camera is in use. */
@@ -143,6 +164,7 @@ function render(): void {
   pending = false;
   if (!loaded) return;
   aim();
+  terrain.shade(renderer, camera);
   renderer.clear();
   for (const [scene, pass] of [
     [terrain.far, FAR_PASS],
@@ -209,7 +231,7 @@ async function saveSideBySide(): Promise<void> {
   }
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   layout();
-  await save(out, '');
+  await save(out, `-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
 /** The current view with its lines, at the canvas's own resolution. */
@@ -221,7 +243,7 @@ async function saveView(): Promise<void> {
   const ctx = out.getContext('2d')!;
   ctx.drawImage(renderer.domElement, 0, 0);
   ctx.drawImage(lines, 0, 0);
-  await save(out, `-${Math.round(state.yaw)}`);
+  await save(out, `-${Math.round(state.yaw)}-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
 async function save(canvas: HTMLCanvasElement, suffix: string): Promise<void> {
@@ -294,17 +316,23 @@ shot.add(state, 'wipe', 0, 1, 0.01).onChange(requestRender);
 shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
 shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
 gui.add(state, 'peaks').onChange(requestRender);
+const time = gui.addFolder('Light');
+time.add(state, 'season', Object.keys(SEASONS)).onChange(lightChanged);
+time.add(state, 'hour', 0, 24, 0.05).name('hour (local)').onChange(lightChanged);
 const style = gui.addFolder('Look').close();
 style.addColor(look, 'ground');
-style.addColor(look, 'horizon');
-style.addColor(look, 'zenith');
-style.add(look, 'shade', 0, 1, 0.01).name('relief shading');
-style.add(look, 'hazeKm', 5, 300, 1).name('haze (km)');
+style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)');
+style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)');
+style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)');
+style.add(look, 'softness', 0.005, 0.3, 0.005).name('band softness');
+style.add(look, 'gradient', 0, 1, 0.01).name('smooth light kept');
 style.onChange(() => {
   terrain.setLook(look);
   requestRender();
 });
+style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, 'copy').name('copy look JSON');
 const facts = gui.addFolder('Readout');
+facts.add(readout, 'sun').listen().disable();
 facts.add(readout, 'dtm').name('DTM').listen().disable();
 facts.add(readout, 'eye').listen().disable();
 facts.add(readout, 'rmsDtm').name('RMS, DTM').listen().disable();

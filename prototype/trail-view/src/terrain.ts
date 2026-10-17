@@ -6,6 +6,8 @@
 
 import * as THREE from 'three';
 import type { Bake } from './bake';
+import type { Light } from './light';
+import { fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 
 const AZIMUTHS = 2048;
@@ -22,99 +24,6 @@ const NEAR_RING = Math.ceil(Math.log(3_000 / R0) / Math.log(Q));
 const FAR_RING = Math.floor(Math.log(100 / R0) / Math.log(Q));
 export const NEAR_PASS = { near: 0.5, far: 6_000 };
 export const FAR_PASS = { near: 150, far: 500_000 };
-
-const vertexShader = /* glsl */ `
-precision highp sampler2DArray;
-uniform sampler2DArray heights;
-uniform float half0;
-uniform float levels;
-uniform float dtmLevels;
-uniform bool glo30Only;
-uniform float lift;
-uniform float curvature;
-
-out vec3 vWorld;
-out vec3 vNormal;
-out float vInside;
-
-float levelHeight(float k, vec2 p) {
-  float half_ = half0 * exp2(k);
-  vec2 uv = vec2(p.x, -p.y) / (2.0 * half_) + 0.5;
-  float layer = glo30Only && k < dtmLevels ? levels + k : k;
-  return textureLod(heights, vec3(uv, layer), 0.0).r;
-}
-
-// The same rule as Surface.level in skyline.ts.
-float heightOn(float k, vec2 p) {
-  float h = levelHeight(k, p);
-  if (k < levels - 1.0) {
-    float w = smoothstep(0.9, 1.0, max(abs(p.x), abs(p.y)) / (half0 * exp2(k)));
-    if (w > 0.0) h = mix(h, levelHeight(k + 1.0, p), w);
-  }
-  return h;
-}
-
-void main() {
-  vec2 p = (modelMatrix * vec4(position, 1.0)).xy;
-  float r = length(p);
-  float m = max(abs(p.x), abs(p.y));
-  float k = max(0.0, ceil(log2(max(m, 1.0) / half0)));
-  vInside = k < levels ? 1.0 : 0.0;
-  k = min(k, levels - 1.0);
-  float h = heightOn(k, p);
-  // The normal at the mesh's own scale: a ring step or a level pixel, whichever is larger.
-  float e = max(2.0 * half0 * exp2(k) / 1024.0, 0.0103 * r);
-  float dx = heightOn(k, p + vec2(e, 0.0)) - heightOn(k, p - vec2(e, 0.0));
-  float dy = heightOn(k, p + vec2(0.0, e)) - heightOn(k, p - vec2(0.0, e));
-  vNormal = normalize(vec3(-dx, -dy, 2.0 * e));
-  vWorld = vec3(p, h - lift - curvature * r * r);
-  gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
-}
-`;
-
-const fragmentShader = /* glsl */ `
-uniform vec3 ground;
-uniform vec3 horizon;
-uniform vec3 light;
-uniform float shade;
-uniform float hazeKm;
-
-in vec3 vWorld;
-in vec3 vNormal;
-in float vInside;
-out vec4 colour;
-
-void main() {
-  if (vInside < 0.5) discard;
-  float lambert = max(dot(normalize(vNormal), light), 0.0);
-  vec3 c = ground * mix(1.0, 0.35 + 0.9 * lambert, shade);
-  float haze = 1.0 - exp(-length(vWorld) / (hazeKm * 1000.0));
-  colour = vec4(mix(c, horizon, haze), 1.0);
-}
-`;
-
-const skyVertex = /* glsl */ `
-out vec2 vNdc;
-void main() {
-  vNdc = position.xy;
-  gl_Position = vec4(position.xy, 1.0, 1.0);
-}
-`;
-
-const skyFragment = /* glsl */ `
-uniform mat4 inverseProjection;
-uniform mat4 cameraWorld;
-uniform vec3 horizon;
-uniform vec3 zenith;
-in vec2 vNdc;
-out vec4 colour;
-void main() {
-  vec4 view = inverseProjection * vec4(vNdc, 1.0, 1.0);
-  vec3 dir = normalize((cameraWorld * vec4(view.xyz / view.w, 0.0)).xyz);
-  float up = clamp(dir.z, 0.0, 1.0);
-  colour = vec4(mix(horizon, zenith, sqrt(up)), 1.0);
-}
-`;
 
 /** One wedge, in its own frame: azimuths 0 to 11.25° clockwise from north, and a centre fan. */
 function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeometry } {
@@ -157,10 +66,16 @@ function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeome
 
 export interface Look {
   ground: string;
-  horizon: string;
-  zenith: string;
-  shade: number;
+  /** Visibility at sea level, in km; the fog thins with altitude. */
   hazeKm: number;
+  /** Scale height of the fog, in metres. */
+  hazeHeight: number;
+  /** Top of the valley mist above sea level, in metres; 0 is none. */
+  mistTop: number;
+  /** Width of the steps between the three light bands. */
+  softness: number;
+  /** How much of the smooth sunlight term is kept beside the bands. */
+  gradient: number;
 }
 
 export class Terrain {
@@ -168,56 +83,81 @@ export class Terrain {
   readonly near = new THREE.Scene();
   /** Triangles one wedge draws over both passes. */
   private readonly perWedge: number;
-  private readonly material: THREE.ShaderMaterial;
+  private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly sky: THREE.ShaderMaterial;
   private readonly wedges: THREE.Mesh[] = [];
   private texture?: THREE.DataArrayTexture;
+  private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
+    format: THREE.RedFormat,
+    type: THREE.UnsignedByteType,
+    wrapS: THREE.RepeatWrapping,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+  });
+  private readonly shadowPass = new THREE.Scene();
+  private shadowsStale = true;
 
   constructor() {
     const geometry = wedgeGeometries();
     this.perWedge = (geometry.near.drawRange.count + geometry.far.drawRange.count) / 3;
-    this.material = new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader,
-      fragmentShader,
-      uniforms: {
-        heights: { value: null },
-        half0: { value: 1250 },
-        levels: { value: 9 },
-        dtmLevels: { value: 0 },
-        glo30Only: { value: false },
-        lift: { value: 0 },
-        curvature: { value: CURVATURE },
-        ground: { value: new THREE.Color() },
-        horizon: { value: new THREE.Color() },
-        light: { value: new THREE.Vector3(-0.5, 0.6, 0.62).normalize() },
-        shade: { value: 1 },
-        hazeKm: { value: 60 },
-      },
+    // One set of uniform objects, shared by every pass.
+    const u = (this.uniforms = {
+      heights: { value: null },
+      half0: { value: 1250 },
+      levels: { value: 9 },
+      dtmLevels: { value: 0 },
+      glo30Only: { value: false },
+      lift: { value: 0 },
+      curvature: { value: CURVATURE },
+      r0: { value: R0 },
+      ringStep: { value: Math.log(Q) },
+      rings: { value: RINGS },
+      azimuths: { value: AZIMUTHS },
+      shadows: { value: this.shadows.texture },
+      sunDir: { value: new THREE.Vector3(0, 0, 1) },
+      sunColour: { value: new THREE.Color() },
+      ambient: { value: new THREE.Color() },
+      zenith: { value: new THREE.Color() },
+      horizon: { value: new THREE.Color() },
+      glow: { value: 0 },
+      night: { value: 0 },
+      ground: { value: new THREE.Color() },
+      softness: { value: 0.08 },
+      gradient: { value: 0.35 },
+      eyeAltitude: { value: 0 },
+      hazeKm: { value: 35 },
+      hazeHeight: { value: 2500 },
+      mistTop: { value: 0 },
+      inverseProjection: { value: new THREE.Matrix4() },
+      cameraWorld: { value: new THREE.Matrix4() },
     });
-    this.sky = new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: skyVertex,
-      fragmentShader: skyFragment,
-      depthTest: false,
-      depthWrite: false,
-      uniforms: {
-        inverseProjection: { value: new THREE.Matrix4() },
-        cameraWorld: { value: new THREE.Matrix4() },
-        horizon: { value: this.material.uniforms.horizon.value },
-        zenith: { value: new THREE.Color() },
-      },
-    });
-    const sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.sky);
-    sky.frustumCulled = false;
+    const material = (vertexShader: string, fragmentShader: string, flat = false) =>
+      new THREE.ShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader,
+        fragmentShader,
+        uniforms: u,
+        depthTest: !flat,
+        depthWrite: !flat,
+      });
+    const terrain = material(terrainVertex, terrainFragment);
+    this.sky = material(fullscreenVertex, skyFragment, true);
+    const quad = (shader: THREE.ShaderMaterial) => {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shader);
+      mesh.frustumCulled = false;
+      return mesh;
+    };
+    const sky = quad(this.sky);
     sky.renderOrder = -1;
     this.far.add(sky);
+    this.shadowPass.add(quad(material(fullscreenVertex, shadowFragment, true)));
     for (const [scene, wedge] of [
       [this.far, geometry.far],
       [this.near, geometry.near],
     ] as const) {
       for (let w = 0; w < WEDGES; w++) {
-        const mesh = new THREE.Mesh(wedge, this.material);
+        const mesh = new THREE.Mesh(wedge, terrain);
         mesh.rotation.z = (-w * 2 * Math.PI) / WEDGES;
         mesh.frustumCulled = false;
         mesh.userData.wedge = w;
@@ -247,33 +187,62 @@ export class Terrain {
     texture.generateMipmaps = false;
     texture.needsUpdate = true;
     this.texture = texture;
-    const u = this.material.uniforms;
+    const u = this.uniforms;
     u.heights.value = texture;
     u.half0.value = half0_m;
     u.levels.value = levels;
     u.dtmLevels.value = dtm_levels;
+    this.shadowsStale = true;
   }
 
-  /** Which levels to draw, and how far their values sit above heights relative to the eye. */
-  setSurface(glo30Only: boolean, lift: number): void {
-    this.material.uniforms.glo30Only.value = glo30Only;
-    this.material.uniforms.lift.value = lift;
+  /**
+   * Which levels to draw, how far their values sit above heights relative to the eye, and the
+   * eye's altitude above sea level.
+   */
+  setSurface(glo30Only: boolean, lift: number, eyeAltitude: number): void {
+    this.uniforms.glo30Only.value = glo30Only;
+    this.uniforms.lift.value = lift;
+    this.uniforms.eyeAltitude.value = eyeAltitude;
+    this.shadowsStale = true;
+  }
+
+  setLight(light: Light): void {
+    const u = this.uniforms;
+    if (!u.sunDir.value.equals(light.sun)) this.shadowsStale = true;
+    u.sunDir.value.copy(light.sun);
+    u.sunColour.value.copy(light.sunColour);
+    u.ambient.value.copy(light.ambient);
+    u.zenith.value.copy(light.zenith);
+    u.horizon.value.copy(light.horizon);
+    u.glow.value = light.glow;
+    u.night.value = light.night;
   }
 
   setLook(look: Look): void {
-    const u = this.material.uniforms;
+    const u = this.uniforms;
     u.ground.value.set(look.ground);
-    u.horizon.value.set(look.horizon);
-    this.sky.uniforms.zenith.value.set(look.zenith);
-    u.shade.value = look.shade;
     u.hazeKm.value = look.hazeKm;
+    u.hazeHeight.value = look.hazeHeight;
+    u.mistTop.value = look.mistTop;
+    u.softness.value = look.softness;
+    u.gradient.value = look.gradient;
+  }
+
+  /** March every vertex toward the sun again, if the sun or the surface moved. */
+  shade(renderer: THREE.WebGLRenderer, camera: THREE.Camera): boolean {
+    if (!this.shadowsStale || !this.texture) return false;
+    this.shadowsStale = false;
+    renderer.setRenderTarget(this.shadows);
+    renderer.render(this.shadowPass, camera);
+    renderer.setRenderTarget(null);
+    return true;
   }
 
   /** Hide the wedges outside the view, and aim the sky. Returns the triangles both passes draw. */
   prepare(camera: THREE.PerspectiveCamera): number {
     camera.updateMatrixWorld();
-    this.sky.uniforms.inverseProjection.value.copy(camera.projectionMatrixInverse);
-    this.sky.uniforms.cameraWorld.value.copy(camera.matrixWorld);
+    this.uniforms.inverseProjection.value.copy(camera.projectionMatrixInverse);
+    this.uniforms.cameraWorld.value.copy(camera.matrixWorld);
     const span = azimuthSpan(camera);
     let drawn = 0;
     for (const mesh of this.wedges) {
