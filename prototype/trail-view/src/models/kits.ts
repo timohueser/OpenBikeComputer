@@ -20,6 +20,8 @@ export interface Kit {
   trees: Species[];
   ground: PlantName[];
   style: BuildingStyle;
+  /** What cottages and houses change from the style, where they differ from farms. */
+  houses?: Partial<BuildingStyle>;
 }
 
 export const KITS = {
@@ -60,6 +62,8 @@ export const KITS = {
       { tree: 'european-beech', leaf: 'broadleaved', cover: 'tree', elevation: [200, 1100], weight: 5 },
     ],
     ground: ['grass', 'fern'],
+    // Town and village houses have a plain steep gable; the half-hip belongs to the farms.
+    houses: { name: 'Town house', pitch: [40, 48], hip: 0, eave: 0.5, verge: 0.4, timber: 'none', chimneys: 1 },
     style: {
       name: 'Black Forest farmhouse',
       pitch: [44, 52],

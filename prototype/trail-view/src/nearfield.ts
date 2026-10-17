@@ -129,7 +129,8 @@ function outlined(outline: THREE.Vector2[], z0: number, height: number, wall: TH
 }
 
 /** Every building as a kit house on its footprint, in metres from the eye. */
-function town(buildings: Building[], eye: number, style: BuildingStyle): THREE.BufferGeometry | null {
+function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometry | null {
+  const houses: BuildingStyle = { ...kit.style, ...kit.houses };
   const rand = random(3);
   const parts: THREE.BufferGeometry[] = [];
   for (const [base, tag, levels, height, ring] of buildings) {
@@ -145,11 +146,12 @@ function town(buildings: Building[], eye: number, style: BuildingStyle): THREE.B
     const wall = levels ? levels * STOREY_M : height ? 0.65 * height : LOW.has(tag) ? 7 : undefined;
     const seed = Math.floor(rand() * 1e6);
     if (area / (fit.width * fit.depth) < RECTANGULAR || area > LARGEST_M2) {
-      const colour = new THREE.Color(style.palette.render[seed % style.palette.render.length]);
+      const colour = new THREE.Color(kit.style.palette.render[seed % kit.style.palette.render.length]);
       parts.push(outlined(outline, base - eye, wall ?? 8, colour));
       continue;
     }
     const plain = Math.hypot(fit.x, fit.y) > PLAIN_M;
+    const style = kind === 'cottage' || kind === 'house' ? houses : kit.style;
     parts.push(building(kind, style, { width: fit.width, depth: fit.depth, wall, seed, plain }).rotateZ(fit.angle).translate(fit.x, fit.y, base - eye));
   }
   return parts.length ? mergeGeometries(parts) : null;
@@ -274,7 +276,7 @@ export class NearField {
 
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
-    const houses = town(bake.buildings, eye_m, kit.style);
+    const houses = town(bake.buildings, eye_m, kit);
     if (houses) {
       const mesh = new THREE.Mesh(houses, this.materials.building);
       mesh.frustumCulled = false;
