@@ -398,6 +398,7 @@ triggers = [
   "companion-ios/scripts/capture-website-screenshots.sh",
   "companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift",
   "companion-ios/OBCCompanion/**",
+  "companion-ios/OBCShare/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Sources/**",
@@ -588,6 +589,7 @@ triggers = [
   "planner/search/place-kinds.json",
   "companion-ios/scripts/generate-website-fixture.py",
   "companion-ios/OBCCompanion/**",
+  "companion-ios/OBCShare/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",
@@ -633,6 +635,7 @@ platforms = ["macos"]
 triggers = [
   "planner/search/place-kinds.json",
   "companion-ios/OBCCompanion/**",
+  "companion-ios/OBCShare/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
   "companion-ios/Packages/OBCKit/Package.swift",

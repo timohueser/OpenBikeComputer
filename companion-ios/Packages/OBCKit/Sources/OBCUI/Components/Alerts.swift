@@ -24,15 +24,17 @@ public extension View {
     /// grouped rows; one plain choice alone is the amber action; a destructive choice is red text.
     /// A sheet, not a confirmation dialog: the dialog pops up as a bubble beside its control.
     /// `onDismiss` runs once the sheet has gone, so a choice can open the next sheet there.
+    /// The open sheet keeps the question it opened with; a new `id` puts a new question on it.
     func obcChoiceSheet(
         _ title: String,
         isPresented: Binding<Bool>,
         message: String? = nil,
         actions: [OBCSheetAction],
+        id: AnyHashable? = nil,
         onDismiss: (() -> Void)? = nil
     ) -> some View {
         sheet(isPresented: isPresented, onDismiss: onDismiss) {
-            OBCChoiceSheet(title: title, message: message, actions: actions)
+            OBCChoiceSheet(title: title, message: message, actions: actions).id(id)
         }
     }
 
