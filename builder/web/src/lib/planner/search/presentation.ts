@@ -13,9 +13,16 @@ const kinds: Record<string, { category: string | null }> = contract.kinds, dataK
 export function category(kind: string): PlaceCategory {
     return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
+/** The category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
+export function sleepCategory(placeKind?: string): PlaceCategory | undefined {
+    const found = placeKind ? category(placeKind) : undefined;
+    return found === 'camp' || found === 'hotel' || found === 'shelter' ? found : undefined;
+}
+/** The icon of a night by the kind of place it is at. */
+export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hotel: 'hotel' } as Record<string, string>)[sleepCategory(placeKind) ?? ''] ?? 'moon';
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
-        locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, content: p.content, detailsLoaded: true,
+        locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, content: p.content,
         description: p.precision === 'street' ? 'Street location only' : p.description ?? '' };
 }
 export function pointLabel(p: QueryPoint): string {

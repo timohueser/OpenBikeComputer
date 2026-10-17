@@ -48,7 +48,8 @@ Each point has a unique non-empty string `id`, a string `label`, and a two-numbe
 Longitude is from -180 to 180. Latitude is from -90 to 90.
 
 The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
-or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, a
+or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, string `placeId` (the search id
+of the mapped place that the point stands for, such as `n123`), a
 coordinate `anchor`, and `leg` (`routed`, `straight`, `drawn`, or `transfer`). A drawn leg can
 have a `drawn` array of coordinates between its endpoints. A drawn coordinate can have a
 third finite number, the elevation in metres. A transfer leg is a straight

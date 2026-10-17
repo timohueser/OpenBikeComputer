@@ -159,7 +159,7 @@
                 onShowConflict={() => conflict && onShowConflict(conflict)}
             >{#snippet picker()}{@render towns(day.ridingNumber, !!days[day.ridingNumber - 1].pinned)}{/snippet}</DayRow>
             {#if !focused && day.ridingNumber < days.length}
-                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights}>{@render towns(day.ridingNumber)}</NightNode>
+                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights} onShow={() => onShowEnd(days[day.ridingNumber - 1])}>{@render towns(day.ridingNumber)}</NightNode>
             {/if}
             {#if focused && day.ridingNumber < days.length && !trip.restAfter?.includes(day.ridingNumber)}
                 <button type="button" class="add-rest" onclick={() => onAddRest(day.ridingNumber)}><Icon name="plus" size={13} />Add rest day</button>

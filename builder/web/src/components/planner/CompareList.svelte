@@ -1,9 +1,10 @@
 <script lang="ts">
     import { tick } from 'svelte';
+    import Icon from './PlannerIcon.svelte';
     import { radioKey } from './Segmented.svelte';
     import { difference, optionLetter, type Compared } from '../../lib/planner/route-options';
 
-    let { label, rows, status, retry, note, applyLabel, previewId, onPreview, onApply }: {
+    let { label, rows, status, retry, note, applyLabel, previewId, onPreview, onApply, onDelete }: {
         /** The name of the list, such as "Route options". */
         label: string;
         /** Your route first, then the routes it is compared with. */
@@ -19,6 +20,8 @@
         previewId: string | null;
         onPreview: (id: string | null) => void;
         onApply: (row: Compared) => void;
+        /** Offers Delete on a previewed row. */
+        onDelete?: (row: Compared) => void;
     } = $props();
 
     const checked = $derived(rows.find(row => row.id === previewId) ?? rows[0]);
@@ -36,9 +39,9 @@
         return `${optionLetter(index)}, ${row.name}: ${km(row.km)} km, climb ${row.climb === null ? 'incomplete' : `${row.climb} m`}, unpaved ${km(row.unpavedKm)} km${d}`;
     }
 
-    /** Ends the preview, or applies the row, and focuses the checked radio: then the rider's current route. */
-    async function end(row?: Compared) {
-        if (row) onApply(row);
+    /** Ends the preview, or applies or deletes the row, and focuses the checked radio while the list stays. */
+    async function end(row?: Compared, apply = onApply) {
+        if (row) apply(row);
         else onPreview(null);
         await tick();
         group?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus();
@@ -89,6 +92,7 @@
                         <div class="actions">
                             <button type="button" class="use" onclick={() => end(row)}>{applyLabel}</button>
                             <button type="button" class="planner-action" onclick={() => end()}>Cancel</button>
+                            {#if onDelete}<button type="button" class="planner-action quiet delete" onclick={() => end(row, onDelete)}><Icon name="trash" size={14} />Delete</button>{/if}
                         </div>
                     {/if}
                 </div>
@@ -219,6 +223,10 @@
     }
     .use:hover {
         filter: brightness(.95);
+    }
+    .delete {
+        gap: 6px;
+        margin-left: auto;
     }
     .note,
     .state p {

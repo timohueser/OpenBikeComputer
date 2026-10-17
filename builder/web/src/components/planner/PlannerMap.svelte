@@ -702,7 +702,7 @@
             if (point.color) button.style.setProperty("--pin-color", point.color);
             button.setAttribute("aria-label", point.kind === "start" ? `Start: ${point.label}` : point.kind === "finish" ? `Finish: ${point.label}` : point.label);
             button.title = dayEnd ? `${point.appearance === "moved" ? "Day end you moved" : "Day end suggested"} · drag along the route` : point.label + (draggable ? " · drag to move" : "");
-            if (point.kind === "place" && point.category) {
+            if ((point.kind === "place" || point.kind === "night") && point.category) {
                 button.append(markerIcon(placeCategories[point.category].icon));
             } else if (point.kind === "waypoint" || point.kind === "detour") {
                 button.append(markerIcon(pointIcons[point.kind]));
