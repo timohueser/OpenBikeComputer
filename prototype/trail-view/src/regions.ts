@@ -32,7 +32,7 @@ export interface RegionLook {
   /** Haze distance at sea level, in km. */
   hazeKm: number;
   /** Ramps that replace palette.ts's for these WorldCover classes, low NDVI to high. */
-  ramps?: Partial<Record<'shrub' | 'grass' | 'moss', [string, string, string]>>;
+  ramps?: Partial<Record<'shrub' | 'grass' | 'crop' | 'bare' | 'built' | 'moss', [string, string, string]>>;
   /**
    * Moorland: open ground that Sentinel-2 sees brown rather than green, painted in its own
    * colour with heather patches over a share of it. Heather plants grow there and grass does not.

@@ -1,1 +1,31 @@
-{ "name": "Valencian coast", "extends": "spain", "where": [ [-1.6, 37.6, 0.6, 39.6] ], "pack": "mediterranean" }
+{
+ "name": "Valencian coast",
+ "extends": "spain",
+ "where": [
+  [-1.6, 37.6, 0.6, 39.6]
+ ],
+ "about": "The karst sierras and badland valleys behind the Alicante coast: pale limestone crags and terraces, dark garrigue cushions and esparto in straw-coloured ground, Aleppo pines, a milky summer haze over a blue sea.",
+ "pack": "mediterranean",
+ "look": {
+  "ramps": {
+   "grass": ["#b7a676", "#a69c69", "#8b8c57"],
+   "crop": ["#b8a37a", "#a49a6c", "#8a8a58"],
+   "shrub": ["#7a7450", "#5f6640", "#4c5a36"],
+   "bare": ["#c8bda5", "#c2b8a0", "#b5ad92"],
+   "built": ["#c9bfa9", "#bdb69a", "#a8a684"]
+  },
+  "snap": 0.75,
+  "hazeKm": 30,
+  "outcrops": 0.6,
+  "rock": "#c4bdad",
+  "sea": { "deep": "#1b4f8a", "shallow": "#3aa4b4" },
+  "grade": {
+   "shadow": [-0.002, 0.0, 0.006],
+   "light": [0.012, 0.006, -0.006],
+   "saturation": 1.04
+  },
+  "weather": {
+   "sunny": { "cover": 0.08, "zenith": "#6a8fc6", "horizon": "#cbd3d6", "grey": 0.25 }
+  }
+ }
+}

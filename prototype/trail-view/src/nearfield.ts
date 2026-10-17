@@ -379,7 +379,7 @@ export class NearField {
         for (let x = -SHRUB_RADIUS_M; x < SHRUB_RADIUS_M; x += SHRUB_SPACING_M) {
           const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
           const scrub = classAt(sx, sy) === CLASS.shrub || habitatAt(sx, sy) === 'scrub';
-          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || !scrub) continue;
+          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M || !scrub) continue;
           if (this.offGround(bake, sx, sy, px)) continue;
           const species = pick(shrubs).tree;
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
