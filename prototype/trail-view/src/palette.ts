@@ -53,6 +53,15 @@ const SEASONAL: Seasonal[] = [
 /** Share of broadleaf trees for a preset's `default_leaf`. */
 export const DECIDUOUS: Record<string, number> = { needleleaved: 0.2, mixed: 0.5, broadleaved: 1 };
 
+/** Road surfaces in the order of ROAD_WIDTHS in bake.py: main, road, gravel, dirt, grass, path. */
+export const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
+
+/** The middle of the season's needle, broadleaf and grass ramps, for instanced trees and tufts. */
+export function foliage(season: number): { needle: THREE.Color; broad: THREE.Color; grass: THREE.Color } {
+  const table = SEASONAL[season];
+  return { needle: new THREE.Color(table.needle[1]), broad: new THREE.Color(table.broad[1]), grass: new THREE.Color(table.grass[2]) };
+}
+
 export const ROCK = '#8c877d';
 export const SHORE = '#4f8088';
 

@@ -34,12 +34,19 @@ const smoothstep = (edge0: number, edge1: number, x: number) => {
 };
 
 /**
+ * Inside BLANKET[0] metres instanced trees stand on the bare DTM; past BLANKET[1] the canopy lies
+ * on it as a raised blanket, which meets GLO-30, a surface model, without a step.
+ */
+export const BLANKET = [800, 1200];
+
+/**
  * The sampling rule the vertex shader uses, over levels with row 0 north. Heights are relative to
  * an eye `above` metres over this surface at the origin, so a coarse surface never buries the eye.
+ * `canopy` holds canopy heights for the first levels, laid on as the blanket.
  */
-export function surface(levels: Float32Array[], size: number, half0: number, above: number): Surface {
+export function surface(levels: Float32Array[], size: number, half0: number, above: number, canopy: Float32Array[] = []): Surface {
   const last = levels.length - 1;
-  const bilinear = (k: number, x: number, y: number) => {
+  const bilinear = (data: Float32Array, k: number, x: number, y: number) => {
     const half = half0 * 2 ** k;
     const scale = size / (2 * half);
     const u = (x + half) * scale - 0.5;
@@ -48,17 +55,19 @@ export function surface(levels: Float32Array[], size: number, half0: number, abo
     const j = Math.min(Math.max(Math.floor(v), 0), size - 2);
     const fu = Math.min(Math.max(u - i, 0), 1);
     const fv = Math.min(Math.max(v - j, 0), 1);
-    const data = levels[k];
     const at = j * size + i;
     const top = data[at] + (data[at + 1] - data[at]) * fu;
     const bottom = data[at + size] + (data[at + size + 1] - data[at + size]) * fu;
     return top + (bottom - top) * fv;
   };
+  const height = (k: number, x: number, y: number) =>
+    bilinear(levels[k], k, x, y) +
+    (k < canopy.length ? bilinear(canopy[k], k, x, y) * smoothstep(BLANKET[0], BLANKET[1], Math.hypot(x, y)) : 0);
   const raw = (k: number, x: number, y: number) => {
-    const h = bilinear(k, x, y);
+    const h = height(k, x, y);
     if (k === last) return h;
     const w = smoothstep(0.9, 1, Math.max(Math.abs(x), Math.abs(y)) / (half0 * 2 ** k));
-    return w > 0 ? h + (bilinear(k + 1, x, y) - h) * w : h;
+    return w > 0 ? h + (height(k + 1, x, y) - h) * w : h;
   };
   const lift = raw(0, 0, 0) + above;
   const level = (k: number, x: number, y: number) => raw(k, x, y) - lift;

@@ -29,8 +29,9 @@ export interface Meta {
   /** Levels k < dtm_levels carry a national DTM; `glo30` holds GLO-30 for the same levels. */
   dtm_levels: number;
   dtm: string | null;
-  /** Levels k < s2_levels carry Sentinel-2 colour. */
+  /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces. */
   s2_levels: number;
+  road_levels: number;
   credits: string[];
   photo?: Photo;
 }
@@ -43,6 +44,9 @@ export interface Peak {
   name: string;
 }
 
+/** A footprint in metres from the eye, its base above sea level and its height. */
+export type Building = [base: number, height: number, ring: number[]];
+
 export interface Bake {
   meta: Meta;
   base: string;
@@ -52,6 +56,13 @@ export interface Bake {
   glo30: Float32Array[];
   /** RG8 per texel and level: the class's palette index, and 255 on water. */
   classes: Uint8Array;
+  /** RG8 per texel, k < road_levels: distance to the nearest road in 0.1 m, and its surface code. */
+  roads: Uint8Array;
+  /** R8 per texel, k < dtm_levels: canopy height in 0.25 m. */
+  canopy: Uint8Array;
+  /** x, y, height, broadleaf (0 or 1) per tree, metres from the eye. */
+  trees: Float32Array;
+  buildings: Building[];
   peaks: Peak[];
   /** Bytes on the wire: heights and classes. */
   bytes: number;
@@ -102,19 +113,27 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, peaks] = await Promise.all([
+  const [surface, glo30, classes, roads, canopy, trees, buildings, peaks] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
+    layers(base, 'road', meta.road_levels),
+    layers(base, 'canopy', meta.dtm_levels),
+    unpack(`${base}trees.bin.gz`),
+    fetch(`${base}buildings.json`).then((r) => r.json()),
     fetch(`${base}peaks.json`).then((r) => (r.ok ? r.json() : [])),
   ]);
-  const bytes = [...surface, ...glo30, classes].reduce((sum, level) => sum + level.bytes, 0);
+  const bytes = [...surface, ...glo30, classes, roads, canopy, trees].reduce((sum, level) => sum + level.bytes, 0);
   return {
     meta,
     base,
     surface: surface.map((level) => level.data),
     glo30: glo30.map((level) => level.data),
     classes: classes.data,
+    roads: roads.data,
+    canopy: canopy.data,
+    trees: new Float32Array(trees.data),
+    buildings,
     peaks: (peaks as [number, number, number | null, string][]).map(([x, y, ele, name]) => ({ x, y, ele, name })),
     bytes,
   };

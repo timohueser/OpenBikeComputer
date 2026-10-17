@@ -83,6 +83,21 @@ MIN_OBSERVATIONS = 3
 # from summer.
 DARK = 0.025
 
+# The near field: road surfaces on k < ROAD_LEVELS (±5 km), buildings within BUILDING_HALF_M,
+# instanced trees within TREE_RADIUS_M on a jittered grid of TREE_SPACING_M, about 1.5 trees per
+# 10 m WorldCover pixel.
+ROAD_LEVELS = 3
+BUILDING_HALF_M = 2500.0
+TREE_RADIUS_M = 1000.0
+TREE_SPACING_M = 8.0
+TREE = CLASSES.index(10)
+# Road surfaces in the order the page's shader paints them (code = index + 1, 0 = no road), with
+# the half-width each is painted at. The field holds the distance to the nearest road EDGE, which
+# stays continuous where two roads of different widths meet; a byte is 0.1 m from -5 m to 20.5 m.
+ROAD_WIDTHS = {"main": 4.5, "road": 3.0, "gravel": 1.75, "dirt": 1.5, "grass": 1.25, "path": 0.6}
+ROAD_REACH_M = 20.5
+LEAF = {"needleleaved": 1, "broadleaved": 2, "mixed": 3}
+
 GDAL_OPTIONS = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.vrt",
                 "GDAL_HTTP_MAX_RETRY": "4", "GDAL_HTTP_RETRY_DELAY": "5"}
 
@@ -315,6 +330,108 @@ def s2_level(k: int, frame: str, quarters: dict[int, list[Path]], work: Path) ->
     return texels
 
 
+def road_surface(tags: dict) -> str | None:
+    """Which painted surface a highway gets, or None for one that is not on the ground."""
+    highway, surface, grade = tags["highway"], tags.get("surface", ""), tags.get("tracktype", "")
+    if tags.get("tunnel") in ("yes", "building_passage") or highway in ("proposed", "construction", "platform"):
+        return None
+    if surface in ("asphalt", "paved", "concrete", "paving_stones", "sett", "chipseal"):
+        return "main" if highway in ("motorway", "trunk", "primary", "secondary") else "road"
+    if surface in ("gravel", "compacted", "fine_gravel", "pebblestone"):
+        return "gravel"
+    if surface in ("dirt", "ground", "earth", "mud", "unpaved", "sand"):
+        return "dirt"
+    if surface in ("grass", "grass_paver"):
+        return "grass"
+    if highway in ("path", "footway", "bridleway", "steps", "pedestrian", "via_ferrata"):
+        return "path"
+    if highway == "track":
+        return {"grade1": "road", "grade2": "gravel", "grade3": "dirt"}.get(grade, "grass")
+    if highway in ("motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"):
+        return "main"
+    return "road"
+
+
+def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
+    """RG8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road, and
+    that road's surface code."""
+    px = 2 * half / SIZE
+    distance = np.full((SIZE, SIZE), ROAD_REACH_M, np.float32)
+    surface = np.zeros((SIZE, SIZE), np.uint8)
+    widths = list(ROAD_WIDTHS.values())
+    for xy, code in roads:
+        width = widths[code - 1]
+        for (ax, ay), (bx, by) in zip(xy[:-1], xy[1:]):
+            i0 = max(int((min(ax, bx) - ROAD_REACH_M + half) / px), 0)
+            i1 = min(int((max(ax, bx) + ROAD_REACH_M + half) / px) + 1, SIZE)
+            j0 = max(int((half - max(ay, by) - ROAD_REACH_M) / px), 0)
+            j1 = min(int((half - min(ay, by) + ROAD_REACH_M) / px) + 1, SIZE)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            x, y = np.meshgrid(-half + (np.arange(i0, i1) + 0.5) * px, half - (np.arange(j0, j1) + 0.5) * px)
+            dx, dy = bx - ax, by - ay
+            t = np.clip(((x - ax) * dx + (y - ay) * dy) / max(dx * dx + dy * dy, 1e-9), 0, 1)
+            d = np.hypot(x - ax - t * dx, y - ay - t * dy) - width
+            closer = d < distance[j0:j1, i0:i1]
+            distance[j0:j1, i0:i1][closer] = d[closer]
+            surface[j0:j1, i0:i1][closer] = code
+    return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface], axis=-1)
+
+
+def box_mean(a: np.ndarray, r: int) -> np.ndarray:
+    """The mean over a (2r + 1)² box, edges repeated."""
+    n = 2 * r + 1
+    s = np.pad(np.pad(a, r, mode="edge").cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    return (s[n:, n:] - s[:-n, n:] - s[n:, :-n] + s[:-n, :-n]) / (n * n)
+
+
+def canopy_of(glo30: np.ndarray, dtm: np.ndarray, classes: np.ndarray, half: float) -> np.ndarray:
+    """GLO-30, a surface model, minus the DTM on tree pixels, clamped to 0–60 m. The DTM is
+    averaged over GLO-30's own 30 m first, so terrain detail does not read as canopy."""
+    canopy = np.clip(glo30 - box_mean(dtm, round(15 / (2 * half / SIZE))), 0, 60)
+    canopy[classes[..., 0] != TREE] = 0
+    return canopy
+
+
+def sample(level: np.ndarray, half: float, x, y):
+    """Nearest texel of a level at metres east and north."""
+    px = 2 * half / SIZE
+    i = np.clip(((np.asarray(x) + half) / px).astype(int), 0, SIZE - 1)
+    j = np.clip(((half - np.asarray(y)) / px).astype(int), 0, SIZE - 1)
+    return level[j, i]
+
+
+def scatter_trees(classes0, roads0, canopy0, leaf0, default_leaf: str) -> np.ndarray:
+    """float32 x, y, height, type (0 conifer, 1 broadleaf) for every tree within TREE_RADIUS_M:
+    jittered on tree pixels, outside the road buffers, as tall as the canopy says."""
+    rng = np.random.default_rng(1)
+    grid = np.arange(-TREE_RADIUS_M, TREE_RADIUS_M, TREE_SPACING_M) + TREE_SPACING_M / 2
+    x, y = (axis.ravel() + rng.uniform(-0.4, 0.4, axis.size) * TREE_SPACING_M for axis in np.meshgrid(grid, grid))
+    half = HALF0_M
+    edge = sample(roads0, half, x, y)[:, 0] / 10 - 5
+    canopy = sample(canopy0, half, x, y)
+    keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & (sample(classes0, half, x, y)[:, 0] == TREE)
+            & (edge > 1.5) & (canopy > 3))
+    x, y, canopy = x[keep], y[keep], canopy[keep]
+    leaf = sample(leaf0, half, x, y)
+    leaf[leaf == 0] = LEAF[default_leaf]
+    broad = np.where(leaf == 3, rng.random(leaf.size) < 0.5, leaf == 2)
+    height = np.clip(canopy, 5, 45) * rng.uniform(0.8, 1.15, canopy.size)
+    return np.stack([x, y, height, broad.astype(np.float32)], axis=-1).astype(np.float32)
+
+
+def leaf_grid(forests: list[tuple[np.ndarray, int]]) -> np.ndarray:
+    """Level 0's leaf type from OSM forest outlines: 0 unknown, else LEAF."""
+    from rasterio.features import rasterize
+    from rasterio.transform import from_origin
+
+    shapes = [({"type": "Polygon", "coordinates": [ring.tolist()]}, code) for ring, code in forests]
+    if not shapes:
+        return np.zeros((SIZE, SIZE), np.uint8)
+    return rasterize(shapes, out_shape=(SIZE, SIZE), transform=from_origin(-HALF0_M, HALF0_M, 2 * HALF0_M / SIZE,
+                                                                           2 * HALF0_M / SIZE), dtype=np.uint8)
+
+
 def pack(array: np.ndarray) -> bytes:
     return gzip.compress(np.ascontiguousarray(array).tobytes(), compresslevel=6)
 
@@ -324,27 +441,48 @@ def encode(heights: np.ndarray) -> bytes:
     return pack(np.clip(np.round((heights + 500.0) * 10.0), 0, 65535).astype("<u2"))
 
 
-def overpass_peaks(lat: float, lon: float, radius: float) -> list[tuple[float, float, str, str]]:
-    query = (f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
-             f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
+def overpass(query: str) -> str:
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
                                      headers={"User-Agent": USER_AGENT})
     for attempt in range(4):
         try:
             with urllib.request.urlopen(request, timeout=900) as response:
-                text = response.read().decode()
-            break
+                return response.read().decode()
         except urllib.error.HTTPError as error:
             # Overpass answers 429 and 502 to 504 when it is busy.
             if error.code not in (429, 502, 503, 504) or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
+
+
+def overpass_peaks(lat: float, lon: float, radius: float) -> list[tuple[float, float, str, str]]:
+    text = overpass(f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
+                    f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
     rows = []
     for line in text.splitlines():
         parts = line.split("\t")
         if len(parts) == 4:
             rows.append((float(parts[0]), float(parts[1]), parts[2], parts[3]))
     return rows
+
+
+def osm_ways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Highways and forests with a leaf type over the road levels, buildings over BUILDING_HALF_M,
+    with their geometry. Cached per position, because a bake is rerun far more often than OSM
+    changes."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (ROAD_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        bw, bs, be, bn = to_wgs84.transform_bounds(-BUILDING_HALF_M, -BUILDING_HALF_M, BUILDING_HALF_M,
+                                                   BUILDING_HALF_M, densify_pts=21)
+        box, near = f"{s},{w},{n},{e}", f"{bs},{bw},{bn},{be}"
+        text = overpass(f'[out:json][timeout:600];(way["highway"]({box});'
+                        f'way["landuse"="forest"]["leaf_type"]({box});way["natural"="wood"]["leaf_type"]({box});'
+                        f'way["building"]({near}););out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
 
 
 def elevation_tag(text: str) -> float | None:
@@ -360,6 +498,19 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     to_wgs84 = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:4326", always_xy=True)
     dtm = preset.get("dtm")
     sizes = []
+    to_frame = Transformer.from_crs("EPSG:4326", CRS.from_proj4(frame), always_xy=True)
+
+    def metres(way: dict) -> np.ndarray:
+        return np.array(to_frame.transform([n["lon"] for n in way["geometry"]], [n["lat"] for n in way["geometry"]])).T
+
+    ways = osm_ways(preset["id"], lat, lon, to_wgs84)
+    codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
+    roads = [(metres(w), codes[surface]) for w in ways
+             if "highway" in w["tags"] and (surface := road_surface(w["tags"]))]
+    forests = [(metres(w), LEAF[w["tags"]["leaf_type"]]) for w in ways
+               if w["tags"].get("leaf_type") in LEAF and w["geometry"][0] == w["geometry"][-1]]
+    print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
+          f"{sum('building' in w['tags'] for w in ways)} buildings", flush=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
@@ -389,9 +540,23 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
-            blob = pack(class_level(k, frame, bbox, heights, work))
+            classes = class_level(k, frame, bbox, heights, work)
+            blob = pack(classes)
             (out / f"class-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "class", len(blob)))
+            if k < ROAD_LEVELS:
+                road = road_field(roads, half)
+                blob = pack(road)
+                (out / f"road-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "road", len(blob)))
+            if dtm and k < dtm_levels:
+                canopy = canopy_of(glo30, heights, classes, half)
+                blob = pack(np.round(canopy * 4).astype(np.uint8))
+                (out / f"canopy-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "canopy", len(blob)))
+            if k == 0:
+                heights0, classes0, road0 = heights, classes, road
+                canopy0 = canopy if dtm else None
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
@@ -405,6 +570,26 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 (out / f"s2-q{q}-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, f"s2-q{q}", len(blob)))
             print(f"  colour level {k}", flush=True)
+
+    # Trees stand only where a DTM says how tall the canopy is: GLO-30 alone cannot.
+    trees = scatter_trees(classes0, road0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed")) \
+        if dtm else np.zeros((0, 4), np.float32)
+    blob = pack(trees)
+    (out / "trees.bin.gz").write_bytes(blob)
+    sizes.append(("-", "trees", len(blob)))
+    buildings = []
+    for way in ways:
+        ring = metres(way)
+        if "building" not in way["tags"] or len(ring) < 4 or np.abs(ring).max() > BUILDING_HALF_M:
+            continue
+        levels = elevation_tag(way["tags"].get("building:levels", ""))
+        height = elevation_tag(way["tags"].get("height", "")) or (3 * levels if levels else 6.0)
+        base = float(sample(heights0, HALF0_M, ring[:, 0], ring[:, 1]).min())
+        buildings.append([round(base, 1), round(height, 1), [round(float(v), 1) for v in ring[:-1].ravel()]])
+    blob = json.dumps(buildings, separators=(",", ":")).encode()
+    (out / "buildings.json").write_bytes(blob)
+    sizes.append(("-", "buildings", len(blob)))
+    print(f"  {len(trees)} trees, {len(buildings)} buildings", flush=True)
 
     ground = preset.get("ground_m", origin.get("dtm", origin["glo30"]))
     print(f"  ground {ground:.1f} m; at the origin the DTM says {origin.get('dtm', float('nan')):.1f} m, "
@@ -428,7 +613,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     above = preset.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, credits=credits)
+                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, credits=credits)
     if "photo_source" in preset:
         shutil.copyfile(preset["photo_source"], out / "photo.jpg")
         meta["photo"] = preset["photo"]
@@ -439,7 +624,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     for row in sizes:
         print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
     print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
-    season = sum(row[2] for row in sizes if row[1] in ("h", "class", "peaks", "s2-q3"))
+    season = sum(row[2] for row in sizes if row[1] in ("h", "class", "road", "canopy", "trees", "buildings", "peaks", "s2-q3"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 

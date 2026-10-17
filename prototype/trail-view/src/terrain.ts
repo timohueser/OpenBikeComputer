@@ -7,7 +7,8 @@
 import * as THREE from 'three';
 import type { Bake } from './bake';
 import type { Light } from './light';
-import { ROCK, SHORE } from './palette';
+import { NearField } from './nearfield';
+import { ROADS, ROCK, SHORE } from './palette';
 import { fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 
@@ -91,6 +92,9 @@ export class Terrain {
   private texture?: THREE.DataArrayTexture;
   private classes?: THREE.DataArrayTexture;
   private colour?: THREE.DataArrayTexture;
+  private canopy?: THREE.DataArrayTexture;
+  private roads?: THREE.DataArrayTexture;
+  readonly nearField: NearField;
   private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
     format: THREE.RedFormat,
     type: THREE.UnsignedByteType,
@@ -133,6 +137,11 @@ export class Terrain {
       snap: { value: 0.4 },
       rock: { value: new THREE.Color(ROCK) },
       shore: { value: new THREE.Color(SHORE) },
+      canopy: { value: null },
+      canopyLevels: { value: 0 },
+      roads: { value: null },
+      roadLevels: { value: 0 },
+      roadColours: { value: ROADS.map((hex) => new THREE.Color(hex)) },
       softness: { value: 0.08 },
       gradient: { value: 0.35 },
       eyeAltitude: { value: 0 },
@@ -162,6 +171,8 @@ export class Terrain {
     sky.renderOrder = -1;
     this.far.add(sky);
     this.shadowPass.add(quad(material(fullscreenVertex, shadowFragment, true)));
+    this.nearField = new NearField(u);
+    this.near.add(this.nearField.trees, this.nearField.buildings);
     for (const [scene, wedge] of [
       [this.far, geometry.far],
       [this.near, geometry.near],
@@ -205,6 +216,15 @@ export class Terrain {
     this.classes?.dispose();
     this.classes = arrayTexture(bake.classes, size, levels, THREE.RGFormat, 'RG8');
     u.classes.value = this.classes;
+    this.canopy?.dispose();
+    this.canopy = dtm_levels ? arrayTexture(bake.canopy, size, dtm_levels, THREE.RedFormat, 'R8') : undefined;
+    u.canopy.value = this.canopy ?? this.classes;
+    u.canopyLevels.value = dtm_levels;
+    this.roads?.dispose();
+    this.roads = arrayTexture(bake.roads, size, bake.meta.road_levels, THREE.RGFormat, 'RG8');
+    u.roads.value = this.roads;
+    u.roadLevels.value = bake.meta.road_levels;
+    this.nearField.set(bake);
     this.setColour(null, 0);
     this.shadowsStale = true;
   }
@@ -276,7 +296,8 @@ export class Terrain {
       mesh.visible = !span || Math.abs(wrap(centre - span.mid)) <= span.half + WEDGE_DEG / 2 + 1;
       if (mesh.visible) drawn++;
     }
-    return (drawn / 2) * this.perWedge;
+    const objects = this.nearField.trees.visible || this.nearField.buildings.visible ? this.nearField.triangles : 0;
+    return (drawn / 2) * this.perWedge + objects;
   }
 }
 

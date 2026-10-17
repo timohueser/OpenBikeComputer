@@ -25,6 +25,10 @@ uv run prototype/trail-view/bake.py hahnen
   `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
   zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m in 3 km requests.
 - Third-party photographs download to `_sources/photos/`. They are never committed.
+- The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
+  and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
+  to the nearest road edge. Trees stand within 1 km only where a DTM gives the canopy height
+  (GLO-30 minus the DTM on tree pixels), so a GLO-30-only place has none.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
 - The photographs come from the `peak-view-photos` fixture package in
@@ -50,6 +54,8 @@ For an iPhone on the same Wi-Fi, run `npm run dev -- --host` and open the printe
 - Red is the skyline read off the photograph, cyan is the skyline cast through the active surface.
 - "Light" sets the season (one day each, 2025) and the hour in the preset's time zone. The
   season also picks the Sentinel-2 quarter and the palette.
+- "trees and grass" and "buildings" switch the near field. Grass tufts are made in the page, on
+  grass and crop texels within 60 m.
 - "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
   light bands; "copy look JSON" copies the values.
 - "save side by side" and "save view" write PNGs to `~/.cache/obc/trail-view/shots/`, named

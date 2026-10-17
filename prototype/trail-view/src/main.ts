@@ -5,7 +5,7 @@ import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
-import { DECIDUOUS, ramps } from './palette';
+import { DECIDUOUS, foliage, ramps } from './palette';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
@@ -38,6 +38,8 @@ const state = {
   photoSkyline: true,
   castSkyline: true,
   peaks: true,
+  trees: true,
+  buildings: true,
   season: 'summer (15 Aug)',
   hour: 16,
   yaw: 0,
@@ -45,7 +47,7 @@ const state = {
   vfov: 60,
 };
 const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
-const readout = { sun: '–', colour: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
+const readout = { sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
@@ -69,7 +71,9 @@ async function select(id: string): Promise<void> {
   if (selecting !== id) return;
   const { meta } = bake;
   terrain.setBake(bake);
-  const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m);
+  const area = meta.size * meta.size;
+  const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
+  const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m, canopy);
   const glo30 = meta.dtm_levels
     ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.size, meta.half0_m, meta.eye_above_ground_m)
     : dtm;
@@ -92,7 +96,8 @@ async function select(id: string): Promise<void> {
     if (selecting !== id) return;
     Object.assign(align, { heading_deg: shot.heading_deg, pitch_deg: shot.pitch_deg, vfov_deg: photoVfov(shot), roll_deg: shot.roll_deg ?? 0 });
   }
-  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights and classes`;
+  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights, classes, roads, canopy, trees`;
+  readout.near = `${bake.trees.length / 4} trees, ${bake.buildings.length} buildings`;
   readout.dtm = meta.dtm_levels ? `${meta.dtm}, ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km` : 'none';
   state.yaw = meta.photo?.heading_deg ?? meta.heading ?? 0;
   state.pitch = meta.photo?.pitch_deg ?? meta.pitch ?? 0;
@@ -113,6 +118,8 @@ async function seasonChanged(): Promise<void> {
   const season = Object.keys(SEASONS).indexOf(state.season);
   const leaf = presets.find((p) => p.id === bake.meta.id)?.default_leaf ?? 'mixed';
   terrain.setPalette(ramps(season, DECIDUOUS[leaf]));
+  const { needle, broad, grass } = foliage(season);
+  terrain.nearField.setFoliage(needle, broad, season === 0 ? null : grass);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
   const colour = await quarters.get(season)!;
@@ -362,6 +369,14 @@ aligned.onChange(() => {
 });
 aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }, 'copy').name('copy camera JSON');
 gui.add(state, 'peaks').onChange(requestRender);
+gui.add(state, 'trees').name('trees and grass').onChange((on: boolean) => {
+  terrain.nearField.trees.visible = on;
+  requestRender();
+});
+gui.add(state, 'buildings').onChange((on: boolean) => {
+  terrain.nearField.buildings.visible = on;
+  requestRender();
+});
 const time = gui.addFolder('Light');
 time.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
 time.add(state, 'hour', 0, 24, 0.05).name('hour (local)').onChange(lightChanged);
@@ -387,6 +402,7 @@ facts.add(readout, 'limit').name('Peak View limit').listen().disable();
 facts.add(readout, 'peaks').name('peaks').listen().disable();
 facts.add(readout, 'bytes').name('download').listen().disable();
 facts.add(readout, 'colour').name('colour').listen().disable();
+facts.add(readout, 'near').name('near field').listen().disable();
 facts.add(readout, 'triangles').name('triangles').listen().disable();
 facts.add(readout, 'frame').name('frame time').listen().disable();
 facts.add({ measure }, 'measure').name('measure 60 frames');
