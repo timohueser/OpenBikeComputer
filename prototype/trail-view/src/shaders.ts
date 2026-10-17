@@ -571,7 +571,10 @@ void main() {
     // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
     vec2 along = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) : vec2(1.0, 0.0);
     float ribs = length(bedding.xy) > 0.01 ? 3.0 : 1.0;
-    vec3 cell = cells(vec2(dot(vWorld.xy, along) / ribs, dot(vWorld.xy, vec2(-along.y, along.x))), 7.0);
+    // A wobble of a couple of metres breaks the cells' straight edges into outcrop outlines.
+    vec2 wobble = 2.2 * (vec2(noise(vWorld.xy / 4.0), noise(vWorld.xy / 4.0 + 19.0)) - 0.5);
+    vec2 q = vWorld.xy + wobble;
+    vec3 cell = cells(vec2(dot(q, along) / ribs, dot(q, vec2(-along.y, along.x))), 7.0);
     float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y);
     vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
     // Close by, mapped bare rock is gravel between the slabs; the stones on it are models.
