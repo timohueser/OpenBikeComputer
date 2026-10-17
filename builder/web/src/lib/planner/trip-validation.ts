@@ -27,6 +27,7 @@ function point(value: unknown): value is RoutePoint {
             Array.isArray(c) && (coordinate(c) || (c.length === 3 && coordinate(c.slice(0, 2)) && finite(c[2]))))))
         && (value.anchor === undefined || coordinate(value.anchor))
         && (value.placeKind === undefined || typeof value.placeKind === 'string')
+        && (value.placeId === undefined || typeof value.placeId === 'string')
         && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
         && (value.turnaround === undefined || value.turnaround === true)
         && (value.note === undefined || typeof value.note === 'string')
