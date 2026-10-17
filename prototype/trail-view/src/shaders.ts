@@ -598,7 +598,7 @@ void main() {
     // Near the eye the pack's own bushes stand there instead. Slopes facing north (here, the
     // northern hemisphere) stay moister and carry more scrub than slopes facing the sun.
     float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0))
-      * (1.0 + clamp(4.0 * n.y, -0.5, 0.8))
+      * (1.0 + clamp(3.0 * n.y, -0.3, 0.6))
       * smoothstep(40.0, 70.0, length(vWorld.xy - cameraPosition.xy));
     // One round bush in a share of the cells, so bushes stand apart rather than merging.
     vec3 bush = cells(vWorld.xy, speckle.y);
@@ -696,6 +696,8 @@ ${COLOUR}
 uniform float tie;
 // Plants that grow only on moor (1) or only off it (-1); 0 grows anywhere.
 uniform float habitat;
+// What a model's colours are multiplied by: rocks take the region's rock colour.
+uniform vec3 recolour;
 in vec3 color;
 // x, y, height, heading.
 in vec4 tree;
@@ -711,7 +713,7 @@ void main() {
   vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + vec3(turn * position.xy, position.z) * tree.z;
   vNormal = vec3(turn * normal.xy, normal.z);
   vShadow = shadowAt(p);
-  vAlbedo = color * tint;
+  vAlbedo = color * tint * recolour;
   // A plant takes its hue from the ground it stands on, so a meadow of tufts reads as the meadow;
   // its own colour keeps only the shading from root to tip.
   if (tie > 0.0 || habitat != 0.0) {

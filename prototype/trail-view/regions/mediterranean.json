@@ -18,7 +18,7 @@
   "roads": ["#8a8680", "#a19c92", "#cdbf9f", "#c2ad88", "#a9a070", "#c7b591"],
   "speckle": { "colour": "#57583a", "share": 0.45, "size_m": 2.5 },
   "hazeKm": 80,
-  "outcrops": 0.4,
+  "outcrops": 0.3,
   "rock": "#d3c6a6",
   "sea": { "deep": "#1b4f8a", "shallow": "#3aa4b4" },
   "grade": { "shadow": [-0.002, 0.0, 0.006], "light": [0.012, 0.006, -0.006], "saturation": 1.04 },

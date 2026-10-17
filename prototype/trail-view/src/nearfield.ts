@@ -14,7 +14,7 @@ import { lighthouse, ruin } from './models/landmarks';
 import { HEDGE, STONE } from './palette';
 import { plant, type PlantName } from './models/plants';
 import { animal, type AnimalName } from './models/animals';
-import { rock, type RockName } from './models/rocks';
+import { rock, ROCK_GREY, type RockName } from './models/rocks';
 import { random } from './models/shape';
 import { LOD_RANGE_M, tree, type Lod, type Season, type TreeName } from './models/trees';
 import { buildingVertex, depthFragment, objectFragment, treeVertex } from './shaders';
@@ -35,7 +35,7 @@ const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share:
   heather: { on: [CLASS.shrub, CLASS.moss, CLASS.bare], height: [0.2, 0.4], share: 0.4, habitat: 1 },
   'heather-bloom': { on: [CLASS.shrub, CLASS.moss], height: [0.2, 0.4], share: 0.15, habitat: 1 },
   huckleberry: { on: [CLASS.tree], height: [0.4, 0.8], share: 0.25 },
-  garrigue: { on: [CLASS.shrub, CLASS.grass, CLASS.bare], height: [0.35, 0.8], share: 0.11, own: true },
+  garrigue: { on: [CLASS.shrub, CLASS.grass, CLASS.bare], height: [0.35, 0.8], share: 0.16, own: true },
   esparto: { on: [CLASS.grass, CLASS.bare, CLASS.shrub], height: [0.4, 0.8], share: 0.4, own: true },
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
@@ -314,7 +314,7 @@ export class NearField {
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
-  private readonly materials: Record<'tree' | 'plant' | 'ownPlant' | 'moorPlant' | 'lushPlant' | 'building', THREE.ShaderMaterial>;
+  private readonly materials: Record<'tree' | 'rock' | 'plant' | 'ownPlant' | 'moorPlant' | 'lushPlant' | 'building', THREE.ShaderMaterial>;
   /** Set when the sun, the spot, the season or the surface moved. */
   shadowsStale = true;
   private readonly shadowMap = new THREE.WebGLRenderTarget(SHADOW_SIZE, SHADOW_SIZE, { depthTexture: depthMap() });
@@ -332,12 +332,13 @@ export class NearField {
         vertexShader,
         fragmentShader: objectFragment,
         // The shared uniform objects themselves, so light and look reach every object.
-        uniforms: { ...uniforms, tie: { value: tie }, habitat: { value: habitat } },
+        uniforms: { ...uniforms, tie: { value: tie }, habitat: { value: habitat }, recolour: { value: new THREE.Vector3(1, 1, 1) } },
         // Thin leaves and blades show both faces; their normals stay as the model lifts them.
         side: THREE.DoubleSide,
       });
     this.materials = {
       tree: material(treeVertex),
+      rock: material(treeVertex),
       plant: material(treeVertex, 0.85),
       ownPlant: material(treeVertex, 0.35),
       moorPlant: material(treeVertex, 0.35, 1),
@@ -349,6 +350,8 @@ export class NearField {
   /** Place the bake's trees, shrubs, plants and buildings with the region's pack; setSeason draws them. */
   set(bake: Bake, region: Region): void {
     const { pack, look } = region;
+    const [stone, grey] = [new THREE.Color(look.rock), new THREE.Color(ROCK_GREY)];
+    this.materials.rock.uniforms.recolour.value.set(stone.r / grey.r, stone.g / grey.g, stone.b / grey.b);
     const { size, half0_m, eye_m } = bake.meta;
     const px = (2 * half0_m) / size;
     const texel = (x: number, y: number) => Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px);
@@ -572,7 +575,7 @@ export class NearField {
       );
       const habitat = what === 'plant' && !this.placedByMap ? GROUND[name as PlantName].habitat : undefined;
       const own = what === 'plant' && GROUND[name as PlantName].own;
-      const material = what !== 'plant' ? this.materials.tree : own ? this.materials.ownPlant
+      const material = what === 'rock' ? this.materials.rock : what !== 'plant' ? this.materials.tree : own ? this.materials.ownPlant
         : habitat === 1 ? this.materials.moorPlant : habitat === -1 ? this.materials.lushPlant : this.materials.plant;
       const mesh = new THREE.Mesh(forest(model, instances), material);
       mesh.frustumCulled = false;
