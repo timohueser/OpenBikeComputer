@@ -51,6 +51,8 @@ const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
 const ROCK_RADIUS_M = 400;
 const ROCK_SPACING_M = 4;
 const ROCK_HEIGHT_M: [number, number] = [0.25, 1.3];
+/** Rocks this near would fill the view; small stones may lie closer. */
+const ROCK_CLEAR_M = 10;
 /** Habitats of open ground: a fine land cover map that says so overrules a WorldCover tree pixel. */
 const TREELESS = new Set<Habitat>(['rock', 'heath', 'bog', 'bracken', 'rough', 'pasture', 'sand', 'saltmarsh']);
 /** Herds graze within this many metres, each spread over HERD_SPREAD_M; an animal stands this tall. */
@@ -394,7 +396,7 @@ export class NearField {
         for (let x = -ROCK_RADIUS_M; x < ROCK_RADIUS_M; x += ROCK_SPACING_M) {
           const [rx, ry] = [x + (rand() - 0.5) * ROCK_SPACING_M, y + (rand() - 0.5) * ROCK_SPACING_M];
           const d = Math.hypot(rx, ry);
-          if (d > ROCK_RADIUS_M || d < CLEAR_M || !ROUGH.has(classAt(rx, ry)) || this.offGround(bake, rx, ry, px)) continue;
+          if (d > ROCK_RADIUS_M || d < ROCK_CLEAR_M || !ROUGH.has(classAt(rx, ry)) || this.offGround(bake, rx, ry, px)) continue;
           const slope = Math.hypot(h(rx + 3, ry) - h(rx - 3, ry), h(rx, ry + 3) - h(rx, ry - 3)) / 6;
           const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
           const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;

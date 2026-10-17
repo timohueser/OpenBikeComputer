@@ -292,8 +292,9 @@ def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work
 def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
     half = HALF0_M * 2**k
     px = 2 * half / SIZE
-    # Upsampling 30 m cells needs interpolation; downsampling keeps each summit with max.
-    resampling = "bilinear" if px < GLO30_PX_M else "max"
+    # Upsampling 30 m cells needs interpolation, cubic so the cells do not show as facets;
+    # downsampling keeps each summit with max.
+    resampling = "cubic" if px < GLO30_PX_M else "max"
     # COG overviews are averaged, which flattens summits; past k = 5 (156 m px) that costs
     # under 0.03° and saves reading full-resolution remote tiles.
     heights = warp(glo30_tiles(bbox, download=k <= 5), frame, half, resampling, overviews=k > 5, work=work)[0]
@@ -598,6 +599,17 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + raise_m[rim]))
     out[sea] = np.minimum(heights[sea], 0.0)
     return out
+
+
+def sharpen_relief(heights: np.ndarray, half: float, rule: dict) -> np.ndarray:
+    """GLO-30 heights with the relief finer than its 30 m cells brought back by an unsharp mask:
+    ridges stand sharper and gullies cut deeper, by the region's amount of the difference from the
+    mean over radius_m. Only where a texel is finer than the radius."""
+    px = 2 * half / SIZE
+    r = round(rule["radius_m"] / px)
+    if r < 3 or rule["amount"] <= 0:
+        return heights
+    return heights + rule["amount"] * (heights - box_mean(heights, r))
 
 
 def sharpen_summits(heights: np.ndarray, summits: list, half: float, rule: dict) -> np.ndarray:
@@ -1019,6 +1031,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, "glo30", len(blob)))
             classes = class_level(k, frame, bbox, heights, work)
             if heights is glo30:
+                heights = sharpen_relief(heights, half, region["relief"])
                 heights = sharpen_summits(heights, summits, half, region["summits"])
                 heights = sharpen_coast(heights, classes, half, region["cliffs"])
                 if k == 0:
