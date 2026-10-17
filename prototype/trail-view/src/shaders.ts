@@ -606,7 +606,7 @@ void main() {
     albedo = mix(mix(albedo, stone * 0.92, 0.45 * rocky), mix(albedo, face, slab), near);
     // Each slab is a facet of its own tilt, so outcrops catch the light and throw their own shade.
     vec2 tilt = vec2(cell.z, fract(cell.x * 7.13)) - 0.5;
-    n = normalize(n + vec3(0.9 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
+    n = normalize(n + vec3(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
   // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
   vec3 face = (rockLevels > 0.0 ? stone : cliffRock) * strata;

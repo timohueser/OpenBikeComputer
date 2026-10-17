@@ -16,7 +16,7 @@
   },
   "snap": 0.75,
   "hazeKm": 30,
-  "outcrops": 0.6,
+  "outcrops": 0.4,
   "rock": "#c4bdad",
   "sea": { "deep": "#1b4f8a", "shallow": "#3aa4b4" },
   "grade": {
@@ -25,7 +25,7 @@
    "saturation": 1.04
   },
   "weather": {
-   "sunny": { "cover": 0.08, "zenith": "#6a8fc6", "horizon": "#cbd3d6", "grey": 0.25 }
+   "sunny": { "cover": 0.12, "zenith": "#4a7fc8", "horizon": "#b8cde0", "grey": 0.1 }
   }
  }
 }
