@@ -66,6 +66,10 @@ interface Broadleaf extends Bark {
   crown: [number, number, number, number];
   /** How far the top is blown over towards +x, in tree heights. */
   sweep?: number;
+  /** An open crown of separate flat puffs on lifted branches, as on a pine, instead of a dome. */
+  open?: true;
+  /** Trunks leaning out from one foot. */
+  stems?: number;
   leaves: Record<Season, Ramp | 'bare'>;
   /** Bare twigs: near trees show limbs in this colour, far ones a haze of it. */
   twigs: Ramp;
@@ -271,6 +275,42 @@ const TREES = {
     // Gorse flowers a little in every month and floods yellow in spring.
     flecks: { winter: ['#f2c230', 0.25], spring: ['#f6c62c', 0.6], summer: ['#f2c230', 0.2], autumn: ['#f2c230', 0.12] },
   },
+  'aleppo-pine': {
+    form: 'broadleaf',
+    name: 'Aleppo pine',
+    fork: 0.5,
+    crown: [0.76, 0.42, 0.42, 0.26],
+    open: true,
+    // A bent, leaning trunk; it takes a random heading like any other tree.
+    sweep: 0.22,
+    trunk: 0.035,
+    flare: 1.4,
+    bark: ['#5a4038', '#8a6a5c'],
+    leaves: {
+      winter: ['#46573f', '#677a58', '#94a67c'],
+      spring: ['#4a5e42', '#6f8460', '#a8bb88'],
+      summer: ['#4a5c42', '#6d825e', '#a3b585'],
+      autumn: ['#48593f', '#6b7f5b', '#9eaf80'],
+    },
+    twigs: ['#5a4038', '#7a5a4c', '#8a6a5c'],
+  },
+  'holm-oak': {
+    form: 'broadleaf',
+    name: 'Holm oak',
+    fork: 0.24,
+    crown: [0.56, 0.46, 0.46, 0.38],
+    stems: 3,
+    trunk: 0.04,
+    flare: 1.4,
+    bark: ['#3e3a35', '#5e5850'],
+    leaves: {
+      winter: ['#26301e', '#3a4a2a', '#5a6a40'],
+      spring: ['#29381f', '#3f542b', '#6c8646'],
+      summer: ['#25331d', '#3a4e29', '#5f7740'],
+      autumn: ['#26321e', '#3b4d2a', '#5e7240'],
+    },
+    twigs: ['#3e3a35', '#5e5850', '#7a736a'],
+  },
 } satisfies Record<string, Tree>;
 
 export type TreeName = keyof typeof TREES;
@@ -383,6 +423,21 @@ function lumps(count: number, rand: () => number): { at: THREE.Vector3; r: numbe
   return out;
 }
 
+/**
+ * An open crown in its own frame, radius 1: a puff on top and smaller ones around it, with sky
+ * between. More puffs are smaller; fewer huddle in, as a far tree has no limbs to hold them.
+ */
+function puffs(count: number, rand: () => number): { at: THREE.Vector3; r: number }[] {
+  const out = [{ at: v3(0.1, 0, 0.5), r: 0.5 }];
+  const ring = count - 1;
+  for (let k = 0; k < ring; k++) {
+    const a = (k / ring) * 2 * Math.PI + rand() * 0.6;
+    const d = Math.min(1, ring / 5) * (0.62 + 0.25 * rand());
+    out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), -0.5 + 0.9 * rand()), r: Math.min(1, Math.sqrt(5 / ring)) * (0.32 + 0.1 * rand()) });
+  }
+  return out;
+}
+
 /** Dots on `share` of the vertices, fewer underneath. Far away an even tint, where dots would flicker. */
 function fleck(p: THREE.Vector3, n: THREE.Vector3, share: number, lod: Lod, seed: number): number {
   const dot = hash(p, seed) < share ? 0.6 + 0.4 * smooth(-0.5, 0.5, n.z) : 0;
@@ -409,9 +464,17 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
       .lerp(tip, 0.7 * smooth(0.2, 0.9, n.z) * smooth(-0.2, 0.8, p.z));
     return flecks ? c.lerp(hex(flecks[0]), fleck(p, n, flecks[1], lod, seed)) : c;
   };
-  const crown = lumps(count, rand);
+  const crown = spec.open ? puffs(count, rand) : lumps(count, rand);
   const parts: THREE.BufferGeometry[] = [];
-  if (spec.trunk) parts.push(trunk(spec, spec.fork + 0.3 * rz, lod, seed));
+  // An open crown's trunk runs up into its top puff, which no limb reaches.
+  const top = spec.open ? cz + 0.3 * rz : spec.fork + 0.3 * rz;
+  // A far tree's stems hide under its crown.
+  const stems = lod < 2 ? (spec.stems ?? 1) : 1;
+  for (let s = 0; spec.trunk && s < stems; s++) {
+    const a = (s / stems) * 2 * Math.PI;
+    const lean = stems > 1 ? v3(0.3 * Math.cos(a), 0.3 * Math.sin(a), 1).normalize() : v3(0, 0, 1);
+    parts.push(place(trunk(spec, top, lod, seed + s), { quat: new THREE.Quaternion().setFromUnitVectors(v3(0, 0, 1), lean) }));
+  }
   if (!(bare && lod === 0)) {
     crown.forEach(({ at, r }, k) => {
       // Each lump a little lighter or darker, so the crown does not read as one blob.
@@ -420,14 +483,15 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
       parts.push(place(geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
     });
   }
-  if (spec.trunk && lod === 0) {
+  // An open crown keeps its limbs a level further out, so its puffs never float.
+  if (spec.trunk && (lod === 0 || (spec.open && lod === 1))) {
     // Limbs run from the fork into the outer lumps; bare ones end in twigs.
     const [foot, bole] = spec.bark.map(hex);
     const [, twig, twigTip] = ramp(spec.twigs);
     const fork: Vec = [0, 0, spec.fork];
     for (const { at, r } of crown.slice(1)) {
       const end = toTree(at.clone().multiplyScalar(bare ? 1 : 0.8));
-      parts.push(limb(fork, end.toArray(), spec.trunk * 0.45, (p) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z)), 0, 6));
+      parts.push(limb(fork, end.toArray(), spec.trunk * 0.45, (p) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z)), 0, lod ? 4 : 6));
       if (!bare) continue;
       for (let k = 0; k < 3; k++) {
         const a = rand() * Math.PI * 2;
