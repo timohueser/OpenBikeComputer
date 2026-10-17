@@ -11,9 +11,9 @@ import { hash, hex, lathe, limb, lump, merge, paint, place, random, smooth, soft
 export const SEASONS = ['winter', 'spring', 'summer', 'autumn'] as const;
 export type Season = (typeof SEASONS)[number];
 
-/** 0 within 60 m, 1 within 300 m, 2 out to 1 km. */
+/** 0 within 40 m, 1 within 200 m, 2 out to 1 km. */
 export type Lod = 0 | 1 | 2;
-export const LOD_RANGE_M = [60, 300, 1000] as const;
+export const LOD_RANGE_M = [40, 200, 1000] as const;
 
 /** Segments around a part, spline rows per tier, conifer tiers and broadleaf crown lumps. */
 const DETAIL = [

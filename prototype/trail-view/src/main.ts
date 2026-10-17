@@ -5,7 +5,9 @@ import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
-import { DECIDUOUS, foliage, ramps } from './palette';
+import { KITS, type KitName } from './models/kits';
+import { SEASONS as SEASON_NAMES } from './models/trees';
+import { DECIDUOUS, ramps } from './palette';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
@@ -58,6 +60,8 @@ const glo30Only = () => !loaded?.bake.meta.dtm_levels || state.surface === GLO30
 const active = <T>(pair: { dtm: T; glo30: T }) => (glo30Only() ? pair.glo30 : pair.dtm);
 const photoLocked = () => Boolean(state.photoCamera && loaded?.bake.meta.photo && photo.naturalWidth);
 
+const presetOf = (id: string) => presets.find((p) => p.id === id)!;
+
 let selecting = '';
 async function select(id: string): Promise<void> {
   selecting = id;
@@ -67,7 +71,7 @@ async function select(id: string): Promise<void> {
   const bake = await loadBake(id);
   if (selecting !== id) return;
   const { meta } = bake;
-  terrain.setBake(bake);
+  terrain.setBake(bake, KITS[presetOf(id).kit as KitName]);
   const area = meta.size * meta.size;
   const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
   const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m, canopy);
@@ -113,10 +117,8 @@ async function seasonChanged(): Promise<void> {
   if (!loaded) return;
   const { bake } = loaded;
   const season = Object.keys(SEASONS).indexOf(state.season);
-  const leaf = presets.find((p) => p.id === bake.meta.id)?.default_leaf ?? 'mixed';
-  terrain.setPalette(ramps(season, DECIDUOUS[leaf]));
-  const { needle, broad, grass } = foliage(season);
-  terrain.nearField.setFoliage(needle, broad, season === 0 ? null : grass);
+  terrain.setPalette(ramps(season, DECIDUOUS[presetOf(bake.meta.id).default_leaf]));
+  terrain.nearField.setSeason(SEASON_NAMES[season]);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
   const colour = await quarters.get(season)!;
@@ -139,7 +141,7 @@ function surfaceChanged(): void {
 function lightChanged(): void {
   if (!loaded) return;
   const { lat, lon, id } = loaded.bake.meta;
-  const timezone = presets.find((p) => p.id === id)?.tz ?? 'UTC';
+  const timezone = presetOf(id).tz;
   const light = lightAt(lat, lon, SEASONS[state.season], state.hour, timezone);
   terrain.setLight(light);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
@@ -343,10 +345,22 @@ function measure(): void {
   requestAnimationFrame(tick);
 }
 
-const gui = new GUI({ title: 'Trail View' });
-gui.add(state, 'preset', presets.map((p) => p.id)).onChange(select);
-gui.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
-const shot = gui.addFolder('Photo');
+const gui = new GUI({ title: 'Trail View', width: 340 });
+const spots = Object.fromEntries(presets.map((p) => [`${KITS[p.kit as KitName].name} · ${p.name}`, p.id]));
+gui.add(state, 'preset', spots).name('spot').onChange(select);
+gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
+gui.add(state, 'hour', 0, 24, 0.05).name('time of day').onChange(lightChanged);
+gui.add(state, 'trees').name('trees and plants').onChange((on: boolean) => {
+  terrain.nearField.trees.visible = on;
+  requestRender();
+});
+gui.add(state, 'buildings').onChange((on: boolean) => {
+  terrain.nearField.buildings.visible = on;
+  requestRender();
+});
+gui.add(state, 'peaks').onChange(requestRender);
+const shot = gui.addFolder('Photo').close();
+shot.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
 shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
 shot.add(state, 'wipe', 0, 1, 0.01).onChange(requestRender);
 shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
@@ -365,18 +379,6 @@ aligned.onChange(() => {
   requestRender();
 });
 aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }, 'copy').name('copy camera JSON');
-gui.add(state, 'peaks').onChange(requestRender);
-gui.add(state, 'trees').name('trees and grass').onChange((on: boolean) => {
-  terrain.nearField.trees.visible = on;
-  requestRender();
-});
-gui.add(state, 'buildings').onChange((on: boolean) => {
-  terrain.nearField.buildings.visible = on;
-  requestRender();
-});
-const time = gui.addFolder('Light');
-time.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
-time.add(state, 'hour', 0, 24, 0.05).name('hour (local)').onChange(lightChanged);
 const style = gui.addFolder('Look').close();
 style.add(look, 'snap', 0, 1, 0.01).name('palette snap');
 style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)');
@@ -389,7 +391,7 @@ style.onChange(() => {
   requestRender();
 });
 style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, 'copy').name('copy look JSON');
-const facts = gui.addFolder('Readout');
+const facts = gui.addFolder('Readout').close();
 facts.add(readout, 'sun').listen().disable();
 facts.add(readout, 'dtm').name('DTM').listen().disable();
 facts.add(readout, 'eye').listen().disable();
@@ -402,11 +404,12 @@ facts.add(readout, 'colour').name('colour').listen().disable();
 facts.add(readout, 'near').name('near field').listen().disable();
 facts.add(readout, 'triangles').name('triangles').listen().disable();
 facts.add(readout, 'frame').name('frame time').listen().disable();
-facts.add({ measure }, 'measure').name('measure 60 frames');
-gui.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
-gui.add({ saveView }, 'saveView').name('save view');
+const tools = gui.addFolder('Tools').close();
+tools.add({ measure }, 'measure').name('measure 60 frames');
+tools.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
+tools.add({ saveView }, 'saveView').name('save view');
 // For scripted checks from the console.
-Object.assign(window, { trailView: { gui, state, look, align, render, layout, loaded: () => loaded } });
+Object.assign(window, { trailView: { gui, state, look, align, render, layout, terrain, loaded: () => loaded } });
 
 terrain.setLook(look);
 select(state.preset).catch((error: Error) => (status.textContent = error.message));

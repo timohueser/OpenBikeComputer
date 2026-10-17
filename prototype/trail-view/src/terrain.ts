@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import type { Bake } from './bake';
 import type { Light } from './light';
+import type { Kit } from './models/kits';
 import { NearField } from './nearfield';
 import { ROADS, ROCK, SHORE } from './palette';
 import { deriveFragment, fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
@@ -150,6 +151,8 @@ export class Terrain {
       roadLevels: { value: 0 },
       roadColours: { value: ROADS.map((hex) => new THREE.Color(hex)) },
       normals: { value: null },
+      nearShadow: { value: null },
+      nearShadowMatrix: { value: new THREE.Matrix4() },
       deriveLevel: { value: 0 },
       waterMap: { value: null },
       waterLevels: { value: 0 },
@@ -201,7 +204,7 @@ export class Terrain {
   }
 
   /** Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced. */
-  setBake(bake: Bake): void {
+  setBake(bake: Bake, kit: Kit): void {
     const { size, levels, half0_m, dtm_levels } = bake.meta;
     const layers = [...bake.surface, ...bake.glo30];
     const data = new Uint16Array(size * size * layers.length);
@@ -248,7 +251,7 @@ export class Terrain {
       depthBuffer: false,
     });
     u.normals.value = this.normals.texture;
-    this.nearField.set(bake);
+    this.nearField.set(bake, kit);
     this.setColour(null, 0);
     this.shadowsStale = this.surfaceStale = true;
   }
@@ -273,12 +276,12 @@ export class Terrain {
     this.uniforms.glo30Only.value = glo30Only;
     this.uniforms.lift.value = lift;
     this.uniforms.eyeAltitude.value = eyeAltitude;
-    this.shadowsStale = this.surfaceStale = true;
+    this.shadowsStale = this.surfaceStale = this.nearField.shadowsStale = true;
   }
 
   setLight(light: Light): void {
     const u = this.uniforms;
-    if (!u.sunDir.value.equals(light.sun)) this.shadowsStale = true;
+    if (!u.sunDir.value.equals(light.sun)) this.shadowsStale = this.nearField.shadowsStale = true;
     u.sunDir.value.copy(light.sun);
     u.sunColour.value.copy(light.sunColour);
     u.ambient.value.copy(light.ambient);
@@ -304,6 +307,7 @@ export class Terrain {
    */
   shade(renderer: THREE.WebGLRenderer, camera: THREE.Camera): boolean {
     if (!this.texture || !this.normals) return false;
+    this.nearField.shade(renderer);
     if (this.surfaceStale) {
       this.surfaceStale = false;
       for (let k = 0; k < this.normals.depth; k++) {

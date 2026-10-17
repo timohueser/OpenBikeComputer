@@ -97,6 +97,8 @@ TREE = CLASSES.index(10)
 ROAD_WIDTHS = {"main": 4.5, "road": 3.0, "gravel": 1.75, "dirt": 1.5, "grass": 1.25, "path": 0.6}
 ROAD_REACH_M = 20.5
 LEAF = {"needleleaved": 1, "broadleaved": 2, "mixed": 3}
+# Tree heights where no DTM gives a canopy: hedgerow and garden trees.
+NO_CANOPY_M = (5.0, 9.0)
 # OSM water on k < WATER_LEVELS (±10 km), as coverage from a 4× finer grid: rivers and canals
 # narrower than a WorldCover pixel, and lakes. Full widths for a waterway without a width tag.
 # Beyond, WorldCover's water class carries what is wide enough to see.
@@ -439,20 +441,21 @@ def sample(level: np.ndarray, half: float, x, y):
 
 def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -> np.ndarray:
     """float32 x, y, height, type (0 conifer, 1 broadleaf) for every tree within TREE_RADIUS_M:
-    jittered on tree pixels, outside the road buffers and water, as tall as the canopy says."""
+    jittered on tree pixels, outside the road buffers and water, as tall as the canopy says.
+    GLO-30 alone cannot measure a canopy, so without a DTM trees stand NO_CANOPY_M tall."""
     rng = np.random.default_rng(1)
     grid = np.arange(-TREE_RADIUS_M, TREE_RADIUS_M, TREE_SPACING_M) + TREE_SPACING_M / 2
     x, y = (axis.ravel() + rng.uniform(-0.4, 0.4, axis.size) * TREE_SPACING_M for axis in np.meshgrid(grid, grid))
     half = HALF0_M
     edge = sample(roads0, half, x, y)[:, 0] / 10 - 5
-    canopy = sample(canopy0, half, x, y)
+    canopy = sample(canopy0, half, x, y) if canopy0 is not None else rng.uniform(*NO_CANOPY_M, x.size)
     keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & (sample(classes0, half, x, y)[:, 0] == TREE)
             & (edge > 1.5) & (sample(water0, half, x, y) < 64) & (canopy > 3))
     x, y, canopy = x[keep], y[keep], canopy[keep]
     leaf = sample(leaf0, half, x, y)
     leaf[leaf == 0] = LEAF[default_leaf]
     broad = np.where(leaf == 3, rng.random(leaf.size) < 0.5, leaf == 2)
-    height = np.clip(canopy, 5, 45) * rng.uniform(0.8, 1.15, canopy.size)
+    height = np.clip(canopy, NO_CANOPY_M[0], 45) * rng.uniform(0.8, 1.15, canopy.size)
     return np.stack([x, y, height, broad.astype(np.float32)], axis=-1).astype(np.float32)
 
 
@@ -484,9 +487,10 @@ def overpass(query: str) -> str:
         try:
             with urllib.request.urlopen(request, timeout=900) as response:
                 return response.read().decode()
-        except urllib.error.HTTPError as error:
-            # Overpass answers 429 and 502 to 504 when it is busy.
-            if error.code not in (429, 502, 503, 504) or attempt == 3:
+        except (urllib.error.HTTPError, TimeoutError) as error:
+            # Overpass answers 429 and 502 to 504, or not at all, when it is busy.
+            busy = isinstance(error, TimeoutError) or error.code in (429, 502, 503, 504)
+            if not busy or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
 
@@ -637,21 +641,19 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, f"s2-q{q}", len(blob)))
             print(f"  colour level {k}", flush=True)
 
-    # Trees stand only where a DTM says how tall the canopy is: GLO-30 alone cannot.
-    trees = scatter_trees(classes0, road0, water0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed")) \
-        if dtm else np.zeros((0, 4), np.float32)
+    trees = scatter_trees(classes0, road0, water0, canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed"))
     blob = pack(trees)
     (out / "trees.bin.gz").write_bytes(blob)
     sizes.append(("-", "trees", len(blob)))
     buildings = []
     for way in ways:
         ring = metres(way)
-        if "building" not in way["tags"] or len(ring) < 4 or np.abs(ring).max() > BUILDING_HALF_M:
+        tags = way["tags"]
+        if "building" not in tags or len(ring) < 4 or np.abs(ring).max() > BUILDING_HALF_M:
             continue
-        levels = elevation_tag(way["tags"].get("building:levels", ""))
-        height = elevation_tag(way["tags"].get("height", "")) or (3 * levels if levels else 6.0)
         base = float(sample(heights0, HALF0_M, ring[:, 0], ring[:, 1]).min())
-        buildings.append([round(base, 1), round(height, 1), [round(float(v), 1) for v in ring[:-1].ravel()]])
+        buildings.append([round(base, 1), tags["building"], elevation_tag(tags.get("building:levels", "")),
+                          elevation_tag(tags.get("height", "")), [round(float(v), 1) for v in ring[:-1].ravel()]])
     blob = json.dumps(buildings, separators=(",", ":")).encode()
     (out / "buildings.json").write_bytes(blob)
     sizes.append(("-", "buildings", len(blob)))

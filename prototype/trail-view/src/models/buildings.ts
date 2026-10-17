@@ -35,6 +35,8 @@ export interface Footprint {
   /** Roof pitch in degrees; by default a seeded value in the style's range. */
   pitch?: number;
   seed?: number;
+  /** Walls without windows and doors, for a building too far away to show them. */
+  plain?: boolean;
 }
 
 interface Kind {
@@ -117,7 +119,7 @@ function cuts(values: number[], end: number): number[] {
   return [0, ...inside.filter((v, i) => i === 0 || v - inside[i - 1] > 1e-3), end];
 }
 
-export function building(kind: BuildingKind, style: BuildingStyle, { width, depth, wall, pitch, seed = 1 }: Footprint): THREE.BufferGeometry {
+export function building(kind: BuildingKind, style: BuildingStyle, { width, depth, wall, pitch, seed = 1, plain = false }: Footprint): THREE.BufferGeometry {
   const k = KINDS[kind];
   const rand = random(seed);
   const pick = (list: string[]) => hex(list[Math.floor(rand() * list.length)]);
@@ -152,13 +154,13 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
     const doorAt = n % 2 ? windows[(n - 1) / 2] : len / 2;
     const shutterHalf = ww / 2 + (shutters ? 0.45 * ww : 0);
     const edges = windows.flatMap((c) => [c - ww / 2, c + ww / 2, c - shutterHalf, c + shutterHalf]);
-    const us = cuts(front ? [...edges, doorAt - k.door / 2, doorAt + k.door / 2] : edges, len);
+    const us = plain ? [0, len] : cuts(front ? [...edges, doorAt - k.door / 2, doorAt + k.door / 2] : edges, len);
     const levels = Array.from({ length: storeys }, (_, s) => [s * storey, (s + sill) * storey, (s + lintel) * storey]).flat();
-    const zs = cuts([PLINTH, ...levels], height);
+    const zs = cuts(plain ? [PLINTH, storey] : [PLINTH, ...levels], height);
     const cell = (u: number, z: number) => {
       const s = Math.min(storeys - 1, Math.floor(z / storey));
-      const opening = z > (s + sill) * storey && z < (s + lintel) * storey;
-      if (front && Math.abs(u - doorAt) < k.door / 2 && z < lintel * storey) return door;
+      const opening = !plain && z > (s + sill) * storey && z < (s + lintel) * storey;
+      if (!plain && front && Math.abs(u - doorAt) < k.door / 2 && z < lintel * storey) return door;
       if (opening && windows.some((c) => Math.abs(u - c) < ww / 2)) return glass;
       if (opening && windows.some((c) => Math.abs(u - c) < shutterHalf)) return shutter;
       if (z < PLINTH) return plinth;

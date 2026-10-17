@@ -27,8 +27,8 @@ uv run prototype/trail-view/bake.py hahnen
 - Third-party photographs download to `_sources/photos/`. They are never committed.
 - The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
-  to the nearest road edge. Trees stand within 1 km only where a DTM gives the canopy height
-  (GLO-30 minus the DTM on tree pixels), so a GLO-30-only place has none.
+  to the nearest road edge. Trees stand on tree pixels within 1 km, as tall as the canopy (GLO-30
+  minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees stand 5 to 9 m.
 - Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
   their `width` tag or a default, and water areas. The water levels hold the share of each pixel
   under water, from a 4× finer grid. Streams count only off tree pixels.
@@ -49,19 +49,21 @@ cd prototype/trail-view && npm ci && npm run dev
 ```
 
 Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.json` runs the same.
-For an iPhone on the same Wi-Fi, run `npm run dev -- --host` and open the printed network address.
+`http://localhost:5180/models.html` shows every model of a kit at each level of detail.
 
+- "spot" picks a place by region, "season" one day of the year, "time of day" the local hour.
 - Drag to look, scroll to change the field of view. Either one leaves the photo camera.
-- "photo camera" frames the view like the photograph; "wipe" moves the border between the two.
-  "align camera" moves a photograph's camera; "copy camera JSON" copies it for `presets.json`.
-- Red is the skyline read off the photograph, cyan is the skyline cast through the active surface.
-- "Light" sets the season (one day each, 2025) and the hour in the preset's time zone. The
-  season also picks the Sentinel-2 quarter and the palette.
-- "trees and grass" and "buildings" switch the near field. Grass tufts are made in the page, on
-  grass and crop texels within 60 m.
+- "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border between
+  the two. "align camera" moves a photograph's camera; "copy camera JSON" copies it for
+  `presets.json`. Red is the skyline read off the photograph, cyan the skyline cast through the
+  active surface.
+- The season (one day each, 2025) also picks the Sentinel-2 quarter and the palette.
+- The near field comes from the spot's kit in `src/models/kits.ts`: trees by leaf type and
+  elevation, ground plants by land cover within 60 m, and houses fitted to OSM footprints by
+  their `building` value and size. Ground plants take their hue from the ground under them.
 - "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
   light bands; "copy look JSON" copies the values.
-- "save side by side" and "save view" write PNGs to `~/.cache/obc/trail-view/shots/`, named
+- "Tools": "save side by side" and "save view" write PNGs to `~/.cache/obc/trail-view/shots/`, named
   with the preset, the surface, the quarter and the clock time.
 
 ## What will bite you

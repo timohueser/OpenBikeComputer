@@ -45,8 +45,8 @@ export interface Peak {
   name: string;
 }
 
-/** A footprint in metres from the eye, its base above sea level and its height. */
-export type Building = [base: number, height: number, ring: number[]];
+/** A footprint in metres from the eye: its lowest ground above sea level, the OSM building value, levels and height tags. */
+export type Building = [base: number, building: string, levels: number | null, height: number | null, ring: number[]];
 
 export interface Bake {
   meta: Meta;

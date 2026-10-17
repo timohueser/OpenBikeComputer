@@ -277,6 +277,20 @@ uniform float eyeAltitude;
 uniform float hazeKm;
 uniform float hazeHeight;
 uniform float mistTop;
+uniform sampler2DShadow nearShadow;
+uniform mat4 nearShadowMatrix;
+
+// Trees and buildings near the eye cast into a depth map from the sun. Outside it, 1. The
+// lookup starts a quarter metre off the surface, so a face does not shadow itself, and the GPU
+// blends the four comparisons around it, so an edge is soft rather than stepped.
+float nearShadowAt(vec3 world, vec3 n) {
+  vec4 q = nearShadowMatrix * vec4(world + 0.25 * n, 1.0);
+  vec3 c = q.xyz / q.w * 0.5 + 0.5;
+  float reach = max(abs(c.x - 0.5), abs(c.y - 0.5)) * 2.0;
+  if (reach > 1.0 || c.z > 1.0) return 1.0;
+  // About a tenth of a metre of bias, over the map's 4 km of depth.
+  return mix(1.0, texture(nearShadow, vec3(c.xy, c.z - 0.000025)), smoothstep(1.0, 0.9, reach));
+}
 
 // Three soft bands of sunlight, with some of the smooth term kept so a high sun still shows
 // relief. A face out of the sun keeps the cool sky light, never black; open is how much of
@@ -345,7 +359,8 @@ void main() {
   float steep = 1.0 - smoothstep(0.766, 0.809, n.z);
   vec3 albedo = mix(g.albedo, rock, steep * (1.0 - g.tree) * (1.0 - g.road));
   albedo = mix(albedo, ramps[18], g.snow);
-  vec3 c = lightUp(albedo, n, vShadow, open);
+  float shadow = vShadow * nearShadowAt(vWorld, n);
+  vec3 c = lightUp(albedo, n, shadow, open);
 
   // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
   // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
@@ -355,20 +370,26 @@ void main() {
   vec3 mirrored = reflect(dir, up);
   float fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
   vec3 body = mix(ramps[21], shore, 1.0 - smoothstep(0.5, 0.8, g.water)) * (ambient + 0.5 * sunColour * max(sunDir.z, 0.0));
-  vec3 water = mix(body, sky(mirrored), fresnel) + 4.0 * sunColour * vShadow * pow(max(dot(mirrored, sunDir), 0.0), 400.0);
+  vec3 water = mix(body, sky(mirrored), fresnel) + 4.0 * sunColour * shadow * pow(max(dot(mirrored, sunDir), 0.0), 400.0);
   c = mix(c, water, smoothstep(0.45, 0.55, g.water));
   colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
 }
 `;
 
-/** Instanced trees, a unit model scaled by each tree's height and stood on the bare ground. */
+/**
+ * Instanced trees and plants: a unit model turned to its heading, scaled by its height and stood
+ * on the bare ground, in its own vertex colours.
+ */
 export const treeVertex = /* glsl */ `
 ${HEIGHTS}
 ${SHADOW_AT}
-uniform vec3 foliage;
-uniform vec3 bark;
+${COLOUR}
+// How far a model takes its colour from the ground under it: 0 for trees.
+uniform float tie;
+in vec3 color;
+// x, y, height, heading.
 in vec4 tree;
-in float part;
+in float tint;
 out vec3 vWorld;
 out vec3 vNormal;
 out float vShadow;
@@ -376,10 +397,14 @@ out vec3 vAlbedo;
 
 void main() {
   vec2 p = tree.xy;
-  vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + position * tree.z;
-  vNormal = normal;
+  mat2 turn = mat2(cos(tree.w), sin(tree.w), -sin(tree.w), cos(tree.w));
+  vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + vec3(turn * position.xy, position.z) * tree.z;
+  vNormal = vec3(turn * normal.xy, normal.z);
   vShadow = shadowAt(p);
-  vAlbedo = part < 0.5 ? bark : foliage * (0.8 + 0.4 * tree.w);
+  vAlbedo = color * tint;
+  // A plant takes its hue from the ground it stands on, so a meadow of tufts reads as the meadow;
+  // its own colour keeps only the shading from root to tip.
+  if (tie > 0.0) vAlbedo = mix(vAlbedo, groundAt(p, 0.5).albedo * clamp(luma(color) / 0.3, 0.4, 1.6) * tint, tie);
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }
 `;
@@ -389,7 +414,7 @@ export const buildingVertex = /* glsl */ `
 ${SHADOW_AT}
 uniform float lift;
 uniform float curvature;
-in vec3 tint;
+in vec3 color;
 out vec3 vWorld;
 out vec3 vNormal;
 out float vShadow;
@@ -399,7 +424,7 @@ void main() {
   vWorld = position - vec3(0.0, 0.0, lift + curvature * dot(position.xy, position.xy));
   vNormal = normal;
   vShadow = shadowAt(position.xy);
-  vAlbedo = tint;
+  vAlbedo = color;
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }
 `;
@@ -414,7 +439,8 @@ in vec3 vAlbedo;
 out vec4 colour;
 
 void main() {
-  colour = vec4(finish(atmosphere(lightUp(vAlbedo, normalize(vNormal), vShadow, 1.0), vWorld)), 1.0);
+  vec3 n = normalize(vNormal);
+  colour = vec4(finish(atmosphere(lightUp(vAlbedo, n, vShadow * nearShadowAt(vWorld, n), 1.0), vWorld)), 1.0);
 }
 `;
 
@@ -442,6 +468,14 @@ void main() {
     + surfaceZ(k, p + vec2(0.0, wide)) + surfaceZ(k, p - vec2(0.0, wide));
   float open = clamp(1.0 - 1.5 * (0.25 * around - surfaceZ(k, p)) / wide, 0.6, 1.15);
   colour = vec4((east - west) / (2.0 * e), (north - south) / (2.0 * e), open, 1.0);
+}
+`;
+
+/** Depth only, for the near shadow map; the object's own vertex shader places it. */
+export const depthFragment = /* glsl */ `
+out vec4 colour;
+void main() {
+  colour = vec4(1.0);
 }
 `;
 
