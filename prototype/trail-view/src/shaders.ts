@@ -567,8 +567,8 @@ void main() {
   float rocky = outcrops * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor - 0.3, 0.0, 1.0)
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0));
-  // Mapped exposed rock is mostly slabs.
-  rocky = max(rocky, 0.6 * g.bare);
+  // Mapped exposed rock is outcrops in turf, about a third rock.
+  rocky = max(rocky, 0.35 * g.bare);
   if (rocky > 0.0) {
     // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
     vec2 along = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) : vec2(1.0, 0.0);
@@ -588,6 +588,9 @@ void main() {
     }
     float near = 1.0 - smoothstep(1.5, 4.0, footprint);
     albedo = mix(mix(albedo, stone * 0.92, 0.45 * rocky), mix(albedo, face, slab), near);
+    // Each slab is a facet of its own tilt, so outcrops catch the light and throw their own shade.
+    vec2 tilt = vec2(cell.z, fract(cell.x * 7.13)) - 0.5;
+    n = normalize(n + vec3(0.9 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
   // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
   vec3 face = stone * strata;
