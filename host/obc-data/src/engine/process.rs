@@ -1,10 +1,12 @@
 //! Running a step and measuring what it cost.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::Request;
@@ -19,15 +21,19 @@ thread_local! {
     /// The CPU milliseconds and the largest peak of the programs that the Rust step of this thread
     /// ran with [`run_child`].
     static CHILDREN: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// Set when the run of the Rust step of this thread stops.
+    static STOP: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
 /// Run a step in this process, on this thread. Its CPU time is the time of the whole process, so it
 /// is exact only while no other step runs. Its peak is the peak of the whole process so far, not
 /// the peak of the step: an upper bound, as the scheduler needs. The programs that the step runs
-/// with [`run_child`], such as Osmium, add their CPU time, and their peak when it is more.
-pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
+/// with [`run_child`], such as Osmium, add their CPU time, and their peak when it is more. When
+/// `stop` is set, [`check_stop`] on this thread fails.
+pub fn in_process(stop: Arc<AtomicBool>, step: impl FnOnce() -> Result<(), String>) -> Result<Usage, String> {
     let start = Instant::now();
     CHILDREN.set((0, 0));
+    STOP.set(Some(stop));
     let before = own_usage();
     step()?;
     let after = own_usage();
@@ -37,6 +43,15 @@ pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, St
         cpu_ms: before.zip(after).map(|(before, after)| after.0.saturating_sub(before.0) + cpu),
         peak_rss_bytes: after.map(|after| after.1.max(peak)),
     })
+}
+
+/// An error when the run of the Rust step of this thread stops. A long step calls it in its loops,
+/// so that a stop ends the step in seconds. It is one atomic load. Outside a step it never fails.
+pub fn check_stop() -> Result<(), String> {
+    match STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Relaxed))) {
+        true => Err("the run stopped".into()),
+        false => Ok(()),
+    }
 }
 
 /// Run `command` for the Rust step of this thread, and wait for it: its CPU time and its peak
@@ -212,8 +227,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_rust_step_has_the_peak_of_a_program_that_it_runs() {
-        let usage =
-            in_process(|| run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)).unwrap();
+        let usage = in_process(Arc::default(), || {
+            run_child(Command::new("python3").args(["-c", "b'x' * (600 << 20)"])).map(drop)
+        })
+        .unwrap();
         assert!(usage.peak_rss_bytes.unwrap() > 600 << 20, "{:?}", usage.peak_rss_bytes);
     }
 

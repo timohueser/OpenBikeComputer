@@ -9,6 +9,7 @@ fn fact_file(name: &str) -> bool {
 pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(String, String), Value>, String> {
     let mut facts = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
+        obc_data::engine::check_stop()?;
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
         if Path::new(name).file_stem().and_then(|name| name.to_str()) != Some(hash(&bytes).as_str()) {
             return Err(format!("shared fact checksum changed: {name}"));
@@ -113,6 +114,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
     let mut sources = Vec::new();
     let mut paths = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
+        obc_data::engine::check_stop()?;
         let value: Value =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let relative = match value["kind"].as_str() {
@@ -149,6 +151,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
         paths.insert((string(&value, "kind")?.to_owned(), string(&value, "key")?.to_owned()), relative);
     }
     for (name, path) in files.iter().filter(|(name, _)| name.starts_with("content/assets/")) {
+        obc_data::engine::check_stop()?;
         let target = root.join(name);
         fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
         fs::copy(path, &target).map_err(|e| e.to_string())?;
@@ -164,6 +167,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
     let mut places = Vec::new();
     let mut aliases = BTreeMap::new();
     for id in ids {
+        obc_data::engine::check_stop()?;
         let entity = subject(&facts, id).ok_or_else(|| format!("missing shared subject: {id}"))?;
         let canonical = string(&entity, "id")?.to_owned();
         if canonical != *id {
@@ -280,6 +284,7 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
     // fact, not in its file name.
     let mut links = BTreeMap::new();
     for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
+        obc_data::engine::check_stop()?;
         let value: Value =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         if value["kind"] == "link" {
@@ -289,6 +294,7 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
     let mut ids = BTreeSet::new();
     let mut resolutions = Vec::new();
     for summit in &source.summits {
+        obc_data::engine::check_stop()?;
         for kind in ["wikidata", "wikipedia"] {
             let Some(tag) = summit.tags.get(kind) else { continue };
             let key = format!("{kind}:{tag}");
@@ -321,6 +327,7 @@ pub fn bundles(files: &BTreeMap<String, std::path::PathBuf>, output: &Path) -> R
         let manifest: Value =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         for pin in manifest["records"].as_array().ok_or("shared manifest records missing")? {
+            obc_data::engine::check_stop()?;
             if pin["kind"] == "file" {
                 continue;
             }

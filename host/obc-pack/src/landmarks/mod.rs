@@ -406,6 +406,7 @@ fn compile_selected(
     for source in
         snapshot.sources.iter().filter(|source| source.path.starts_with("classes/") && source.path.ends_with(".json"))
     {
+        obc_data::engine::check_stop()?;
         let capture = json_pinned(root, &snapshot.sources, &source.path)?;
         let entities = capture["entities"].as_object().ok_or("invalid class capture")?;
         for (id, entity) in entities {
@@ -470,6 +471,7 @@ fn compile_selected(
     let mut selected = BTreeSet::new();
     let mut loaded: Option<(String, Value)> = None;
     for place in places {
+        obc_data::engine::check_stop()?;
         let qid = string(&place, "qid")?.to_owned();
         if !is_qid(&qid) {
             return Err("invalid QID".into());

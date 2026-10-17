@@ -274,6 +274,7 @@ pub fn compile(
     let mut entities = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for summit in source.summits {
+        obc_data::engine::check_stop()?;
         if !seen.insert(summit.node_id) {
             return Err("duplicate source summit".into());
         }
@@ -348,6 +349,7 @@ pub fn compile(
         });
     }
     for (id, entity) in entities {
+        obc_data::engine::check_stop()?;
         let place =
             snapshot.places.iter().find(|p| p["qid"] == id).ok_or_else(|| format!("missing peak capture {id}"))?;
         // The summit's own OSM coordinate, not the article entity's: a photo taken at the summit
