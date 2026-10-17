@@ -19,9 +19,9 @@ fn attribution(
     Ok(Attribution { source_url, revision, license_url, original_notices })
 }
 
-pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: &Value) -> Result<Article, String> {
+pub(super) fn article(sources: &Sources, entity: &Value, capture: &Value) -> Result<Article, String> {
     if capture["compact"] == true {
-        let raw = json_pinned(root, sources, string(capture, "path")?)?;
+        let raw = json_pinned(sources, string(capture, "path")?)?;
         let language = string(&raw, "language")?;
         let title = string(&raw, "title")?;
         if raw["kind"] != "article"
@@ -62,7 +62,7 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     let title = string(capture, "title")?;
     let expected =
         entity["sitelinks"][format!("{language}wiki")]["title"].as_str().ok_or("article_identity_mismatch")?;
-    let raw = json_pinned(root, sources, string(capture, "path")?)?;
+    let raw = json_pinned(sources, string(capture, "path")?)?;
     let page = resolved_page(&raw, expected)?;
     let revision = capture["revision"].as_u64().ok_or("missing_article_revision")?;
     if page["revisions"][0]["revid"].as_u64() != Some(revision) || page["title"] != title {
@@ -71,7 +71,7 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     if page["pageprops"]["wikibase_item"].as_str().is_some_and(|id| entity["id"] != id) {
         return Err("article_identity_mismatch".into());
     }
-    let markup = String::from_utf8(read_pinned(root, sources, string(capture, "html_path")?, 4 * 1024 * 1024)?)
+    let markup = String::from_utf8(read_pinned(sources, string(capture, "html_path")?, 4 * 1024 * 1024)?)
         .map_err(|_| "article_utf8")?;
     let stamp = markup
         .split_once("\"wgRevisionId\":")
@@ -106,7 +106,7 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     let notices_selector = Selector::parse("#footer-info-copyright, .mw-parser-output .licensetpl, .mw-parser-output .attribution, .mw-parser-output .source-attribution").expect("fixed selector");
     let notices = document.select(&notices_selector).map(|item| item.inner_html()).collect::<Vec<_>>().join("\n");
     let url = string(capture, "url")?.to_owned();
-    if !sources.iter().any(|source| source.path == capture["html_path"] && source.url == url) {
+    if !capture["html_path"].as_str().and_then(|path| sources.pins.get(path)).is_some_and(|source| source.url == url) {
         return Err("article_source_mismatch".into());
     }
     let attribution = attribution(url, revision.to_string(), license, notices)?;
@@ -192,8 +192,8 @@ pub(super) fn described(metadata: &Value) -> Result<(&Value, String), String> {
 
 /// The evidence is read apart from the photo itself: ranking has to order every candidate before
 /// the compiler asks any one of them for pixels.
-pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Result<Signals, String> {
-    let metadata = json_pinned(root, sources, string(capture, "metadata_path")?)?;
+pub(super) fn signals(sources: &Sources, capture: &Value) -> Result<Signals, String> {
+    let metadata = json_pinned(sources, string(capture, "metadata_path")?)?;
     let (page, filename) = described(&metadata)?;
     let categories = page["categories"]
         .as_array()
@@ -208,7 +208,7 @@ pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Resul
         .filter(|(lat, lon)| (-90.0..=90.0).contains(lat) && (-180.0..=180.0).contains(lon));
     let mut depicts = BTreeSet::new();
     if let Some(path) = capture.get("depicts_path").and_then(Value::as_str) {
-        let raw = json_pinned(root, sources, path)?;
+        let raw = json_pinned(sources, path)?;
         for media in raw["entities"].as_object().into_iter().flatten().map(|(_, media)| media) {
             for statement in media["statements"]["P180"].as_array().into_iter().flatten() {
                 let id = statement["mainsnak"]["datavalue"]["value"]["id"].as_str();
@@ -222,13 +222,12 @@ pub(super) fn signals(root: &Path, sources: &[Source], capture: &Value) -> Resul
 }
 
 pub(super) fn photo(
-    root: &Path,
-    sources: &[Source],
+    sources: &Sources,
     capture: &Value,
     allowed: &BTreeSet<String>,
     qid: &str,
 ) -> Result<(Photo, Vec<u8>), String> {
-    let metadata = json_pinned(root, sources, string(capture, "metadata_path")?)?;
+    let metadata = json_pinned(sources, string(capture, "metadata_path")?)?;
     let (page, filename) = described(&metadata)?;
     if !allowed.contains(&filename) {
         return Err("photo_identity_mismatch".into());
@@ -236,18 +235,18 @@ pub(super) fn photo(
     let info = &page["imageinfo"][0];
     let attribution = photo_attribution(info)?;
     let input_path = string(capture, "path")?;
-    let source = sources.iter().find(|source| source.path == input_path).ok_or("photo_source_missing")?;
+    let source = sources.pins.get(input_path).ok_or("photo_source_missing")?;
     let thumbnail = info.get("thumburl").and_then(Value::as_str).is_some_and(|url| source.url == url);
     if source.url != string(info, "url")? && !thumbnail {
         return Err("photo_identity_mismatch".into());
     }
-    let bytes = read_pinned(root, sources, input_path, photo::MAX_SOURCE_BYTES as u64)?;
+    let bytes = read_pinned(sources, input_path, photo::MAX_SOURCE_BYTES as u64)?;
     let sha1 =
         <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     if thumbnail {
         for field in ["revision_before_path", "revision_after_path"] {
             let path = capture[field].as_str().ok_or("photo_thumbnail_revision_unverified")?;
-            let witness = json_pinned(root, sources, path)?;
+            let witness = json_pinned(sources, path)?;
             let (witness_page, witness_file) = described(&witness)?;
             let current = &witness_page["imageinfo"][0];
             if witness_file != filename || !revision_matches(info, current) {

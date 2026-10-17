@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 /// The compiled artifact the packer and the device content come from.
@@ -107,6 +107,22 @@ struct Source {
     sha256: String,
     bytes: u64,
     url: String,
+}
+/// The pinned sources of a snapshot by path, under its canonical root.
+struct Sources {
+    root: PathBuf,
+    pins: BTreeMap<String, Source>,
+}
+impl Sources {
+    fn new(root: &Path, sources: Vec<Source>) -> Result<Sources, String> {
+        let mut pins = BTreeMap::new();
+        for source in sources {
+            if let Some(source) = pins.insert(source.path.clone(), source) {
+                return Err(format!("duplicate source: {}", source.path));
+            }
+        }
+        Ok(Sources { root: root.canonicalize().map_err(|e| e.to_string())?, pins })
+    }
 }
 #[derive(Deserialize)]
 struct Snapshot {
@@ -261,21 +277,16 @@ fn file_digest(path: &Path) -> Result<String, String> {
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing {key}"))
 }
-fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Result<Vec<u8>, String> {
+fn read_pinned(sources: &Sources, path: &str, limit: u64) -> Result<Vec<u8>, String> {
     if Path::new(path).components().any(|part| !matches!(part, Component::Normal(_))) {
         return Err(format!("source path must be relative: {path}"));
     }
-    let source =
-        sources.iter().find(|source| source.path == path).ok_or_else(|| format!("unregistered source: {path}"))?;
+    let source = sources.pins.get(path).ok_or_else(|| format!("unregistered source: {path}"))?;
     if source.bytes > limit {
         return Err(format!("source exceeds byte limit: {path}"));
     }
-    let file = root.join(path);
-    if !file
-        .canonicalize()
-        .map_err(|e| format!("missing source {path}: {e}"))?
-        .starts_with(root.canonicalize().map_err(|e| e.to_string())?)
-    {
+    let file = sources.root.join(path);
+    if !file.canonicalize().map_err(|e| format!("missing source {path}: {e}"))?.starts_with(&sources.root) {
         return Err(format!("source path escapes snapshot: {path}"));
     }
     let metadata = fs::symlink_metadata(&file).map_err(|e| format!("missing source {path}: {e}"))?;
@@ -293,8 +304,8 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
 /// capture keeps is one the compiler can read.
 const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
 
-fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
-    let value: Value = serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
+fn json_pinned(sources: &Sources, path: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(&read_pinned(sources, path, MAX_JSON_SOURCE)?)
         .map_err(|e| format!("invalid source {path}: {e}"))?;
     if value["kind"] == "entity" {
         let key = string(&value, "key")?;
@@ -393,20 +404,17 @@ fn compile_selected(
     only_qids: Option<&BTreeSet<String>>,
     write_content: bool,
 ) -> Result<Content, String> {
-    let (snapshot, raw) = load_snapshot(snapshot_path)?;
+    let (snapshot, sources, raw) = load_snapshot(snapshot_path)?;
     if snapshot.peaks.is_some() {
         return Err("peak capture requires the peak compiler".into());
     }
-    let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
     let boundary_bytes = fs::read(boundary).map_err(|e| e.to_string())?;
     let boundary_json: Value = serde_json::from_slice(&boundary_bytes).map_err(|e| e.to_string())?;
     let geometry = if boundary_json["type"] == "Feature" { &boundary_json["geometry"] } else { &boundary_json };
     let polygon = boundary_geometry(geometry)?;
     let mut parents: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for source in
-        snapshot.sources.iter().filter(|source| source.path.starts_with("classes/") && source.path.ends_with(".json"))
-    {
-        let capture = json_pinned(root, &snapshot.sources, &source.path)?;
+    for path in sources.pins.keys().filter(|path| path.starts_with("classes/") && path.ends_with(".json")) {
+        let capture = json_pinned(&sources, path)?;
         let entities = capture["entities"].as_object().ok_or("invalid class capture")?;
         for (id, entity) in entities {
             if entity.get("missing").is_some() {
@@ -436,7 +444,7 @@ fn compile_selected(
     policy_input.extend_from_slice(locale::LANGUAGE_BYTES);
     policy_input.extend_from_slice(PHOTO_POOL_BYTES);
     policy_input.extend_from_slice(include_bytes!("locale.rs"));
-    let locales = load_locales(root, &snapshot.sources)?;
+    let locales = load_locales(&sources)?;
     let mut input = raw;
     input.extend_from_slice(&boundary_bytes);
     let mut content = Content {
@@ -491,7 +499,7 @@ fn compile_selected(
             None => format!("entities/{qid}.json"),
         };
         if !matches!(&loaded, Some((held, _)) if *held == path) {
-            let raw = json_pinned(root, &snapshot.sources, &path)?;
+            let raw = json_pinned(&sources, &path)?;
             loaded = Some((path, raw));
         }
         let entity = &loaded.as_ref().expect("the response just loaded").1["entities"][&qid];
@@ -523,8 +531,7 @@ fn compile_selected(
         // A landmark photo is taken at the landmark, so it has no camera-distance reference.
         let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) = prepare_article(
             &Inputs {
-                root,
-                sources: &snapshot.sources,
+                sources: &sources,
                 locales: &locales,
                 output,
                 select_photos,
@@ -665,8 +672,7 @@ pub struct PreparedArticle {
 
 /// The pinned capture one article preparation reads, and the directory it writes a photo to.
 struct Inputs<'a> {
-    root: &'a Path,
-    sources: &'a [Source],
+    sources: &'a Sources,
     locales: &'a BTreeMap<String, Value>,
     output: &'a Path,
     /// Only a compile a capture drives asks for originals. A production compile holds every
@@ -681,8 +687,7 @@ struct Inputs<'a> {
 /// The captured file members of the place's own Commons categories. The listing is a pinned source
 /// and its title has to be one of the entity's own P373 claims, so a capture cannot widen the pool.
 fn category_members(
-    root: &Path,
-    sources: &[Source],
+    sources: &Sources,
     place: &Value,
     categories: &[String],
     snapshot_schema: u32,
@@ -725,7 +730,7 @@ fn category_members(
             if !paths.insert(path) {
                 return Err(format!("duplicate commons category page: {path}"));
             }
-            let raw = json_pinned(root, sources, path)?;
+            let raw = json_pinned(sources, path)?;
             let listed = raw["query"]["categorymembers"].as_array().ok_or("invalid category members")?;
             for member in listed {
                 let file = string(member, "title")?
@@ -761,7 +766,7 @@ fn prepare_article(
     found: &mut Found,
     summit: Option<(f64, f64)>,
 ) -> Result<Option<PreparedArticle>, String> {
-    let Inputs { root, sources, locales, output, select_photos, text_required, snapshot_schema } = *inputs;
+    let Inputs { sources, locales, output, select_photos, text_required, snapshot_schema } = *inputs;
     let Found { omissions, requests } = found;
     let qid = string(place, "qid")?;
     let mut omit = |asset: &str, reason: String| {
@@ -772,7 +777,7 @@ fn prepare_article(
     let mut lead = BTreeSet::new();
     for (candidate, _) in locale::languages() {
         if let Some(capture) = captures.iter().find(|item| item["language"] == candidate) {
-            match article(root, sources, entity, capture) {
+            match article(sources, entity, capture) {
                 Ok(Article { language, pages, attribution, lead_image }) => {
                     lead.extend(lead_image);
                     variants.push(TextVariant { language, text_pages: pages, attribution });
@@ -818,7 +823,7 @@ fn prepare_article(
     };
     // Every P373 claim, so the compiler and the capture cannot name different categories.
     let categories: Vec<String> = claim_files("P373").into_iter().map(|name| format!("Category:{name}")).collect();
-    let members = category_members(root, sources, place, &categories, snapshot_schema)?;
+    let members = category_members(sources, place, &categories, snapshot_schema)?;
     let pools = photo_pools();
     let mut ranked = Vec::new();
     for image in place["images"].as_array().into_iter().flatten() {
@@ -827,7 +832,7 @@ fn prepare_article(
             omit("photo", "photo_source_kind".into());
             continue;
         };
-        let signals = match assets::signals(root, sources, image) {
+        let signals = match assets::signals(sources, image) {
             Ok(signals) => signals,
             Err(reason) => {
                 omit("photo", reason);
@@ -855,7 +860,7 @@ fn prepare_article(
             omit("photo", "photo_identity_mismatch".into());
             continue;
         }
-        let metadata = json_pinned(root, sources, string(image, "metadata_path")?)?;
+        let metadata = json_pinned(sources, string(image, "metadata_path")?)?;
         let (page, _) = assets::described(&metadata)?;
         if let Err(reason) = assets::photo_attribution(&page["imageinfo"][0]) {
             omit("photo", reason);
@@ -879,7 +884,7 @@ fn prepare_article(
             }
             continue;
         }
-        match assets::photo(root, sources, image, allowed, qid) {
+        match assets::photo(sources, image, allowed, qid) {
             Ok((candidate, pixels)) => {
                 fs::write(output.join(&candidate.path), pixels).map_err(|e| e.to_string())?;
                 photo = Some(candidate);
@@ -894,28 +899,25 @@ fn prepare_article(
     Ok(Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }))
 }
 
-fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
+fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Sources, Vec<u8>), String> {
     let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
-    let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    let mut snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
     if !matches!(snapshot.schema, 1 | 2) {
         return Err("unsupported source snapshot schema".into());
     }
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
-    let mut registered = BTreeSet::new();
-    for source in &snapshot.sources {
-        if !registered.insert(&source.path) {
-            return Err(format!("duplicate source: {}", source.path));
-        }
-        read_pinned(root, &snapshot.sources, &source.path, photo::MAX_SOURCE_BYTES as u64)?;
+    let sources = Sources::new(root, std::mem::take(&mut snapshot.sources))?;
+    for path in sources.pins.keys() {
+        read_pinned(&sources, path, photo::MAX_SOURCE_BYTES as u64)?;
     }
-    Ok((snapshot, raw))
+    Ok((snapshot, sources, raw))
 }
 
-fn load_locales(root: &Path, sources: &[Source]) -> Result<BTreeMap<String, Value>, String> {
+fn load_locales(sources: &Sources) -> Result<BTreeMap<String, Value>, String> {
     let mut locales = BTreeMap::new();
-    for source in sources.iter().filter(|s| s.path.starts_with("locales/")) {
-        let raw = json_pinned(root, sources, &source.path)?;
-        let id = Path::new(&source.path).file_stem().and_then(|s| s.to_str()).ok_or("invalid locale path")?;
+    for path in sources.pins.keys().filter(|path| path.starts_with("locales/")) {
+        let raw = json_pinned(sources, path)?;
+        let id = Path::new(path).file_stem().and_then(|s| s.to_str()).ok_or("invalid locale path")?;
         if let Some(entity) = raw["entities"].get(id).filter(|e| e["id"] == id) {
             locales.insert(id.to_owned(), entity.clone());
         }
