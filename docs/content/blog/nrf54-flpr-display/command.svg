@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="750" viewBox="0 0 1400 750" role="img" aria-label="A command and its completion"><title>A command and its completion</title><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#236899"/></marker></defs><rect width="1400" height="750" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="#183344">
+<text x="60" y="45" font-size="31" text-anchor="start" fill="#183344" font-weight="bold">A command and its completion</text>
+<rect x="30" y="85" width="280" height="65" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="170.0" y="125.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">M33 / Embassy</text>
+<path d="M 170 150 V 690" stroke="#b8c7d0" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="390" y="85" width="280" height="65" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="530.0" y="125.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Shared RAM</text>
+<path d="M 530 150 V 690" stroke="#b8c7d0" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="760" y="85" width="280" height="65" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="900.0" y="125.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">FLPR</text>
+<path d="M 900 150 V 690" stroke="#b8c7d0" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="1100" y="85" width="280" height="65" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="1240.0" y="125.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">EGU20 IRQ</text>
+<path d="M 1240 150 V 690" stroke="#b8c7d0" stroke-width="2" stroke-dasharray="7 7"/>
+<path d="M 170 198 H 520" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="350" y="184" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">command + argument</text>
+<path d="M 170 257 H 520" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="350" y="243" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">barrier, then request</text>
+<path d="M 900 316 H 540" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="710" y="302" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">read sequence; fence; read payload</text>
+<rect x="775" y="350" width="250" height="65" rx="12" fill="#edf7f1" stroke="#bed0dc" stroke-width="2"/>
+<text x="900.0" y="390.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Run LED job</text>
+<text x="170" y="363" font-size="24" text-anchor="middle" fill="#237562" font-weight="normal">Await DONE</text>
+<text x="170" y="397" font-size="21" text-anchor="middle" fill="#237562" font-weight="normal">Heartbeat still runs</text>
+<path d="M 900 457 H 540" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="720" y="443" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">result; fence; matching ack</text>
+<path d="M 900 526 H 1230" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="1070" y="512" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">fence; trigger EGU20</text>
+<path d="M 1240 605 H 180" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="700" y="591" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">clear event; signal DONE</text>
+<text x="170" y="665" font-size="22" text-anchor="middle" fill="#237562" font-weight="normal">Check ack, then read result</text>
+</g></svg>

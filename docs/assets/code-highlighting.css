@@ -1,0 +1,7 @@
+.prose .hljs-comment, .prose .hljs-quote { color: var(--ink-faint); font-style: italic; }
+.prose .hljs-keyword, .prose .hljs-selector-tag { color: var(--coral); }
+.prose .hljs-string, .prose .hljs-regexp { color: var(--water); }
+.prose .hljs-number, .prose .hljs-literal { color: var(--forest-deep); }
+.prose .hljs-title, .prose .hljs-section { color: var(--forest); }
+.prose .hljs-type, .prose .hljs-built_in { color: var(--route); }
+.prose .hljs-meta, .prose .hljs-symbol, .prose .hljs-attr { color: var(--water); }
