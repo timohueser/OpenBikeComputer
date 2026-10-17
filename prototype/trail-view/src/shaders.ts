@@ -615,7 +615,7 @@ void main() {
   // The body turns from the shallow colour beside the shore, where the surf churns it, to the deep
   // one within a few tens of metres: rocky coasts drop off fast.
   float sea = 1.0 - smoothstep(1.0, 3.0, altitude);
-  vec3 body = mix(seaDeep, mix(seaShallow, seaDeep, smoothstep(3.0, 45.0, g.shore)), sea) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
+  vec3 body = mix(seaDeep, mix(seaShallow, seaDeep, smoothstep(2.0, 22.0, g.shore)), sea) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
   // Swell rolls in as faint lighter bands, and the sun's path glints in sparks rather than a sheen.
   body *= 1.0 + 0.06 * sin(dot(vWorld.xy, vec2(0.8, 0.6)) / 9.0 + time * 0.9) * (1.0 - smoothstep(2.0, 8.0, footprint));
   float sparks = smoothstep(0.8, 0.86, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));

@@ -598,6 +598,10 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     out = heights.copy()
     out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + raise_m[rim]))
     out[sea] = np.minimum(heights[sea], 0.0)
+    # A one-texel step is sampled unevenly by the mesh, which turns a cliff into a comb of spikes:
+    # spread it over a few texels along the coast.
+    band = distance <= steps + 2
+    out[band] = box_mean(out, 1)[band]
     return out
 
 

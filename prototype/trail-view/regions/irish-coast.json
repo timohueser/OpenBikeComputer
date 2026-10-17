@@ -15,7 +15,7 @@
    "heath": "#7e7152",
    "bog": "#86704a",
    "bracken": "#677338",
-   "rough": "#857f4f",
+   "rough": "#7f8250",
    "pasture": "#5f8748",
    "scrub": "#55652f",
    "hedge": "#3b5530",
@@ -31,7 +31,7 @@
   "outcrops": 0.55,
   "rock": "#a3a094",
   "bedding": { "strike": 55, "dip": 65 },
-  "sea": { "deep": "#0e3461", "shallow": "#2a9a98" },
+  "sea": { "deep": "#0e3461", "shallow": "#1f7f86" },
   "swell": 250
  }
 }
