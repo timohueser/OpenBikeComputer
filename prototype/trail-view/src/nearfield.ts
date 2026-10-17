@@ -35,8 +35,8 @@ const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share:
   heather: { on: [CLASS.shrub, CLASS.moss, CLASS.bare], height: [0.2, 0.4], share: 0.4, habitat: 1 },
   'heather-bloom': { on: [CLASS.shrub, CLASS.moss], height: [0.2, 0.4], share: 0.15, habitat: 1 },
   huckleberry: { on: [CLASS.tree], height: [0.4, 0.8], share: 0.25 },
-  garrigue: { on: [CLASS.shrub, CLASS.grass, CLASS.bare], height: [0.35, 0.8], share: 0.07, own: true },
-  esparto: { on: [CLASS.grass, CLASS.bare, CLASS.shrub], height: [0.4, 0.8], share: 0.3, own: true },
+  garrigue: { on: [CLASS.shrub, CLASS.grass, CLASS.bare], height: [0.35, 0.8], share: 0.11, own: true },
+  esparto: { on: [CLASS.grass, CLASS.bare, CLASS.shrub], height: [0.4, 0.8], share: 0.4, own: true },
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
 const CLEAR_M = 6;

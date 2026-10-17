@@ -55,6 +55,8 @@ export interface RegionLook {
   snowline: number;
   /** The rock's bedding planes in degrees, so cliffs and slabs show their strata as they lie. */
   bedding?: { strike: number; dip: number };
+  /** Road surfaces in the order of ROAD_WIDTHS in bake.py, where they differ from palette.ts's. */
+  roads?: string[];
   /** Open water away from the shore, and the sea beside it. */
   sea: { deep: string; shallow: string };
   /** The bearing the prevailing swell comes from, in degrees: shores open to it get the heavy surf. */

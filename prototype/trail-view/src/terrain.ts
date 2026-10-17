@@ -369,6 +369,7 @@ export class Terrain {
     u.shoreReach.value = bake.meta.shore_reach_m;
     const land = region.look;
     u.rock.value.set(land.rock);
+    (land.roads ?? ROADS).forEach((hex, i) => u.roadColours.value[i].set(hex));
     u.cliffRock.value.set(land.cliff ?? land.rock);
     u.seaDeep.value.set(land.sea.deep);
     u.seaShallow.value.set(land.sea.shallow);

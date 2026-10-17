@@ -15,6 +15,7 @@
    "built": ["#c9bfa9", "#bdb69a", "#a8a684"]
   },
   "snap": 0.6,
+  "roads": ["#8a8680", "#a19c92", "#cdbf9f", "#c2ad88", "#a9a070", "#c7b591"],
   "speckle": { "colour": "#4b5632", "share": 0.5, "size_m": 2.5 },
   "hazeKm": 30,
   "outcrops": 0.4,

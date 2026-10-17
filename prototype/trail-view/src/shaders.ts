@@ -590,8 +590,12 @@ void main() {
   // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond,
   // denser in some stretches than others.
   if (speckle.x > 0.0) {
-    float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0));
-    float dots = smoothstep(1.0 - cover - 0.04, 1.0 - cover + 0.04, noise(vWorld.xy / speckle.y));
+    // Near the eye the pack's own bushes stand there instead.
+    float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0))
+      * smoothstep(40.0, 70.0, length(vWorld.xy - cameraPosition.xy));
+    // One round bush in a share of the cells, so bushes stand apart rather than merging.
+    vec3 bush = cells(vWorld.xy, speckle.y);
+    float dots = step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y);
     albedo = mix(albedo, speckleColour, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * speckle.y, 0.1 * speckle.y, surfaceSize)));
   }
   // Heather in patches over the moor.
