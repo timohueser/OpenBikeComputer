@@ -6,6 +6,7 @@
  ],
  "about": "The south-west peninsulas and the Reeks: washed Atlantic headlands, bright grass, moor and heather, grey slabs breaking through, a navy sea turning turquoise at the rocks.",
  "pack": "irish-coast",
+ "cliffs": { "reach_m": 35, "raise_m": 30 },
  "look": {
   "ramps": { "grass": ["#8f8455", "#7c8c52", "#5f8748"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
   "moor": { "colour": "#7e7152", "heather": "#6e5266", "share": 0.4 },

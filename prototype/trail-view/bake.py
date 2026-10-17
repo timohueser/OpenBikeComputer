@@ -553,25 +553,49 @@ def grow(a: np.ndarray, op) -> np.ndarray:
 def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs: dict) -> np.ndarray:
     """GLO-30 heights with cliff coasts made sheer. GLO-30 makes a cliff a 30 m slope into the sea.
     The sea beside land stands at sea level, so the coast drops where WorldCover puts the water's
-    edge; land within the region's reach_m of it rises toward the highest ground within reach, by at
-    most raise_m, where that ground is min_m high. A larger raise lifts the edge to ground that only
-    rises further inland."""
+    edge. Land within the region's reach_m of it takes the height found reach_m straight inland,
+    where that is min_m high, fading to its own height at the reach. A cliff has a shoulder: another
+    reach inland the ground rises little. There the edge rises up to raise_m; where the ground goes
+    on climbing it is a hillside, and the edge rises a fifth of that at most."""
     water = classes[..., 1] == 255
     sea = water & (heights <= SEA_LEVEL_M)
     if not sea.any():
         return heights
+    px = 2 * half / SIZE
     # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
     # the shore is sea, however high the DEM puts it. Twice the cliff reach, so a lough behind a
     # cliff top keeps its level.
-    reach = max(1, round(cliffs["reach_m"] * 2 / (2 * half / SIZE)))
-    for _ in range(reach):
+    for _ in range(max(1, round(cliffs["reach_m"] * 2 / px))):
         sea |= grow(sea, np.logical_or) & water
-    top, near = heights, sea
-    for _ in range(max(1, round(cliffs["reach_m"] / (2 * half / SIZE)))):
-        top, near = grow(top, np.maximum), grow(near, np.logical_or)
-    rim = ~water & near & (top >= cliffs["min_m"])
+    steps = max(1, round(cliffs["reach_m"] / px))
+    # Steps from the sea, a little beyond the reach, so "inland" has a direction there too.
+    distance = np.full(heights.shape, 2.0 * steps + 1)
+    distance[sea] = 0
+    near = sea
+    for step in range(1, 2 * steps + 1):
+        grown = grow(near, np.logical_or)
+        distance[grown & ~near] = step
+        near = grown
+    gy, gx = np.gradient(box_mean(distance, 1))
+    norm = np.maximum(np.hypot(gx, gy), 1e-6)
+    rows, cols = np.mgrid[0:SIZE, 0:SIZE].astype(np.float32)
+
+    def inland(reach: float) -> np.ndarray:
+        """Bilinear height `reach` texels inland of each texel."""
+        y = np.clip(rows + gy / norm * reach, 0, SIZE - 1.001)
+        x = np.clip(cols + gx / norm * reach, 0, SIZE - 1.001)
+        y0, x0 = y.astype(int), x.astype(int)
+        fy, fx = y - y0, x - x0
+        return ((heights[y0, x0] * (1 - fx) + heights[y0, x0 + 1] * fx) * (1 - fy)
+                + (heights[y0 + 1, x0] * (1 - fx) + heights[y0 + 1, x0 + 1] * fx) * fy)
+
+    top, beyond = inland(steps), inland(2 * steps)
+    shoulder = beyond - top < 0.5 * (top - heights)
+    fade = np.clip(1 - (distance - 1) / steps, 0, 1)
+    raise_m = np.where(shoulder, cliffs["raise_m"], cliffs["raise_m"] / 5) * fade
+    rim = ~water & (distance <= steps) & (top >= cliffs["min_m"])
     out = heights.copy()
-    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + cliffs["raise_m"]))
+    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + raise_m[rim]))
     out[sea] = np.minimum(heights[sea], 0.0)
     return out
 
