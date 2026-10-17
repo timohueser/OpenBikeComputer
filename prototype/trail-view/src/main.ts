@@ -2,9 +2,10 @@ import GUI from 'lil-gui';
 import * as THREE from 'three';
 import presets from '../presets.json';
 import { clock } from 'planner-sun';
-import { loadBake, type Bake } from './bake';
+import { loadBake, loadQuarter, type Bake } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLines, placeLabels, type Line } from './overlay';
+import { DECIDUOUS, ramps } from './palette';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
@@ -43,8 +44,8 @@ const state = {
   pitch: 0,
   vfov: 60,
 };
-const look: Look = { ground: '#6c7a4c', hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
-const readout = { sun: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
+const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
+const readout = { sun: '–', colour: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
@@ -89,13 +90,34 @@ async function select(id: string): Promise<void> {
   } else {
     readout.rmsDtm = readout.rmsGlo30 = readout.limit = '–';
   }
-  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights`;
+  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights and classes`;
   readout.dtm = meta.dtm_levels ? `${meta.dtm}, ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km` : 'none';
   state.yaw = meta.photo?.heading_deg ?? meta.heading ?? 0;
   state.pitch = meta.photo?.pitch_deg ?? meta.pitch ?? 0;
   element('#credits').textContent = meta.credits.join(' · ');
   status.textContent = '';
+  quarters.clear();
   surfaceChanged();
+  seasonChanged();
+}
+
+/** Sentinel-2 quarters of the current preset, by season index, loaded once each. */
+const quarters = new Map<number, ReturnType<typeof loadQuarter>>();
+
+/** The season's palette and light at once, then its Sentinel-2 quarter when it arrives. */
+async function seasonChanged(): Promise<void> {
+  if (!loaded) return;
+  const { bake } = loaded;
+  const season = Object.keys(SEASONS).indexOf(state.season);
+  const leaf = presets.find((p) => p.id === bake.meta.id)?.default_leaf ?? 'mixed';
+  terrain.setPalette(ramps(season, DECIDUOUS[leaf]));
+  lightChanged();
+  if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
+  const colour = await quarters.get(season)!;
+  if (loaded?.bake !== bake || Object.keys(SEASONS).indexOf(state.season) !== season) return;
+  terrain.setColour(colour.data, bake.meta.s2_levels);
+  readout.colour = `${(colour.bytes / 1e6).toFixed(1)} MB for this season`;
+  requestRender();
 }
 
 function surfaceChanged(): void {
@@ -103,7 +125,6 @@ function surfaceChanged(): void {
   const lift = active(loaded.ground).lift;
   terrain.setSurface(glo30Only(), lift, loaded.bake.meta.eye_m + lift);
   readout.eye = `${(loaded.bake.meta.eye_m + lift).toFixed(1)} m`;
-  lightChanged();
   loaded.sighted = sightedPeaks(loaded.bake.peaks, active(loaded.ground), active(loaded.sky));
   readout.peaks = `${loaded.sighted.length} of ${loaded.bake.peaks.length} named peaks sighted`;
   layout();
@@ -250,7 +271,7 @@ async function save(canvas: HTMLCanvasElement, suffix: string): Promise<void> {
   const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
   const { id, dtm_levels, half0_m } = loaded!.bake.meta;
   const reach = glo30Only() ? 'glo30' : `dtm${(half0_m * 2 ** (dtm_levels - 1)) / 1000}km`;
-  const name = `${id}-${reach}${suffix}.png`;
+  const name = `${id}-${reach}-q${Object.keys(SEASONS).indexOf(state.season) + 1}${suffix}.png`;
   const response = await fetch(`/__shot/${name}`, { method: 'POST', body: blob });
   readout.frame = response.ok ? `saved shots/${name}` : `saving failed: ${response.status}`;
 }
@@ -317,10 +338,10 @@ shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRend
 shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
 gui.add(state, 'peaks').onChange(requestRender);
 const time = gui.addFolder('Light');
-time.add(state, 'season', Object.keys(SEASONS)).onChange(lightChanged);
+time.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
 time.add(state, 'hour', 0, 24, 0.05).name('hour (local)').onChange(lightChanged);
 const style = gui.addFolder('Look').close();
-style.addColor(look, 'ground');
+style.add(look, 'snap', 0, 1, 0.01).name('palette snap');
 style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)');
 style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)');
 style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)');
@@ -340,6 +361,7 @@ facts.add(readout, 'rmsGlo30').name('RMS, GLO-30').listen().disable();
 facts.add(readout, 'limit').name('Peak View limit').listen().disable();
 facts.add(readout, 'peaks').name('peaks').listen().disable();
 facts.add(readout, 'bytes').name('download').listen().disable();
+facts.add(readout, 'colour').name('colour').listen().disable();
 facts.add(readout, 'triangles').name('triangles').listen().disable();
 facts.add(readout, 'frame').name('frame time').listen().disable();
 facts.add({ measure }, 'measure').name('measure 60 frames');

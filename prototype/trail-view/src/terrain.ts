@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import type { Bake } from './bake';
 import type { Light } from './light';
+import { ROCK, SHORE } from './palette';
 import { fullscreenVertex, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 
@@ -65,7 +66,8 @@ function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeome
 }
 
 export interface Look {
-  ground: string;
+  /** 0 takes the ground's chroma from Sentinel-2, 1 paints the class palette alone. */
+  snap: number;
   /** Visibility at sea level, in km; the fog thins with altitude. */
   hazeKm: number;
   /** Scale height of the fog, in metres. */
@@ -87,6 +89,8 @@ export class Terrain {
   private readonly sky: THREE.ShaderMaterial;
   private readonly wedges: THREE.Mesh[] = [];
   private texture?: THREE.DataArrayTexture;
+  private classes?: THREE.DataArrayTexture;
+  private colour?: THREE.DataArrayTexture;
   private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
     format: THREE.RedFormat,
     type: THREE.UnsignedByteType,
@@ -122,7 +126,13 @@ export class Terrain {
       horizon: { value: new THREE.Color() },
       glow: { value: 0 },
       night: { value: 0 },
-      ground: { value: new THREE.Color() },
+      classes: { value: null },
+      s2: { value: null },
+      s2Levels: { value: 0 },
+      ramps: { value: [] as THREE.Color[] },
+      snap: { value: 0.4 },
+      rock: { value: new THREE.Color(ROCK) },
+      shore: { value: new THREE.Color(SHORE) },
       softness: { value: 0.08 },
       gradient: { value: 0.35 },
       eyeAltitude: { value: 0 },
@@ -192,7 +202,23 @@ export class Terrain {
     u.half0.value = half0_m;
     u.levels.value = levels;
     u.dtmLevels.value = dtm_levels;
+    this.classes?.dispose();
+    this.classes = arrayTexture(bake.classes, size, levels, THREE.RGFormat, 'RG8');
+    u.classes.value = this.classes;
+    this.setColour(null, 0);
     this.shadowsStale = true;
+  }
+
+  /** One season's Sentinel-2 levels, or none: the class palette alone. */
+  setColour(data: Uint8Array | null, levels: number): void {
+    this.colour?.dispose();
+    this.colour = data ? arrayTexture(data, 1024, levels, THREE.RGBAFormat, 'RGBA8') : undefined;
+    this.uniforms.s2.value = this.colour ?? this.classes;
+    this.uniforms.s2Levels.value = data ? levels : 0;
+  }
+
+  setPalette(ramps: THREE.Color[]): void {
+    this.uniforms.ramps.value = ramps;
   }
 
   /**
@@ -220,7 +246,7 @@ export class Terrain {
 
   setLook(look: Look): void {
     const u = this.uniforms;
-    u.ground.value.set(look.ground);
+    u.snap.value = look.snap;
     u.hazeKm.value = look.hazeKm;
     u.hazeHeight.value = look.hazeHeight;
     u.mistTop.value = look.mistTop;
@@ -252,6 +278,16 @@ export class Terrain {
     }
     return (drawn / 2) * this.perWedge;
   }
+}
+
+function arrayTexture(data: Uint8Array, size: number, depth: number, format: THREE.PixelFormat, internal: THREE.PixelFormatGPU) {
+  const texture = new THREE.DataArrayTexture(data, size, size, depth);
+  texture.format = format;
+  texture.internalFormat = internal;
+  texture.minFilter = texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 const wrap = (degrees: number) => ((((degrees + 180) % 360) + 360) % 360) - 180;

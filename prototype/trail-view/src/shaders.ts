@@ -1,20 +1,31 @@
 /** The GLSL. Every pass reads heights through the same level rule as `Surface` in skyline.ts. */
 
-const HEIGHTS = /* glsl */ `
+const LEVELS = /* glsl */ `
 precision highp sampler2DArray;
-uniform sampler2DArray heights;
 uniform float half0;
 uniform float levels;
+
+/** The finest level that holds p; levels or more beyond the last. */
+float levelOf(vec2 p) {
+  return max(0.0, ceil(log2(max(max(abs(p.x), abs(p.y)), 1.0) / half0)));
+}
+
+vec2 uvOn(float k, vec2 p) {
+  return vec2(p.x, -p.y) / (2.0 * half0 * exp2(k)) + 0.5;
+}
+`;
+
+const HEIGHTS = /* glsl */ `
+${LEVELS}
+uniform sampler2DArray heights;
 uniform float dtmLevels;
 uniform bool glo30Only;
 uniform float lift;
 uniform float curvature;
 
 float levelHeight(float k, vec2 p) {
-  float half_ = half0 * exp2(k);
-  vec2 uv = vec2(p.x, -p.y) / (2.0 * half_) + 0.5;
   float layer = glo30Only && k < dtmLevels ? levels + k : k;
-  return textureLod(heights, vec3(uv, layer), 0.0).r;
+  return textureLod(heights, vec3(uvOn(k, p), layer), 0.0).r;
 }
 
 float heightOn(float k, vec2 p) {
@@ -24,11 +35,6 @@ float heightOn(float k, vec2 p) {
     if (w > 0.0) h = mix(h, levelHeight(k + 1.0, p), w);
   }
   return h;
-}
-
-/** The finest level that holds p; levels or more beyond the last. */
-float levelOf(vec2 p) {
-  return max(0.0, ceil(log2(max(max(abs(p.x), abs(p.y)), 1.0) / half0)));
 }
 
 /** The drawn surface: height above the eye, dropped by curvature with refraction. */
@@ -58,6 +64,86 @@ vec3 sky(vec3 dir) {
   float toward = max(dot(normalize(dir.xy + 1e-6), normalize(sunDir.xy + 1e-6)), 0.0);
   float near = max(dot(dir, sunDir), 0.0);
   return c + GLOW * glow * (0.35 * pow(toward, 3.0) * exp(-5.0 * up) + 0.5 * pow(near, 24.0));
+}
+`;
+
+const COLOUR = /* glsl */ `
+${LEVELS}
+uniform sampler2DArray classes;
+uniform sampler2DArray s2;
+uniform float s2Levels;
+uniform vec3 ramps[33];
+uniform float snap;
+// Half a level sharper than the pixel footprint.
+const float DETAIL = -0.5;
+
+struct Ground {
+  vec3 albedo;
+  float water;
+  float tree;
+  float snow;
+};
+
+float luma(vec3 c) {
+  return dot(c, vec3(0.3, 0.59, 0.11));
+}
+
+vec3 ramp(int index, float t) {
+  vec3 a = ramps[index * 3];
+  vec3 b = ramps[index * 3 + 1];
+  vec3 c = ramps[index * 3 + 2];
+  return t < 0.5 ? mix(a, b, 2.0 * t) : mix(b, c, 2.0 * t - 1.0);
+}
+
+Ground groundOn(float k, vec2 p) {
+  vec2 uv = uvOn(k, p);
+  vec4 s = k < s2Levels ? texture(s2, vec3(uv, k)) : vec4(0.0);
+  bool seen = s.a > 0.5 / 255.0;
+  float ndvi = seen ? (s.a * 255.0 - 1.0) / 127.0 - 1.0 : 0.45;
+  float t = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);
+  // The four classes around p, each through its ramp, blended as a bilinear sample would be.
+  vec2 texel = uv * 1024.0 - 0.5;
+  ivec2 corner = ivec2(floor(texel));
+  vec2 f = texel - floor(texel);
+  vec3 palette = vec3(0.0);
+  float water = 0.0;
+  float tree = 0.0;
+  for (int j = 0; j < 4; j++) {
+    ivec2 o = ivec2(j & 1, j >> 1);
+    vec2 cls = texelFetch(classes, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).rg;
+    int index = int(cls.r * 255.0 + 0.5);
+    // Unknown ground is painted as grass.
+    if (index > 10) index = 2;
+    float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+    palette += w * ramp(index, t);
+    water += w * cls.g;
+    tree += index == 0 ? w : 0.0;
+  }
+  if (!seen) return Ground(palette, water, tree, 0.0);
+  // The satellite gives chroma only: brightness comes from the palette and the sun, because the
+  // mosaics carry their own shadows.
+  vec3 shown = min(s.rgb * 1.65, vec3(1.0));
+  vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-3));
+  chroma = mix(vec3(luma(chroma)), chroma, 0.8);
+  vec3 refl = pow(s.rgb, vec3(2.2));
+  float bright = smoothstep(0.28, 0.42, min(refl.r, min(refl.g, refl.b)));
+  float shaded = step(1.15 * refl.r, refl.b) * step(ndvi, 0.1) * smoothstep(0.03, 0.06, refl.b);
+  return Ground(mix(chroma, palette, snap), water, tree, max(bright, shaded) * (1.0 - water));
+}
+
+/**
+ * The ground under p from the level whose pixel matches the screen footprint, so the octave levels
+ * act as the mip chain, blended into the next one like the heights are.
+ */
+Ground groundAt(vec2 p, float footprint) {
+  float kf = max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0)) + DETAIL);
+  kf = min(kf, levels - 1.0);
+  float k = floor(kf);
+  float w = max(kf - k, smoothstep(0.9, 1.0, max(abs(p.x), abs(p.y)) / (half0 * exp2(k))));
+  Ground a = groundOn(k, p);
+  if (w <= 0.0 || k >= levels - 1.0) return a;
+  Ground b = groundOn(k + 1.0, p);
+  return Ground(mix(a.albedo, b.albedo, w), mix(a.water, b.water, w), mix(a.tree, b.tree, w), mix(a.snow, b.snow, w));
 }
 `;
 
@@ -97,7 +183,9 @@ void main() {
 
 export const terrainFragment = /* glsl */ `
 ${SKY}
-uniform vec3 ground;
+${COLOUR}
+uniform vec3 rock;
+uniform vec3 shore;
 uniform vec3 sunColour;
 uniform vec3 ambient;
 uniform float softness;
@@ -116,16 +204,33 @@ in float vShadow;
 out vec4 colour;
 
 void main() {
+  // Derivatives before the discard, where every pixel of the quad still runs.
+  float footprint = max(length(dFdx(vWorld.xy)), length(dFdy(vWorld.xy)));
   if (vInside < 0.5) discard;
   vec3 n = normalize(vNormal);
+  Ground g = groundAt(vWorld.xy, footprint);
+  // Steep open ground is rock; trees hold on to it.
+  float steep = 1.0 - smoothstep(0.766, 0.809, n.z);
+  vec3 albedo = mix(g.albedo, rock, steep * (1.0 - g.tree));
+  albedo = mix(albedo, ramps[18], g.snow);
   // Three soft bands of sunlight, with some of the smooth term kept so a high sun still shows
   // relief. A face out of the sun keeps the cool sky light, never black.
   float lit = max(dot(n, sunDir), 0.0) * vShadow;
   float band = 0.45 * smoothstep(0.03, 0.03 + softness, lit) + 0.55 * smoothstep(0.32, 0.32 + softness, lit);
-  vec3 c = ground * (ambient * (0.65 + 0.35 * n.z) + sunColour * mix(band, lit, gradient));
+  vec3 c = albedo * (ambient * (0.65 + 0.35 * n.z) + sunColour * mix(band, lit, gradient));
 
   float d = length(vWorld);
   vec3 dir = vWorld / d;
+  // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
+  // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
+  // would really show is darker than the sky.
+  vec3 up = normalize(vec3(2.0 * curvature * vWorld.xy, 1.0));
+  vec3 mirrored = reflect(dir, up);
+  float fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
+  vec3 body = mix(ramps[21], shore, 1.0 - smoothstep(0.5, 0.8, g.water)) * (ambient + 0.5 * sunColour * max(sunDir.z, 0.0));
+  vec3 water = mix(body, sky(mirrored), fresnel) + 4.0 * sunColour * vShadow * pow(max(dot(mirrored, sunDir), 0.0), 400.0);
+  c = mix(c, water, smoothstep(0.45, 0.55, g.water));
+
   vec3 hazeColour = sky(normalize(vec3(dir.xy, 0.0)));
   // Height fog: the mean of exp(-altitude / H) along the sight line, over the eye's altitude
   // and the true altitude of the fragment.

@@ -1,5 +1,5 @@
 [
- {"id": "hahnen", "photo": "hahnen", "dtm": "ch", "tz": "Europe/Zurich"},
- {"id": "rigidalstock-from-brunni", "photo": "rigidalstock-from-brunni", "dtm": "ch", "tz": "Europe/Zurich"},
- {"id": "urnerstaffel", "photo": "urnerstaffel", "dtm": "ch", "tz": "Europe/Zurich"}
+ {"id": "hahnen", "photo": "hahnen", "dtm": "ch", "tz": "Europe/Zurich", "default_leaf": "needleleaved"},
+ {"id": "rigidalstock-from-brunni", "photo": "rigidalstock-from-brunni", "dtm": "ch", "tz": "Europe/Zurich", "default_leaf": "needleleaved"},
+ {"id": "urnerstaffel", "photo": "urnerstaffel", "dtm": "ch", "tz": "Europe/Zurich", "default_leaf": "needleleaved"}
 ]
