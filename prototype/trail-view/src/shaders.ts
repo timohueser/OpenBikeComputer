@@ -532,7 +532,8 @@ void main() {
   // Steep open ground is rock, banded in strata by height; trees and roads hold on to it. Where
   // the geological map reaches, the rock takes its unit's colour. Variegated clays erode into
   // badlands, so their beds show on gentler slopes: red, white and green-grey, streaked by gullies.
-  float altitude = vWorld.z + curvature * dot(vWorld.xy, vWorld.xy);
+  // Above sea level, so strata, spray and sea do not move with the eye.
+  float altitude = eyeAltitude + vWorld.z + curvature * dot(vWorld.xy, vWorld.xy);
   // Strata follow the bedding planes: level where the kit gives none, tilted where it does.
   float bed = dot(vec3(vWorld.xy, altitude), bedding);
   vec2 strike = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) * 1.4142 : vec2(1.0);
@@ -560,14 +561,14 @@ void main() {
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor - 0.3, 0.0, 1.0)
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0));
   // Mapped exposed rock is mostly slabs.
-  rocky = max(rocky, 0.85 * g.bare);
+  rocky = max(rocky, 0.6 * g.bare);
   if (rocky > 0.0) {
     // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
     vec2 along = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) : vec2(1.0, 0.0);
     float ribs = length(bedding.xy) > 0.01 ? 3.0 : 1.0;
     vec3 cell = cells(vec2(dot(vWorld.xy, along) / ribs, dot(vWorld.xy, vec2(-along.y, along.x))), 7.0);
-    float slab = step(cell.x, rocky) * smoothstep(0.1, 0.16, cell.y);
-    vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.75, 1.0, smoothstep(0.16, 0.24, cell.y));
+    float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y);
+    vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
     // Close by, mapped bare rock is gravel between the slabs; the stones on it are models.
     if (g.bare > 0.0 && footprint < 0.5) {
       float grit = 0.78 + 0.3 * noise(vWorld.xy / 0.35) + 0.12 * noise(vWorld.xy / 2.5);
@@ -576,7 +577,7 @@ void main() {
       slab = max(slab, close);
     }
     float near = 1.0 - smoothstep(1.5, 4.0, footprint);
-    albedo = mix(mix(albedo, stone * 0.92, 0.6 * rocky), mix(albedo, face, slab), near);
+    albedo = mix(mix(albedo, stone * 0.92, 0.45 * rocky), mix(albedo, face, slab), near);
   }
   // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
   vec3 face = stone * strata;
@@ -598,20 +599,20 @@ void main() {
   c += wet * g.road * fresnel * sky(mirrored);
   // The body turns from the shallow colour beside the shore, where the surf churns it, to the deep
   // one within a few tens of metres: rocky coasts drop off fast.
-  vec3 body = mix(seaShallow, seaDeep, smoothstep(3.0, 45.0, g.shore)) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
+  float sea = 1.0 - smoothstep(1.0, 3.0, altitude);
+  vec3 body = mix(seaDeep, mix(seaShallow, seaDeep, smoothstep(3.0, 45.0, g.shore)), sea) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
   // Swell rolls in as faint lighter bands, and the sun's path glints in sparks rather than a sheen.
   body *= 1.0 + 0.06 * sin(dot(vWorld.xy, vec2(0.8, 0.6)) / 9.0 + time * 0.9) * (1.0 - smoothstep(2.0, 8.0, footprint));
-  float sparks = smoothstep(0.72, 0.8, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));
+  float sparks = smoothstep(0.8, 0.86, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));
   vec3 water = mix(body, sky(mirrored), 0.35 * fresnel)
-    + sunColour * shadow * (4.0 * pow(max(dot(mirrored, sunDir), 0.0), 400.0) + 2.5 * sparks * pow(max(dot(mirrored, sunDir), 0.0), 30.0));
+    + sunColour * shadow * (4.0 * pow(max(dot(mirrored, sunDir), 0.0), 400.0) + 2.5 * sparks * pow(max(dot(mirrored, sunDir), 0.0), 80.0));
   // Surf on the sea: a white rim at the shore, at least a pixel wide so a far coast keeps its line,
   // and broken crests rolling in.
-  float sea = 1.0 - smoothstep(1.0, 3.0, altitude);
   float rim = 1.0 - smoothstep(2.0, 5.0 + 3.0 * noise(vWorld.xy / 3.0), g.shore / max(footprint / 2.5, 1.0));
   float crest = smoothstep(0.84, 0.94, fract(g.shore / 17.0 + time * 0.05)) * (1.0 - smoothstep(8.0, 55.0, g.shore))
     * smoothstep(0.35, 0.6, noise(vWorld.xy / 6.0 + vec2(time * 0.2, 0.0))) * (1.0 - smoothstep(1.0, 4.0, footprint));
   water = mix(water, vec3(0.85) * (ambient + sunColour * max(sunDir.z, 0.0) * shadow), sea * max(rim, crest));
-  c = mix(c, water, smoothstep(0.45, 0.55, g.water));
+  c = mix(c, water, smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, n.z));
   colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
 }
 `;
@@ -758,17 +759,18 @@ out vec4 colour;
  * colour and how much of it covers the sky.
  */
 vec4 tower(vec3 dir, vec3 sunLight, vec3 skyLight) {
-  float az = atan(dir.x, dir.y);
+  // Noise on the unit circle of the bearing, so it has no seam where the angle wraps.
+  vec2 h = normalize(dir.xy + 1e-6);
   float e = asin(clamp(dir.z, -1.0, 1.0));
-  float group = smoothstep(0.3, 0.55, cloudNoise(vec2(az * 2.6, 3.0)));
-  float rise = group * (0.03 + 0.15 * cloudNoise(vec2(az * 9.0, 7.0))) * towers;
-  float lumps = 0.012 * (cloudNoise(vec2(az * 60.0, e * 40.0)) + 0.5 * cloudNoise(vec2(az * 130.0, e * 90.0)));
-  float base = 0.006 + 0.01 * cloudNoise(vec2(az * 5.0, 1.0));
+  float group = smoothstep(0.48, 0.68, cloudNoise(h * 6.5 + 3.0));
+  float rise = group * (0.04 + 0.12 * cloudNoise(h * 11.0 + 7.0)) * towers;
+  float lumps = 0.009 * (cloudNoise(h * 70.0 + e * 30.0) + 0.4 * cloudNoise(h * 160.0 + e * 60.0));
+  float base = 0.006 + 0.01 * cloudNoise(h * 12.0 + 1.0);
   float cover = smoothstep(base - 0.001, base + 0.002, e) * (1.0 - smoothstep(rise + lumps - 0.004, rise + lumps, e - base));
   if (cover <= 0.0 || rise <= 0.0) return vec4(0.0);
   float up = clamp((e - base) / max(rise, 1e-3), 0.0, 1.0);
   float side = max(dot(normalize(dir.xy + 1e-6), normalize(sunDir.xy + 1e-6)), 0.0);
-  float puff = smoothstep(0.35, 0.65, cloudNoise(vec2(az * 45.0, e * 70.0)));
+  float puff = smoothstep(0.35, 0.65, cloudNoise(h * 110.0 + e * 70.0));
   vec3 c = skyLight * (0.75 + 0.35 * up) + sunLight * (0.35 + 0.45 * up + 0.25 * puff) * (0.7 + 0.3 * side);
   return vec4(c, cover);
 }

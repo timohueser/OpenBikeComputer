@@ -537,8 +537,9 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float) -> np.n
     if not sea.any():
         return heights
     # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
-    # the shore is sea, however high the DEM puts it.
-    reach = max(1, round(CLIFF_REACH_M * 4 / (2 * half / SIZE)))
+    # the shore is sea, however high the DEM puts it. Twice the cliff reach, so a lough behind a
+    # cliff top keeps its level.
+    reach = max(1, round(CLIFF_REACH_M * 2 / (2 * half / SIZE)))
     for _ in range(reach):
         sea |= grow(sea, np.logical_or) & water
     top, near = heights, sea

@@ -147,7 +147,8 @@ export const KITS = {
       },
       moor: { colour: '#7e7152', heather: '#6e5266', share: 0.4 },
       habitats: {
-        rock: '#8d8f88',
+        // Mapped rock is slabs and stones on tawny ground; the slabs bring the grey.
+        rock: '#857a58',
         heath: '#7e7152',
         bog: '#86704a',
         bracken: '#6f8c3a',

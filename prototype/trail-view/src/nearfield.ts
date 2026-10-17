@@ -57,6 +57,10 @@ const TREELESS = new Set<Habitat>(['rock', 'heath', 'bog', 'bracken', 'rough', '
 const HERD_RADIUS_M = 400;
 const HERD_SPREAD_M = 14;
 const ANIMAL_M = 0.95;
+/** A crest within this many metres drops more than CREST_DROP_M within CREST_ARM_M to both sides. */
+const CREST_RADIUS_M = 1500;
+const CREST_ARM_M = 20;
+const CREST_DROP_M = 7;
 /** Crags along a crest, about this far apart and this tall. */
 const CRAG_SPACING_M = 5;
 const CRAG_HEIGHT_M: [number, number] = [2, 6];
@@ -411,6 +415,22 @@ export class NearField {
         const [cx, cy] = [x0 + (x1 - x0) * f + (rand() - 0.5) * 3, y0 + (y1 - y0) * f + (rand() - 0.5) * 3];
         if (Math.hypot(cx, cy) < CLEAR_M) continue;
         add('rock|crag', cx, cy, CRAG_HEIGHT_M[0] + rand() * (CRAG_HEIGHT_M[1] - CRAG_HEIGHT_M[0]), Math.atan2(y1 - y0, x1 - x0) + (rand() - 0.5) * 0.8);
+      }
+    }
+
+    // Crests the DEM rounds off: ground that drops steeply to both sides along some axis.
+    if (outcrops > 0) {
+      const h = (x: number, y: number) => groundHeight(bake, x, y);
+      for (let y = -CREST_RADIUS_M; y < CREST_RADIUS_M; y += CRAG_SPACING_M) {
+        for (let x = -CREST_RADIUS_M; x < CREST_RADIUS_M; x += CRAG_SPACING_M) {
+          const [cx, cy] = [x + (rand() - 0.5) * CRAG_SPACING_M, y + (rand() - 0.5) * CRAG_SPACING_M];
+          if (Math.hypot(cx, cy) > CREST_RADIUS_M || Math.hypot(cx, cy) < CLEAR_M) continue;
+          const c = h(cx, cy);
+          const crest = [[1, 0], [0, 1], [0.7071, 0.7071], [0.7071, -0.7071]].some(
+            ([dx, dy]) => c - h(cx + dx * CREST_ARM_M, cy + dy * CREST_ARM_M) > CREST_DROP_M && c - h(cx - dx * CREST_ARM_M, cy - dy * CREST_ARM_M) > CREST_DROP_M,
+          );
+          if (crest && rand() < outcrops) add('rock|crag', cx, cy, CRAG_HEIGHT_M[0] + rand() * (CRAG_HEIGHT_M[1] - CRAG_HEIGHT_M[0]), rand() * 2 * Math.PI);
+        }
       }
     }
 

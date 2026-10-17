@@ -36,12 +36,14 @@ export function ruin(width: number, depth: number, height: number, seed: number)
     for (let s = 0; s < steps; s++) {
       const [t0, t1] = [s / steps, (s + 1) / steps];
       const [x0, y0, x1, y1] = [ax + (bx - ax) * t0, ay + (by - ay) * t0, ax + (bx - ax) * t1, ay + (by - ay) * t1];
-      const top = height * (1 - 0.3 * rand() ** 2);
+      // Mostly whole to the wall head, broken down here and there.
+      const top = height * (rand() < 0.75 ? 1 - 0.04 * rand() : 0.7 + 0.2 * rand());
+      const stone = new THREE.Color(STONE[side % STONE.length]);
       // Bottom to top in storeys, so a slit can sit in one.
       for (let z = -1; z < top; z += 3) {
         const z1 = Math.min(z + 3, top);
-        const slit = z > 1 && z1 < top - 1 && s % 3 === 1 && rand() < 0.5;
-        const c = new THREE.Color(slit ? SLIT : STONE[Math.floor(rand() * STONE.length)]);
+        const slit = z > 1 && z1 < top - 1 && s === Math.floor(steps / 2) && rand() < 0.6;
+        const c = slit ? new THREE.Color(SLIT) : stone.clone().multiplyScalar(0.94 + 0.08 * rand());
         corners.push([x0, y0, z], [x1, y1, z], [x1, y1, z1], [x0, y0, z], [x1, y1, z1], [x0, y0, z1]);
         colours.push(c, c);
       }
