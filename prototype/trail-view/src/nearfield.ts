@@ -25,15 +25,18 @@ const CLASS = { tree: 0, shrub: 1, grass: 2, crop: 3, bare: 5, moss: 10 } as con
 /**
  * Where each ground plant grows, how tall it stands, and the share of grid points it takes there.
  * In a region with moor, heather also grows on grass that the satellite sees as moor, and grass only
- * off it: the shader decides per plant from the same ground the terrain paints.
+ * off it: the shader decides per plant from the same ground the terrain paints. Plants whose own
+ * colour is their character keep it (`own`) rather than taking the ground's.
  */
-const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share: number; habitat?: 1 | -1 }> = {
+const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share: number; habitat?: 1 | -1; own?: true }> = {
   grass: { on: [CLASS.grass, CLASS.crop], height: [0.25, 0.5], share: 1, habitat: -1 },
   'alpine-flowers': { on: [CLASS.grass], height: [0.2, 0.35], share: 0.15 },
   fern: { on: [CLASS.tree], height: [0.5, 0.9], share: 0.3 },
   heather: { on: [CLASS.shrub, CLASS.moss, CLASS.bare], height: [0.2, 0.4], share: 0.4, habitat: 1 },
   'heather-bloom': { on: [CLASS.shrub, CLASS.moss], height: [0.2, 0.4], share: 0.15, habitat: 1 },
   huckleberry: { on: [CLASS.tree], height: [0.4, 0.8], share: 0.25 },
+  garrigue: { on: [CLASS.shrub, CLASS.grass, CLASS.bare], height: [0.5, 1.0], share: 0.12, own: true },
+  esparto: { on: [CLASS.grass, CLASS.bare, CLASS.shrub], height: [0.4, 0.8], share: 0.3, own: true },
 };
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
 const CLEAR_M = 6;
@@ -297,7 +300,7 @@ export class NearField {
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
-  private readonly materials: Record<'tree' | 'plant' | 'moorPlant' | 'lushPlant' | 'building', THREE.ShaderMaterial>;
+  private readonly materials: Record<'tree' | 'plant' | 'ownPlant' | 'moorPlant' | 'lushPlant' | 'building', THREE.ShaderMaterial>;
   /** Set when the sun, the spot, the season or the surface moved. */
   shadowsStale = true;
   private readonly shadowMap = new THREE.WebGLRenderTarget(SHADOW_SIZE, SHADOW_SIZE, { depthTexture: depthMap() });
@@ -322,6 +325,7 @@ export class NearField {
     this.materials = {
       tree: material(treeVertex),
       plant: material(treeVertex, 0.7),
+      ownPlant: material(treeVertex, 0.15),
       moorPlant: material(treeVertex, 0.35, 1),
       lushPlant: material(treeVertex, 0.7, -1),
       building: material(buildingVertex),
@@ -530,7 +534,9 @@ export class NearField {
           : plant(name as PlantName, leaves),
       );
       const habitat = what === 'plant' && !this.placedByMap ? GROUND[name as PlantName].habitat : undefined;
-      const material = what !== 'plant' ? this.materials.tree : habitat === 1 ? this.materials.moorPlant : habitat === -1 ? this.materials.lushPlant : this.materials.plant;
+      const own = what === 'plant' && GROUND[name as PlantName].own;
+      const material = what !== 'plant' ? this.materials.tree : own ? this.materials.ownPlant
+        : habitat === 1 ? this.materials.moorPlant : habitat === -1 ? this.materials.lushPlant : this.materials.plant;
       const mesh = new THREE.Mesh(forest(model, instances), material);
       mesh.frustumCulled = false;
       // Ground plants are too small to cast a shadow worth their cost.

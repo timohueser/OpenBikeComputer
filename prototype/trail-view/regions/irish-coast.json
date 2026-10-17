@@ -11,7 +11,7 @@
   "ramps": { "grass": ["#8f8455", "#7c8c52", "#5f8748"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
   "moor": { "colour": "#7e7152", "heather": "#6f5d63", "share": 0.3 },
   "habitats": {
-   "rock": "#857a58",
+   "rock": "#77794c",
    "heath": "#7e7152",
    "bog": "#86704a",
    "bracken": "#677338",
@@ -29,9 +29,11 @@
    "sunny": { "cover": 0.32, "base": 900, "dark": 0.4, "zenith": "#5d7fae", "horizon": "#a9bfd4", "grey": 0.35, "towers": 0.8 }
   },
   "outcrops": 0.55,
-  "rock": "#a3a094",
+  "rock": "#969489",
+  "cliff": "#6f716b",
+  "snowline": 1100,
   "bedding": { "strike": 55, "dip": 65 },
-  "sea": { "deep": "#0e3461", "shallow": "#1f7f86" },
+  "sea": { "deep": "#12385e", "shallow": "#1d6274" },
   "swell": 250
  }
 }

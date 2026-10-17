@@ -10,7 +10,7 @@
  "look": {
   "snap": 0.4,
   "hazeKm": 35,
-  "outcrops": 0,
+  "outcrops": 0, "snowline": 1500,
   "rock": "#8c877d",
   "sea": { "deep": "#2c5874", "shallow": "#4f8088" },
   "grade": { "shadow": [-0.004, 0, 0.012], "light": [0.01, 0.004, -0.008], "saturation": 1.08 }

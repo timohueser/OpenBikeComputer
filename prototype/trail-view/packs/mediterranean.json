@@ -1,13 +1,13 @@
 {
  "name": "Mediterranean",
  "extends": "base",
- "about": "Stand-ins until the library has Aleppo pine, holm oak, carob and esparto: a conifer for the pines, a round broadleaf for the evergreen oaks, gorse for the garrigue, hawthorn for almonds.",
+ "about": "Aleppo pines and holm oaks on the slopes, kermes oak scrub, garrigue cushions and esparto tussocks between the rocks; hawthorn stands in for almonds.",
  "trees": [
-  { "tree": "douglas-fir", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1600], "weight": 1 },
-  { "tree": "sycamore-maple", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 1, "evergreen": true },
-  { "tree": "gorse", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 1 }
+  { "tree": "aleppo-pine", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 3 },
+  { "tree": "holm-oak", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 2 },
+  { "tree": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 1 }
  ],
- "ground": ["grass", "heather"],
+ "ground": ["esparto", "garrigue", "grass"],
  "orchard": "hawthorn",
  "style": {
   "name": "Village house",

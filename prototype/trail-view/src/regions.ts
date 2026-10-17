@@ -42,8 +42,12 @@ export interface RegionLook {
   habitats?: Partial<Record<Habitat, string>>;
   /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */
   outcrops: number;
-  /** Cliffs and slabs. */
+  /** Slabs and outcrops, and cliff walls unless `cliff` says otherwise. */
   rock: string;
+  /** Cliff walls: often darker than sunlit slabs, shaded, wet and lichened. */
+  cliff?: string;
+  /** Out of winter, snow lies only above this altitude; below it a white pixel is rock or spray. */
+  snowline: number;
   /** The rock's bedding planes in degrees, so cliffs and slabs show their strata as they lie. */
   bedding?: { strike: number; dip: number };
   /** Open water away from the shore, and the sea beside it. */

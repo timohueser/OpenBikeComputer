@@ -469,6 +469,10 @@ ${SHADE}
 ${COLOUR}
 uniform sampler2DArray normals;
 uniform vec3 rock;
+// Below this altitude the satellite's white is rock, spray or cloud, not snow (off season).
+uniform float snowline;
+// Cliff walls, where no geological map gives the rock's colour.
+uniform vec3 cliffRock;
 uniform vec3 seaDeep;
 uniform vec3 seaShallow;
 uniform vec3 heather;
@@ -527,6 +531,8 @@ void main() {
   float footprint = max(length(dFdx(vWorld.xy)), length(dFdy(vWorld.xy)));
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
+  // How flat the ground is at the pixel's own level: water lies only where it is.
+  float level = n.z;
   // A cliff spans few texels across and many metres up, so its fine slopes would streak down
   // the face; it takes its normal from coarser levels instead.
   float cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
@@ -603,12 +609,13 @@ void main() {
     n = normalize(n + vec3(0.9 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
   // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
-  vec3 face = stone * strata;
+  vec3 face = (rockLevels > 0.0 ? stone : cliffRock) * strata;
   face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
-  face = mix(face, vec3(0.42, 0.2, 0.06), 0.45 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
+  face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
     * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
   albedo = mix(albedo, face, steep * (1.0 - g.tree) * (1.0 - g.road));
-  albedo = mix(albedo, ramps[18], g.snow) * (1.0 - 0.3 * wet * (1.0 - g.snow));
+  float snow = g.snow * smoothstep(snowline - 200.0, snowline, altitude);
+  albedo = mix(albedo, ramps[18], snow) * (1.0 - 0.3 * wet * (1.0 - snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   vec3 c = lightUp(albedo, n, shadow, open);
 
@@ -637,7 +644,7 @@ void main() {
   float crest = smoothstep(0.84, 0.94, fract(g.shore / 17.0 + time * 0.05)) * (1.0 - smoothstep(8.0, 15.0 + 70.0 * swell, g.shore))
     * smoothstep(0.35, 0.6, noise(vWorld.xy / 6.0 + vec2(time * 0.2, 0.0))) * (1.0 - smoothstep(1.0, 4.0, footprint)) * (0.2 + 0.8 * swell);
   water = mix(water, vec3(0.85) * (ambient + sunColour * max(sunDir.z, 0.0) * shadow), sea * max(rim, crest));
-  c = mix(c, water, smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, n.z));
+  c = mix(c, water, smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, level));
   colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
 }
 `;

@@ -136,7 +136,7 @@ async function seasonChanged(): Promise<void> {
   const { bake } = loaded;
   const season = Object.keys(SEASONS).indexOf(state.season);
   const { region } = loaded;
-  terrain.setPalette(ramps(season, DECIDUOUS[region.leaf], region.look));
+  terrain.setPalette(ramps(season, DECIDUOUS[region.leaf], region.look), SEASON_NAMES[season] === 'winter' ? -1e4 : region.look.snowline);
   terrain.nearField.setSeason(SEASON_NAMES[season]);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));

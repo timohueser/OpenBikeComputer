@@ -227,6 +227,8 @@ export class Terrain {
       ramps: { value: [] as THREE.Color[] },
       snap: { value: 0.4 },
       rock: { value: new THREE.Color() },
+      cliffRock: { value: new THREE.Color() },
+      snowline: { value: -1e4 },
       seaDeep: { value: new THREE.Color() },
       seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
@@ -365,6 +367,7 @@ export class Terrain {
     u.shoreReach.value = bake.meta.shore_reach_m;
     const land = region.look;
     u.rock.value.set(land.rock);
+    u.cliffRock.value.set(land.cliff ?? land.rock);
     u.seaDeep.value.set(land.sea.deep);
     u.seaShallow.value.set(land.sea.shallow);
     u.moorColour.value.set(land.moor?.colour ?? land.rock);
@@ -416,8 +419,10 @@ export class Terrain {
     this.uniforms.s2Levels.value = data ? levels : 0;
   }
 
-  setPalette(ramps: THREE.Color[]): void {
+  /** The season's palette, and the altitude below which white is no snow (none in winter). */
+  setPalette(ramps: THREE.Color[], snowline: number): void {
     this.uniforms.ramps.value = ramps;
+    this.uniforms.snowline.value = snowline;
   }
 
   /**
