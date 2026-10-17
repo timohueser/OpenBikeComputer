@@ -1,0 +1,1 @@
+{ "name": "Baden-Württemberg", "extends": "world", "where": [ [7.5, 47.5, 10.5, 49.8] ], "tz": "Europe/Berlin", "dtm": "de-bw" }

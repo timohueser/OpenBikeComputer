@@ -1,0 +1,1 @@
+{ "name": "Valencian coast", "extends": "spain", "where": [ [-1.6, 37.6, 0.6, 39.6] ], "pack": "mediterranean" }

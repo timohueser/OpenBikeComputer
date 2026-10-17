@@ -7,15 +7,12 @@
 import * as THREE from 'three';
 import { HABITATS, type Bake } from './bake';
 import type { Light } from './light';
-import type { Kit } from './models/kits';
+import type { Region } from './regions';
 import { NearField } from './nearfield';
-import { ROADS, ROCK, SEA, VARIEGATED } from './palette';
+import { ROADS, VARIEGATED } from './palette';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 import type { Weather } from './weather';
-
-/** The grade where a kit sets none: shadows a little cool, light a little warm. */
-const GRADE = { shadow: [-0.004, 0, 0.012] as const, light: [0.01, 0.004, -0.008] as const, saturation: 1.08 };
 
 /** How far the clouds drift in an hour of the day, in metres east and north: slow enough for a day played in 30 s. */
 const DRIFT_PER_HOUR = [2000, 700];
@@ -173,7 +170,7 @@ export class Terrain {
       s2Levels: { value: 0 },
       ramps: { value: [] as THREE.Color[] },
       snap: { value: 0.4 },
-      rock: { value: new THREE.Color(ROCK) },
+      rock: { value: new THREE.Color() },
       seaDeep: { value: new THREE.Color() },
       seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
@@ -266,7 +263,7 @@ export class Terrain {
   }
 
   /** Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced. */
-  setBake(bake: Bake, kit: Kit): void {
+  setBake(bake: Bake, region: Region): void {
     const { size, levels, half0_m, dtm_levels } = bake.meta;
     const layers = [...bake.surface, ...bake.glo30];
     const data = new Uint16Array(size * size * layers.length);
@@ -306,16 +303,16 @@ export class Terrain {
     u.waterMap.value = this.water;
     u.waterLevels.value = bake.meta.water_levels;
     u.shoreReach.value = bake.meta.shore_reach_m;
-    const land = kit.land ?? {};
-    u.rock.value.set(land.rock ?? ROCK);
-    u.seaDeep.value.set(land.sea?.deep ?? SEA.deep);
-    u.seaShallow.value.set(land.sea?.shallow ?? SEA.shallow);
-    u.moorColour.value.set(land.moor?.colour ?? ROCK);
+    const land = region.look;
+    u.rock.value.set(land.rock);
+    u.seaDeep.value.set(land.sea.deep);
+    u.seaShallow.value.set(land.sea.shallow);
+    u.moorColour.value.set(land.moor?.colour ?? land.rock);
     u.moorOn.value = land.moor ? 1 : 0;
-    u.heather.value.set(land.moor?.heather ?? ROCK);
+    u.heather.value.set(land.moor?.heather ?? land.rock);
     u.heatherShare.value = land.moor?.share ?? 0;
-    u.outcrops.value = land.outcrops ?? 0;
-    const grade = land.grade ?? GRADE;
+    u.outcrops.value = land.outcrops;
+    const { grade } = land;
     u.gradeShadow.value.set(...grade.shadow);
     u.gradeLight.value.set(...grade.light);
     u.saturation.value = grade.saturation;
@@ -346,7 +343,7 @@ export class Terrain {
       depthBuffer: false,
     });
     u.normals.value = this.normals.texture;
-    this.nearField.set(bake, kit);
+    this.nearField.set(bake, region);
     this.setColour(null, 0);
     this.shadowsStale = this.surfaceStale = true;
   }

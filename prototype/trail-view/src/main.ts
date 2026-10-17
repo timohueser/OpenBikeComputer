@@ -5,9 +5,9 @@ import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
-import { KITS, type Kit, type KitName } from './models/kits';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
+import { regionAt, type Region } from './regions';
 import { WEATHERS, weatherLight } from './weather';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
@@ -49,12 +49,14 @@ const state = {
   pitch: 0,
   vfov: 60,
 };
-const DEFAULT_LOOK = { snap: 0.4, hazeKm: 35 };
-const look: Look = { ...DEFAULT_LOOK, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
-const readout = { sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
+const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
+const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
+  region: Region;
+  /** Whether the bake holds sea: water at sea level on the near levels. */
+  sea: boolean;
   ground: { dtm: Surface; glo30: Surface };
   sky: { dtm: Skyline; glo30: Skyline };
   sighted: Sighted[];
@@ -65,7 +67,6 @@ const glo30Only = () => !loaded?.bake.meta.dtm_levels || state.surface === GLO30
 const active = <T>(pair: { dtm: T; glo30: T }) => (glo30Only() ? pair.glo30 : pair.dtm);
 const photoLocked = () => Boolean(state.photoCamera && loaded?.bake.meta.photo && photo.naturalWidth);
 
-const presetOf = (id: string) => presets.find((p) => p.id === id)!;
 
 let selecting = '';
 async function select(id: string): Promise<void> {
@@ -76,7 +77,8 @@ async function select(id: string): Promise<void> {
   const bake = await loadBake(id);
   if (selecting !== id) return;
   const { meta } = bake;
-  terrain.setBake(bake, KITS[presetOf(id).kit as KitName]);
+  const region = regionAt(meta.lat, meta.lon);
+  terrain.setBake(bake, region);
   const area = meta.size * meta.size;
   const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
   const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m, canopy);
@@ -85,11 +87,11 @@ async function select(id: string): Promise<void> {
     : dtm;
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
-  loaded = { bake, ground: { dtm, glo30 }, sky, sighted: [] };
-  const land = (KITS[presetOf(id).kit as KitName] as Kit).land;
-  look.snap = land?.snap ?? DEFAULT_LOOK.snap;
-  look.hazeKm = land?.hazeKm ?? DEFAULT_LOOK.hazeKm;
+  loaded = { bake, region, sea: holdsSea(bake), ground: { dtm, glo30 }, sky, sighted: [] };
+  look.snap = region.look.snap;
+  look.hazeKm = region.look.hazeKm;
   terrain.setLook(look);
+  readout.region = region.chain.join(' › ');
   startAnimation();
   const shot = meta.photo;
   const columns = shot?.columns;
@@ -127,8 +129,8 @@ async function seasonChanged(): Promise<void> {
   if (!loaded) return;
   const { bake } = loaded;
   const season = Object.keys(SEASONS).indexOf(state.season);
-  const preset = presetOf(bake.meta.id);
-  terrain.setPalette(ramps(season, DECIDUOUS[preset.default_leaf], (KITS[preset.kit as KitName] as Kit).land));
+  const { region } = loaded;
+  terrain.setPalette(ramps(season, DECIDUOUS[region.leaf], region.look));
   terrain.nearField.setSeason(SEASON_NAMES[season]);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
@@ -151,10 +153,10 @@ function surfaceChanged(): void {
 
 function lightChanged(refreshShadows = true): void {
   if (!loaded) return;
-  const { lat, lon, id } = loaded.bake.meta;
-  const timezone = presetOf(id).tz;
-  const weather = { ...WEATHERS[state.weather], ...(KITS[presetOf(id).kit as KitName] as Kit).land?.weather?.[state.weather as 'sunny'] };
-  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, timezone);
+  const { lat, lon } = loaded.bake.meta;
+  const { tz, look: regional } = loaded.region;
+  const weather = { ...WEATHERS[state.weather], ...regional.weather?.[state.weather as 'sunny'] };
+  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, tz);
   terrain.setLight(weatherLight(light, weather), refreshShadows);
   terrain.setWeather(weather, state.hour);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
@@ -249,8 +251,16 @@ let animating = false;
 let lastTick = 0;
 let ticks = 0;
 
-/** Surf rolls on a kit's sea. */
-const seaside = () => !!loaded && !!(KITS[presetOf(loaded.bake.meta.id).kit as KitName] as Kit).land?.sea;
+/** Surf rolls where the bake holds sea. */
+const seaside = () => !!loaded?.sea;
+
+function holdsSea(bake: Bake): boolean {
+  const { size, water_levels, eye_m } = bake.meta;
+  for (let k = 0; k < water_levels; k++) {
+    for (let i = 0; i < size * size; i += 7) if (bake.classes[(k * size * size + i) * 2 + 1] > 127 && bake.surface[k][i] + eye_m < 2) return true;
+  }
+  return false;
+}
 
 /** Rain falls, surf rolls and the day plays frame by frame; everything else renders on demand. */
 function animate(now: number): void {
@@ -398,7 +408,7 @@ function measure(): void {
 }
 
 const gui = new GUI({ title: 'Trail View', width: 340 });
-const spots = Object.fromEntries(presets.map((p) => [`${KITS[p.kit as KitName].name} · ${p.name}`, p.id]));
+const spots = Object.fromEntries(presets.map((p) => [p.name, p.id]));
 gui.add(state, 'preset', spots).name('spot').onChange(select);
 gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
 gui.add(state, 'hour', 0, 24, 0.05).name('time of day').listen().onChange(() => lightChanged());
@@ -454,6 +464,7 @@ style.onChange(() => {
 });
 style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, 'copy').name('copy look JSON');
 const facts = gui.addFolder('Readout').close();
+facts.add(readout, 'region').listen().disable();
 facts.add(readout, 'sun').listen().disable();
 facts.add(readout, 'dtm').name('DTM').listen().disable();
 facts.add(readout, 'eye').listen().disable();

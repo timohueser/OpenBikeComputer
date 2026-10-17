@@ -1,0 +1,35 @@
+{
+ "name": "Irish coast",
+ "extends": "ireland",
+ "where": [
+  [-10.6, 51.4, -9.2, 52.3]
+ ],
+ "about": "The south-west peninsulas and the Reeks: washed Atlantic headlands, bright grass, moor and heather, grey slabs breaking through, a navy sea turning turquoise at the rocks.",
+ "pack": "irish-coast",
+ "look": {
+  "ramps": { "grass": ["#8f8455", "#7c8c52", "#5f8748"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
+  "moor": { "colour": "#7e7152", "heather": "#6e5266", "share": 0.4 },
+  "habitats": {
+   "rock": "#857a58",
+   "heath": "#7e7152",
+   "bog": "#86704a",
+   "bracken": "#6f8c3a",
+   "rough": "#788a4e",
+   "pasture": "#5f8748",
+   "scrub": "#55652f",
+   "hedge": "#3b5530",
+   "sand": "#d6cba8",
+   "saltmarsh": "#7c8a60"
+  },
+  "snap": 0.85,
+  "hazeKm": 70,
+  "grade": { "shadow": [-0.006, 0.004, 0.016], "light": [0.006, 0.004, -0.004], "saturation": 1.1 },
+  "weather": {
+   "sunny": { "cover": 0.32, "base": 900, "dark": 0.4, "zenith": "#5d7fae", "horizon": "#a9bfd4", "grey": 0.35, "towers": 0.8 }
+  },
+  "outcrops": 0.55,
+  "rock": "#8d8f88",
+  "bedding": { "strike": 55, "dip": 65 },
+  "sea": { "deep": "#0e3461", "shallow": "#2a9a98" }
+ }
+}

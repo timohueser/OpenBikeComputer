@@ -123,18 +123,15 @@ SUPERSAMPLE = 4
 # The water levels' second byte: metres from water to the nearest land as sqrt(d / SHORE_REACH_M),
 # so the shallows near a shore keep their detail and open water reaches the deep colour.
 SHORE_REACH_M = 600.0
-# Where GLO-30 is the only elevation, a cliff coast is a 30 m slope into the sea. The sea beside land
-# stands at sea level, so the coast drops where WorldCover puts the water's edge; land this close
-# to it rises toward the highest ground within reach, by at most CLIFF_RAISE_M, where that is a
-# cliff's height. A larger raise lifts the edge to ground that only rises further inland.
-CLIFF_REACH_M = 15.0
-CLIFF_RAISE_M = 6.0
-CLIFF_MIN_M = 12.0
+# Water at most this high is the sea, for cliff coasts.
 SEA_LEVEL_M = 3.0
+# Regions are rulesets in regions/: which DTM, land cover and geology a place uses and how its
+# coast is shaped come from the deepest region whose box holds the eye (see src/regions.ts).
+REGIONS = HERE / "regions"
 
 # Geology for rock colour on k < ROCK_LEVELS: IGME's continuous 1:50 000 map, layer 1 is the
 # units' fill. Its colours are cartographic, so each unit's own lithology text picks the colour.
-GEOLOGY = {"es": ("https://mapas.igme.es/gis/services/Cartografia_Geologica/IGME_Geode_50/MapServer/WMSServer", "1",
+GEOLOGY = {"igme": ("https://mapas.igme.es/gis/services/Cartografia_Geologica/IGME_Geode_50/MapServer/WMSServer", "1",
                   "GEODE 1:50 000 © IGME")}
 ROCK_LEVELS = 3
 # Words in a unit's description and the rock colour they mean, first match first. Variegated rock
@@ -154,10 +151,9 @@ ROCK = "#b0a796"
 HABITATS = ("none", "rock", "heath", "bog", "bracken", "rough", "pasture", "scrub", "hedge", "sand", "saltmarsh", "built",
             "water")
 HABITAT_LEVELS = 3
-# Ireland's National Land Cover Map 2018, mapped from 1 m imagery to 0.05 ha: (west, south, east, north),
-# the feature service, and its LEVEL_2_VALUE words for each habitat, the first match winning.
-NLCM = ((-10.7, 51.35, -5.9, 55.45),
-        "https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0",
+# Ireland's National Land Cover Map 2018, mapped from 1 m imagery to 0.05 ha: the feature service,
+# and its LEVEL_2_VALUE words for each habitat, the first match winning.
+NLCM = ("https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0",
         "National Land Cover Map 2018 © Tailte Éireann and EPA, CC BY 4.0")
 NLCM_WORDS = [("exposed rock", "rock"), ("heath", "heath"), ("bog", "bog"), ("peat", "bog"), ("fen", "bog"),
               ("swamp", "bog"), ("bracken", "bracken"), ("wet grassland", "rough"), ("dry grassland", "rough"),
@@ -201,6 +197,30 @@ def fixture_photo(name: str) -> Path:
     else:
         base = Path.home() / ".cache/openbikecomputer/fixtures/by-id"
     return base / "peak-view-photos/photos" / f"{name}.jpg"
+
+
+def merge(a: dict, b: dict) -> dict:
+    """b over a: objects merge, anything else replaces."""
+    out = dict(a)
+    for key, value in b.items():
+        out[key] = merge(a[key], value) if isinstance(value, dict) and isinstance(a.get(key), dict) else value
+    return out
+
+
+def region_at(lat: float, lon: float) -> dict:
+    """The deepest region whose box holds the point, merged over its parents, with its id."""
+    table = {path.stem: json.loads(path.read_text()) for path in REGIONS.glob("*.json")}
+
+    def chain(name: str) -> list[str]:
+        return chain(table[name]["extends"]) + [name] if "extends" in table[name] else [name]
+
+    fits = [(len(chain(name)), -(e - w) * (n - s), name) for name, region in table.items()
+            for w, s, e, n in region.get("where", []) if w <= lon <= e and s <= lat <= n]
+    name = max(fits)[2] if fits else "world"
+    region = {}
+    for step in chain(name):
+        region = merge(region, {k: v for k, v in table[step].items() if k not in ("extends", "where", "about")})
+    return region | {"id": name}
 
 
 def load_preset(preset_id: str) -> dict:
@@ -530,8 +550,12 @@ def grow(a: np.ndarray, op) -> np.ndarray:
     return out
 
 
-def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float) -> np.ndarray:
-    """GLO-30 heights with cliff coasts made sheer (see CLIFF_REACH_M)."""
+def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs: dict) -> np.ndarray:
+    """GLO-30 heights with cliff coasts made sheer. GLO-30 makes a cliff a 30 m slope into the sea.
+    The sea beside land stands at sea level, so the coast drops where WorldCover puts the water's
+    edge; land within the region's reach_m of it rises toward the highest ground within reach, by at
+    most raise_m, where that ground is min_m high. A larger raise lifts the edge to ground that only
+    rises further inland."""
     water = classes[..., 1] == 255
     sea = water & (heights <= SEA_LEVEL_M)
     if not sea.any():
@@ -539,15 +563,15 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float) -> np.n
     # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
     # the shore is sea, however high the DEM puts it. Twice the cliff reach, so a lough behind a
     # cliff top keeps its level.
-    reach = max(1, round(CLIFF_REACH_M * 2 / (2 * half / SIZE)))
+    reach = max(1, round(cliffs["reach_m"] * 2 / (2 * half / SIZE)))
     for _ in range(reach):
         sea |= grow(sea, np.logical_or) & water
     top, near = heights, sea
-    for _ in range(max(1, round(CLIFF_REACH_M / (2 * half / SIZE)))):
+    for _ in range(max(1, round(cliffs["reach_m"] / (2 * half / SIZE)))):
         top, near = grow(top, np.maximum), grow(near, np.logical_or)
-    rim = ~water & near & (top >= CLIFF_MIN_M)
+    rim = ~water & near & (top >= cliffs["min_m"])
     out = heights.copy()
-    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + CLIFF_RAISE_M))
+    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + cliffs["raise_m"]))
     out[sea] = np.minimum(heights[sea], 0.0)
     return out
 
@@ -674,7 +698,7 @@ def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, s
         query = {"where": "1=1", "geometry": f"{w},{s},{e},{n}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
                  "spatialRel": "esriSpatialRelIntersects", "outFields": "LEVEL_2_VALUE", "outSR": 4326, "f": "json"}
         get = lambda **extra: json.loads(urllib.request.urlopen(
-            f"{NLCM[1]}/query?{urllib.parse.urlencode({**query, **extra})}", timeout=600).read())
+            f"{NLCM[0]}/query?{urllib.parse.urlencode({**query, **extra})}", timeout=600).read())
         count = get(returnCountOnly="true", returnGeometry="false")["count"]
         with ThreadPoolExecutor(3) as pool:
             pages = pool.map(lambda offset: get(returnGeometry="true", resultOffset=offset, resultRecordCount=2000),
@@ -866,7 +890,9 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     lat, lon = preset["lat"], preset["lon"]
     frame = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
     to_wgs84 = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:4326", always_xy=True)
-    dtm = preset.get("dtm")
+    region = region_at(lat, lon)
+    dtm = region.get("dtm")
+    print(f"  region {region['id']}", flush=True)
     sizes = []
     to_frame = Transformer.from_crs("EPSG:4326", CRS.from_proj4(frame), always_xy=True)
 
@@ -899,9 +925,9 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     orchards = [metres(w) for w in tagged("landuse", "orchard") if w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM features: {len(walls)} walls and hedges, "
           f"{len(orchards)} orchards", flush=True)
-    geology = GEOLOGY.get(dtm)
+    geology = GEOLOGY.get(region.get("geology"))
     units: dict[int, str] = {}
-    habitats = nlcm(preset["id"], lat, lon, to_wgs84) if NLCM[0][0] <= lon <= NLCM[0][2] and NLCM[0][1] <= lat <= NLCM[0][3] else []
+    habitats = nlcm(preset["id"], lat, lon, to_wgs84) if region.get("landcover") == "nlcm" else []
     if habitats:
         print(f"  land cover: {len(habitats)} polygons", flush=True)
 
@@ -932,7 +958,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, "glo30", len(blob)))
             classes = class_level(k, frame, bbox, heights, work)
             if heights is glo30:
-                heights = sharpen_coast(heights, classes, half)
+                heights = sharpen_coast(heights, classes, half, region["cliffs"])
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
@@ -945,7 +971,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 (out / f"road-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "road", len(blob)))
             if geology and k < ROCK_LEVELS:
-                blob = pack(rock_level(dtm, k, frame, bbox, work, units))
+                blob = pack(rock_level(region["geology"], k, frame, bbox, work, units))
                 (out / f"rock-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "rock", len(blob)))
             if habitats and k < HABITAT_LEVELS:
@@ -981,7 +1007,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, f"s2-q{q}", len(blob)))
             print(f"  colour level {k}", flush=True)
 
-    trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), preset.get("default_leaf", "mixed"))
+    trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), region["leaf"])
     trees = np.concatenate([trees, orchard_trees(orchards)])
     blob = pack(trees)
     (out / "trees.bin.gz").write_bytes(blob)
@@ -1012,7 +1038,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
 
     credits = [CREDITS["glo30"]] + ([CREDITS[dtm]] if dtm else []) + [CREDITS["worldcover"], CREDITS["s2"]]
     credits += [geology[2]] if geology else []
-    credits += [NLCM[2]] if habitats else []
+    credits += [NLCM[1]] if habitats else []
     if not skip_peaks:
         radius = HALF0_M * 2 ** (LEVELS - 1)
         raw = overpass_peaks(lat, lon, radius)

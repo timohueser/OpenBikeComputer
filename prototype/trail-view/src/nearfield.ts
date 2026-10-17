@@ -1,15 +1,15 @@
 /**
- * What the near pass draws besides the terrain, from the place's kit: trees within 1 km at three
- * levels of detail, shrubs, rocks and ground plants near the eye, OSM buildings as the kit's houses
+ * What the near pass draws besides the terrain, from the region's pack: trees within 1 km at three
+ * levels of detail, shrubs, rocks and ground plants near the eye, OSM buildings as the pack's houses
  * and landmarks, and OSM walls and hedges.
- * Where each object stands comes from the data; the kit decides what it looks like.
+ * Where each object stands comes from the data; the pack decides what it looks like.
  */
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { HABITATS, type Bake, type Building, type Habitat } from './bake';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
-import type { Kit } from './models/kits';
+import type { Pack, Region } from './regions';
 import { lighthouse, ruin } from './models/landmarks';
 import { HEDGE, STONE } from './palette';
 import { plant, type PlantName } from './models/plants';
@@ -24,7 +24,7 @@ const CLASS = { tree: 0, shrub: 1, grass: 2, crop: 3, bare: 5, moss: 10 } as con
 
 /**
  * Where each ground plant grows, how tall it stands, and the share of grid points it takes there.
- * In a kit with moor, heather also grows on grass that the satellite sees as moor, and grass only
+ * In a region with moor, heather also grows on grass that the satellite sees as moor, and grass only
  * off it: the shader decides per plant from the same ground the terrain paints.
  */
 const GROUND: Record<PlantName, { on: number[]; height: [number, number]; share: number; habitat?: 1 | -1 }> = {
@@ -46,7 +46,7 @@ const SHRUB_SHARE = 0.5;
 const SHRUB_HEIGHT_M: [number, number] = [0.8, 1.8];
 /**
  * Rocks on a jittered grid within this many metres, on open ground that is steep, on a ridge or
- * by the sea, as many as the kit's outcrops say: the same ground the terrain paints with slabs.
+ * by the sea, as many as the region's outcrops say: the same ground the terrain paints with slabs.
  */
 const ROCK_RADIUS_M = 400;
 const ROCK_SPACING_M = 4;
@@ -103,7 +103,7 @@ const SUN_M = 2000;
 /** Per instance: x, y, height, heading, tint. */
 type Instances = number[];
 
-/** The kit house for an OSM building value and its footprint area. */
+/** The pack house for an OSM building value and its footprint area. */
 function kindOf(tag: string, area: number): BuildingKind {
   if (SHEDS.has(tag)) return 'barn';
   if (tag === 'farm') return 'farmhouse';
@@ -145,7 +145,7 @@ function rectangle(outline: THREE.Vector2[]): { x: number; y: number; angle: num
   return best;
 }
 
-/** Walls and a flat roof along an outline, for footprints no kit house fits. */
+/** Walls and a flat roof along an outline, for footprints no pack house fits. */
 function outlined(outline: THREE.Vector2[], z0: number, height: number, wall: THREE.Color): THREE.BufferGeometry {
   const position: number[] = [];
   const color: number[] = [];
@@ -167,9 +167,9 @@ function outlined(outline: THREE.Vector2[], z0: number, height: number, wall: TH
   return geometry;
 }
 
-/** Every building as a kit house on its footprint, in metres from the eye. */
-function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometry | null {
-  const houses: BuildingStyle = { ...kit.style, ...kit.houses };
+/** Every building as a pack house on its footprint, in metres from the eye. */
+function town(buildings: Building[], eye: number, pack: Pack): THREE.BufferGeometry | null {
+  const houses: BuildingStyle = { ...pack.style, ...pack.houses };
   const rand = random(3);
   const parts: THREE.BufferGeometry[] = [];
   for (const [base, tag, levels, height, ring] of buildings) {
@@ -194,12 +194,12 @@ function town(buildings: Building[], eye: number, kit: Kit): THREE.BufferGeometr
       continue;
     }
     if (area / (fit.width * fit.depth) < RECTANGULAR || area > LARGEST_M2) {
-      const colour = new THREE.Color(kit.style.palette.render[seed % kit.style.palette.render.length]);
+      const colour = new THREE.Color(pack.style.palette.render[seed % pack.style.palette.render.length]);
       parts.push(outlined(outline, base - eye, wall ?? 8, colour));
       continue;
     }
     const plain = Math.hypot(fit.x, fit.y) > PLAIN_M;
-    const style = kind === 'cottage' || kind === 'house' ? houses : kit.style;
+    const style = kind === 'cottage' || kind === 'house' ? houses : pack.style;
     parts.push(building(kind, style, { width: fit.width, depth: fit.depth, wall, seed, plain }).rotateZ(fit.angle).translate(fit.x, fit.y, base - eye));
   }
   return parts.length ? mergeGeometries(parts) : null;
@@ -324,8 +324,9 @@ export class NearField {
     };
   }
 
-  /** Place the bake's trees, shrubs, plants and buildings with the kit; setSeason draws them. */
-  set(bake: Bake, kit: Kit): void {
+  /** Place the bake's trees, shrubs, plants and buildings with the region's pack; setSeason draws them. */
+  set(bake: Bake, region: Region): void {
+    const { pack, look } = region;
     const { size, half0_m, eye_m } = bake.meta;
     const px = (2 * half0_m) / size;
     const texel = (x: number, y: number) => Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px);
@@ -345,8 +346,8 @@ export class NearField {
     // Hawthorn leans downwind by design, so it keeps its heading.
     const heading = (name: TreeName) => (name === 'hawthorn' ? 0 : rand() * 2 * Math.PI);
 
-    const standing = kit.trees.filter((s) => s.cover === 'tree');
-    const shrubs = kit.trees.filter((s) => s.cover === 'shrub');
+    const standing = pack.trees.filter((s) => s.cover === 'tree');
+    const shrubs = pack.trees.filter((s) => s.cover === 'shrub');
     const { trees } = bake;
     for (let i = 0; i < trees.length; i += 4) {
       const [x, y, height] = [trees[i], trees[i + 1], trees[i + 2]];
@@ -357,8 +358,8 @@ export class NearField {
         add(`tree|${species}|${lodAt(Math.hypot(x, y))}`, x, y, SHRUB_HEIGHT_M[1] * (0.7 + 0.3 * rand()), heading(species));
         continue;
       }
-      if (trees[i + 3] > 1.5 && kit.orchard) {
-        add(`tree|${kit.orchard}|${lodAt(Math.hypot(x, y))}`, x, y, height, heading(kit.orchard));
+      if (trees[i + 3] > 1.5 && pack.orchard) {
+        add(`tree|${pack.orchard}|${lodAt(Math.hypot(x, y))}`, x, y, height, heading(pack.orchard));
         continue;
       }
       const leaf = trees[i + 3] > 0.5 ? 'broadleaved' : 'needleleaved';
@@ -383,7 +384,7 @@ export class NearField {
       }
     }
 
-    const outcrops = kit.land?.outcrops ?? 0;
+    const { outcrops } = look;
     if (outcrops > 0) {
       const h = (x: number, y: number) => groundHeight(bake, x, y);
       const water = (x: number, y: number) => bake.classes[texel(x, y) * 2 + 1] > 127;
@@ -437,7 +438,7 @@ export class NearField {
     // Herds on their ground: a centre that fits, then each animal near it that also fits.
     const grazes = (on: Habitat[], x: number, y: number) =>
       Math.hypot(x, y) > CLEAR_M && !this.offGround(bake, x, y, px) && (habitats ? on.includes(habitatAt(x, y)) : classAt(x, y) === CLASS.grass);
-    for (const herd of kit.herds ?? []) {
+    for (const herd of pack.herds ?? []) {
       for (let group = 0, tries = 0; group < herd.groups && tries < 400; tries++) {
         const [hx, hy] = [(rand() * 2 - 1) * HERD_RADIUS_M, (rand() * 2 - 1) * HERD_RADIUS_M];
         if (Math.hypot(hx, hy) > HERD_RADIUS_M || !grazes(herd.on, hx, hy)) continue;
@@ -462,8 +463,8 @@ export class NearField {
     }
 
     // The rarer plants first, so the common one does not take every spot.
-    const ground = [...kit.ground].sort((a, b) => GROUND[a].share - GROUND[b].share);
-    const moor = !!kit.land?.moor;
+    const ground = [...pack.ground].sort((a, b) => GROUND[a].share - GROUND[b].share);
+    const moor = !!look.moor;
     // A habitat map settles moor here, once per plant; without one the shader asks the satellite.
     const moorAt = (x: number, y: number) => ['heath', 'bog'].includes(habitatAt(x, y));
     const grows = (name: PlantName, kind: number, x: number, y: number) => {
@@ -485,12 +486,12 @@ export class NearField {
     }
     this.groups = groups;
     this.placedByMap = habitats;
-    this.evergreen = new Set(kit.trees.filter((s) => s.evergreen).map((s) => s.tree));
+    this.evergreen = new Set(pack.trees.filter((s) => s.evergreen).map((s) => s.tree));
     this.shadowsStale = true;
 
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
-    for (const geometry of [town(bake.buildings, eye_m, kit), walls(bake)]) {
+    for (const geometry of [town(bake.buildings, eye_m, pack), walls(bake)]) {
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, this.materials.building);
       mesh.frustumCulled = false;

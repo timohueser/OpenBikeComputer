@@ -1,0 +1,10 @@
+{
+ "name": "Cascades",
+ "extends": "usa",
+ "where": [
+  [-123.5, 46, -120, 49.1]
+ ],
+ "tz": "America/Los_Angeles",
+ "leaf": "needleleaved",
+ "pack": "cascades"
+}

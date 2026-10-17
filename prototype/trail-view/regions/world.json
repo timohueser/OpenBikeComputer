@@ -1,0 +1,16 @@
+{
+ "name": "World",
+ "about": "The root: defaults every region inherits. A region names its parent in 'extends' and the boxes it covers in 'where' as [west, south, east, north]; the deepest region whose box holds the eye wins.",
+ "tz": "UTC",
+ "leaf": "mixed",
+ "pack": "base",
+ "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
+ "look": {
+  "snap": 0.4,
+  "hazeKm": 35,
+  "outcrops": 0,
+  "rock": "#8c877d",
+  "sea": { "deep": "#2c5874", "shallow": "#4f8088" },
+  "grade": { "shadow": [-0.004, 0, 0.012], "light": [0.01, 0.004, -0.008], "saturation": 1.08 }
+ }
+}

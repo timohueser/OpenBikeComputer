@@ -1,12 +1,12 @@
 /**
- * The model sheet behind models.html: each model of a kit, at each level of detail, on its own
+ * The model sheet behind models.html: each model of a pack, at each level of detail, on its own
  * turntable in the toon light of the marmot scene. One canvas behind the page draws every view
  * box in turn.
  */
 
 import * as THREE from 'three';
 import { BUILDING_KINDS, building, buildingLabel, type BuildingKind } from './buildings';
-import { KITS, type KitName } from './kits';
+import { PACK_NAMES, packNamed } from '../regions';
 import { plant, plantLabel } from './plants';
 import { hex, paint, soft, triangles } from './shape';
 import { LOD_RANGE_M, SEASONS, tree, treeLabel, type Lod, type Season } from './trees';
@@ -103,7 +103,7 @@ function block(parent: HTMLElement, className: string): HTMLElement {
   return parent.appendChild(Object.assign(document.createElement('div'), { className }));
 }
 
-function show(kitName: KitName, season: Season): void {
+function show(packName: string, season: Season): void {
   for (const { model } of cells) {
     scene.remove(model);
     (model.children[0] as THREE.Mesh).geometry.dispose();
@@ -113,7 +113,7 @@ function show(kitName: KitName, season: Season): void {
   ground.geometry.dispose();
   ground.geometry = paint(soft(new THREE.CircleGeometry(1, 48)), hex(MEADOW[season]));
 
-  const kit = KITS[kitName];
+  const kit = packNamed(packName);
   heading(sheet, 'Trees');
   const forest = block(sheet, 'species');
   for (const species of kit.trees) {
@@ -133,14 +133,14 @@ function show(kitName: KitName, season: Season): void {
   });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('.chips button')) {
-    button.setAttribute('aria-pressed', String(button.value === kitName || button.value === season));
+    button.setAttribute('aria-pressed', String(button.value === packName || button.value === season));
   }
-  history.replaceState(null, '', `#${kitName}/${season}`);
+  history.replaceState(null, '', `#${packName}/${season}`);
 }
 
 const [hashKit, hashSeason] = location.hash.slice(1).split('/');
 const state = {
-  kit: (hashKit in KITS ? hashKit : 'alps') as KitName,
+  kit: PACK_NAMES.includes(hashKit) ? hashKit : 'alps',
   season: ((SEASONS as readonly string[]).includes(hashSeason) ? hashSeason : 'summer') as Season,
 };
 
@@ -154,7 +154,7 @@ function chips(id: string, values: readonly string[], labels: (value: string) =>
     });
   }
 }
-chips('kits', Object.keys(KITS), (k) => KITS[k as KitName].name, (k) => (state.kit = k as KitName));
+chips('kits', PACK_NAMES, (k) => packNamed(k).name, (k) => (state.kit = k));
 chips('seasons', SEASONS, (s) => s[0].toUpperCase() + s.slice(1), (s) => (state.season = s as Season));
 show(state.kit, state.season);
 
