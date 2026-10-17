@@ -20,9 +20,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +36,10 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path[:0] = [str(REPO / "host/obc-dem/reference"), str(REPO)]
 from ingest.sources import SOURCES as DTM_SOURCES  # noqa: E402
+from ingest.sources.base import http_download  # noqa: E402
+from ingest.sources.protocols import ArcGisSource  # noqa: E402
 from ingest.sources.stac import stac_items  # noqa: E402
+from ingest.sources.us import US  # noqa: E402
 from tools.planner_snow import cdse_credentials  # noqa: E402
 
 CACHE = Path.home() / ".cache/obc/trail-view"
@@ -45,7 +51,8 @@ HALF0_M = 1250.0
 # The national DTM covers k ≤ 3, ±10 km. The owner chose it after ±5 km put the Rigidalstock
 # ridge, 4.7 km from Brunni, into the blend toward GLO-30.
 DTM_LEVELS = 4
-# The height above the ground the Peak View photographs were taken from.
+# The height above the ground the Peak View photographs were taken from. A preset can raise its
+# eye with `eye_above_ground_m`, as a lookout's deck stands above the summit rocks.
 PHONE_M = 1.6
 NODATA = -32768.0
 
@@ -53,6 +60,8 @@ GLO30_LOCAL = Path.home() / ".cache/obcm/dem"
 GLO30_S3 = "https://copernicus-dem-30m.s3.amazonaws.com"
 GLO30_PX_M = 30.0
 PHOTO_JSON = REPO / "fixtures/sources/peak-view/photos"
+# 3DEP at 2 m: the registry's 1 m row fetches four times the pixels the levels can show.
+US_2M = ArcGisSource("us", "United States", "3DEP 2 m", 2.0, "Public domain", "NAVD88", url=US.service)
 OVERPASS = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "OpenBikeComputer trail view prototype (https://github.com/timohueser/OpenBikeComputer)"
 
@@ -80,6 +89,8 @@ GDAL_OPTIONS = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLO
 CREDITS = {
     "glo30": "Copernicus DEM GLO-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA",
     "ch": "swissALTI3D © swisstopo",
+    "de-bw": "DGM1 © LGL Baden-Württemberg, dl-de/by-2-0",
+    "us": "USGS 3D Elevation Program, public domain",
     "worldcover": "ESA WorldCover 10 m 2021 v200 © ESA WorldCover project, CC BY 4.0",
     "s2": f"Contains modified Copernicus Sentinel data {S2_YEAR} (Sentinel-2 quarterly mosaics)",
     "osm": "© OpenStreetMap contributors (ODbL)",
@@ -103,19 +114,30 @@ def load_preset(preset_id: str) -> dict:
     if preset_id not in presets:
         sys.exit(f"unknown preset {preset_id!r}; presets.json has {', '.join(presets)}")
     preset = dict(presets[preset_id])
-    if name := preset.get("photo"):
-        photo = json.loads((PHOTO_JSON / f"{name}.json").read_text())
-        preset.update(lat=photo["lat"], lon=photo["lon"], ground_m=photo["ground_m"],
-                      heading=photo["heading_deg"], pitch=photo["pitch_deg"])
-        preset["photo"] = {key: photo[key] for key in
+    photo = preset.get("photo")
+    if isinstance(photo, str):
+        # A Peak View fixture: position, ground and camera come with the photograph.
+        fixture = json.loads((PHOTO_JSON / f"{photo}.json").read_text())
+        preset.update(lat=fixture["lat"], lon=fixture["lon"], ground_m=fixture["ground_m"])
+        preset["photo"] = {key: fixture[key] for key in
                            ("heading_deg", "pitch_deg", "lens_mm", "columns", "rms_limit_deg", "subject")}
+        preset["photo"]["credit"] = CREDITS["photo"]
+        preset["photo_source"] = fixture_photo(photo)
+    elif photo:
+        # A third-party photograph, kept in the cache only; its camera was aligned in the page.
+        suffix = Path(urllib.parse.urlparse(photo["url"]).path).suffix.lower()
+        preset["photo_source"] = http_download(photo["url"], SOURCES / "photos" / f"{preset_id}{suffix}",
+                                               headers={"User-Agent": USER_AGENT})
+        preset["photo"] = {key: value for key, value in photo.items() if key != "url"}
+    if preset.get("photo"):
         preset["photo"]["file"] = "photo.jpg"
-        preset["photo_source"] = fixture_photo(name)
+        preset.update(heading=preset["photo"]["heading_deg"], pitch=preset["photo"]["pitch_deg"])
     return preset
 
 
-def glo30_tiles(bbox) -> list[str]:
-    """Every GLO-30 tile the box touches: the local copy if there is one, else the public COG."""
+def glo30_tiles(bbox, download: bool) -> list[str]:
+    """Every GLO-30 tile the box touches: a local copy if there is one, else the public COG,
+    downloaded first when the warp reads it at full resolution."""
     listing = SOURCES / "glo30-tiles.txt"
     if not listing.exists():
         listing.parent.mkdir(parents=True, exist_ok=True)
@@ -128,8 +150,11 @@ def glo30_tiles(bbox) -> list[str]:
             name = (f"Copernicus_DSM_COG_10_{'N' if lat >= 0 else 'S'}{abs(lat):02d}_00_"
                     f"{'E' if lon >= 0 else 'W'}{abs(lon):03d}_00_DEM")
             local = GLO30_LOCAL / f"{name}.tif"
-            if local.exists():
-                tiles.append(str(local))
+            cached = SOURCES / "glo30" / f"{name}.tif"
+            if local.exists() or cached.exists():
+                tiles.append(str(local if local.exists() else cached))
+            elif name in published and download:
+                tiles.append(str(http_download(f"{GLO30_S3}/{name}/{name}.tif", cached)))
             elif name in published:
                 tiles.append(f"/vsicurl/{GLO30_S3}/{name}/{name}.tif")
     return tiles
@@ -157,10 +182,58 @@ def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
     resampling = "bilinear" if px < GLO30_PX_M else "max"
     # COG overviews are averaged, which flattens summits; past k = 5 (156 m px) that costs
     # under 0.03° and saves reading full-resolution remote tiles.
-    heights = warp(glo30_tiles(bbox), frame, half, resampling, overviews=k > 5, work=work)[0]
+    heights = warp(glo30_tiles(bbox, download=k <= 5), frame, half, resampling, overviews=k > 5, work=work)[0]
     # Missing tiles are sea.
     heights[heights == NODATA] = 0.0
     return heights
+
+
+def dtm_rasters(key: str, bbox) -> list[Path]:
+    if key == "de-bw":
+        return bw_rasters(bbox)
+    if key == "us":
+        # request_boxes sizes a split at the box's middle latitude, so a row further from the
+        # pole can overrun the service's 2000 px cap. 3 km boxes stay far below it.
+        west, south, east, north = bbox
+        rows = math.ceil((north - south) * 111_320 / 3000)
+        cols = math.ceil((east - west) * 111_320 * math.cos(math.radians(south)) / 3000)
+        boxes = [(west + (east - west) * j / cols, south + (north - south) * i / rows,
+                  west + (east - west) * (j + 1) / cols, south + (north - south) * (i + 1) / rows)
+                 for i in range(rows) for j in range(cols)]
+        return [path for box in boxes for path in US_2M.fetch(box, SOURCES / key)]
+    return DTM_SOURCES[key].fetch(bbox, SOURCES / key)
+
+
+def bw_rasters(bbox) -> list[Path]:
+    """Baden-Württemberg's DGM1 as compressed GeoTIFFs.
+
+    A 2 km zip unpacks to 116 MB of XYZ text, so each zip is converted and its text deleted
+    before the next. The heights are metres, though the registry row says centimetres.
+    """
+    out = SOURCES / "de-bw"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def one(item) -> list[Path]:
+        name, url = item
+        done = out / f"{name}.tifs"
+        if not done.exists():
+            converted = []
+            with tempfile.TemporaryDirectory(dir=out) as tmp:
+                # A square outside the state is not published.
+                archive = http_download(url, Path(tmp) / name, optional=True)
+                members = zipfile.ZipFile(archive).namelist() if archive else []
+                for member in (m for m in members if m.endswith(".xyz")):
+                    xyz = Path(zipfile.ZipFile(archive).extract(member, tmp))
+                    tif = out / f"{xyz.stem}.tif"
+                    subprocess.run(["gdal_translate", "-q", "-a_srs", "EPSG:25832", "-co", "COMPRESS=DEFLATE",
+                                    "-co", "PREDICTOR=3", "-co", "TILED=YES", str(xyz), str(tif)], check=True)
+                    xyz.unlink()
+                    converted.append(tif.name)
+            done.write_text("\n".join(converted))
+        return [out / tif for tif in done.read_text().split()]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return [tif for tifs in pool.map(one, DTM_SOURCES["de-bw"].files(bbox)) for tif in tifs]
 
 
 def worldcover_tiles(bbox) -> list[str]:
@@ -253,11 +326,19 @@ def encode(heights: np.ndarray) -> bytes:
 
 def overpass_peaks(lat: float, lon: float, radius: float) -> list[tuple[float, float, str, str]]:
     query = (f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
-             f'node["natural"="peak"]["name"](around:{radius:.0f},{lat},{lon});out;')
+             f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
                                      headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=900) as response:
-        text = response.read().decode()
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                text = response.read().decode()
+            break
+        except urllib.error.HTTPError as error:
+            # Overpass answers 429 and 502 to 504 when it is busy.
+            if error.code not in (429, 502, 503, 504) or attempt == 3:
+                raise
+            time.sleep(60 * (attempt + 1))
     rows = []
     for line in text.splitlines():
         parts = line.split("\t")
@@ -285,8 +366,7 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         dtm_paths = []
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
-            dtm_paths = DTM_SOURCES[dtm].fetch(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21),
-                                               SOURCES / dtm)
+            dtm_paths = dtm_rasters(dtm, to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
         centre = slice(SIZE // 2 - 1, SIZE // 2 + 1)
         origin = {}
         for k in range(LEVELS):
@@ -345,13 +425,14 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         credits.append(CREDITS["osm"])
 
     meta = {key: preset[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in preset}
-    meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + PHONE_M, 2),
+    above = preset.get("eye_above_ground_m", PHONE_M)
+    meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
                 dtm=dtm, s2_levels=S2_LEVELS, credits=credits)
     if "photo_source" in preset:
         shutil.copyfile(preset["photo_source"], out / "photo.jpg")
         meta["photo"] = preset["photo"]
-        credits.append(CREDITS["photo"])
+        credits.append(preset["photo"]["credit"])
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
 
     print(f"\n{'level':>5} {'layer':>6} {'bytes':>10}")

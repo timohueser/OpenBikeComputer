@@ -2,13 +2,16 @@
 
 export interface Photo {
   file: string;
+  credit: string;
   heading_deg: number;
   pitch_deg: number;
-  lens_mm: number;
-  /** [bearing, elevation] in degrees, on a quarter-degree bearing grid. */
-  columns: [number, number][];
-  rms_limit_deg: number;
-  subject: string;
+  /** Peak View fixtures state a 35 mm equivalent lens; aligned photographs a vertical field. */
+  lens_mm?: number;
+  vfov_deg?: number;
+  roll_deg?: number;
+  /** [bearing, elevation] in degrees, on a quarter-degree bearing grid. Fixtures only. */
+  columns?: [number, number][];
+  rms_limit_deg?: number;
 }
 
 export interface Meta {
@@ -19,6 +22,7 @@ export interface Meta {
   pitch?: number;
   ground_m: number;
   eye_m: number;
+  eye_above_ground_m: number;
   levels: number;
   size: number;
   half0_m: number;

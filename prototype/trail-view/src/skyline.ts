@@ -16,8 +16,6 @@ const SECTORS = 16;
 const STOP_R0 = 10;
 const STOPS_PER_OCTAVE = 8;
 
-/** The eye stands this far above the surface under it, as the photographs were taken. */
-export const PHONE_M = 1.6;
 
 export interface Surface {
   levels: number;
@@ -37,9 +35,9 @@ const smoothstep = (edge0: number, edge1: number, x: number) => {
 
 /**
  * The sampling rule the vertex shader uses, over levels with row 0 north. Heights are relative to
- * an eye PHONE_M above this surface at the origin, so a coarse surface never buries the eye.
+ * an eye `above` metres over this surface at the origin, so a coarse surface never buries the eye.
  */
-export function surface(levels: Float32Array[], size: number, half0: number): Surface {
+export function surface(levels: Float32Array[], size: number, half0: number, above: number): Surface {
   const last = levels.length - 1;
   const bilinear = (k: number, x: number, y: number) => {
     const half = half0 * 2 ** k;
@@ -62,7 +60,7 @@ export function surface(levels: Float32Array[], size: number, half0: number): Su
     const w = smoothstep(0.9, 1, Math.max(Math.abs(x), Math.abs(y)) / (half0 * 2 ** k));
     return w > 0 ? h + (bilinear(k + 1, x, y) - h) * w : h;
   };
-  const lift = raw(0, 0, 0) + PHONE_M;
+  const lift = raw(0, 0, 0) + above;
   const level = (k: number, x: number, y: number) => raw(k, x, y) - lift;
   return {
     levels: levels.length,

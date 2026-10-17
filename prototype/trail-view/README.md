@@ -1,7 +1,7 @@
 # Trail View: painted panoramas from map data
 
-A throwaway browser prototype. It draws a 360° view at a fixed viewpoint from elevation, OSM and
-(later) land cover and Sentinel-2 colour. This branch is an archive. It never merges. Findings go
+A throwaway browser prototype. It draws a 360° view at a fixed viewpoint from elevation, OSM, land
+cover and Sentinel-2 colour. This branch is an archive. It never merges. Findings go
 in a draft pull request from this branch.
 
 ## What is here
@@ -9,7 +9,7 @@ in a draft pull request from this branch.
 | Path | What it is |
 |---|---|
 | `bake.py` | Bakes one preset into `~/.cache/obc/trail-view/<preset>/` |
-| `presets.json` | The viewpoints. A `photo` entry takes position and camera from the `peak-view-photos` fixture |
+| `presets.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
 | `index.html`, `src/` | The Vite + TypeScript + three.js page |
 
 ## Bake
@@ -21,7 +21,10 @@ uv run prototype/trail-view/bake.py hahnen
 ```
 
 - GLO-30 tiles come from `~/.cache/obcm/dem/` where they exist, else from the public COGs.
-- swissALTI3D tiles are fetched with `host/obc-dem/reference` into `~/.cache/obc/trail-view/_sources/ch/`.
+- The national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
+  `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
+  zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m in 3 km requests.
+- Third-party photographs download to `_sources/photos/`. They are never committed.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
 - The photographs come from the `peak-view-photos` fixture package in
@@ -29,7 +32,8 @@ uv run prototype/trail-view/bake.py hahnen
 - WorldCover is read from its public COGs. The Sentinel-2 quarterly mosaics are read from CDSE
   S3 with the keys in `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads
   them.
-- A place takes about 4 minutes and 120 MB, most of it the four Sentinel-2 quarters.
+- A place takes 5 to 12 minutes and about 100 MB, most of it the four Sentinel-2 quarters. A first
+  bake in Baden-Württemberg or the US spends most of its time on the DTM.
 
 ## Open
 
@@ -42,6 +46,7 @@ For an iPhone on the same Wi-Fi, run `npm run dev -- --host` and open the printe
 
 - Drag to look, scroll to change the field of view. Either one leaves the photo camera.
 - "photo camera" frames the view like the photograph; "wipe" moves the border between the two.
+  "align camera" moves a photograph's camera; "copy camera JSON" copies it for `presets.json`.
 - Red is the skyline read off the photograph, cyan is the skyline cast through the active surface.
 - "Light" sets the season (one day each, 2025) and the hour in the preset's time zone. The
   season also picks the Sentinel-2 quarter and the palette.
@@ -57,6 +62,9 @@ For an iPhone on the same Wi-Fi, run `npm run dev -- --host` and open the printe
 - A level blends into the next over its outer tenth. A skyline in that band is part GLO-30 even
   with the DTM on.
 - The dev server sends `*.bin.gz` with `Content-Encoding: gzip`, so the browser unpacks them.
+- OSM tags volcanoes `natural=volcano`, not `natural=peak`; the peak query asks for both.
+- A photograph's own coordinates can be a place tag rather than where the camera stood. Check
+  that the cast skyline at the photo's point shows what the photograph shows.
 - gdalwarp prints `ERROR 6: ... SetColorTable()` for every WorldCover level, because it copies the
   colour table into a float32 file. The values are correct.
 - The sun model is the planner's `sun.ts`, imported as `planner-sun`. `tsc` reads

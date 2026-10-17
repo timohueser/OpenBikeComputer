@@ -50,24 +50,53 @@ export function drawLines(
   }
 }
 
-/** Peak labels, best first, skipping any that would overlap one already placed. */
-export function placeLabels(layer: HTMLElement, camera: THREE.PerspectiveCamera, sighted: Sighted[]): void {
-  const { clientWidth: width, clientHeight: height } = layer;
-  const placed: number[] = [];
-  const labels: string[] = [];
+/** Where peak labels go: best first, skipping any that would overlap one already placed. */
+function labelSpots(camera: THREE.PerspectiveCamera, width: number, height: number, sighted: Sighted[], gap: number) {
+  const spots: { x: number; y: number; s: Sighted }[] = [];
   for (const s of [...sighted].sort((a, b) => b.angle - a.angle)) {
     const at = project(camera, s.bearing, s.angle, width, height);
     if (!at || at[0] < 0 || at[0] > width || at[1] < 30 || at[1] > height) continue;
-    if (placed.some((x) => Math.abs(x - at[0]) < 16)) continue;
-    placed.push(at[0]);
-    const ele = s.peak.ele === null ? '' : ` <small>${Math.round(s.peak.ele)}</small>`;
-    const km = s.distance >= 10_000 ? `${Math.round(s.distance / 1000)} km` : `${(s.distance / 1000).toFixed(1)} km`;
-    labels.push(
-      `<div class="peak" style="left:${at[0].toFixed(1)}px;top:${at[1].toFixed(1)}px" title="${km}">` +
-        `<span>${escape(s.peak.name)}${ele}</span></div>`,
-    );
+    if (spots.some((spot) => Math.abs(spot.x - at[0]) < gap)) continue;
+    spots.push({ x: at[0], y: at[1], s });
   }
-  layer.innerHTML = labels.join('');
+  return spots;
+}
+
+const kilometres = (metres: number) =>
+  metres >= 10_000 ? `${Math.round(metres / 1000)} km` : `${(metres / 1000).toFixed(1)} km`;
+
+export function placeLabels(layer: HTMLElement, camera: THREE.PerspectiveCamera, sighted: Sighted[]): void {
+  layer.innerHTML = labelSpots(camera, layer.clientWidth, layer.clientHeight, sighted, 16)
+    .map(({ x, y, s }) => {
+      const ele = s.peak.ele === null ? '' : ` <small>${Math.round(s.peak.ele)}</small>`;
+      return `<div class="peak" style="left:${x.toFixed(1)}px;top:${y.toFixed(1)}px" title="${kilometres(s.distance)}">` +
+        `<span>${escape(s.peak.name)}${ele}</span></div>`;
+    })
+    .join('');
+}
+
+/** The same labels drawn into a saved image, with their distance. */
+export function drawLabels(ctx: CanvasRenderingContext2D, camera: THREE.PerspectiveCamera, width: number, height: number, sighted: Sighted[]): void {
+  const scale = Math.max(1, width / 1200);
+  ctx.font = `${12 * scale}px system-ui, sans-serif`;
+  ctx.lineWidth = scale;
+  for (const { x, y, s } of labelSpots(camera, width, height, sighted, 16 * scale)) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y - 18 * scale);
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(x + 2 * scale, y - 20 * scale);
+    ctx.rotate((-50 * Math.PI) / 180);
+    const text = `${s.peak.name}${s.peak.ele === null ? '' : ` ${Math.round(s.peak.ele)}`} · ${kilometres(s.distance)}`;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.lineWidth = 3 * scale;
+    ctx.strokeText(text, 0, 0);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
 }
 
 /** Bearing ticks every 5°, names every 45°, and a mark for each sighted peak. */

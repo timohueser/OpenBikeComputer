@@ -2,9 +2,9 @@ import GUI from 'lil-gui';
 import * as THREE from 'three';
 import presets from '../presets.json';
 import { clock } from 'planner-sun';
-import { loadBake, loadQuarter, type Bake } from './bake';
+import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
-import { drawCompass, drawLines, placeLabels, type Line } from './overlay';
+import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
 import { DECIDUOUS, ramps } from './palette';
 import { BINS, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
@@ -69,16 +69,19 @@ async function select(id: string): Promise<void> {
   if (selecting !== id) return;
   const { meta } = bake;
   terrain.setBake(bake);
-  const dtm = surface(bake.surface, meta.size, meta.half0_m);
-  const glo30 = meta.dtm_levels ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.size, meta.half0_m) : dtm;
+  const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m);
+  const glo30 = meta.dtm_levels
+    ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.size, meta.half0_m, meta.eye_above_ground_m)
+    : dtm;
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
   loaded = { bake, ground: { dtm, glo30 }, sky, sighted: [] };
   const shot = meta.photo;
+  const columns = shot?.columns;
+  readout.rmsDtm = columns && meta.dtm_levels ? `${rms(sky.dtm, columns).toFixed(3)}°` : '–';
+  readout.rmsGlo30 = columns ? `${rms(sky.glo30, columns).toFixed(3)}°` : '–';
+  readout.limit = columns ? `${shot!.rms_limit_deg!.toFixed(2)}° (${columns.length} columns)` : '–';
   if (shot) {
-    readout.rmsDtm = meta.dtm_levels ? `${rms(sky.dtm, shot.columns).toFixed(3)}°` : '–';
-    readout.rmsGlo30 = `${rms(sky.glo30, shot.columns).toFixed(3)}°`;
-    readout.limit = `${shot.rms_limit_deg.toFixed(2)}° (${shot.columns.length} columns)`;
     // Only the photograph's size is needed. `decode()` waits for a rendered frame, which a hidden
     // page never gets.
     await new Promise((settled) => {
@@ -87,8 +90,7 @@ async function select(id: string): Promise<void> {
       photo.src = `${bake.base}${shot.file}`;
     });
     if (selecting !== id) return;
-  } else {
-    readout.rmsDtm = readout.rmsGlo30 = readout.limit = '–';
+    Object.assign(align, { heading_deg: shot.heading_deg, pitch_deg: shot.pitch_deg, vfov_deg: photoVfov(shot), roll_deg: shot.roll_deg ?? 0 });
   }
   readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights and classes`;
   readout.dtm = meta.dtm_levels ? `${meta.dtm}, ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km` : 'none';
@@ -159,19 +161,27 @@ function layout(): void {
   requestRender();
 }
 
+/** The photograph's vertical field: aligned, or from a 35 mm equivalent lens on the long side. */
+function photoVfov(shot: Photo): number {
+  if (shot.vfov_deg) return shot.vfov_deg;
+  const focal = (shot.lens_mm! / 36) * Math.max(photo.naturalWidth, photo.naturalHeight);
+  return (2 * Math.atan(photo.naturalHeight / 2 / focal) * 180) / Math.PI;
+}
+
 function aim(): void {
   const shot = loaded?.bake.meta.photo;
+  let roll = 0;
   if (photoLocked() && shot) {
-    // A 35 mm equivalent lens, measured on the long side as the photographs' fit did.
-    const focal = (shot.lens_mm / 36) * Math.max(photo.naturalWidth, photo.naturalHeight);
     state.yaw = shot.heading_deg;
     state.pitch = shot.pitch_deg;
-    state.vfov = (2 * Math.atan(photo.naturalHeight / 2 / focal) * 180) / Math.PI;
+    state.vfov = photoVfov(shot);
+    roll = shot.roll_deg ?? 0;
   }
   camera.fov = state.vfov;
   const yaw = (state.yaw * Math.PI) / 180;
   const pitch = (state.pitch * Math.PI) / 180;
   camera.lookAt(Math.sin(yaw) * Math.cos(pitch), Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch));
+  camera.rotateZ((roll * Math.PI) / 180);
 }
 
 let pending = false;
@@ -219,7 +229,7 @@ function skylines(cast: boolean, photographed: boolean): Line[] {
     shown.push({ points: Array.from({ length: BINS + 1 }, (_, b) => [(b * 360) / BINS, angle[b % BINS]] as const), colour: '#22e0ff' });
   }
   const shot = loaded.bake.meta.photo;
-  if (photographed && shot) shown.push({ points: shot.columns, colour: '#ff3b30' });
+  if (photographed && shot?.columns) shown.push({ points: shot.columns, colour: '#ff3b30' });
   return shown;
 }
 
@@ -264,6 +274,7 @@ async function saveView(): Promise<void> {
   const ctx = out.getContext('2d')!;
   ctx.drawImage(renderer.domElement, 0, 0);
   ctx.drawImage(lines, 0, 0);
+  if (state.peaks && loaded) drawLabels(ctx, camera, out.width, out.height, loaded.sighted);
   await save(out, `-${Math.round(state.yaw)}-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
@@ -336,6 +347,20 @@ shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
 shot.add(state, 'wipe', 0, 1, 0.01).onChange(requestRender);
 shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
 shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
+// Align a photograph's camera here, then save it back to presets.json.
+const align = { heading_deg: 0, pitch_deg: 0, vfov_deg: 40, roll_deg: 0 };
+const aligned = shot.addFolder('align camera').close();
+aligned.add(align, 'heading_deg', 0, 360, 0.05).name('heading').listen();
+aligned.add(align, 'pitch_deg', -30, 30, 0.05).name('pitch').listen();
+aligned.add(align, 'vfov_deg', 5, 90, 0.05).name('vertical field').listen();
+aligned.add(align, 'roll_deg', -10, 10, 0.05).name('roll').listen();
+aligned.onChange(() => {
+  const photographed = loaded?.bake.meta.photo;
+  if (!photographed) return;
+  Object.assign(photographed, align);
+  requestRender();
+});
+aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }, 'copy').name('copy camera JSON');
 gui.add(state, 'peaks').onChange(requestRender);
 const time = gui.addFolder('Light');
 time.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
@@ -368,7 +393,7 @@ facts.add({ measure }, 'measure').name('measure 60 frames');
 gui.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
 gui.add({ saveView }, 'saveView').name('save view');
 // For scripted checks from the console.
-Object.assign(window, { trailView: { gui, state, look, render, layout } });
+Object.assign(window, { trailView: { gui, state, look, align, render, layout, loaded: () => loaded } });
 
 terrain.setLook(look);
 select(state.preset).catch((error: Error) => (status.textContent = error.message));
