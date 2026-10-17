@@ -416,8 +416,8 @@ out vec4 colour;
  * act as its mip chain. The mesh's triangles at range are long along the view, and normals
  * interpolated across them would smear slope into teeth down the fall line.
  */
-vec3 groundNormal(vec2 p, float footprint, out float open) {
-  float kf = min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))), levels - 1.0);
+vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
+  float kf = min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))) + coarser, levels - 1.0);
   float k = floor(kf);
   vec4 slope = texture(normals, vec3(uvOn(k, p), k));
   if (kf > k) slope = mix(slope, texture(normals, vec3(uvOn(k + 1.0, p), k + 1.0)), kf - k);
@@ -428,11 +428,21 @@ vec3 groundNormal(vec2 p, float footprint, out float open) {
 void main() {
   float footprint = max(length(dFdx(vWorld.xy)), length(dFdy(vWorld.xy)));
   float open;
-  vec3 n = groundNormal(vWorld.xy, footprint, open);
+  vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
+  // A cliff spans few texels across and many metres up, so its fine slopes would streak down
+  // the face; it takes its normal from coarser levels instead.
+  float cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
+  if (cliff > 0.0) {
+    float coarseOpen;
+    n = normalize(mix(n, groundNormal(vWorld.xy, footprint, 2.0, coarseOpen), cliff));
+    open = mix(open, coarseOpen, cliff);
+  }
   Ground g = groundAt(vWorld.xy, footprint);
-  // Steep open ground is rock; trees and roads hold on to it.
+  // Steep open ground is rock, banded in strata by height; trees and roads hold on to it.
   float steep = 1.0 - smoothstep(0.766, 0.809, n.z);
-  vec3 albedo = mix(g.albedo, rock, steep * (1.0 - g.tree) * (1.0 - g.road));
+  float altitude = vWorld.z + curvature * dot(vWorld.xy, vWorld.xy);
+  float strata = 0.86 + 0.22 * noise(vec2(altitude / 9.0, (vWorld.x + vWorld.y) / 120.0));
+  vec3 albedo = mix(g.albedo, rock * strata, steep * (1.0 - g.tree) * (1.0 - g.road));
   albedo = mix(albedo, ramps[18], g.snow) * (1.0 - 0.3 * wet * (1.0 - g.snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   vec3 c = lightUp(albedo, n, shadow, open);

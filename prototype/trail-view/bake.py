@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
+# dependencies = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "truststore==0.10.4"]
 # ///
 """Bake one Trail View preset into ~/.cache/obc/trail-view/<preset>/.
 
@@ -30,13 +30,20 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+import truststore
 from pyproj import CRS, Transformer
+
+# Certificates are checked against the system's trust store, as curl does: Spain's IGN serves a
+# chain whose root Python's own bundle does not hold.
+truststore.inject_into_ssl()
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path[:0] = [str(REPO / "host/obc-dem/reference"), str(REPO)]
 from ingest.sources import SOURCES as DTM_SOURCES  # noqa: E402
 from ingest.sources.base import http_download  # noqa: E402
+from ingest.sources.es import ES  # noqa: E402
+from ingest.sources.fr import FR, BilWmsSource  # noqa: E402
 from ingest.sources.protocols import ArcGisSource  # noqa: E402
 from ingest.sources.stac import stac_items  # noqa: E402
 from ingest.sources.us import US  # noqa: E402
@@ -62,7 +69,15 @@ GLO30_PX_M = 30.0
 PHOTO_JSON = REPO / "fixtures/sources/peak-view/photos"
 # 3DEP at 2 m: the registry's 1 m row fetches four times the pixels the levels can show.
 US_2M = ArcGisSource("us", "United States", "3DEP 2 m", 2.0, "Public domain", "NAVD88", url=US.service)
-OVERPASS = "https://overpass-api.de/api/interpreter"
+# RGE ALTI at 2 m for the same reason: at 1 m a ±10 km window is 400 M pixels.
+FR_2M = BilWmsSource("fr", "France", "RGE ALTI 2 m", 2.0, FR.licence, FR.vertical_datum, url=FR.service, layer=FR.layer)
+# Services that answer one box at a time. request_boxes sizes a split at the box's middle
+# latitude, so a row further from the pole can overrun a service's 2000 px cap; 3 km boxes stay
+# far below it at these resolutions.
+BOXED = {"us": US_2M, "fr": FR_2M, "es": ES}
+BOX_M = 3000
+# Public Overpass instances, tried in turn while one is busy.
+OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
 USER_AGENT = "OpenBikeComputer trail view prototype (https://github.com/timohueser/OpenBikeComputer)"
 
 WORLDCOVER = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif"
@@ -114,6 +129,8 @@ CREDITS = {
     "ch": "swissALTI3D © swisstopo",
     "de-bw": "DGM1 © LGL Baden-Württemberg, dl-de/by-2-0",
     "us": "USGS 3D Elevation Program, public domain",
+    "fr": "RGE ALTI © IGN, Licence Ouverte",
+    "es": "MDT05 © Instituto Geográfico Nacional, CC BY 4.0",
     "worldcover": "ESA WorldCover 10 m 2021 v200 © ESA WorldCover project, CC BY 4.0",
     "s2": f"Contains modified Copernicus Sentinel data {S2_YEAR} (Sentinel-2 quarterly mosaics)",
     "osm": "© OpenStreetMap contributors (ODbL)",
@@ -214,16 +231,14 @@ def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
 def dtm_rasters(key: str, bbox) -> list[Path]:
     if key == "de-bw":
         return bw_rasters(bbox)
-    if key == "us":
-        # request_boxes sizes a split at the box's middle latitude, so a row further from the
-        # pole can overrun the service's 2000 px cap. 3 km boxes stay far below it.
+    if key in BOXED:
         west, south, east, north = bbox
-        rows = math.ceil((north - south) * 111_320 / 3000)
-        cols = math.ceil((east - west) * 111_320 * math.cos(math.radians(south)) / 3000)
+        rows = math.ceil((north - south) * 111_320 / BOX_M)
+        cols = math.ceil((east - west) * 111_320 * math.cos(math.radians(south)) / BOX_M)
         boxes = [(west + (east - west) * j / cols, south + (north - south) * i / rows,
                   west + (east - west) * (j + 1) / cols, south + (north - south) * (i + 1) / rows)
                  for i in range(rows) for j in range(cols)]
-        return [path for box in boxes for path in US_2M.fetch(box, SOURCES / key)]
+        return [path for box in boxes for path in BOXED[key].fetch(box, SOURCES / key)]
     return DTM_SOURCES[key].fetch(bbox, SOURCES / key)
 
 
@@ -481,9 +496,9 @@ def encode(heights: np.ndarray) -> bytes:
 
 
 def overpass(query: str) -> str:
-    request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
-                                     headers={"User-Agent": USER_AGENT})
     for attempt in range(4):
+        request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
+                                         data=urllib.parse.urlencode({"data": query}).encode())
         try:
             with urllib.request.urlopen(request, timeout=900) as response:
                 return response.read().decode()
@@ -626,6 +641,8 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 sizes.append((k, "canopy", len(blob)))
             if k == 0:
                 heights0, classes0, road0, water0 = heights, classes, road, water
+            if k == 1:
+                heights1 = heights
                 canopy0 = canopy if dtm else None
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
@@ -651,7 +668,9 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
         tags = way["tags"]
         if "building" not in tags or len(ring) < 4 or np.abs(ring).max() > BUILDING_HALF_M:
             continue
-        base = float(sample(heights0, HALF0_M, ring[:, 0], ring[:, 1]).min())
+        # Level 0 holds ±1.25 km; past it a footprint takes its ground from level 1, not the edge.
+        inner = np.abs(ring).max() < HALF0_M
+        base = float(sample(heights0 if inner else heights1, HALF0_M * (1 if inner else 2), ring[:, 0], ring[:, 1]).min())
         buildings.append([round(base, 1), tags["building"], elevation_tag(tags.get("building:levels", "")),
                           elevation_tag(tags.get("height", "")), [round(float(v), 1) for v in ring[:-1].ravel()]])
     blob = json.dumps(buildings, separators=(",", ":")).encode()

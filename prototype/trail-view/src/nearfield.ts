@@ -187,6 +187,8 @@ export class NearField {
   triangles = 0;
   /** Instances by "tree|name|lod" or "plant|name". */
   private groups = new Map<string, Instances>();
+  /** Species that keep their summer leaves all year. */
+  private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
   private readonly materials: Record<'tree' | 'plant' | 'building', THREE.ShaderMaterial>;
   /** Set when the sun, the spot, the season or the surface moved. */
@@ -272,6 +274,7 @@ export class NearField {
       }
     }
     this.groups = groups;
+    this.evergreen = new Set(kit.trees.filter((s) => s.evergreen).map((s) => s.tree));
     this.shadowsStale = true;
 
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
@@ -303,8 +306,9 @@ export class NearField {
     for (const [key, instances] of this.groups) {
       const [what, name, lod] = key.split('|');
       if (what === 'plant' && season === 'winter') continue;
-      const model = this.model(key, season, () =>
-        what === 'tree' ? tree(name as TreeName, season, Number(lod) as Lod) : plant(name as PlantName, season),
+      const leaves = this.evergreen.has(name) ? 'summer' : season;
+      const model = this.model(key, leaves, () =>
+        what === 'tree' ? tree(name as TreeName, leaves, Number(lod) as Lod) : plant(name as PlantName, leaves),
       );
       const mesh = new THREE.Mesh(forest(model, instances), what === 'tree' ? this.materials.tree : this.materials.plant);
       mesh.frustumCulled = false;

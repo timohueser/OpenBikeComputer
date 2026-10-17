@@ -13,6 +13,8 @@ export interface Species {
   elevation: [number, number];
   /** Its share among the species that fit a spot. */
   weight: number;
+  /** Drawn in its summer leaves all year: it stands in for an evergreen the library has no model of. */
+  evergreen?: boolean;
 }
 
 export interface Kit {
@@ -23,6 +25,37 @@ export interface Kit {
   /** What cottages and houses change from the style, where they differ from farms. */
   houses?: Partial<BuildingStyle>;
 }
+
+const BLACK_FOREST: Kit = {
+  name: 'Black Forest',
+  trees: [
+    { tree: 'norway-spruce', leaf: 'needleleaved', cover: 'tree', elevation: [300, 1300], weight: 4 },
+    { tree: 'silver-fir', leaf: 'needleleaved', cover: 'tree', elevation: [300, 1200], weight: 3 },
+    { tree: 'european-beech', leaf: 'broadleaved', cover: 'tree', elevation: [200, 1100], weight: 5 },
+  ],
+  ground: ['grass', 'fern'],
+  // Town and village houses have a plain steep gable; the half-hip belongs to the farms.
+  houses: { name: 'Town house', pitch: [40, 48], hip: 0, eave: 0.5, verge: 0.4, timber: 'none', chimneys: 1 },
+  style: {
+    name: 'Black Forest farmhouse',
+    pitch: [44, 52],
+    eave: 1,
+    verge: 0.7,
+    hip: 0.55,
+    timber: 'upper',
+    shutters: true,
+    chimneys: 0,
+    palette: {
+      render: ['#f1ece0', '#e8e0cc'],
+      wood: ['#4f3626', '#5e4030', '#6b4a32'],
+      roof: ['#5b5048', '#6a5d52', '#8a4a36'],
+      door: ['#5e4030', '#3f5a3a'],
+      shutter: ['#3f6a42', '#2f4a36', '#a8382e'],
+      plinth: '#8f8a80',
+      chimney: '#a39a8e',
+    },
+  },
+};
 
 export const KITS = {
   alps: {
@@ -54,36 +87,9 @@ export const KITS = {
       },
     },
   },
-  'black-forest': {
-    name: 'Black Forest',
-    trees: [
-      { tree: 'norway-spruce', leaf: 'needleleaved', cover: 'tree', elevation: [300, 1300], weight: 4 },
-      { tree: 'silver-fir', leaf: 'needleleaved', cover: 'tree', elevation: [300, 1200], weight: 3 },
-      { tree: 'european-beech', leaf: 'broadleaved', cover: 'tree', elevation: [200, 1100], weight: 5 },
-    ],
-    ground: ['grass', 'fern'],
-    // Town and village houses have a plain steep gable; the half-hip belongs to the farms.
-    houses: { name: 'Town house', pitch: [40, 48], hip: 0, eave: 0.5, verge: 0.4, timber: 'none', chimneys: 1 },
-    style: {
-      name: 'Black Forest farmhouse',
-      pitch: [44, 52],
-      eave: 1,
-      verge: 0.7,
-      hip: 0.55,
-      timber: 'upper',
-      shutters: true,
-      chimneys: 0,
-      palette: {
-        render: ['#f1ece0', '#e8e0cc'],
-        wood: ['#4f3626', '#5e4030', '#6b4a32'],
-        roof: ['#5b5048', '#6a5d52', '#8a4a36'],
-        door: ['#5e4030', '#3f5a3a'],
-        shutter: ['#3f6a42', '#2f4a36', '#a8382e'],
-        plinth: '#8f8a80',
-        chimney: '#a39a8e',
-      },
-    },
-  },
+  'black-forest': BLACK_FOREST,
+  // The Vosges share the Black Forest's trees and farms across the Rhine.
+  vosges: { ...BLACK_FOREST, name: 'Vosges' },
   'irish-coast': {
     name: 'Irish coast',
     trees: [
@@ -138,6 +144,36 @@ export const KITS = {
         shutter: ['#4a3324'],
         plinth: '#7d7a74',
         chimney: '#8f8a84',
+      },
+    },
+  },
+  mediterranean: {
+    name: 'Mediterranean',
+    // Stand-ins until the library has Aleppo pine, holm oak and carob: a conifer for the pines,
+    // a round broadleaf for the evergreen oaks. Gorse grows in the Valencian garrigue itself.
+    trees: [
+      { tree: 'douglas-fir', leaf: 'needleleaved', cover: 'tree', elevation: [0, 1600], weight: 1 },
+      { tree: 'sycamore-maple', leaf: 'broadleaved', cover: 'tree', elevation: [0, 1600], weight: 1, evergreen: true },
+      { tree: 'gorse', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 1600], weight: 1 },
+    ],
+    ground: ['grass', 'heather'],
+    style: {
+      name: 'Village house',
+      pitch: [18, 26],
+      eave: 0.35,
+      verge: 0.2,
+      hip: 0,
+      timber: 'none',
+      shutters: true,
+      chimneys: 1,
+      palette: {
+        render: ['#f6f2e8', '#f2ead8', '#efe2c4', '#f6f2e8'],
+        wood: ['#6b4a32'],
+        roof: ['#b5653e', '#a5583a', '#c0744a'],
+        door: ['#5e4030', '#3f5a3a', '#2f4a6a'],
+        shutter: ['#3f6a42', '#5e4030', '#2f4a6a'],
+        plinth: '#c8bca4',
+        chimney: '#f2ead8',
       },
     },
   },
