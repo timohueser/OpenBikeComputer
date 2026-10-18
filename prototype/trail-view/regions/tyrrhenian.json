@@ -1,1 +1,8 @@
-{ "name": "Tyrrhenian-Adriatic sclerophyllous and mixed forests", "ecoregion": 806, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Tyrrhenian-Adriatic sclerophyllous and mixed forests",
+ "ecoregion": 806,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "tyrrhenian",
+ "about": "The coasts and lowlands of Sardinia, Sicily, Calabria, Apulia and Campania, the coast of Corsica, the Croatian islands from Krk to Mljet, and Malta: holm and cork oak woods and maquis of lentisk, myrtle and strawberry tree on granite, limestone and volcanic hills, Aleppo and stone pine on the coasts, olive groves, vineyards and wheat hills that turn to straw by June, dry stone walls, prickly pears and dwarf fan palms, and stone or rendered villages with low tile or flat roofs, trulli in the Valle d'Itria. No split: the region is many islands and coast strips with one dry-summer climate, so one haze, weather and grade serve all of it; the straw summer and the green winter come from Sentinel-2 colour and seasonal NDVI ramps, the bare karst of the Croatian islands and Malta from the barren rule, the oak, chestnut and juniper belts of the Sardinian mountains from the tree elevation bands, and the houses from culture by country and subdivision. The one candidate for a subregion is the dark volcanic ground of Vesuvius, Ischia and Pantelleria, if a spot there shows that the limestone rock colour is wrong."
+}
