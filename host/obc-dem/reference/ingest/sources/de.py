@@ -15,6 +15,7 @@ NRW's coverage is `x`/`y` and the two INSPIRE coverages are `E`/`N`. A server re
 subset whose label it does not know, so the row carries the labels its capabilities state.
 """
 
+from .base import RASTER_SUFFIXES
 from .grid import GridTiles
 from .protocols import Wcs10Source, Wcs20Source
 from .stac import StacSearchSource
@@ -77,6 +78,7 @@ SN = GridTiles(
     tile_km=2,
 )
 
+# Each zip holds the tile as a GeoTIFF and again as an XYZ grid; the GeoTIFF carries its CRS.
 TH = GridTiles(
     "de-th", "Germany, Thuringia", "DGM1 1 m", 1.0,
     "dl-de/by-2-0", DHHN,
@@ -84,6 +86,7 @@ TH = GridTiles(
     name="dgm1_32_{east}_{north}_1_th_2020-2025.zip",
     epsg=25832,
     tile_km=1,
+    members=RASTER_SUFFIXES,
 )
 
 MV = Wcs20Source(
