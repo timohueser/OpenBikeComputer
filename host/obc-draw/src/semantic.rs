@@ -583,6 +583,7 @@ impl Sampling {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Window {
     target: [u16; CLASSES],
     counts: [u8; CLASSES],
@@ -624,7 +625,6 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
     }
 
     let mut layouts = Vec::new();
-    let mut windows = HashMap::new();
     let mut window_base = 0;
     for (oy, ox) in [(0, 0), (0, WINDOW_HALF), (WINDOW_HALF, 0), (WINDOW_HALF, WINDOW_HALF)] {
         let nx = grid.cols.saturating_sub(ox).div_ceil(WINDOW_CELLS);
@@ -633,6 +633,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
         window_base += nx * ny;
         layouts.push(WindowLayout { ox, oy, nx, ny, base });
     }
+    let mut windows = vec![None; window_base];
     for layout in &layouts {
         for by in 0..layout.ny {
             for bx in 0..layout.nx {
@@ -654,7 +655,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         window.counts[labels[i] as usize] += 1;
                     }
                 }
-                windows.insert(layout.base + by * layout.nx + bx, window);
+                windows[layout.base + by * layout.nx + bx] = Some(window);
             }
         }
     }
@@ -666,6 +667,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                 let start = x0 + ((parity as isize - y as isize - x0 as isize) & 1) as usize;
                 for x in (start..x1).step_by(2) {
                     let i = grid.index(x, y);
+                    let support = support[i];
                     let old = labels[i] as usize;
                     let mut neighbours = [u8::MAX; 4];
                     let mut n_len = 0usize;
@@ -688,16 +690,15 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         candidates[n as usize] = true;
                     }
                     let mut strongest = [0usize, 1usize];
-                    if evidence(support[i], strongest[1], prior_class) > evidence(support[i], strongest[0], prior_class)
-                    {
+                    if evidence(support, strongest[1], prior_class) > evidence(support, strongest[0], prior_class) {
                         strongest.swap(0, 1);
                     }
                     for class in 2..CLASSES {
-                        let e = evidence(support[i], class, prior_class);
-                        if e > evidence(support[i], strongest[0], prior_class) {
+                        let e = evidence(support, class, prior_class);
+                        if e > evidence(support, strongest[0], prior_class) {
                             strongest[1] = strongest[0];
                             strongest[0] = class;
-                        } else if e > evidence(support[i], strongest[1], prior_class) {
+                        } else if e > evidence(support, strongest[1], prior_class) {
                             strongest[1] = class;
                         }
                     }
@@ -710,14 +711,14 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                         if new == old || !is_candidate {
                             continue;
                         }
-                        let mut delta = DATA_WEIGHT
-                            * (evidence(support[i], old, prior_class) - evidence(support[i], new, prior_class));
+                        let mut delta =
+                            DATA_WEIGHT * (evidence(support, old, prior_class) - evidence(support, new, prior_class));
                         let before_edges = neighbours[..n_len].iter().filter(|&&n| n as usize != old).count();
                         let after_edges = neighbours[..n_len].iter().filter(|&&n| n as usize != new).count();
                         delta += BOUNDARY_WEIGHT * (after_edges as f64 - before_edges as f64);
                         for &wi in &memberships {
                             let Some(wi) = wi else { continue };
-                            let w = &windows[&wi];
+                            let w = windows[wi].as_ref().expect("active cell window");
                             // Targets are exact multiples of 1/64, and each window has at most
                             // 100 cells. The squared-error difference is exact in binary arithmetic.
                             let old_error = w.counts[old] as f64 - w.target[old] as f64 / 64.0;
@@ -735,7 +736,7 @@ fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&Semant
                     if best != old {
                         labels[i] = best as u8;
                         for wi in memberships.into_iter().flatten() {
-                            let window = windows.get_mut(&wi).expect("active cell window");
+                            let window = windows[wi].as_mut().expect("active cell window");
                             window.counts[old] -= 1;
                             window.counts[best] += 1;
                         }
@@ -767,7 +768,7 @@ fn evidence(support: Support, class: usize, prior: Option<u8>) -> f64 {
     }
 }
 
-fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &HashMap<usize, Window>) -> [Option<usize>; 4] {
+fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Option<Window>]) -> [Option<usize>; 4] {
     let mut out = [None; 4];
     for (slot, layout) in layouts.iter().enumerate() {
         if x < layout.ox || y < layout.oy {
@@ -777,7 +778,7 @@ fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &HashMap<u
         let by = (y - layout.oy) / WINDOW_CELLS;
         if bx < layout.nx && by < layout.ny {
             let index = layout.base + by * layout.nx + bx;
-            if windows.contains_key(&index) {
+            if windows[index].is_some() {
                 out[slot] = Some(index);
             }
         }
