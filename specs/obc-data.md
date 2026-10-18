@@ -527,7 +527,9 @@ same fields.
 A command starts in the repository root. Its standard output and standard error go to the
 standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
 runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
-when the step ends, also when it fails. A failed step writes no receipt. A declared directory may be empty when the step creates it.
+when the step ends, also when it fails. `TMPDIR` of a command is the empty directory `tmp` there, beside
+`output`; a step makes no other file with that name. A program puts no socket in `TMPDIR`: its path
+can be longer than the 108 bytes of a socket path. A failed step writes no receipt. A declared directory may be empty when the step creates it.
 A declared output that does not exist is an error.
 
 ### Offline
