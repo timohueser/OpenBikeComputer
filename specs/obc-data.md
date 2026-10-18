@@ -527,7 +527,8 @@ gives the same fields to its function.
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
 
-A step starts in the repository root, in a process group of its own. Its standard output and
+A step starts in the repository root, in a process group of its own. On Linux it gets SIGKILL
+when the engine ends; the programs that it started can stay. Its standard output and
 standard error go to the standard error of the engine. Exit status 0 is success. When a Rust
 function fails, its child process writes the error as the last line of standard error and exits
 with 1. The objects are read-only. While a step
@@ -572,6 +573,7 @@ ends.
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
 | `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. Linux starts the peak of a forked process at the resident set of the engine, which runs no step itself. `null` when the system does not report it |
+| `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -603,7 +605,8 @@ fetch. An `id` names a group only in the plan that it comes from.
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
 options. Without one, it is the `cost` of the output of the step in the serving release, else the
-newest receipt of the step, or `null`. The `bytes` of a fetch is the size of its files in the
+newest receipt of the step, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
+receipt with `own_process`: the cost in a release does not tell whose peak it is. The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
@@ -657,10 +660,13 @@ after a refresh of the extract, does not bake on any machine.
   that read it. A step without an estimate counts as the longest.
 - The memory that the steps that run at the same time reserve is not more than the physical
   memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
-  A step without one reserves its input bytes (`bytes_in`) times the largest peak per input byte
-  of a receipt of its layer: in the store, or of a step of this run that ended. A step that has
-  neither reserves the whole memory, so the first step of a layer without a measured peak runs
-  alone. A step that reserves more than the memory runs alone.
+  A step without one reserves from the measured steps of its layer, the receipts with
+  `own_process`, a peak and input bytes, in the store or of this run: their smallest peak, or,
+  when that is more, its input bytes (`bytes_in`) times the peak per input byte of the measured
+  step that read the most. The peak per input byte of a step that read little is mostly the fixed
+  memory of a process. A step of a layer without a measured step reserves the whole memory, so the
+  first step of such a layer runs alone. A step that reserves more than the memory runs alone. A
+  step with worker processes reserves its largest process, not their sum.
 - A step that does not fit in the free memory holds back the steps after it, so that it starts
   first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
@@ -1151,7 +1157,7 @@ it.
   end the steps that run, so it frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
-  the lock. On its machine, the next run of the same store takes the lock over at once, with a
+  the lock. On its machine, on Linux, the next run of the same store takes the lock over at once, with a
   conditional write, and writes that to its log: the store shows that the process of the run
   ended (see [Runs](#runs)), and no process of its session runs, such as a program of a
   step. On another machine, `obc data unlock TARGET --from MACHINE` frees the
