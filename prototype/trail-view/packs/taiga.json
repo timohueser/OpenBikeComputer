@@ -1,0 +1,35 @@
+{
+ "name": "Scandinavian and Russian taiga",
+ "extends": "base",
+ "about": "Scots pine on sand and rock, Norway spruce on moist ground, downy and silver birch, aspen, grey alder and rowan; juniper, willow and dwarf birch; bilberry, lingonberry, crowberry, heather and reindeer lichen under the trees and on the rocks; Labrador tea, bog cotton and sedge on the mires, fireweed on the clearings; dairy cattle, a few sheep and horses by the farms; wooden houses.",
+ "trees": {
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 6 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 950], "weight": 5 },
+  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 4 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
+  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "tea-leaved-willow": { "model": "hawthorn", "latin": "Salix phylicifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "dwarf-birch": { "model": "huckleberry", "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 1 }
+ },
+ "ground": {
+  "bilberry": {},
+  "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub", "moss"], "height": [0.1, 0.25], "share": 0.2 },
+  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["tree", "moss", "wetland"], "share": 0.15 },
+  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare"], "height": [0.05, 0.12], "share": 0.3 },
+  "heather": {},
+  "fern": {},
+  "labrador-tea": { "model": "alpenrose", "latin": "Rhododendron tomentosum", "on": ["wetland", "moss"], "height": [0.3, 0.8], "share": 0.12, "clumped": true },
+  "bog-cotton": {},
+  "bottle-sedge": { "model": "moor-grass", "latin": "Carex rostrata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.3 },
+  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.05, "clumped": true }
+ },
+ "herds": {
+  "dairy-cattle": { "model": "highland-cow", "groups": 2, "size": [3, 12], "on": ["pasture"] },
+  "sheep": { "groups": 1, "size": [4, 15], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "style": "wood-cabin"
+}
