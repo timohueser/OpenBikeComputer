@@ -1,1 +1,8 @@
-{ "name": "Faroe Islands boreal grasslands", "ecoregion": 729, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Faroe Islands boreal grasslands",
+ "ecoregion": 729,
+ "extends": "world",
+ "about": "Steep green slopes in stepped basalt over fjords and sounds, and sheer sea cliffs and stacks, often under low cloud: lush hayfields inside stone walls round the villages, grass and heather heath with sheep on the outfield, blanket bog on the shelves, moss and bare rock on the plateaus, no tree but in a few plantations and gardens, and black-tarred or painted wooden houses with turf or iron roofs. No split: the islands lie within 100 km and share one wet, windy, grey climate, so haze, weather and grade do not change across stable geography; Sentinel-2 colour with the NDVI ramps and the barren rule tells hayfield, outfield grass, heath, bog and the moss and rock of the plateaus apart, WorldCover places the few planted trees, windswept_m and the cliffs rule keep the coasts bare and sheer, and the whole region is one country for its houses.",
+ "leaf": "mixed",
+ "pack": "faroe"
+}
