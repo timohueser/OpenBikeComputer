@@ -135,6 +135,11 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
 /// output goes to standard error. The usage is that of the process and the children it waited for.
 pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {
     let mut command = command(root, argv, python)?;
+    // Temporary files go beside the output, on the disk of the store: `/tmp` can be a tmpfs, whose
+    // files take memory that no receipt counts.
+    let temporary = request.output.with_file_name("tmp");
+    std::fs::create_dir_all(&temporary).map_err(|e| format!("{}: {e}", temporary.display()))?;
+    command.env("TMPDIR", &temporary);
     let program = &argv[0];
     command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
     let start = Instant::now();

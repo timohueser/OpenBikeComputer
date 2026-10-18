@@ -970,6 +970,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
+    fn a_program_writes_its_temporary_files_in_the_work_of_its_step() {
+        let fixture = fixture("engine-temporary");
+        let script = "import json, os, sys, tempfile\nrequest = json.load(sys.stdin)\n\
+                      with tempfile.NamedTemporaryFile() as spool:\n    \
+                      open(os.path.join(request['output'], 'temp.txt'), 'w').write(os.path.dirname(spool.name))\n";
+        write(&fixture.root().join("temp.py"), script);
+        let temp = step("test/temp", Vec::new(), "temp.txt", Run::Command(vec!["python3".into(), "temp.py".into()]));
+        let receipt = &fixture.build(&[temp]).unwrap()[0].receipt;
+        let used = fs::read_to_string(fixture.store.object(&receipt.files[0].sha256)).unwrap();
+        assert_eq!(Path::new(&used), fixture.store.partial(&format!("layer-{}", receipt.key)).join("tmp"));
+        assert!(!Path::new(&used).exists(), "the engine removes it with the work of the step");
+    }
+
+    #[test]
     fn an_empty_client_directory_retains_metadata_and_missing_outputs_still_fail() {
         let fixture = fixture("engine-empty-client");
         fn sea(request: &Request) -> Result<(), String> {
