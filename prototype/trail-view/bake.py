@@ -12,6 +12,7 @@ for every other layer.
 """
 
 import argparse
+import base64
 import fcntl
 import gzip
 import http.client
@@ -28,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -42,6 +44,8 @@ from timezonefinder import TimezoneFinder
 # Certificates are checked against the system's trust store, as curl does: Spain's IGN serves a
 # chain whose root Python's own bundle does not hold.
 truststore.inject_into_ssl()
+# Map images come without a georeference; their box is the request's.
+warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarning)
 # urllib tries every IPv6 address for its full timeout before IPv4, and IPv6 to some CDNs hangs.
 _getaddrinfo = socket.getaddrinfo
 socket.getaddrinfo = lambda host, port, family=0, *rest, **kw: _getaddrinfo(host, port, socket.AF_INET, *rest, **kw)
@@ -103,10 +107,34 @@ USER_AGENT = "OpenBikeComputer trail view prototype (https://github.com/timohues
 
 WORLDCOVER = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif"
 WORLDCOVER_PX_M = 10.0
-# WorldCover classes in the order of the page's palette ramps. 255 is unknown.
-CLASSES = (10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100)
-WATER = CLASSES.index(80)
-UNKNOWN = 255
+# The ground vocabulary the page shares: a material's or lithology's code is its index.
+VOCABULARY = json.loads((HERE / "materials.json").read_text())
+MATERIAL = {entry["id"]: code for code, entry in enumerate(VOCABULARY["materials"])}
+LITHOLOGY = {entry["id"]: code for code, entry in enumerate(VOCABULARY["lithologies"])}
+COVER = np.array([entry["cover"] for entry in VOCABULARY["materials"]])
+WOODLAND = COVER == "tree"
+NONE, WATER, SEA = MATERIAL["none"], MATERIAL["inland-water"], MATERIAL["sea"]
+WORLDCOVER_MATERIALS = {10: "forest", 20: "scrub", 30: "grassland", 40: "arable", 50: "built-up", 60: "sparse",
+                        70: "glacier", 80: "inland-water", 90: "marsh", 95: "marsh", 100: "moss-lichen"}
+# The materials a coarser map may name more precisely: the same structure, or open ground of
+# another name. WorldCover's 10 m keeps the structure; a 100 m map only names it.
+OPEN = {"grassland", "scrub", "sparse", "moss-lichen", "marsh"}
+REFINES = {
+    "needleleaf-forest": {"forest"}, "broadleaf-forest": {"forest"}, "mixed-forest": {"forest"},
+    "sclerophyllous-scrub": {"scrub"}, "heath": OPEN, "bog": OPEN | {"heath"},
+    "pasture": {"grassland"}, "rough-grass": {"grassland"}, "wet-grassland": {"grassland"}, "salt-marsh": {"marsh"},
+    "rice": {"arable"}, "vineyard": {"arable"}, "orchard": {"arable"}, "olive-grove": {"arable"},
+    "bare-soil": {"sparse"}, "bare-rock": {"sparse"}, "scree": {"sparse", "bare-rock"}, "sand": {"sparse"},
+    "beach": {"sparse", "sand"},
+}
+# Heath from the satellite: open ground that reflects as much red as green (the midpoint of 1.1
+# to 1.4) while it grows. Mediterranean summer ground is as red, but dry: its NDVI is low and past
+# its spring peak.
+MOOR_GREEN_RED = 1.25
+MOOR_NDVI = 0.45
+MOOR_PEAK = 0.1
+# Land cover and geology maps refine the baseline on k < NATIONAL_LEVELS (±5 km).
+NATIONAL_LEVELS = 3
 
 S2_STAC = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mosaics/items"
 S2_YEAR = 2025
@@ -118,10 +146,6 @@ MIN_OBSERVATIONS = 3
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes
 # from summer.
 DARK = 0.025
-# Land whose NDVI stays below this in every quarter is barren: the page's barren weight passes 0.5.
-BARREN_NDVI = 0.25
-# The page's snow test starts where every visible band reflects this much.
-SNOW_WHITE = 0.36
 
 # The near field: road surfaces on k < ROAD_LEVELS (±5 km), buildings within BUILDING_HALF_M,
 # instanced trees within TREE_RADIUS_M on a jittered grid of TREE_SPACING_M, about 1.5 trees per
@@ -130,7 +154,6 @@ ROAD_LEVELS = 3
 BUILDING_HALF_M = 2500.0
 TREE_RADIUS_M = 1000.0
 TREE_SPACING_M = 8.0
-TREE = CLASSES.index(10)
 # Road surfaces in the order the page's shader paints them (code = index + 1, 0 = no road), with
 # the half-width each is painted at where OSM gives no width. The field holds the distance to the
 # nearest road EDGE, which stays continuous where two roads of different widths meet; a byte is
@@ -144,7 +167,8 @@ ROAD_REACH_M = 20.5
 # cut or filled to them at no more than GRADE_BANK (rise over run, about 40°), as a road is built.
 GRADE_SMOOTH_M = 12.0
 GRADE_BANK = 0.85
-LEAF = {"needleleaved": 1, "broadleaved": 2, "mixed": 3}
+# OSM's leaf_type, and a region's `leaf`, as the forest it makes.
+LEAF = {"needleleaved": "needleleaf-forest", "broadleaved": "broadleaf-forest", "mixed": "mixed-forest"}
 # Tree heights where no DTM gives a canopy: hedgerow and garden trees.
 NO_CANOPY_M = (5.0, 9.0)
 # OSM water on k < WATER_LEVELS (±10 km), as coverage from a 4× finer grid: rivers and canals
@@ -176,74 +200,113 @@ GROUND_BRIDGES = {"no", "boardwalk", "low_water_crossing"}
 # region walk starts at regions/<region>.json.
 SPOTS = HERE / "spots"
 REGIONS = HERE / "regions"
-# Countries and their first-level subdivisions, simplified to about a kilometre (tune/countries.py):
-# an eye outside every one takes the nearest within this reach, as a cliff top the simplified coast
-# leaves in the sea.
+# Countries and their first-level subdivisions (tune/countries.py) and the ecoregions
+# (tune/ecoregions.py) are simplified to about a kilometre: a point outside every one takes the
+# nearest within this reach, as a cliff top the simplified coast leaves in the sea.
 COUNTRIES = HERE / "tune/countries.json"
-COUNTRY_REACH_M = 25_000.0
+ECOREGIONS = HERE / "tune/ecoregions.json"
+REACH_M = 25_000.0
+# Where two regions meet, their terrain rules blend over this width, so no seam shows.
+FEATHER_M = 200.0
 
-# Geology for rock colour on k < ROCK_LEVELS: IGME's continuous 1:50 000 map, layer 1 is the
-# units' fill. Its colours are cartographic, so each unit's own lithology text picks the colour.
+# CORINE Land Cover 2018 at 100 m over Europe: the EEA's map service draws it in its legend's
+# colours, which name its classes. The classes that make a baseline material more precise.
+CLC = ("https://image.discomap.eea.europa.eu/arcgis/rest/services/Corine/CLC2018_LAEA/MapServer",
+       "Corine Land Cover 2018 © European Union, Copernicus Land Monitoring Service")
+CLC_PX_M = 100.0
+CLC_MATERIALS = {131: "bare-soil", 132: "bare-soil", 213: "rice", 221: "vineyard", 222: "orchard", 223: "olive-grove",
+                 231: "pasture", 311: "broadleaf-forest", 312: "needleleaf-forest", 313: "mixed-forest", 321: "rough-grass",
+                 322: "heath", 323: "sclerophyllous-scrub", 331: "sand", 332: "bare-rock", 412: "bog", 421: "salt-marsh"}
+# OSM's natural and landuse areas, and its kinds of wetland, that name a material more precisely.
+OSM_NATURAL = {"bare_rock": "bare-rock", "scree": "scree", "shingle": "beach", "sand": "sand", "beach": "beach",
+               "heath": "heath", "grassland": "rough-grass"}
+OSM_LANDUSE = {"vineyard": "vineyard", "orchard": "orchard"}
+WETLANDS = {"bog": "bog", "saltmarsh": "salt-marsh", "wet_meadow": "wet-grassland"}
+
+# The rock of every land texel: EGDI's 1:1 000 000 surface geology of Europe, and BGR's 1:5 000 000
+# IGME 5000 where EGDI names no rock (Ireland; Britain gives only its surface deposits). Each is one
+# download: the URL, its layer, the field that names the rock, and the credit.
+EGDI = ("https://egeologija.si/download/GeologicUnitView.gpkg", "GeologicUnitView", "representativelithology_uri",
+        "Surface geology 1:1 000 000 © EuroGeoSurveys (EGDI), CC BY 4.0")
+IGME5000 = ("https://download.bgr.de/bgr/Geologie/IGME5000/shp/IGME5000.zip", "IGME5000_europeEPSG3034shp_geology_poly_v01",
+            "Portr_Petr", "IGME5000, BGR")
+# Their terms for each lithology, split by "|". Any other term is unknown: surface deposits, which hide the
+# rock that crags show, and undifferentiated units.
+EGDI_TERMS = {
+    "limestone": "limestone|chalk|impureLimestone|carbonateSedimentaryRock|marble|travertine",
+    "limestone-marl": "impureCarbonateSedimentaryRock",
+    "dolomite": "dolomite|impureDolomite|dolomiticOrMagnesianSedimentaryRock",
+    "marl-clay": "mudstone|claystone|siltstone|organicBearingMudstone",
+    "gypsum": "gypsumOrAnhydrite",
+    "sandstone": "sandstone|wacke|arenite|clasticSandstone",
+    "conglomerate": "conglomerate|breccia|diamictite",
+    "quartzite": "quartzite|nonClasticSiliceousSedimentaryRock|biogenicSilicaSedimentaryRock",
+    "granite": "granite|granitoid|monzogranite|syenogranite|granodiorite|tonalite|diorite|quartzDiorite|dioriticRock|syenite|syeniticRock|monzonite|foidSyenitoid|foidBearingSyenite|anorthositicRock|phaneriticIgneousRock|acidicIgneousRock|orthogneiss|gneiss|paragneiss|migmatite|granulite",
+    "schist-slate-shale": "shale|slate|schist|micaSchist|phyllite|phyllonite|amphibolite|foliatedMetamorphicRock|chloriteActinoliteEpidoteMetamorphicRock|glaucophaneLawsoniteEpidoteMetamorphicRock",
+    "basalt-lava": "basalt|alkaliOlivineBasalt|tholeiiticBasalt|basanite|tephrite|andesite|spilite|basicIgneousRock|fineGrainedIgneousRock|komatiiticRock",
+    "felsic-lava": "rhyolite|rhyolitoid|dacite|trachyte|trachytoid|trachyticRock|phonolite|porphyry",
+    "dolerite": "gabbro|gabbroid|gabbroicRock|doleriticRock|ultramaficIgneousRock|peridotite|pyroxenite|serpentinite|eclogite",
+    "tuff": "tuffBrecciaAgglomerateOrPyroclasticBreccia|ashTuffLapillistoneAndLapilliTuff|pyroclasticRock",
+    "cinder-scoria": "pyroclasticMaterial|ashBrecciaBombOrBlockTephra",
+}
+IGME5000_TERMS = {
+    "limestone": "limestone|carbonates|carbonates, consolidated|chalk|marble|meta-limestone|meta-carbonate",
+    "dolomite": "dolomite/dolostone",
+    "marl-clay": "marl|marlstone|clay|claystone|mudstone|siltstone|mud|silt|meta-claystone",
+    "gypsum": "gypsum|evaporites|rock salt",
+    "sandstone": "sandstone|meta-sandstone|siliclastics, consolidated",
+    "conglomerate": "conglomerate|tillite",
+    "quartzite": "quartzite|chert",
+    "granite": "granite|granite group|alkali granite|meta-granite|meta-granite group|granodiorite|meta-granodiorite|"
+               "granodiorite-diorite group|diorite|tonalite|syenite|alkali syenite|syenite-monzonite group|plutonic alkaline group|"
+               "meta-plutonic rock group|gneiss|migmatite/anatexite|granulite",
+    "schist-slate-shale": "mica schist|schist group|phyllite|shale/slate|greenschist|blueschist|amphibolite|meta-sediment group|"
+                          "miscellaneous metamorphic rock group",
+    "basalt-lava": "basalt|basalt group|tholeiitic basalt|alkali basalt|meta-basalt|meta-basalt group|andesite|andesite group|"
+                   "meta-andesite|tephrite, basanite|latite|theralite|essexite-theralite group|lamprophyre|volcanic alkaline group|"
+                   "volcanic ultramafic group|meta-volcanic rock group",
+    "felsic-lava": "rhyolite|rhyolite group|alkali rhyolite|meta-rhyolite|meta-rhyolite group|rhyodacite|meta-rhyodacite|dacite|"
+                   "trachyte|phonolite",
+    "dolerite": "gabbro|gabbro group|meta-gabbro|meta-gabbro group|dolerite|plutonic ultramafic group|peridotite|meta-peridotite|"
+                "dunite, harzburgite, lherzolite|serpentinite|eclogite",
+    "tuff": "tuff group|tuffite group|andesite tuffite|andesite agglomerate|volcano-sediments",
+    "alluvium-colluvium": "sand|gravel",
+}
+
+# Spain's continuous 1:50 000 geological map (IGME, not IGME 5000) on k < NATIONAL_LEVELS: layer 1
+# is the units' fill. Its colours are cartographic, so each unit's own description names its rock.
 GEOLOGY = {"igme": ("https://mapas.igme.es/gis/services/Cartografia_Geologica/IGME_Geode_50/MapServer/WMSServer", "1",
                   "GEODE 1:50 000 © IGME")}
-ROCK_LEVELS = 3
-# Words in a unit's description: rocks with their colour, and colour words that tint the rock they
-# follow. A description names its main rock first, so the earliest rock word sets the colour, a
-# colour word right after it ("margas blancas") overrides it, and variegated rock is drawn in
-# red, green and white bands.
-ROCKS = [
-    ("yeso", "#e2dccd"), ("calcaren", "#cdb88e"), ("caliza", "#d3c6a6"), ("dolom", "#b2a894"),
-    ("arenisca", "#c3a06c"), ("conglomerad", "#a99878"), ("marga", "#cbbd98"), ("arcilla", "#b58a64"),
-    ("limo", "#c2a886"), ("pizarra", "#6e6a66"), ("granit", "#b5aba0"), ("cuarcita", "#bfb9ae"),
-    ("esquisto", "#7b766c"), ("glacis", "#c2ad88"), ("coluvi", "#c2ad88"), ("aluvi", "#c2ad88"),
-    # Volcanic: dark flows and dykes, rust cinder, cream pumice, tan tuff. Descriptions write
-    # "basálticas" with the accent.
-    ("colada", "#4a4541"), ("basalt", "#4a4644"), ("basált", "#4a4644"), ("ankaramit", "#4a4644"),
-    ("fonolit", "#5e554b"), ("fonolít", "#5e554b"), ("traqui", "#686057"), ("sálic", "#8a7f71"),
-    ("dique", "#6f675d"), ("intrusiv", "#6f675d"), ("escoria", "#6a3d31"), ("piroclast", "#7a5040"),
-    ("pumit", "#d6c7a2"), ("pómez", "#d6c7a2"), ("toba", "#b39a74"),
-]
-COLOURS = [("abigarrad", "#a8604e"), ("blanc", "#ddd6c4"), ("roj", "#a9583f"), ("salm", "#c98c6e"), ("verde", "#8f9884"),
-           ("negr", "#3e3a37")]
-COLOUR_AFTER = 3
-ROCK = "#b0a796"
-# Words for the rock itself and how hard it stands, 0 soft to 1 hard, first match first: hard
-# rock breaks through as outcrops and crags, marl and clay weather into smooth slopes and gullies.
-HARDNESS = [
-    ("alternancia", 0.4), ("flysch", 0.4), ("abigarrad", 0.1), ("arcilla", 0.1), ("limo", 0.1),
-    ("yeso", 0.2), ("margos", 0.45), ("marga", 0.15), ("dolom", 1.0), ("cuarcita", 1.0),
-    ("granit", 1.0), ("caliza", 0.9), ("calcaren", 0.6), ("conglomerad", 0.7), ("arenisca", 0.6),
-    ("pizarra", 0.6), ("esquisto", 0.5), ("glacis", 0.05), ("coluvi", 0.05), ("aluvi", 0.05),
-    ("dique", 1.0), ("intrusiv", 1.0), ("fonolit", 0.95), ("fonolít", 0.95), ("colada", 0.85), ("basalt", 0.85),
-    ("basált", 0.85), ("traqui", 0.85), ("escoria", 0.3), ("piroclast", 0.25), ("pumit", 0.1), ("pómez", 0.1),
-    ("toba", 0.5),
-]
-# Fine habitats for the ground mosaic on k < HABITAT_LEVELS, in one vocabulary whatever the source;
-# the page's region kit paints each. The spot's `landcover` names the source.
-HABITATS = ("none", "rock", "heath", "bog", "bracken", "rough", "pasture", "scrub", "hedge", "sand", "saltmarsh", "built",
-            "water")
-HABITAT_LEVELS = 3
+# Words in a unit's description for each lithology. A description names its main rock first, so
+# the earliest word wins, and names variegated beds right after their rock ("arcillas abigarradas").
+# Descriptions write "basálticas" with the accent.
+ROCK_WORDS = {
+    "limestone-marl": ("alternancia", "flysch", "margos"), "gypsum": ("yeso",), "limestone": ("calcaren", "caliza"),
+    "dolomite": ("dolom",), "sandstone": ("arenisca",), "conglomerate": ("conglomerad",), "marl-clay": ("marga", "arcilla", "limo"),
+    "schist-slate-shale": ("pizarra", "esquisto"), "granite": ("granit",), "quartzite": ("cuarcita",),
+    "alluvium-colluvium": ("glacis", "coluvi", "aluvi", "terraza", "deyecc", "deslizamiento", "arroyada"),
+    "basalt-lava": ("colada", "basalt", "basált", "ankaramit"), "felsic-lava": ("fonolit", "fonolít", "traqui", "sálic"),
+    "dolerite": ("dique", "intrusiv"), "cinder-scoria": ("escoria", "piroclast"), "pumice": ("pumit", "pómez"), "tuff": ("toba",),
+}
+VARIEGATED, VARIEGATED_AFTER = "abigarrad", 3
 # Ireland's National Land Cover Map 2018, mapped from 1 m imagery to 0.05 ha: the feature service,
-# and its LEVEL_2_VALUE words for each habitat, the first match winning.
+# and its LEVEL_2_VALUE words for each material, the first match winning.
 NLCM = ("https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0",
         "National Land Cover Map 2018 © Tailte Éireann and EPA, CC BY 4.0")
-NLCM_WORDS = [("exposed rock", "rock"), ("heath", "heath"), ("bog", "bog"), ("peat", "bog"), ("fen", "bog"),
-              ("swamp", "bog"), ("bracken", "bracken"), ("wet grassland", "rough"), ("dry grassland", "rough"),
+NLCM_WORDS = [("exposed rock", "bare-rock"), ("heath", "heath"), ("bog", "bog"), ("peat", "bog"), ("fen", "marsh"),
+              ("swamp", "marsh"), ("bracken", "bracken"), ("wet grassland", "wet-grassland"), ("dry grassland", "rough-grass"),
               ("improved grassland", "pasture"), ("amenity grassland", "pasture"), ("scrub", "scrub"),
               ("transitional forest", "scrub"), ("hedgerow", "hedge"), ("treeline", "hedge"), ("sand", "sand"),
-              ("coastal sediments", "sand"), ("mudflat", "sand"), ("saltmarsh", "saltmarsh"), ("artificial", "built"),
-              ("buildings", "built"), ("ways", "built"), ("bare soil", "built"), ("water", "water"),
-              ("lakes", "water"), ("rivers", "water")]
+              ("coastal sediments", "beach"), ("mudflat", "sand"), ("saltmarsh", "salt-marsh"), ("artificial", "built-up"),
+              ("buildings", "built-up"), ("ways", "built-up"), ("bare soil", "bare-soil")]
 # NatureScot's Habitat Map of Scotland, without overlaps or mosaics, over WFS; its EUNIS codes for
-# each habitat, the longest matching prefix winning. Woodland keeps WorldCover's trees.
+# each material, the longest matching prefix winning. Woodland keeps WorldCover's trees.
 HABMOS = ("https://ogc.nature.scot/geoserver/ows", "habitatsandspecies:habmosnvccleaned",
           "Contains NatureScot information licensed under the Open Government Licence v3.0")
-HABMOS_CODES = {"F4": "heath", "F2": "heath", "D1": "bog", "D2": "bog", "D4": "bog", "H2": "rock", "H3": "rock",
-                "B3": "rock", "E5.3": "bracken", "E5": "rough", "E1": "rough", "E3": "rough", "E4": "rough", "E2": "pasture", "I": "pasture",
-                "F3": "scrub", "F9": "scrub", "G5": "scrub", "B1": "sand", "A2.5": "saltmarsh", "C1": "water",
-                "C2": "water", "C3": "water", "J": "built"}
-# Burn order: broad covers first, so the small and linear ones they hold stay on top.
-HABITAT_ORDER = ("pasture", "rough", "heath", "bog", "bracken", "saltmarsh", "sand", "scrub", "water", "built", "rock", "hedge")
+HABMOS_CODES = {"F4": "heath", "F2": "heath", "D1": "bog", "D2": "bog", "D4": "marsh", "H2": "scree", "H3": "bare-rock",
+                "B3": "bare-rock", "E5.3": "bracken", "E5": "rough-grass", "E1": "rough-grass", "E3": "wet-grassland",
+                "E4": "rough-grass", "E2": "pasture", "I": "pasture", "F3": "scrub", "F9": "scrub", "G5": "scrub", "B1": "sand",
+                "A2.5": "salt-marsh", "J": "built-up"}
 
 # OSM features near the eye: walls and hedges within WALL_HALF_M, cut into pieces of at most
 # WALL_PIECE_M so each stands on the ground; orchard trees in rows ORCHARD_SPACING_M apart.
@@ -331,11 +394,25 @@ def area_of(area: list) -> float:
     return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(area, area[1:] + area[:1]))) / 2
 
 
-def region_of(start: str, lat: float, lon: float) -> tuple[list[str], dict]:
-    """The region ids from world down to the point's region, and their rules merged. The walk
-    starts at `start` and steps into the subregion of the current region whose `where` holds the
-    point, the smallest on a tie, until none does."""
-    table = {path.stem: json.loads(path.read_text()) for path in REGIONS.glob("*.json")}
+def region_table() -> dict[str, dict]:
+    return {path.stem: json.loads(path.read_text()) for path in REGIONS.glob("*.json")}
+
+
+def rules_of(table: dict, name: str) -> dict:
+    """The region's rules, its parents' merged under them."""
+    chain = [name]
+    while "extends" in table[chain[0]]:
+        chain.insert(0, table[chain[0]]["extends"])
+    region = {}
+    for link in chain:
+        region = merge(region, {k: v for k, v in table[link].items() if k not in ("extends", "where", "about")})
+    return region
+
+
+def region_of(table: dict, start: str, lat: float, lon: float) -> list[str]:
+    """The region ids from world down to the point's region. The walk starts at `start` and steps
+    into the subregion of the current region whose `where` holds the point, the smallest on a tie,
+    until none does."""
     if start not in table:
         sys.exit(f"spots/{start}.json has no region: regions/{start}.json is missing")
     chain = [start]
@@ -344,16 +421,84 @@ def region_of(start: str, lat: float, lon: float) -> tuple[list[str], dict]:
     while fits := [(area_of(area), name) for name, region in table.items() if region.get("extends") == chain[-1]
                    for area in region.get("where", []) if holds(area, lat, lon)]:
         chain.append(min(fits)[1])
-    region = {}
-    for name in chain:
-        region = merge(region, {k: v for k, v in table[name].items() if k not in ("extends", "where", "about")})
-    return chain, region
+    return chain
+
+
+def frame_ring(ring: list, to_frame, step_deg: float = 0.02) -> list:
+    """A ring of [lon, lat] in frame metres, with vertices every step_deg along each edge, so its
+    edges curve as they do in the frame."""
+    out = []
+    for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]):
+        n = max(1, math.ceil(max(abs(x1 - x0), abs(y1 - y0)) / step_deg))
+        out += [(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n) for i in range(n)]
+    xs, ys = to_frame.transform(*np.array(out).T)
+    return np.stack([xs, ys], axis=-1).tolist() + [[float(xs[0]), float(ys[0])]]
+
+
+def region_levels(table: dict, start: str, to_frame, to_wgs84) -> tuple[list[np.ndarray], list[str]]:
+    """Per level, R8: the index into the names of the region that each texel lies in. A texel lies
+    in the ecoregion that holds it, or the nearest within REACH_M, else in `start`; from there it
+    steps into subregions as region_of's walk does. Coarse levels first: a texel no ecoregion holds
+    takes the region of the coarser level under it."""
+    from rasterio.features import rasterize
+
+    names = [start]
+
+    def code(name: str) -> int:
+        if name not in names:
+            names.append(name)
+        return names.index(name)
+
+    ecoregions = [e for e in json.loads(ECOREGIONS.read_text())["regions"] if e.get("short") in table]
+    levels = [None] * LEVELS
+    for k in reversed(range(LEVELS)):
+        half = HALF0_M * 2**k
+        transform = rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE)
+        west, south, east, north = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        shapes = [({"type": "Polygon", "coordinates": [frame_ring(ring, to_frame) for ring in polygon]}, code(e["short"]))
+                  for e in ecoregions for polygon in e["polygons"]
+                  if min(x for x, _ in polygon[0]) < east and max(x for x, _ in polygon[0]) > west
+                  and min(y for _, y in polygon[0]) < north and max(y for _, y in polygon[0]) > south]
+        index = rasterize(shapes, out_shape=(SIZE, SIZE), transform=transform, fill=255, dtype=np.uint8) \
+            if shapes else np.full((SIZE, SIZE), 255, np.uint8)
+        gaps = index == 255
+        if k == LEVELS - 1:
+            index = spread(index, gaps, 0, steps=round(REACH_M / (2 * half / SIZE)))
+        else:
+            under = levels[k + 1][SIZE // 4:3 * SIZE // 4, SIZE // 4:3 * SIZE // 4].repeat(2, axis=0).repeat(2, axis=1)
+            index[gaps] = under[gaps]
+        # Each region in turn steps into its subregions, the smallest burnt last so it wins a tie.
+        n = 0
+        while n < len(names):
+            inside = index == n
+            subregions = [(area_of(area), name, area) for name, region in table.items()
+                          if region.get("extends") == names[n] for area in region.get("where", [])] if inside.any() else []
+            for _, name, area in sorted(subregions, reverse=True):
+                ring = area if isinstance(area[0], list) else [[area[0], area[1]], [area[2], area[1]], [area[2], area[3]],
+                                                                [area[0], area[3]]]
+                held = rasterize([({"type": "Polygon", "coordinates": [frame_ring(ring, to_frame)]}, 1)], out_shape=(SIZE, SIZE),
+                                 transform=transform, dtype=np.uint8).astype(bool) & inside
+                if held.any():
+                    index[held] = code(name)
+            n += 1
+        levels[k] = index
+    return levels, names
+
+
+def by_region(heights: np.ndarray, regions: np.ndarray, rules: list[dict], half: float, shape) -> np.ndarray:
+    """shape(heights, rules) for each region's rules, blended where the regions lie: each one's
+    share is its area feathered over FEATHER_M."""
+    present = np.unique(regions)
+    if len(present) == 1:
+        return shape(heights, rules[present[0]])
+    r = max(1, round(FEATHER_M / (2 * half / SIZE)))
+    return sum(fine(box_mean((regions == code).astype(np.float32), r)) * shape(heights, rules[code]) for code in present)
 
 
 def place_at(places: list[dict], lat: float, lon: float) -> str | None:
     """The lower-case ISO code of the place that holds the point, else of the nearest one within
-    COUNTRY_REACH_M."""
-    nearest, reach = None, COUNTRY_REACH_M
+    REACH_M."""
+    nearest, reach = None, REACH_M
     for place in places:
         (x0, y0), (x1, y1) = np.array([pair for ring in place["rings"] for pair in zip(ring, ring[1:])]).transpose(1, 2, 0)
         # Even-odd over every ring of the place: a hole's crossings cancel its polygon's.
@@ -361,7 +506,7 @@ def place_at(places: list[dict], lat: float, lon: float) -> str | None:
             crossings = ((y0 > lat) != (y1 > lat)) & (lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0))
         if crossings.sum() % 2:
             return place["iso"]
-        # Metres on a plane through the point: close enough to tell COUNTRY_REACH_M.
+        # Metres on a plane through the point: close enough to tell REACH_M.
         sx, sy = 111_320.0 * math.cos(math.radians(lat)), 111_320.0
         ax, ay, dx, dy = (x0 - lon) * sx, (y0 - lat) * sy, (x1 - x0) * sx, (y1 - y0) * sy
         t = np.clip(-(ax * dx + ay * dy) / np.maximum(dx * dx + dy * dy, 1e-9), 0, 1)
@@ -558,33 +703,39 @@ def worldcover_tiles(bbox) -> list[str]:
     return tiles
 
 
-def class_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path, coast: list[np.ndarray] | None = None,
-                wet: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
-    """RG8: the palette index of the WorldCover class, and 255 where it is water; and the sea from
-    OSM's coastline, or None. With OSM's water coverage (`wet`), those settle where water lies."""
+def material_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path, coast: list[np.ndarray] | None = None,
+                   wet: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+    """R8: the material of WorldCover's class, sea and inland water as they settle; and the sea
+    from OSM's coastline, or None. With OSM's water coverage (`wet`), water settles where it lies."""
     half = HALF0_M * 2**k
     resampling = "near" if 2 * half / SIZE <= WORLDCOVER_PX_M else "mode"
     raw = warp(worldcover_tiles(bbox), frame, half, resampling, overviews=True, work=work)[0]
-    lookup = np.full(256, UNKNOWN, np.uint8)
-    lookup[list(CLASSES)] = np.arange(len(CLASSES))
-    index = lookup[np.where(raw == NODATA, 0, raw).astype(np.uint8)]
+    lookup = np.full(256, NONE, np.uint8)
+    for value, name in WORLDCOVER_MATERIALS.items():
+        lookup[value] = MATERIAL[name]
+    material = lookup[np.where(raw == NODATA, 0, raw).astype(np.uint8)]
     # No tile is published over open sea.
-    index[(index == UNKNOWN) & (heights <= 0.5)] = WATER
-    index = round_shores(index, half)
-    sea = sea_mask(coast, index == WATER, half) if coast else None
+    material[(material == NONE) & (heights <= 0.5)] = WATER
+    material = round_shores(material, half)
+    sea = sea_mask(coast, material == WATER, half) if coast else None
     if wet is not None:
-        index = settle_water(index, heights, sea, wet, half)
-    return np.stack([index, np.where(index == WATER, 255, 0).astype(np.uint8)], axis=-1), sea
+        material = settle_water(material, heights, sea, wet, half)
+    material[(material == WATER) & (sea if sea is not None else heights <= SEA_LEVEL_M)] = SEA
+    return material, sea
 
 
-def settle_water(index: np.ndarray, heights: np.ndarray, sea: np.ndarray | None, wet: np.ndarray,
+def is_water(material: np.ndarray) -> np.ndarray:
+    return (material == WATER) | (material == SEA)
+
+
+def settle_water(material: np.ndarray, heights: np.ndarray, sea: np.ndarray | None, wet: np.ndarray,
                  half: float) -> np.ndarray:
     """The sea lies where OSM's coastline puts it, to the texel. Other WorldCover water stays where
     OSM maps water, or where the ground is flat as a lake is, away from the sea's shore; elsewhere
-    it was a shadow or a gully finer than the DEM, and takes the nearest land class. Without a
+    it was a shadow or a gully finer than the DEM, and takes the nearest land's material. Without a
     coastline, water at sea level and the water joined to it is the sea."""
-    index = index.copy()
-    water = index == WATER
+    material = material.copy()
+    water = material == WATER
     # The spread is taken over water only, because the DEM blends the bank into a lake's edge;
     # water joined to a flat surface is the same lake. A lone texel is a shadow.
     surface = grow(np.where(water, heights, -np.inf), np.maximum) - grow(np.where(water, heights, np.inf), np.minimum)
@@ -607,43 +758,52 @@ def settle_water(index: np.ndarray, heights: np.ndarray, sea: np.ndarray | None,
         # does not.
         for _ in range(steps):
             keep |= grow(keep & ~sea, np.logical_or) & water & ~sea
-        index[sea] = WATER
-    # Land that no land class reaches, as an islet or a mole OSM maps in the sea, is rock.
-    return take_nearest_land(index, water & ~keep, CLASSES.index(60))
+        material[sea] = WATER
+    # Land that no land material reaches, as an islet or a mole OSM maps in the sea, is sparse.
+    return spread(material, water & ~keep, MATERIAL["sparse"], avoid=(material == NONE) | (material == WATER))
 
 
-def take_nearest_land(index: np.ndarray, lost: np.ndarray, otherwise: int) -> np.ndarray:
-    """Lost texels take the class of the nearest land, spreading in from their edges, and the
-    texels none reaches take `otherwise`. Shifted by slicing, so no texel sees the far edge."""
-    index[lost] = UNKNOWN
-    filled = True
-    while filled:
+def spread(index: np.ndarray, lost: np.ndarray, otherwise: int, avoid: np.ndarray | None = None,
+           steps: int | None = None) -> np.ndarray:
+    """Lost texels take the value of the nearest texel that is neither lost nor in `avoid`,
+    spreading in from their edges; those it does not reach within `steps` take `otherwise`. Shifted
+    by slicing, so no texel sees the far edge."""
+    index = index.copy()
+    source = ~lost if avoid is None else ~lost & ~avoid
+    open_ = lost.copy()
+    step = 0
+    while open_.any() and step != steps:
+        step += 1
         filled = False
-        for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
-            near = np.full_like(index, UNKNOWN)
-            to, src = (slice(1, None), slice(None, -1)) if step > 0 else (slice(None, -1), slice(1, None))
+        for axis, d in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            near, near_source = np.zeros_like(index), np.zeros_like(source)
+            to, src = (slice(1, None), slice(None, -1)) if d > 0 else (slice(None, -1), slice(1, None))
             if axis == 0:
-                near[to] = index[src]
+                near[to], near_source[to] = index[src], source[src]
             else:
-                near[:, to] = index[:, src]
-            fill = lost & (index == UNKNOWN) & (near != UNKNOWN) & (near != WATER)
+                near[:, to], near_source[:, to] = index[:, src], source[:, src]
+            fill = open_ & near_source
             index[fill] = near[fill]
+            source |= fill
+            open_ &= ~fill
             filled |= bool(fill.any())
-    index[lost & (index == UNKNOWN)] = otherwise
+        if not filled:
+            break
+    index[open_] = otherwise
     return index
 
 
-def round_shores(index: np.ndarray, half: float) -> np.ndarray:
+def round_shores(material: np.ndarray, half: float) -> np.ndarray:
     """Finer than WorldCover's pixels, its shores are stair-stepped: water by the majority within
-    half a pixel instead, and land that loses its water takes the nearest land class."""
+    half a pixel instead, and land that loses its water takes the nearest land's material."""
     r = round(WORLDCOVER_PX_M / 2 / (2 * half / SIZE))
     if not r:
-        return index
-    index = index.copy()
-    water = box_mean((index == WATER).astype(np.float32), r) > 0.5
-    lost = (index == WATER) & ~water
-    index[water] = WATER
-    return take_nearest_land(index, lost, CLASSES.index(30))
+        return material
+    material = material.copy()
+    water = box_mean((material == WATER).astype(np.float32), r) > 0.5
+    lost = (material == WATER) & ~water
+    material[water] = WATER
+    return spread(material, lost, MATERIAL["grassland"], avoid=(material == NONE) | water)
 
 
 def s2_items(bbox, work: Path) -> dict[int, list[Path]]:
@@ -693,24 +853,138 @@ def s2_level(k: int, frame: str, quarters: dict[int, list[Path]], work: Path) ->
     return texels
 
 
-def ndvimax_levels(out: Path) -> list[float | None]:
-    """Writes ndvimax-k for k < S2_LEVELS from the colour levels: per texel the most NDVI any
-    quarter saw, in their alpha code. Returns per quarter the median luma of barren land's
-    reflectance, as the page reads it, without white that may be snow."""
-    def read(name: str, bands: int) -> np.ndarray:
-        return np.frombuffer(gzip.decompress((out / name).read_bytes()), np.uint8).reshape(SIZE, SIZE, bands)
+def unpacked(path: Path, bands: int) -> np.ndarray:
+    return np.frombuffer(gzip.decompress(path.read_bytes()), np.uint8).reshape(SIZE, SIZE, bands)
 
-    lumas = {q: [] for q in range(1, 5)}
-    for k in range(S2_LEVELS):
-        quarters = {q: read(f"s2-q{q}-{k}.bin.gz", 4) for q in range(1, 5)}
-        most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
-        (out / f"ndvimax-{k}.bin.gz").write_bytes(pack(most))
-        barren = (read(f"class-{k}.bin.gz", 2)[..., 1] < 128) & (most > 0) & ((most - 1.0) / 127 - 1 < BARREN_NDVI)
-        for q, texels in quarters.items():
-            refl = (texels[..., :3] / 255.0) ** 2.2
-            keep = barren & (texels[..., 3] > 0) & (refl.min(axis=-1) < SNOW_WHITE)
-            lumas[q].append(refl[keep] @ (0.3, 0.59, 0.11))
-    return [round(float(np.median(np.concatenate(v))), 4) if sum(map(len, v)) else None for v in lumas.values()]
+
+def satellite_heath(quarters: dict[int, np.ndarray], most: np.ndarray) -> np.ndarray:
+    """Where the satellite sees heath: in summer's quarter, or spring's where summer saw nothing,
+    the ground reflects as much red as green while its NDVI is high and near the year's most."""
+    texels = np.where((quarters[3][..., 3] > 0)[..., None], quarters[3], quarters[2])
+    refl = (texels[..., :3] / 255.0) ** 2.2
+    ndvi = (texels[..., 3] - 1.0) / 127 - 1
+    return ((texels[..., 3] > 0) & (refl[..., 1] < MOOR_GREEN_RED * refl[..., 0]) & (ndvi >= MOOR_NDVI)
+            & (ndvi >= (most - 1.0) / 127 - 1 - MOOR_PEAK))
+
+
+def refine(material: np.ndarray, proposed: np.ndarray) -> np.ndarray:
+    """Each proposed material where it names the texel's material more precisely (REFINES); 0
+    proposes nothing."""
+    out = material.copy()
+    for name, coarser in REFINES.items():
+        at = (proposed == MATERIAL[name]) & np.isin(material, [MATERIAL[c] for c in coarser])
+        out[at] = MATERIAL[name]
+    return out
+
+
+def overlay(material: np.ndarray, proposed: np.ndarray) -> np.ndarray:
+    """A finer map's material on every land texel it names: WorldCover and the satellite keep the water."""
+    at = (proposed != NONE) & ~is_water(material)
+    out = material.copy()
+    out[at] = proposed[at]
+    return out
+
+
+def polygons_level(polygons: list[tuple[list[np.ndarray], int]], half: float) -> np.ndarray:
+    """R8: the code of the polygon over each texel, 0 under none. A polygon is its rings in frame
+    metres, its holes among them; the smaller burns over the larger."""
+    from rasterio.features import rasterize
+
+    if not polygons:
+        return np.zeros((SIZE, SIZE), np.uint8)
+    size = lambda rings: max(abs(float(np.sum(r[:-1, 0] * r[1:, 1] - r[1:, 0] * r[:-1, 1]))) for r in rings)
+    # GDAL fills a polygon even-odd over all its rings, so a multipolygon's outers and inners can share one.
+    shapes = [({"type": "Polygon", "coordinates": [r.tolist() for r in rings]}, code)
+              for rings, code in sorted(polygons, key=lambda p: -size(p[0]))]
+    return rasterize(shapes, out_shape=(SIZE, SIZE), dtype=np.uint8,
+                     transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE))
+
+
+def clc_legend() -> dict[int, int]:
+    """The CLC raster's legend as 0xRRGGBB → class, from the service's swatches, cached."""
+    path = SOURCES / "clc" / "legend.json"
+    if not path.exists():
+        legend = json.loads(urllib.request.urlopen(f"{CLC[0]}/legend?f=json", timeout=120).read())
+        colours = {}
+        for entry in next(layer for layer in legend["layers"] if layer["layerId"] == 1)["legend"]:
+            with rasterio.MemoryFile(base64.b64decode(entry["imageData"])) as file, file.open() as image:
+                swatch = image.read()
+            r, g, b = (int(v) for v in swatch[:3, swatch.shape[1] // 2, swatch.shape[2] // 2])
+            colours[(r << 16) | (g << 8) | b] = int(entry["label"].split(":")[0])
+        write_atomic(path, json.dumps(colours))
+    return {int(rgb): code for rgb, code in json.loads(path.read_text()).items()}
+
+
+def clc_level(spot_id: str, lat: float, lon: float, k: int, frame: str, work: Path) -> np.ndarray:
+    """R8 on level k: the material that each texel's CLC class names (CLC_MATERIALS), 0 elsewhere
+    and outside CLC. One map image per spot and level in EPSG:3035, at 100 m or the service's
+    4096 px, cached."""
+    half = HALF0_M * 2**k
+    west, south, east, north = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:3035", always_xy=True).transform_bounds(
+        -half, -half, half, half, densify_pts=21)
+    px = max(east - west, north - south) / min(4096, math.ceil(max(east - west, north - south) / CLC_PX_M))
+    w, h = math.ceil((east - west) / px), math.ceil((north - south) / px)
+    # The box widened to whole pixels, so the service draws it at exactly this size.
+    x0, y0 = (west + east - w * px) / 2, (south + north - h * px) / 2
+    bounds = (x0, y0, x0 + w * px, y0 + h * px)
+    path = SOURCES / "clc" / f"{spot_id}_{lat:.5f}_{lon:.5f}-{k}.png"
+    if not path.exists():
+        params = {"bbox": ",".join(f"{v:.1f}" for v in bounds), "bboxSR": 3035, "imageSR": 3035, "size": f"{w},{h}",
+                  "layers": "show:1", "format": "png32", "transparent": "true", "f": "image"}
+        with machine_lock("clc"):
+            http_download(f"{CLC[0]}/export?{urllib.parse.urlencode(params)}", path, headers={"User-Agent": USER_AGENT})
+    with rasterio.open(path) as f:
+        rgba = f.read().astype(np.int64)
+    colour = np.where(rgba[3] > 0, (rgba[0] << 16) | (rgba[1] << 8) | rgba[2], -1)
+    lookup = {rgb: MATERIAL[CLC_MATERIALS[code]] for rgb, code in clc_legend().items() if code in CLC_MATERIALS}
+    materials = np.zeros(colour.shape, np.uint8)
+    for rgb, code in lookup.items():
+        materials[colour == rgb] = code
+    return onto_level(materials[None], bounds, "EPSG:3035", k, frame, "mode" if 2 * half / SIZE > px else "near", work)[0]
+
+
+def lithology_sources() -> tuple[Path, Path]:
+    """EGDI's GeoPackage and IGME 5000's shapefile, each downloaded once."""
+    folder = SOURCES / "lithology"
+    shapefile = folder / "igme5000" / f"{IGME5000[1]}.shp"
+    with machine_lock("lithology"):
+        egdi = http_download(EGDI[0], folder / "GeologicUnitView.gpkg")
+        if not shapefile.exists():
+            archive = http_download(IGME5000[0], folder / "IGME5000.zip")
+            with zipfile.ZipFile(archive) as z:
+                for member in z.namelist():
+                    if Path(member).stem == IGME5000[1]:
+                        (shapefile.parent / Path(member).name).write_bytes(z.read(member))
+            archive.unlink()
+    return egdi, shapefile
+
+
+def lithology_level(sources: tuple[Path, Path], k: int, frame: str, work: Path, used: set) -> np.ndarray:
+    """R8 on level k: the lithology of each texel from EGDI, and from IGME 5000 where EGDI names
+    none. Each map's units over the level, simplified to half a texel, are burnt onto it; the
+    credit of each map that names any goes into `used`."""
+    from rasterio.features import rasterize
+
+    half = HALF0_M * 2**k
+    # Both maps are in EPSG:3034, so the filter box is in their own metres.
+    box = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:3034", always_xy=True).transform_bounds(
+        -half, -half, half, half, densify_pts=21)
+    out = np.zeros((SIZE, SIZE), np.uint8)
+    for path, (_, layer, field, credit), terms in zip(sources, (EGDI, IGME5000), (EGDI_TERMS, IGME5000_TERMS)):
+        codes = {term: LITHOLOGY[name] for name, words in terms.items() for term in words.split("|")}
+        units = work / "units.geojson"
+        units.unlink(missing_ok=True)
+        subprocess.run(["ogr2ogr", "-q", "-f", "GeoJSON", str(units), str(path), layer, "-select", field,
+                        "-spat", *map(str, box), "-t_srs", frame, "-simplify", str(half / SIZE), "-nlt", "MULTIPOLYGON"],
+                       check=True)
+        shapes = [(f["geometry"], codes[term]) for f in json.loads(units.read_text())["features"]
+                  if f["geometry"] and (term := (f["properties"][field] or "").rsplit("/", 1)[-1]) in codes]
+        if shapes:
+            unknown = out == 0
+            out[unknown] = rasterize(shapes, out_shape=(SIZE, SIZE), dtype=np.uint8,
+                                     transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE))[unknown]
+            used.add(credit)
+    return out
 
 
 def road_surface(tags: dict) -> str | None:
@@ -909,16 +1183,16 @@ def osm_wet(rivers, lakes, islands, half: float) -> np.ndarray:
     return wet.reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
 
 
-def water_field(wet: np.ndarray, streams, classes: np.ndarray, half: float, work: Path) -> np.ndarray:
+def water_field(wet: np.ndarray, streams, material: np.ndarray, half: float, work: Path) -> np.ndarray:
     """RG8: the share of each pixel under OSM water (`osm_wet`, plus streams), 0–255, and its shore
-    distance (SHORE_REACH_M). Streams count only off tree pixels, because the canopy hides them."""
+    distance (SHORE_REACH_M). Streams count only off woodland, because the canopy hides them."""
     fine = SIZE * SUPERSAMPLE
     reach = 2 * half / fine
     water = wet
     if streams:
         cover = (edge_distance(streams, half, fine, reach)[0] < 0).reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
-        water = np.maximum(water, cover * (classes[..., 0] != TREE))
-    shore = shore_distance((classes[..., 1] == 255) | (water >= 0.5), half, work)
+        water = np.maximum(water, cover * ~WOODLAND[material])
+    shore = shore_distance(is_water(material) | (water >= 0.5), half, work)
     return np.stack([np.round(water * 255), np.round(np.sqrt(shore / SHORE_REACH_M) * 255)], axis=-1).astype(np.uint8)
 
 
@@ -945,7 +1219,7 @@ def grow(a: np.ndarray, op) -> np.ndarray:
     return out
 
 
-def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs: dict,
+def sharpen_coast(heights: np.ndarray, water: np.ndarray, half: float, cliffs: dict,
                   coast_sea: np.ndarray | None = None) -> np.ndarray:
     """GLO-30 heights with cliff coasts made sheer. GLO-30 makes a cliff a 30 m slope into the sea.
     The sea beside land stands at sea level, so the coast drops where WorldCover puts the water's
@@ -954,7 +1228,6 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     reach inland the ground rises little. There the edge rises up to raise_m; where the ground goes
     on climbing it is a hillside, and the edge rises a fifth of that at most. OSM's coastline, where
     there is one, says where the sea is to the texel, gullies the DEM averages away included."""
-    water = classes[..., 1] == 255
     sea = coast_sea.copy() if coast_sea is not None else water & (heights <= SEA_LEVEL_M)
     if not sea.any():
         return heights
@@ -1064,44 +1337,38 @@ def wms_map(service: str, layer: str, fmt: str, bbox, px: int, path: Path, info:
     return http_download(f"{service}?{urllib.parse.urlencode(params)}", path)
 
 
-def onto_level(bands: np.ndarray, bbox, k: int, frame: str, size: int, resampling: str, work: Path) -> np.ndarray:
-    """uint8 bands over a WGS84 box, warped onto level k's grid at size² texels."""
+def onto_level(bands: np.ndarray, bounds, crs: str, k: int, frame: str, resampling: str, work: Path) -> np.ndarray:
+    """uint8 bands over a box in `crs`, warped onto level k's grid."""
     half = HALF0_M * 2**k
-    src, dst = work / "wms.tif", work / "wms-warp.tif"
+    src, dst = work / "map.tif", work / "map-warp.tif"
     profile = {"driver": "GTiff", "height": bands.shape[1], "width": bands.shape[2], "count": bands.shape[0],
-               "dtype": "uint8", "crs": "EPSG:4326", "transform": rasterio.transform.from_bounds(*bbox, bands.shape[2], bands.shape[1])}
+               "dtype": "uint8", "crs": crs, "transform": rasterio.transform.from_bounds(*bounds, bands.shape[2], bands.shape[1])}
     with rasterio.open(src, "w", **profile) as f:
         f.write(bands)
     # A fourth band is data here, not alpha.
     subprocess.run(["gdalwarp", "-q", "-overwrite", "-nosrcalpha", "-t_srs", frame, "-te", str(-half), str(-half), str(half),
-                    str(half), "-ts", str(size), str(size), "-r", resampling, str(src), str(dst)], check=True)
+                    str(half), "-ts", str(SIZE), str(SIZE), "-r", resampling, str(src), str(dst)], check=True)
     with rasterio.open(dst) as f:
         return f.read()
 
 
-def lithology(text: str) -> tuple[str, bool, float]:
-    """The unit's rock colour, whether it is variegated, and its hardness, each from the earliest
-    word in the description that says so."""
+def lithology(text: str) -> int:
+    """The lithology that a unit's description names: its earliest rock word, variegated where
+    the variegated word follows it or names the unit alone."""
     lower = text.lower()
-
-    def first(words):
-        found = [(lower.find(word), word, value) for word, value in words if word in lower]
-        return min(found) if found else None
-
-    rock = first(ROCKS)
-    colour = first(COLOURS)
-    hard = first(HARDNESS)
-    tint = colour if colour and (not rock or 0 <= colour[0] - rock[0] - len(rock[1]) <= COLOUR_AFTER) else None
-    hex_ = tint[2] if tint else rock[2] if rock else ROCK
-    return hex_, bool(tint and tint[1] == "abigarrad"), hard[2] if hard else 0.5
+    found = [(lower.find(word), word, name) for name, words in ROCK_WORDS.items() for word in words if word in lower]
+    at, word, name = min(found) if found else (-1, "", "unknown")
+    tint = lower.find(VARIEGATED)
+    if tint >= 0 and (not found or 0 <= tint - at - len(word) <= VARIEGATED_AFTER):
+        return LITHOLOGY["variegated-marl"]
+    return LITHOLOGY[name]
 
 
-def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> np.ndarray:
-    """RGBA8 on level k: the rock colour of the geological unit; alpha 255 where it is variegated,
-    else its hardness × 200.
+def igme_level(k: int, frame: str, bbox, work: Path, units: dict) -> np.ndarray:
+    """R8 on level k: the lithology of the geological unit, 0 where its description names none.
     The map's fill colours stand for units; hatching and antialiased edges are minor colours, which
     take the nearest major one. `units` caches each fill colour's description across levels."""
-    service, layer, _ = GEOLOGY[key]
+    service, layer, _ = GEOLOGY["igme"]
     px = 2048
     with rasterio.open(wms_map(service, layer, "image/png", bbox, px, work / f"geology-{k}.png")) as f:
         rgb = f.read()[:3].astype(np.int64)
@@ -1118,7 +1385,7 @@ def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> n
             fill = (label < 0) & (shifted >= 0)
             label[fill] = shifted[fill]
     label[label < 0] = int(np.argmax([np.sum(label == i) for i in range(len(majors))]))
-    colours = np.zeros((len(majors), 4), np.uint8)
+    lithologies = np.zeros(len(majors), np.uint8)
     for i, value in enumerate(majors):
         if value not in units:
             inside = label == i
@@ -1129,9 +1396,8 @@ def rock_level(key: str, k: int, frame: str, bbox, work: Path, units: dict) -> n
             body = wms_map(service, layer, "image/png", bbox, px, work / f"info-{k}-{value}.xml", info=(int(x), int(j))).read_text()
             match = re.search(r'DescripciónUnidadGeológica="([^"]*)"', body)
             units[value] = match.group(1) if match else ""
-        colour, banded, hard = lithology(units[value])
-        colours[i] = [int(colour[1:3], 16), int(colour[3:5], 16), int(colour[5:7], 16), 255 if banded else round(200 * hard)]
-    return np.moveaxis(onto_level(np.moveaxis(colours[label], -1, 0), bbox, k, frame, SIZE, "near", work), 0, -1)
+        lithologies[i] = lithology(units[value])
+    return onto_level(lithologies[label][None].astype(np.uint8), bbox, "EPSG:4326", k, frame, "near", work)[0]
 
 
 def box_mean(a: np.ndarray, r: int) -> np.ndarray:
@@ -1141,11 +1407,11 @@ def box_mean(a: np.ndarray, r: int) -> np.ndarray:
     return (s[n:, n:] - s[:-n, n:] - s[n:, :-n] + s[:-n, :-n]) / (n * n)
 
 
-def canopy_of(glo30: np.ndarray, dtm: np.ndarray, classes: np.ndarray, half: float) -> np.ndarray:
-    """GLO-30, a surface model, minus the DTM on tree pixels, clamped to 0–60 m. The DTM is
-    averaged over GLO-30's own 30 m first, so terrain detail does not read as canopy."""
+def canopy_of(glo30: np.ndarray, dtm: np.ndarray, material: np.ndarray, half: float) -> np.ndarray:
+    """GLO-30, a surface model, minus the DTM on woodland, clamped to 0–60 m. The DTM is averaged
+    over GLO-30's own 30 m first, so terrain detail does not read as canopy."""
     canopy = np.clip(glo30 - box_mean(dtm, round(15 / (2 * half / SIZE))), 0, 60)
-    canopy[classes[..., 0] != TREE] = 0
+    canopy[~WOODLAND[material]] = 0
     return canopy
 
 
@@ -1158,34 +1424,35 @@ def sample(level: np.ndarray, half: float, x, y):
     return level[j, i]
 
 
-def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -> np.ndarray:
+def scatter_trees(material0, roads0, water0, canopy0, regions0, leaves: np.ndarray) -> np.ndarray:
     """float32 x, y, height, type (0 conifer, 1 broadleaf) for every tree within TREE_RADIUS_M:
-    jittered on tree pixels, outside the road buffers and water, as tall as the canopy says.
-    GLO-30 alone cannot measure a canopy, so without a DTM trees stand NO_CANOPY_M tall."""
+    jittered on woodland, outside the road buffers and water, as tall as the canopy says. A forest
+    of unknown leaf type takes its region's `leaf` (`leaves`, a forest per region). GLO-30 alone
+    cannot measure a canopy, so without a DTM trees stand NO_CANOPY_M tall."""
     rng = np.random.default_rng(1)
     grid = np.arange(-TREE_RADIUS_M, TREE_RADIUS_M, TREE_SPACING_M) + TREE_SPACING_M / 2
     x, y = (axis.ravel() + rng.uniform(-0.4, 0.4, axis.size) * TREE_SPACING_M for axis in np.meshgrid(grid, grid))
     half = HALF0_M
     edge = sample(roads0, half, x, y)[:, 0] / 10 - 5
     canopy = sample(canopy0, half, x, y) if canopy0 is not None else rng.uniform(*NO_CANOPY_M, x.size)
-    keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & (sample(classes0, half, x, y)[:, 0] == TREE)
+    keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & WOODLAND[sample(material0, half, x, y)]
             & (edge > 1.5) & (sample(water0, half, x, y) < 64) & (canopy > 3))
     x, y, canopy = x[keep], y[keep], canopy[keep]
-    leaf = sample(leaf0, half, x, y)
-    leaf[leaf == 0] = LEAF[default_leaf]
-    broad = np.where(leaf == 3, rng.random(leaf.size) < 0.5, leaf == 2)
+    forest = sample(material0, half, x, y)
+    forest = np.where(forest == MATERIAL["forest"], leaves[sample(regions0, half, x, y)], forest)
+    broad = np.where(forest == MATERIAL["mixed-forest"], rng.random(forest.size) < 0.5, forest == MATERIAL["broadleaf-forest"])
     height = np.clip(canopy, NO_CANOPY_M[0], 45) * rng.uniform(0.8, 1.15, canopy.size)
     return np.stack([x, y, height, broad.astype(np.float32)], axis=-1).astype(np.float32)
 
 
 def nlcm(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
-    """The land cover map's polygons over the habitat levels as WGS84 rings with their habitat,
+    """The land cover map's polygons over the national levels as WGS84 rings with their material,
     cached per position. The service pages 2000 polygons at a time, slowly, so pages run three
     at once."""
     cached = SOURCES / "nlcm" / f"{spot_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
         with machine_lock("landcover-nlcm"):
-            half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+            half = HALF0_M * 2 ** (NATIONAL_LEVELS - 1)
             w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
             query = {"where": "1=1", "geometry": f"{w},{s},{e},{n}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
                      "spatialRel": "esriSpatialRelIntersects", "outFields": "LEVEL_2_VALUE", "outSR": 4326, "f": "json"}
@@ -1198,17 +1465,17 @@ def nlcm(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str
                 rows = [[f["geometry"]["rings"], f["attributes"]["LEVEL_2_VALUE"]] for page in pages for f in page["features"]
                         if f.get("geometry")]
             write_atomic(cached, json.dumps(rows))
-    habitat = lambda value: next((h for word, h in NLCM_WORDS if word in (value or "").lower()), "none")
-    return [(rings, habitat(value)) for rings, value in json.loads(cached.read_text())]
+    material = lambda value: next((m for word, m in NLCM_WORDS if word in (value or "").lower()), "none")
+    return [(rings, material(value)) for rings, value in json.loads(cached.read_text())]
 
 
 def habmos(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
-    """HabMoS polygons over the habitat levels as WGS84 rings with their habitat, cached like
+    """HabMoS polygons over the national levels as WGS84 rings with their material, cached like
     `nlcm`. One request: the service returns up to a million features."""
     cached = SOURCES / "habmos" / f"{spot_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
         with machine_lock("landcover-habmos"):
-            half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+            half = HALF0_M * 2 ** (NATIONAL_LEVELS - 1)
             w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
             query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": HABMOS[1],
                      "outputFormat": "application/json", "srsName": "EPSG:4326",
@@ -1222,30 +1489,15 @@ def habmos(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, s
                 rows += [[rings, f["properties"].get("HABITAT_CODE")] for rings in polygons]
             write_atomic(cached, json.dumps(rows))
 
-    def habitat(code: str | None) -> str:
+    def material(code: str | None) -> str:
         matches = [prefix for prefix in HABMOS_CODES if (code or "").startswith(prefix)]
         return HABMOS_CODES[max(matches, key=len)] if matches else "none"
 
-    return [(rings, habitat(code)) for rings, code in json.loads(cached.read_text())]
+    return [(rings, material(code)) for rings, code in json.loads(cached.read_text())]
 
 
 # Land cover maps by a spot's `landcover` key: the polygons, and their credit.
 LANDCOVER = {"nlcm": (nlcm, NLCM[1]), "habmos": (habmos, HABMOS[2])}
-
-
-def habitat_level(polygons: list[tuple[list, str]], to_frame, half: float) -> np.ndarray:
-    """R8 on level k: the index into HABITATS of each texel, 0 where the map has none."""
-    from rasterio.features import rasterize
-
-    def frame(rings):
-        return [np.array(to_frame.transform(*np.array(ring).T)).T.tolist() for ring in rings]
-
-    shapes = [({"type": "Polygon", "coordinates": frame(rings)}, HABITATS.index(h))
-              for h in HABITAT_ORDER for rings, kind in polygons if kind == h]
-    if not shapes:
-        return np.zeros((SIZE, SIZE), np.uint8)
-    return rasterize(shapes, out_shape=(SIZE, SIZE), dtype=np.uint8,
-                     transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE))
 
 
 def orchard_trees(orchards: list[np.ndarray]) -> np.ndarray:
@@ -1295,18 +1547,6 @@ def wall_pieces(walls: list[tuple[np.ndarray, int]]) -> np.ndarray:
             if max(np.abs(a).max(), np.abs(b).max()) <= WALL_HALF_M:
                 rows.append([*a, *b, kind])
     return np.array(rows, np.float32).reshape(-1, 5)
-
-
-def leaf_grid(forests: list[tuple[np.ndarray, int]]) -> np.ndarray:
-    """Level 0's leaf type from OSM forest outlines: 0 unknown, else LEAF."""
-    from rasterio.features import rasterize
-    from rasterio.transform import from_origin
-
-    shapes = [({"type": "Polygon", "coordinates": [ring.tolist()]}, code) for ring, code in forests]
-    if not shapes:
-        return np.zeros((SIZE, SIZE), np.uint8)
-    return rasterize(shapes, out_shape=(SIZE, SIZE), transform=from_origin(-HALF0_M, HALF0_M, 2 * HALF0_M / SIZE,
-                                                                           2 * HALF0_M / SIZE), dtype=np.uint8)
 
 
 def pack(array: np.ndarray) -> bytes:
@@ -1444,6 +1684,21 @@ def osm_features(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
                f'way["natural"~"^(arete|ridge)$"]({box});way["landuse"="orchard"]({box});')
 
 
+def osm_areas(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Natural and landuse areas that may name a material, ways and multipolygons, over the water
+    levels."""
+    box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
+    values = {"natural": "|".join([*OSM_NATURAL, "wetland"]), "landuse": "|".join(OSM_LANDUSE)}
+    return osm(spot_id, lat, lon, "_areas", "".join(f'{kind}["{key}"~"^({v})$"]({box});' for kind in ("way", "relation")
+                                                   for key, v in values.items()))
+
+
+def area_material(tags: dict) -> str | None:
+    if tags.get("natural") == "wetland":
+        return WETLANDS.get(tags.get("wetland"))
+    return OSM_NATURAL.get(tags.get("natural")) or OSM_LANDUSE.get(tags.get("landuse"))
+
+
 # Lifts the page draws, with cables and pylons, out to ±10 km where a gondola still shows.
 AERIALWAYS = ("cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "t-bar", "j-bar", "platter")
 AERIALWAY_HALF_M = 10000.0
@@ -1469,12 +1724,34 @@ def elevation_tag(text: str) -> float | None:
     return float(match.group(1).replace(",", ".")) if match else None
 
 
-def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
-    if missing := [tool for tool in ("gdalwarp", "gdal_translate", "gdalbuildvrt", PROXIMITY) if not shutil.which(tool)]:
+def places_at(places: list[dict], lons: np.ndarray, lats: np.ndarray) -> list[str | None]:
+    """The lower-case ISO code of the place that holds each point, None where none does. Only the
+    places near the points' box are tested."""
+    found = [None] * len(lons)
+    if not len(lons):
+        return found
+    w, s, e, n = lons.min() - 0.5, lats.min() - 0.5, lons.max() + 0.5, lats.max() + 0.5
+    for place in places:
+        (x0, y0), (x1, y1) = np.array([pair for ring in place["rings"] for pair in zip(ring, ring[1:])]).transpose(1, 2, 0)
+        if x0.max() < w or x0.min() > e or y0.max() < s or y0.min() > n:
+            continue
+        for at in range(0, len(lons), 1000):
+            lon, lat = lons[at:at + 1000, None], lats[at:at + 1000, None]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                crossings = (((y0 > lat) != (y1 > lat)) & (lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0))).sum(axis=1)
+            for i in np.flatnonzero(crossings % 2):
+                found[at + i] = place["iso"]
+    return found
+
+
+def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
+    tools = ("gdalwarp", "gdal_translate", "gdalbuildvrt", "ogr2ogr", PROXIMITY)
+    if missing := [tool for tool in tools if not shutil.which(tool)]:
         sys.exit(f"bake.py needs the GDAL command-line tools on PATH (Ubuntu: gdal-bin, python3-gdal); not found: {', '.join(missing)}")
     out = CACHE / spot["id"]
     lat, lon = spot["lat"], spot["lon"]
-    chain, region = region_of(spot["file"], lat, lon)
+    table = region_table()
+    chain = region_of(table, spot["file"], lat, lon)
     places = json.loads(COUNTRIES.read_text())
     country, subdivision = place_at(places["countries"], lat, lon), place_at(places["subdivisions"], lat, lon)
     tz = TimezoneFinder().timezone_at(lng=lon, lat=lat)
@@ -1513,7 +1790,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     decked = [bridge and passes_within(xy, BUILDING_HALF_M) for xy, _, _, bridge in roads]
     decks = chain_bridges([(xy, code, width) for (xy, code, width, _), deck in zip(roads, decked) if deck])
     roads = [(xy, 0 if deck else code, width, bridge) for (xy, code, width, bridge), deck in zip(roads, decked)]
-    forests = [(metres(w), LEAF[w["tags"]["leaf_type"]]) for w in ways
+    forests = [([metres(w)], MATERIAL[LEAF[w["tags"]["leaf_type"]]]) for w in ways
                if w["tags"].get("leaf_type") in LEAF and w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
           f"{sum('building' in w['tags'] for w in ways)} buildings", flush=True)
@@ -1547,15 +1824,47 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     orchards = [metres(w) for w in tagged("landuse", "orchard") if w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM features: {len(walls)} walls and hedges, "
           f"{len(orchards)} orchards", flush=True)
-    geology = GEOLOGY.get(spot.get("geology"))
+    areas = []
+    for element in osm_areas(spot["id"], lat, lon, to_wgs84):
+        if not (name := area_material(element["tags"])):
+            continue
+        if element["type"] == "way" and element["geometry"][0] == element["geometry"][-1]:
+            areas.append(([metres(element)], MATERIAL[name]))
+        elif element["type"] == "relation" and (rings := close_rings([metres(m) for m in element["members"]
+                                                                       if m.get("type") == "way" and m.get("geometry")])):
+            areas.append((rings, MATERIAL[name]))
+    print(f"  OSM areas: {len(areas)} that may name a material", flush=True)
+    # Without the national maps, the spot bakes as one where none exists.
+    geology = None if baseline else spot.get("geology")
     units: dict[int, str] = {}
-    landcover = LANDCOVER.get(spot.get("landcover"))
-    habitats = landcover[0](spot["id"], lat, lon, to_wgs84) if landcover else []
-    if habitats:
-        print(f"  land cover: {len(habitats)} polygons", flush=True)
+    landcover = None if baseline else LANDCOVER.get(spot.get("landcover"))
+    national = [([np.array(to_frame.transform(*np.array(ring).T)).T for ring in rings], MATERIAL[name])
+                for rings, name in (landcover[0](spot["id"], lat, lon, to_wgs84) if landcover else []) if name != "none"]
+    if landcover:
+        print(f"  land cover: {len(national)} polygons", flush=True)
+    regions, names = region_levels(table, spot["file"], to_frame, to_wgs84)
+    rules = [rules_of(table, name) for name in names]
+    print(f"  regions: {', '.join(name for code, name in enumerate(names) if any((r == code).any() for r in regions))}", flush=True)
+    if names[regions[0][SIZE // 2, SIZE // 2]] != chain[-1]:
+        print(f"  the eye's texel lies in {names[regions[0][SIZE // 2, SIZE // 2]]}, not in {chain[-1]}", flush=True)
+    rocks = lithology_sources()
+    used = set()
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
+        if not colour:
+            sizes += [(k, f"s2-q{q}", path.stat().st_size) for (k, q), path in s2.items()]
+        else:
+            with machine_lock("cdse"):
+                half = HALF0_M * 2 ** (S2_LEVELS - 1)
+                quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
+                print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
+                for k in range(S2_LEVELS):
+                    for q, texels in s2_level(k, frame, quarters, work).items():
+                        blob = pack(texels)
+                        s2[k, q].write_bytes(blob)
+                        sizes.append((k, f"s2-q{q}", len(blob)))
+                    print(f"  colour level {k}", flush=True)
         grid = work / "national.tif"
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
@@ -1577,21 +1886,26 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 origin["glo30"] = float(glo30[centre, centre].mean())
             heights = glo30
             if dtm and k < dtm_levels:
-                national = warp([grid], frame, half, "cubic", overviews=False, work=work, size=HEIGHT_SIZE)[0]
-                gaps = national == NODATA
-                national[gaps] = glo30[gaps]
+                national_heights = warp([grid], frame, half, "cubic", overviews=False, work=work, size=HEIGHT_SIZE)[0]
+                gaps = national_heights == NODATA
+                national_heights[gaps] = glo30[gaps]
                 if k == 0:
-                    origin["dtm"] = float(national[centre, centre].mean())
-                heights = national
+                    origin["dtm"] = float(national_heights[centre, centre].mean())
+                heights = national_heights
                 blob = encode(glo30)
                 (out / f"glo30-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "glo30", len(blob)))
             wet = osm_wet(rivers, lakes, islands, half) if k < WATER_LEVELS else None
-            classes, sea = class_level(k, frame, bbox, coarse(heights), work, coast if k < WATER_LEVELS else None, wet)
+            material, sea = material_level(k, frame, bbox, coarse(heights), work, coast if k < WATER_LEVELS else None, wet)
             if heights is glo30:
-                heights = sharpen_relief(heights, half, region["relief"])
-                heights = sharpen_summits(heights, summits, half, region["summits"])
-                heights = sharpen_coast(heights, fine(classes), half, region["cliffs"], None if sea is None else fine(sea))
+                region = regions[k]
+                heights = by_region(heights, region, rules, half, lambda h, rule: sharpen_relief(h, half, rule["relief"]))
+                at = sample(region, half, [x for x, _, _ in summits], [y for _, y, _ in summits])
+                for code in np.unique(region):
+                    heights = sharpen_summits(heights, [s for s, c in zip(summits, at) if c == code], half, rules[code]["summits"])
+                water = fine(is_water(material))
+                heights = by_region(heights, region, rules, half, lambda h, rule: sharpen_coast(
+                    h, water, half, rule["cliffs"], None if sea is None else fine(sea)))
                 if k == 0:
                     origin["glo30"] = float(heights[centre, centre].mean())
             if k < ROAD_LEVELS and roads:
@@ -1601,72 +1915,74 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
-            blob = pack(classes)
-            (out / f"class-{k}.bin.gz").write_bytes(blob)
-            sizes.append((k, "class", len(blob)))
+            # The baseline, refined in turn by each source that names its materials more precisely.
+            if k < S2_LEVELS:
+                quarters = {q: unpacked(s2[k, q], 4) for q in range(1, 5)}
+                most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
+                blob = pack(most)
+                (out / f"ndvimax-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, "ndvimax", len(blob)))
+                material = refine(material, np.where(satellite_heath(quarters, most), MATERIAL["heath"], NONE).astype(np.uint8))
+            if k < ROAD_LEVELS:
+                material = refine(material, polygons_level(forests, half))
+            if (clc := clc_level(spot["id"], lat, lon, k, frame, work)).any():
+                material = refine(material, clc)
+                used.add(CLC[1])
+            if k < WATER_LEVELS:
+                material = refine(material, polygons_level(areas, half))
+            if national and k < NATIONAL_LEVELS:
+                material = overlay(material, polygons_level(national, half))
+            rock = lithology_level(rocks, k, frame, work, used)
+            if geology and k < NATIONAL_LEVELS:
+                mapped = igme_level(k, frame, bbox, work, units)
+                rock = np.where(mapped > 0, mapped, rock)
+            rock[is_water(material)] = 0
+            for name, layer in (("material", material), ("litho", rock), ("region", regions[k])):
+                blob = pack(layer)
+                (out / f"{name}-{k}.bin.gz").write_bytes(blob)
+                sizes.append((k, name, len(blob)))
             if k < ROAD_LEVELS:
                 road = road_field(roads, half)
                 blob = pack(road)
                 (out / f"road-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "road", len(blob)))
-            if geology and k < ROCK_LEVELS:
-                blob = pack(rock_level(spot["geology"], k, frame, bbox, work, units))
-                (out / f"rock-{k}.bin.gz").write_bytes(blob)
-                sizes.append((k, "rock", len(blob)))
-            if habitats and k < HABITAT_LEVELS:
-                blob = pack(habitat_level(habitats, to_frame, half))
-                (out / f"habitat-{k}.bin.gz").write_bytes(blob)
-                sizes.append((k, "habitat", len(blob)))
             if k < WATER_LEVELS:
-                water = water_field(wet, streams, classes, half, work)
+                water = water_field(wet, streams, material, half, work)
                 blob = pack(water)
                 (out / f"water-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "water", len(blob)))
             if dtm and k < dtm_levels:
-                canopy = canopy_of(coarse(glo30), coarse(heights), classes, half)
+                canopy = canopy_of(coarse(glo30), coarse(heights), material, half)
                 blob = pack(np.round(canopy * 4).astype(np.uint8))
                 (out / f"canopy-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "canopy", len(blob)))
             if k == 0:
-                heights0, classes0, road0, water0 = heights, classes, road, water
+                heights0, material0, road0, water0 = heights, material, road, water
                 canopy0 = canopy if dtm else None
             if k == 1:
                 heights1 = heights
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / HEIGHT_SIZE:.2f} m heights, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
-        if not colour:
-            sizes += [(k, f"s2-q{q}", path.stat().st_size) for (k, q), path in s2.items()]
-        else:
-            with machine_lock("cdse"):
-                half = HALF0_M * 2 ** (S2_LEVELS - 1)
-                quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
-                print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
-                for k in range(S2_LEVELS):
-                    for q, texels in s2_level(k, frame, quarters, work).items():
-                        blob = pack(texels)
-                        s2[k, q].write_bytes(blob)
-                        sizes.append((k, f"s2-q{q}", len(blob)))
-                    print(f"  colour level {k}", flush=True)
-        barren_median = ndvimax_levels(out)
-        sizes += [(k, "ndvimax", (out / f"ndvimax-{k}.bin.gz").stat().st_size) for k in range(S2_LEVELS)]
-
-    trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), region["leaf"])
+    leaves = np.array([MATERIAL[LEAF[rule["leaf"]]] for rule in rules], np.uint8)
+    trees = scatter_trees(material0, road0, water0[..., 0], canopy0, regions[0], leaves)
     trees = np.concatenate([trees, orchard_trees(orchards)])
     blob = pack(trees)
     (out / "trees.bin.gz").write_bytes(blob)
     sizes.append(("-", "trees", len(blob)))
+    footprints = [(metres(way), way["tags"]) for way in ways if "building" in way["tags"]]
+    footprints = [(ring, tags) for ring, tags in footprints if len(ring) >= 4 and np.abs(ring).max() <= BUILDING_HALF_M]
+    lons, lats = to_wgs84.transform([ring[:-1, 0].mean() for ring, _ in footprints], [ring[:-1, 1].mean() for ring, _ in footprints])
+    # Each house takes the style of its own place: its subdivision, else the eye's.
+    homes = places_at(places["subdivisions"], np.array(lons), np.array(lats))
     buildings = []
-    for way in ways:
-        ring = metres(way)
-        tags = way["tags"]
-        if "building" not in tags or len(ring) < 4 or np.abs(ring).max() > BUILDING_HALF_M:
-            continue
+    for (ring, tags), home in zip(footprints, homes):
         # Level 0 holds ±1.25 km; past it a footprint takes its ground from level 1, not the edge.
         inner = np.abs(ring).max() < HALF0_M
         base = float(sample(heights0 if inner else heights1, HALF0_M * (1 if inner else 2), ring[:, 0], ring[:, 1]).min())
         buildings.append([round(base, 1), landmark(tags), elevation_tag(tags.get("building:levels", "")),
-                          elevation_tag(tags.get("height", "")), [round(float(v), 1) for v in ring[:-1].ravel()]])
+                          elevation_tag(tags.get("height", "")), [round(float(v), 1) for v in ring[:-1].ravel()],
+                          home or subdivision or country])
     blob = json.dumps(buildings, separators=(",", ":")).encode()
     (out / "buildings.json").write_bytes(blob)
     sizes.append(("-", "buildings", len(blob)))
@@ -1694,31 +2010,29 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
           f"GLO-30 {origin['glo30']:.1f} m")
 
     credits = [CREDITS["glo30"]] + ([CREDITS.get(dtm) or DTM_SOURCES[dtm].credit(time.strftime("%Y-%m-%d"))] if dtm else [])
-    credits += [CREDITS["worldcover"], CREDITS["s2"]]
-    credits += [geology[2]] if geology else []
-    credits += [landcover[1]] if habitats else []
+    credits += [CREDITS["worldcover"], CREDITS["s2"], *sorted(used)]
+    credits += [GEOLOGY[geology][2]] if geology else []
+    credits += [landcover[1]] if national else []
     credits.append(CREDITS["osm"])
 
     meta = {key: spot[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in spot}
     above = spot.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, height_size=HEIGHT_SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, barren_median=barren_median, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
-                rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
-                region=chain[-1], chain=chain, country=country, subdivision=subdivision, tz=tz,
-                credits=credits)
+                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
+                region=chain[-1], chain=chain, regions=names, country=country, subdivision=subdivision, tz=tz, credits=credits)
     if "photo_source" in spot:
         shutil.copyfile(spot["photo_source"], out / "photo.jpg")
         meta["photo"] = spot["photo"]
         credits.append(spot["photo"]["credit"])
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
 
-    print(f"\n{'level':>5} {'layer':>6} {'bytes':>10}")
+    print(f"\n{'level':>5} {'layer':>8} {'bytes':>10}")
     for row in sizes:
-        print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
-    print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
-    season = sum(row[2] for row in sizes
-                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "s2-q3", "ndvimax", "rock", "habitat", "walls"))
+        print(f"{row[0]!s:>5} {row[1]:>8} {row[2]:>10,}")
+    print(f"{'':>5} {'total':>8} {sum(row[2] for row in sizes):>10,}")
+    season = sum(row[2] for row in sizes if row[1] in ("h", "material", "litho", "region", "road", "water", "canopy", "trees",
+                                                        "buildings", "s2-q3", "ndvimax", "walls"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 
@@ -1730,8 +2044,10 @@ def main() -> None:
                         help="read the Sentinel-2 levels again; a rebake keeps them while the spot stays where it was")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
                         help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
+    parser.add_argument("--baseline", action="store_true",
+                        help="leave out the spot's land cover and geology maps, as for a place without them")
     args = parser.parse_args()
-    bake(load_spot(args.spot), args.colour, args.dtm_levels)
+    bake(load_spot(args.spot), args.colour, args.dtm_levels, args.baseline)
 
 
 if __name__ == "__main__":
