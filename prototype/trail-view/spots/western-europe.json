@@ -1,0 +1,7 @@
+[
+ {"id": "kandel", "name": "Kandel summit", "dtm": "de-bw", "lat": 48.065519, "lon": 8.014977, "photo": {"url": "https://upload.wikimedia.org/wikipedia/commons/f/fa/November_Mount_Kandel_-_Master_Black_Forest_Photography_2014_Grand_Panorama_Cite_Emmendingen_and_Waldkirch_-_Mountain_View_and_Sun_Valley_-_panoramio.jpg", "credit": "Photograph: pictures Jettcom (Panoramio), CC BY 3.0, via Wikimedia Commons", "heading_deg": 294.64, "pitch_deg": -3.55, "vfov_deg": 18.02, "roll_deg": -0.13}},
+ {"id": "kandel-forest-road", "name": "Kandel forest road", "dtm": "de-bw", "lat": 48.078348, "lon": 7.993396, "heading": 160, "pitch": -4},
+ {"id": "waldkirch", "name": "Waldkirch from the Kandel slope", "dtm": "de-bw", "lat": 48.08851, "lon": 7.9657, "heading": 330, "pitch": -6},
+ {"id": "route-des-cretes-hohneck", "name": "Hohneck, above the Route des Crêtes", "dtm": "fr", "lat": 48.0376, "lon": 7.0163, "heading": 110, "pitch": -4},
+ {"id": "route-des-cretes-grand-ballon", "name": "Grand Ballon, above the Route des Crêtes", "dtm": "fr", "lat": 47.9008, "lon": 7.0984, "heading": 150, "pitch": -3}
+]

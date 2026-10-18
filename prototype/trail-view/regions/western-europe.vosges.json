@@ -1,0 +1,9 @@
+{
+ "name": "Vosges",
+ "extends": "western-europe",
+ "where": [
+  [6.6, 47.6, 7.4, 48.6]
+ ],
+ "about": "The Vosges share the Black Forest's trees and farms across the Rhine.",
+ "pack": "western-europe.black-forest"
+}

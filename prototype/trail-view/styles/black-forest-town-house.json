@@ -1,0 +1,10 @@
+{
+ "name": "Town house",
+ "extends": "black-forest-farmhouse",
+ "pitch": [40, 48],
+ "hip": 0,
+ "eave": 0.5,
+ "verge": 0.4,
+ "timber": "none",
+ "chimneys": 1
+}

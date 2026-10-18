@@ -402,6 +402,7 @@ export class NearField {
         add(`tree|${pack.orchard}|${lodAt(Math.hypot(x, y))}`, x, y, height, heading(pack.orchard));
         continue;
       }
+      if (!standing.length) continue;
       const leaf = trees[i + 3] > 0.5 ? 'broadleaved' : 'needleleaved';
       const elevation = bake.surface[0][texel(x, y)] + eye_m;
       // The elevation band outranks the leaf type, which is often only the region's guess.

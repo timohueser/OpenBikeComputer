@@ -1,0 +1,20 @@
+{
+ "name": "Tenerife, south",
+ "extends": "canaries",
+ "where": [[-16.97, 27.98, -16.08, 28.62]],
+ "about": "The lee side: ochre and rust slopes, grey-green tabaiba and cardón dotted over cinder, dry barrancos, a dusty haze over a deep blue sea.",
+ "pack": "canaries.south",
+ "look": {
+  "ramps": {
+   "grass": ["#a68e66", "#948a5e", "#7c8250"],
+   "shrub": ["#8a8462", "#76784e", "#5f6a42"],
+   "crop": ["#b8a37a", "#9a9a64", "#7a8a52"],
+   "bare": ["#7a5c48", "#866850", "#94765a"]
+  },
+  "speckle": { "colour": "#6f7350", "share": 0.3, "size_m": 1.5 },
+  "hazeKm": 40,
+  "outcrops": 0.3,
+  "snap": 0.35
+ },
+ "leaf": "needleleaved"
+}

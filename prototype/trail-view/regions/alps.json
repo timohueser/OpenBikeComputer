@@ -1,7 +1,8 @@
 {
- "name": "Alps",
- "extends": "switzerland",
- "where": [ [6.8, 45.8, 10.5, 47.0] ],
+ "name": "Alps conifer and mixed forests",
+ "ecoregion": 689,
+ "extends": "world",
+ "leaf": "needleleaved",
  "pack": "alps",
  "look": {
   "weather": { "sunny": { "base": 2900 }, "cloudy": { "base": 2200 }, "rainy": { "base": 1400 } }

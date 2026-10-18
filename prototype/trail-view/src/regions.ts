@@ -1,9 +1,10 @@
 /**
- * Regions and packs: two hierarchies of data, in regions/ and packs/. A region is a ruleset: the
- * areas it covers, its data sources and coast rules (which bake.py reads), and its look; it names
- * the pack that holds its models. Each file extends a parent and inherits what it does not say:
- * objects merge, anything else replaces. A spot's region is the deepest one whose area holds it,
- * the smallest area on a tie. An area is a box [west, south, east, north] or a ring of [lon, lat].
+ * Regions, packs and house styles: three hierarchies of data, in regions/, packs/ and styles/. A
+ * region is a ruleset: its terrain rules (which bake.py reads) and its look; it names the pack that
+ * holds its models, and a pack names its house style. Each file extends a parent and inherits what
+ * it does not say: objects merge, anything else replaces. bake.py picks a spot's region and writes
+ * it to meta.region. A pack's `style` and a look's `roadLine` may be a map by country,
+ * {"ie": …, "*": …}: the spot's country picks its entry, else "*".
  */
 
 import type { Habitat } from './bake';
@@ -97,8 +98,8 @@ export interface Pack {
   trees: Species[];
   ground: (Ground & { id: string; plant: string })[];
   style: BuildingStyle;
-  /** What cottages and houses change from the style, where they differ from farms. */
-  houses?: Partial<BuildingStyle>;
+  /** The style of cottages and houses, where it differs from farms'. */
+  houses?: BuildingStyle;
   /** The tree that stands in OSM orchards; without one, the pack's broadleaves do. */
   orchard?: string;
   /** Herds near the eye: how many groups of how many, on which habitats (on WorldCover grass without a map). */
@@ -110,21 +111,18 @@ export interface Region {
   name: string;
   /** Root first. */
   chain: string[];
-  tz: string;
   leaf: 'needleleaved' | 'broadleaved' | 'mixed';
   look: RegionLook;
   pack: Pack;
 }
 
-type Box = [west: number, south: number, east: number, north: number];
-type Ring = [lon: number, lat: number][];
-type Area = Box | Ring;
-type Entry = Record<string, unknown> & { extends?: string; where?: Area[] };
+type Entry = Record<string, unknown> & { extends?: string };
 
 const byName = (files: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(files).map(([path, data]) => [path.split('/').pop()!.replace(/\.json$/, ''), data as Entry]));
 const REGIONS = byName(import.meta.glob('../regions/*.json', { eager: true, import: 'default' }));
 const PACKS = byName(import.meta.glob('../packs/*.json', { eager: true, import: 'default' }));
+const STYLES = byName(import.meta.glob('../styles/*.json', { eager: true, import: 'default' }));
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -135,6 +133,7 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
 }
 
 function chain(table: Record<string, Entry>, id: string): string[] {
+  if (!table[id]) throw new Error(`no file for ${id}`);
   const up = table[id].extends;
   return up ? [...chain(table, up), id] : [id];
 }
@@ -146,36 +145,22 @@ function resolve(table: Record<string, Entry>, id: string): Record<string, unkno
   }, {});
 }
 
-const isRing = (a: Area): a is Ring => Array.isArray(a[0]);
+/** A value or a map by country: the country's entry, else "*". */
+const local = <T>(value: T | Record<string, T>, country?: string | null): T =>
+  isObject(value) ? (value[country ?? '*'] ?? value['*']) : value;
 
-function holds(a: Area, lat: number, lon: number): boolean {
-  if (!isRing(a)) return a[0] <= lon && lon <= a[2] && a[1] <= lat && lat <= a[3];
-  let inside = false;
-  a.forEach(([x0, y0], i) => {
-    const [x1, y1] = a[(i + 1) % a.length];
-    if (y0 > lat !== y1 > lat && lon < x0 + ((lat - y0) * (x1 - x0)) / (y1 - y0)) inside = !inside;
-  });
-  return inside;
-}
-
-const area = (a: Area) =>
-  isRing(a)
-    ? Math.abs(a.reduce((sum, [x0, y0], i) => sum + x0 * a[(i + 1) % a.length][1] - a[(i + 1) % a.length][0] * y0, 0)) / 2
-    : (a[2] - a[0]) * (a[3] - a[1]);
-
-/** The region of a spot, with its look and pack resolved. */
-export function regionAt(lat: number, lon: number): Region {
-  const fits = Object.keys(REGIONS).flatMap((id) => (REGIONS[id].where ?? []).filter((a) => holds(a, lat, lon)).map((a) => ({ id, a })));
-  fits.sort((a, b) => chain(REGIONS, b.id).length - chain(REGIONS, a.id).length || area(a.a) - area(b.a));
-  const id = fits[0]?.id ?? 'world';
+/** A region with its look and pack resolved for a spot in `country`. */
+export function regionNamed(id: string, country?: string | null): Region {
   const region = resolve(REGIONS, id) as Omit<Region, 'id' | 'chain' | 'pack'> & { pack: string };
-  return { ...region, id, chain: chain(REGIONS, id), pack: packNamed(region.pack) };
+  const look = { ...region.look, roadLine: local(region.look.roadLine, country) };
+  return { ...region, id, chain: chain(REGIONS, id), look, pack: packNamed(region.pack, country) };
 }
 
 export const PACK_NAMES = Object.keys(PACKS).filter((name) => name !== 'base');
 
-export function packNamed(name: string): Pack {
+export function packNamed(name: string, country?: string | null): Pack {
   const pack = resolve(PACKS, name);
+  const style = (id: string) => resolve(STYLES, id) as unknown as BuildingStyle;
   const unknown = (species: string, model: unknown) => new Error(`pack ${name}: ${species} names unknown model ${model}`);
   const listed = <T>(table: unknown, key: string, ...models: Record<string, unknown>[]) =>
     Object.entries((table ?? {}) as Record<string, Record<string, unknown> | null>)
@@ -190,5 +175,6 @@ export function packNamed(name: string): Pack {
   if (tall) throw new Error(`pack ${name}: ${tall.id} stands as a tree, but ${tall.tree} is not a tree model`);
   if (pack.orchard !== undefined && !((pack.orchard as string) in TREES)) throw unknown('orchard', pack.orchard);
   const ground = listed<Pack['ground'][number]>(pack.ground, 'plant', PLANTS).map((g) => ({ ...PLANTS[g.plant].ground, ...g }));
-  return { ...pack, trees, ground, herds: listed(pack.herds, 'animal', ANIMALS) } as unknown as Pack;
+  const houses = pack.houses && style(pack.houses as string);
+  return { ...pack, trees, ground, herds: listed(pack.herds, 'animal', ANIMALS), style: style(local(pack.style as string, country)), houses } as unknown as Pack;
 }

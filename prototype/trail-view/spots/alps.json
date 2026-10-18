@@ -1,0 +1,6 @@
+[
+ {"id": "hahnen", "name": "Hahnen from the Aa", "dtm": "ch", "photo": "hahnen"},
+ {"id": "rigidalstock-from-brunni", "name": "Brunni toward Rigidalstock", "dtm": "ch", "photo": "rigidalstock-from-brunni"},
+ {"id": "urnerstaffel", "name": "Urnerstaffel", "dtm": "ch", "photo": "urnerstaffel"},
+ {"id": "engelberg-nassboden", "name": "Engelberg from Nassboden", "dtm": "ch", "lat": 46.82545, "lon": 8.415666, "heading": 248, "pitch": -8}
+]

@@ -1,0 +1,4 @@
+[
+ {"id": "cavall-verd", "name": "Cavall Verd ridge", "dtm": "es", "geology": "igme", "lat": 38.767347, "lon": -0.135, "heading": 75, "pitch": -4},
+ {"id": "cavall-verd-ebo", "name": "Vall d'Ebo toward Cavall Verd", "dtm": "es", "geology": "igme", "lat": 38.813217, "lon": -0.134822, "photo": {"url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a5/Avenc_ample%2C_en_la_Vall_d%27Ebo._30_de_giner_de_2021.jpg/1920px-Avenc_ample%2C_en_la_Vall_d%27Ebo._30_de_giner_de_2021.jpg", "credit": "Photograph: Josep Lluís, CC BY-SA 4.0, via Wikimedia Commons", "heading_deg": 166.04, "pitch_deg": -2.0, "vfov_deg": 63.4, "roll_deg": 0}}
+]

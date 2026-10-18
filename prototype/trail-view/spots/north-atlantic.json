@@ -1,0 +1,4 @@
+[
+ {"id": "highlands-elgol", "name": "The Cuillin from Elgol", "dtm": "scot", "landcover": "habmos", "lat": 57.145683, "lon": -6.106989, "photo": {"url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/27/Loch_Scavaig_and_The_Cuillin_from_Elgol_-_geograph.org.uk_-_2323444.jpg/1920px-Loch_Scavaig_and_The_Cuillin_from_Elgol_-_geograph.org.uk_-_2323444.jpg", "credit": "Photograph: Richard Dorrell, CC BY-SA 2.0, via Wikimedia Commons", "heading_deg": 327.15, "pitch_deg": 0.85, "vfov_deg": 32.05, "roll_deg": 0}},
+ {"id": "highlands-quiraing", "name": "The Quiraing from the Staffin road", "dtm": "scot", "landcover": "habmos", "lat": 57.628832, "lon": -6.28921, "photo": {"url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/42/View_towards_the_Quiraing.jpg/1920px-View_towards_the_Quiraing.jpg", "credit": "Photograph: Thomas Fuhrmann, CC BY-SA 4.0, via Wikimedia Commons", "heading_deg": 15, "pitch_deg": 0.0, "vfov_deg": 19.5, "roll_deg": 0}}
+]

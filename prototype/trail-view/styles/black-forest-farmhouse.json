@@ -1,0 +1,19 @@
+{
+ "name": "Black Forest farmhouse",
+ "pitch": [44, 52],
+ "eave": 1,
+ "verge": 0.7,
+ "hip": 0.55,
+ "timber": "upper",
+ "shutters": true,
+ "chimneys": 0,
+ "palette": {
+  "render": ["#f1ece0", "#e8e0cc"],
+  "wood": ["#4f3626", "#5e4030", "#6b4a32"],
+  "roof": ["#5b5048", "#6a5d52", "#8a4a36"],
+  "door": ["#5e4030", "#3f5a3a"],
+  "shutter": ["#3f6a42", "#2f4a36", "#a8382e"],
+  "plinth": "#8f8a80",
+  "chimney": "#a39a8e"
+ }
+}

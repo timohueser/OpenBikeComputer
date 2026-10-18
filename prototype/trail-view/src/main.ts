@@ -1,13 +1,12 @@
 import GUI from 'lil-gui';
 import * as THREE from 'three';
-import presets from '../presets.json';
 import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
-import { regionAt, type Region } from './regions';
+import { regionNamed, type Region } from './regions';
 import { WEATHERS, weatherLight } from './weather';
 import { BINS, CURVATURE, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
@@ -33,10 +32,15 @@ const camera = new THREE.PerspectiveCamera(60, 1, FAR_PASS.near, FAR_PASS.far);
 camera.up.set(0, 0, 1);
 const terrain = new Terrain();
 
+/** Every spot, with the region its file spots/<region>.json names. */
+const SPOTS = Object.entries(import.meta.glob<{ id: string; name: string }[]>('../spots/*.json', { eager: true, import: 'default' })).flatMap(
+  ([path, spots]) => spots.map((spot) => ({ ...spot, region: path.split('/').pop()!.replace(/\.json$/, '') })),
+);
+
 const DTM = 'national DTM';
 const GLO30 = 'GLO-30 only';
 const state = {
-  preset: presets[0].id,
+  preset: SPOTS[0].id,
   surface: DTM,
   photoCamera: true,
   wipe: 0.5,
@@ -96,7 +100,8 @@ async function select(id: string): Promise<void> {
   const bake = await loadBake(id);
   if (selecting !== id) return;
   const { meta } = bake;
-  const region = regionAt(meta.lat, meta.lon);
+  // A bake from before meta.region takes the region of its spots file.
+  const region = regionNamed(meta.region ?? SPOTS.find((spot) => spot.id === id)!.region, meta.country);
   Object.assign(state, { x: 0, y: 0 });
   terrain.setBake(bake, region);
   const area = meta.size * meta.size;
@@ -172,10 +177,10 @@ function surfaceChanged(): void {
 
 function lightChanged(refreshShadows = true): void {
   if (!loaded) return;
-  const { lat, lon } = loaded.bake.meta;
-  const { tz, look: regional } = loaded.region;
+  const { lat, lon, tz } = loaded.bake.meta;
+  const regional = loaded.region.look;
   const weather = { ...WEATHERS[state.weather], ...regional.weather?.[state.weather as 'sunny'] };
-  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, tz);
+  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, tz ?? 'UTC');
   terrain.setLight(weatherLight(light, weather), refreshShadows);
   terrain.setWeather(weather, state.hour, loaded.bake.meta.eye_m + state.rise);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
@@ -480,7 +485,7 @@ function measure(): void {
 }
 
 const gui = new GUI({ title: 'Trail View', width: 340 });
-const spots = Object.fromEntries(presets.map((p) => [p.name, p.id]));
+const spots = Object.fromEntries(SPOTS.map((spot) => [`${spot.region} · ${spot.name}`, spot.id]));
 gui.add(state, 'preset', spots).name('spot').onChange(select);
 gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
 gui.add(state, 'hour', 0, 24, 0.05).name('time of day').listen().onChange(() => lightChanged());
@@ -517,7 +522,7 @@ shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
 shot.add(state, 'wipe', 0, 1, 0.01).onChange(requestRender);
 shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
 shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
-// Align a photograph's camera here, then save it back to presets.json.
+// Align a photograph's camera here, then save it back to its spot in spots/.
 const align = { heading_deg: 0, pitch_deg: 0, vfov_deg: 40, roll_deg: 0 };
 const aligned = shot.addFolder('align camera').close();
 aligned.add(align, 'heading_deg', 0, 360, 0.05).name('heading').listen();
@@ -570,7 +575,7 @@ Object.assign(window, {
 });
 
 const linked = new URLSearchParams(location.hash.slice(1));
-if (presets.some((p) => p.id === linked.get('spot'))) state.preset = linked.get('spot')!;
+if (SPOTS.some((spot) => spot.id === linked.get('spot'))) state.preset = linked.get('spot')!;
 state.season = Object.keys(SEASONS).find((s) => s.startsWith(`${linked.get('season')} `)) ?? state.season;
 state.hour = Number(linked.get('hour') ?? state.hour);
 if (linked.get('weather')! in WEATHERS) state.weather = linked.get('weather')!;

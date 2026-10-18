@@ -9,9 +9,9 @@ in a draft pull request from this branch.
 | Path | What it is |
 |---|---|
 | `bake.py` | Bakes one spot into `~/.cache/obc/trail-view/<spot>/` |
-| `presets.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
+| `spots/*.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
 | `regions/*.json` | Rulesets: where a region applies, its terrain rules and its look |
-| `packs/*.json` | Asset packs: the trees, plants, herds and houses a region draws |
+| `packs/*.json`, `styles/*.json` | Asset packs: the trees, plants, herds and houses a region draws |
 | `index.html`, `src/` | The Vite + TypeScript + three.js page |
 
 ## Bake
@@ -86,14 +86,14 @@ uv run prototype/trail-view/bake.py hahnen
 - A place takes 5 to 12 minutes and about 100 MB, most of it the four Sentinel-2 quarters. A first
   bake in Baden-Württemberg or the US spends most of its time on the DTM.
 
-## Regions and packs
+## Spots, regions and packs
 
-A region is a ruleset in `regions/<name>.json` that names the region it `extends`. A subregion
-also names the areas it covers (`where`: boxes `[west, south, east, north]` or rings of
-`[lon, lat]`). A spot's walk starts at the region of its spots file. It steps into the subregion
-that holds the spot, the smallest on a tie, until none does: `world` › `celtic` ›
-`celtic.irish-coast`. A region inherits all it does not say: objects merge, anything else
-replaces. bake.py walks; the page reads the region from `meta.region`.
+A region inherits all it does not say from the one it `extends`: objects merge, anything else
+replaces. `regions/<short>.json` is an ecoregion of `tune/ecoregions.json`, `<short>.<sub>.json` a
+subregion that covers `where` (boxes `[west, south, east, north]` or rings of `[lon, lat]`).
+A spot's walk starts at the region of its spots file. It steps into the subregion that holds the
+spot, the smallest on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`. bake.py
+walks and writes the region to `meta.region`; the page reads it from there.
 
 | Key | What it sets |
 |---|---|
@@ -101,18 +101,17 @@ replaces. bake.py walks; the page reads the region from `meta.region`.
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
 | `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 
-Generic rules take their numbers from the region; the data picks where they act. Geology
-descriptions (IGME in Spain) give rock colour and hardness: hard rock stands as outcrops and crags,
-soft marl and clay keep their scrub. A fine land cover map (NLCM in Ireland) overrules WorldCover
-where it has a habitat.
+Generic rules take their numbers from the region; the data picks where they act. IGME's geology
+gives rock colour and hardness: hard rock stands as outcrops and crags, soft marl and clay keep
+their scrub. A fine land cover map overrules WorldCover where it has a habitat.
 
-A pack in `packs/<name>.json` extends another and keys its trees and herds by species, so a child
-adds or changes one and `null` drops one: `atlantic` holds the moor, sheep and cottages that
-`irish-coast` and `highlands` share, and `canary` the pines and high-mountain shrubs of
-`canary-north` and `canary-south`. Trees go by leaf type and elevation; a plant model listed with
-`cover: "shrub"` stands as a shrub. Herds go by habitat, or by the WorldCover classes a habitat
-stands for where no land cover map gives one. Regions share packs: the Vosges draw the Black
-Forest's. A new place needs a region with an area; its models come from the pack it names.
+A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its ecoregion and keys its trees
+and herds by species, so a child adds or changes one and `null` drops one. Trees go by leaf type
+and elevation; a plant model listed with `cover: "shrub"` stands as a shrub. Herds go by habitat,
+or by the WorldCover classes a habitat stands for where no land cover map gives one. An ecoregion
+owns its regions and packs; two that share a look keep a copy each. Models and house styles
+(`styles/`) are shared. A pack's `style` and a look's `roadLine` may be a map by country,
+`{"ie": …, "*": …}`: `meta.country` picks its entry, else `"*"`.
 
 ## Open
 
@@ -133,7 +132,7 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   of it, trees within 1 km, and the finest ground within 1.25 km.
 - "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border between
   the two. "align camera" moves a photograph's camera; "copy camera JSON" copies it for
-  `presets.json`. Red is the skyline read off the photograph, cyan the skyline cast through the
+  `spots/`. Red is the skyline read off the photograph, cyan the skyline cast through the
   active surface.
 - The season (one day each, 2025) also picks the Sentinel-2 quarter and the palette.
 - The near field comes from the region's pack: trees by leaf type and

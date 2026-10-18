@@ -42,6 +42,13 @@ export interface Meta {
   habitat_levels?: number;
   credits: string[];
   photo?: Photo;
+  /** The spot's region (regions/<region>.json) and its chain from world down. */
+  region?: string;
+  chain?: string[];
+  /** ISO 3166-1 alpha-2 in lower case, null off every country. */
+  country?: string | null;
+  /** The IANA time zone at the spot. */
+  tz?: string;
 }
 
 /** The habitats bake.py writes, in its order. */

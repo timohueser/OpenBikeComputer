@@ -1,7 +1,6 @@
 {
  "name": "World",
- "about": "The root: defaults every region inherits. A region names its parent in 'extends' and the areas it covers in 'where', each a box [west, south, east, north] or a ring of [lon, lat]; the deepest region whose area holds the eye wins.",
- "tz": "UTC",
+ "about": "The root: defaults every region inherits. An ecoregion extends it; a subregion extends one and names the areas it covers in 'where', each a box [west, south, east, north] or a ring of [lon, lat]. A spot starts at the region of its spots file and steps into the subregion whose area holds it, the smallest on a tie.",
  "leaf": "mixed",
  "pack": "base",
  "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
