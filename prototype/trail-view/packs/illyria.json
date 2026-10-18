@@ -47,5 +47,5 @@
   "donkey": { "model": "highland-cow", "latin": "Equus asinus", "groups": 1, "size": [1, 3], "on": ["rough-grass", "wet-grassland", "grassland", "pasture", "arable"] }
  },
  "orchard": "holm-oak",
- "style": "village-house"
+ "style": { "al": "village-house", "*": "stone-house" }
 }

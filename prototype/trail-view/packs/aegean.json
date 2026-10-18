@@ -30,5 +30,5 @@
   "sheep": { "groups": 2, "size": [6, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "orchard": "holm-oak",
- "style": "village-house"
+ "style": { "gr-l": "whitewashed-house", "gr-f": "village-house", "*": "stone-house" }
 }

@@ -36,5 +36,5 @@
   "goat": { "groups": 1, "size": [4, 12], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "orchard": "holm-oak",
- "style": "village-house"
+ "style": { "it-77": "whitewashed-house", "it-67": "whitewashed-house", "*": "village-house" }
 }

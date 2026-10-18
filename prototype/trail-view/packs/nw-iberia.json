@@ -45,5 +45,5 @@
   "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
  },
  "orchard": "hawthorn",
- "style": { "es-ex": "village-house", "es-cm": "village-house", "pt-05": "village-house", "pt-09": "village-house", "pt-12": "village-house", "*": "house" }
+ "style": { "es-cl": "slate-stone-house", "es-ga": "slate-stone-house", "pt-04": "slate-stone-house", "es-ex": "village-house", "es-cm": "village-house", "pt-05": "village-house", "pt-12": "village-house", "*": "stone-house" }
 }

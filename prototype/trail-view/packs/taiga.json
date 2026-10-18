@@ -31,5 +31,5 @@
   "sheep": { "groups": 1, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
- "style": "wood-cabin"
+ "style": { "se": "falu-red-house", "fi": "falu-red-house", "no": "falu-red-house", "*": "log-house" }
 }

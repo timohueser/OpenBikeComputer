@@ -45,5 +45,5 @@
   "goat": { "groups": 1, "size": [3, 15], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
  },
  "orchard": "hawthorn",
- "style": { "ru-ba": "wood-cabin", "ru-ore": "wood-cabin", "ru-sam": "wood-cabin", "*": "village-house" }
+ "style": { "ru-ba": "log-house", "ru-ore": "log-house", "ru-sam": "log-house", "*": "whitewashed-house" }
 }

@@ -35,5 +35,5 @@
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
- "style": "wood-cabin"
+ "style": { "se": "falu-red-house", "fi": "falu-red-house", "ax": "falu-red-house", "no": "falu-red-house", "*": "log-house" }
 }

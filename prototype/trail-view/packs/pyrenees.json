@@ -44,5 +44,5 @@
   "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "orchard": "hawthorn",
- "style": "house"
+ "style": "slate-stone-house"
 }
