@@ -274,7 +274,7 @@ pub(super) fn update(
     machine: Option<&MachineCheck>,
     run: &mut Run,
 ) -> Result<Updated, Error> {
-    locked(target, run, |run, held| {
+    locked(store, target, run, |run, held| {
         let prepared = prepare(root, store, http, target, code, edit, &asked.only, machine, Some(run))?;
         if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
             return Err(lost(&format!("target `{}`", target.0)));
@@ -286,24 +286,34 @@ pub(super) fn update(
 
 /// Do `work` while the run holds the lock of `target`: a thread writes the heartbeat, and the lock
 /// is free again at the end. When another run takes the lock, the run stops. SIGINT and SIGTERM
-/// stop the run, so it frees the lock.
+/// stop the run, so it frees the lock. A lock that a run of this machine in `store` kept when its
+/// process ended, the run takes over.
 pub(super) fn locked<T>(
+    store: &Store,
     (name, target): (&str, &Target),
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    locked_as((&format!("target `{name}`"), &format!("obc data unlock {name}")), target, run, work)
+    locked_as(store, (&format!("target `{name}`"), &format!("obc data unlock {name}")), target, run, work)
 }
 
 /// [`locked`] for the lock of `target`, which messages name `label` and `unlock` frees.
 pub(super) fn locked_as<T>(
+    store: &Store,
     (label, unlock): (&str, &str),
     target: &Target,
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
     crate::engine::runs::stop_on_signals();
-    let held = Held::take(target, run.id(), crate::date::now()).map_err(|refused| match refused {
+    let now = crate::date::now();
+    let taken = match Held::take(target, run.id(), now) {
+        Err(lock::Refused::Held(holder)) if runs::died(store, &holder) => {
+            Held::take_over(target, run.id(), now, Some(&holder)).map(|held| (held, Some(holder.run)))
+        }
+        taken => taken.map(|held| (held, None)),
+    };
+    let (held, over) = taken.map_err(|refused| match refused {
         lock::Refused::Held(holder) => {
             Code::Blocked.error(format!("{label}: {}", lock::held_by(&holder))).fix(format!(
                 "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
@@ -318,6 +328,9 @@ pub(super) fn locked_as<T>(
             .error(format!("{label}: {e}"))
             .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK)),
     })?;
+    if let Some(dead) = over {
+        run.line(&format!("{label}: run {dead} ended without freeing the lock; this run took it over"))?;
+    }
     let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
     let result = std::thread::scope(|scope| {
         let held = &held;
@@ -1903,6 +1916,41 @@ pub(super) mod tests {
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
     }
 
+    #[test]
+    fn an_update_takes_over_the_lock_that_a_run_of_this_machine_kept_when_its_process_ended() {
+        let fixture = fixture("update-died");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let dead = Run::create(&fixture.store, ["update", "local"]).unwrap();
+        // The process ends without freeing the lock, as on an out-of-memory kill, and a program of
+        // one of its steps still runs in the process group that the run led.
+        std::mem::forget(lock::Held::take(&target, dead.id(), crate::date::now()).unwrap());
+        let status_file = dead.status_file();
+        drop(dead);
+        let mut program = std::process::Command::new("sleep");
+        std::os::unix::process::CommandExt::process_group(program.arg("60"), 0);
+        let mut program = program.spawn().unwrap();
+        let mut status: serde_json::Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+        status["pid"] = program.id().into();
+        std::fs::write(&status_file, serde_json::to_vec(&status).unwrap()).unwrap();
+        let Some((lock::LockFile::Held(mut holder), _)) = lock::read(&target).unwrap() else { panic!("free") };
+
+        holder.machine = "elsewhere".into();
+        let lock_file = fixture.scratch.0.join("local").join(lock::LOCK);
+        std::fs::write(&lock_file, serde_json::to_vec(&lock::LockFile::Held(holder.clone())).unwrap()).unwrap();
+        let refused = update(&fixture, &target, region).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "only this machine knows that the process of its run ended");
+
+        holder.machine = crate::machine();
+        std::fs::write(&lock_file, serde_json::to_vec(&lock::LockFile::Held(holder)).unwrap()).unwrap();
+        let refused = update(&fixture, &target, region).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "a program of the run still runs");
+        program.kill().unwrap();
+        program.wait().unwrap();
+        update(&fixture, &target, region).unwrap();
+        assert_eq!(lock::read(&target).unwrap().unwrap().0, lock::LockFile::Free, "the run frees it");
+    }
+
     std::thread_local! {
         /// The clock of a wait for the follower: each sleep moves it on.
         static CLOCK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
@@ -1942,7 +1990,7 @@ pub(super) mod tests {
         let base = release::serving(target).unwrap();
         let wait = Wait { give_up, now: || CLOCK.get(), sleep: |every| CLOCK.set(CLOCK.get() + every), ..Wait::RUN };
         let mut run = Run::create(&fixture.store, ["update", "local"]).unwrap();
-        let switched = locked(("local", target), &mut run, |run, held| {
+        let switched = locked(&fixture.store, ("local", target), &mut run, |run, held| {
             switch_to(("local", target), base.as_ref(), id, &Http::new(), Some(wait), (run, held))
         });
         crate::cli::api::finish_run(run, switched)

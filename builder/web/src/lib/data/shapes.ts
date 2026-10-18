@@ -191,6 +191,8 @@ export interface Holder {
     waiting?: string;
     /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
     stale: boolean;
+    /** Whether the run ran on this machine and its process ended: the next update takes the lock over. */
+    died: boolean;
 }
 
 /** The runs of other machines, from the locks of the targets that they change. */

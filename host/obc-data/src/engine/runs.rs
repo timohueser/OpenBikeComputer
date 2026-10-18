@@ -297,7 +297,7 @@ impl Run {
         self.dir.join(STATUS)
     }
 
-    fn line(&mut self, text: &str) -> Result<(), String> {
+    pub(crate) fn line(&mut self, text: &str) -> Result<(), String> {
         let at = date::timestamp(date::now());
         let line = format!("{} {text}\n", &at[11..19]);
         self.log.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.status.id))
@@ -1058,20 +1058,58 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
         }
     };
     let died = match status.state {
-        State::Running => Some("its process ended before it finished"),
-        State::Starting if !alive(status.pid) => Some("its process never started"),
+        State::Running => Some(("its process ended before it finished", ENDED)),
+        State::Starting if !alive(status.pid) => Some(("its process never started", "Run its command again.")),
         _ => None,
     };
-    if let Some(message) = died.filter(|_| !running) {
+    if let Some((message, fix)) = died.filter(|_| !running) {
         status.state = State::Failed;
         status
             .phases
             .iter_mut()
             .filter(|phase| phase.state == State::Running)
             .for_each(|phase| phase.state = State::Failed);
-        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
+        status.layers.iter_mut().for_each(|layer| layer.leaves_baking.clear());
+        // A step that started and did not finish has no layer and no error yet.
+        let building: Vec<&str> = status
+            .steps
+            .iter()
+            .filter(|step| step.layer.is_empty() && step.error.is_none())
+            .map(|step| step.step.as_str())
+            .collect();
+        let message = match building.is_empty() {
+            true => message.to_string(),
+            false => format!("{message}, while it built {}", building.join(", ")),
+        };
+        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, fix));
     }
     Ok(status)
+}
+
+/// The fix of a run whose process ended before it finished.
+const ENDED: &str = "A process that ends without an error was often stopped by the kernel, for lack of memory \
+                     or at a restart; the system log names it. Run its command again: it takes over a lock that \
+                     the run kept, and reuses what the run built.";
+
+/// Whether `holder` is a run of this machine in `store` whose process ended, and no process of its
+/// process group runs, such as a program of a step: it cannot free the lock that it holds, so the
+/// next run takes the lock over.
+pub fn died(store: &Store, holder: &crate::lock::Holder) -> bool {
+    holder.machine == crate::machine()
+        && status(store, &holder.run)
+            .is_ok_and(|status| !matches!(status.state, State::Running | State::Starting) && !group_alive(status.pid))
+}
+
+/// Whether a process of the process group `pid` runs. A detached run leads its group, so the
+/// programs of its steps stay in the group after it ended.
+fn group_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    if let Ok(pid @ 1..) = libc::pid_t::try_from(pid) {
+        // SAFETY: signal 0 only checks that a process of the group exists.
+        let found = unsafe { libc::kill(-pid, 0) } == 0;
+        return found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    false
 }
 
 /// Whether the process `pid` runs.
@@ -1550,13 +1588,15 @@ mod tests {
         let fixture = fixture("runs-interrupted");
         let mut run = Run::create(&fixture.store, ["build", "test"]).unwrap();
         run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
+        run.record(&Event::StepStarted { step: "test/upper".into() }).unwrap();
+        run.flush().unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Running);
         let id = run.id().to_string();
         drop(run);
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Failed);
         assert_eq!(status(&fixture.store, &id).unwrap().phases[0].state, State::Failed);
         let ended = follow(&fixture.store, &id, |_, _| Ok(())).unwrap().unwrap();
-        assert_eq!(ended.error.unwrap().message, "its process ended before it finished");
+        assert_eq!(ended.error.unwrap().message, "its process ended before it finished, while it built test/upper");
 
         std::fs::create_dir(fixture.store.run("2026-01-01-000000")).unwrap();
         let empty = list(&fixture.store).unwrap().pop().unwrap();

@@ -461,7 +461,7 @@ pub(super) fn prepare(
     let id = asked.id;
     let label = format!("source `{id}` on `{name}`");
     let unlock = format!("obc data unlock {name} --source {id}");
-    update_cli::locked_as((&label, &unlock), &prepared::folder(target, id), run, |run, held| {
+    update_cli::locked_as(context.store, (&label, &unlock), &prepared::folder(target, id), run, |run, held| {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
         let planned = plan(context, (name, target), asked, today)?;
         if !held.beat(Some(&planned.review.id), None, crate::date::now())? {
