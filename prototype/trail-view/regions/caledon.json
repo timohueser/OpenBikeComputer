@@ -1,1 +1,8 @@
-{ "name": "Caledon conifer forests", "ecoregion": 691, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Caledon conifer forests",
+ "ecoregion": 691,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "caledon",
+ "about": "The Scottish Highlands from Glen Coe, Glen Affric and Torridon over Rannoch, Atholl and the Monadhliath to the Cairngorms, the Angus glens and Deeside: remnants of Caledonian pinewood with old Scots pine, birch and juniper, plantations of spruce, larch and lodgepole pine, heather and grass moor and blanket bog over most of the hill, granite and schist mountains with corries and late snow patches, lochs in the glens, and white-harled or granite cottages, farm steadings and shooting lodges along single-track roads and estate tracks. Two subregions. caledon.highlands holds the whole Highlands north and west of the Highland Boundary Fault, which is almost all of this ecoregion, with the look and pack of the western spots. Inside it, caledon.east holds the Grampians south-east of the Great Glen and east of Drumochter, because the rules at the eye change across the main watershed: the east lies in its rain shadow, with a drier and brighter sky, heather moor burned in strips for grouse over most of the open hill instead of tawny moor grass, and pink-grey granite and gravel on the Cairngorm and Lochnagar plateaux. The Highlands look paints most of the ground in its own palette, so Sentinel-2 colour does not carry this. Glen Affric, Rannoch and the hills north of the Great Glen keep the western rules. The region's pack draws caledon.east and the north-eastern foothills from Donside to Dufftown, which lie outside both subregions."
+}

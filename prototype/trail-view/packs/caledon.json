@@ -1,0 +1,46 @@
+{
+ "name": "Caledon conifer forests",
+ "extends": "base",
+ "about": "Old Scots pine with downy and silver birch, rowan, aspen and alder in the Caledonian pinewoods and the glens, juniper under them; Sitka and Norway spruce, larch and lodgepole pine in the plantations; sessile oak, hazel and sycamore low in the straths, broom, gorse and grey willow at their edges; heather, bilberry, cowberry and crowberry on the moor and the pinewood floor, woolly fringe-moss on the high plateaux, moor grass, bog cotton and soft rush on the wet ground, bracken, ferns and foxgloves on the lower slopes; red deer on the hill, Blackface sheep, Highland and Aberdeen Angus cattle and Highland ponies; white-harled cottages.",
+ "trees": {
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 650], "weight": 5, "evergreen": true },
+  "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2, "evergreen": true },
+  "common-broom": { "model": "gorse", "latin": "Cytisus scoparius", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
+ },
+ "ground": {
+  "heather": {},
+  "heather-bloom": {},
+  "bilberry": {},
+  "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub"], "height": [0.1, 0.25], "share": 0.15 },
+  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "bare"], "share": 0.2 },
+  "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.3 },
+  "moor-grass": {},
+  "bog-cotton": {},
+  "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.05, "habitat": "lush", "clumped": true },
+  "bracken": {},
+  "fern": {},
+  "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "red-deer": { "model": "goat", "latin": "Cervus elaphus", "groups": 3, "size": [4, 25], "on": ["heath", "rough", "bog"] },
+  "sheep": { "groups": 4, "size": [3, 20], "on": ["pasture", "rough", "heath"] },
+  "highland-cow": { "groups": 1, "size": [2, 8], "on": ["pasture", "rough"] },
+  "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [5, 20], "on": ["pasture"] },
+  "highland-pony": { "model": "highland-cow", "latin": "Equus caballus (Highland)", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "style": "highland-cottage"
+}
