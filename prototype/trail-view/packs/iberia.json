@@ -22,10 +22,10 @@
   "albardin": { "model": "esparto", "latin": "Lygeum spartum", "on": ["bare"], "height": [0.3, 0.6], "share": 0.3 }
  },
  "herds": {
-  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture"] },
-  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [4, 15], "on": ["rough"] },
-  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "rock"] }
+  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "orchard": "holm-oak",
  "style": "village-house"

@@ -31,10 +31,10 @@
   "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 }
  },
  "herds": {
-  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "rough", "heath"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 12], "on": ["pasture"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "rough"] },
-  "goat": { "groups": 1, "size": [3, 12], "on": ["rough", "scrub", "rock"] }
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [3, 12], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "orchard": "hawthorn",
  "style": "house"

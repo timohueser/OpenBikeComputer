@@ -46,10 +46,10 @@
   "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
  },
  "herds": {
-  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "rough", "heath"] },
-  "goat": { "groups": 2, "size": [4, 15], "on": ["rough", "scrub", "rock"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 12], "on": ["pasture"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "rough"] }
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "goat": { "groups": 2, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "orchard": "hawthorn",
  "style": "village-house"

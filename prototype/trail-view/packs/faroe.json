@@ -21,7 +21,7 @@
   "thrift": { "model": "alpine-flowers", "latin": "Armeria maritima", "on": ["grass", "bare"], "height": [0.05, 0.2], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "faroese-sheep": { "model": "sheep", "latin": "Ovis aries (Faroese)", "groups": 8, "size": [2, 6], "on": ["pasture", "rough", "heath", "bog"] }
+  "faroese-sheep": { "model": "sheep", "latin": "Ovis aries (Faroese)", "groups": 8, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] }
  },
  "style": "wood-cabin"
 }

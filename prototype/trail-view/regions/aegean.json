@@ -4,5 +4,6 @@
  "extends": "world",
  "about": "Limestone, marble and granite hills over a blue sea: grey-green kermes oak and lentisk maquis, phrygana cushions in straw-coloured grass that greens up in winter, olive groves and dark cypresses round tiled or whitewashed villages, Aleppo and Calabrian pine on the coasts, black pine, Greek fir and beech on the high massifs. No split: bare Cycladic phrygana, green Ionian maquis and the northern plains differ in Sentinel-2 colour and NDVI, the massifs in tree bands and the snowline, so one set of winter-green ramps, one haze and one weather serve the whole region.",
  "leaf": "mixed",
- "pack": "aegean"
+ "pack": "aegean",
+ "look": { "bare_luma": [0.115, 0.156, 0.156, 0.113] }
 }

@@ -26,12 +26,12 @@
   "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 10], "on": ["pasture", "rough", "scrub"] },
-  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 2, "size": [3, 10], "on": ["rough", "scrub"] },
-  "goat": { "groups": 2, "size": [5, 20], "on": ["rough", "scrub", "rock"] },
-  "sheep": { "groups": 2, "size": [10, 40], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 8], "on": ["pasture", "rough"] },
-  "mouflon": { "model": "sheep", "latin": "Ovis gmelini musimon", "groups": 1, "size": [2, 8], "on": ["rock", "rough"] }
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "scrub", "sclerophyllous-scrub"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 2, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] },
+  "goat": { "groups": 2, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "sheep": { "groups": 2, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "mouflon": { "model": "sheep", "latin": "Ovis gmelini musimon", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "orchard": "european-beech",
  "style": "village-house"

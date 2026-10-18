@@ -5,5 +5,6 @@
   [6.6, 47.6, 7.4, 48.6]
  ],
  "about": "The Vosges share the Black Forest's trees and farms across the Rhine.",
- "pack": "western-europe.black-forest"
+ "pack": "western-europe.black-forest",
+ "look": { "bare_luma": [0.096, 0.128, 0.123, 0.086] }
 }

@@ -37,11 +37,11 @@
   "white-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus albus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 4, "size": [4, 15], "on": ["pasture", "rough"] },
-  "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "rough", "heath"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [3, 10], "on": ["rough", "heath", "pasture"] },
-  "goat": { "groups": 1, "size": [3, 10], "on": ["rough", "scrub", "rock"] },
-  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [2, 8], "on": ["rock", "rough"] }
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 4, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
+  "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "orchard": "hawthorn",
  "style": "house"

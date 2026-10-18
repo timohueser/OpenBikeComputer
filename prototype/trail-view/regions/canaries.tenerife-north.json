@@ -7,6 +7,7 @@
  "about": "The windward side: the trade-wind cloud sits on the slopes, laurel forest and tree heath above terraces, banana and vine below, green the year round.",
  "pack": "canaries.north",
  "look": {
+  "bare_luma": [0.092, 0.134, 0.13, 0.092],
   "ramps": {
    "grass": ["#a59c64", "#8a8b52", "#6a7f44"],
    "shrub": ["#6b6a3e", "#58623a", "#475a30"],

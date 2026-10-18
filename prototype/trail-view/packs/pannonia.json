@@ -36,10 +36,10 @@
   "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
  },
  "herds": {
-  "hungarian-grey-cattle": { "model": "highland-cow", "latin": "Bos taurus (Hungarian Grey)", "groups": 1, "size": [10, 40], "on": ["pasture", "rough"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture"] },
-  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [30, 150], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 12], "on": ["pasture"] }
+  "hungarian-grey-cattle": { "model": "highland-cow", "latin": "Bos taurus (Hungarian Grey)", "groups": 1, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable"] },
+  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [30, 150], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 12], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": { "hr-03": "wood-cabin", "hu": "village-house", "rs": "village-house", "hr": "village-house", "ro": "village-house", "ua": "village-house", "*": "house" }

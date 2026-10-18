@@ -9,8 +9,8 @@
  },
  "ground": {"heather": {}, "heather-bloom": {}, "moor-grass": {}, "bracken": {}, "bog-cotton": {}},
  "herds": {
-  "sheep": { "groups": 6, "size": [2, 8], "on": ["pasture", "rough", "heath", "bog"] },
-  "highland-cow": { "groups": 2, "size": [2, 6], "on": ["pasture", "rough"] }
+  "sheep": { "groups": 6, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] },
+  "highland-cow": { "groups": 2, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": "highland-cottage"
 }

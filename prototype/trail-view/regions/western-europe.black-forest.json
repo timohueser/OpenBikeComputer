@@ -1,1 +1,1 @@
-{ "name": "Black Forest", "extends": "western-europe", "where": [ [7.6, 47.6, 8.7, 48.95] ], "pack": "western-europe.black-forest" }
+{ "name": "Black Forest", "extends": "western-europe", "where": [ [7.6, 47.6, 8.7, 48.95] ], "pack": "western-europe.black-forest", "look": { "bare_luma": [0.089, 0.127, 0.124, 0.083] } }

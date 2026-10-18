@@ -23,8 +23,8 @@
   "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 4, "size": [5, 30], "on": ["pasture"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 12], "on": ["pasture", "rough"] }
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 4, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": "village-house"
 }

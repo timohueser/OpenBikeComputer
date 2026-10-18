@@ -30,11 +30,11 @@
   "blue-hedgehog-broom": { "model": "garrigue", "latin": "Erinacea anthyllis", "on": ["shrub", "bare"], "height": [0.2, 0.4], "share": 0.12 }
  },
  "herds": {
-  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "rough", "heath"] },
-  "goat": { "groups": 1, "size": [8, 30], "on": ["rough", "scrub", "rock"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [4, 15], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [3, 10], "on": ["rough", "heath", "pasture"] },
-  "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["rock"] }
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
+  "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
  },
  "orchard": "hawthorn",
  "style": "village-house"

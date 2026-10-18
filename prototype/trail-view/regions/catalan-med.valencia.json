@@ -7,6 +7,7 @@
  "about": "The karst sierras and badland valleys behind the Alicante coast: pale limestone crags and terraces, dark garrigue cushions and esparto in straw-coloured ground, Aleppo pines, a milky summer haze over a blue sea.",
  "pack": "catalan-med.valencia",
  "look": {
+  "bare_luma": [0.151, 0.194, 0.194, 0.142],
   "ramps": {
    "grass": {
     "winter": ["#9a9564", "#7c8650", "#5f7240"],

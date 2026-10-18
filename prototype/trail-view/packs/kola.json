@@ -23,8 +23,8 @@
   "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough", "bog"] },
-  "sheep": { "groups": 1, "size": [2, 6], "on": ["pasture", "rough"] }
+  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "sheep": { "groups": 1, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": "wood-cabin"
 }

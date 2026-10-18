@@ -25,9 +25,9 @@
   "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 3, "size": [3, 12], "on": ["pasture"] },
-  "sheep": { "groups": 1, "size": [6, 20], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 3, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "sheep": { "groups": 1, "size": [6, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": { "lt": "wood-cabin", "by": "wood-cabin", "ua": "village-house", "md": "village-house", "ro": "village-house", "*": "house" }

@@ -21,8 +21,8 @@
   "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.04, "clumped": true }
  },
  "herds": {
-  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough", "bog"] },
-  "sheep": { "groups": 3, "size": [2, 6], "on": ["pasture", "rough", "heath"] }
+  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "sheep": { "groups": 3, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] }
  },
  "style": "wood-cabin"
 }

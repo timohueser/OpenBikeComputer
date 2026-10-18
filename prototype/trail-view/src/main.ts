@@ -5,7 +5,6 @@ import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
 import { drawCompass } from './overlay';
 import { SEASONS as SEASON_NAMES } from './models/trees';
-import { DECIDUOUS, ramps } from './palette';
 import { regionNamed, validate, type Region } from './regions';
 import { CURVATURE, surface, type Surface } from './surface';
 import { WEATHERS, weatherLight } from './weather';
@@ -73,13 +72,14 @@ const state = {
 /** The views of `debugColour` in shaders.ts. */
 const DEBUG_VIEWS = {
   off: 0,
-  'WorldCover class': 1,
+  material: 1,
   'NDVI (red), annual max (green)': 2,
   barren: 3,
   'steep (red), skirt (blue)': 4,
-  habitat: 5,
+  lithology: 5,
   'snow (red below the snowline)': 6,
   water: 7,
+  region: 8,
 };
 const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
 const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', bytes: '–', triangles: '–', frame: '–' };
@@ -108,10 +108,11 @@ async function select(id: string): Promise<void> {
   const bake = await loadBake(id);
   if (selecting !== id) return;
   const { meta } = bake;
-  // A bake from before meta.region takes the region of its spots file.
-  const region = regionNamed(meta.region ?? SPOTS.find((spot) => spot.id === id)!.region, [meta.subdivision, meta.country].filter((place): place is string => !!place));
+  const places = [meta.subdivision, meta.country].filter((place): place is string => !!place);
+  const regions = meta.regions.map((name) => regionNamed(name, places));
+  const region = regionNamed(meta.region, places);
   Object.assign(state, { x: 0, y: 0 });
-  terrain.setBake(bake, region);
+  terrain.setBake(bake, regions, region);
   const area = meta.size * meta.size;
   const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
   const dtm = surface(bake.surface, meta.half0_m, meta.eye_above_ground_m, canopy);
@@ -135,7 +136,7 @@ async function select(id: string): Promise<void> {
     if (selecting !== id) return;
     Object.assign(align, { heading_deg: shot.heading_deg, pitch_deg: shot.pitch_deg, vfov_deg: photoVfov(shot), roll_deg: shot.roll_deg ?? 0 });
   }
-  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights, classes, roads, canopy, trees`;
+  readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights, ground, roads, canopy, trees`;
   readout.near = `${bake.trees.length / 4} trees, ${bake.buildings.length} buildings`;
   readout.dtm = meta.dtm_levels ? `${meta.dtm}, ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km` : 'none';
   state.yaw = meta.photo?.heading_deg ?? meta.heading ?? 0;
@@ -156,14 +157,13 @@ async function seasonChanged(): Promise<void> {
   if (!loaded) return;
   const { bake } = loaded;
   const season = Object.keys(SEASONS).indexOf(state.season);
-  const { region } = loaded;
-  terrain.setPalette(ramps(season, DECIDUOUS[region.leaf], region.look), SEASON_NAMES[season] === 'winter' ? -1e4 : region.look.snowline);
+  terrain.setSeason(season);
   terrain.nearField.setSeason(SEASON_NAMES[season]);
   lightChanged();
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
   const colour = await quarters.get(season)!;
   if (loaded?.bake !== bake || Object.keys(SEASONS).indexOf(state.season) !== season) return;
-  terrain.setColour(colour.data, bake.meta.s2_levels, bake.meta.barren_median?.[season]);
+  terrain.setColour(colour.data, bake.meta.s2_levels);
   readout.colour = `${(colour.bytes / 1e6).toFixed(1)} MB for this season`;
   requestRender();
 }

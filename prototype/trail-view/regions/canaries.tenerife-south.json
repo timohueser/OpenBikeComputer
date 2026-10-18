@@ -5,6 +5,7 @@
  "about": "The lee side: ochre and rust slopes, grey-green tabaiba and cardón dotted over cinder, dry barrancos, a dusty haze over a deep blue sea.",
  "pack": "canaries.south",
  "look": {
+  "bare_luma": [0.093, 0.129, 0.127, 0.088],
   "ramps": {
    "grass": ["#a68e66", "#948a5e", "#7c8250"],
    "shrub": ["#8a8462", "#76784e", "#5f6a42"],

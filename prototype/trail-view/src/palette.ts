@@ -1,10 +1,10 @@
 /**
- * The painted ground colours: one ramp per WorldCover class, low NDVI to high, in the order of
- * `CLASSES` in bake.py. Grass, crops and trees change with the season; deciduous autumn colour
- * comes from this table, not from NDVI.
+ * The painted ground colours: one ramp per cover, low NDVI to high, in COVER_ORDER. Grass, crops
+ * and trees change with the season; deciduous autumn colour comes from this table, not from NDVI.
  */
 
 import * as THREE from 'three';
+import { COVER_ORDER } from './materials';
 import { SEASONS } from './models/trees';
 import type { Ramp, RegionLook } from './regions';
 
@@ -64,27 +64,13 @@ export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
 export const STONE = ['#9a958a', '#8a857a', '#a8a294'];
 export const HEDGE = ['#3f5a30', '#4a6434', '#36502c'];
 
-/** The 11 class ramps for a season, as 33 colours. */
+/** The ramps of the covers for a season, three colours each. */
 export function ramps(season: number, deciduous: number, land?: RegionLook): THREE.Color[] {
   const own = Object.fromEntries(Object.entries(land?.ramps ?? {}).flatMap(([key, ramp]) => {
     const now = Array.isArray(ramp) ? ramp : ramp?.[SEASONS[season]];
     return now ? [[key, now]] : [];
   }));
-  const table: Seasonal = { ...SEASONAL[season], ...own };
-  const fixed: typeof FIXED = { ...FIXED, ...own };
+  const table: Record<string, Ramp> = { ...FIXED, ...SEASONAL[season], ...own };
   const tree = table.needle.map((needle, i) => new THREE.Color(needle).lerp(new THREE.Color(table.broad[i]), deciduous));
-  const order: (Ramp | THREE.Color[])[] = [
-    tree,
-    fixed.shrub,
-    table.grass,
-    table.crop,
-    fixed.built,
-    fixed.bare,
-    fixed.snow,
-    fixed.water,
-    fixed.wetland,
-    fixed.mangrove,
-    fixed.moss,
-  ];
-  return order.flatMap((ramp) => ramp.map((colour) => (colour instanceof THREE.Color ? colour : new THREE.Color(colour))));
+  return COVER_ORDER.flatMap((cover) => (cover === 'tree' ? tree : table[cover].map((hex) => new THREE.Color(hex))));
 }

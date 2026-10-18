@@ -15,6 +15,7 @@
   "amount": 0.7
  },
  "look": {
+  "bare_luma": [0.064, 0.081, 0.083, 0.078],
   "ramps": {
    "grass": {
     "winter": ["#97805a", "#8a7a52", "#71704a"],
@@ -25,17 +26,20 @@
    "shrub": ["#6b5440", "#6e5b3e", "#5c5a38"],
    "moss": ["#8a7a56", "#857f4f", "#6e7a4a"]
   },
-  "moor": { "colour": "#6f5c3a", "heather": "#5e4552", "share": 0.35 },
-  "habitats": {
-   "rock": "#727068",
-   "heath": "#5f5338",
-   "bog": "#8c7348",
-   "bracken": "#7a7a3c",
-   "rough": "#8a7d4e",
-   "pasture": "#6e8445",
-   "scrub": "#55602f",
-   "sand": "#cfc4a2",
-   "saltmarsh": "#7c8a60"
+  "moor": { "heather": "#5e4552", "share": 0.35 },
+  "materials": {
+   "bare-rock": { "colour": "#727068" },
+   "scree": { "colour": "#727068" },
+   "heath": { "colour": "#5f5338" },
+   "bog": { "colour": "#8c7348" },
+   "bracken": { "colour": "#7a7a3c" },
+   "rough-grass": { "colour": "#8a7d4e" },
+   "wet-grassland": { "colour": "#8a7d4e" },
+   "pasture": { "colour": "#6e8445" },
+   "scrub": { "colour": "#55602f" },
+   "sand": { "colour": "#cfc4a2" },
+   "beach": { "colour": "#cfc4a2" },
+   "salt-marsh": { "colour": "#7c8a60" }
   },
   "snap": 0.8,
   "hazeKm": 18,

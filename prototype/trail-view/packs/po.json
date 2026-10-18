@@ -33,9 +33,9 @@
   "perennial-glasswort": { "model": "garrigue", "latin": "Sarcocornia fruticosa", "on": ["wetland"], "height": [0.2, 0.5], "share": 0.4 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 1, "size": [4, 15], "on": ["pasture"] },
-  "sheep": { "groups": 1, "size": [40, 200], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 6], "on": ["pasture"] }
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 1, "size": [4, 15], "on": ["pasture", "grassland", "arable"] },
+  "sheep": { "groups": 1, "size": [40, 200], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 6], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": "village-house"

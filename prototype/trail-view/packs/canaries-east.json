@@ -18,8 +18,8 @@
   "grapevine": { "model": "garrigue", "latin": "Vitis vinifera", "on": ["crop"], "height": [0.4, 1.0], "share": 0.1 }
  },
  "herds": {
-  "goat": { "groups": 2, "size": [5, 25], "on": ["rough", "scrub", "rock"] },
-  "dromedary": { "model": "highland-cow", "latin": "Camelus dromedarius", "groups": 1, "size": [2, 8], "on": ["scrub", "rough"] }
+  "goat": { "groups": 2, "size": [5, 25], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "dromedary": { "model": "highland-cow", "latin": "Camelus dromedarius", "groups": 1, "size": [2, 8], "on": ["scrub", "sclerophyllous-scrub", "rough-grass", "wet-grassland", "grassland"] }
  },
  "style": "canarian-house"
 }

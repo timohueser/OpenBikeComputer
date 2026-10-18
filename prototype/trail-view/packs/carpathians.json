@@ -31,9 +31,9 @@
   "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 }
  },
  "herds": {
-  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [20, 80], "on": ["pasture", "rough", "heath"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "rough"] }
+  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "orchard": "hawthorn",
  "style": { "ua": "wood-cabin", "*": "house" }

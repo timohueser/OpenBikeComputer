@@ -5,11 +5,13 @@
  */
 
 import * as THREE from 'three';
-import { HABITATS, heightAtTexel, heightSize, type Bake } from './bake';
+import { heightAtTexel, heightSize, type Bake } from './bake';
 import type { Light } from './light';
+import { MATERIALS, WATER } from './materials';
 import type { Region } from './regions';
 import { NearField } from './nearfield';
 import { ROAD_LINE, ROADS, VARIEGATED } from './palette';
+import { packRules, SLOT } from './rules';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './surface';
 import type { Weather } from './weather';
@@ -36,6 +38,8 @@ function exposure(bake: Bake, swell: number | undefined): Uint8Array {
   return out;
 }
 
+const WATERY = MATERIALS.map((_, code) => WATER.has(code));
+
 /** Metres of open sea from each sea texel toward a bearing, up to FETCH_M; 0 elsewhere. */
 function fetchToward(bake: Bake, bearing: number): Float32Array {
   const { size, water_levels, half0_m, eye_m } = bake.meta;
@@ -55,7 +59,7 @@ function fetchToward(bake: Bake, bearing: number): Float32Array {
       for (let ii = 0; ii < size; ii++) {
         const i = di > 0 ? size - 1 - ii : ii;
         const t = base + j * size + i;
-        if (bake.classes[t * 2 + 1] < 128 || heightAtTexel(bake, k, i, j) + eye_m > 2) continue;
+        if (!WATERY[bake.material[t]] || heightAtTexel(bake, k, i, j) + eye_m > 2) continue;
         const [ni, nj] = [i + di, j + dj];
         const ahead = ni < 0 || nj < 0 || ni >= size || nj >= size ? coarser(ni, nj) : fetch[base + nj * size + ni];
         fetch[t] = Math.min(FETCH_M, ahead + step);
@@ -143,7 +147,7 @@ function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeome
 }
 
 export interface Look {
-  /** 0 takes the ground's chroma from Sentinel-2, 1 paints the class palette alone. */
+  /** 0 takes the ground's chroma from Sentinel-2, 1 paints the palette alone. */
   snap: number;
   /** Visibility at sea level, in km; the fog thins with altitude. */
   hazeKm: number;
@@ -168,15 +172,16 @@ export class Terrain {
   private readonly sky: THREE.ShaderMaterial;
   private readonly wedges: THREE.Mesh[] = [];
   private texture?: THREE.DataArrayTexture;
-  private classes?: THREE.DataArrayTexture;
+  private ground?: THREE.DataArrayTexture;
+  private rules?: THREE.DataTexture;
+  /** The bake's regions, in the order its region layer indexes them. */
+  private regions: Region[] = [];
   private ndvimax?: THREE.DataArrayTexture;
   private colour?: THREE.DataArrayTexture;
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
   private water?: THREE.DataArrayTexture;
   private exposed?: THREE.DataArrayTexture;
-  private rockMap?: THREE.DataArrayTexture;
-  private habitatMap?: THREE.DataArrayTexture;
   readonly nearField: NearField;
   private readonly shadows = new THREE.WebGLRenderTarget(AZIMUTHS, RINGS, {
     format: THREE.RedFormat,
@@ -227,33 +232,17 @@ export class Terrain {
       horizon: { value: new THREE.Color() },
       glow: { value: 0 },
       night: { value: 0 },
-      classes: { value: null },
+      ground: { value: null },
+      rules: { value: null },
       s2: { value: null },
       s2Levels: { value: 0 },
       ndviMax: { value: null },
       ndviMaxLevels: { value: 0 },
-      barrenMedian: { value: 0 },
-      turf: { value: 0.55 },
       debugView: { value: 0 },
-      ramps: { value: Array.from({ length: 33 }, () => new THREE.Color()) },
       snap: { value: 0.4 },
-      rock: { value: new THREE.Color() },
-      cliffRock: { value: new THREE.Color() },
-      snowline: { value: -1e4 },
       seaDeep: { value: new THREE.Color() },
       seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
-      moorColour: { value: new THREE.Color() },
-      speckleColour: { value: new THREE.Color() },
-      speckle: { value: new THREE.Vector2() },
-      moorOn: { value: 0 },
-      heather: { value: new THREE.Color() },
-      heatherShare: { value: 0 },
-      outcrops: { value: 0 },
-      bedding: { value: new THREE.Vector3(0, 0, 1) },
-      habitatMap: { value: null },
-      habitatLevels: { value: 0 },
-      habitatPaint: { value: HABITATS.map(() => new THREE.Vector4()) },
       canopy: { value: null },
       canopyLevels: { value: 0 },
       roads: { value: null },
@@ -267,8 +256,6 @@ export class Terrain {
       waterMap: { value: null },
       exposureMap: { value: null },
       waterLevels: { value: 0 },
-      rockMap: { value: null },
-      rockLevels: { value: 0 },
       variegated: { value: VARIEGATED.map((hex) => new THREE.Color(hex)) },
       softness: { value: 0.08 },
       gradient: { value: 0.35 },
@@ -335,9 +322,13 @@ export class Terrain {
     }
   }
 
-  /** Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced. */
-  setBake(bake: Bake, region: Region): void {
-    const { size, levels, half0_m, dtm_levels } = bake.meta;
+  /**
+   * Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced;
+   * the ground layers; and each region's rules. `regions` are the bake's, in meta.regions' order;
+   * the eye's region gives the sea, the roads and the grade.
+   */
+  setBake(bake: Bake, regions: Region[], eye: Region): void {
+    const { size, levels, half0_m, dtm_levels, s2_levels } = bake.meta;
     const fine = heightSize(bake.meta);
     const layers = [...bake.surface, ...bake.glo30];
     const data = new Uint16Array(fine * fine * layers.length);
@@ -362,17 +353,22 @@ export class Terrain {
     u.heightSize.value = fine;
     u.levels.value = levels;
     u.dtmLevels.value = dtm_levels;
-    this.classes?.dispose();
-    this.classes = arrayTexture(bake.classes, size, levels, THREE.RGFormat, 'RG8');
-    u.classes.value = this.classes;
-    const ndviMaxLevels = bake.meta.barren_median ? bake.meta.s2_levels : 0;
+    const cells = new Uint8Array(bake.material.length * 4);
+    for (let t = 0; t < bake.material.length; t++) {
+      cells[t * 4] = bake.material[t];
+      cells[t * 4 + 1] = bake.litho[t];
+      cells[t * 4 + 2] = bake.region[t];
+    }
+    this.ground?.dispose();
+    this.ground = arrayTexture(cells, size, levels, THREE.RGBAFormat, 'RGBA8');
+    u.ground.value = this.ground;
     this.ndvimax?.dispose();
-    this.ndvimax = ndviMaxLevels ? arrayTexture(bake.ndvimax, size, ndviMaxLevels, THREE.RedFormat, 'R8') : undefined;
-    u.ndviMax.value = this.ndvimax ?? this.classes;
-    u.ndviMaxLevels.value = ndviMaxLevels;
+    this.ndvimax = arrayTexture(bake.ndvimax, size, s2_levels, THREE.RedFormat, 'R8');
+    u.ndviMax.value = this.ndvimax;
+    u.ndviMaxLevels.value = s2_levels;
     this.canopy?.dispose();
     this.canopy = dtm_levels ? arrayTexture(bake.canopy, size, dtm_levels, THREE.RedFormat, 'R8') : undefined;
-    u.canopy.value = this.canopy ?? this.classes;
+    u.canopy.value = this.canopy ?? this.ground;
     u.canopyLevels.value = dtm_levels;
     this.roads?.dispose();
     this.roads = arrayTexture(bake.roads, size, bake.meta.road_levels, THREE.RGBFormat, 'RGB8');
@@ -382,48 +378,20 @@ export class Terrain {
     this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RGFormat, 'RG8');
     u.waterMap.value = this.water;
     this.exposed?.dispose();
-    this.exposed = arrayTexture(exposure(bake, region.look.swell), size, bake.meta.water_levels, THREE.RedFormat, 'R8');
+    this.exposed = arrayTexture(exposure(bake, eye.look.swell), size, bake.meta.water_levels, THREE.RedFormat, 'R8');
     u.exposureMap.value = this.exposed;
     u.waterLevels.value = bake.meta.water_levels;
     u.shoreReach.value = bake.meta.shore_reach_m;
-    const land = region.look;
-    u.rock.value.set(land.rock);
+    const land = eye.look;
     (land.roads ?? ROADS).forEach((hex, i) => u.roadColours.value[i].set(hex));
     u.roadLine.value.set(land.roadLine ?? ROAD_LINE);
-    u.cliffRock.value.set(land.cliff ?? land.rock);
     u.seaDeep.value.set(land.sea.deep);
     u.seaShallow.value.set(land.sea.shallow);
-    u.moorColour.value.set(land.moor?.colour ?? land.rock);
-    u.moorOn.value = land.moor ? 1 : 0;
-    u.speckleColour.value.set(land.speckle?.colour ?? '#000');
-    u.speckle.value.set(land.speckle?.share ?? 0, land.speckle?.size_m ?? 1);
-    u.heather.value.set(land.moor?.heather ?? land.rock);
-    u.heatherShare.value = land.moor?.share ?? 0;
-    u.outcrops.value = land.outcrops;
-    u.turf.value = Math.cos((land.turf_deg * Math.PI) / 180);
     const { grade } = land;
     u.gradeShadow.value.set(...grade.shadow);
     u.gradeLight.value.set(...grade.light);
     u.saturation.value = grade.saturation;
-    // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
-    const { strike, dip } = land.bedding ?? { strike: 0, dip: 0 };
-    const [toward, tilt] = [((strike + 90) * Math.PI) / 180, (dip * Math.PI) / 180];
-    u.bedding.value.set(Math.sin(toward) * Math.sin(tilt), Math.cos(toward) * Math.sin(tilt), Math.cos(tilt));
-    const habitatLevels = land.habitats ? (bake.meta.habitat_levels ?? 0) : 0;
-    this.habitatMap?.dispose();
-    this.habitatMap = habitatLevels ? arrayTexture(bake.habitat, size, habitatLevels, THREE.RedFormat, 'R8') : undefined;
-    u.habitatMap.value = this.habitatMap ?? this.classes;
-    u.habitatLevels.value = habitatLevels;
-    HABITATS.forEach((name, i) => {
-      const hex = land.habitats?.[name];
-      const c = new THREE.Color(hex ?? '#000');
-      u.habitatPaint.value[i].set(c.r, c.g, c.b, hex ? 1 : 0);
-    });
-    const { rock_levels } = bake.meta;
-    this.rockMap?.dispose();
-    this.rockMap = rock_levels ? arrayTexture(bake.rock, size, rock_levels, THREE.RGBAFormat, 'SRGB8_ALPHA8') : undefined;
-    u.rockMap.value = this.rockMap ?? this.classes;
-    u.rockLevels.value = rock_levels;
+    this.regions = regions;
     this.normals?.dispose();
     this.normals = new THREE.WebGLArrayRenderTarget(fine, fine, levels, {
       type: THREE.HalfFloatType,
@@ -432,18 +400,17 @@ export class Terrain {
       depthBuffer: false,
     });
     u.normals.value = this.normals.texture;
-    this.nearField.set(bake, region);
+    this.nearField.set(bake, regions, eye);
     this.setColour(null, 0);
     this.shadowsStale = this.surfaceStale = true;
   }
 
-  /** One season's Sentinel-2 levels and its barren_median, or none: the class palette alone. */
-  setColour(data: Uint8Array | null, levels: number, barrenMedian?: number | null): void {
+  /** One season's Sentinel-2 levels, or none: the palette alone. */
+  setColour(data: Uint8Array | null, levels: number): void {
     this.colour?.dispose();
     this.colour = data ? arrayTexture(data, 1024, levels, THREE.RGBAFormat, 'RGBA8') : undefined;
-    this.uniforms.s2.value = this.colour ?? this.classes;
+    this.uniforms.s2.value = this.colour ?? this.ground;
     this.uniforms.s2Levels.value = data ? levels : 0;
-    this.uniforms.barrenMedian.value = barrenMedian ?? 0;
   }
 
   /** A false-colour view of one input (DEBUG_VIEWS in main.ts), 0 for none. */
@@ -451,10 +418,13 @@ export class Terrain {
     this.uniforms.debugView.value = view;
   }
 
-  /** The season's palette, and the altitude below which white is no snow (none in winter). */
-  setPalette(ramps: THREE.Color[], snowline: number): void {
-    this.uniforms.ramps.value = ramps;
-    this.uniforms.snowline.value = snowline;
+  /** Every region's rules for a season, 0 winter to 3 autumn: its ramps, snowline and bare_luma. */
+  setSeason(season: number): void {
+    this.rules?.dispose();
+    this.rules = new THREE.DataTexture(packRules(this.regions, season), SLOT.count, this.regions.length, THREE.RGBAFormat, THREE.FloatType);
+    this.rules.minFilter = this.rules.magFilter = THREE.NearestFilter;
+    this.rules.needsUpdate = true;
+    this.uniforms.rules.value = this.rules;
   }
 
   /**

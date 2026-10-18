@@ -29,11 +29,11 @@
   "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.2, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [5, 25], "on": ["pasture", "rough"] },
-  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough"] },
-  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "rough"] },
-  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "rock"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [3, 12], "on": ["pasture"] }
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "holm-oak",
  "style": "village-house"

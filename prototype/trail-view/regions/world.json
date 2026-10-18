@@ -12,6 +12,26 @@
   "softness": 0.08, "gradient": 0.35,
   "outcrops": 0, "snowline": 1500, "turf_deg": 42,
   "rock": "#8c877d",
+  "lithology": {
+   "limestone": { "colour": "#d3c6a6" },
+   "dolomite": { "colour": "#b2a894" },
+   "marl-clay": { "colour": "#cbbd98" },
+   "gypsum": { "colour": "#e2dccd" },
+   "sandstone": { "colour": "#c3a06c" },
+   "conglomerate": { "colour": "#a99878" },
+   "quartzite": { "colour": "#bfb9ae" },
+   "granite": { "colour": "#b5aba0" },
+   "schist-slate-shale": { "colour": "#6e6a66" },
+   "basalt-lava": { "colour": "#4a4541" },
+   "cinder-scoria": { "colour": "#7a5040" },
+   "pumice": { "colour": "#d6c7a2" },
+   "tuff": { "colour": "#b39a74" },
+   "alluvium-colluvium": { "colour": "#c2ad88" },
+   "variegated-marl": { "colour": "#a8604e", "banded": true },
+   "limestone-marl": { "colour": "#d3c6a6" },
+   "dolerite": { "colour": "#6f675d" },
+   "felsic-lava": { "colour": "#5e554b" }
+  },
   "sea": { "deep": "#2c5874", "shallow": "#4f8088" },
   "grade": { "shadow": [-0.004, 0, 0.012], "light": [0.01, 0.004, -0.008], "saturation": 1.08 }
  }

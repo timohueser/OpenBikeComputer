@@ -25,9 +25,9 @@
   "bog-cotton": {}
  },
  "herds": {
-  "icelandic-sheep": { "model": "sheep", "latin": "Ovis aries (Icelandic)", "groups": 5, "size": [2, 4], "on": ["pasture", "rough", "heath", "bog"] },
-  "icelandic-horse": { "model": "highland-cow", "latin": "Equus caballus (Icelandic)", "groups": 2, "size": [3, 12], "on": ["pasture", "rough"] },
-  "icelandic-cattle": { "model": "highland-cow", "latin": "Bos taurus (Icelandic)", "groups": 1, "size": [3, 10], "on": ["pasture"] }
+  "icelandic-sheep": { "model": "sheep", "latin": "Ovis aries (Icelandic)", "groups": 5, "size": [2, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] },
+  "icelandic-horse": { "model": "highland-cow", "latin": "Equus caballus (Icelandic)", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "icelandic-cattle": { "model": "highland-cow", "latin": "Bos taurus (Icelandic)", "groups": 1, "size": [3, 10], "on": ["pasture", "grassland", "arable"] }
  },
  "style": "cottage"
 }

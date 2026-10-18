@@ -30,9 +30,9 @@
   "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.05, "clumped": true }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [5, 20], "on": ["pasture"] },
-  "sheep": { "groups": 1, "size": [5, 20], "on": ["pasture", "rough"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable"] },
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": "wood-cabin"

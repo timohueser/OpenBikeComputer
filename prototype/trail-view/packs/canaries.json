@@ -8,7 +8,7 @@
   "tajinaste": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1900, 2700], "weight": 0.5 }
  },
  "herds": {
-  "goat": { "groups": 3, "size": [3, 9], "on": ["rough", "scrub", "rock"] }
+  "goat": { "groups": 3, "size": [3, 9], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "style": "canarian-house"
 }

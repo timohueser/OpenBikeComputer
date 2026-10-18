@@ -42,10 +42,10 @@
   "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 3, "size": [5, 30], "on": ["pasture"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "rough"] },
-  "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "rough", "heath", "saltmarsh"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [1, 6], "on": ["pasture"] }
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 3, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "salt-marsh"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": { "fr-bre": "cottage", "fr-pdl": "cottage", "fr-cvl": "cottage", "fr-naq": "village-house", "fr-occ": "village-house", "dk": "cottage", "gg": "cottage", "je": "cottage", "*": "house" }

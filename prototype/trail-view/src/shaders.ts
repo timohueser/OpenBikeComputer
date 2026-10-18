@@ -1,5 +1,7 @@
 /** The GLSL. Every pass reads heights through the same level rule as `Surface` in surface.ts. */
 
+import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY } from './materials';
+import { SLOT } from './rules';
 import { BLANKET } from './surface';
 
 const LEVELS = /* glsl */ `
@@ -165,17 +167,44 @@ vec3 cloudColour(vec3 dir, float thick, vec3 sunLight, vec3 skyLight) {
 }
 `;
 
+/** The vocabulary of materials.json, compiled in: each material's cover, moor and rock, each lithology's hardness. */
+const flags = (set: Set<number>) => MATERIALS.map((_, i) => (set.has(i) ? '1.0' : '0.0')).join(', ');
+/** WorldCover's legend colour per cover, in sRGB. */
+const LEGEND = [[0.0, 0.39, 0.0], [1.0, 0.73, 0.13], [1.0, 1.0, 0.3], [0.94, 0.59, 1.0], [0.98, 0.0, 0.0], [0.71, 0.71, 0.71],
+  [0.94, 0.94, 0.94], [0.0, 0.39, 0.78], [0.0, 0.59, 0.63], [0.0, 0.81, 0.46], [0.98, 0.9, 0.63]];
+/** Each material in its cover's legend colour, from dark to light among the materials of that cover. */
+const MATERIAL_KEY = COVER.map((cover, i) => {
+  const peers = COVER.flatMap((c, j) => (c === cover ? [j] : []));
+  const f = peers.length > 1 ? peers.indexOf(i) / (peers.length - 1) : 0.5;
+  return LEGEND[cover].map((v) => (f < 0.5 ? v * (0.45 + 1.1 * f) : v + (1 - v) * 0.7 * (f - 0.5)));
+});
+const VOCABULARY = /* glsl */ `
+${COVER_ORDER.map((cover, i) => `const int COVER_${cover.toUpperCase()} = ${i};`).join('\n')}
+const int COVERS[${MATERIALS.length}] = int[](${COVER.join(', ')});
+const float MOOR[${MATERIALS.length}] = float[](${flags(MOOR)});
+const float ROCKY[${MATERIALS.length}] = float[](${flags(ROCKY)});
+const float HARDNESS[${LITHOLOGIES.length}] = float[](${HARDNESS.map((h) => h.toFixed(3)).join(', ')});
+const int SLOT_MATERIALS = ${SLOT.materials};
+const int SLOT_LITHOLOGIES = ${SLOT.lithologies};
+const int SLOT_CLIFF = ${SLOT.cliff};
+const int SLOT_HEATHER = ${SLOT.heather};
+const int SLOT_SPECKLE = ${SLOT.speckle};
+const int SLOT_TERRAIN = ${SLOT.terrain};
+const int SLOT_BEDDING = ${SLOT.bedding};
+`;
+
 /** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
 const COLOUR = /* glsl */ `
-uniform sampler2DArray classes;
+${VOCABULARY}
+// Per texel and level: the material, the lithology and the region, an index into the bake's regions.
+uniform sampler2DArray ground;
+// Each region's rules, a row of slots (SLOT in rules.ts).
+uniform sampler2D rules;
 uniform sampler2DArray s2;
 uniform float s2Levels;
 // The most NDVI any quarter saw, in the s2 alpha code, for k < ndviMaxLevels.
 uniform sampler2DArray ndviMax;
 uniform float ndviMaxLevels;
-// The season's median luma of barren land's reflectance; 0 without one.
-uniform float barrenMedian;
-uniform vec3 ramps[33];
 uniform float snap;
 uniform sampler2DArray roads;
 uniform float roadLevels;
@@ -185,12 +214,6 @@ uniform sampler2DArray waterMap;
 uniform sampler2DArray exposureMap;
 uniform float waterLevels;
 uniform float shoreReach;
-uniform vec3 moorColour;
-uniform float moorOn;
-uniform sampler2DArray habitatMap;
-uniform float habitatLevels;
-// Per habitat (HABITATS in bake.ts): the kit's colour, and 1 where it has one.
-uniform vec4 habitatPaint[13];
 // Half a level sharper than the pixel footprint.
 const float DETAIL = -0.5;
 
@@ -208,12 +231,18 @@ struct Ground {
   // lush is 0 where no Sentinel-2 pixel says.
   float rough;
   float lush;
-  // Moorland: open ground the satellite sees brown, or heath and bog on a land cover map, 0–1.
+  // Heath and bog, 0–1.
   float moor;
-  // Exposed rock on a land cover map, 0–1.
+  // Exposed rock and scree, 0–1.
   float bare;
   // Land no quarter sees green, 0–1: pumice, lava, scree and limestone, whatever WorldCover calls it.
   float barren;
+  // The rock: its colour, its banded share and how hard it stands, 0 soft to 1 hard.
+  vec3 stone;
+  float banded;
+  float hardness;
+  // The region of the texel nearest p, whose rules the fragment takes.
+  float region;
 };
 
 float luma(vec3 c) {
@@ -261,11 +290,14 @@ vec3 roadSurface(int code, float inside, float across, vec2 p, float w, vec3 gro
   return c;
 }
 
-vec3 ramp(int index, float t) {
-  vec3 a = ramps[index * 3];
-  vec3 b = ramps[index * 3 + 1];
-  vec3 c = ramps[index * 3 + 2];
-  return t < 0.5 ? mix(a, b, 2.0 * t) : mix(b, c, 2.0 * t - 1.0);
+vec4 rule(int region, int slot) {
+  return texelFetch(rules, ivec2(slot, region), 0);
+}
+
+/** The cover's ramp in the region, low NDVI to high. */
+vec3 ramp(int region, int cover, float t) {
+  int slot = cover * 3 + (t < 0.5 ? 0 : 1);
+  return mix(rule(region, slot).rgb, rule(region, slot + 1).rgb, t < 0.5 ? 2.0 * t : 2.0 * t - 1.0);
 }
 
 Ground groundOn(float k, vec2 p, float footprint) {
@@ -279,31 +311,57 @@ Ground groundOn(float k, vec2 p, float footprint) {
     float most = texture(ndviMax, vec3(uv, k)).r;
     barren = most > 0.5 / 255.0 ? 1.0 - smoothstep(0.15, 0.35, (most * 255.0 - 1.0) / 127.0 - 1.0) : 0.0;
   }
-  // The four classes around p, each through its ramp, blended as a bilinear sample would be. A
-  // wobble of up to half a texel turns WorldCover's 10 m stairs into brush edges.
+  // Rock where the satellite sees green is a ledge of turf.
+  float ledge = smoothstep(0.35, 0.6, ndvi);
+  // The four texels around p, each its material through its region's rules, blended as a bilinear
+  // sample would be. A wobble of up to half a texel turns WorldCover's 10 m stairs into brush edges.
   vec2 texel = uv * 1024.0 - 0.5;
   vec2 brushed = texel + 0.45 * (vec2(noise(texel * 0.7), noise(texel * 0.7 + 31.0)) * 2.0 - 1.0);
   ivec2 corner = ivec2(floor(brushed));
   vec2 f = brushed - floor(brushed);
   vec3 palette = vec3(0.0);
+  vec4 paint = vec4(0.0);
+  vec3 stone = vec3(0.0);
   float water = 0.0;
   float tree = 0.0;
   float rough = 0.0;
+  float moor = 0.0;
+  float bare = 0.0;
+  float banded = 0.0;
+  float hardness = 0.0;
+  int region = 0;
+  float nearest = 0.0;
   for (int j = 0; j < 4; j++) {
     ivec2 o = ivec2(j & 1, j >> 1);
-    vec2 cls = texelFetch(classes, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).rg;
-    int index = int(cls.r * 255.0 + 0.5);
-    // Unknown ground is painted as grass. Where the satellite looks, its snow test decides snow.
-    if (index > 10) index = 2;
-    if (index == 6 && seen) index = 5;
+    ivec3 cell = ivec3(texelFetch(ground, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).rgb * 255.0 + 0.5);
+    int own = cell.b;
+    int cover = COVERS[cell.r];
+    // Where the satellite looks, its snow test decides snow.
+    if (cover == COVER_SNOW && seen) cover = COVER_BARE;
     float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-    vec3 c = ramp(index, t);
+    bool open = cover == COVER_SHRUB || cover == COVER_GRASS || cover == COVER_WETLAND || cover == COVER_MOSS;
+    vec3 c = ramp(own, cover, t);
     // Open land no quarter sees green is bare, whatever WorldCover calls it.
-    if (index == 1 || index == 2 || index == 8 || index == 10) c = mix(c, ramp(5, t), barren);
+    if (open && barren > 0.0) c = mix(c, ramp(own, COVER_BARE, t), barren);
+    float turf = ROCKY[cell.r] * ledge;
+    if (turf > 0.0) c = mix(c, ramp(own, COVER_GRASS, t), turf);
+    // The region's paint for the material, where it names one, over the ramp.
+    vec4 named = rule(own, SLOT_MATERIALS + cell.r);
+    vec4 rock = rule(own, SLOT_LITHOLOGIES + cell.g);
     palette += w * c;
-    water += w * cls.g;
-    tree += index == 0 ? w : 0.0;
-    rough += index == 1 || index == 2 || index == 5 || index == 8 || index == 10 ? w : 0.0;
+    paint += w * named.a * (1.0 - turf) * vec4(named.rgb, 1.0);
+    water += cover == COVER_WATER ? w : 0.0;
+    tree += cover == COVER_TREE ? w : 0.0;
+    rough += open || cover == COVER_BARE ? w : 0.0;
+    moor += w * MOOR[cell.r];
+    bare += w * ROCKY[cell.r];
+    stone += w * rock.rgb;
+    banded += w * rock.a;
+    hardness += w * HARDNESS[cell.g];
+    if (w > nearest) {
+      nearest = w;
+      region = own;
+    }
   }
   // OSM water: rivers narrower than a WorldCover pixel, and lakes, as coverage from a finer grid.
   float shore = shoreReach;
@@ -323,48 +381,20 @@ Ground groundOn(float k, vec2 p, float footprint) {
     vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-4));
     albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, snap);
     vec3 refl = pow(s.rgb, vec3(2.2));
-    // Barren ground is as light as the satellite sees it against the place's own barren ground:
-    // pumice light, lava dark.
-    if (barrenMedian > 0.0) albedo *= mix(1.0, clamp(luma(refl) / barrenMedian, 0.6, 1.6), barren);
+    // Barren ground is as light as the satellite sees it against the region's bare_luma: pumice
+    // light, lava dark.
+    float bareLuma = rule(region, SLOT_BEDDING).a;
+    if (bareLuma > 0.0) albedo *= mix(1.0, clamp(luma(refl) / bareLuma, 0.6, 1.6), barren);
     // Snow is as blue as it is red; white marl and gypsum are warmer.
     float bright = smoothstep(0.36, 0.5, min(refl.r, min(refl.g, refl.b))) * smoothstep(0.9, 0.97, refl.b / max(refl.r, 1e-3));
     float shaded = step(1.15 * refl.r, refl.b) * step(ndvi, 0.1) * smoothstep(0.03, 0.06, refl.b);
     snow = max(bright, shaded) * (1.0 - water);
   }
-  // Moor against pasture: heath and bog reflect as much red as green, grazed grass far more green.
-  float moor = 0.0;
-  if (seen && moorOn > 0.0) {
-    vec3 refl = pow(s.rgb, vec3(2.2));
-    moor = rough * (1.0 - water) * (1.0 - smoothstep(1.1, 1.4, refl.g / max(refl.r, 1e-4)));
-    albedo = mix(albedo, moorColour, moor);
-  }
-  // A fine land cover map, where the bake has one, paints its habitats in the kit's colours over
-  // the palette, blended across texels like the classes; heath and bog are its moor.
-  float bare = 0.0;
-  if (k < habitatLevels) {
-    vec4 paint = vec4(0.0);
-    float mapped = 0.0;
-    float wild = 0.0;
-    for (int j = 0; j < 4; j++) {
-      ivec2 o = ivec2(j & 1, j >> 1);
-      int code = int(texelFetch(habitatMap, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).r * 255.0 + 0.5);
-      float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-      // Mapped rock is crag and grass ledges together: where the satellite sees green, a ledge.
-      float ledge = code == 1 ? smoothstep(0.35, 0.6, ndvi) : 0.0;
-      paint += w * habitatPaint[code].a * (1.0 - ledge) * vec4(habitatPaint[code].rgb, 1.0);
-      mapped += code > 0 ? w : 0.0;
-      wild += code == 2 || code == 3 ? w : 0.0;
-      bare += code == 1 ? w : 0.0;
-    }
-    albedo = mix(albedo, paint.rgb / max(paint.a, 1e-4), paint.a * (1.0 - water));
-    moor = mix(moor, wild, mapped);
-    // The map knows open ground from wood better than WorldCover's 10 m pixels.
-    tree *= 1.0 - mapped;
-  }
+  albedo = mix(albedo, paint.rgb / max(paint.a, 1e-4), paint.a * (1.0 - water));
 
   // A road paints where the distance to the nearest road edge is negative; the distance is linear
   // across an edge, so filtering keeps the edge sharp to a pixel. Its surface comes from the four
-  // codes around p, blended like the classes, so roads of two kinds meet without a seam. Unpaved
+  // codes around p, blended like the materials, so roads of two kinds meet without a seam. Unpaved
   // edges fray into the ground.
   float road = 0.0;
   if (k < roadLevels) {
@@ -402,7 +432,8 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water));
+  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water),
+                stone, banded, hardness, float(region));
 }
 
 /** The level whose pixel matches the screen footprint at p, with the fraction toward the next. */
@@ -423,7 +454,8 @@ Ground groundAt(vec2 p, float footprint) {
   Ground b = groundOn(k + 1.0, p, footprint);
   return Ground(mix(a.albedo, b.albedo, w), mix(a.water, b.water, w), mix(a.tree, b.tree, w), mix(a.snow, b.snow, w),
                 mix(a.road, b.road, w), mix(a.shore, b.shore, w), mix(a.exposure, b.exposure, w), mix(a.rough, b.rough, w), mix(a.lush, b.lush, w),
-                mix(a.moor, b.moor, w), mix(a.bare, b.bare, w), mix(a.barren, b.barren, w));
+                mix(a.moor, b.moor, w), mix(a.bare, b.bare, w), mix(a.barren, b.barren, w), mix(a.stone, b.stone, w), mix(a.banded, b.banded, w),
+                mix(a.hardness, b.hardness, w), w < 0.5 ? a.region : b.region);
 }
 `;
 
@@ -569,26 +601,10 @@ uniform float curvature;
 ${SHADE}
 ${COLOUR}
 uniform sampler2DArray normals;
-uniform vec3 rock;
-// Below this altitude the satellite's white is rock, spray or cloud, not snow (off season).
-uniform float snowline;
-// Cliff walls, where no geological map gives the rock's colour.
-uniform vec3 cliffRock;
 uniform vec3 seaDeep;
 uniform vec3 seaShallow;
-uniform vec3 heather;
-uniform float heatherShare;
-uniform vec3 speckleColour;
-// Share of open ground under scattered bushes, and their size in metres.
-uniform vec2 speckle;
-uniform float outcrops;
-uniform vec3 bedding;
 uniform float time;
-uniform sampler2DArray rockMap;
-uniform float rockLevels;
 uniform vec3 variegated[3];
-// The cosine of the steepest slope green turf holds: the region's turf_deg.
-uniform float turf;
 // A false-colour view of one input, 0 for the painted ground (DEBUG_VIEWS in main.ts).
 uniform int debugView;
 
@@ -636,27 +652,27 @@ vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
   return normalize(vec3(-slope.rg, 1.0));
 }
 
-// WorldCover's legend, and one colour per habitat (HABITATS in bake.ts), in sRGB.
-const vec3 CLASS_KEY[11] = vec3[](vec3(0.0, 0.39, 0.0), vec3(1.0, 0.73, 0.13), vec3(1.0, 1.0, 0.3), vec3(0.94, 0.59, 1.0),
-  vec3(0.98, 0.0, 0.0), vec3(0.71), vec3(0.94), vec3(0.0, 0.39, 0.78), vec3(0.0, 0.59, 0.63), vec3(0.0, 0.81, 0.46), vec3(0.98, 0.9, 0.63));
-const vec3 HABITAT_KEY[13] = vec3[](vec3(0.2), vec3(0.7), vec3(0.55, 0.25, 0.5), vec3(0.55, 0.4, 0.2), vec3(0.8, 0.5, 0.1),
-  vec3(0.75, 0.75, 0.3), vec3(0.3, 0.85, 0.2), vec3(0.1, 0.45, 0.1), vec3(0.0, 0.3, 0.15), vec3(1.0, 0.9, 0.6),
-  vec3(0.4, 0.7, 0.6), vec3(0.95, 0.1, 0.1), vec3(0.1, 0.3, 0.9));
+// One colour per material, in its cover's WorldCover legend colour, in sRGB.
+const vec3 MATERIAL_KEY[${MATERIALS.length}] = vec3[](${MATERIAL_KEY.map((c) => `vec3(${c.map((v) => v.toFixed(3)).join(', ')})`).join(', ')});
 const vec3 UNKNOWN = vec3(0.45, 0.45, 0.6);
 
+// A distinct colour for each code, by the golden angle round the hue circle.
+vec3 key(int code) {
+  float h = fract(float(code) * 0.618034);
+  return 0.15 + 0.75 * clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+}
+
 /**
- * The debug views, in sRGB: 1 WorldCover class; 2 NDVI red, its annual max green; 3 barren orange;
- * 4 steep red, skirt blue; 5 habitat; 6 snow white, red below the snowline; 7 water, pale at the
- * shore. Blue-grey where the bake has no such level.
+ * The debug views, in sRGB: 1 material; 2 NDVI red, its annual max green; 3 barren orange; 4 steep
+ * red, skirt blue; 5 lithology, unknown blue-grey; 6 snow white, red below the snowline; 7 water,
+ * pale at the shore; 8 region. Blue-grey where the bake has no such level.
  */
-vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, float altitude) {
+vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, float altitude, float snowline) {
   float k = floor(groundLevel(p, footprint));
   vec2 uv = uvOn(k, p);
   ivec3 texel = ivec3(clamp(ivec2(floor(uv * 1024.0)), ivec2(0), ivec2(1023)), int(k));
-  if (debugView == 1) {
-    int index = int(texelFetch(classes, texel, 0).r * 255.0 + 0.5);
-    return index > 10 ? UNKNOWN : CLASS_KEY[index];
-  }
+  ivec3 cell = ivec3(texelFetch(ground, texel, 0).rgb * 255.0 + 0.5);
+  if (debugView == 1) return MATERIAL_KEY[cell.r];
   if (debugView == 2) {
     float now = k < s2Levels ? texture(s2, vec3(uv, k)).a : 0.0;
     float most = k < ndviMaxLevels ? texture(ndviMax, vec3(uv, k)).r : 0.0;
@@ -665,8 +681,9 @@ vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, fl
   }
   if (debugView == 3) return k < ndviMaxLevels ? mix(vec3(0.15, 0.4, 0.15), vec3(1.0, 0.55, 0.1), g.barren) : UNKNOWN;
   if (debugView == 4) return mix(mix(vec3(0.2, 0.35, 0.2), vec3(1.0, 0.25, 0.1), steep), vec3(0.2, 0.4, 1.0), skirt);
-  if (debugView == 5) return k < habitatLevels ? HABITAT_KEY[int(texelFetch(habitatMap, texel, 0).r * 255.0 + 0.5)] : UNKNOWN;
+  if (debugView == 5) return cell.g == 0 ? UNKNOWN : key(cell.g);
   if (debugView == 6) return vec3(0.15) + 0.85 * vec3(g.snow, vec2(g.snow * smoothstep(snowline - 200.0, snowline, altitude)));
+  if (debugView == 8) return key(cell.b);
   return mix(vec3(0.3, 0.27, 0.22), mix(vec3(0.6, 0.95, 1.0), vec3(0.05, 0.2, 0.65), smoothstep(0.0, 100.0, g.shore)), g.water);
 }
 
@@ -678,6 +695,10 @@ void main() {
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
   Ground g = groundAt(vWorld.xy, footprint);
+  int region = int(g.region);
+  // outcrops, cos turf_deg, snowline, speckle size
+  vec4 terrain = rule(region, SLOT_TERRAIN);
+  vec3 bedding = rule(region, SLOT_BEDDING).xyz;
   // Where the mesh slopes far more steeply than the finest ground, or stands well above water, it
   // is a slope the mesh smoothed out of detail finer than its triangles, as at a sea cliff's foot a
   // kilometre off: it is cliff, lit like the cliff beside it, not the flat sea under it. Over land
@@ -701,28 +722,23 @@ void main() {
     n = normalize(mix(n, coarse, towards));
     open = mix(open, coarseOpen, towards);
   }
-  // Steep open ground is rock, banded in strata by height; trees and roads hold on to it. Where
-  // the geological map reaches, the rock takes its unit's colour. Variegated clays erode into
-  // badlands, so their beds show on gentler slopes: red, white and green-grey, streaked by gullies.
-  // Above sea level, so strata, spray and sea do not move with the eye.
+  // Steep open ground is rock, banded in strata by height; trees and roads hold on to it. The rock
+  // takes its lithology's colour. Variegated clays erode into badlands, so their beds show on
+  // gentler slopes: red, white and green-grey, streaked by gullies. Above sea level, so strata,
+  // spray and sea do not move with the eye.
   float altitude = eyeAltitude + vWorld.z + curvature * dot(vWorld.xy, vWorld.xy);
   // Strata follow the bedding planes: level where the kit gives none, tilted where it does.
   float bed = dot(vec3(vWorld.xy, altitude), bedding);
   vec2 strike = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) * 1.4142 : vec2(1.0);
   float strata = 0.86 + 0.22 * noise(vec2(bed / 9.0, dot(vWorld.xy, strike) / 120.0));
-  vec3 stone = rock;
-  float banded = 0.0;
-  // How hard the rock stands, 0 to 1, from the geological map; 0.5 without one.
-  float hardness = 0.5;
-  float kr = floor(max(levelOf(vWorld.xy), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))));
-  if (kr < rockLevels) {
-    vec4 unit = texture(rockMap, vec3(uvOn(kr, vWorld.xy), kr));
+  float banded = g.banded;
+  float hardness = g.hardness;
+  vec3 stone = g.stone;
+  if (banded > 0.0) {
     float across = (vWorld.x - vWorld.y) * 0.7071;
     float layer = 0.7 * noise(vec2(altitude / 4.0, across / 400.0)) + 0.3 * noise(vec2(across / 2.5, altitude / 30.0));
     vec3 beds = mix(mix(variegated[0], variegated[1], smoothstep(0.48, 0.53, layer)), variegated[2], smoothstep(0.58, 0.63, layer));
-    banded = step(0.9, unit.a);
-    hardness = banded > 0.5 ? 0.1 : unit.a * (255.0 / 200.0);
-    stone = mix(unit.rgb, beds, banded);
+    stone = mix(stone, beds, banded);
   }
   // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
   // bare only where they are near cliffs.
@@ -730,10 +746,10 @@ void main() {
   // Where the satellite sees green, a steep slope is turf and scrub on the rock up to the region's
   // turf angle at least: Atlantic headlands stay green to the cliff edge.
   float green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
-  bareFrom = mix(bareFrom, min(bareFrom, turf), green);
+  bareFrom = mix(bareFrom, min(bareFrom, terrain.y), green);
   float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
   if (debugView > 0) {
-    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt, altitude) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
+    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt, altitude, terrain.z) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
     return;
   }
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
@@ -750,27 +766,29 @@ void main() {
   }
   // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond,
   // denser in some stretches than others.
-  if (speckle.x > 0.0) {
+  vec4 speckle = rule(region, SLOT_SPECKLE);
+  if (speckle.a > 0.0) {
     // Near the eye the pack's own bushes stand there instead. Slopes facing north (here, the
     // northern hemisphere) stay moister and carry more scrub than slopes facing the sun.
-    float cover = speckle.x * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0))
+    float cover = speckle.a * g.rough * (1.0 - g.road) * (0.6 + 0.8 * noise(vWorld.xy / 90.0))
       * (1.0 + clamp(3.0 * n.y, -0.3, 0.6))
       * smoothstep(40.0, 70.0, length(vWorld.xy - cameraPosition.xy));
     // One round bush in a share of the cells, so bushes stand apart rather than merging.
-    vec3 bush = cells(vWorld.xy, speckle.y);
+    vec3 bush = cells(vWorld.xy, terrain.w);
     float dots = step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y);
-    albedo = mix(albedo, speckleColour, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * speckle.y, 0.1 * speckle.y, surfaceSize)));
+    albedo = mix(albedo, speckle.rgb, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * terrain.w, 0.1 * terrain.w, surfaceSize)));
   }
   // Heather in patches over the moor.
   float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
-  albedo = mix(albedo, heather, g.moor * (1.0 - g.road) * smoothstep(1.0 - heatherShare, 1.1 - heatherShare, patches));
+  vec4 heather = rule(region, SLOT_HEATHER);
+  albedo = mix(albedo, heather.rgb, g.moor * (1.0 - g.road) * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
   // Rock slabs break through open ground on slopes, ridges and poor grass: cells about 9 m across,
   // each rock or turf, with turf between slabs and a dark rim round each. Too small to see past a
   // few metres a pixel, they become their share of rock colour.
-  float rocky = outcrops * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
+  float rocky = terrain.x * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor + 0.8 * (hardness - 0.5) - 0.3, 0.0, 1.0)
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness) * (1.0 - 0.7 * green);
-  // Mapped exposed rock is outcrops in turf, about a third rock.
+  // Exposed rock is outcrops in turf, about a third rock.
   rocky = max(rocky, 0.35 * g.bare);
   // Slab cells only where a pixel can show them; past that, rock is its share of colour.
   if (rocky > 0.0 && footprint >= 4.0) albedo = mix(albedo, stone * 0.92, 0.45 * rocky);
@@ -784,7 +802,7 @@ void main() {
     vec3 cell = cells(vec2(dot(q, along) / ribs, dot(q, vec2(-along.y, along.x))), 7.0);
     float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y);
     vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
-    // Close by, mapped bare rock is gravel between the slabs; the stones on it are models.
+    // Close by, exposed rock is gravel between the slabs; the stones on it are models.
     if (g.bare > 0.0 && footprint < 0.5) {
       float grit = 0.78 + 0.3 * noise(vWorld.xy / 0.35) + 0.12 * noise(vWorld.xy / 2.5);
       float close = g.bare * (1.0 - slab) * (1.0 - smoothstep(0.2, 0.5, footprint));
@@ -798,9 +816,10 @@ void main() {
     n = normalize(n + vec3(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
   // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°, so a
-  // cinder cone is no cliff; walls past about 47° are rock. Sea cliffs: wet and dark where the
-  // waves reach, orange lichen in the spray above.
-  vec3 face = mix(rockLevels > 0.0 ? stone : cliffRock, g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
+  // cinder cone is no cliff; walls past about 47° are rock, in the region's cliff colour where it
+  // names one. Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
+  vec4 wall = rule(region, SLOT_CLIFF);
+  vec3 face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
   // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
   // cliff reads; they fade where a pixel spans a bed.
   float along = dot(vWorld.xy, strike);
@@ -812,8 +831,8 @@ void main() {
   face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
     * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
   albedo = mix(albedo, face, steep * (1.0 - g.tree) * (1.0 - g.road));
-  float snow = g.snow * smoothstep(snowline - 200.0, snowline, altitude);
-  albedo = mix(albedo, ramps[18], snow) * (1.0 - 0.3 * wet * (1.0 - snow));
+  float snow = g.snow * smoothstep(terrain.z - 200.0, terrain.z, altitude);
+  albedo = mix(albedo, rule(region, COVER_SNOW * 3).rgb, snow) * (1.0 - 0.3 * wet * (1.0 - snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   vec3 c = lightUp(albedo, n, shadow, open);
 
@@ -860,9 +879,7 @@ ${MESH_LEVEL}
 ${COLOUR}
 // How far a model takes its colour from the ground under it: 0 for trees.
 uniform float tie;
-// Plants that grow only on moor (1) or only off it (-1); 0 grows anywhere.
-uniform float habitat;
-// What a model's colours are multiplied by: rocks take the region's rock colour.
+// What a model's colours are multiplied by: rocks take the colour of the rock they lie on.
 uniform vec3 recolour;
 in vec3 color;
 // x, y, height, heading.
@@ -882,12 +899,10 @@ void main() {
   vAlbedo = color * tint * recolour;
   // A plant takes its hue from the ground it stands on, so a meadow of tufts reads as the meadow;
   // its own colour keeps only the shading from root to tip.
-  if (tie > 0.0 || habitat != 0.0) {
+  if (tie > 0.0) {
     Ground g = groundAt(p, 0.5);
     // Shaded from root to tip around the ground's own brightness, never much brighter than it.
     vAlbedo = mix(vAlbedo, g.albedo * clamp(luma(color) / 0.3, 0.5, 1.2) * tint, tie);
-    // Off its habitat a plant folds to a point under the ground.
-    if (moorOn > 0.0 && habitat * (g.moor - 0.5) < 0.0) vWorld = vec3(p, vWorld.z - 50.0);
   }
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }

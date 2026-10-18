@@ -26,9 +26,9 @@
   "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 10], "on": ["pasture", "rough"] },
-  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough"] },
-  "goat": { "groups": 1, "size": [2, 8], "on": ["scrub", "rock"] }
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "goat": { "groups": 1, "size": [2, 8], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "style": "village-house"
 }

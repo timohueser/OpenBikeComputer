@@ -10,7 +10,7 @@
  * regions/, packs/, styles/ and spots/ against them: npm run check runs it, and the page at load.
  */
 
-import { HABITATS, type Habitat } from './bake';
+import { COVER_ORDER, LITHOLOGIES, MATERIALS, vocabularyProblems } from './materials';
 import type { BuildingStyle } from './models/buildings';
 import { ANIMALS, COVERS, PLANTS, TREES, type Ground } from './models/library';
 import { SEASONS, type Season } from './models/trees';
@@ -100,18 +100,19 @@ const GROUND = object({
   model: text, latin: text, on: list(oneOf(...COVERS)), height: span(number(0, 50)), share: number(0, 1),
   habitat: oneOf('moor', 'lush'), own: oneOf(true), clumped: oneOf(true),
 });
-const HERD = object({ model: text, latin: text, groups: number(1, 100), size: span(number(1, 1000), true), on: list(oneOf(...HABITATS)) });
+const HERD = object({ model: text, latin: text, groups: number(1, 100), size: span(number(1, 1000), true), on: list(oneOf(...MATERIALS)) });
 
-const RAMP_CLASSES = ['shrub', 'grass', 'crop', 'bare', 'built', 'moss', 'needle', 'broad'] as const;
+/** A ramp per cover, woodland's by its leaf. */
+const RAMP_COVERS = [...COVER_ORDER.filter((cover) => cover !== 'tree'), 'needle', 'broad'] as const;
 export type Ramp = [string, string, string];
 /**
- * Low to high NDVI per WorldCover class; `needle` and `broad` colour woodland by its leaf. A class
- * holds one ramp for the year or one per season, as winter-green Mediterranean hills need; a season
- * it leaves out keeps palette.ts's.
+ * Low to high NDVI per cover; `needle` and `broad` colour woodland by its leaf. A cover holds one
+ * ramp for the year or one per season, as winter-green Mediterranean hills need; a season it
+ * leaves out keeps palette.ts's.
  */
-type Ramps = Partial<Record<(typeof RAMP_CLASSES)[number], Ramp | Partial<Record<Season, Ramp>>>>;
+type Ramps = Partial<Record<(typeof RAMP_COVERS)[number], Ramp | Partial<Record<Season, Ramp>>>>;
 const RAMP = list(colour, 3);
-const RAMPS = each(RAMP_CLASSES, (v, p) => (Array.isArray(v) ? RAMP(v, p) : each(SEASONS, RAMP)(v, p)));
+const RAMPS = each(RAMP_COVERS, (v, p) => (Array.isArray(v) ? RAMP(v, p) : each(SEASONS, RAMP)(v, p)));
 
 /** How the ground, sea and air read in a region. */
 export interface RegionLook {
@@ -125,28 +126,32 @@ export interface RegionLook {
   /** Width of the steps between the three light bands, and the share of smooth light kept. */
   softness: number;
   gradient: number;
-  /** Ramps that replace palette.ts's for these WorldCover classes. A class's value replaces its parent's whole. */
+  /** Ramps that replace palette.ts's for these covers. A cover's value replaces its parent's whole. */
   ramps?: Ramps;
-  /**
-   * Moorland: open ground that Sentinel-2 sees brown rather than green, painted in its own
-   * colour with heather patches over a share of it. Heather plants grow there and grass does not.
-   */
-  moor?: { colour: string; heather: string; share: number };
+  /** Heather in patches over a share of the heath and bog. With it, moor plants grow there and lush ones do not. */
+  moor?: { heather: string; share: number };
   /**
    * Scattered bushes on open ground, too small for WorldCover: their colour, the share of ground
    * they cover, and their size in metres. Far off they become their share of colour.
    */
   speckle?: { colour: string; share: number; size_m: number };
-  /** Colours for the habitats of a fine land cover map, where the bake has one; others keep the palette. */
-  habitats?: Partial<Record<Habitat, string>>;
+  /** A colour per material (materials.json), painted over its cover's ramp; a material without one keeps the ramp. */
+  materials?: Partial<Record<string, { colour: string }>>;
+  /** A colour per lithology for slabs, crags and cliffs, drawn in red, white and green beds where `banded`. */
+  lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
   /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */
   outcrops: number;
   /** Where the satellite sees green, a slope stays turf up to this many degrees; rock that holds steeper keeps its own angle. */
   turf_deg: number;
-  /** Slabs and outcrops, and cliff walls unless `cliff` says otherwise. */
+  /** Rock of an unknown lithology. */
   rock: string;
-  /** Cliff walls: often darker than sunlit slabs, shaded, wet and lichened. */
+  /** Cliff walls, whatever their rock: often darker than sunlit slabs, shaded, wet and lichened. */
   cliff?: string;
+  /**
+   * The luma of the satellite's barren ground against which bare ground is lighter or darker, one
+   * for the year or one per quarter; without it, bare ground keeps the palette's brightness.
+   */
+  bare_luma?: number | [number, number, number, number];
   /** Out of winter, snow lies only above this altitude; below it a white pixel is rock or spray. */
   snowline: number;
   /** The rock's bedding planes in degrees, so cliffs and slabs show their strata as they lie. */
@@ -174,9 +179,11 @@ const WEATHER = object({
 const LOOK = object({
   snap: number(0, 1), hazeKm: number(1, 500), hazeHeight: number(100, 20_000), mistTop: number(0, 5000),
   softness: number(0, 1), gradient: number(0, 1), ramps: RAMPS,
-  moor: object({ colour, heather: colour, share: number(0, 1) }),
+  moor: object({ heather: colour, share: number(0, 1) }),
   speckle: object({ colour, share: number(0, 1), size_m: number(0, 50) }),
-  habitats: each(HABITATS, colour), outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
+  materials: each(MATERIALS, object({ colour })), lithology: each(LITHOLOGIES.slice(1), object({ colour, banded: oneOf(true) })),
+  bare_luma: (v, p) => (Array.isArray(v) ? list(number(0, 1), 4)(v, p) : number(0, 1)(v, p)),
+  outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
   snowline: number(0, 9000), bedding: object({ strike: number(0, 360), dip: number(0, 90) }), roads: list(colour, 6),
   roadLine: byPlace(colour), sea: object({ deep: colour, shallow: colour }), windswept_m: number(0, 5000), swell: number(0, 360),
   grade: object({ shadow: list(number(-0.1, 0.1), 3), light: list(number(-0.1, 0.1), 3), saturation: number(0, 3) }),
@@ -200,8 +207,8 @@ export interface Pack {
   houses?: BuildingStyle;
   /** The tree that stands in OSM orchards; without one, the pack's broadleaves do. */
   orchard?: string;
-  /** Herds near the eye: how many groups of how many, on which habitats (on WorldCover grass without a map). */
-  herds: { id: string; animal: string; groups: number; size: [number, number]; on: Habitat[] }[];
+  /** Herds near the eye: how many groups of how many, on which materials. */
+  herds: { id: string; animal: string; groups: number; size: [number, number]; on: string[] }[];
 }
 
 const PACK = object({
@@ -341,7 +348,7 @@ function outside(polygons: [number, number][][][], lon: number, lat: number): nu
 
 /** Every problem in the data files, one line each: the file, the key path and what is wrong. */
 export function validate(): string[] {
-  const out: string[] = [];
+  const out: string[] = vocabularyProblems();
   const add = (file: string, problems: string[]) => out.push(...problems.map((problem) => `${file}: ${problem}`));
   const short = (name: unknown) => String(name).split('.')[0];
 

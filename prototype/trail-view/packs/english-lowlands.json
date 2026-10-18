@@ -35,10 +35,10 @@
   "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
  },
  "herds": {
-  "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "rough", "heath"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [5, 20], "on": ["pasture", "rough"] },
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 1, "size": [10, 40], "on": ["pasture"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [1, 6], "on": ["pasture", "heath"] }
+  "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 1, "size": [10, 40], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable", "heath"] }
  },
  "orchard": "hawthorn",
  "style": "house"
