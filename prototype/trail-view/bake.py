@@ -294,23 +294,25 @@ ROCK_WORDS = {
 }
 VARIEGATED, VARIEGATED_AFTER = "abigarrad", 3
 # Ireland's National Land Cover Map 2018, mapped from 1 m imagery to 0.05 ha: the feature service,
-# and its LEVEL_2_VALUE words for each material, the first match winning.
+# and its LEVEL_2_VALUE words for each material, the first match winning. Its buildings, ways and
+# artificial surfaces name no material: OSM draws the houses and roads, and the polygons hold their
+# verges and yards.
 NLCM = ("https://services-eu1.arcgis.com/FH5XCsx8rYXqnjF5/arcgis/rest/services/MapGenieNationalLandCover2018ITM/FeatureServer/0",
         "National Land Cover Map 2018 © Tailte Éireann and EPA, CC BY 4.0")
 NLCM_WORDS = [("exposed rock", "bare-rock"), ("heath", "heath"), ("bog", "bog"), ("peat", "bog"), ("fen", "marsh"),
               ("swamp", "marsh"), ("bracken", "bracken"), ("wet grassland", "wet-grassland"), ("dry grassland", "rough-grass"),
               ("improved grassland", "pasture"), ("amenity grassland", "pasture"), ("scrub", "scrub"),
               ("transitional forest", "scrub"), ("hedgerow", "hedge"), ("treeline", "hedge"), ("sand", "sand"),
-              ("coastal sediments", "beach"), ("mudflat", "sand"), ("saltmarsh", "salt-marsh"), ("artificial", "built-up"),
-              ("buildings", "built-up"), ("ways", "built-up"), ("bare soil", "bare-soil")]
+              ("coastal sediments", "beach"), ("mudflat", "sand"), ("saltmarsh", "salt-marsh"), ("bare soil", "bare-soil")]
 # NatureScot's Habitat Map of Scotland, without overlaps or mosaics, over WFS; its EUNIS codes for
-# each material, the longest matching prefix winning. Woodland keeps WorldCover's trees.
+# each material, the longest matching prefix winning. Woodland keeps WorldCover's trees; constructed
+# ground (J) names no material, as NLCM's does not.
 HABMOS = ("https://ogc.nature.scot/geoserver/ows", "habitatsandspecies:habmosnvccleaned",
           "Contains NatureScot information licensed under the Open Government Licence v3.0")
 HABMOS_CODES = {"F4": "heath", "F2": "heath", "D1": "bog", "D2": "bog", "D4": "marsh", "H2": "scree", "H3": "bare-rock",
                 "B3": "bare-rock", "E5.3": "bracken", "E5": "rough-grass", "E1": "rough-grass", "E3": "wet-grassland",
                 "E4": "rough-grass", "E2": "pasture", "I": "pasture", "F3": "scrub", "F9": "scrub", "G5": "scrub", "B1": "sand",
-                "A2.5": "salt-marsh", "J": "built-up"}
+                "A2.5": "salt-marsh"}
 
 # OSM features near the eye: walls and hedges within WALL_HALF_M, cut into pieces of at most
 # WALL_PIECE_M so each stands on the ground; orchard trees in rows ORCHARD_SPACING_M apart.
