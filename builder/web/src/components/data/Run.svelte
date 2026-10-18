@@ -118,7 +118,7 @@
 
     {#if view.phases.length}<Phases entered={view.phases} />{/if}
 
-    <Timeline {view} {now} cores={status?.machine.cores ?? null} />
+    <Timeline {view} {now} />
 
     {#if live && status}
         {@const machine = status.machine}

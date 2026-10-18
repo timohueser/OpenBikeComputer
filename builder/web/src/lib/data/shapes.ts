@@ -246,7 +246,9 @@ export interface RunView extends RunSummary {
         source: string;
         version: string;
         params: [string, string][];
-        started?: string | null;
+        /** When it started and ended, in milliseconds after the start of the run. */
+        start_ms?: number | null;
+        end_ms?: number | null;
         bytes: number | null;
         wall_ms: number | null;
         error: string | null;
@@ -270,11 +272,11 @@ export interface RunStep {
     layer: string;
     reused: boolean;
     unchanged: boolean;
-    /** `null` for a step that the run did not start, such as an unchanged one. */
-    started?: string | null;
+    /** When it started and when it finished or failed, in milliseconds after the start of the run.
+     *  An unchanged step does not start. */
+    start_ms?: number | null;
+    end_ms?: number | null;
     wall_ms: number | null;
-    /** The CPU time of its build in this run; `null` when it did not build. */
-    cpu_ms?: number | null;
     peak_rss_bytes: number | null;
     bytes_out: number | null;
     error: string | null;

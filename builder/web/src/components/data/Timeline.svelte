@@ -4,7 +4,7 @@
 
     // The run on a clock: its phases, then one row for each fetch or step that ran beside another.
     // A run that bakes one step at a time has one row.
-    let { view, now, cores }: { view: RunView; now: number; cores: number | null } = $props();
+    let { view, now }: { view: RunView; now: number } = $props();
 
     const ROW = 14;
     const GAP = 2;
@@ -14,10 +14,10 @@
     const LABEL = 6.4; // px per character of a bar label
     const EVERY = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720].map((minutes) => minutes * 60_000);
     const COLOUR: Record<Bar["kind"], string> = {
-        fetch: "var(--ink-faint)",
+        fetch: "var(--amber)",
         device: "var(--water)",
-        planner: "var(--forest)",
-        other: "var(--wood)",
+        planner: "var(--route)",
+        other: "var(--ink-faint)",
     };
     const KIND: Record<Bar["kind"], string> = { fetch: "fetch", device: "device step", planner: "planner step", other: "other step" };
 
@@ -26,9 +26,12 @@
     const t0 = $derived(Date.parse(view.started));
     const height = $derived(BAND + Math.max(t.lanes, 1) * (ROW + GAP) + AXIS);
     const x = (ms: number) => PAD + (ms / Math.max(t.span, 1)) * Math.max(width - 2 * PAD, 1);
+    // Ticks on whole minutes or hours of the local clock, at least 64 px apart.
     const ticks = $derived.by(() => {
-        const every = EVERY.find((step) => (t.span / step) * 64 <= width) ?? EVERY[EVERY.length - 1];
-        return Array.from({ length: Math.floor(t.span / every) + 1 }, (_, i) => i * every);
+        const every = EVERY.find((step) => (t.span / step) * 64 <= width) ?? Math.ceil((t.span * 64) / Math.max(width, 1) / 3_600_000) * 3_600_000;
+        const local = -new Date(t0).getTimezoneOffset() * 60_000;
+        const first = Math.ceil((t0 + local) / every) * every - local - t0;
+        return Array.from({ length: Math.max(0, Math.floor((t.span - first) / every) + 1) }, (_, i) => first + i * every);
     });
     const phases = $derived(
         view.phases.map((phase, i) => ({
@@ -39,10 +42,7 @@
     );
     const at = (ms: number) => clock(new Date(t0 + ms).toISOString());
     const fill = (bar: Bar) => (bar.state === "running" ? "var(--running)" : bar.state === "failed" ? "var(--missing)" : COLOUR[bar.kind]);
-    const tip = (bar: Bar) =>
-        `${bar.name} · ${at(bar.start)}–${at(bar.end)} · ${span(bar.end - bar.start)}` +
-        (bar.cores === null ? "" : ` · ${bar.cores.toFixed(1)} cores`) +
-        (bar.state === "done" ? "" : ` · ${bar.state}`);
+    const tip = (bar: Bar) => `${bar.name} · ${at(bar.start)}–${at(bar.end)} · ${span(bar.end - bar.start)}${bar.state === "done" ? "" : ` · ${bar.state}`}`;
     /** The longest end of `name`, in whole path parts, that fits in `px`, such as `0037-0033`. */
     const fit = (name: string, px: number) =>
         name
@@ -50,8 +50,7 @@
             .map((_, i, parts) => parts.slice(i).join("/"))
             .find((label) => label.length * LABEL + 8 <= px);
     const steps = $derived(t.bars.filter((bar) => bar.kind !== "fetch").length);
-    const used = $derived(t.busy_ms > 0 && cores ? ` · ${(t.cpu_ms / t.busy_ms).toFixed(1)} of ${cores} cores busy` : "");
-    const summary = $derived(`${steps} ${steps === 1 ? "step" : "steps"} · at most ${t.lanes} at a time${used}`);
+    const summary = $derived(`${steps} ${steps === 1 ? "step" : "steps"} · at most ${t.lanes} at a time`);
     const legend = $derived([
         ...(["device", "planner", "other", "fetch"] as const).filter((kind) => t.bars.some((bar) => bar.kind === kind && bar.state === "done")).map((kind) => ({ label: KIND[kind], colour: COLOUR[kind] })),
         ...(t.bars.some((bar) => bar.state === "running") ? [{ label: "running", colour: "var(--running)" }] : []),
@@ -59,7 +58,7 @@
     ]);
 </script>
 
-{#if t.bars.length || phases.length}
+{#if t.bars.length}
     <section class="card" aria-labelledby="timeline">
         <div class="title">
             <h2 id="timeline">Timeline</h2>
@@ -75,7 +74,7 @@
                 <svg {width} {height} role="img" aria-label="{view.phases.length} phases and {summary}, from {at(0)} to {at(t.span)}">
                     {#each ticks as tick (tick)}
                         <line class="tick" x1={x(tick)} x2={x(tick)} y1={BAND - 4} y2={height - AXIS + 4} />
-                        <text class="tick-label" x={x(tick)} y={height - 6} text-anchor={tick === 0 ? "start" : "middle"}>{at(tick)}</text>
+                        <text class="tick-label" x={x(tick)} y={height - 6} text-anchor={x(tick) < 24 ? "start" : "middle"}>{at(tick)}</text>
                     {/each}
                     {#each phases as phase (phase.phase)}
                         {@const w = Math.max(x(phase.end) - x(phase.start) - GAP, 1)}
