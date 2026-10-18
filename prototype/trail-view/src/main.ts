@@ -3,20 +3,18 @@ import * as THREE from 'three';
 import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
 import { lightAt, SEASONS } from './light';
-import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
+import { drawCompass } from './overlay';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
 import { regionNamed, validate, type Region } from './regions';
+import { CURVATURE, surface, type Surface } from './surface';
 import { WEATHERS, weatherLight } from './weather';
-import { BINS, CURVATURE, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
 
 const element = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const stage = element('#stage');
 const frame = element('#frame');
 const photo = element<HTMLImageElement>('#photo');
-const lines = element<HTMLCanvasElement>('#lines');
-const labels = element('#labels');
 const compass = element('#compass');
 const status = element('#status');
 
@@ -58,9 +56,6 @@ const state = {
   photoCamera: true,
   /** The reference photograph in a corner of the view. */
   reference: true,
-  photoSkyline: true,
-  castSkyline: true,
-  peaks: true,
   trees: true,
   buildings: true,
   season: 'summer (15 Aug)',
@@ -90,14 +85,12 @@ const DEBUG_VIEWS = {
   water: 7,
 };
 const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
-const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
+const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
   region: Region;
   ground: { dtm: Surface; glo30: Surface };
-  sky: { dtm: Skyline; glo30: Skyline };
-  sighted: Sighted[];
 }
 let loaded: Loaded | null = null;
 
@@ -128,18 +121,12 @@ async function select(id: string): Promise<void> {
   const glo30 = meta.dtm_levels
     ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.size, meta.half0_m, meta.eye_above_ground_m)
     : dtm;
-  const dtmSky = skyline(dtm, meta.size);
-  const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
-  loaded = { bake, region, ground: { dtm, glo30 }, sky, sighted: [] };
+  loaded = { bake, region, ground: { dtm, glo30 } };
   const { snap, hazeKm, hazeHeight, mistTop, softness, gradient } = region.look;
   Object.assign(look, { snap, hazeKm, hazeHeight, mistTop, softness, gradient });
   terrain.setLook(look);
   readout.region = region.chain.join(' › ');
   const shot = meta.photo;
-  const columns = shot?.columns;
-  readout.rmsDtm = columns && meta.dtm_levels ? `${rms(sky.dtm, columns).toFixed(3)}°` : '–';
-  readout.rmsGlo30 = columns ? `${rms(sky.glo30, columns).toFixed(3)}°` : '–';
-  readout.limit = columns ? `${shot!.rms_limit_deg!.toFixed(2)}° (${columns.length} columns)` : '–';
   if (shot) {
     // Only the photograph's size is needed. `decode()` waits for a rendered frame, which a hidden
     // page never gets.
@@ -189,8 +176,6 @@ function surfaceChanged(): void {
   const lift = active(loaded.ground).lift + state.rise;
   terrain.setSurface(glo30Only(), lift, loaded.bake.meta.eye_m + lift);
   readout.eye = `${(loaded.bake.meta.eye_m + lift).toFixed(1)} m`;
-  loaded.sighted = sightedPeaks(loaded.bake.peaks, active(loaded.ground), active(loaded.sky));
-  readout.peaks = `${loaded.sighted.length} of ${loaded.bake.peaks.length} named peaks sighted`;
   layout();
 }
 
@@ -219,8 +204,6 @@ function layout(): void {
   frame.style.width = `${width}px`;
   frame.style.height = `${height}px`;
   renderer.setSize(width, height, false);
-  lines.width = Math.round(width * renderer.getPixelRatio());
-  lines.height = Math.round(height * renderer.getPixelRatio());
   camera.aspect = width / height;
   requestRender();
 }
@@ -243,8 +226,6 @@ function eyeAt(x: number, y: number): THREE.Vector3 {
   if (Number.isNaN(at)) return new THREE.Vector3(x, y, 0);
   return new THREE.Vector3(x, y, at + loaded.bake.meta.eye_above_ground_m - CURVATURE * (x * x + y * y));
 }
-
-const moved = () => state.x !== 0 || state.y !== 0;
 
 function aim(): void {
   const shot = loaded?.bake.meta.photo;
@@ -289,14 +270,7 @@ function render(): void {
   }
   if (WEATHERS[state.weather].rain) renderer.render(terrain.overlay, camera);
   photo.hidden = !state.reference || !photo.naturalWidth;
-  const ctx = lines.getContext('2d')!;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, lines.width, lines.height);
-  ctx.setTransform(renderer.getPixelRatio(), 0, 0, renderer.getPixelRatio(), 0, 0);
-  if (!moved()) drawLines(ctx, camera, lines.clientWidth, lines.clientHeight, skylines(state.castSkyline, state.photoSkyline));
-  if (state.peaks) placeLabels(labels, camera, loaded.sighted);
-  else labels.innerHTML = '';
-  drawCompass(compass, camera, loaded.sighted, state.pitch);
+  drawCompass(compass, camera, state.pitch);
   writeHash();
 }
 
@@ -344,18 +318,6 @@ function startAnimation(): void {
   requestAnimationFrame(animate);
 }
 
-function skylines(cast: boolean, photographed: boolean): Line[] {
-  const shown: Line[] = [];
-  if (!loaded) return shown;
-  if (cast) {
-    const angle = active(loaded.sky).angle;
-    shown.push({ points: Array.from({ length: BINS + 1 }, (_, b) => [(b * 360) / BINS, angle[b % BINS]] as const), colour: '#22e0ff' });
-  }
-  const shot = loaded.bake.meta.photo;
-  if (photographed && shot?.columns) shown.push({ points: shot.columns, colour: '#ff3b30' });
-  return shown;
-}
-
 /** The photograph beside the render from its camera, at the photograph's size, written by the dev server. */
 async function saveSideBySide(): Promise<string | null> {
   if (!loaded?.bake.meta.photo || !photo.naturalWidth) return null;
@@ -371,33 +333,18 @@ async function saveSideBySide(): Promise<string | null> {
   const ctx = out.getContext('2d')!;
   ctx.drawImage(photo, 0, 0, width, height);
   ctx.drawImage(renderer.domElement, width, 0);
-  for (const [left, cast] of [
-    [0, false],
-    [width, true],
-  ] as const) {
-    ctx.save();
-    ctx.translate(left, 0);
-    ctx.beginPath();
-    ctx.rect(0, 0, width, height);
-    ctx.clip();
-    drawLines(ctx, camera, width, height, skylines(cast, true));
-    ctx.restore();
-  }
   renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
   layout();
   return save(out, `-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
-/** The current view with its lines, at the canvas's own resolution. */
+/** The current view, at the canvas's own resolution. */
 async function saveView(): Promise<string | null> {
   render();
   const out = document.createElement('canvas');
-  out.width = lines.width;
-  out.height = lines.height;
-  const ctx = out.getContext('2d')!;
-  ctx.drawImage(renderer.domElement, 0, 0);
-  ctx.drawImage(lines, 0, 0);
-  if (state.peaks && loaded) drawLabels(ctx, camera, out.width, out.height, loaded.sighted);
+  out.width = renderer.domElement.width;
+  out.height = renderer.domElement.height;
+  out.getContext('2d')!.drawImage(renderer.domElement, 0, 0);
   return save(out, `-${Math.round(state.yaw)}-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
@@ -548,12 +495,9 @@ gui.add(state, 'buildings').onChange((on: boolean) => {
   terrain.nearField.buildings.visible = on;
   requestRender();
 });
-gui.add(state, 'peaks').onChange(requestRender);
 const shot = gui.addFolder('Photo').close();
 shot.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
 shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
-shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
-shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
 // Align a photograph's camera here, then save it back to its spot in spots/.
 const align = { heading_deg: 0, pitch_deg: 0, vfov_deg: 40, roll_deg: 0 };
 const aligned = shot.addFolder('align camera').close();
@@ -587,10 +531,6 @@ facts.add(readout, 'region').listen().disable();
 facts.add(readout, 'sun').listen().disable();
 facts.add(readout, 'dtm').name('DTM').listen().disable();
 facts.add(readout, 'eye').listen().disable();
-facts.add(readout, 'rmsDtm').name('RMS, DTM').listen().disable();
-facts.add(readout, 'rmsGlo30').name('RMS, GLO-30').listen().disable();
-facts.add(readout, 'limit').name('Peak View limit').listen().disable();
-facts.add(readout, 'peaks').name('peaks').listen().disable();
 facts.add(readout, 'bytes').name('download').listen().disable();
 facts.add(readout, 'colour').name('colour').listen().disable();
 facts.add(readout, 'near').name('near field').listen().disable();

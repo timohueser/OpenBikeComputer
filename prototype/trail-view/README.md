@@ -85,8 +85,8 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
   is Scotland's LiDAR Phase 1 in 10 km squares; where it was never flown the spot is GLO-30 only.
 - Overpass queries, each cached per position in `_sources/osm/`: highways and forests (±5 km)
   with buildings (±2.5 km); water and multipolygon water (±10 km); walls, hedges, orchards, aretes
-  and ridges (±5 km); lifts (±10 km); the coastline (±10 km); and peaks over 320 km, which takes
-  minutes.
+  and ridges (±5 km); lifts (±10 km); and the coastline (±10 km). Named summits with a
+  height, for `summits`, come in 5° tiles in `_sources/osm/summits/` that every spot shares.
 - Roads are graded into the heights: level across, smoothed along, with banks of at most 40°.
   Trees stand on tree pixels within 1 km, as tall as the canopy (GLO-30 minus the DTM), or 5 to
   9 m without a DTM.
@@ -141,8 +141,8 @@ prints one JSON line with its files, the renderer, the triangles and the page er
 - Drag to look, scroll to change the field of view. "free movement": W A S D or the arrows walk,
   Q and E lower and raise the eye, Shift runs. Plants stand within 60 m of the spot, trees within
   1 km.
-- "Photo": "photo camera" frames the view like the photograph. "align camera" moves a photograph's camera, and "copy camera JSON" copies it for `spots/`. Red
-  is the skyline read off the photograph, cyan the cast skyline.
+- "Photo": "photo camera" frames the view like the photograph. "align camera" moves a
+  photograph's camera, and "copy camera JSON" copies it for `spots/`.
 - "Readout" › "region" shows the chain of regions, root first.
 - "Look" tunes palette snap, haze, mist and the light bands; "copy look JSON" copies them.
 - "Tools": "raise eye" lifts the eye. "save side by side" and "save view" write shots.
@@ -154,9 +154,9 @@ prints one JSON line with its files, the renderer, the triangles and the page er
 - A level blends into the next over its outer tenth. A skyline in that band is part GLO-30 even
   with the DTM on.
 - The dev server sends `*.bin.gz` with `Content-Encoding: gzip`, so the browser unpacks them.
-- OSM tags volcanoes `natural=volcano`, not `natural=peak`; the peak query asks for both.
+- OSM tags volcanoes `natural=volcano`, not `natural=peak`; the summit query asks for both.
 - A photograph's own coordinates can be a place tag rather than where the camera stood. Check
-  that the cast skyline at the photo's point shows what the photograph shows.
+  that the view at the photo's point shows what the photograph shows.
 - Python checks certificates against the system trust store (`truststore`): Spain's IGN serves a
   chain whose root Python's own bundle lacks.
 - A spot is only as good as what its eye sees. A point in forest, beside a house, just below a

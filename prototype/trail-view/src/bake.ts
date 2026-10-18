@@ -9,9 +9,6 @@ export interface Photo {
   lens_mm?: number;
   vfov_deg?: number;
   roll_deg?: number;
-  /** [bearing, elevation] in degrees, on a quarter-degree bearing grid. Fixtures only. */
-  columns?: [number, number][];
-  rms_limit_deg?: number;
 }
 
 export interface Meta {
@@ -55,14 +52,6 @@ export interface Meta {
 export const HABITATS = ['none', 'rock', 'heath', 'bog', 'bracken', 'rough', 'pasture', 'scrub', 'hedge', 'sand', 'saltmarsh', 'built', 'water'] as const;
 export type Habitat = (typeof HABITATS)[number];
 
-export interface Peak {
-  /** Metres east and north of the eye. */
-  x: number;
-  y: number;
-  ele: number | null;
-  name: string;
-}
-
 /** A footprint in metres from the eye: its lowest ground above sea level, the OSM building value, levels and height tags. */
 export type Building = [base: number, building: string, levels: number | null, height: number | null, ring: number[]];
 
@@ -92,7 +81,6 @@ export interface Bake {
   /** x, y, height, type (0 conifer, 1 broadleaf, 2 orchard) per tree, metres from the eye. */
   trees: Float32Array;
   buildings: Building[];
-  peaks: Peak[];
   /** Cable cars and lifts: the OSM aerialway kind and the line station to station, x, y in metres. */
   aerialways: { kind: string; line: number[] }[];
   /** Bridges within the near field: the road's surface code (ROAD_WIDTHS order, from 1), half-width and line. */
@@ -140,7 +128,7 @@ async function heights(url: string, eye: number): Promise<{ data: Float32Array; 
   return { data, bytes };
 }
 
-/** A list an older bake may lack. The dev server answers a missing file with the page itself. */
+/** A list an older bake may lack. */
 const optional = (url: string): Promise<unknown[]> => fetch(url).then((r) => (r.ok ? r.json() : [])).catch(() => []);
 
 export async function loadBake(id: string): Promise<Bake> {
@@ -149,7 +137,7 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, ndvimax, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways, bridges] = await Promise.all([
+  const [surface, glo30, classes, ndvimax, roads, water, rock, habitat, canopy, trees, buildings, walls, aerialways, bridges] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
@@ -162,7 +150,6 @@ export async function loadBake(id: string): Promise<Bake> {
     unpack(`${base}trees.bin.gz`),
     fetch(`${base}buildings.json`).then((r) => r.json()),
     unpack(`${base}walls.bin.gz`),
-    optional(`${base}peaks.json`),
     optional(`${base}aerialways.json`),
     optional(`${base}bridges.json`),
   ]);
@@ -182,7 +169,6 @@ export async function loadBake(id: string): Promise<Bake> {
     trees: new Float32Array(trees.data),
     buildings,
     walls: new Float32Array(walls.data),
-    peaks: (peaks as [number, number, number | null, string][]).map(([x, y, ele, name]) => ({ x, y, ele, name })),
     aerialways: (aerialways as [string, number[]][]).map(([kind, line]) => ({ kind, line })),
     bridges: (bridges as [number, number, number[]][]).map(([code, half, line]) => ({ code, half, line })),
     bytes,

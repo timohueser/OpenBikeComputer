@@ -1,6 +1,6 @@
-/** The GLSL. Every pass reads heights through the same level rule as `Surface` in skyline.ts. */
+/** The GLSL. Every pass reads heights through the same level rule as `Surface` in surface.ts. */
 
-import { BLANKET } from './skyline';
+import { BLANKET } from './surface';
 
 const LEVELS = /* glsl */ `
 precision highp sampler2DArray;

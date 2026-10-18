@@ -141,6 +141,9 @@ NO_CANOPY_M = (5.0, 9.0)
 # narrower than a WorldCover pixel, and lakes. Full widths for a waterway without a width tag.
 # Beyond, WorldCover's water class carries what is wide enough to see.
 WATER_LEVELS = 4
+# Summits come from Overpass in tiles of SUMMIT_TILE_DEG that all spots share: the last level
+# spans ±320 km, so neighbouring spots need nearly the same summits.
+SUMMIT_TILE_DEG = 5
 WATERWAY_WIDTHS = {"river": 12.0, "canal": 8.0, "stream": 2.0}
 # WorldCover water that no OSM water holds stays water only where its surface is this flat across
 # 3×3 texels, as a lake's is: dark gullies and cliff shadows read as water too.
@@ -369,7 +372,7 @@ def load_spot(spot_id: str) -> dict:
         fixture = json.loads((PHOTO_JSON / f"{photo}.json").read_text())
         spot.update(lat=fixture["lat"], lon=fixture["lon"], ground_m=fixture["ground_m"])
         spot["photo"] = {key: fixture[key] for key in
-                         ("heading_deg", "pitch_deg", "lens_mm", "columns", "rms_limit_deg", "subject")}
+                         ("heading_deg", "pitch_deg", "lens_mm", "subject")}
         spot["photo"]["credit"] = CREDITS["photo"]
         spot["photo_source"] = fixture_photo(photo)
     elif photo:
@@ -412,7 +415,7 @@ def glo30_tiles(bbox, download: bool) -> list[str]:
 def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work: Path,
          threads: bool = True) -> np.ndarray:
     """Every band of the inputs on level grid `half`, as float32 with NODATA."""
-    out = work / "warp.tif"
+    out = Path(tempfile.mkdtemp(dir=work)) / "warp.tif"
     cmd = ["gdalwarp", "-q", "-overwrite", "-t_srs", frame, "-te", str(-half), str(-half), str(half), str(half),
            "-ts", str(SIZE), str(SIZE), "-r", resampling, "-ot", "Float32", "-dstnodata", str(NODATA)]
     if threads:
@@ -421,7 +424,9 @@ def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work
         cmd += ["-ovr", "NONE"]
     subprocess.run(cmd + [str(p) for p in inputs] + [str(out)], check=True, env={**os.environ, **GDAL_OPTIONS})
     with rasterio.open(out) as src:
-        return src.read()
+        bands = src.read()
+    shutil.rmtree(out.parent)
+    return bands
 
 
 def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
@@ -635,14 +640,17 @@ def s2_level(k: int, frame: str, quarters: dict[int, list[Path]], work: Path) ->
     are few. Winter pixels in terrain shadow take their chroma from summer."""
     half = HALF0_M * 2**k
     resampling = "bilinear" if 2 * half / SIZE < 10 else "average"
-    seen = {}
-    for q, vrts in quarters.items():
-        # CDSE allows 4 connections per user, so these warps read on one thread.
+
+    def read(vrts: list[Path]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         b02, b03, b04, b08, looks = warp(vrts, frame, half, resampling, overviews=True, work=work, threads=False)
         valid = (looks >= MIN_OBSERVATIONS) & (b04 != NODATA)
         visible = np.clip(np.stack([b04, b03, b02]) / 10000.0, 0.0, 1.0)
         ndvi = np.clip((b08 - b04) / np.maximum(b08 + b04, 1.0), -1.0, 1.0)
-        seen[q] = (visible, ndvi, valid)
+        return visible, ndvi, valid
+
+    # CDSE allows 4 connections per user: the four quarters read side by side, each on one thread.
+    with ThreadPoolExecutor(len(quarters)) as pool:
+        seen = dict(zip(quarters, pool.map(read, quarters.values())))
     summer = seen[3]
     for q in (1, 4):
         visible, ndvi, valid = seen[q]
@@ -1281,32 +1289,36 @@ def encode(heights: np.ndarray) -> bytes:
 
 
 def overpass(query: str) -> str:
-    """Overpass's answer, from each public instance in turn while they are busy. One query at a
-    time on this machine, as the public instances ration queries per address."""
-    with machine_lock("overpass"):
-        for attempt in range(4):
-            request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
-                                             data=urllib.parse.urlencode({"data": query}).encode())
-            try:
-                with urllib.request.urlopen(request, timeout=900) as response:
-                    text = response.read().decode()
-                # A query that runs out of time or memory still answers 200: JSON with an error
-                # remark, CSV with nothing at all.
-                remark = json.loads(text).get("remark", "") if query.startswith("[out:json]") else "" if text.strip() else "error: no rows"
-                if "error" in remark:
-                    raise http.client.HTTPException(remark)
-                return text
-            except (OSError, http.client.HTTPException) as error:
-                # Busy is 429 or 500 to 504, a dropped connection, or no answer at all.
-                if isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504) or attempt == 3:
-                    raise
-            time.sleep(60 * (attempt + 1))
+    """Overpass's answer, from each public instance in turn while they are busy. Busy spells last
+    many minutes, so the tries span about half an hour."""
+    tries = 8
+    for attempt in range(tries):
+        request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
+                                         data=urllib.parse.urlencode({"data": query}).encode())
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                text = response.read().decode()
+            # A query that runs out of time or memory still answers 200: JSON with an error
+            # remark, CSV with nothing at all.
+            remark = json.loads(text).get("remark", "") if query.startswith("[out:json]") else "" if text.strip() else "error: no rows"
+            if "error" in remark:
+                raise http.client.HTTPException(remark)
+            return text
+        except (OSError, http.client.HTTPException) as error:
+            # Busy is 429 or 500 to 504, a dropped connection, or no answer at all.
+            if isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
+                raise
+        time.sleep(60 * (attempt + 1))
 
 
 def cached_overpass(path: Path, query: str) -> str:
-    """Overpass's answer, cached at `path`, because a bake is rerun far more often than OSM changes."""
+    """Overpass's answer, cached at `path`, because a bake is rerun far more often than OSM changes.
+    One query at a time on this machine, as the public instances ration queries per address; a bake
+    that waited reads the answer the other one fetched."""
     if not path.exists():
-        write_atomic(path, overpass(query))
+        with machine_lock("overpass"):
+            if not path.exists():
+                write_atomic(path, overpass(query))
     return path.read_text(encoding="utf-8")
 
 
@@ -1323,13 +1335,21 @@ def overpass_box(to_wgs84, half: float) -> str:
     return f"{s},{w},{n},{e}"
 
 
-def osm_peaks(spot_id: str, lat: float, lon: float) -> list[list[str]]:
-    """Named peaks and volcanoes out to the last level, 320 km, as lat, lon, ele, name."""
-    radius = HALF0_M * 2 ** (LEVELS - 1)
-    text = cached_overpass(SOURCES / "osm" / f"{spot_id}_{lat:.5f}_{lon:.5f}_peaks.csv",
-                           f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
-                           f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
-    return [row for row in (line.split("\t") for line in text.splitlines()) if len(row) == 4]
+def osm_summits(to_wgs84) -> list[tuple[str, ...]]:
+    """Named peaks and volcanoes with a height tag over the last level, as lat, lon, ele, from the
+    summit tiles it touches. The header row keeps a tile without summits from reading as a failed
+    query. A summit on a tile edge is in both tiles, and is taken once."""
+    half = HALF0_M * 2 ** (LEVELS - 1)
+    west, south, east, north = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+    t = SUMMIT_TILE_DEG
+    rows = {}
+    for lat in range(math.floor(south / t) * t, math.floor(north / t) * t + 1, t):
+        for lon in range(math.floor(west / t) * t, math.floor(east / t) * t + 1, t):
+            text = cached_overpass(SOURCES / "osm" / "summits" / f"{lat}_{lon}.csv",
+                                   f'[out:csv(::lat,::lon,ele;true)][timeout:600];'
+                                   f'node["natural"~"^(peak|volcano)$"]["name"]["ele"]({lat},{lon},{lat + t},{lon + t});out;')
+            rows.update(dict.fromkeys(tuple(row) for row in (line.split("\t") for line in text.splitlines()[1:]) if len(row) == 3))
+    return list(rows)
 
 
 def osm_ways(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
@@ -1440,13 +1460,10 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     def metres(way: dict) -> np.ndarray:
         return np.array(to_frame.transform([n["lon"] for n in way["geometry"]], [n["lat"] for n in way["geometry"]])).T
 
-    raw = osm_peaks(spot["id"], lat, lon)
+    raw = osm_summits(to_wgs84)
     xs, ys = to_frame.transform([float(r[1]) for r in raw], [float(r[0]) for r in raw])
-    peaks = [[round(x), round(y), elevation_tag(ele), name] for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
-    blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
-    (out / "peaks.json").write_bytes(blob)
-    sizes.append(("-", "peaks", len(blob)))
-    summits = [(x, y, ele) for x, y, ele, _ in peaks if ele is not None]
+    summits = [(round(x), round(y), ele) for x, y, (_, _, text) in zip(xs, ys, raw)
+               if (ele := elevation_tag(text)) is not None]
 
     ways = osm_ways(spot["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
@@ -1658,7 +1675,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
         print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
     print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
     season = sum(row[2] for row in sizes
-                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3", "ndvimax", "rock", "habitat", "walls"))
+                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "s2-q3", "ndvimax", "rock", "habitat", "walls"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 

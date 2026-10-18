@@ -11,7 +11,7 @@ import type { Region } from './regions';
 import { NearField } from './nearfield';
 import { ROAD_LINE, ROADS, VARIEGATED } from './palette';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
-import { CURVATURE } from './skyline';
+import { CURVATURE } from './surface';
 import type { Weather } from './weather';
 
 /** Open water upwind beyond this counts as the open ocean. */
