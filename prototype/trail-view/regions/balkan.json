@@ -1,1 +1,8 @@
-{ "name": "Balkan mixed forests", "ecoregion": 646, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Balkan mixed forests",
+ "ecoregion": 646,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "balkan",
+ "about": "Rolling hills of Turkey, Hungarian and sessile oak with hornbeam and lime between the maize, wheat and sunflower plains of the Danube, the Morava and Thrace; plum orchards, vineyards and hay meadows round red-tiled villages, dry downy-oak, Christ's thorn and juniper slopes in the Struma and Vardar valleys, and beech forests, black pine and wide summer pastures on the Šar, Korab and Kopaonik. No split: one continental haze, weather and grade fit the region from the Wallachian plain to Mariovo; the summer-dry southern valleys differ from the green north in Sentinel-2 colour and NDVI, the mountains in the tree elevation bands, WorldCover's tree line, the barren rule and the snowline, and the houses in culture by country."
+}
