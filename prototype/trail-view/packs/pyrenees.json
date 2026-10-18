@@ -37,7 +37,7 @@
   "white-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus albus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "groups": 4, "size": [4, 15], "on": ["pasture", "rough"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 4, "size": [4, 15], "on": ["pasture", "rough"] },
   "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "rough", "heath"] },
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [3, 10], "on": ["rough", "heath", "pasture"] },
   "goat": { "groups": 1, "size": [3, 10], "on": ["rough", "scrub", "rock"] },
