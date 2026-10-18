@@ -1,1 +1,8 @@
-{ "name": "Pannonian mixed forests", "ecoregion": 674, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Pannonian mixed forests",
+ "ecoregion": 674,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "pannonia",
+ "about": "A wide, low basin inside the Carpathian arc, from the Vienna basin and southern Moravia over the Hungarian plain to Slavonia, Vojvodina and the Transylvanian plateau: flat fields of maize, wheat and sunflowers, grassy puszta, willow and poplar floodplains along the Danube, Tisza, Drava and Sava, reed-fringed lakes, vine hills and oak woods on the volcanic and limestone hills around Balaton, Pálava and Fruška Gora, and long villages of whitewashed houses. No split: the region lies between 75 and about 1000 m in one continental climate, so one haze, weather and grade fit it; the dry puszta and the greener Transylvanian hills differ in colour, which Sentinel-2 colour and the NDVI ramps carry, the beech woods on the higher hills come from the tree elevation bands, and the houses from the house style by country and subdivision."
+}

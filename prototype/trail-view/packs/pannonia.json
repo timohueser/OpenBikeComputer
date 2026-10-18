@@ -1,0 +1,46 @@
+{
+ "name": "Pannonian mixed forests",
+ "extends": "base",
+ "about": "Pedunculate oak, narrow-leaved ash, field elm, white willow and poplars in the floodplains; Turkey, sessile, Hungarian and downy oak with hornbeam, field maple and lime on the hills, beech above them; black locust everywhere, Scots and black pine planted on the sands, juniper on the sandy steppe; hawthorn, blackthorn, dog rose and hazel in the hedges and the steppe scrub, grey willow in the marshes; reed and sedge on the lake shores and in the marshes, feather grass on dry sand and loess, ferns in the beech woods; Hungarian Grey and Simmental cattle, Zackel sheep and horses on the puszta and the common pastures; whitewashed village houses, oak-plank houses in Lonjsko polje, plastered houses in Austria, Moravia and Slovakia. Hawthorn stands in for the fruit orchards.",
+ "trees": {
+  "pedunculate-oak": { "model": "sycamore-maple", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 4 },
+  "turkey-oak": { "model": "european-beech", "latin": "Quercus cerris", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 700], "weight": 3 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [150, 800], "weight": 2 },
+  "hungarian-oak": { "model": "european-beech", "latin": "Quercus frainetto", "leaf": "broadleaved", "cover": "tree", "elevation": [80, 500], "weight": 1 },
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 600], "weight": 1 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 800], "weight": 3 },
+  "field-maple": { "model": "sycamore-maple", "latin": "Acer campestre", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 700], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 3 },
+  "narrow-leaved-ash": { "model": "sycamore-maple", "latin": "Fraxinus angustifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
+  "field-elm": { "model": "sycamore-maple", "latin": "Ulmus minor", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "white-willow": { "model": "silver-birch", "latin": "Salix alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "black-poplar": { "model": "silver-birch", "latin": "Populus nigra", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "black-locust": { "model": "sycamore-maple", "latin": "Robinia pseudoacacia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 3 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "black-pine": { "model": "scots-pine", "latin": "Pinus nigra", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 3 },
+  "blackthorn": { "model": "hawthorn", "latin": "Prunus spinosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
+  "dog-rose": { "model": "hawthorn", "latin": "Rosa canina", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [150, 1000], "weight": 1 },
+  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1, "evergreen": true }
+ },
+ "ground": {
+  "fern": {},
+  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "tussock-sedge": { "model": "moor-grass", "latin": "Carex elata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.4 },
+  "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
+ },
+ "herds": {
+  "hungarian-grey-cattle": { "model": "highland-cow", "latin": "Bos taurus (Hungarian Grey)", "groups": 1, "size": [10, 40], "on": ["pasture", "rough"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture"] },
+  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [30, 150], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 12], "on": ["pasture"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "hr-03": "wood-cabin", "hu": "village-house", "rs": "village-house", "hr": "village-house", "ro": "village-house", "ua": "village-house", "*": "house" }
+}
