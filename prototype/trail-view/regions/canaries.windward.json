@@ -1,0 +1,13 @@
+{
+ "name": "La Palma, La Gomera, El Hierro and Gran Canaria, windward",
+ "extends": "canaries",
+ "where": [
+  [[-17.88, 28.88], [-17.88, 28.8], [-17.872, 28.765], [-17.86, 28.752], [-17.845, 28.745], [-17.833, 28.73], [-17.828, 28.7], [-17.824, 28.66], [-17.828, 28.63], [-17.835, 28.61], [-17.836, 28.56], [-17.842, 28.52], [-17.845, 28.47], [-17.84, 28.43], [-17.68, 28.43], [-17.68, 28.88]],
+  [[-15.73, 28.22], [-15.73, 28.11], [-15.7, 28.08], [-15.69, 28.055], [-15.645, 28.02], [-15.598, 28.007], [-15.57, 27.962], [-15.5, 27.958], [-15.4, 27.95], [-15.32, 27.95], [-15.32, 28.22]],
+  [[-17.37, 28.24], [-17.37, 28.15], [-17.322, 28.13], [-17.29, 28.115], [-17.25, 28.104], [-17.215, 28.1], [-17.188, 28.098], [-17.15, 28.115], [-17.1, 28.135], [-17.06, 28.135], [-17.06, 28.24]],
+  [[-18.2, 27.89], [-18.2, 27.78], [-18.11, 27.765], [-18.095, 27.74], [-18.07, 27.73], [-18.05, 27.722], [-18.0, 27.735], [-17.96, 27.745], [-17.92, 27.755], [-17.85, 27.755], [-17.85, 27.89]]
+ ],
+ "about": "The trade-wind sides of the other high islands, from the sea to the main crest: La Palma east of the Caldera rim, the Cumbre Nueva and the Cumbre Vieja; Gran Canaria north of Tamadaba, Cruz de Tejeda and Pico de las Nieves; La Gomera north of the Garajonay plateau; El Hierro's El Golfo and the Valverde plateau. Banana terraces and palms by the sea, laurel forest and fayal-brezal in the cloud belt, Canary pine above it on La Palma, green the year round. Split as Tenerife is, for the same reason: the ramps, the haze and the weather change at the crest, and laurel and heath stand where the lee side has tabaiba, juniper and pine at the same height. One subregion holds the windward sides of all four islands, because they share one climate; canaries.tenerife-north is the same side of Tenerife. The trade-wind cloud belt at about 600 to 1500 m is a height question for the weather, not an area.",
+ "leaf": "broadleaved",
+ "pack": "canaries.windward"
+}
