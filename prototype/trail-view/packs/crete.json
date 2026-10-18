@@ -1,0 +1,35 @@
+{
+ "name": "Crete",
+ "extends": "base",
+ "about": "Olive groves above all, carob low down, Calabrian pine on the south and east slopes, Italian cypress, kermes oak, holm oak and Cretan maple in the mountain forests, oriental plane in the valleys, valonia oak and sweet chestnut in the west; kermes oak, lentisk, tree heath, Spanish broom and oleander in the maquis and the stream beds, prickly juniper and Cretan barberry up to the bare summits; thorny burnet phrygana and asphodel on the grazed ground; goats and sheep. Holm oak stands in for olives in the orchards.",
+ "trees": {
+  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
+  "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "kermes-oak": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 3 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1500], "weight": 1 },
+  "cretan-maple": { "model": "sycamore-maple", "latin": "Acer sempervirens", "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1800], "weight": 1 },
+  "oriental-plane": { "model": "sycamore-maple", "latin": "Platanus orientalis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "valonia-oak": { "model": "european-beech", "latin": "Quercus ithaburensis subsp. macrolepis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
+  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 900], "weight": 0.5 },
+  "calabrian-pine": { "model": "aleppo-pine", "latin": "Pinus brutia", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1400], "weight": 3 },
+  "italian-cypress": { "model": "western-red-cedar", "latin": "Cupressus sempervirens", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1800], "weight": 2 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1800], "weight": 4 },
+  "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 1 },
+  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [700, 2100], "weight": 1 },
+  "cretan-barberry": { "model": "garrigue", "latin": "Berberis cretica", "leaf": "broadleaved", "cover": "shrub", "elevation": [1300, 2300], "weight": 2 }
+ },
+ "ground": {
+  "garrigue": {},
+  "thorny-burnet": { "model": "garrigue", "latin": "Sarcopoterium spinosum", "height": [0.25, 0.5] },
+  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
+ },
+ "herds": {
+  "goat": { "groups": 3, "size": [5, 30], "on": ["rough", "scrub", "rock"] },
+  "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "rough"] }
+ },
+ "orchard": "holm-oak",
+ "style": "canarian-house"
+}

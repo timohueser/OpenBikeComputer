@@ -1,1 +1,8 @@
-{ "name": "Crete Mediterranean forests", "ecoregion": 789, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Crete Mediterranean forests",
+ "ecoregion": 789,
+ "extends": "world",
+ "about": "Limestone mountains over a blue sea: grey phrygana of thorny burnet and thyme on stony hills grazed by goats and sheep, olive groves in every valley round flat-roofed white and ochre villages, carob and oleander low down, Calabrian pine on the south and east slopes, cypress and kermes oak forests in the gorges of the White Mountains, and bare summits with snow into spring on the Lefka Ori, Psiloritis and Dikti, with fields on the Omalos and Lasithi plateaus. No split: the wet west and the dry east, the plateaus and the gorges differ in Sentinel-2 colour and NDVI, the forest belts and the bare high ground follow the tree elevation bands, the barren rule and the snowline, and the island is narrow with the sea in view almost everywhere, so one haze, one weather and one grade serve all of it.",
+ "leaf": "mixed",
+ "pack": "crete"
+}
