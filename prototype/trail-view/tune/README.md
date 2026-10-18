@@ -5,8 +5,8 @@ right everywhere. The baseline is the 45 regions in `tune/ecoregions.json` (RESO
 2017, Europe to 60° E, without the regions only in Russia). Each region has a short name, such as
 `alps` or `celtic`.
 
-One tracking issue on GitHub holds the batch plan, the asset census and the status of each region.
-This file holds only the instructions.
+One tracking issue on GitHub holds the batch plan and the asset census, and the demo shows the
+status of each region. This file holds only the instructions.
 
 ## Linux setup
 
@@ -76,7 +76,7 @@ One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32
 
 9. Smoke test, from the repository root. The JSON line names the WebGL `renderer`. If it names
    SwiftShader on a machine with a GPU, the Vulkan path does not work: use `--swiftshader` and
-   write it into the tracking issue.
+   tell the owner.
 
    ```sh
    uv run prototype/trail-view/bake.py healy-pass
@@ -98,31 +98,31 @@ step 4, which is the coordinator's checkout, and give it this message:
 
 > Read prototype/trail-view/tune/README.md and act as the coordinator of the Europe tune.
 
-The coordinator's first steps:
-
-1. Ask the owner, then open one GitHub issue, "Trail View: Europe tune". It holds the batch plan,
-   the census table and the status of each region.
-2. Fix the regression set: every spot in `spots/` at the start of the tune, and later every spot
-   of an approved region.
-3. Make one worktree per region agent, from the repository root, and run `npm ci` in its
-   `prototype/trail-view`:
-
-   ```sh
-   git worktree add ../tune-<short> -b tune/<short> archive/trail-view-prototype
-   ```
-
 Run bake.py from the repository root. Run every other command in `prototype/trail-view`.
+
+The coordinator works in this order and reports to the owner in its chat after each step:
+
+1. **Demo.** Build the demo (see "Demo") and serve it. Tell the owner how to open it, and wait
+   for the owner's OK.
+2. **Tracking issue.** Ask the owner, then open one GitHub issue, "Trail View: Europe tune", for
+   the batch plan and the census. Fix the regression set: every spot in `spots/` at the start of
+   the tune, and later every spot of an approved region.
+3. **Phase 1** for every region, then the **census and batch 0**. Show the census and the batch
+   plan to the owner before batch 0.
+4. **Region batches**, at most four regions at a time, until all 45 are done.
 
 ## Roles
 
-- **Owner.** Judges each region on the review page, writes comments and approves. Registers API
-  keys.
-- **Coordinator.** One session in its own worktree on `archive/trail-view-prototype`. It runs
-  phase 1 and the census, plans the batches, starts the region agents, merges their branches,
-  owns the frozen files and renders the regression set after each shared change.
-- **Region agent.** One session per region (Opus), in its own worktree on branch `tune/<short>`.
-  It writes only `regions/<short>.json`, `regions/<short>.*.json`, `packs/<short>.json`,
-  `packs/<short>.*.json`, `spots/<short>.json` and the asset files that the census gave it.
+- **Owner.** Looks at the demo and gives feedback and approvals to the coordinator, in its chat.
+  Registers API keys.
+- **Coordinator.** The session in the clone, on `archive/trail-view-prototype`. It builds the
+  demo, runs phase 1 and the census, plans the batches, starts the region agents, passes the
+  owner's feedback to them, keeps the region status, lands their branches, owns the frozen files
+  and renders the regression set after each shared change. It asks the owner before every push.
+- **Region agent.** A background agent of the coordinator, on Opus, one per region, in its own
+  worktree on branch `tune/<short>`. It writes only `regions/<short>.json`,
+  `regions/<short>.*.json`, `packs/<short>.json`, `packs/<short>.*.json`, `spots/<short>.json`
+  and the asset files that the census gave it. It reports to the coordinator, never to the owner.
 - **Asset builder.** A region agent or a batch-0 agent that holds the claim for an asset.
 
 ## Phase 1: research, for every region
@@ -168,22 +168,29 @@ The coordinator does this once, after phase 1.
 ## Region batches
 
 Four regions run at a time. Mix landscapes in a batch, for example one boreal, one Atlantic,
-one alpine and one Mediterranean region, so that the four share few assets.
+one alpine and one Mediterranean region, so that the four share few assets. For each region, the
+coordinator makes a worktree and serves it for the owner (slot N of 1 to 4):
 
-Each region agent repeats these steps until the owner approves:
+```sh
+git worktree add ../tune-<short> -b tune/<short> archive/trail-view-prototype
+cd ../tune-<short>/prototype/trail-view && npm ci && npx vite --port 518N
+```
+
+Each region agent repeats these steps:
 
 1. **Bake.** `uv run prototype/trail-view/bake.py <spot>` for each spot. Give a spot the best
    data that needs no key with its `dtm`, `landcover` and `geology` keys. See "Data sources".
 2. **Tune.** Change the region's look and rules and the pack. `npm run check` must pass.
-3. **Shoot.** `npm run shoot -- <spot>,<spot> --round <n>`, with `--swiftshader` on a machine
-   without a GPU. This writes the round to the review page. Look at the PNGs with the Read tool
-   before the owner does.
-4. **Post.** `node tune/comment.mjs <short> --round <n> "<what changed and why>"`.
-5. **Read.** The owner comments on `review.html`. The comments are in
-   `~/.cache/obc/trail-view/review/<short>/comments.jsonl`, one JSON object per line with its
-   `round`, `spot`, `by` and `approve`. Start the next round.
-6. **Land.** After the approval: `npm run check`, then one commit on `tune/<short>`. The
-   coordinator rebases it onto `archive/trail-view-prototype` and fast-forwards.
+3. **Check.** `npm run shoot -- <spot>,<spot>` (with `--swiftshader` on a machine without a GPU).
+   Look at the PNGs with the Read tool, against the reference photos, and fix what is clearly
+   wrong before the owner sees it.
+4. **Report.** Tell the coordinator what changed and why. The coordinator sets the region to
+   "ready for feedback" and tells the owner, with the link to slot N's demo.
+5. **Feedback.** The owner answers the coordinator. The coordinator passes the feedback to the
+   same agent and sets the region back to "in progress". Start again at step 1 or 2.
+6. **Land.** When the owner approves: `npm run check`, then one commit on `tune/<short>`. The
+   coordinator rebases it onto `archive/trail-view-prototype`, fast-forwards, sets the region to
+   "done" and starts the next region in the slot.
 
 ## Claims: each asset is built once
 
@@ -236,16 +243,24 @@ regression set and every approved spot before and after, and asks the owner.
   tracking issue. The owner registers and puts the key in `~/.config/openbikecomputer/`.
 - After the tune, the official bake pipeline takes over the best source per country.
 
-## Review page
+## Demo
 
-Each checkout serves `review.html` with its own spots. The owner opens a region in review on the
-port of the slot that tunes it, and approved regions on the coordinator's port 5180. From the Mac:
+The coordinator builds the demo first, from `index.html`:
+
+- Pick a region, then one of its spots.
+- The spot's reference photo is a small overlay in a corner. The owner can hide or show it, and
+  enlarge it with a click.
+- The picker shows each region's status: not started, in progress, ready for feedback, done.
+  The status is one file, `~/.cache/obc/trail-view/status.json` (`{"<short>": "<status>"}`).
+  Only the coordinator writes it. Every checkout serves the bake cache, so every slot's demo
+  shows the same status.
+- No comment boxes: feedback goes to the coordinator. `review.html` and `tune/comment.mjs` can go.
+
+The coordinator's checkout serves the done regions on port 5180, and slot N the region it tunes
+on port 518N. From the Mac:
 
 ```sh
 ssh -N -L 5180:localhost:5180 -L 5181:localhost:5181 -L 5182:localhost:5182 -L 5183:localhost:5183 -L 5184:localhost:5184 box
 ```
 
-Then open `http://localhost:518N/review.html`. The page lists the regions with their status, the
-spots with their reference photos, each round beside the previous one, links to the live view,
-and a comment box per region and per spot. A comment or an approval belongs to the round on the
-screen.
+Then open `http://localhost:5180/` or the slot's `http://localhost:518N/`.
