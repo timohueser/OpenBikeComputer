@@ -1,1 +1,8 @@
-{ "name": "Celtic broadleaf forests", "ecoregion": 651, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Celtic broadleaf forests",
+ "ecoregion": 651,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "celtic",
+ "about": "Ireland, Northern Ireland, the Isle of Man, Wales, Cornwall and Devon, the English Midlands and the North, and Scotland south and east of the Highlands: small green fields of pasture behind hawthorn hedges, banks and dry-stone walls; moor of heather, purple moor-grass, mat-grass, bracken and blanket bog on the Wicklow Mountains, the Mournes, Eryri, the Lake District, the Pennines, the Southern Uplands, the Manx hills and Dartmoor; sessile oak, ash and birch in the valleys, dark Sitka spruce plantations on the hills, limestone scars in the Burren and the Dales, and arable plains in the east. No split beyond the Irish coast: one wet Atlantic sky, haze and grade fit the whole region, and the drier east is a gradient, not a line on stable ground. Moor and pasture, hill and plain differ in colour and cover, which Sentinel-2 colour, the moor rule, the NDVI ramps, the tree bands and windswept_m carry, and the houses change by country, which the house style by place carries. The Irish coast subregion keeps the south-west peninsulas and the Reeks as they are."
+}
