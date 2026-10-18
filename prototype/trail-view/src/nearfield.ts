@@ -10,9 +10,10 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { groundAt, HABITATS, type Bake, type Building, type Habitat } from './bake';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import type { Pack, Region } from './regions';
+import { bridges } from './bridges';
 import { lifts } from './lifts';
 import { lighthouse, ruin } from './models/landmarks';
-import { HEDGE, STONE } from './palette';
+import { HEDGE, ROADS, STONE } from './palette';
 import { plant, type PlantName } from './models/plants';
 import { animal, type AnimalName } from './models/animals';
 import { rock, ROCK_GREY, type RockName } from './models/rocks';
@@ -408,13 +409,19 @@ export class NearField {
       windswept > 0 && [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * windswept, y + Math.cos((a * Math.PI) / 4) * windswept));
     const standing = pack.trees.filter((s) => s.cover === 'tree');
     const shrubs = pack.trees.filter((s) => s.cover === 'shrub');
+    // Shrubs keep to their elevation band, as trees do, where any shrub fits there.
+    const shrubAt = (x: number, y: number) => {
+      const elevation = bake.surface[0][texel(x, y)] + eye_m;
+      const fits = shrubs.filter((s) => elevation >= s.elevation[0] && elevation <= s.elevation[1]);
+      return pick(fits.length ? fits : shrubs).tree;
+    };
     const { trees } = bake;
     for (let i = 0; i < trees.length; i += 4) {
       const [x, y, height] = [trees[i], trees[i + 1], trees[i + 2]];
       if (Math.hypot(x, y) < CLEAR_M || TREELESS.has(habitatAt(x, y)) || exposed(x, y)) continue;
       // Scrub on the map is gorse and thorn, not trees.
       if (habitatAt(x, y) === 'scrub' && shrubs.length) {
-        const species = pick(shrubs).tree;
+        const species = shrubAt(x, y);
         add(shrubKey(species, Math.hypot(x, y)), x, y, SHRUB_HEIGHT_M[1] * (0.7 + 0.3 * rand()), heading(species));
         continue;
       }
@@ -443,7 +450,7 @@ export class NearField {
           const share = scrub ? SHRUB_SHARE : sparse ? SHRUB_SHARE / 3 : 0;
           if (rand() > share || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M) continue;
           if (this.offGround(bake, sx, sy, px) || strand(sx, sy)) continue;
-          const species = pick(shrubs).tree;
+          const species = shrubAt(sx, sy);
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
           add(shrubKey(species, Math.hypot(sx, sy)), sx, sy, height, heading(species));
         }
@@ -574,7 +581,8 @@ export class NearField {
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
     const { solid, cables } = lifts(bake, LIFT_REACH_M);
-    for (const geometry of [town(bake.buildings, eye_m, pack), walls(bake), solid]) {
+    const decks = bridges(bake, new THREE.Color(pack.style.palette.plinth), look.roads ?? ROADS);
+    for (const geometry of [town(bake.buildings, eye_m, pack), walls(bake), solid, decks]) {
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, this.materials.building);
       mesh.frustumCulled = false;

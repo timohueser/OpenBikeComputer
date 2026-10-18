@@ -3,10 +3,11 @@
  "extends": "canary",
  "about": "The lee side: cardón candelabras and tabaiba domes on the dry slopes, palms and dragon trees in the barrancos.",
  "trees": {
-  "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1, "evergreen": true },
-  "dragon-tree": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.3, "evergreen": true },
+  "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1, "evergreen": true },
+  "dragon-tree": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.1, "evergreen": true },
   "cardon": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 3 },
-  "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 4 }
+  "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 4 },
+  "canary-pine": { "elevation": [900, 2200] }
  },
  "ground": ["tabaiba", "grass"]
 }

@@ -130,12 +130,22 @@ NO_CANOPY_M = (5.0, 9.0)
 # Beyond, WorldCover's water class carries what is wide enough to see.
 WATER_LEVELS = 4
 WATERWAY_WIDTHS = {"river": 12.0, "canal": 8.0, "stream": 2.0}
+# WorldCover water that no OSM water holds stays water only where its surface is this flat across
+# 3×3 texels, as a lake's is: dark gullies and cliff shadows read as water too.
+FLAT_WATER_M = 1.0
+# With a coastline, WorldCover water within this many metres of the sea and outside it is beach,
+# rock or surf it misread, unless OSM maps water there.
+COAST_SHORE_M = 50.0
 SUPERSAMPLE = 4
 # The water levels' second byte: metres from water to the nearest land as sqrt(d / SHORE_REACH_M),
 # so the shallows near a shore keep their detail and open water reaches the deep colour.
 SHORE_REACH_M = 600.0
 # Water at most this high is the sea, for cliff coasts.
 SEA_LEVEL_M = 3.0
+# A cliff rim's lift is averaged over this radius of land.
+RIM_SMOOTH_M = 5.0
+# OSM bridge values for a way that lies on the ground: a road like any other, not a deck.
+GROUND_BRIDGES = {"no", "boardwalk", "low_water_crossing"}
 # Regions are rulesets in regions/: which DTM, land cover and geology a place uses and how its
 # coast is shaped come from the deepest region whose box holds the eye (see src/regions.ts).
 REGIONS = HERE / "regions"
@@ -451,8 +461,10 @@ def worldcover_tiles(bbox) -> list[str]:
     return tiles
 
 
-def class_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path) -> np.ndarray:
-    """RG8: the palette index of the WorldCover class, and 255 where it is water."""
+def class_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path, coast: list[np.ndarray] | None = None,
+                wet: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+    """RG8: the palette index of the WorldCover class, and 255 where it is water; and the sea from
+    OSM's coastline, or None. With OSM's water coverage (`wet`), those settle where water lies."""
     half = HALF0_M * 2**k
     resampling = "near" if 2 * half / SIZE <= WORLDCOVER_PX_M else "mode"
     raw = warp(worldcover_tiles(bbox), frame, half, resampling, overviews=True, work=work)[0]
@@ -462,7 +474,66 @@ def class_level(k: int, frame: str, bbox, heights: np.ndarray, work: Path) -> np
     # No tile is published over open sea.
     index[(index == UNKNOWN) & (heights <= 0.5)] = WATER
     index = round_shores(index, half)
-    return np.stack([index, np.where(index == WATER, 255, 0).astype(np.uint8)], axis=-1)
+    sea = sea_mask(coast, index == WATER, half) if coast else None
+    if wet is not None:
+        index = settle_water(index, heights, sea, wet, half)
+    return np.stack([index, np.where(index == WATER, 255, 0).astype(np.uint8)], axis=-1), sea
+
+
+def settle_water(index: np.ndarray, heights: np.ndarray, sea: np.ndarray | None, wet: np.ndarray,
+                 half: float) -> np.ndarray:
+    """The sea lies where OSM's coastline puts it, to the texel. Other WorldCover water stays where
+    OSM maps water, or where the ground is flat as a lake is, away from the sea's shore; elsewhere
+    it was a shadow or a gully finer than the DEM, and takes the nearest land class. Without a
+    coastline, water at sea level and the water joined to it is the sea."""
+    index = index.copy()
+    water = index == WATER
+    # The spread is taken over water only, because the DEM blends the bank into a lake's edge;
+    # water joined to a flat surface is the same lake. A lone texel is a shadow.
+    surface = grow(np.where(water, heights, -np.inf), np.maximum) - grow(np.where(water, heights, np.inf), np.minimum)
+    flat = water & (surface < FLAT_WATER_M) & (box_mean(water.astype(np.float32), 1) > 0.3)
+    for _ in range(2):
+        flat |= grow(flat, np.logical_or) & water
+    if sea is None:
+        # The sea is water at sea level and the water joined to it, which GLO-30 smears up a cliff.
+        keep = water & (heights <= SEA_LEVEL_M)
+        for _ in range(round(2 * COAST_SHORE_M / (2 * half / SIZE))):
+            keep |= grow(keep, np.logical_or) & water
+        keep |= (wet >= 0.5) | flat
+    else:
+        steps = max(1, round(COAST_SHORE_M / (2 * half / SIZE)))
+        shore = sea.copy()
+        for _ in range(steps):
+            shore = grow(shore, np.logical_or)
+        keep = sea | (wet >= 0.5) | (flat & ~shore)
+        # A river or lagoon keeps its width across the shore band; water joined only to the sea
+        # does not.
+        for _ in range(steps):
+            keep |= grow(keep & ~sea, np.logical_or) & water & ~sea
+        index[sea] = WATER
+    # Land that no land class reaches, as an islet or a mole OSM maps in the sea, is rock.
+    return take_nearest_land(index, water & ~keep, CLASSES.index(60))
+
+
+def take_nearest_land(index: np.ndarray, lost: np.ndarray, otherwise: int) -> np.ndarray:
+    """Lost texels take the class of the nearest land, spreading in from their edges, and the
+    texels none reaches take `otherwise`. Shifted by slicing, so no texel sees the far edge."""
+    index[lost] = UNKNOWN
+    filled = True
+    while filled:
+        filled = False
+        for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            near = np.full_like(index, UNKNOWN)
+            to, src = (slice(1, None), slice(None, -1)) if step > 0 else (slice(None, -1), slice(1, None))
+            if axis == 0:
+                near[to] = index[src]
+            else:
+                near[:, to] = index[:, src]
+            fill = lost & (index == UNKNOWN) & (near != UNKNOWN) & (near != WATER)
+            index[fill] = near[fill]
+            filled |= bool(fill.any())
+    index[lost & (index == UNKNOWN)] = otherwise
+    return index
 
 
 def round_shores(index: np.ndarray, half: float) -> np.ndarray:
@@ -475,14 +546,7 @@ def round_shores(index: np.ndarray, half: float) -> np.ndarray:
     water = box_mean((index == WATER).astype(np.float32), r) > 0.5
     lost = (index == WATER) & ~water
     index[water] = WATER
-    index[lost] = UNKNOWN
-    for _ in range(2 * r + 1):
-        for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
-            shifted = np.roll(index, step, axis=axis)
-            fill = lost & (index == UNKNOWN) & (shifted != UNKNOWN) & (shifted != WATER)
-            index[fill] = shifted[fill]
-    index[lost & (index == UNKNOWN)] = CLASSES.index(30)
-    return index
+    return take_nearest_land(index, lost, CLASSES.index(30))
 
 
 def s2_items(bbox, work: Path) -> dict[int, list[Path]]:
@@ -592,11 +656,38 @@ def edge_distance(lines: list[tuple[np.ndarray, float]], half: float, size: int,
 
 def road_field(roads: list[tuple[np.ndarray, int, float, bool]], half: float) -> np.ndarray:
     """RGB8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road; that
-    road's surface code; and its half-width in 0.05 m steps, so the page knows where its middle is."""
+    road's surface code; and its half-width in 0.05 m steps, so the page knows where its middle is.
+    A bridge drawn as a deck comes with code 0, which the page does not paint."""
     distance, nearest, _ = edge_distance([(xy, width) for xy, _, width, _ in roads], half, SIZE, ROAD_REACH_M)
     surface = np.array([0] + [code for _, code, _, _ in roads], np.uint8)[nearest]
     width = np.array([0] + [min(round(width * 20), 255) for _, _, width, _ in roads], np.uint8)[nearest]
     return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface, width], axis=-1)
+
+
+def passes_within(xy: np.ndarray, r: float) -> bool:
+    """Whether the line passes within r metres of the eye."""
+    a, d = xy[:-1], np.diff(xy, axis=0)
+    t = np.clip(-(a * d).sum(1) / np.maximum((d * d).sum(1), 1e-9), 0, 1)
+    return bool(np.hypot(*(a + t[:, None] * d).T).min() < r) if len(d) else False
+
+
+def chain_bridges(bridges: list[tuple[np.ndarray, int, float]]) -> list[tuple[np.ndarray, int, float]]:
+    """Bridges OSM splits into several ways, joined where an end meets an end, so each deck spans
+    bank to bank and only the banks set its level."""
+    out = list(bridges)
+    i = 0
+    while i < len(out):
+        for j in range(i + 1, len(out)):
+            a, b = out[i][0], out[j][0]
+            ends = [(a, b), (a, b[::-1]), (a[::-1], b), (a[::-1], b[::-1])]
+            joined = next((np.concatenate([x, y[1:]]) for x, y in ends if np.hypot(*(x[-1] - y[0])) < 1.0), None)
+            if joined is not None:
+                out[i] = (joined, out[i][1], max(out[i][2], out[j][2]))
+                del out[j]
+                break
+        else:
+            i += 1
+    return out
 
 
 def grade_roads(heights: np.ndarray, roads: list[tuple[np.ndarray, int, float, bool]], half: float) -> np.ndarray:
@@ -637,26 +728,75 @@ def grade_roads(heights: np.ndarray, roads: list[tuple[np.ndarray, int, float, b
     return out
 
 
-def water_field(rivers, streams, lakes, classes: np.ndarray, half: float, work: Path) -> np.ndarray:
-    """RG8: the share of each pixel under OSM water, 0–255, and its shore distance (SHORE_REACH_M).
-    Streams count only off tree pixels, because the canopy hides them."""
+def sea_mask(coast: list[np.ndarray], worldcover_water: np.ndarray, half: float) -> np.ndarray | None:
+    """The sea on a level from OSM's coastline, which has the land on its left. The line, drawn
+    through every texel it touches, splits the level into regions; each region is sea or land by
+    a vote of points just right and just left of every segment, and a region the votes split (a
+    gully or neck finer than a texel) keeps WorldCover's water. The line's own texels go with the
+    side most of their neighbours took, WorldCover's on a tie. None where no coastline crosses the level, or where the
+    sea it gives is mostly land to WorldCover, as a line drawn the wrong way round would flood
+    the land."""
+    from rasterio.features import rasterize, shapes
+
+    transform = rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE)
+    lines = [({"type": "LineString", "coordinates": xy.tolist()}, 1) for xy in coast if len(xy) > 1]
+    line = rasterize(lines, out_shape=(SIZE, SIZE), transform=transform, all_touched=True, dtype=np.uint8).astype(bool) \
+        if lines else np.zeros((SIZE, SIZE), bool)
+    if not line.any():
+        return None
+    regions = [geometry for geometry, _ in shapes((~line).astype(np.uint8), mask=~line, connectivity=8, transform=transform)]
+    label = rasterize([(g, n) for n, g in enumerate(regions, 1)], out_shape=(SIZE, SIZE), transform=transform, dtype=np.int32)
+    px = 2 * half / SIZE
+    votes = np.zeros((2, len(regions) + 1))
+    for xy in coast:
+        d = np.diff(xy, axis=0)
+        length = np.hypot(*d.T)
+        ok = length > 1e-6
+        mid, right = ((xy[:-1] + xy[1:]) / 2)[ok], (np.stack([d[:, 1], -d[:, 0]], 1) / np.maximum(length, 1e-6)[:, None])[ok]
+        for side, sign in ((0, 1), (1, -1)):
+            p = mid + sign * 0.75 * px * right
+            i, j = np.floor((p[:, 0] + half) / px).astype(int), np.floor((half - p[:, 1]) / px).astype(int)
+            inside = (i >= 0) & (i < SIZE) & (j >= 0) & (j < SIZE)
+            np.add.at(votes[side], label[j[inside], i[inside]], 1)
+    sea_votes, land_votes = votes
+    water_share = np.bincount(label.ravel(), weights=worldcover_water.ravel(), minlength=len(regions) + 1) / \
+        np.maximum(np.bincount(label.ravel(), minlength=len(regions) + 1), 1)
+    is_sea = np.where(sea_votes > 2 * land_votes, True, np.where(land_votes > 2 * sea_votes, False, water_share > 0.5))
+    is_sea[0] = False
+    sea = is_sea[label] & ~line
+    neighbours = box_mean(sea.astype(np.float32), 1), box_mean((~sea & ~line).astype(np.float32), 1)
+    sea |= line & ((neighbours[0] > neighbours[1]) | ((neighbours[0] == neighbours[1]) & worldcover_water))
+    if (sea & ~worldcover_water).sum() > 0.3 * max(sea.sum(), 1):
+        return None
+    return sea
+
+
+def osm_wet(rivers, lakes, islands, half: float) -> np.ndarray:
+    """The share of each texel under OSM's rivers, canals and water areas, less their islands,
+    from a 4× finer grid."""
     from rasterio.features import rasterize
     from rasterio.transform import from_origin
 
     fine = SIZE * SUPERSAMPLE
     reach = 2 * half / fine
-
-    def coverage(wet: np.ndarray) -> np.ndarray:
-        return wet.reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
-
     wet = edge_distance(rivers, half, fine, reach)[0] < 0
     if lakes:
-        shapes = [({"type": "Polygon", "coordinates": [ring.tolist()]}, 1) for ring in lakes]
+        shapes = [({"type": "Polygon", "coordinates": [ring.tolist()]}, value)
+                  for rings, value in ((lakes, 1), (islands, 0)) for ring in rings]
         wet |= rasterize(shapes, out_shape=(fine, fine), transform=from_origin(-half, half, reach, reach),
                          dtype=np.uint8).astype(bool)
-    water = coverage(wet)
+    return wet.reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
+
+
+def water_field(wet: np.ndarray, streams, classes: np.ndarray, half: float, work: Path) -> np.ndarray:
+    """RG8: the share of each pixel under OSM water (`osm_wet`, plus streams), 0–255, and its shore
+    distance (SHORE_REACH_M). Streams count only off tree pixels, because the canopy hides them."""
+    fine = SIZE * SUPERSAMPLE
+    reach = 2 * half / fine
+    water = wet
     if streams:
-        water = np.maximum(water, coverage(edge_distance(streams, half, fine, reach)[0] < 0) * (classes[..., 0] != TREE))
+        cover = (edge_distance(streams, half, fine, reach)[0] < 0).reshape(SIZE, SUPERSAMPLE, SIZE, SUPERSAMPLE).mean(axis=(1, 3))
+        water = np.maximum(water, cover * (classes[..., 0] != TREE))
     shore = shore_distance((classes[..., 1] == 255) | (water >= 0.5), half, work)
     return np.stack([np.round(water * 255), np.round(np.sqrt(shore / SHORE_REACH_M) * 255)], axis=-1).astype(np.uint8)
 
@@ -684,22 +824,24 @@ def grow(a: np.ndarray, op) -> np.ndarray:
     return out
 
 
-def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs: dict) -> np.ndarray:
+def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs: dict,
+                  coast_sea: np.ndarray | None = None) -> np.ndarray:
     """GLO-30 heights with cliff coasts made sheer. GLO-30 makes a cliff a 30 m slope into the sea.
     The sea beside land stands at sea level, so the coast drops where WorldCover puts the water's
     edge. Land within the region's reach_m of it takes the height found reach_m straight inland,
     where that is min_m high, fading to its own height at the reach. A cliff has a shoulder: another
     reach inland the ground rises little. There the edge rises up to raise_m; where the ground goes
-    on climbing it is a hillside, and the edge rises a fifth of that at most."""
+    on climbing it is a hillside, and the edge rises a fifth of that at most. OSM's coastline, where
+    there is one, says where the sea is to the texel, gullies the DEM averages away included."""
     water = classes[..., 1] == 255
-    sea = water & (heights <= SEA_LEVEL_M)
+    sea = coast_sea.copy() if coast_sea is not None else water & (heights <= SEA_LEVEL_M)
     if not sea.any():
         return heights
     px = 2 * half / SIZE
     # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
     # the shore is sea, however high the DEM puts it. Twice the cliff reach, so a lough behind a
     # cliff top keeps its level.
-    for _ in range(max(1, round(cliffs["reach_m"] * 2 / px))):
+    for _ in range(0 if coast_sea is not None else max(1, round(cliffs["reach_m"] * 2 / px))):
         sea |= grow(sea, np.logical_or) & water
     steps = max(1, round(cliffs["reach_m"] / px))
     # Steps from the sea, a little beyond the reach, so "inland" has a direction there too.
@@ -728,8 +870,12 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     fade = np.clip(1 - (distance - 1) / steps, 0, 1)
     raise_m = np.where(shoulder, cliffs["raise_m"], cliffs["raise_m"] / 5) * fade
     rim = ~water & (distance <= steps) & (top >= cliffs["min_m"])
-    out = heights.copy()
-    out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + raise_m[rim]))
+    lift = np.where(rim, np.maximum(np.minimum(top, heights + raise_m) - heights, 0.0), 0.0)
+    # Where the coast turns sharply, the inland direction and the shoulder test jump from texel to
+    # texel; the lift is averaged over the land around, so the rim rises as a shelf, not spikes.
+    land = (~water).astype(np.float32)
+    r = max(1, round(RIM_SMOOTH_M / px))
+    out = heights + np.where(water, 0.0, box_mean(lift, r) / np.maximum(box_mean(land, r), 1e-6))
     # Flat at sea level, and the shore no lower: cubic upsampling overshoots below a cliff, and the
     # wall would hang into the hollow.
     out[sea] = 0.0
@@ -1094,8 +1240,8 @@ def osm_ways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
 
 
 def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """Waterways and water areas over the water levels, cached like `osm_ways`. Lakes mapped as
-    multipolygon relations are left to WorldCover, which sees anything that large."""
+    """Waterways and water areas over the water levels, cached like `osm_ways`. Lakes and wide
+    rivers mapped as multipolygon relations come from `osm_water_areas`."""
     cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_water.json"
     if not cached.exists():
         half = HALF0_M * 2 ** (WATER_LEVELS - 1)
@@ -1103,6 +1249,52 @@ def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
         box = f"{s},{w},{n},{e}"
         text = overpass(f'[out:json][timeout:600];(way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
                         f'way["natural"="water"]({box});way["landuse"="reservoir"]({box}););out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+
+
+def osm_water_areas(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Lakes, reservoirs and wide rivers mapped as multipolygon relations over the water levels,
+    cached like `osm_ways`, each with its member ways' roles and geometry."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_waterareas.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        box = f"{s},{w},{n},{e}"
+        text = overpass(f'[out:json][timeout:600];(relation["natural"="water"]({box});'
+                        f'relation["waterway"="riverbank"]({box});relation["landuse"="reservoir"]({box}););out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [relation for relation in json.loads(cached.read_text())["elements"] if relation.get("members")]
+
+
+def close_rings(lines: list[np.ndarray]) -> list[np.ndarray]:
+    """A multipolygon's member ways joined end to end into closed rings; a ring the query box cut
+    open is dropped."""
+    lines, rings = list(lines), []
+    while lines:
+        ring = lines.pop()
+        while np.hypot(*(ring[0] - ring[-1])) > 0.5:
+            following = next((i for i, line in enumerate(lines) if np.hypot(*(ring[-1] - line[0])) <= 0.5
+                              or np.hypot(*(ring[-1] - line[-1])) <= 0.5), None)
+            if following is None:
+                break
+            line = lines.pop(following)
+            ring = np.concatenate([ring, (line if np.hypot(*(ring[-1] - line[0])) <= 0.5 else line[::-1])[1:]])
+        if len(ring) >= 4 and np.hypot(*(ring[0] - ring[-1])) <= 0.5:
+            rings.append(ring)
+    return rings
+
+
+def osm_coastline(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """OSM's coastline over the water levels, cached like `osm_ways`: lines with the land on their
+    left, mapped from imagery to a few metres, gullies and stacks included."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_coast.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        text = overpass(f'[out:json][timeout:600];way["natural"="coastline"]({s},{w},{n},{e});out geom;')
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_text(text)
     return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
@@ -1182,8 +1374,13 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
 
     ways = osm_ways(preset["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
-    roads = [(metres(w), codes[surface], road_width(w["tags"], surface), w["tags"].get("bridge", "no") != "no")
+    roads = [(metres(w), codes[surface], road_width(w["tags"], surface), w["tags"].get("bridge", "no") not in GROUND_BRIDGES)
              for w in ways if "highway" in w["tags"] and (surface := road_surface(w["tags"]))]
+    # Bridges near the eye are drawn as decks. The road field keeps their footprint, unpainted
+    # (code 0), so trees and plants stay off them; farther bridges are painted as before.
+    decked = [bridge and passes_within(xy, BUILDING_HALF_M) for xy, _, _, bridge in roads]
+    decks = chain_bridges([(xy, code, width) for (xy, code, width, _), deck in zip(roads, decked) if deck])
+    roads = [(xy, 0 if deck else code, width, bridge) for (xy, code, width, bridge), deck in zip(roads, decked)]
     forests = [(metres(w), LEAF[w["tags"]["leaf_type"]]) for w in ways
                if w["tags"].get("leaf_type") in LEAF and w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
@@ -1200,7 +1397,16 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
             (streams if tags["waterway"] == "stream" else rivers).append((xy, width / 2))
         elif closed and tags.get("waterway") != "stream":
             lakes.append(xy)
+    islands = []
+    for relation in osm_water_areas(preset["id"], lat, lon, to_wgs84):
+        if relation["tags"].get("intermittent") == "yes" or relation["tags"].get("seasonal") == "yes":
+            continue
+        members = [m for m in relation["members"] if m.get("type") == "way" and m.get("geometry")]
+        lakes += close_rings([metres(m) for m in members if m.get("role") != "inner"])
+        islands += close_rings([metres(m) for m in members if m.get("role") == "inner"])
     print(f"  OSM water: {len(rivers)} rivers and canals, {len(streams)} streams, {len(lakes)} areas", flush=True)
+    coast = [metres(way) for way in osm_coastline(preset["id"], lat, lon, to_wgs84)]
+    print(f"  OSM coastline: {len(coast)} ways", flush=True)
     features = osm_features(preset["id"], lat, lon, to_wgs84)
     tagged = lambda key, *values: [w for w in features if w["tags"].get(key) in values]
     walls = [(metres(w), 1 if w["tags"]["barrier"] == "hedge" else 0) for w in tagged("barrier", "wall", "retaining_wall", "hedge")]
@@ -1244,11 +1450,12 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
                 blob = encode(glo30)
                 (out / f"glo30-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "glo30", len(blob)))
-            classes = class_level(k, frame, bbox, heights, work)
+            wet = osm_wet(rivers, lakes, islands, half) if k < WATER_LEVELS else None
+            classes, sea = class_level(k, frame, bbox, heights, work, coast if k < WATER_LEVELS else None, wet)
             if heights is glo30:
                 heights = sharpen_relief(heights, half, region["relief"])
                 heights = sharpen_summits(heights, summits, half, region["summits"])
-                heights = sharpen_coast(heights, classes, half, region["cliffs"])
+                heights = sharpen_coast(heights, classes, half, region["cliffs"], sea)
                 if k == 0:
                     origin["glo30"] = float(heights[centre, centre].mean())
             if k < ROAD_LEVELS and roads:
@@ -1275,7 +1482,7 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
                 (out / f"habitat-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "habitat", len(blob)))
             if k < WATER_LEVELS:
-                water = water_field(rivers, streams, lakes, classes, half, work)
+                water = water_field(wet, streams, classes, half, work)
                 blob = pack(water)
                 (out / f"water-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "water", len(blob)))
@@ -1286,9 +1493,9 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
                 sizes.append((k, "canopy", len(blob)))
             if k == 0:
                 heights0, classes0, road0, water0 = heights, classes, road, water
+                canopy0 = canopy if dtm else None
             if k == 1:
                 heights1 = heights
-                canopy0 = canopy if dtm else None
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
@@ -1329,6 +1536,12 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
     blob = pack(wall_pieces(walls))
     (out / "walls.bin.gz").write_bytes(blob)
     sizes.append(("-", "walls", len(blob)))
+
+    # Bridges near enough to show as decks: surface code, half-width and the line.
+    bridges = [[code, round(width, 2), [round(float(v), 1) for v in xy.ravel()]] for xy, code, width in decks]
+    blob = json.dumps(bridges, separators=(",", ":")).encode()
+    (out / "bridges.json").write_bytes(blob)
+    sizes.append(("-", "bridges", len(blob)))
 
     # The OSM line runs station to station; a vertex between is a pylon.
     lifts = [[way["tags"]["aerialway"], [round(float(v), 1) for v in metres(way).ravel()]]

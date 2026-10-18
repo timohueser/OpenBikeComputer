@@ -194,7 +194,8 @@ struct Ground {
   float shore;
   // How open the sea is to the swell, 0 sheltered to 1 the open ocean.
   float exposure;
-  // Share of open, unfarmed ground (shrub, grass, bare, wetland, moss), and how lush it is, 0–1.
+  // Share of open, unfarmed ground (shrub, grass, bare, wetland, moss), and how lush it is, 0–1;
+  // lush is 0 where no Sentinel-2 pixel says.
   float rough;
   float lush;
   // Moorland: open ground the satellite sees brown, or heath and bog on a land cover map, 0–1.
@@ -377,7 +378,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, t, moor, bare);
+  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare);
 }
 
 /**
@@ -499,7 +500,9 @@ float nearShadowAt(vec3 world, vec3 n) {
 vec3 lightUp(vec3 albedo, vec3 n, float shadow, float open) {
   float lit = max(dot(n, sunDir), 0.0) * shadow;
   float band = 0.45 * smoothstep(0.03, 0.03 + softness, lit) + 0.55 * smoothstep(0.32, 0.32 + softness, lit);
-  return albedo * (ambient * (0.85 + 0.15 * n.z) * open + sunColour * mix(band, lit, gradient));
+  // Steep faces also catch light thrown up from the ground below, so shaded dark rock keeps its
+  // colour rather than sinking into the tone curve's toe. Faces turned down see little ground.
+  return albedo * (ambient * ((0.85 + 0.15 * n.z) * open + 0.2 * (1.0 - abs(n.z))) + sunColour * mix(band, lit, gradient));
 }
 
 // The haze between the eye (three's cameraPosition, the origin at the spot) and a point.
@@ -658,6 +661,10 @@ void main() {
   // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
   // bare only where they are near cliffs.
   float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
+  // Where the satellite sees green, a steep slope is turf and scrub on the rock, bare only past
+  // about 57°: Atlantic headlands and Alpine meadows stay green to the cliff edge.
+  float green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
+  bareFrom = mix(bareFrom, 0.55, green);
   float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
@@ -692,7 +699,7 @@ void main() {
   // few metres a pixel, they become their share of rock colour.
   float rocky = outcrops * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor + 0.8 * (hardness - 0.5) - 0.3, 0.0, 1.0)
-    * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness);
+    * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness) * (1.0 - 0.7 * green);
   // Mapped exposed rock is outcrops in turf, about a third rock.
   rocky = max(rocky, 0.35 * g.bare);
   // Slab cells only where a pixel can show them; past that, rock is its share of colour.

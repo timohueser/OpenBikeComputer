@@ -8,13 +8,15 @@
  "pack": "canary-north",
  "look": {
   "ramps": {
-   "grass": ["#8f8a58", "#6f8048", "#557a3e"],
-   "shrub": ["#4f5f34", "#3f5a30", "#355228"],
-   "crop": ["#9a9460", "#78884c", "#5c7e40"]
+   "grass": ["#a59c64", "#8a8b52", "#6a7f44"],
+   "shrub": ["#6b6a3e", "#58623a", "#475a30"],
+   "crop": ["#9a9460", "#78884c", "#5c7e40"],
+   "broad": ["#7a7d48", "#6b7a42", "#5a723b"]
   },
   "weather": {
-   "sunny": { "cover": 0.5, "base": 900, "dark": 0.3, "grey": 0.4 }
+   "sunny": { "cover": 0.3, "base": 900, "dark": 0.3 }
   },
-  "hazeKm": 35
+  "hazeKm": 50,
+  "speckle": { "colour": "#48532e", "share": 0.3, "size_m": 3 }
  }
 }

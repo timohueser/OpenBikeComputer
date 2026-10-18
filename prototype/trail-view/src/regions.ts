@@ -27,7 +27,8 @@ export interface Species {
   evergreen?: boolean;
 }
 
-type Ramps = Partial<Record<'shrub' | 'grass' | 'crop' | 'bare' | 'built' | 'moss', [string, string, string]>>;
+/** Low to high NDVI per WorldCover class; `needle` and `broad` colour woodland by its leaf. */
+type Ramps = Partial<Record<'shrub' | 'grass' | 'crop' | 'bare' | 'built' | 'moss' | 'needle' | 'broad', [string, string, string]>>;
 
 /** How the ground, sea and air read in a region. */
 export interface RegionLook {

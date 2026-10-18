@@ -33,18 +33,25 @@ uv run prototype/trail-view/bake.py hahnen
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
   to the nearest road edge, the road's surface and its half-width (OSM `width`, else by surface
   and class). Roads are graded into the heights: level across, smoothed along, with banks of at
-  most 40°; bridges keep the ground under them. Trees stand on tree pixels within 1 km, as tall as
+  most 40°; bridges keep the ground under them. Within ±2.5 km the page draws bridges as stone
+  decks with parapets, arches and piers; ways OSM splits mid-span are joined first, and
+  `bridge=boardwalk` stays a road on the ground. Trees stand on tree pixels within 1 km, as tall as
   the canopy (GLO-30 minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees
   stand 5 to 9 m.
 - Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
-  their `width` tag or a default, and water areas. The water levels hold the share of each pixel
-  under water, from a 4× finer grid, and each water pixel's distance to land. Streams count only
-  off tree pixels.
-- A third cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges, and a
-  fourth over ±10 km brings cable cars and ski lifts. The page adds pylons where OSM maps a lift
+  their `width` tag or a default, and water areas; a third brings multipolygon lakes and rivers.
+  The water levels hold the share of each pixel under water, from a 4× finer grid, and each water
+  pixel's distance to land. Streams count only off tree pixels. WorldCover water that OSM does not map stays water only where its surface is
+  flat; shadows and gullies take the nearest land class.
+- Another cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges, and
+  one over ±10 km brings cable cars and ski lifts. The page adds pylons where OSM maps a lift
   station to station only.
+- One more cached Overpass query over ±10 km brings OSM's coastline. Where there is one, the sea
+  lies where it says, to the texel, and WorldCover water within 50 m of the sea is shore unless OSM
+  maps water there.
 - Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land lies
-  at sea level, and the land edge rises a little toward the cliff top.
+  at sea level, and the land edge rises a little toward the cliff top, averaged over 5 m so the
+  rim is a shelf, not spikes.
 - Habitat levels (±5 km) come from the region's open land cover map (`landcover`): Ireland's
   National Land Cover Map 2018 (`nlcm`; its feature service returns 2000 polygons in about 75 s)
   or NatureScot's Habitat Map of Scotland (`habmos`, one WFS request, EUNIS codes). Polygons are

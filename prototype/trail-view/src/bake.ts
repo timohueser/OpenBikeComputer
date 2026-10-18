@@ -84,6 +84,8 @@ export interface Bake {
   peaks: Peak[];
   /** Cable cars and lifts: the OSM aerialway kind and the line station to station, x, y in metres. */
   aerialways: { kind: string; line: number[] }[];
+  /** Bridges within the near field: the road's surface code (ROAD_WIDTHS order, from 1), half-width and line. */
+  bridges: { code: number; half: number; line: number[] }[];
   /** Bytes on the wire: heights and classes. */
   bytes: number;
 }
@@ -127,13 +129,16 @@ async function heights(url: string, eye: number): Promise<{ data: Float32Array; 
   return { data, bytes };
 }
 
+/** A list an older bake may lack. The dev server answers a missing file with the page itself. */
+const optional = (url: string): Promise<unknown[]> => fetch(url).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+
 export async function loadBake(id: string): Promise<Bake> {
   const base = `/${id}/`;
   const response = await fetch(`${base}meta.json`);
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways] = await Promise.all([
+  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways, bridges] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
@@ -145,8 +150,9 @@ export async function loadBake(id: string): Promise<Bake> {
     unpack(`${base}trees.bin.gz`),
     fetch(`${base}buildings.json`).then((r) => r.json()),
     unpack(`${base}walls.bin.gz`),
-    fetch(`${base}peaks.json`).then((r) => (r.ok ? r.json() : [])),
-    fetch(`${base}aerialways.json`).then((r) => (r.ok ? r.json() : [])),
+    optional(`${base}peaks.json`),
+    optional(`${base}aerialways.json`),
+    optional(`${base}bridges.json`),
   ]);
   const bytes = [...surface, ...glo30, classes, roads, water, rock, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
   return {
@@ -165,6 +171,7 @@ export async function loadBake(id: string): Promise<Bake> {
     walls: new Float32Array(walls.data),
     peaks: (peaks as [number, number, number | null, string][]).map(([x, y, ele, name]) => ({ x, y, ele, name })),
     aerialways: (aerialways as [string, number[]][]).map(([kind, line]) => ({ kind, line })),
+    bridges: (bridges as [number, number, number[]][]).map(([code, half, line]) => ({ code, half, line })),
     bytes,
   };
 }

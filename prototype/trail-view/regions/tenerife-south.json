@@ -6,12 +6,15 @@
  "pack": "canary-south",
  "look": {
   "ramps": {
-   "grass": ["#bca77a", "#a69a6a", "#8a8a5a"],
+   "grass": ["#a68e66", "#948a5e", "#7c8250"],
    "shrub": ["#8a8462", "#76784e", "#5f6a42"],
    "crop": ["#b8a37a", "#9a9a64", "#7a8a52"],
-   "bare": ["#8a6f58", "#9a7d62", "#a88e70"]
+   "bare": ["#7a5c48", "#866850", "#94765a"]
   },
   "speckle": { "colour": "#6f7350", "share": 0.3, "size_m": 1.5 },
-  "hazeKm": 70
- }
+  "hazeKm": 40,
+  "outcrops": 0.3,
+  "snap": 0.35
+ },
+ "leaf": "needleleaved"
 }
