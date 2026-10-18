@@ -414,6 +414,7 @@ fn compile_selected(
     let polygon = boundary_geometry(geometry)?;
     let mut parents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in sources.pins.keys().filter(|path| path.starts_with("classes/") && path.ends_with(".json")) {
+        obc_data::engine::check_stop()?;
         let capture = json_pinned(&sources, path)?;
         let entities = capture["entities"].as_object().ok_or("invalid class capture")?;
         for (id, entity) in entities {
@@ -478,6 +479,7 @@ fn compile_selected(
     let mut selected = BTreeSet::new();
     let mut loaded: Option<(String, Value)> = None;
     for place in places {
+        obc_data::engine::check_stop()?;
         let qid = string(&place, "qid")?.to_owned();
         if !is_qid(&qid) {
             return Err("invalid QID".into());

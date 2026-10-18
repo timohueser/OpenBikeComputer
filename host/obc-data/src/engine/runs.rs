@@ -512,6 +512,9 @@ impl Run {
         let mut failure: Option<String> = None;
         let (mut running, mut reserved) = (0, 0);
         let (sender, receiver) = mpsc::channel();
+        // Set when the run stops, so that a Rust step stops in its loops: a program gets the
+        // signal of `stop`.
+        let steps_stop: Arc<AtomicBool> = Arc::default();
         std::thread::scope(|scope| loop {
             if failure.is_none() {
                 failure = self.check_stop(store).err();
@@ -610,11 +613,11 @@ impl Run {
                 let started = self.record(&Event::StepStarted { step: step.name.clone() });
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {
                     Ok((receipt, request)) => {
-                        let sender = sender.clone();
+                        let (sender, stop) = (sender.clone(), &steps_stop);
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
                             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                build_step(store, root, step, receipt, request, again)
+                                build_step(store, root, step, receipt, request, again, stop)
                             }));
                             let _ = sender.send((step, cost, result.unwrap_or_else(|payload| Err(panicked(payload)))));
                         });
@@ -628,7 +631,11 @@ impl Run {
                 break;
             }
             let (step, cost, result) = loop {
-                match receiver.recv_timeout(SAVE) {
+                let received = receiver.recv_timeout(SAVE);
+                if self.stop.load(Ordering::Relaxed) || self.stopping() {
+                    steps_stop.store(true, Ordering::Relaxed);
+                }
+                match received {
                     Ok(received) => break received,
                     // The status shows the steps that started while a long step runs.
                     Err(_) => {
@@ -781,7 +788,7 @@ fn keeps(store: &Store, output: &Output, key: &str) -> bool {
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 /// Whether SIGINT or SIGTERM came: the run of this process stops before its next fetch, step or
-/// phase.
+/// phase, and a Rust step that runs stops at its next [`super::check_stop`].
 pub fn signalled() -> bool {
     SIGNALLED.load(Ordering::Relaxed)
 }
@@ -1406,6 +1413,36 @@ mod tests {
         let status = status(&fixture.store, &id).unwrap();
         assert_eq!(status.state, State::Stopped);
         assert!(stop(&fixture.store, &id).unwrap_err().contains("does not run"));
+    }
+
+    /// The store of the run of [`stopped_while_it_runs`].
+    static STOPPED_STORE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+    /// A step that writes the stop file of its run, as `obc data runs RUN --stop` does, and runs
+    /// until it sees the stop.
+    fn stopped_while_it_runs(_: &Request) -> Result<(), String> {
+        let store = Store::at(STOPPED_STORE.get().unwrap().clone());
+        std::fs::write(store.run(&list(&store)?[0].id).join(STOP), "").map_err(|e| e.to_string())?;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(30) {
+            crate::engine::check_stop()?;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_stop_during_a_rust_step_ends_the_step_and_the_run_as_stopped() {
+        let fixture = fixture("runs-stop-in-process");
+        STOPPED_STORE.set(fixture.store.root().to_path_buf()).unwrap();
+        let steps =
+            [step("test/long", vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(stopped_while_it_runs))];
+        let start = Instant::now();
+        let error = fixture.run(&steps, &fixture.plan(&steps).unwrap(), Limits::machine()).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(10), "the step stops in seconds: {:?}", start.elapsed());
+        assert_eq!(error, "step `test/long`: the run stopped");
+        let run = &list(&fixture.store).unwrap()[0];
+        assert_eq!(status(&fixture.store, &run.id).unwrap().state, State::Stopped);
     }
 
     #[test]
