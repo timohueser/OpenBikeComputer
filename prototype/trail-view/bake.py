@@ -230,8 +230,8 @@ EGDI = ("https://egeologija.si/download/GeologicUnitView.gpkg", "GeologicUnitVie
         "Surface geology 1:1 000 000 © EuroGeoSurveys (EGDI), CC BY 4.0")
 IGME5000 = ("https://download.bgr.de/bgr/Geologie/IGME5000/shp/IGME5000.zip", "IGME5000_europeEPSG3034shp_geology_poly_v01",
             "Portr_Petr", "IGME5000, BGR")
-# Their terms for each lithology, split by "|". Any other term is unknown: surface deposits, which hide the
-# rock that crags show, and undifferentiated units.
+# Their terms for each lithology, split by "|". Any other term is unknown: surface deposits, which
+# hide the rock that crags show, and undifferentiated units.
 EGDI_TERMS = {
     "limestone": "limestone|chalk|impureLimestone|carbonateSedimentaryRock|marble|travertine",
     "limestone-marl": "impureCarbonateSedimentaryRock",
@@ -241,9 +241,13 @@ EGDI_TERMS = {
     "sandstone": "sandstone|wacke|arenite|clasticSandstone",
     "conglomerate": "conglomerate|breccia|diamictite",
     "quartzite": "quartzite|nonClasticSiliceousSedimentaryRock|biogenicSilicaSedimentaryRock",
-    "granite": "granite|granitoid|monzogranite|syenogranite|granodiorite|tonalite|diorite|quartzDiorite|dioriticRock|syenite|syeniticRock|monzonite|foidSyenitoid|foidBearingSyenite|anorthositicRock|phaneriticIgneousRock|acidicIgneousRock|orthogneiss|gneiss|paragneiss|migmatite|granulite",
-    "schist-slate-shale": "shale|slate|schist|micaSchist|phyllite|phyllonite|amphibolite|foliatedMetamorphicRock|chloriteActinoliteEpidoteMetamorphicRock|glaucophaneLawsoniteEpidoteMetamorphicRock",
-    "basalt-lava": "basalt|alkaliOlivineBasalt|tholeiiticBasalt|basanite|tephrite|andesite|spilite|basicIgneousRock|fineGrainedIgneousRock|komatiiticRock",
+    "granite": "granite|granitoid|monzogranite|syenogranite|granodiorite|tonalite|diorite|quartzDiorite|dioriticRock|syenite|"
+               "syeniticRock|monzonite|foidSyenitoid|foidBearingSyenite|anorthositicRock|phaneriticIgneousRock|acidicIgneousRock|"
+               "orthogneiss|gneiss|paragneiss|migmatite|granulite",
+    "schist-slate-shale": "shale|slate|schist|micaSchist|phyllite|phyllonite|amphibolite|foliatedMetamorphicRock|"
+                          "chloriteActinoliteEpidoteMetamorphicRock|glaucophaneLawsoniteEpidoteMetamorphicRock",
+    "basalt-lava": "basalt|alkaliOlivineBasalt|tholeiiticBasalt|basanite|tephrite|andesite|spilite|basicIgneousRock|"
+                   "fineGrainedIgneousRock|komatiiticRock",
     "felsic-lava": "rhyolite|rhyolitoid|dacite|trachyte|trachytoid|trachyticRock|phonolite|porphyry",
     "dolerite": "gabbro|gabbroid|gabbroicRock|doleriticRock|ultramaficIgneousRock|peridotite|pyroxenite|serpentinite|eclogite",
     "tuff": "tuffBrecciaAgglomerateOrPyroclasticBreccia|ashTuffLapillistoneAndLapilliTuff|pyroclasticRock",
@@ -436,10 +440,10 @@ def frame_ring(ring: list, to_frame, step_deg: float = 0.02) -> list:
 
 
 def region_levels(table: dict, start: str, to_frame, to_wgs84) -> tuple[list[np.ndarray], list[str]]:
-    """Per level, R8: the index into the names of the region that each texel lies in. A texel lies
-    in the ecoregion that holds it, or the nearest within REACH_M, else in `start`; from there it
-    steps into subregions as region_of's walk does. Coarse levels first: a texel no ecoregion holds
-    takes the region of the coarser level under it."""
+    """Per level, R8: the index into the names, the regions present, of the region that each texel
+    lies in. A texel lies in the ecoregion that holds it, or the nearest within REACH_M, else in
+    `start`; from there it steps into subregions as region_of's walk does. Coarse levels first: a
+    texel no ecoregion holds takes the region of the coarser level under it."""
     from rasterio.features import rasterize
 
     names = [start]
@@ -482,7 +486,10 @@ def region_levels(table: dict, start: str, to_frame, to_wgs84) -> tuple[list[np.
                     index[held] = code(name)
             n += 1
         levels[k] = index
-    return levels, names
+    present = sorted(set().union(*(np.unique(index).tolist() for index in levels)))
+    remap = np.zeros(256, np.uint8)
+    remap[present] = np.arange(len(present))
+    return [remap[index] for index in levels], [names[n] for n in present]
 
 
 def by_region(heights: np.ndarray, regions: np.ndarray, rules: list[dict], half: float, shape) -> np.ndarray:
@@ -1844,7 +1851,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
         print(f"  land cover: {len(national)} polygons", flush=True)
     regions, names = region_levels(table, spot["file"], to_frame, to_wgs84)
     rules = [rules_of(table, name) for name in names]
-    print(f"  regions: {', '.join(name for code, name in enumerate(names) if any((r == code).any() for r in regions))}", flush=True)
+    print(f"  regions: {', '.join(names)}", flush=True)
     if names[regions[0][SIZE // 2, SIZE // 2]] != chain[-1]:
         print(f"  the eye's texel lies in {names[regions[0][SIZE // 2, SIZE // 2]]}, not in {chain[-1]}", flush=True)
     rocks = lithology_sources()
@@ -1972,7 +1979,8 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
     sizes.append(("-", "trees", len(blob)))
     footprints = [(metres(way), way["tags"]) for way in ways if "building" in way["tags"]]
     footprints = [(ring, tags) for ring, tags in footprints if len(ring) >= 4 and np.abs(ring).max() <= BUILDING_HALF_M]
-    lons, lats = to_wgs84.transform([ring[:-1, 0].mean() for ring, _ in footprints], [ring[:-1, 1].mean() for ring, _ in footprints])
+    lons, lats = to_wgs84.transform([ring[:-1, 0].mean() for ring, _ in footprints],
+                                    [ring[:-1, 1].mean() for ring, _ in footprints])
     # Each house takes the style of its own place: its subdivision, else the eye's.
     homes = places_at(places["subdivisions"], np.array(lons), np.array(lats))
     buildings = []

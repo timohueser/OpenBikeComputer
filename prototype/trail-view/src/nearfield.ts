@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { groundAt, heightAtTexel, type Bake, type Building } from './bake';
-import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, WATER } from './materials';
+import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, ROUGH, WATERY } from './materials';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import { packNamed, type Pack, type Region } from './regions';
 import { bridges } from './bridges';
@@ -23,7 +23,6 @@ import { buildingVertex, depthFragment, objectFragment, treeVertex } from './sha
 
 /** Each material code's cover, by name. */
 const COVER_OF = COVER.map((cover) => COVER_ORDER[cover]);
-const WATERY = MATERIALS.map((_, code) => WATER.has(code));
 
 /** Each ground plant comes in this many shapes, so a stand does not repeat one clump. */
 const PLANT_SEEDS = 3;
@@ -71,8 +70,6 @@ const CRAG_HEIGHT_M: [number, number] = [1.5, 3.5];
 /** Small stones on a jittered grid within this many metres, on exposed rock. */
 const STONE_RADIUS_M = 60;
 const STONE_SPACING_M = 1.2;
-/** Covers of open, unfarmed ground, as the shader's `rough`. */
-const ROUGH = new Set(['shrub', 'grass', 'bare', 'wetland', 'moss']);
 
 /** OSM building values that draw nothing, draw as a barn or shed, or draw as a block. */
 const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
@@ -330,13 +327,14 @@ export class NearField {
     const px = (2 * half0_m) / size;
     const texel = (x: number, y: number) => Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px);
     const materialAt = (x: number, y: number) => bake.material[texel(x, y)];
-    // The region at x, y from the finest level that holds it.
-    const regionAt = (x: number, y: number) => {
+    // A ground layer at x, y, from the finest level that holds it.
+    const at = (layer: Uint8Array, x: number, y: number) => {
       const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), bake.meta.levels - 1);
       const half = half0_m * 2 ** k;
       const p = (2 * half) / size;
-      return bake.region[k * size * size + Math.floor((half - y) / p) * size + Math.floor((x + half) / p)];
+      return layer[k * size * size + Math.floor((half - y) / p) * size + Math.floor((x + half) / p)];
     };
+    const regionAt = (x: number, y: number) => at(bake.region, x, y);
     const kits = regions.map(({ look, pack }) => ({
       look,
       pack,
@@ -349,7 +347,7 @@ export class NearField {
     // The colour of the rock at x, y: its lithology's in the region's rules, else the region's rock.
     const stoneAt = (x: number, y: number) => {
       const { look } = kitAt(x, y);
-      return look.lithology?.[LITHOLOGIES[bake.litho[texel(x, y)]]]?.colour ?? look.rock;
+      return look.lithology?.[LITHOLOGIES[at(bake.litho, x, y)]]?.colour ?? look.rock;
     };
     const groups = new Map<string, Instances>();
     // One stream of random numbers per kind of object, so placing one kind never moves another.
@@ -435,7 +433,7 @@ export class NearField {
         const d = Math.hypot(rx, ry);
         const { outcrops } = kitAt(rx, ry).look;
         const material = materialAt(rx, ry);
-        if (!outcrops || d > ROCK_RADIUS_M || d < ROCK_CLEAR_M || !ROUGH.has(COVER_OF[material]) || this.offGround(bake, rx, ry, px)) continue;
+        if (!outcrops || d > ROCK_RADIUS_M || d < ROCK_CLEAR_M || !ROUGH.has(material) || this.offGround(bake, rx, ry, px)) continue;
         const slope = Math.hypot(h(rx + 3, ry) - h(rx - 3, ry), h(rx, ry + 3) - h(rx, ry - 3)) / 6;
         const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
         const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;

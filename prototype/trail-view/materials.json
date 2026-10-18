@@ -44,7 +44,7 @@
   { "id": "sandstone", "about": "Sandstone, greywacke and arkose.", "hardness": 0.6 },
   { "id": "conglomerate", "about": "Conglomerate and breccia.", "hardness": 0.7 },
   { "id": "quartzite", "about": "Quartzite and chert.", "hardness": 1.0 },
-  { "id": "granite", "about": "Granite and other light plutonic rock, gneiss.", "hardness": 1.0 },
+  { "id": "granite", "about": "Granite, granodiorite, diorite and gneiss.", "hardness": 1.0 },
   { "id": "schist-slate-shale", "about": "Schist, slate, phyllite and shale.", "hardness": 0.55 },
   { "id": "basalt-lava", "about": "Basalt and other dark lava flows.", "hardness": 0.85 },
   { "id": "cinder-scoria", "about": "Loose volcanic cinder, scoria and ash.", "hardness": 0.25 },

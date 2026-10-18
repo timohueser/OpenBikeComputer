@@ -21,7 +21,12 @@ const code = (id: string) => MATERIALS.indexOf(id);
 export const MOOR = new Set(['heath', 'bog'].map(code));
 /** Exposed rock: crag and turf ledges together, strewn with stones, where nothing is planted. */
 export const ROCKY = new Set(['bare-rock', 'scree'].map(code));
-export const WATER = new Set(['sea', 'inland-water'].map(code));
+/** Open, unfarmed ground: slabs break through it and bushes stand on it. Pasture is cleared. */
+export const ROUGH = new Set(
+  MATERIALS.flatMap((id, i) => (['shrub', 'grass', 'bare', 'wetland', 'moss'].includes(COVER_ORDER[COVER[i]]) && id !== 'pasture' ? [i] : [])),
+);
+/** Per material code, whether it is water: the sea or inland water. */
+export const WATERY = MATERIALS.map((id) => id === 'sea' || id === 'inland-water');
 
 /** The vocabulary's own problems: unknown covers, and ids that repeat. */
 export function vocabularyProblems(): string[] {

@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { hash, hex, lump, noise, smooth, unit } from './shape';
 
 /** Grey body, a lit top, and lichen: yellow-green and the orange of salt-sprayed rock. The page
- * multiplies these by the region's rock colour over ROCK_GREY. */
+ * multiplies these by the colour of the rock they lie on over ROCK_GREY. */
 export const ROCK_GREY = '#8e908a';
 const BODY = ['#7d7f78', ROCK_GREY, '#a3a49c'].map(hex);
 const LICHEN = ['#b4b05a', '#c98a3a'].map(hex);

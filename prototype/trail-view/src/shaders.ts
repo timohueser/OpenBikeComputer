@@ -1,6 +1,6 @@
 /** The GLSL. Every pass reads heights through the same level rule as `Surface` in surface.ts. */
 
-import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY } from './materials';
+import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, ROUGH } from './materials';
 import { SLOT } from './rules';
 import { BLANKET } from './surface';
 
@@ -167,7 +167,7 @@ vec3 cloudColour(vec3 dir, float thick, vec3 sunLight, vec3 skyLight) {
 }
 `;
 
-/** The vocabulary of materials.json, compiled in: each material's cover, moor and rock, each lithology's hardness. */
+/** The vocabulary of materials.json, compiled in: each material's cover, moor, rock and rough ground, each lithology's hardness. */
 const flags = (set: Set<number>) => MATERIALS.map((_, i) => (set.has(i) ? '1.0' : '0.0')).join(', ');
 /** WorldCover's legend colour per cover, in sRGB. */
 const LEGEND = [[0.0, 0.39, 0.0], [1.0, 0.73, 0.13], [1.0, 1.0, 0.3], [0.94, 0.59, 1.0], [0.98, 0.0, 0.0], [0.71, 0.71, 0.71],
@@ -183,7 +183,9 @@ ${COVER_ORDER.map((cover, i) => `const int COVER_${cover.toUpperCase()} = ${i};`
 const int COVERS[${MATERIALS.length}] = int[](${COVER.join(', ')});
 const float MOOR[${MATERIALS.length}] = float[](${flags(MOOR)});
 const float ROCKY[${MATERIALS.length}] = float[](${flags(ROCKY)});
+const float ROUGH[${MATERIALS.length}] = float[](${flags(ROUGH)});
 const float HARDNESS[${LITHOLOGIES.length}] = float[](${HARDNESS.map((h) => h.toFixed(3)).join(', ')});
+const int HEATH = ${MATERIALS.indexOf('heath')};
 const int SLOT_MATERIALS = ${SLOT.materials};
 const int SLOT_LITHOLOGIES = ${SLOT.lithologies};
 const int SLOT_CLIFF = ${SLOT.cliff};
@@ -227,8 +229,8 @@ struct Ground {
   float shore;
   // How open the sea is to the swell, 0 sheltered to 1 the open ocean.
   float exposure;
-  // Share of open, unfarmed ground (shrub, grass, bare, wetland, moss), and how lush it is, 0–1;
-  // lush is 0 where no Sentinel-2 pixel says.
+  // Share of open, unfarmed ground (ROUGH in materials.ts), and how lush it is, 0–1; lush is 0
+  // where no Sentinel-2 pixel says.
   float rough;
   float lush;
   // Heath and bog, 0–1.
@@ -311,7 +313,8 @@ Ground groundOn(float k, vec2 p, float footprint) {
     float most = texture(ndviMax, vec3(uv, k)).r;
     barren = most > 0.5 / 255.0 ? 1.0 - smoothstep(0.15, 0.35, (most * 255.0 - 1.0) / 127.0 - 1.0) : 0.0;
   }
-  // Rock where the satellite sees green is a ledge of turf.
+  // Exposed rock where the satellite sees green is a ledge of turf: the region's heath where it
+  // paints one, else grass.
   float ledge = smoothstep(0.35, 0.6, ndvi);
   // The four texels around p, each its material through its region's rules, blended as a bilinear
   // sample would be. A wobble of up to half a texel turns WorldCover's 10 m stairs into brush edges.
@@ -350,9 +353,13 @@ Ground groundOn(float k, vec2 p, float footprint) {
     vec4 rock = rule(own, SLOT_LITHOLOGIES + cell.g);
     palette += w * c;
     paint += w * named.a * (1.0 - turf) * vec4(named.rgb, 1.0);
+    if (turf > 0.0) {
+      vec4 moor = rule(own, SLOT_MATERIALS + HEATH);
+      paint += w * moor.a * turf * vec4(moor.rgb, 1.0);
+    }
     water += cover == COVER_WATER ? w : 0.0;
     tree += cover == COVER_TREE ? w : 0.0;
-    rough += open || cover == COVER_BARE ? w : 0.0;
+    rough += w * ROUGH[cell.r];
     moor += w * MOOR[cell.r];
     bare += w * ROCKY[cell.r];
     stone += w * rock.rgb;

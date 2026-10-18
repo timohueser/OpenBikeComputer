@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { heightAtTexel, heightSize, type Bake } from './bake';
 import type { Light } from './light';
-import { MATERIALS, WATER } from './materials';
+import { WATERY } from './materials';
 import type { Region } from './regions';
 import { NearField } from './nearfield';
 import { ROAD_LINE, ROADS, VARIEGATED } from './palette';
@@ -37,8 +37,6 @@ function exposure(bake: Bake, swell: number | undefined): Uint8Array {
   for (let t = 0; t < sum.length; t++) out[t] = Math.round((255 * sum[t]) / FETCH_M);
   return out;
 }
-
-const WATERY = MATERIALS.map((_, code) => WATER.has(code));
 
 /** Metres of open sea from each sea texel toward a bearing, up to FETCH_M; 0 elsewhere. */
 function fetchToward(bake: Bake, bearing: number): Float32Array {
