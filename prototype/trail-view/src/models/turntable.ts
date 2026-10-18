@@ -7,9 +7,9 @@
 import * as THREE from 'three';
 import { BUILDING_KINDS, building, buildingLabel, type BuildingKind } from './buildings';
 import { PACK_NAMES, packNamed } from '../regions';
-import { plant, plantLabel } from './plants';
+import { plant, plantLabel, type PlantName } from './plants';
 import { hex, paint, soft, triangles } from './shape';
-import { LOD_RANGE_M, SEASONS, tree, treeLabel, type Lod, type Season } from './trees';
+import { LOD_RANGE_M, SEASONS, tree, treeLabel, TREE_NAMES, type Lod, type Season, type TreeName } from './trees';
 
 /** Width, depth and wall height in metres for each kind on the sheet. */
 const FOOTPRINTS: Record<BuildingKind, [number, number, number?]> = {
@@ -119,8 +119,11 @@ function show(packName: string, season: Season): void {
   for (const species of kit.trees) {
     const [low, high] = species.elevation;
     const lods = block(forest, 'lods');
-    heading(lods, `${treeLabel(species.tree)} · ${species.leaf}, on ${species.cover} · ${low}–${high} m · weight ${species.weight}`, 'h3');
-    for (const lod of [0, 1, 2] as Lod[]) cell(lods, tree(species.tree, season, lod), `LOD ${lod}`, `within ${LOD_RANGE_M[lod]} m`);
+    const name = species.tree;
+    const isTree = TREE_NAMES.includes(name as TreeName);
+    heading(lods, `${isTree ? treeLabel(name as TreeName) : plantLabel(name as PlantName)} · ${species.leaf}, on ${species.cover} · ${low}–${high} m · weight ${species.weight}`, 'h3');
+    if (!isTree) cell(lods, plant(name as PlantName, season), 'shrub', 'one LOD');
+    else for (const lod of [0, 1, 2] as Lod[]) cell(lods, tree(name as TreeName, season, lod), `LOD ${lod}`, `within ${LOD_RANGE_M[lod]} m`);
   }
   heading(sheet, 'Ground plants');
   const plants = block(sheet, 'row');

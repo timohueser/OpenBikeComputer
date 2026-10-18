@@ -1,0 +1,21 @@
+{
+ "name": "Scottish Highlands",
+ "extends": "atlantic",
+ "about": "Scots pine and birch in the glens, spruce plantations, tawny moor grass, heather, bracken and bog cotton on the hill; Highland cattle by the croft; white harled and grey stone cottages.",
+ "trees": {
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 650], "weight": 3, "evergreen": true },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 }
+ },
+ "ground": ["grass", "moor-grass", "heather", "heather-bloom", "bracken", "bog-cotton"],
+ "herds": {
+  "sheep": { "groups": 6 },
+  "highland-cow": { "groups": 2, "size": [2, 6], "on": ["pasture", "rough"] }
+ },
+ "style": {
+  "name": "Highland cottage",
+  "palette": {
+   "render": ["#f2f0ea", "#efede6", "#e6e2d8", "#a8a49b"]
+  }
+ }
+}

@@ -1,31 +1,16 @@
 {
  "name": "Irish coast",
- "extends": "base",
- "trees": [
-  { "tree": "hawthorn", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
-  { "tree": "gorse", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
- ],
- "ground": ["grass", "heather", "heather-bloom"],
- "herds": [
-  { "animal": "sheep", "groups": 10, "size": [2, 8], "on": ["pasture", "rough", "heath", "bog"] }
- ],
+ "extends": "atlantic",
+ "about": "Wind-bent hawthorn and gorse; cottages in white and in the coast's yellows, blues and pinks, with bright doors.",
+ "trees": {
+  "hawthorn": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
+ },
  "style": {
   "name": "Irish cottage",
-  "pitch": [36, 44],
-  "eave": 0.2,
-  "verge": 0.15,
-  "hip": 0,
-  "timber": "none",
-  "shutters": false,
-  "chimneys": 2,
   "palette": {
    "render": ["#f4f1e8", "#f4f1e8", "#efe8d2", "#e8d690", "#b9cdd6", "#e6bcb2"],
-   "wood": ["#5a4a3e"],
-   "roof": ["#4e555c", "#5b6168", "#454b52"],
-   "door": ["#a8322c", "#2f5a8a", "#3b6b4a", "#e2b33a"],
-   "shutter": ["#2e3a44"],
-   "plinth": "#9a958c",
-   "chimney": "#f0ece2"
+   "door": ["#a8322c", "#2f5a8a", "#3b6b4a", "#e2b33a"]
   }
  }
 }

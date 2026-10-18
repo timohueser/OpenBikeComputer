@@ -1,14 +1,22 @@
 {
  "name": "Black Forest",
  "extends": "base",
- "trees": [
-  { "tree": "norway-spruce", "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1300], "weight": 4 },
-  { "tree": "silver-fir", "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1200], "weight": 3 },
-  { "tree": "european-beech", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 5 }
- ],
+ "trees": {
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1300], "weight": 4 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1200], "weight": 3 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 5 }
+ },
  "ground": ["grass", "fern"],
  "orchard": "hawthorn",
- "houses": { "name": "Town house", "pitch": [40, 48], "hip": 0, "eave": 0.5, "verge": 0.4, "timber": "none", "chimneys": 1 },
+ "houses": {
+  "name": "Town house",
+  "pitch": [40, 48],
+  "hip": 0,
+  "eave": 0.5,
+  "verge": 0.4,
+  "timber": "none",
+  "chimneys": 1
+ },
  "style": {
   "name": "Black Forest farmhouse",
   "pitch": [44, 52],

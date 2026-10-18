@@ -1,0 +1,41 @@
+{
+ "name": "Scottish Highlands",
+ "extends": "uk",
+ "where": [
+  [[-8.0, 55.3], [-5.0, 55.3], [-4.75, 56.0], [-4.35, 56.15], [-3.85, 56.37], [-3.5, 56.55], [-3.0, 56.75], [-2.6, 56.9], [-2.2, 57.0], [-2.6, 57.25], [-3.2, 57.4], [-3.7, 57.52], [-4.2, 57.55], [-3.9, 57.85], [-3.4, 58.2], [-3.0, 58.7], [-5.0, 58.7], [-7.0, 58.6], [-8.0, 58.6]]
+ ],
+ "about": "North and west of the Highland Boundary Fault: tawny moor and dark crags over glens and lochs, birch and pine low down, a low grey Atlantic sky.",
+ "pack": "highlands",
+ "cliffs": {
+  "reach_m": 35,
+  "raise_m": 30
+ },
+ "relief": {
+  "radius_m": 60,
+  "amount": 0.7
+ },
+ "look": {
+  "ramps": {
+   "grass": ["#8c7c4e", "#7a7548", "#617444"],
+   "shrub": ["#6b5440", "#6e5b3e", "#5c5a38"],
+   "moss": ["#8a7a56", "#857f4f", "#6e7a4a"]
+  },
+  "seasons": {
+   "autumn": { "grass": ["#9c7a44", "#8f723f", "#77703f"] },
+   "winter": { "grass": ["#97805a", "#8a7a52", "#71704a"] }
+  },
+  "moor": { "colour": "#6f5c3a", "heather": "#5e4552", "share": 0.35 },
+  "snap": 0.8,
+  "hazeKm": 18,
+  "grade": { "shadow": [-0.003, 0.0, 0.008], "light": [0.005, 0.003, -0.004], "saturation": 0.95 },
+  "weather": {
+   "sunny": { "cover": 0.5, "base": 1100, "dark": 0.4, "zenith": "#5574a6", "horizon": "#d6dee8", "grey": 0.35, "towers": 0 }
+  },
+  "outcrops": 0.6,
+  "rock": "#86847d",
+  "cliff": "#605e59",
+  "snowline": 1150,
+  "sea": { "deep": "#2b3d4c", "shallow": "#46606f" },
+  "swell": 260
+ }
+}

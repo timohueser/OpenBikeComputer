@@ -1,0 +1,29 @@
+{
+ "name": "Canary Islands",
+ "extends": "spain",
+ "where": [[-18.3, 27.5, -13.3, 29.5]],
+ "about": "Volcanic islands in the trade wind: dark basalt and red cinder, a deep Atlantic blue, white surf on black rock, Canary pine on the mid slopes.",
+ "tz": "Atlantic/Canary",
+ "pack": "canary",
+ "cliffs": {
+  "reach_m": 35,
+  "raise_m": 30
+ },
+ "look": {
+  "ramps": {
+   "bare": ["#6e5a4c", "#7f6a58", "#8e7a62"]
+  },
+  "snap": 0.5,
+  "hazeKm": 60,
+  "outcrops": 0.5,
+  "rock": "#5c5550",
+  "cliff": "#4a4542",
+  "snowline": 3500,
+  "sea": { "deep": "#1d4c78", "shallow": "#357f9c" },
+  "swell": 340,
+  "grade": { "shadow": [-0.002, 0.0, 0.006], "light": [0.01, 0.005, -0.005], "saturation": 1.04 },
+  "weather": {
+   "sunny": { "cover": 0.2, "base": 1200, "zenith": "#2c66b8", "horizon": "#a8c6e4", "grey": 0.5 }
+  }
+ }
+}

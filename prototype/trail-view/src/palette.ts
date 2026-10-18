@@ -56,6 +56,8 @@ export const DECIDUOUS: Record<string, number> = { needleleaved: 0.2, mixed: 0.5
 
 /** Road surfaces in the order of ROAD_WIDTHS in bake.py: main, road, gravel, dirt, grass, path. */
 export const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
+/** The line along each edge of a main road. */
+export const ROAD_LINE = '#d6d4cc';
 
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];

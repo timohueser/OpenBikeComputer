@@ -66,7 +66,7 @@ export interface Bake {
   glo30: Float32Array[];
   /** RG8 per texel and level: the class's palette index, and 255 on water. */
   classes: Uint8Array;
-  /** RG8 per texel, k < road_levels: distance to the nearest road in 0.1 m, and its surface code. */
+  /** RGB8 per texel, k < road_levels: distance to the nearest road edge in 0.1 m, its surface code and half-width in 0.05 m. */
   roads: Uint8Array;
   /** RG8 per texel, k < water_levels: the share of the texel under OSM water, 0–255, and sqrt(shore distance / shore_reach_m). */
   water: Uint8Array;
@@ -82,6 +82,8 @@ export interface Bake {
   trees: Float32Array;
   buildings: Building[];
   peaks: Peak[];
+  /** Cable cars and lifts: the OSM aerialway kind and the line station to station, x, y in metres. */
+  aerialways: { kind: string; line: number[] }[];
   /** Bytes on the wire: heights and classes. */
   bytes: number;
 }
@@ -131,7 +133,7 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks] = await Promise.all([
+  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
@@ -144,6 +146,7 @@ export async function loadBake(id: string): Promise<Bake> {
     fetch(`${base}buildings.json`).then((r) => r.json()),
     unpack(`${base}walls.bin.gz`),
     fetch(`${base}peaks.json`).then((r) => (r.ok ? r.json() : [])),
+    fetch(`${base}aerialways.json`).then((r) => (r.ok ? r.json() : [])),
   ]);
   const bytes = [...surface, ...glo30, classes, roads, water, rock, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
   return {
@@ -161,6 +164,20 @@ export async function loadBake(id: string): Promise<Bake> {
     buildings,
     walls: new Float32Array(walls.data),
     peaks: (peaks as [number, number, number | null, string][]).map(([x, y, ele, name]) => ({ x, y, ele, name })),
+    aerialways: (aerialways as [string, number[]][]).map(([kind, line]) => ({ kind, line })),
     bytes,
   };
+}
+
+/** The bare ground's height above the eye at x, y, bilinear from the finest level that holds it. */
+export function groundAt(bake: Bake, x: number, y: number): number {
+  const { size, half0_m, levels } = bake.meta;
+  const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), levels - 1);
+  const half = half0_m * 2 ** k;
+  const px = (2 * half) / size;
+  const [u, v] = [(x + half) / px - 0.5, (half - y) / px - 0.5];
+  const [i, j] = [Math.min(Math.max(Math.floor(u), 0), size - 2), Math.min(Math.max(Math.floor(v), 0), size - 2)];
+  const [fu, fv] = [u - i, v - j];
+  const h = (di: number, dj: number) => bake.surface[k][(j + dj) * size + i + di];
+  return (h(0, 0) * (1 - fu) + h(1, 0) * fu) * (1 - fv) + (h(0, 1) * (1 - fu) + h(1, 1) * fu) * fv;
 }

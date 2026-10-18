@@ -76,6 +76,24 @@ float shadowAt(vec2 p) {
 }
 `;
 
+/** Reads HEIGHTS and GRID, which the shader brings in before it. */
+const MESH_LEVEL = /* glsl */ `
+/**
+ * A mesh vertex samples the level whose texels match the mesh's own spacing there, blended
+ * between the two levels around it: ground detail smaller than a triangle (a sea cliff 1 km off)
+ * slopes instead of aliasing into a comb, and no ring of vertices jumps a whole level, which
+ * would blunt peaks. The fragment shader keeps the finer normals.
+ */
+float meshZ(vec2 p, bool ground) {
+  float spacing = length(p) * max(exp(ringStep) - 1.0, 6.2831853 / azimuths);
+  float level = clamp(log2(max(spacing / (2.0 * half0 / 1024.0), 1.0)), levelOf(p), levels - 1.0);
+  float k = floor(level);
+  float z = ground ? groundZ(k, p) : surfaceZ(k, p);
+  if (level > k) z = mix(z, ground ? groundZ(k + 1.0, p) : surfaceZ(k + 1.0, p), level - k);
+  return z;
+}
+`;
+
 const SKY = /* glsl */ `
 uniform vec3 zenith;
 uniform vec3 horizon;
@@ -152,6 +170,7 @@ uniform float snap;
 uniform sampler2DArray roads;
 uniform float roadLevels;
 uniform vec3 roadColours[6];
+uniform vec3 roadLine;
 uniform sampler2DArray waterMap;
 uniform sampler2DArray exposureMap;
 uniform float waterLevels;
@@ -200,6 +219,33 @@ float noise(vec2 q) {
   vec2 f = q - i;
   f = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0)), f.x), f.y);
+}
+
+/** The share of a pixel w metres wide, centred on x, that falls inside [a, b]. */
+float band(float x, float a, float b, float w) {
+  return clamp((min(x + 0.5 * w, b) - max(x - 0.5 * w, a)) / w, 0.0, 1.0);
+}
+
+/**
+ * A road's surface at inside metres in from its edge and across metres from its centreline,
+ * seen by a pixel w metres wide, over the ground colour beside it. Paved main roads keep a line
+ * along each edge; lanes and tracks wear two wheel ruts, grass and dirt ones with grass between;
+ * gravel lies in grains.
+ */
+vec3 roadSurface(int code, float inside, float across, vec2 p, float w, vec3 ground) {
+  vec3 c = roadColours[code - 1];
+  // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
+  c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
+  // Only roads of two full lanes carry edge lines.
+  if (code == 1 && inside + across >= 3.5) c = mix(c, roadLine, band(inside, 0.25, 0.37, w));
+  if (code == 3) c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
+  float ruts = band(across, 0.55, 1.05, w);
+  // One car wide: inside and across add up to the half-width.
+  bool lane = inside + across < 2.6;
+  if ((code == 2 && lane) || code == 3) c *= 1.0 - 0.08 * ruts;
+  if (code == 4) c = mix(c * (1.0 - 0.18 * ruts), ground, band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), w) * 0.85);
+  if (code == 5) c = mix(mix(ground, c, 0.35), roadColours[3], ruts * 0.8);
+  return c;
 }
 
 vec3 ramp(int index, float t) {
@@ -291,25 +337,42 @@ Ground groundOn(float k, vec2 p, float footprint) {
 
   // A road paints where the distance to the nearest road edge is negative; the distance is linear
   // across an edge, so filtering keeps the edge sharp to a pixel. Its surface comes from the four
-  // codes around p, blended like the classes, so roads of two kinds meet without a seam.
+  // codes around p, blended like the classes, so roads of two kinds meet without a seam. Unpaved
+  // edges fray into the ground.
   float road = 0.0;
   if (k < roadLevels) {
-    float edge = texture(roads, vec3(uv, k)).r * 25.5 - 5.0;
-    road = 1.0 - smoothstep(-footprint, footprint, edge);
-    if (road > 0.0) {
-      vec3 surface = vec3(0.0);
+    vec3 field = texture(roads, vec3(uv, k)).rgb;
+    float edge = field.r * 25.5 - 5.0;
+    if (edge < footprint + 0.3) {
+      float across = max(field.b * 12.75 + edge, 0.0);
+      int codes[4];
+      float weights[4];
       float weight = 0.0;
+      float fray = 0.0;
       ivec2 cell = ivec2(floor(texel));
       vec2 h = texel - floor(texel);
       for (int j = 0; j < 4; j++) {
         ivec2 o = ivec2(j & 1, j >> 1);
-        int code = int(texelFetch(roads, ivec3(clamp(cell + o, ivec2(0), ivec2(1023)), int(k)), 0).g * 255.0 + 0.5);
-        if (code == 0) continue;
-        float w = (o.x == 1 ? h.x : 1.0 - h.x) * (o.y == 1 ? h.y : 1.0 - h.y);
-        surface += w * roadColours[code - 1];
-        weight += w;
+        codes[j] = int(texelFetch(roads, ivec3(clamp(cell + o, ivec2(0), ivec2(1023)), int(k)), 0).g * 255.0 + 0.5);
+        weights[j] = codes[j] == 0 ? 0.0 : (o.x == 1 ? h.x : 1.0 - h.x) * (o.y == 1 ? h.y : 1.0 - h.y);
+        fray += weights[j] * (codes[j] > 2 ? 0.18 : 0.0);
+        weight += weights[j];
       }
-      albedo = mix(albedo, surface / max(weight, 1e-4), road * min(weight * 4.0, 1.0));
+      // Each surface once: the four taps mostly share one.
+      vec3 surface = vec3(0.0);
+      for (int j = 0; j < 4; j++) {
+        if (weights[j] == 0.0) continue;
+        float w = weights[j];
+        for (int i = j + 1; i < 4; i++) {
+          if (codes[i] != codes[j]) continue;
+          w += weights[i];
+          weights[i] = 0.0;
+        }
+        surface += w * roadSurface(codes[j], -edge, across, p, footprint, albedo);
+      }
+      edge += fray / max(weight, 1e-4) * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5) * 2.0;
+      road = (1.0 - smoothstep(-footprint, footprint, edge)) * min(weight * 4.0, 1.0);
+      albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
   return Ground(albedo, water, tree, snow, road, shore, exposure, rough, t, moor, bare);
@@ -336,14 +399,17 @@ Ground groundAt(vec2 p, float footprint) {
 export const terrainVertex = /* glsl */ `
 ${HEIGHTS}
 ${SHADOW_AT}
+${MESH_LEVEL}
 
 out vec3 vWorld;
 out float vShadow;
+// How far the mesh stands above the finest ground here.
+out float vLift;
 
 void main() {
   vec2 p = (modelMatrix * vec4(position, 1.0)).xy;
-  float k = min(levelOf(p), levels - 1.0);
-  vWorld = vec3(p, surfaceZ(k, p));
+  vWorld = vec3(p, meshZ(p, false));
+  vLift = vWorld.z - surfaceZ(min(levelOf(p), levels - 1.0), p);
   vShadow = shadowAt(p);
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
 }
@@ -491,6 +557,7 @@ uniform vec3 variegated[3];
 
 in vec3 vWorld;
 in float vShadow;
+in float vLift;
 out vec4 colour;
 
 // Voronoi cells about size metres across: the nearest cell's id hash, the gap to the next cell's
@@ -539,20 +606,27 @@ void main() {
   float surfaceSize = max(length(dFdx(vWorld)), length(dFdy(vWorld)));
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
+  // Where the mesh stands well above the finest ground, or slopes far more steeply than it, it is
+  // a slope the mesh smoothed out of detail finer than its triangles, as at a sea cliff's foot a
+  // kilometre off: it is cliff, lit like the cliff beside it, not the flat sea under it.
+  vec3 facet = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+  facet *= sign(facet.z);
+  float skirt = max(smoothstep(1.0, 4.0, vLift), smoothstep(0.25, 0.5, n.z - facet.z));
   // How flat the ground is at the pixel's own level: water lies only where it is.
-  float level = n.z;
+  float level = mix(n.z, facet.z, skirt);
   // A cliff spans few texels across and many metres up, so its fine slopes would streak down
   // the face; it takes its normal from coarser levels instead.
   float cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
   // How steep the land is a few texels across: a road cutting or a bank is steep only at the
   // finest level, and stays vegetated.
   float broad = 0.0;
-  if (n.z < 0.95) {
+  if (n.z < 0.95 || skirt > 0.0) {
     float coarseOpen;
     vec3 coarse = groundNormal(vWorld.xy, footprint, 2.0, coarseOpen);
-    broad = 1.0 - smoothstep(0.85, 0.95, coarse.z);
-    n = normalize(mix(n, coarse, cliff));
-    open = mix(open, coarseOpen, cliff);
+    broad = max(1.0 - smoothstep(0.85, 0.95, coarse.z), skirt);
+    float towards = max(cliff, skirt);
+    n = normalize(mix(n, coarse, towards));
+    open = mix(open, coarseOpen, towards);
   }
   Ground g = groundAt(vWorld.xy, footprint);
   // Steep open ground is rock, banded in strata by height; trees and roads hold on to it. Where
@@ -581,7 +655,7 @@ void main() {
   // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
   // bare only where they are near cliffs.
   float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
-  float steep = (1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad;
+  float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
@@ -645,6 +719,13 @@ void main() {
   }
   // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
   vec3 face = (rockLevels > 0.0 ? stone : cliffRock) * strata;
+  // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
+  // cliff reads; they fade where a pixel spans a bed.
+  float along = dot(vWorld.xy, strike);
+  float ledge = fract(bed / 3.5 + 0.9 * noise(vec2(along / 14.0, bed / 11.0)));
+  // Cracks come and go along the bed, so the beds read as rock, not as contour lines.
+  float broken = smoothstep(0.35, 0.6, noise(vec2(along / 5.0, bed / 2.0 + 3.0)));
+  face *= 1.0 + (1.0 - smoothstep(0.3, 1.2, surfaceSize)) * (0.12 * (1.0 - smoothstep(0.0, 0.18, ledge)) - 0.28 * broken * smoothstep(0.82, 0.97, ledge));
   face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
   face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
     * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
@@ -693,6 +774,7 @@ void main() {
 export const treeVertex = /* glsl */ `
 ${HEIGHTS}
 ${SHADOW_AT}
+${MESH_LEVEL}
 ${COLOUR}
 // How far a model takes its colour from the ground under it: 0 for trees.
 uniform float tie;
@@ -712,7 +794,7 @@ out vec3 vAlbedo;
 void main() {
   vec2 p = tree.xy;
   mat2 turn = mat2(cos(tree.w), sin(tree.w), -sin(tree.w), cos(tree.w));
-  vWorld = vec3(p, groundZ(min(levelOf(p), levels - 1.0), p)) + vec3(turn * position.xy, position.z) * tree.z;
+  vWorld = vec3(p, meshZ(p, true)) + vec3(turn * position.xy, position.z) * tree.z;
   vNormal = vec3(turn * normal.xy, normal.z);
   vShadow = shadowAt(p);
   vAlbedo = color * tint * recolour;

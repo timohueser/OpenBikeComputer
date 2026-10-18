@@ -1,11 +1,11 @@
 {
  "name": "Cascades",
  "extends": "base",
- "trees": [
-  { "tree": "douglas-fir", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 4 },
-  { "tree": "western-hemlock", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1800], "weight": 4 },
-  { "tree": "western-red-cedar", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 }
- ],
+ "trees": {
+  "douglas-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 4 },
+  "western-hemlock": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1800], "weight": 4 },
+  "western-red-cedar": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 }
+ },
  "ground": ["fern", "huckleberry", "grass"],
  "style": {
   "name": "Wood cabin",

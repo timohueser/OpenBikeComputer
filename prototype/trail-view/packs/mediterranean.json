@@ -1,13 +1,13 @@
 {
  "name": "Mediterranean",
  "extends": "base",
- "about": "Aleppo pines and holm oaks on the slopes, kermes oak scrub, garrigue cushions and esparto tussocks between the rocks; hawthorn stands in for almonds.",
- "trees": [
-  { "tree": "aleppo-pine", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 3 },
-  { "tree": "holm-oak", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 2 },
-  { "tree": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 1 }
- ],
- "ground": ["esparto", "garrigue", "grass"],
+ "about": "Aleppo pines and holm oaks on the slopes, kermes oak scrub, garrigue cushions, dwarf fan palms and esparto tussocks between the rocks; hawthorn stands in for almonds.",
+ "trees": {
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 3 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 2 },
+  "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 1 }
+ },
+ "ground": ["esparto", "garrigue", "fan-palm", "grass"],
  "orchard": "hawthorn",
  "style": {
   "name": "Village house",

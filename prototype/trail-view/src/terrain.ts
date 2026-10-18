@@ -9,7 +9,7 @@ import { HABITATS, type Bake } from './bake';
 import type { Light } from './light';
 import type { Region } from './regions';
 import { NearField } from './nearfield';
-import { ROADS, VARIEGATED } from './palette';
+import { ROAD_LINE, ROADS, VARIEGATED } from './palette';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './skyline';
 import type { Weather } from './weather';
@@ -248,6 +248,7 @@ export class Terrain {
       roads: { value: null },
       roadLevels: { value: 0 },
       roadColours: { value: ROADS.map((hex) => new THREE.Color(hex)) },
+      roadLine: { value: new THREE.Color(ROAD_LINE) },
       normals: { value: null },
       nearShadow: { value: null },
       nearShadowMatrix: { value: new THREE.Matrix4() },
@@ -356,7 +357,7 @@ export class Terrain {
     u.canopy.value = this.canopy ?? this.classes;
     u.canopyLevels.value = dtm_levels;
     this.roads?.dispose();
-    this.roads = arrayTexture(bake.roads, size, bake.meta.road_levels, THREE.RGFormat, 'RG8');
+    this.roads = arrayTexture(bake.roads, size, bake.meta.road_levels, THREE.RGBFormat, 'RGB8');
     u.roads.value = this.roads;
     u.roadLevels.value = bake.meta.road_levels;
     this.water?.dispose();
@@ -370,6 +371,7 @@ export class Terrain {
     const land = region.look;
     u.rock.value.set(land.rock);
     (land.roads ?? ROADS).forEach((hex, i) => u.roadColours.value[i].set(hex));
+    u.roadLine.value.set(land.roadLine ?? ROAD_LINE);
     u.cliffRock.value.set(land.cliff ?? land.rock);
     u.seaDeep.value.set(land.sea.deep);
     u.seaShallow.value.set(land.sea.shallow);

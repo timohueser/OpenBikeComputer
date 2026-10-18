@@ -1,6 +1,6 @@
 {
  "name": "World",
- "about": "The root: defaults every region inherits. A region names its parent in 'extends' and the boxes it covers in 'where' as [west, south, east, north]; the deepest region whose box holds the eye wins.",
+ "about": "The root: defaults every region inherits. A region names its parent in 'extends' and the areas it covers in 'where', each a box [west, south, east, north] or a ring of [lon, lat]; the deepest region whose area holds the eye wins.",
  "tz": "UTC",
  "leaf": "mixed",
  "pack": "base",

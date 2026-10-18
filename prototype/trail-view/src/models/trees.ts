@@ -15,11 +15,14 @@ export type Season = (typeof SEASONS)[number];
 export type Lod = 0 | 1 | 2;
 export const LOD_RANGE_M = [40, 200, 1000] as const;
 
-/** Segments around a part, spline rows per tier, conifer tiers and broadleaf crown lumps. */
+/**
+ * Segments around a part, spline rows per tier, conifer tiers and broadleaf crown lumps. A trunk
+ * has its own sides and rows per profile span.
+ */
 const DETAIL = [
-  { sides: 22, rows: 10, tiers: 7, trunk: [10, 8], lumps: 9, ico: 3 },
-  { sides: 10, rows: 6, tiers: 5, trunk: [6, 4], lumps: 6, ico: 1 },
-  { sides: 6, rows: 3, tiers: 3, trunk: [4, 3], lumps: 4, ico: 0 },
+  { sides: 22, rows: 10, tiers: 7, trunk: [10, 2], lumps: 9, ico: 3 },
+  { sides: 10, rows: 6, tiers: 5, trunk: [6, 1], lumps: 6, ico: 1 },
+  { sides: 6, rows: 3, tiers: 3, trunk: [4, 1], lumps: 5, ico: 0 },
 ] as const;
 
 /** Shade, body and lit-tip colour. */
@@ -29,8 +32,16 @@ interface Bark {
   /** Trunk radius at the ground, and the root flare in trunk radii. */
   trunk: number;
   flare: number;
+  /** The trunk's radius at its top, in ground radii; 0.6 by default. */
+  neck?: number;
   /** Colour at the ground and higher up. */
   bark: [string, string];
+  /** Where the ground colour turns into the colour higher up, in shares of the trunk; [0, 0.5] by default. */
+  fade?: [number, number];
+  /** Dark marks on pale bark, as on birch: their colour and share of the bark. */
+  marks?: [string, number];
+  /** Diamond leaf scars, as on a palm: how many around the trunk. */
+  scars?: number;
 }
 
 interface Conifer extends Bark {
@@ -55,6 +66,10 @@ interface Conifer extends Bark {
   under?: string;
   /** How far the leader nods over towards +x, in tree heights. */
   nod?: number;
+  /** Each tier a whorl of branches ending in drooping tufts, with sky between, as on a Canary pine. */
+  tufts?: true;
+  /** Needle tufts sprouting from the bare trunk: how many a near tree has. */
+  sprouts?: number;
 }
 
 interface Broadleaf extends Bark {
@@ -68,8 +83,18 @@ interface Broadleaf extends Bark {
   sweep?: number;
   /** An open crown of separate flat puffs on lifted branches, as on a pine, instead of a dome. */
   open?: true;
+  /** Limbs leave the trunk at staggered heights below their lumps, as on an old pine, not from one fork. */
+  stagger?: true;
+  /** Puffs are flat-topped pads, as on a Scots pine; a near tree has three more. */
+  pads?: true;
+  /** Lumps hang into points this far, in lump radii, as the twigs of a weeping birch. */
+  weep?: number;
   /** Trunks leaning out from one foot. */
   stems?: number;
+  /** A palm: this many fronds near the eye arch out of the trunk's top, as long as the crown is wide. */
+  fronds?: number;
+  /** A dragon tree: limbs fork this many ways at each level and end in rosettes of sword leaves. */
+  branching?: number[];
   leaves: Record<Season, Ramp | 'bare'>;
   /** Bare twigs: near trees show limbs in this colour, far ones a haze of it. */
   twigs: Ramp;
@@ -311,6 +336,130 @@ const TREES = {
     },
     twigs: ['#3e3a35', '#5e5850', '#7a736a'],
   },
+  'scots-pine': {
+    form: 'broadleaf',
+    name: 'Scots pine',
+    fork: 0.5,
+    crown: [0.78, 0.36, 0.3, 0.25],
+    open: true,
+    stagger: true,
+    pads: true,
+    sweep: 0.1,
+    trunk: 0.025,
+    flare: 1.5,
+    // Grey plates on the lower trunk, the fox-orange of the upper trunk and limbs.
+    bark: ['#4e3e34', '#c0663a'],
+    fade: [0.25, 0.45],
+    leaves: {
+      winter: ['#223b37', '#3a6258', '#6f9283'],
+      spring: ['#25423c', '#406c5f', '#86a893'],
+      summer: ['#24413b', '#3f6a5e', '#7d9f8c'],
+      autumn: ['#24403a', '#3e685c', '#7a9a88'],
+    },
+    twigs: ['#7a4430', '#a85a38', '#c0663a'],
+  },
+  'silver-birch': {
+    form: 'broadleaf',
+    name: 'Silver birch',
+    fork: 0.34,
+    crown: [0.64, 0.27, 0.27, 0.34],
+    open: true,
+    stagger: true,
+    weep: 0.6,
+    trunk: 0.015,
+    flare: 1.6,
+    bark: ['#3a3430', '#eeebe4'],
+    fade: [0.02, 0.12],
+    marks: ['#1e1a18', 0.45],
+    leaves: {
+      winter: 'bare',
+      spring: ['#5a8a32', '#8ec04c', '#cfe886'],
+      summer: ['#4a7029', '#76a03c', '#b6d266'],
+      autumn: ['#9a7418', '#d4a62a', '#f2d45a'],
+    },
+    twigs: ['#4a3436', '#6a4e4c', '#866a64'],
+  },
+  laurel: {
+    form: 'broadleaf',
+    name: 'Laurel forest tree',
+    fork: 0.38,
+    // Taller and narrower than the holm oak.
+    crown: [0.6, 0.32, 0.32, 0.42],
+    stems: 4,
+    trunk: 0.022,
+    flare: 1.5,
+    // Moss climbs the trunks in the cloud forest.
+    bark: ['#4a5236', '#6e675c'],
+    // Glossy: deep shade, bright lit tops.
+    leaves: {
+      winter: ['#1a3a26', '#1f452b', '#5a964a'],
+      spring: ['#1b3c27', '#22492d', '#6aa452'],
+      summer: ['#1a3b26', '#21472c', '#5e9c4c'],
+      autumn: ['#1a3a26', '#1f452b', '#5a964a'],
+    },
+    twigs: ['#4a453c', '#6e675c', '#8a8276'],
+  },
+  'canary-palm': {
+    form: 'broadleaf',
+    name: 'Canary Island date palm',
+    fork: 0.66,
+    crown: [0.7, 0.36, 0.36, 0.3],
+    fronds: 48,
+    trunk: 0.045,
+    neck: 1,
+    flare: 1.3,
+    bark: ['#5e5040', '#8a7860'],
+    scars: 7,
+    leaves: {
+      winter: ['#2e4a26', '#557a34', '#a4bc5e'],
+      spring: ['#2f4c27', '#587e36', '#a8c062'],
+      summer: ['#2e4a26', '#557a34', '#a4bc5e'],
+      autumn: ['#2e4a26', '#557a34', '#a4bc5e'],
+    },
+    twigs: ['#5e5040', '#7a6a54', '#8a7860'],
+  },
+  'dragon-tree': {
+    form: 'broadleaf',
+    name: 'Dragon tree',
+    fork: 0.4,
+    crown: [0.76, 0.46, 0.46, 0.28],
+    branching: [3, 3, 3],
+    trunk: 0.08,
+    // The trunk swells towards its crown.
+    neck: 1.05,
+    flare: 1.5,
+    bark: ['#6a655a', '#9a968a'],
+    leaves: {
+      winter: ['#2e4636', '#4f6e52', '#9ab486'],
+      spring: ['#2f4837', '#527254', '#a0ba8a'],
+      summer: ['#2e4636', '#4f6e52', '#9ab486'],
+      autumn: ['#2e4636', '#4f6e52', '#9ab486'],
+    },
+    twigs: ['#6e6a60', '#8e8a7e', '#a8a498'],
+  },
+  'canary-pine': {
+    form: 'conifer',
+    name: 'Canary Island pine',
+    base: 0.45,
+    radius: 0.21,
+    shape: (t) => (1 - t) ** 0.6,
+    overlap: 0.8,
+    droop: 0.6,
+    lobes: 4,
+    jitter: 0.4,
+    tufts: true,
+    sprouts: 8,
+    trunk: 0.024,
+    flare: 1.6,
+    // Old fires char the foot of the trunk.
+    bark: ['#3e3430', '#86766a'],
+    needles: {
+      winter: ['#2c5430', '#4a8240', '#a0bf62'],
+      spring: ['#2f5a32', '#4f8a42', '#b0cc68'],
+      summer: ['#2e5831', '#4d8741', '#a8c862'],
+      autumn: ['#2d5631', '#4b8540', '#a4c460'],
+    },
+  },
 } satisfies Record<string, Tree>;
 
 export type TreeName = keyof typeof TREES;
@@ -325,20 +474,114 @@ export function tree(name: TreeName, season: Season, lod: Lod, seed = 1): THREE.
 
 const ramp = (r: Ramp) => r.map(hex) as [THREE.Color, THREE.Color, THREE.Color];
 
+/** Bands of marks up a near marked trunk; each holds up to two dashes. */
+const BANDS = 18;
+
 /** A trunk from the ground to `top`, darker at its foot. */
-function trunk({ trunk: r, flare, bark }: Bark, top: number, lod: Lod, seed: number): THREE.BufferGeometry {
-  const [sides, rows] = DETAIL[lod].trunk;
+function trunk({ trunk: r, flare, neck = 0.6, bark, fade = [0, 0.5], marks, scars }: Bark, top: number, lod: Lod, seed: number): THREE.BufferGeometry {
+  if (scars && lod === 0) return scarred(r, flare, bark, scars, top);
+  const [sides, perSpan] = DETAIL[lod].trunk;
   const [foot, bole] = bark.map(hex);
+  const low = Math.min(6 * r, 0.5 * top);
+  const at = (z: number): [number, number] => [r * THREE.MathUtils.lerp(1, neck, (z - low) / (top - low)), z];
+  // A near marked trunk has a row at each edge of each band of marks, which are rows enough.
+  const bands = marks && lod === 0 ? BANDS : 0;
+  const centre = (b: number) => low + ((b + 0.5) / bands) * (top - low);
+  const half = 0.3 * r;
   const profile: [number, number][] = [
     [0, 0],
     [r * flare, 0],
-    [(r * (1 + flare)) / 2, 2 * r],
-    [r, Math.min(6 * r, 0.5 * top)],
-    [r * 0.6, top],
+    // A far trunk's flare is one straight span.
+    ...(lod < 2 ? [[(r * (1 + flare)) / 2, 2 * r] as [number, number]] : []),
+    ...(bands ? Array.from({ length: bands }, (_, b) => [at(centre(b) - half), at(centre(b) + half)]).flat() : [at(low)]),
+    at(top),
     [0, top + r],
   ];
-  const geo = soft(lathe(profile, sides, rows), 0.075 * r, 1.4 / r, seed);
-  return paint(geo, (p) => foot.clone().lerp(bole, smooth(0, 0.5 * top, p.z)));
+  // The lathe samples its spline evenly per span, so whole rows per span keep every profile point.
+  const geo = soft(lathe(profile, sides, (bands ? 1 : perSpan) * (profile.length - 1)), 0.075 * r, 1.4 / r, seed);
+  // A far scarred trunk takes the mean shade of its plates and grooves.
+  const colour = (p: THREE.Vector3) => foot.clone().lerp(bole, smooth(fade[0] * top, fade[1] * top, p.z)).multiplyScalar(scars ? 0.8 : 1);
+  if (!marks) return paint(geo, colour);
+  const mark = hex(marks[0]);
+  if (!bands) return paint(geo, (p) => colour(p).lerp(mark, 0.3 * marks[1]));
+  // Dashes an eighth to a quarter of the way round.
+  const rand = random(seed);
+  const dashes = Array.from({ length: bands }, () => [0, 1].flatMap(() => (rand() < marks[1] ? [[2 * Math.PI * rand(), (Math.PI / 8) * (1 + rand())]] : [])));
+  return stain(paint(geo, colour), mark, (c) => {
+    const b = Math.round(((c.z - low) / (top - low)) * bands - 0.5);
+    const a = Math.atan2(c.y, c.x);
+    return Math.abs(c.z - centre(b)) < half && (dashes[b] ?? []).some(([to, width]) => Math.abs(((a - to + 3 * Math.PI) % (2 * Math.PI)) - Math.PI) < width);
+  });
+}
+
+/** Paints whole faces whose centre `dark` picks, so marks keep the sharp edges vertex colours would blur. */
+function stain(geo: THREE.BufferGeometry, mark: THREE.Color, dark: (centre: THREE.Vector3) => boolean): THREE.BufferGeometry {
+  const flat = geo.toNonIndexed();
+  const pos = flat.getAttribute('position');
+  const col = flat.getAttribute('color');
+  const c = v3();
+  for (let i = 0; i < pos.count; i += 3) {
+    c.set(pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2), pos.getY(i) + pos.getY(i + 1) + pos.getY(i + 2), pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)).divideScalar(3);
+    if (dark(c)) for (let j = i; j < i + 3; j++) col.setXYZ(j, mark.r, mark.g, mark.b);
+  }
+  return flat.setIndex(Array.from({ length: pos.count }, (_, i) => i));
+}
+
+/**
+ * A trunk of diamond leaf scars in rings, each ring turned half a diamond. A diamond is four flat
+ * faces around a raised centre, so the sun lights its upper half and the grooves stay dark:
+ * 4 × n triangles a ring.
+ */
+function scarred(r: number, flare: number, bark: [string, string], n: number, top: number): THREE.BufferGeometry {
+  const [foot, bole] = bark.map(hex);
+  // Rings half a diamond apart; a diamond is half as tall as it is wide.
+  const h = (0.25 * 2 * Math.PI * r) / n;
+  const corner = (i: number, k: number, raised = false) => {
+    const z = i * h;
+    // Scars run in a slow spiral, as the leaves grew.
+    const a = (k / 2 + 0.03 * i) * ((2 * Math.PI) / n);
+    const radius = r * (1 + (flare - 1) * (1 - smooth(0, 4 * r, z))) * (raised ? 1.15 : 1);
+    return v3(radius * Math.cos(a), radius * Math.sin(a), z);
+  };
+  const sheet = cards();
+  for (let i = 0; i * h < top; i++) {
+    for (let k = i % 2; k < 2 * n; k += 2) {
+      const c = corner(i, k, true);
+      const ring = [corner(i, k + 1), corner(i + 1, k), corner(i, k - 1), corner(i - 1, k)];
+      const plate = foot.clone().lerp(bole, smooth(0, 0.5 * top, c.z));
+      const groove = plate.clone().multiplyScalar(0.55);
+      for (let e = 0; e < 4; e++) sheet.add([c, ring[e], ring[(e + 1) % 4]], [plate, groove, groove]);
+    }
+  }
+  return sheet.build();
+}
+
+/**
+ * Loose triangles with their own colours. Without a centre the faces stay flat; with one, normals
+ * point out from it, leaning up, so a crown of thin leaves lights as one round crown.
+ */
+function cards() {
+  const position: number[] = [];
+  const normal: number[] = [];
+  const color: number[] = [];
+  return {
+    add(corners: THREE.Vector3[], colours: THREE.Color[], centre?: THREE.Vector3) {
+      const flat = v3().subVectors(corners[1], corners[0]).cross(v3().subVectors(corners[2], corners[0])).normalize();
+      corners.forEach((p, i) => {
+        const n = centre ? p.clone().sub(centre).normalize().lerp(v3(0, 0, 1), 0.3).normalize() : flat;
+        position.push(p.x, p.y, p.z);
+        normal.push(n.x, n.y, n.z);
+        colours[i].toArray(color, color.length);
+      });
+    },
+    build() {
+      return new THREE.BufferGeometry()
+        .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+        .setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
+        .setAttribute('color', new THREE.Float32BufferAttribute(color, 3))
+        .setIndex(Array.from({ length: position.length / 3 }, (_, i) => i));
+    },
+  };
 }
 
 // One tier of branches, radius 1 and height 1: out along the underside to the rim, then up to the tip.
@@ -359,7 +602,9 @@ function scallop(geo: THREE.BufferGeometry, lobes: number, droop: number, seed: 
 
 /** Stacked tiers along the crown; fewer, taller tiers keep the same outline at a lower detail. */
 function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): THREE.BufferGeometry {
-  const { sides, rows, tiers } = DETAIL[lod];
+  const { sides, rows } = DETAIL[lod];
+  // A far tufted pine keeps its whorls, as its tiers are layers apart, not one cone.
+  const { tiers } = DETAIL[spec.tufts ? Math.min(lod, 1) : lod];
   const rand = random(seed);
   const own = spec.needles[season];
   const bare = own === 'bare';
@@ -377,6 +622,14 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): THREE.B
   const height = spec.overlap * step;
   const branches = bare && lod === 0;
   const parts = [trunk(spec, branches ? 0.97 : 1 - height, lod, seed)];
+  const bole = hex(spec.bark[1]);
+  // A flat ball of needles drooping from a branch tip: 80 triangles near, 20, then a 12-triangle
+  // double cone. A far tuft has too few corners to droop without turning into a point.
+  const tuft = (at: Vec, size: number, k: number) => {
+    const geo = lod === 2 ? soft(lathe([[0, -1], [1, 0], [0, 1]], 6, 2)) : soft(lump(1, lod ? 0 : 1), 0.08, 3, seed + k);
+    if (lod < 2) hang(geo, 1, spec.droop);
+    return place(paint(geo, needles), { at, scale: [size, size, 0.5 * size] });
+  };
   for (let i = 0; i < tiers; i++) {
     const z = spec.base + i * step;
     const r = spec.radius * spec.shape((z - spec.base) / (1 - spec.base)) * (1 + spec.jitter * (2 * rand() - 1));
@@ -391,8 +644,31 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): THREE.B
       }
       continue;
     }
+    if (spec.tufts && lod === 2) {
+      // Far off a whorl's tufts merge into one flat layer.
+      parts.push(place(tuft([0, 0, 0], 1, i), { at: [shift, 0, z + 0.2 * height], rot: [0, 0, spin], scale: [1.25 * r, 1.25 * r, 0.85 * r] }));
+      continue;
+    }
+    if (spec.tufts) {
+      const n = spec.lobes;
+      for (let k = 0; k < n; k++) {
+        const a = spin + ((k + 0.5 * rand()) / n) * 2 * Math.PI;
+        const end: Vec = [shift + 0.8 * r * Math.cos(a), 0.8 * r * Math.sin(a), z + 0.2 * height];
+        parts.push(limb([0, 0, z], end, spec.trunk * 0.3, bole, 0, 4));
+        parts.push(tuft(end, 0.45 * r * (1 + 0.2 * lod), i * n + k));
+      }
+      continue;
+    }
     const geo = soft(scallop(lathe(TIER, sides, rows), lobes, spec.droop, seed + i), 0.02, 4, seed + i);
     parts.push(place(paint(geo, needles), { at: [shift, shift * 0.5, z], rot: [0, 0, spin], scale: [r, r, height] }));
+  }
+  if (spec.tufts && !bare) parts.push(tuft([0, 0, 1 - 0.5 * height], 0.35 * spec.radius, -1));
+  // Sprouts are too small to see beyond the near trees.
+  for (let k = 0; !bare && k < (spec.sprouts ?? 0) >> (2 * lod); k++) {
+    const a = rand() * 2 * Math.PI;
+    const size = spec.trunk * (0.8 + 0.6 * rand());
+    const at: Vec = [1.2 * spec.trunk * Math.cos(a), 1.2 * spec.trunk * Math.sin(a), spec.base * (0.25 + 0.7 * rand())];
+    parts.push(tuft(at, size, 100 + k));
   }
   const geo = merge(parts);
   if (spec.nod) nod(geo, spec.nod);
@@ -425,14 +701,14 @@ function lumps(count: number, rand: () => number): { at: THREE.Vector3; r: numbe
 
 /**
  * An open crown in its own frame, radius 1: a puff on top and smaller ones around it, with sky
- * between. More puffs are smaller; fewer huddle in, as a far tree has no limbs to hold them.
+ * between. More puffs are smaller; fewer huddle in a little, as a far tree has no limbs to hold them.
  */
 function puffs(count: number, rand: () => number): { at: THREE.Vector3; r: number }[] {
   const out = [{ at: v3(0.1, 0, 0.5), r: 0.5 }];
   const ring = count - 1;
   for (let k = 0; k < ring; k++) {
     const a = (k / ring) * 2 * Math.PI + rand() * 0.6;
-    const d = Math.min(1, ring / 5) * (0.62 + 0.25 * rand());
+    const d = THREE.MathUtils.clamp(ring / 5, 0.85, 1) * (0.62 + 0.25 * rand());
     out.push({ at: v3(d * Math.cos(a), d * Math.sin(a), -0.5 + 0.9 * rand()), r: Math.min(1, Math.sqrt(5 / ring)) * (0.32 + 0.1 * rand()) });
   }
   return out;
@@ -455,7 +731,9 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
   const toTree = (p: THREE.Vector3) => v3(p.x * rx, p.y * ry, cz + p.z * rz);
   const leaves = spec.leaves[season];
   const bare = leaves === 'bare';
-  const [deep, mid, tip] = ramp(bare ? spec.twigs : leaves);
+  // A far bare weeping crown is a haze of twigs inside its leafed outline, greyed by the sky through it.
+  const veil = bare && spec.weep ? 0.8 : 1;
+  const [deep, mid, tip] = ramp(bare ? spec.twigs : leaves).map((c) => c.lerp(hex('#8c8a88'), veil < 1 ? 0.4 : 0));
   const flecks = spec.flecks?.[season];
   const foliage = (p: THREE.Vector3, n: THREE.Vector3) => {
     const c = deep
@@ -464,22 +742,34 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
       .lerp(tip, 0.7 * smooth(0.2, 0.9, n.z) * smooth(-0.2, 0.8, p.z));
     return flecks ? c.lerp(hex(flecks[0]), fleck(p, n, flecks[1], lod, seed)) : c;
   };
-  const crown = spec.open ? puffs(count, rand) : lumps(count, rand);
+  // A palm or a dragon tree grows its crown from the trunk's top.
+  if (spec.fronds || spec.branching) {
+    const crown = spec.fronds ? palm(spec, lod, [deep, mid, tip], rand) : dragon(spec, lod, [deep, mid, tip], rand);
+    return merge([trunk(spec, spec.fork, lod, seed), ...crown]);
+  }
+  const crown = spec.open ? puffs(count + (spec.pads && !lod ? 3 : 0), rand) : lumps(count, rand);
   const parts: THREE.BufferGeometry[] = [];
   // An open crown's trunk runs up into its top puff, which no limb reaches.
   const top = spec.open ? cz + 0.3 * rz : spec.fork + 0.3 * rz;
-  // A far tree's stems hide under its crown.
+  // A far tree's stems hide under its crown, so it has one trunk as stout as all of them.
   const stems = lod < 2 ? (spec.stems ?? 1) : 1;
+  const stout = { ...spec, trunk: spec.trunk * Math.sqrt((spec.stems ?? 1) / stems) };
   for (let s = 0; spec.trunk && s < stems; s++) {
     const a = (s / stems) * 2 * Math.PI;
-    const lean = stems > 1 ? v3(0.3 * Math.cos(a), 0.3 * Math.sin(a), 1).normalize() : v3(0, 0, 1);
-    parts.push(place(trunk(spec, top, lod, seed + s), { quat: new THREE.Quaternion().setFromUnitVectors(v3(0, 0, 1), lean) }));
+    // Stems lean apart from one stool, their feet a little apart.
+    const out = stems > 1 ? v3(Math.cos(a), Math.sin(a), 0) : v3();
+    const lean = out.clone().multiplyScalar(0.3).setZ(1).normalize();
+    parts.push(place(trunk(stout, top, lod, seed + s), { at: out.multiplyScalar(1.2 * spec.trunk), quat: new THREE.Quaternion().setFromUnitVectors(v3(0, 0, 1), lean) }));
   }
   if (!(bare && lod === 0)) {
     crown.forEach(({ at, r }, k) => {
       // Each lump a little lighter or darker, so the crown does not read as one blob.
       const tone = 0.9 + 0.2 * rand();
-      const geo = paint(place(soft(lump(r, ico), 0.04, 4, seed + k), { at }), (p, n) => foliage(p, n).multiplyScalar(tone));
+      // A flat pad needs fewer corners than a round puff.
+      const puff = soft(lump(veil * r, spec.pads ? Math.min(ico, 2) : ico), 0.04, 4, seed + k);
+      if (spec.weep && !bare) hang(puff, r, spec.weep);
+      if (spec.pads) pad(puff, r);
+      const geo = paint(place(puff, { at: at.clone().multiplyScalar(veil) }), (p, n) => foliage(p, n).multiplyScalar(tone));
       parts.push(place(geo, { at: [0, 0, cz], scale: [rx, ry, rz] }));
     });
   }
@@ -491,19 +781,169 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
     const fork: Vec = [0, 0, spec.fork];
     for (const { at, r } of crown.slice(1)) {
       const end = toTree(at.clone().multiplyScalar(bare ? 1 : 0.8));
-      parts.push(limb(fork, end.toArray(), spec.trunk * 0.45, (p) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z)), 0, lod ? 4 : 6));
-      if (!bare) continue;
-      for (let k = 0; k < 3; k++) {
+      const from: Vec = spec.stagger ? [0, 0, Math.max(spec.fork, end.z - 0.6 * Math.hypot(end.x, end.y))] : fork;
+      parts.push(limb(from, end.toArray(), spec.trunk * 0.45, (p) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z)), 0, lod ? 4 : 6));
+      if (!bare || lod) continue;
+      // Twigs fan out from a limb's end; a weeping tree's droop out and down from along its outer half.
+      for (let k = 0; k < (spec.weep ? 6 : 3); k++) {
         const a = rand() * Math.PI * 2;
         const out = at.clone().normalize().add(v3(0.6 * Math.cos(a), 0.6 * Math.sin(a), 0.5)).setLength(r * 0.9);
-        const tipAt = toTree(at.clone().add(out));
-        parts.push(limb(end.toArray(), tipAt.toArray(), spec.trunk * 0.18, (p) => twig.clone().lerp(twigTip, smooth(cz, cz + rz, p.z)), 0, 4));
+        let [root, tipAt] = [end, toTree(at.clone().add(out))];
+        if (spec.weep) {
+          root = v3(...from).lerp(end, 0.4 + 0.12 * k);
+          const away = v3(root.x, root.y, 0).normalize().add(v3(0.5 * Math.cos(a), 0.5 * Math.sin(a), 0)).setLength(0.6 * r * rx);
+          tipAt = root.clone().add(away).setZ(root.z - 2 * spec.weep * (0.6 + 0.6 * rand()) * r * rz);
+        }
+        parts.push(limb(root.toArray(), tipAt.toArray(), spec.trunk * 0.18, (p) => twig.clone().lerp(twigTip, smooth(cz, cz + rz, p.z)), 0, 4));
       }
     }
   }
   const geo = merge(parts);
   if (spec.sweep) sweep(geo, spec.sweep);
   return geo;
+}
+
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
+/**
+ * Fronds arch out of a knob of leaf bases, the young ones upright and the old ones hanging. Near
+ * the eye each leaflet is one card, so a frond reads as a comb: 48 fronds of 11 pairs. Further off
+ * a frond is one strip over the comb's outline, which keeps the crown's mass.
+ */
+function palm(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand: () => number): THREE.BufferGeometry[] {
+  const [cz, length] = spec.crown;
+  const count = [spec.fronds!, 36, 16][lod];
+  const segments = [11, 4, 2][lod];
+  const base = v3(0, 0, spec.fork);
+  const centre = v3(0, 0, cz);
+  const sheet = cards();
+  for (let f = 0; f < count; f++) {
+    const age = (f + 0.5) / count;
+    const rise = THREE.MathUtils.lerp(1.3, -0.6, age) + 0.15 * (rand() - 0.5);
+    const a = f * GOLDEN;
+    const out = v3(Math.cos(a), Math.sin(a), 0);
+    const side = v3(-Math.sin(a), Math.cos(a), 0);
+    const reach = length * (0.85 + 0.25 * rand());
+    // Even the upright fronds arch over, so the crown reads as a fountain, not a spray of spikes.
+    const sag = 0.25 + 0.25 * Math.cos(rise);
+    const along = (s: number) =>
+      base.clone().addScaledVector(out, Math.cos(rise) * s * reach).setZ(spec.fork + (Math.sin(rise) * s - sag * s * s) * reach);
+    const width = (s: number) => 0.22 * reach * Math.sin(Math.PI * Math.min(1, s + 0.12)) ** 0.7;
+    // Old fronds yellow towards the tips.
+    const lit = tip.clone().lerp(hex('#c8b860'), 0.6 * smooth(0.6, 1, age));
+    const root = (s: number) => deep.clone().lerp(mid, s);
+    const rim = (s: number) => mid.clone().lerp(lit, smooth(0.2, 0.9, s));
+    for (let j = 0; j < segments; j++) {
+      const s = 0.12 + (0.86 * j) / segments;
+      // Leaflets leave gaps between them; strip segments meet.
+      const t = s + (lod ? 0.86 : 0.8) / segments;
+      const [p, q] = [along(s), along(t)];
+      const forward = q.clone().sub(p).normalize();
+      // Where a leaflet from c ends: out, forward and up.
+      const leaflet = (c: THREE.Vector3, s: number, sign: number) =>
+        c.clone().addScaledVector(side, sign * width(s)).addScaledVector(forward, 0.4 * width(s)).add(v3(0, 0, 0.3 * width(s)));
+      // Darker than the rim, as a comb's roots and the shade between its leaflets are.
+      const rib = (s: number) => root(s).lerp(rim(s), 0.25);
+      for (const sign of [-1, 1]) {
+        const ep = leaflet(p, s, sign);
+        if (lod === 0) sheet.add([p, q, ep], [root(s), root(s), rim(s)], centre);
+        else {
+          sheet.add([p, q, ep], [rib(s), rib(t), rim(s)], centre);
+          // The tip narrows to a point.
+          if (j < segments - 1) sheet.add([q, leaflet(q, t, sign), ep], [rib(t), rim(t), rim(s)], centre);
+        }
+      }
+    }
+  }
+  // Leaf bases far off are as green as the fronds around them, lest they read as a nut.
+  const knob = paint(place(soft(lump((lod ? 1.3 : 1.7) * spec.trunk, lod ? 0 : 1), 0.1 * spec.trunk, 30), { at: base }), hex('#6a5a3c').lerp(deep, lod ? 0.6 : 0));
+  return [sheet.build(), knob];
+}
+
+/**
+ * Limbs fork `branching` ways at each level, rising and spreading so the rosettes of sword
+ * leaves at their ends make an umbrella. A tree within 200 m keeps two levels; a far one keeps
+ * the first, each limb ending in a ragged bowl where its rosettes would be.
+ */
+function dragon(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand: () => number): THREE.BufferGeometry[] {
+  const [cz, rx, , rz] = spec.crown;
+  const levels = spec.branching!.slice(0, [3, 2, 1][lod]);
+  const [foot, bole] = spec.bark.map(hex);
+  const bark = (p: THREE.Vector3) => foot.clone().lerp(bole, smooth(0, spec.fork, p.z));
+  const size = 0.2;
+  const blades = lod ? 20 : 32;
+  const fork = v3(0, 0, spec.fork);
+  // A collar where the limbs leave the trunk, so the trunk swells into them.
+  const parts = lod < 2 ? [paint(place(soft(lump(1.1 * spec.trunk, lod ? 0 : 1), 0.08 * spec.trunk, 30), { at: fork }), bark)] : [];
+  const sheet = cards();
+  const grow = (from: THREE.Vector3, a0: number, a1: number, level: number, r: number) => {
+    const m = levels[level];
+    for (let c = 0; c < m; c++) {
+      const a = a0 + ((c + 0.5 + 0.4 * (rand() - 0.5)) / m) * (a1 - a0);
+      // A far tree's one level reaches as far as a near tree's first.
+      const f = (level + 1) / Math.max(2, levels.length);
+      const d = rx * f ** 0.8 * (0.75 + 0.35 * rand());
+      const z = spec.fork + (cz + rz * Math.sqrt(Math.max(0, 1 - (d / rx) ** 2)) - size - spec.fork) * f ** 0.45;
+      const to = v3(d * Math.cos(a), d * Math.sin(a), z);
+      parts.push(limb(from.toArray(), to.toArray(), r, bark, 0, [6, 4, 3][lod]));
+      if (level + 1 < levels.length) grow(to, a0 + (c * (a1 - a0)) / m, a0 + ((c + 1) * (a1 - a0)) / m, level + 1, 0.75 * r);
+      else if (lod === 2) bowl(sheet, to, a, 0.7 * rx, size, [deep, mid, tip]);
+      else {
+        rosette(sheet, to, size, blades, [deep, mid, tip], rand);
+        // A heart fills the rosette between its blades.
+        parts.push(paint(place(soft(lump(0.38 * size, 0)), { at: to.clone().setZ(to.z + 0.15 * size) }), deep.clone().lerp(mid, 0.5)));
+      }
+    }
+  };
+  grow(fork, 0, 2 * Math.PI, 0, 0.8 * spec.trunk);
+  return [...parts, sheet.build()];
+}
+
+/**
+ * A far group of rosettes: a bowl of 8 triangles from a limb's end, out towards `heading`, its
+ * rim ragged so its top edge reads as blades.
+ */
+function bowl(sheet: ReturnType<typeof cards>, at: THREE.Vector3, heading: number, radius: number, height: number, [deep, mid, tip]: THREE.Color[]): void {
+  const rim = at.clone().add(v3(0.5 * radius * Math.cos(heading), 0.5 * radius * Math.sin(heading), height));
+  const centre = rim.clone().setZ(rim.z - 2 * height);
+  const point = (k: number) => {
+    const a = heading + (k / 8) * 2 * Math.PI;
+    const out = k % 2 ? 0.7 : 1;
+    return rim.clone().add(v3(out * radius * Math.cos(a), out * radius * Math.sin(a), (out - 0.75) * height));
+  };
+  const [spike, notch] = [mid.clone().lerp(tip, 0.15), deep.clone().lerp(mid, 0.3)];
+  for (let k = 0; k < 8; k++) sheet.add([at, point(k), point(k + 1)], [deep, k % 2 ? notch : spike, k % 2 ? spike : notch], centre);
+}
+
+/** Stiff sword leaves up and out from one point, only the outer ring drooping. */
+function rosette(sheet: ReturnType<typeof cards>, at: THREE.Vector3, size: number, count: number, [deep, mid, tip]: THREE.Color[], rand: () => number): void {
+  for (let j = 0; j < count; j++) {
+    const a = j * GOLDEN + 0.5 * rand();
+    const t = (j + 0.5) / count;
+    const polar = 1.3 * Math.sqrt(t) + 0.45 * smooth(0.7, 1, t);
+    const reach = size * (0.8 + 0.35 * rand());
+    const end = at.clone().add(v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar)).multiplyScalar(reach));
+    const side = v3(-Math.sin(a), Math.cos(a), 0).multiplyScalar(0.14 * reach);
+    sheet.add([at.clone().sub(side), at.clone().add(side), end], [deep, deep, mid.clone().lerp(tip, smooth(0.5, 0, polar) + 0.3 * rand())], at);
+  }
+}
+
+/** Squashes a lump of radius r into a pad with a flat top and round sides. */
+function pad(geo: THREE.BufferGeometry, r: number): void {
+  const pos = geo.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) pos.setZ(i, pos.getZ(i) - 0.4 * r * smooth(0.2 * r, r, pos.getZ(i)));
+  geo.computeVertexNormals();
+}
+
+/** Draws the underside of a lump of radius r down into a hanging point. */
+function hang(geo: THREE.BufferGeometry, r: number, amount: number): void {
+  const pos = geo.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const k = smooth(0.2, -1, pos.getZ(i) / r);
+    const narrow = 1 - 0.5 * amount * k;
+    pos.setXYZ(i, pos.getX(i) * narrow, pos.getY(i) * narrow, pos.getZ(i) - amount * r * k * k);
+  }
+  geo.computeVertexNormals();
 }
 
 /** Shears a tree downwind, towards +x, more the higher it reaches. */

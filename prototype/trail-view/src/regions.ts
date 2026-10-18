@@ -1,8 +1,9 @@
 /**
  * Regions and packs: two hierarchies of data, in regions/ and packs/. A region is a ruleset: the
- * boxes it covers, its data sources and coast rules (which bake.py reads), and its look; it names
+ * areas it covers, its data sources and coast rules (which bake.py reads), and its look; it names
  * the pack that holds its models. Each file extends a parent and inherits what it does not say:
- * objects merge, anything else replaces. A spot's region is the deepest one whose box holds it.
+ * objects merge, anything else replaces. A spot's region is the deepest one whose area holds it,
+ * the smallest area on a tie. An area is a box [west, south, east, north] or a ring of [lon, lat].
  */
 
 import type { Habitat } from './bake';
@@ -13,7 +14,8 @@ import type { TreeName } from './models/trees';
 import type { Weather } from './weather';
 
 export interface Species {
-  tree: TreeName;
+  /** A tree model, or a plant model that stands as a shrub. */
+  tree: TreeName | PlantName;
   /** The OSM leaf_type it stands for, and the WorldCover class it stands on. */
   leaf: 'needleleaved' | 'broadleaved';
   cover: 'tree' | 'shrub';
@@ -61,6 +63,8 @@ export interface RegionLook {
   bedding?: { strike: number; dip: number };
   /** Road surfaces in the order of ROAD_WIDTHS in bake.py, where they differ from palette.ts's. */
   roads?: string[];
+  /** The line along each edge of a main road, where it is not white. */
+  roadLine?: string;
   /** Open water away from the shore, and the sea beside it. */
   sea: { deep: string; shallow: string };
   /** Trees and shrubs keep this far from the sea, where wind and salt keep headlands bare. */
@@ -73,7 +77,11 @@ export interface RegionLook {
   weather?: Partial<Record<'sunny' | 'cloudy' | 'rainy', Partial<Weather>>>;
 }
 
-/** The models a region draws. */
+/**
+ * The models a region draws. In the files, trees and herds are objects keyed by species, so a pack
+ * adds to its parent's or changes one, and null drops one; a species key that is not its model's
+ * name names the model in `model`.
+ */
 export interface Pack {
   name: string;
   trees: Species[];
@@ -99,7 +107,9 @@ export interface Region {
 }
 
 type Box = [west: number, south: number, east: number, north: number];
-type Entry = Record<string, unknown> & { extends?: string; where?: Box[] };
+type Ring = [lon: number, lat: number][];
+type Area = Box | Ring;
+type Entry = Record<string, unknown> & { extends?: string; where?: Area[] };
 
 const byName = (files: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(files).map(([path, data]) => [path.split('/').pop()!.replace(/\.json$/, ''), data as Entry]));
@@ -126,13 +136,27 @@ function resolve(table: Record<string, Entry>, id: string): Record<string, unkno
   }, {});
 }
 
-const holds = ([w, s, e, n]: Box, lat: number, lon: number) => w <= lon && lon <= e && s <= lat && lat <= n;
-const area = ([w, s, e, n]: Box) => (e - w) * (n - s);
+const isRing = (a: Area): a is Ring => Array.isArray(a[0]);
+
+function holds(a: Area, lat: number, lon: number): boolean {
+  if (!isRing(a)) return a[0] <= lon && lon <= a[2] && a[1] <= lat && lat <= a[3];
+  let inside = false;
+  a.forEach(([x0, y0], i) => {
+    const [x1, y1] = a[(i + 1) % a.length];
+    if (y0 > lat !== y1 > lat && lon < x0 + ((lat - y0) * (x1 - x0)) / (y1 - y0)) inside = !inside;
+  });
+  return inside;
+}
+
+const area = (a: Area) =>
+  isRing(a)
+    ? Math.abs(a.reduce((sum, [x0, y0], i) => sum + x0 * a[(i + 1) % a.length][1] - a[(i + 1) % a.length][0] * y0, 0)) / 2
+    : (a[2] - a[0]) * (a[3] - a[1]);
 
 /** The region of a spot, with its look and pack resolved. */
 export function regionAt(lat: number, lon: number): Region {
-  const fits = Object.keys(REGIONS).flatMap((id) => (REGIONS[id].where ?? []).filter((box) => holds(box, lat, lon)).map((box) => ({ id, box })));
-  fits.sort((a, b) => chain(REGIONS, b.id).length - chain(REGIONS, a.id).length || area(a.box) - area(b.box));
+  const fits = Object.keys(REGIONS).flatMap((id) => (REGIONS[id].where ?? []).filter((a) => holds(a, lat, lon)).map((a) => ({ id, a })));
+  fits.sort((a, b) => chain(REGIONS, b.id).length - chain(REGIONS, a.id).length || area(a.a) - area(b.a));
   const id = fits[0]?.id ?? 'world';
   const region = resolve(REGIONS, id) as Omit<Region, 'id' | 'chain' | 'pack'> & { pack: string };
   return { ...region, id, chain: chain(REGIONS, id), pack: packNamed(region.pack) };
@@ -140,4 +164,11 @@ export function regionAt(lat: number, lon: number): Region {
 
 export const PACK_NAMES = Object.keys(PACKS).filter((name) => name !== 'base');
 
-export const packNamed = (name: string) => resolve(PACKS, name) as unknown as Pack;
+export function packNamed(name: string): Pack {
+  const pack = resolve(PACKS, name);
+  const listed = <T>(table: unknown, key: string) =>
+    Object.entries((table ?? {}) as Record<string, Record<string, unknown> | null>)
+      .filter(([, entry]) => entry)
+      .map(([id, entry]) => ({ [key]: entry!.model ?? id, ...entry }) as T);
+  return { ...pack, trees: listed<Species>(pack.trees, 'tree'), herds: listed<NonNullable<Pack['herds']>[number]>(pack.herds, 'animal') } as unknown as Pack;
+}

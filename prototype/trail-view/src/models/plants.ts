@@ -4,7 +4,8 @@
  */
 
 import * as THREE from 'three';
-import { hash, hex, merge, paint, place, random, ribbon, smooth, soft, tube, unit, v3, type Vec } from './shape';
+import { hash, hex, lump, merge, paint, place, random, ribbon, smooth, soft, tube, unit, v3, type Vec } from './shape';
+import { SUCCULENTS } from './succulents';
 import type { Season } from './trees';
 
 /** Shade, body and lit-tip colour. */
@@ -62,6 +63,42 @@ const ESPARTO: Record<Season, Ramp> = {
   summer: ['#6b6a45', '#a39d6a', '#d8c98e'],
   autumn: ['#6b6a45', '#a39d6a', '#d4c58e'],
 };
+
+/** Bracken: fresh green, rust-orange as it dies in autumn, faded russet through winter. */
+const BRACKEN: Record<Season, Ramp> = {
+  winter: ['#55301e', '#8a4e2e', '#b27a4c'],
+  spring: ['#3f6a24', '#72a43a', '#b0d266'],
+  summer: ['#2f5a20', '#5a9030', '#9ac24c'],
+  autumn: ['#70300f', '#b8581c', '#e69a44'],
+};
+
+/**
+ * How far bracken has died back, for every other frond and the ones between: up to 0.35 the blade
+ * withers and hangs, beyond that the stalk bends over. The standing fronds keep a clump's height,
+ * so it keeps its size through the seasons. Spring's fallen fronds are last year's.
+ */
+const BRACKEN_SLUMP: Record<Season, [number, number]> = { winter: [0.35, 1], spring: [0, 1], summer: [0, 0], autumn: [0.08, 0.22] };
+
+/** Cotton-grass leaves: green with russet tips, crimson in autumn, straw in winter. */
+const SEDGE: Record<Season, Ramp> = {
+  winter: ['#56442e', '#86704a', '#ac966a'],
+  spring: ['#3c5a2a', '#66883c', '#a2a456'],
+  summer: ['#3a5828', '#62823a', '#a08a4a'],
+  autumn: ['#52241a', '#8a3424', '#bc5a34'],
+};
+
+/** Purple moor grass and deer grass: the straw of dead blades, tawny to orange-brown in autumn. */
+const MOOR_GRASS: Record<Season, Ramp> = {
+  winter: ['#6a4e32', '#a8845a', '#d4b88a'],
+  spring: ['#5e4a30', '#9a7e56', '#c8ac7e'],
+  summer: ['#5a4e30', '#968458', '#d2bc88'],
+  autumn: ['#6a3a1e', '#a8683a', '#c99a5a'],
+};
+
+const MOOR_GREEN: Ramp = ['#3a4a1f', '#7a8c3e', '#a2ac58'];
+
+/** Share of a tussock's blades still green, counted from the crown out. */
+const MOOR_LIVE: Record<Season, number> = { winter: 0, spring: 0.3, summer: 0.95, autumn: 0.12 };
 
 /** Gentian, buttercup, edelweiss white, aster and pink, as the season has them. */
 const FLOWERS: Record<Season, string[]> = {
@@ -302,6 +339,229 @@ function huckleberry(season: Season, rand: () => number): THREE.BufferGeometry {
   return merge(parts);
 }
 
+const PINNAE = 6;
+
+/**
+ * A bracken frond: a short stalk curving out of the ground into a triangular blade that rises at 35
+ * to 50 degrees and arches over, its pinnae swept forward. `slump` kills it, as BRACKEN_SLUMP says,
+ * until a fallen blade props on its tip near the root; a low `open` curls a young blade into a
+ * nodding crozier. 28 triangles.
+ */
+function frond(root: Vec, a: number, size: number, [deep, mid, tip]: THREE.Color[], slump: number, open: number, rand: () => number) {
+  const out = v3(Math.cos(a), Math.sin(a), 0);
+  const side = v3(-out.y, out.x, 0);
+  const [hang, fall, young] = [smooth(0, 0.35, slump), smooth(0.35, 1, slump), 1 - open];
+  const curl = Math.min(1, hang + 2 * young);
+  const height = size * (0.22 + 0.08 * rand()) * (1 - 0.3 * fall);
+  const lean = (0.25 + 0.25 * rand()) * (1 - 0.7 * young) + 0.3 * fall;
+  // The stalk bends from near upright at the root to past `lean` at the elbow, so stalk and blade
+  // make one arch rather than a pole and a table.
+  const step = (from: THREE.Vector3, tilt: number) => from.clone().addScaledVector(out, 0.5 * height * Math.sin(tilt)).setZ(from.z + 0.5 * height * Math.cos(tilt));
+  const bend = step(v3(...root), 0.4 * lean);
+  const top = step(bend, 1.6 * lean);
+  const stalk = paint(ribbon([root, bend.toArray(), top.toArray()], side.toArray(), () => 0.008, 2), deep.clone().lerp(mid, 0.5)).toNonIndexed();
+  const length = size * (0.5 + 0.15 * rand()) * (0.55 + 0.45 * open) * (1 - 0.25 * hang) * (1 - 0.3 * fall);
+  const rise = 0.6 + 0.25 * rand() + 1.2 * young + 0.3 * hang - 1.6 * fall;
+  // The rachis is a parabola from the elbow to where its tip ends: a live tip near the elbow's
+  // height, a withered one hanging near the ground, a fallen one on it.
+  const live = top.z + length * (young ? 0.05 : -0.06 + 0.12 * rand());
+  const end = live + (0.03 + 0.12 * (1 - fall) - live) * hang;
+  const droop = Math.sin(rise) - (end - top.z) / length;
+  const rachis = (u: number) =>
+    top.clone().addScaledVector(out, length * Math.cos(rise) * u).setZ(Math.max(0.02, top.z + length * (Math.sin(rise) * u - droop * u * u)));
+  const position: number[] = [];
+  const normal: number[] = [];
+  const color: number[] = [];
+  const face = (corners: THREE.Vector3[], colours: THREE.Color[], n: THREE.Vector3) =>
+    corners.forEach((p, i) => {
+      position.push(p.x, p.y, p.z);
+      normal.push(n.x, n.y, n.z);
+      colours[i].toArray(color, color.length);
+    });
+  // Each pinna is a triangle on most of a rachis segment, its apex out to the side and forward,
+  // folded down along its midrib: the two halves light apart and notches open between pinnae, so the
+  // blade reads lacy rather than as one smooth panel.
+  for (const s of [1, -1]) {
+    for (let i = 0; i < PINNAE; i++) {
+      const [u0, u1] = [(i + 0.08) / PINNAE, (i + 0.92) / PINNAE];
+      const midrib = rachis((u0 + u1) / 2);
+      const forward = rachis(u1).sub(rachis(u0)).normalize();
+      const reach = 0.42 * length * open ** 1.5 * (1 - 0.45 * hang) * (1 - u0) ** 0.85 * (0.85 + 0.3 * rand());
+      // Young and withered pinnae fold down and in along the rachis, so the blade hangs narrow.
+      const apex = midrib.clone().addScaledVector(side, s * reach * (1 - 0.4 * curl)).addScaledVector(forward, (0.65 + 0.3 * curl) * reach);
+      apex.z = Math.max(0.01, apex.z - (0.1 + 1.1 * curl) * reach);
+      const fold = 0.25 * midrib.distanceTo(rachis(u0));
+      const [back, front] = [rachis(u0), rachis(u1)].map((p) => p.setZ(p.z - fold));
+      const stem = deep.clone().lerp(mid, 0.3 + 0.4 * u0);
+      const leaf = mid.clone().lerp(tip, 0.1 + 0.3 * u0 + 0.2 * rand());
+      const lit = mid.clone().lerp(tip, 0.4 + 0.4 * u0 + 0.2 * rand());
+      for (const edge of [back, front]) {
+        const n = edge.clone().sub(midrib).cross(apex.clone().sub(midrib)).normalize();
+        face([midrib, edge, apex], [stem, leaf, lit], n.z < 0 ? n.negate() : n);
+      }
+    }
+  }
+  const blade = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+    .setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
+    .setAttribute('color', new THREE.Float32BufferAttribute(color, 3));
+  return merge([stalk, blade]);
+}
+
+/**
+ * Three to six bracken fronds arching out of a small patch, their blades in tiers. In spring young
+ * fronds stand among last year's, propped on the ground. A clump is the same in every season, only
+ * older. 84 to 168 triangles.
+ */
+function bracken(season: Season, rand: () => number): THREE.BufferGeometry {
+  const count = 6 - Math.floor(4 * rand());
+  const parts: THREE.BufferGeometry[] = [];
+  for (let k = 0; k < count; k++) {
+    const fallen = k % 2 === 1;
+    const old = season === 'spring' && fallen;
+    const b = (k / count) * 2 * Math.PI + rand() * 0.8;
+    const d = 0.05 + 0.2 * rand();
+    const colours = ramp(BRACKEN[old ? 'winter' : season]);
+    // Autumn fronds die unevenly: some still orange, some already brown.
+    const brown = 0.6 * rand();
+    const shade = 0.85 + 0.3 * rand();
+    colours.forEach((c, i) => c.lerp(hex(BRACKEN.winter[i]), season === 'autumn' ? brown : 0).multiplyScalar(shade));
+    const slump = Math.min(1, BRACKEN_SLUMP[season][fallen ? 1 : 0] * (0.85 + 0.3 * rand()));
+    const open = season === 'spring' && !old ? 0.55 : 1;
+    // Lower fronds around a tall one hide its stalk under their blades, in tiers.
+    const size = 1 - (0.55 * k * (0.8 + 0.4 * rand())) / count;
+    parts.push(frond([d * Math.cos(b), d * Math.sin(b), 0], b + (rand() - 0.5) * 0.6, size, colours, slump, open, rand));
+  }
+  return merge(parts);
+}
+
+/**
+ * A head on a stalk tip, its foot on the tip and its length along `axis`: a soft ball with its
+ * corners pushed out a little.
+ */
+function head(ball: THREE.BufferGeometry, tip: THREE.Vector3, axis: THREE.Vector3, stretch: number, low: THREE.Color, high: THREE.Color, rand: () => number) {
+  const geo = soft(ball);
+  const pos = geo.getAttribute('position');
+  const nrm = geo.getAttribute('normal');
+  const p = v3();
+  for (let i = 0; i < pos.count; i++) pos.setXYZ(i, ...p.fromBufferAttribute(pos, i).multiplyScalar(1 + 0.15 * rand()).toArray());
+  // Normals lean up, so the head lights as one soft tuft rather than a cut stone.
+  for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, ...p.fromBufferAttribute(pos, i).normalize().lerp(v3(0, 0, 1), 0.5).normalize().toArray());
+  geo.rotateZ(rand() * 2 * Math.PI).scale(1, 1, stretch);
+  geo.computeBoundingBox();
+  const { min, max } = geo.boundingBox!;
+  place(geo, { at: tip.clone().addScaledVector(axis, -0.85 * min.z), quat: new THREE.Quaternion().setFromUnitVectors(v3(0, 0, 1), axis) });
+  return paint(geo, (q) => low.clone().lerp(high, smooth(tip.z + 0.3 * min.z, tip.z + 0.8 * max.z, q.z)));
+}
+
+/**
+ * A cotton-grass tuft: seven narrow arching leaves and seven thin stalks, each topped in summer by
+ * a white cotton tuft that nods off it and in spring by a dark flower spikelet. Out of flower the
+ * stalks taper, lean and break like dry stems. 175 triangles in summer, 91 in spring, 42 without
+ * heads.
+ */
+function bogCotton(season: Season, rand: () => number): THREE.BufferGeometry {
+  const [deep, mid, tip] = ramp(SEDGE[season]);
+  const leaf = (p: THREE.Vector3) => deep.clone().lerp(mid, smooth(0, 0.2, p.length())).lerp(tip, smooth(0.25, 0.55, p.length()));
+  const dead = season === 'autumn' || season === 'winter';
+  const parts: THREE.BufferGeometry[] = [];
+  for (let k = 0; k < 7; k++) {
+    const a = k * GOLDEN + rand() * 0.5;
+    parts.push(paint(blade([0.03 * Math.cos(a), 0.03 * Math.sin(a), 0], a, 0.45 + 0.2 * rand(), 0.25 + 0.5 * rand(), dead ? 0.6 : 0.4, (t) => 0.07 * (1 - t), 2), leaf));
+  }
+  const stalk = hex(dead ? '#8a6e48' : '#6e7a48');
+  for (let k = 0; k < 7; k++) {
+    const a = k * GOLDEN + 1 + rand() * 0.6;
+    const [c, s] = [Math.cos(a), Math.sin(a)];
+    const d = 0.08 + 0.22 * rand();
+    const foot: Vec = [0.02 * c, 0.02 * s, 0];
+    const top = v3(d * c, d * s, 0.75 + 0.25 * rand());
+    if (!dead) {
+      parts.push(paint(ribbon([foot, top.toArray()], [-s, c, 0], (t) => 0.016 * (1 - 0.4 * t), 1), stalk));
+      const up = top.clone().sub(v3(...foot)).normalize();
+      if (season === 'spring') {
+        parts.push(head(new THREE.OctahedronGeometry(0.026), top, up, 1.5, hex('#3e3226'), hex('#6a5a40'), rand));
+        continue;
+      }
+      // The cotton nods out, away from the tuft.
+      const tilt = 0.5 + 0.5 * rand();
+      const nod = up.clone().multiplyScalar(Math.cos(tilt)).add(v3(c, s, 0).multiplyScalar(Math.sin(tilt))).normalize();
+      parts.push(head(lump(0.04, 0), top, nod, 1.4, hex('#e2ded2'), hex('#ffffff'), rand));
+      continue;
+    }
+    // Dry stems: one in three broken over at the kink, one in three shorter.
+    const broken = k % 3 === 1;
+    if (k % 3 === 2) top.z *= 0.7;
+    // At half the stem, where the ribbon puts its middle vertex.
+    const kink = v3(...foot).lerp(top, 0.5);
+    const bend = broken ? 0.7 + 0.6 * rand() : 0.15 * rand();
+    const rest = top.distanceTo(kink);
+    const over = v3(c, s, 0).multiplyScalar(Math.sin(bend)).add(top.clone().sub(kink).normalize().multiplyScalar(Math.cos(bend))).normalize();
+    const end = kink.clone().addScaledVector(over, rest);
+    parts.push(paint(ribbon([foot, kink.toArray(), end.toArray()], [-s, c, 0], (t) => 0.018 * (1 - t), 2), stalk));
+  }
+  return merge(parts);
+}
+
+/**
+ * A tussock of purple moor grass or deer grass, lit as one dome: blades taper from inside it to
+ * points on a ragged top, and a fringe of long blades rises out of its edge and bows over nearly
+ * to the ground. Live blades grow from the crown out as the season has them, dead straw beyond. 98
+ * triangles.
+ */
+function moorGrass(season: Season, rand: () => number): THREE.BufferGeometry {
+  const [deep, mid, tip] = ramp(MOOR_GRASS[season]);
+  const [greenDeep, greenMid] = ramp(MOOR_GREEN);
+  // Live blades go buff at the tip only as they turn in autumn.
+  const buff = season === 'autumn' ? 0.35 : 0.1;
+  const tuft: Tuft = [0, 0, 0.6, 1];
+  const cards = cushion();
+  // Root, blade and tip: a live blade is green, a dead one straw throughout. The root's shade
+  // fades out by a third of the height, so a long front blade is no dark stake.
+  const colours = (live: boolean, foot: number) => {
+    const [r1, r2] = [rand(), rand()];
+    const body = live ? greenMid.clone().lerp(tip, 0.5 * buff + 0.15 * r1) : mid.clone().lerp(tip, 0.35 + 0.4 * r1);
+    const end = live ? greenMid.clone().lerp(tip, buff + 0.35 * buff * r2 + 0.15 * r2) : body.clone().lerp(tip, 0.3);
+    const root = (live ? greenDeep.clone().lerp(greenMid, 0.2) : deep.clone().lerp(mid, 0.2)).lerp(body, 0.35 + 0.65 * smooth(0, 0.3, foot));
+    return [root, body, end];
+  };
+  const across = (a: number, width: number) => {
+    const turn = a + Math.PI / 2 + (rand() - 0.5) * 0.8;
+    return v3(Math.cos(turn), Math.sin(turn), 0).multiplyScalar(width * (0.8 + 0.4 * rand()));
+  };
+  const dome = 54;
+  for (let j = 0; j < dome; j++) {
+    const a = j * GOLDEN + rand() * 0.5;
+    const polar = 1.25 * Math.sqrt((j + 0.5) / dome);
+    const k = 0.88 + 0.22 * rand();
+    const top = v3(0.6 * k * Math.sin(polar) * Math.cos(a), 0.6 * k * Math.sin(polar) * Math.sin(a), k * Math.cos(polar) ** 0.6 + 0.1 * rand());
+    // A blade stands more upright than the dome's normal.
+    const lean = 0.6 * polar;
+    const foot = top.clone().addScaledVector(v3(Math.sin(lean) * Math.cos(a), Math.sin(lean) * Math.sin(a), Math.cos(lean)), -0.6 - 0.25 * rand());
+    foot.z = Math.max(foot.z, 0);
+    const side = across(a, 0.04);
+    const [root, body, end] = colours(j < MOOR_LIVE[season] * dome, foot.z);
+    cards.add(tuft, [foot.clone().add(side), foot.clone().sub(side), top], [root, body, end]);
+  }
+  const fringe = 22;
+  for (let j = 0; j < fringe; j++) {
+    const a = ((j + rand() * 0.8) / fringe) * 2 * Math.PI;
+    const polar = 0.9 + 0.25 * rand();
+    const foot = v3(0.5 * Math.sin(polar) * Math.cos(a), 0.5 * Math.sin(polar) * Math.sin(a), 0.9 * Math.cos(polar) ** 0.6);
+    const reach = 0.85 + 0.2 * rand();
+    const out = a + (rand() - 0.5) * 0.3;
+    const end = v3(reach * Math.cos(out), reach * Math.sin(out), 0.08 + 0.17 * rand());
+    // A kite bent at its widest and bowed up there, so the blade arches out of the tussock's side
+    // and over toward the ground in one curve.
+    const bend = foot.clone().lerp(end, 0.45);
+    bend.z += 0.07 + 0.05 * rand();
+    const side = across(out, 0.035);
+    const [root, body, tipColour] = colours(rand() < MOOR_LIVE[season], foot.z);
+    cards.add(tuft, [foot, bend.clone().add(side), bend.clone().sub(side), bend.clone().add(side), end, bend.clone().sub(side)], [root, body, body, body, tipColour, body]);
+  }
+  return cards.build();
+}
+
 const PLANTS = {
   grass: { name: 'Grass tuft', build: (season: Season, seed: number) => grass(season, random(seed)) },
   'alpine-flowers': { name: 'Alpine flowers', build: (season: Season, seed: number) => flowers(season, random(seed)) },
@@ -311,6 +571,10 @@ const PLANTS = {
   huckleberry: { name: 'Huckleberry', build: (season: Season, seed: number) => huckleberry(season, random(seed)) },
   garrigue: { name: 'Garrigue', build: (season: Season, seed: number) => garrigue(season, random(seed)) },
   esparto: { name: 'Esparto', build: (season: Season, seed: number) => esparto(season, random(seed)) },
+  bracken: { name: 'Bracken', build: (season: Season, seed: number) => bracken(season, random(seed)) },
+  'bog-cotton': { name: 'Bog cotton', build: (season: Season, seed: number) => bogCotton(season, random(seed)) },
+  'moor-grass': { name: 'Moor grass', build: (season: Season, seed: number) => moorGrass(season, random(seed)) },
+  ...SUCCULENTS,
 };
 
 export type PlantName = keyof typeof PLANTS;

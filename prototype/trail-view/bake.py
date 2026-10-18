@@ -107,10 +107,18 @@ TREE_RADIUS_M = 1000.0
 TREE_SPACING_M = 8.0
 TREE = CLASSES.index(10)
 # Road surfaces in the order the page's shader paints them (code = index + 1, 0 = no road), with
-# the half-width each is painted at. The field holds the distance to the nearest road EDGE, which
-# stays continuous where two roads of different widths meet; a byte is 0.1 m from -5 m to 20.5 m.
+# the half-width each is painted at where OSM gives no width. The field holds the distance to the
+# nearest road EDGE, which stays continuous where two roads of different widths meet; a byte is
+# 0.1 m from -5 m to 20.5 m.
 ROAD_WIDTHS = {"main": 4.5, "road": 3.0, "gravel": 1.75, "dirt": 1.5, "grass": 1.25, "path": 0.6}
+# Paved half-widths by class where OSM gives no width: a lane is about one car wide.
+PAVED_WIDTHS = {"motorway": 6.0, "trunk": 5.0, "primary": 4.0, "secondary": 3.25, "tertiary": 3.0,
+                "unclassified": 2.5, "residential": 2.5, "service": 2.0, "living_street": 2.0}
 ROAD_REACH_M = 20.5
+# Roads are graded: level across, smoothed along over ±GRADE_SMOOTH_M, and the ground beside them
+# cut or filled to them at no more than GRADE_BANK (rise over run, about 40°), as a road is built.
+GRADE_SMOOTH_M = 12.0
+GRADE_BANK = 0.85
 LEAF = {"needleleaved": 1, "broadleaved": 2, "mixed": 3}
 # Tree heights where no DTM gives a canopy: hedgerow and garden trees.
 NO_CANOPY_M = (5.0, 9.0)
@@ -143,8 +151,15 @@ ROCKS = [
     ("arenisca", "#c3a06c"), ("conglomerad", "#a99878"), ("marga", "#cbbd98"), ("arcilla", "#b58a64"),
     ("limo", "#c2a886"), ("pizarra", "#6e6a66"), ("granit", "#b5aba0"), ("cuarcita", "#bfb9ae"),
     ("esquisto", "#7b766c"), ("glacis", "#c2ad88"), ("coluvi", "#c2ad88"), ("aluvi", "#c2ad88"),
+    # Volcanic: dark flows and dykes, rust cinder, cream pumice, tan tuff. Descriptions write
+    # "basálticas" with the accent.
+    ("colada", "#4a4541"), ("basalt", "#4a4644"), ("basált", "#4a4644"), ("ankaramit", "#4a4644"),
+    ("fonolit", "#5e554b"), ("fonolít", "#5e554b"), ("traqui", "#686057"), ("sálic", "#8a7f71"),
+    ("dique", "#6f675d"), ("intrusiv", "#6f675d"), ("escoria", "#6a3d31"), ("piroclast", "#7a5040"),
+    ("pumit", "#d6c7a2"), ("pómez", "#d6c7a2"), ("toba", "#b39a74"),
 ]
-COLOURS = [("abigarrad", "#a8604e"), ("blanc", "#ddd6c4"), ("roj", "#a9583f"), ("salm", "#c98c6e"), ("verde", "#8f9884")]
+COLOURS = [("abigarrad", "#a8604e"), ("blanc", "#ddd6c4"), ("roj", "#a9583f"), ("salm", "#c98c6e"), ("verde", "#8f9884"),
+           ("negr", "#3e3a37")]
 COLOUR_AFTER = 3
 ROCK = "#b0a796"
 # Words for the rock itself and how hard it stands, 0 soft to 1 hard, first match first: hard
@@ -154,6 +169,9 @@ HARDNESS = [
     ("yeso", 0.2), ("margos", 0.45), ("marga", 0.15), ("dolom", 1.0), ("cuarcita", 1.0),
     ("granit", 1.0), ("caliza", 0.9), ("calcaren", 0.6), ("conglomerad", 0.7), ("arenisca", 0.6),
     ("pizarra", 0.6), ("esquisto", 0.5), ("glacis", 0.05), ("coluvi", 0.05), ("aluvi", 0.05),
+    ("dique", 1.0), ("intrusiv", 1.0), ("fonolit", 0.95), ("fonolít", 0.95), ("colada", 0.85), ("basalt", 0.85),
+    ("basált", 0.85), ("traqui", 0.85), ("escoria", 0.3), ("piroclast", 0.25), ("pumit", 0.1), ("pómez", 0.1),
+    ("toba", 0.5),
 ]
 # Fine habitats for the ground mosaic on k < HABITAT_LEVELS, in one vocabulary whatever the source;
 # the page's region kit paints each. The source is the best open land cover whose box holds the eye.
@@ -216,15 +234,35 @@ def merge(a: dict, b: dict) -> dict:
     return out
 
 
+def holds(area: list, lat: float, lon: float) -> bool:
+    """Whether a box [west, south, east, north] or a ring of [lon, lat] holds the point."""
+    if not isinstance(area[0], list):
+        w, s, e, n = area
+        return w <= lon <= e and s <= lat <= n
+    inside = False
+    for (x0, y0), (x1, y1) in zip(area, area[1:] + area[:1]):
+        if (y0 > lat) != (y1 > lat) and lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0):
+            inside = not inside
+    return inside
+
+
+def area_of(area: list) -> float:
+    if not isinstance(area[0], list):
+        w, s, e, n = area
+        return (e - w) * (n - s)
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(area, area[1:] + area[:1]))) / 2
+
+
 def region_at(lat: float, lon: float) -> dict:
-    """The deepest region whose box holds the point, merged over its parents, with its id."""
+    """The deepest region whose area holds the point, the smallest on a tie, merged over its
+    parents, with its id."""
     table = {path.stem: json.loads(path.read_text()) for path in REGIONS.glob("*.json")}
 
     def chain(name: str) -> list[str]:
         return chain(table[name]["extends"]) + [name] if "extends" in table[name] else [name]
 
-    fits = [(len(chain(name)), -(e - w) * (n - s), name) for name, region in table.items()
-            for w, s, e, n in region.get("where", []) if w <= lon <= e and s <= lat <= n]
+    fits = [(len(chain(name)), -area_of(area), name) for name, region in table.items()
+            for area in region.get("where", []) if holds(area, lat, lon)]
     name = max(fits)[2] if fits else "world"
     region = {}
     for step in chain(name):
@@ -480,14 +518,28 @@ def road_surface(tags: dict) -> str | None:
     return "road"
 
 
+def road_width(tags: dict, surface: str) -> float:
+    """The half-width a road is drawn at: OSM's width where it gives one."""
+    try:
+        return max(float(tags.get("width", "").split()[0]) / 2, 0.4)
+    except (ValueError, IndexError):
+        paved = surface in ("main", "road")
+        return PAVED_WIDTHS.get(tags["highway"], ROAD_WIDTHS[surface]) if paved else ROAD_WIDTHS[surface]
+
+
 def edge_distance(lines: list[tuple[np.ndarray, float]], half: float, size: int, reach: float):
     """Over a size² grid on ±half: the distance to the nearest edge of the lines, each drawn at
-    its half-width, negative inside and at most `reach`; and that line's index + 1, 0 for none."""
+    its half-width, negative inside and at most `reach`; that line's index + 1, 0 for none; and how
+    far along it the nearest point lies, in metres."""
     px = 2 * half / size
     distance = np.full((size, size), reach, np.float32)
     nearest = np.zeros((size, size), np.int32)
+    along = np.zeros((size, size), np.float32)
     for n, (xy, width) in enumerate(lines, 1):
+        start = 0.0
         for (ax, ay), (bx, by) in zip(xy[:-1], xy[1:]):
+            length = float(np.hypot(bx - ax, by - ay))
+            start += length
             i0 = max(int((min(ax, bx) - width - reach + half) / px), 0)
             i1 = min(int((max(ax, bx) + width + reach + half) / px) + 1, size)
             j0 = max(int((half - max(ay, by) - width - reach) / px), 0)
@@ -501,16 +553,55 @@ def edge_distance(lines: list[tuple[np.ndarray, float]], half: float, size: int,
             closer = d < distance[j0:j1, i0:i1]
             distance[j0:j1, i0:i1][closer] = d[closer]
             nearest[j0:j1, i0:i1][closer] = n
-    return distance, nearest
+            along[j0:j1, i0:i1][closer] = start - length * (1 - t[closer])
+    return distance, nearest, along
 
 
-def road_field(roads: list[tuple[np.ndarray, int]], half: float) -> np.ndarray:
-    """RG8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road, and
-    that road's surface code."""
-    widths = list(ROAD_WIDTHS.values())
-    distance, nearest = edge_distance([(xy, widths[code - 1]) for xy, code in roads], half, SIZE, ROAD_REACH_M)
-    surface = np.array([0] + [code for _, code in roads], np.uint8)[nearest]
-    return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface], axis=-1)
+def road_field(roads: list[tuple[np.ndarray, int, float, bool]], half: float) -> np.ndarray:
+    """RGB8: (distance to the nearest road edge + 5 m) in 0.1 m steps, negative inside a road; that
+    road's surface code; and its half-width in 0.05 m steps, so the page knows where its middle is."""
+    distance, nearest, _ = edge_distance([(xy, width) for xy, _, width, _ in roads], half, SIZE, ROAD_REACH_M)
+    surface = np.array([0] + [code for _, code, _, _ in roads], np.uint8)[nearest]
+    width = np.array([0] + [min(round(width * 20), 255) for _, _, width, _ in roads], np.uint8)[nearest]
+    return np.stack([np.round((distance + 5) * 10).astype(np.uint8), surface, width], axis=-1)
+
+
+def grade_roads(heights: np.ndarray, roads: list[tuple[np.ndarray, int, float, bool]], half: float) -> np.ndarray:
+    """Heights with the roads built into them. A road lies level across at its centreline's
+    height, which is smoothed along it, and the ground beside it is cut or filled to it at no more
+    than GRADE_BANK. Bridges keep the ground under them."""
+    px = 2 * half / SIZE
+    lines = [(xy, width) for xy, _, width, bridge in roads if not bridge]
+    distance, nearest, along = edge_distance(lines, half, SIZE, ROAD_REACH_M)
+    near = np.flatnonzero(nearest)
+    near = near[np.argsort(nearest.flat[near], kind="stable")]
+    groups = np.split(near, np.flatnonzero(np.diff(nearest.flat[near])) + 1)
+    centre = np.empty(near.size, np.float32)
+    ends = np.cumsum([0] + [len(g) for g in groups])
+    r = max(1, round(GRADE_SMOOTH_M / px))
+    for group, start, end in zip(groups, ends[:-1], ends[1:]):
+        if not len(group):
+            continue
+        xy = lines[nearest.flat[group[0]] - 1][0]
+        s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+        steps = np.linspace(0, s[-1], max(2, int(s[-1] / px) + 1))
+        x, y = np.interp(steps, s, xy[:, 0]), np.interp(steps, s, xy[:, 1])
+        u = np.clip((x + half) / px - 0.5, 0, SIZE - 1.001)
+        v = np.clip((half - y) / px - 0.5, 0, SIZE - 1.001)
+        i, j = u.astype(int), v.astype(int)
+        fu, fv = u - i, v - j
+        z = ((heights[j, i] * (1 - fu) + heights[j, i + 1] * fu) * (1 - fv)
+             + (heights[j + 1, i] * (1 - fu) + heights[j + 1, i + 1] * fu) * fv)
+        z = np.convolve(np.pad(z, r, mode="edge"), np.ones(2 * r + 1) / (2 * r + 1), mode="valid")
+        centre[start:end] = np.interp(along.flat[group], steps, z)
+    h = heights.flat[near]
+    bank = GRADE_BANK * np.maximum(distance.flat[near], 0)
+    graded = centre + np.clip(h - centre, -bank, bank)
+    # Back to the ground as it is toward the field's reach, so no seam shows where it ends.
+    fade = np.clip((ROAD_REACH_M - distance.flat[near]) / 4, 0, 1)
+    out = heights.copy()
+    out.flat[near] = h + (graded - h) * fade
+    return out
 
 
 def water_field(rivers, streams, lakes, classes: np.ndarray, half: float, work: Path) -> np.ndarray:
@@ -606,11 +697,11 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     rim = ~water & (distance <= steps) & (top >= cliffs["min_m"])
     out = heights.copy()
     out[rim] = np.maximum(heights[rim], np.minimum(top[rim], heights[rim] + raise_m[rim]))
-    out[sea] = np.minimum(heights[sea], 0.0)
-    # A one-texel step is sampled unevenly by the mesh, which turns a cliff into a comb of spikes:
-    # spread it over a few texels along the coast.
-    band = distance <= steps + 2
-    out[band] = box_mean(out, 1)[band]
+    # Flat at sea level, and the shore no lower: cubic upsampling overshoots below a cliff, and the
+    # wall would hang into the hollow.
+    out[sea] = 0.0
+    shore = distance <= steps
+    out[shore] = np.maximum(out[shore], 0.0)
     return out
 
 
@@ -967,6 +1058,23 @@ def osm_features(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]
     return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
 
 
+# Lifts the page draws, with cables and pylons, out to ±10 km where a gondola still shows.
+AERIALWAYS = ("cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "t-bar", "j-bar", "platter")
+AERIALWAY_HALF_M = 10000.0
+
+
+def osm_aerialways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+    """Cable cars, gondolas and ski lifts over AERIALWAY_HALF_M, cached like `osm_ways`."""
+    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_aerialways.json"
+    if not cached.exists():
+        w, s, e, n = to_wgs84.transform_bounds(-AERIALWAY_HALF_M, -AERIALWAY_HALF_M, AERIALWAY_HALF_M,
+                                               AERIALWAY_HALF_M, densify_pts=21)
+        text = overpass(f'[out:json][timeout:600];way["aerialway"~"^({"|".join(AERIALWAYS)})$"]({s},{w},{n},{e});out geom;')
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text)
+    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+
+
 def landmark(tags: dict) -> str:
     """The building value, or the landmark it is: a lighthouse, or a ruined castle or tower."""
     if tags.get("man_made") == "lighthouse":
@@ -981,7 +1089,7 @@ def elevation_tag(text: str) -> float | None:
     return float(match.group(1).replace(",", ".")) if match else None
 
 
-def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
+def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> None:
     out = CACHE / preset["id"]
     out.mkdir(parents=True, exist_ok=True)
     lat, lon = preset["lat"], preset["lon"]
@@ -1010,8 +1118,8 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
 
     ways = osm_ways(preset["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
-    roads = [(metres(w), codes[surface]) for w in ways
-             if "highway" in w["tags"] and (surface := road_surface(w["tags"]))]
+    roads = [(metres(w), codes[surface], road_width(w["tags"], surface), w["tags"].get("bridge", "no") != "no")
+             for w in ways if "highway" in w["tags"] and (surface := road_surface(w["tags"]))]
     forests = [(metres(w), LEAF[w["tags"]["leaf_type"]]) for w in ways
                if w["tags"].get("leaf_type") in LEAF and w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
@@ -1075,6 +1183,10 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
                 heights = sharpen_coast(heights, classes, half, region["cliffs"])
                 if k == 0:
                     origin["glo30"] = float(heights[centre, centre].mean())
+            if k < ROAD_LEVELS and roads:
+                heights = grade_roads(heights, roads, half)
+                if k == 0:
+                    origin["dtm" if dtm else "glo30"] = float(heights[centre, centre].mean())
             blob = encode(heights)
             (out / f"h-{k}.bin.gz").write_bytes(blob)
             sizes.append((k, "h", len(blob)))
@@ -1112,16 +1224,19 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
-        cdse_credentials()
-        half = HALF0_M * 2 ** (S2_LEVELS - 1)
-        quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
-        print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
-        for k in range(S2_LEVELS):
-            for q, texels in s2_level(k, frame, quarters, work).items():
-                blob = pack(texels)
-                (out / f"s2-q{q}-{k}.bin.gz").write_bytes(blob)
-                sizes.append((k, f"s2-q{q}", len(blob)))
-            print(f"  colour level {k}", flush=True)
+        if skip_colour:
+            sizes += [(k, f"s2-q{q}", (out / f"s2-q{q}-{k}.bin.gz").stat().st_size) for k in range(S2_LEVELS) for q in range(1, 5)]
+        else:
+            cdse_credentials()
+            half = HALF0_M * 2 ** (S2_LEVELS - 1)
+            quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
+            print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
+            for k in range(S2_LEVELS):
+                for q, texels in s2_level(k, frame, quarters, work).items():
+                    blob = pack(texels)
+                    (out / f"s2-q{q}-{k}.bin.gz").write_bytes(blob)
+                    sizes.append((k, f"s2-q{q}", len(blob)))
+                print(f"  colour level {k}", flush=True)
 
     trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), region["leaf"])
     trees = np.concatenate([trees, orchard_trees(orchards)])
@@ -1146,6 +1261,13 @@ def bake(preset: dict, skip_peaks: bool, dtm_levels: int) -> None:
     blob = pack(wall_pieces(walls))
     (out / "walls.bin.gz").write_bytes(blob)
     sizes.append(("-", "walls", len(blob)))
+
+    # The OSM line runs station to station; a vertex between is a pylon.
+    lifts = [[way["tags"]["aerialway"], [round(float(v), 1) for v in metres(way).ravel()]]
+             for way in osm_aerialways(preset["id"], lat, lon, to_wgs84)]
+    blob = json.dumps(lifts, separators=(",", ":")).encode()
+    (out / "aerialways.json").write_bytes(blob)
+    sizes.append(("-", "aerialways", len(blob)))
     print(f"  {len(trees)} trees, {len(buildings)} buildings", flush=True)
 
     ground = preset.get("ground_m", origin.get("dtm", origin["glo30"]))
@@ -1185,10 +1307,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("preset")
     parser.add_argument("--skip-peaks", action="store_true", help="keep the peaks.json of an earlier bake")
+    parser.add_argument("--skip-colour", action="store_true", help="keep the Sentinel-2 levels of an earlier bake")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
                         help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
     args = parser.parse_args()
-    bake(load_preset(args.preset), args.skip_peaks, args.dtm_levels)
+    bake(load_preset(args.preset), args.skip_peaks, args.skip_colour, args.dtm_levels)
 
 
 if __name__ == "__main__":

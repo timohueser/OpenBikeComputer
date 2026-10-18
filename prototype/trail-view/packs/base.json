@@ -1,7 +1,7 @@
 {
  "name": "Base",
  "about": "What a place draws when no pack says more: grass, and plain houses.",
- "trees": [],
+ "trees": {},
  "ground": ["grass"],
  "style": {
   "name": "House",

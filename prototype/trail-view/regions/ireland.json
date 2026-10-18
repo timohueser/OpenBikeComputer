@@ -1,1 +1,1 @@
-{ "name": "Ireland", "extends": "world", "where": [ [-10.7, 51.35, -5.9, 55.45] ], "tz": "Europe/Dublin", "landcover": "nlcm" }
+{ "name": "Ireland", "extends": "world", "where": [ [-10.7, 51.35, -5.9, 55.45] ], "tz": "Europe/Dublin", "landcover": "nlcm", "look": { "roadLine": "#cdae4a" } }

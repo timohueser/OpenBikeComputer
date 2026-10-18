@@ -30,15 +30,20 @@ uv run prototype/trail-view/bake.py hahnen
 - Third-party photographs download to `_sources/photos/`. They are never committed.
 - The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
-  to the nearest road edge. Trees stand on tree pixels within 1 km, as tall as the canopy (GLO-30
-  minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees stand 5 to 9 m.
+  to the nearest road edge, the road's surface and its half-width (OSM `width`, else by surface
+  and class). Roads are graded into the heights: level across, smoothed along, with banks of at
+  most 40°; bridges keep the ground under them. Trees stand on tree pixels within 1 km, as tall as
+  the canopy (GLO-30 minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees
+  stand 5 to 9 m.
 - Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
   their `width` tag or a default, and water areas. The water levels hold the share of each pixel
   under water, from a 4× finer grid, and each water pixel's distance to land. Streams count only
   off tree pixels.
-- A third cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges.
-- Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land drops
-  to sea level, and the land edge rises a little toward the cliff top.
+- A third cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges, and a
+  fourth over ±10 km brings cable cars and ski lifts. The page adds pylons where OSM maps a lift
+  station to station only.
+- Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land lies
+  at sea level, and the land edge rises a little toward the cliff top.
 - Habitat levels (±5 km) come from the best open land cover map whose box holds the eye. Today
   that is Ireland's National Land Cover Map 2018 only. Its feature service returns 2000 polygons
   in about 75 s; they are cached in `_sources/nlcm/`.
@@ -46,6 +51,7 @@ uv run prototype/trail-view/bake.py hahnen
   the colour, and variegated units are drawn in bands.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
+- `--skip-colour` keeps the Sentinel-2 levels of an earlier bake, which take most of a bake's time.
 - The photographs come from the `peak-view-photos` fixture package in
   `~/.cache/openbikecomputer/fixtures/`.
 - WorldCover is read from its public COGs. The Sentinel-2 quarterly mosaics are read from CDSE
@@ -56,26 +62,32 @@ uv run prototype/trail-view/bake.py hahnen
 
 ## Regions and packs
 
-A region is a ruleset in `regions/<name>.json`. It names the region it `extends` and the boxes it
-covers (`where`, as `[west, south, east, north]`); a spot takes the deepest region whose box holds
-it, so `world` › `ireland` › `irish-coast`. A region inherits all it does not say: objects merge,
-anything else replaces. bake.py and the page (`src/regions.ts`) resolve the same files.
+A region is a ruleset in `regions/<name>.json`. It names the region it `extends` and the areas it
+covers (`where`: boxes `[west, south, east, north]` or rings of `[lon, lat]`); a spot takes the
+deepest region whose area holds it, the smallest on a tie, so `world` › `ireland` › `irish-coast`,
+and on Tenerife the north and Las Cañadas rings win over the island's box. A region inherits all
+it does not say: objects merge, anything else replaces. bake.py and the page (`src/regions.ts`)
+resolve the same files.
 
 | Key | What it sets |
 |---|---|
 | `tz`, `leaf`, `pack` | Time zone, default leaf type, the asset pack |
 | `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`), rock colour (`igme`) |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
-| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, roads, snowline, sea, swell, haze, grade, weather |
+| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 
 Generic rules take their numbers from the region; the data picks where they act. Geology
 descriptions (IGME in Spain) give rock colour and hardness: hard rock stands as outcrops and crags,
 soft marl and clay keep their scrub. A fine land cover map (NLCM in Ireland) overrules WorldCover
 where it has a habitat.
 
-A pack in `packs/<name>.json` extends `base` and lists trees by leaf type and elevation, ground
-plants, herds by habitat, and the house style. Regions share packs: the Vosges draw the Black
-Forest's. A new place needs a region with a box; its models come from the pack it names.
+A pack in `packs/<name>.json` extends another and keys its trees and herds by species, so a child
+adds or changes one and `null` drops one: `atlantic` holds the moor, sheep and cottages that
+`irish-coast` and `highlands` share, and `canary` the pines and high-mountain shrubs of
+`canary-north` and `canary-south`. Trees go by leaf type and elevation; a plant model listed with
+`cover: "shrub"` stands as a shrub. Herds go by habitat, or by the WorldCover classes a habitat
+stands for where no land cover map gives one. Regions share packs: the Vosges draw the Black
+Forest's. A new place needs a region with an area; its models come from the pack it names.
 
 ## Open
 
@@ -102,8 +114,9 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
 - The near field comes from the region's pack: trees by leaf type and
   elevation, ground plants by land cover within 60 m, rocks on steep ground, ridges, shores and
   mapped bare rock, crags along mapped crests, and houses fitted to OSM footprints by their
-  `building` value and size. OSM ruins, castles and lighthouses draw as landmarks. Ground plants
-  take their hue from the ground under them.
+  `building` value and size. OSM ruins, castles and lighthouses draw as landmarks, and lifts
+  within 6 km as stations, pylons, cables and carriers. Ground plants take their hue from the
+  ground under them.
 - "Readout" › "region" shows the chain of regions that applies, root first.
 - "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
   light bands; "copy look JSON" copies the values.
