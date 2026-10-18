@@ -84,11 +84,14 @@ const MESH_LEVEL = /* glsl */ `
  * A mesh vertex samples the level whose texels match the mesh's own spacing there, blended
  * between the two levels around it: ground detail smaller than a triangle (a sea cliff 1 km off)
  * slopes instead of aliasing into a comb, and no ring of vertices jumps a whole level, which
- * would blunt peaks. The fragment shader keeps the finer normals.
+ * would blunt peaks. The fragment shader keeps the finer normals. Inside the national DTM the
+ * vertex stays on a DTM level: past 3 km its spacing matches GLO-30's texels, and the skyline
+ * would come from GLO-30 again.
  */
 float meshZ(vec2 p, bool ground) {
   float spacing = length(p) * max(exp(ringStep) - 1.0, 6.2831853 / azimuths);
-  float level = clamp(log2(max(spacing / (2.0 * half0 / heightSize), 1.0)), levelOf(p), levels - 1.0);
+  float top = glo30Only || levelOf(p) >= dtmLevels ? levels - 1.0 : dtmLevels - 1.0;
+  float level = clamp(log2(max(spacing / (2.0 * half0 / heightSize), 1.0)), levelOf(p), top);
   float k = floor(level);
   float z = ground ? groundZ(k, p) : surfaceZ(k, p);
   if (level > k) z = mix(z, ground ? groundZ(k + 1.0, p) : surfaceZ(k + 1.0, p), level - k);
