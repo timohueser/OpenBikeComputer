@@ -37,7 +37,7 @@
     function chip(row: SourceRow, name: string): string {
         const on = row.prepared[name];
         if (on?.error) return "cannot be read";
-        if (on?.lock) return on.lock.stale ? `lock left on ${on.lock.machine}` : `preparing on ${on.lock.machine}`;
+        if (on?.lock) return on.lock.died || on.lock.stale ? `lock left on ${on.lock.machine}` : `preparing on ${on.lock.machine}`;
         return on?.versions.length ? `prepared ${on.versions.at(-1)!.version}` : "not prepared";
     }
 </script>
@@ -135,7 +135,9 @@
                     {:else}
                         <span class="soft">no version</span>
                     {/each}
-                    {#if on.lock?.stale}
+                    {#if on.lock?.died}
+                        <span class="missing">Run {on.lock.run} ended without freeing the lock. The next preparation takes it over.</span>
+                    {:else if on.lock?.stale}
                         <span class="missing"
                             >No heartbeat from run {on.lock.run} on {on.lock.machine} since {when(on.lock.heartbeat)}: it likely ended without freeing the
                             lock. <code>{command(["unlock", name, "--source", id, "--from", on.lock.machine])}</code></span
