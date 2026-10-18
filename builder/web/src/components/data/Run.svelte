@@ -46,6 +46,7 @@
         if (target && (view.state === "failed" || view.state === "stopped") && !view.switched.length) facts.push(`${target} did not change`);
         const changed = status?.targets.find((at) => at.target === target);
         if (changed && !changed.lock && (view.state === "failed" || view.state === "stopped")) facts.push(`the ${target} lock is free`);
+        if (changed?.lock?.died && changed.lock.run === id) facts.push(`it kept the ${target} lock, which the next update takes over`);
         return facts.join(" · ");
     });
     // The cell map: the leaves of one tiled layer that baked and that bake now.

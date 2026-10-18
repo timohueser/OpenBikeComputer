@@ -1135,8 +1135,10 @@ it.
   frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
-  the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
-  run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
+  the lock. On its machine, the next run of the same store takes the lock over at once, with a
+  conditional write, and writes that to its log: the store shows that the process of the run
+  ended (see [Runs](#runs)). On another machine, `obc data unlock TARGET --from MACHINE` frees the
+  lock of a run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
@@ -1632,7 +1634,8 @@ each app, the run that holds its lock or why `lock.json` cannot be read, the reg
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
-the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
+the next step is to wait for that run, unless its process ended on this machine: then the next
+update takes the lock over. It fetches only small metadata, and checks upstream with the
 checks of the last hour. A target that serves nothing has the next command
 `obc data update TARGET --region ID`. For an R2 target, the next command is the review
 (`--dry-run`): its update needs the id that the owner approved.
@@ -3104,6 +3107,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Lock": {
       "description": "The run that holds the lock of a target, as its `lock.json` says.",
       "properties": {
+        "died": {
+          "description": "Whether the run ran on this machine and its process ended: the next run takes the lock\nover.",
+          "type": "boolean"
+        },
         "heartbeat": {
           "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
           "type": "string"
@@ -3152,7 +3159,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "phase",
         "heartbeat",
         "progress",
-        "stale"
+        "stale",
+        "died"
       ],
       "type": "object"
     },

@@ -38,7 +38,7 @@
             "release": {"serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-09T08:00:00Z"}, "rollback": {"id": "2c91555555555555555555555555555555555555555555555555555555555555", "since": "2026-10-09T08:00:00Z"}},
             "made": {"machine": "hetzner-bake-1", "time": "2026-10-09T06:40:00Z"},
             "serve": null,
-            "lock": {"machine": "hetzner-bake-1", "run": "2026-10-12-093112", "review": "4c1e0d2a91b7", "phase": "router-ready", "heartbeat": "2026-10-12T10:14:04Z", "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 1284, "total": 1284}, {"layer": "planner/search", "done": 5, "total": 5}, {"layer": "planner/index", "done": 1, "total": 1}], "waiting": "the planner release is starting", "stale": false},
+            "lock": {"machine": "hetzner-bake-1", "run": "2026-10-12-093112", "review": "4c1e0d2a91b7", "phase": "router-ready", "heartbeat": "2026-10-12T10:14:04Z", "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 1284, "total": 1284}, {"layer": "planner/search", "done": 5, "total": 5}, {"layer": "planner/index", "done": 1, "total": 1}], "waiting": "the planner release is starting", "stale": false, "died": false},
             "lock_error": null,
             "region": "dach",
             "area": {"name": "Germany, Austria and Switzerland", "boxes": [{"west": 5.86, "south": 47.27, "east": 15.04, "north": 55.06}, {"west": 9.53, "south": 46.37, "east": 17.16, "north": 49.02}, {"west": 5.95, "south": 45.81, "east": 10.49, "north": 47.81}], "missing": null},
