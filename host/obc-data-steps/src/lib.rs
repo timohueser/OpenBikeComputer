@@ -71,6 +71,18 @@ mod tests {
     }
 
     #[test]
+    fn each_function_has_a_name_of_its_own_and_is_listed() {
+        let names: std::collections::BTreeSet<&str> = super::FUNCTIONS.iter().map(|function| function.name).collect();
+        assert_eq!(names.len(), super::FUNCTIONS.len(), "two functions have one name");
+        let declared = include_str!("functions.rs").matches(": Function =").count();
+        assert_eq!(
+            declared + 1,
+            super::FUNCTIONS.len(),
+            "FUNCTIONS lists each static of functions.rs and `obc-data/pass`"
+        );
+    }
+
+    #[test]
     fn the_products_fill_each_pointer_of_a_release_once() {
         let mut keys: Vec<&str> = super::PRODUCTS.iter().map(|product| product.pointer().key).collect();
         keys.sort();

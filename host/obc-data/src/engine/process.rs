@@ -71,13 +71,30 @@ pub fn run(root: &Path, run: &Run, request: &Request, stop: &AtomicBool) -> Resu
     command.env("TMPDIR", &temporary);
     command.stdin(Stdio::piped()).stdout(std::io::stderr()).stderr(Stdio::piped());
     #[cfg(unix)]
-    // SAFETY: setpgid is async-signal-safe. A pre_exec also makes `Command` fork, not vfork: the
-    // peak of a forked child starts at the resident set of the engine now, not at its peak.
-    unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut command, || match libc::setpgid(0, 0) {
-            0 => Ok(()),
-            _ => Err(std::io::Error::last_os_error()),
-        });
+    {
+        use std::os::unix::process::CommandExt;
+        if let (Run::Rust(_), Some(program)) = (run, std::env::args_os().next()) {
+            // `ps` shows `obc-data obc_data_step <function>`, not `/proc/self/exe`.
+            command.arg0(program);
+        }
+        #[cfg(target_os = "linux")]
+        let engine = std::process::id();
+        // SAFETY: setpgid, prctl and getppid are async-signal-safe. A pre_exec also makes
+        // `Command` fork, not vfork: the peak of a forked child starts at the resident set of the
+        // engine now, not at its peak.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The step ends with the engine, also when the kernel kills the engine.
+                #[cfg(target_os = "linux")]
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 || libc::getppid() as u32 != engine {
+                    return Err(std::io::Error::other("the engine ended"));
+                }
+                Ok(())
+            });
+        }
     }
     let start = Instant::now();
     let mut child = command.spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
@@ -204,7 +221,7 @@ fn wait(child: Child, stop: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Opt
             stopped = true;
         }
         std::thread::sleep(pause);
-        pause = (pause * 2).min(Duration::from_millis(100));
+        pause = (pause * 2).min(Duration::from_millis(10));
     }
 }
 

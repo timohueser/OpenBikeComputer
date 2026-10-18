@@ -222,7 +222,8 @@ impl Plan {
 }
 
 /// From the newest receipt of the step with the same options, else from the cost of its output in
-/// the release, else from the newest receipt of the step.
+/// the release, else from the newest receipt of the step. A peak comes only from a receipt of a step
+/// that ran in a process of its own: the cost in a release does not tell.
 fn estimate(costs: &Costs, step: &Step) -> Option<Estimate> {
     let newest = |same_options: bool| {
         let receipts = costs.receipts.iter();
@@ -233,13 +234,13 @@ fn estimate(costs: &Costs, step: &Step) -> Option<Estimate> {
         wall_ms: receipt.wall_ms,
         bytes_out: receipt.bytes_out,
         client_bytes: receipt.files.iter().filter(|file| step.client.includes(&file.path)).map(|file| file.size).sum(),
-        peak_rss_bytes: receipt.peak_rss_bytes,
+        peak_rss_bytes: receipt.peak_rss_bytes.filter(|_| receipt.own_process),
     };
     let served = costs.release.get(step.name.as_str()).map(|output| Estimate {
         wall_ms: output.cost.wall_ms,
         bytes_out: output.cost.bytes_out,
         client_bytes: output.client_files().map(|file| file.size).sum(),
-        peak_rss_bytes: output.cost.peak_rss_bytes,
+        peak_rss_bytes: None,
     });
     newest(true).map(of_receipt).or(served).or_else(|| newest(false).map(of_receipt))
 }
@@ -379,5 +380,14 @@ pub(crate) mod tests {
         step.options = serde_json::json!({ "size": 3 });
         assert_eq!(wall_ms(&release, &step), Some(3000), "else the cost in the release");
         assert_eq!(wall_ms(&none, &step), Some(2000), "else the newest of the step");
+
+        // A peak comes only from a step that ran in a process of its own.
+        let peak = |receipts: Vec<Receipt>, release: &BTreeMap<&str, &Output>| {
+            estimate(&Costs { receipts, release }, &step).and_then(|estimate| estimate.peak_rss_bytes)
+        };
+        let measured = Receipt { peak_rss_bytes: Some(1 << 30), ..receipts[1].clone() };
+        assert_eq!(peak(vec![measured.clone()], &none), Some(1 << 30));
+        assert_eq!(peak(vec![Receipt { own_process: false, ..measured }], &none), None, "the peak of an engine");
+        assert_eq!(peak(Vec::new(), &release), None, "a release does not tell");
     }
 }

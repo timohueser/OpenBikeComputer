@@ -1933,6 +1933,7 @@ pub(super) mod tests {
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn an_update_takes_over_the_lock_that_a_run_of_this_machine_kept_when_its_process_ended() {
         let fixture = fixture("update-died");

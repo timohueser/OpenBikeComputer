@@ -192,6 +192,10 @@ pub struct Receipt {
     pub wall_ms: u64,
     pub cpu_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
+    /// Whether the step ran in a process of its own, so that `cpu_ms` and `peak_rss_bytes` are its
+    /// own. Without it, the peak can be that of the engine, and no estimate reads it.
+    #[serde(default)]
+    pub own_process: bool,
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub metrics: BTreeMap<String, Value>,
@@ -647,6 +651,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result
         wall_ms: 0,
         cpu_ms: None,
         peak_rss_bytes: None,
+        own_process: false,
         bytes_in,
         bytes_out: 0,
         metrics: BTreeMap::new(),
@@ -713,6 +718,7 @@ fn execute(
     receipt.wall_ms = usage.wall_ms;
     receipt.cpu_ms = usage.cpu_ms;
     receipt.peak_rss_bytes = usage.peak_rss_bytes;
+    receipt.own_process = true;
     Ok(())
 }
 
@@ -937,7 +943,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     /// The child process of a Rust step of a test runs it here.
     #[test]
     fn obc_data_step() {
-        let mut functions = vec![&UPPERCASE, &COUNT, &NAMED, &SEA, &SPLIT, &ONE, &NOTHING, &EXTRA, &LINK, &PEAK];
+        let mut functions =
+            vec![&UPPERCASE, &COUNT, &NAMED, &SEA, &SPLIT, &ONE, &NOTHING, &EXTRA, &LINK, &PEAK, &OPTIONS];
         functions.extend([&runs::tests::STOPPED, &runs::tests::FIRST_FILE, &plan::tests::LOWER]);
         functions.extend([&changes::tests::PART, &changes::tests::LOUDER]);
         functions.extend(crate::cli::tests::FUNCTIONS);
@@ -1032,6 +1039,33 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     fn sea(request: &Request) -> Result<(), String> {
         fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
         write_atomic(&request.output.join("metadata/empty.json"), b"[\"13/10000/10000\"]")
+    }
+
+    /// Writes its options as JSON to `out.txt`.
+    static OPTIONS: Function = Function { name: "test/options", run: options };
+
+    fn options(request: &Request) -> Result<(), String> {
+        fs::write(request.output.join("out.txt"), request.options.to_string()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_rust_step_gets_the_floats_of_its_options_exactly() {
+        let fixture = fixture("engine-floats");
+        // Coordinates with 17 significant digits, as a step list computes them.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let floats: Vec<f64> = (0..10_000)
+            .map(|_| {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                (state >> 11) as f64 / (1u64 << 53) as f64 * 360.0 - 180.0
+            })
+            .collect();
+        let options = json!({ "bounds": floats });
+        let expected = options.to_string();
+        let step =
+            Step { options: options.clone(), ..step("test/options", Vec::new(), "out.txt", Run::Rust(&OPTIONS)) };
+        let built = fixture.build(&[step]).unwrap();
+        let written = fs::read_to_string(fixture.store.object(&built[0].receipt.files[0].sha256)).unwrap();
+        assert!(written == expected, "a float changed in the child process");
     }
 
     /// Holds 400 MiB for a moment.

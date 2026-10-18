@@ -491,9 +491,9 @@ impl Run {
 
         let planned: HashMap<&str, &Build> = plan.builds().map(|build| (build.step.as_str(), build)).collect();
         let peak = |build: &Build| build.estimate.and_then(|estimate| estimate.peak_rss_bytes);
-        let mut per_byte = HashMap::new();
+        let mut measured = HashMap::new();
         if limits.memory_bytes.is_some() && planned.values().any(|build| peak(build).is_none()) {
-            store.layers()?.iter().for_each(|receipt| learn(&mut per_byte, receipt));
+            store.layers()?.iter().for_each(|receipt| learn(&mut measured, receipt));
         }
         // The planned steps and the layers that they read, in dependency order.
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
@@ -597,9 +597,11 @@ impl Run {
                         prepared
                     }
                 };
+                // A step that reserves more than the memory runs alone, as one that reserves all.
                 let cost = match (&prepared, limits.memory_bytes) {
                     (Ok((receipt, _)), Some(memory)) => {
-                        reservation(peak(build), &per_byte, &receipt.layer, receipt.bytes_in).unwrap_or(memory)
+                        let reserved = reservation(peak(build), measured.get(&receipt.layer), receipt.bytes_in);
+                        reserved.map_or(memory, |reserved| reserved.min(memory))
                     }
                     _ => 0,
                 };
@@ -658,7 +660,7 @@ impl Run {
             reserved -= cost;
             match result {
                 Ok(result) => {
-                    learn(&mut per_byte, &result.receipt);
+                    learn(&mut measured, &result.receipt);
                     let receipt = Box::new(result.receipt.clone());
                     let event = Event::StepFinished {
                         step: step.name.clone(),
@@ -805,20 +807,34 @@ fn longest_first(pending: &mut [&Step], planned: &HashMap<&str, &Build>) {
     pending.sort_by_key(|step| std::cmp::Reverse(chain[step.name.as_str()]));
 }
 
-/// The memory that a step of `layer` that reads `bytes_in` reserves: its estimated `peak`, else
-/// its input bytes times the largest peak per input byte of its layer. `None` when neither is
-/// known: the step reserves the whole memory, so that it runs alone.
-fn reservation(peak: Option<u64>, per_byte: &HashMap<String, f64>, layer: &str, bytes_in: u64) -> Option<u64> {
-    let scaled = || per_byte.get(layer).filter(|_| bytes_in > 0).map(|ratio| (ratio * bytes_in as f64).ceil() as u64);
-    peak.or_else(scaled)
+/// What the measured steps of a layer tell of the memory of its other steps: the smallest peak,
+/// and the input bytes and the peak of the step that read the most.
+struct Measured {
+    smallest: u64,
+    largest: (u64, u64),
 }
 
-/// Raise the largest peak per input byte of the layer of `receipt` to its own.
-fn learn(per_byte: &mut HashMap<String, f64>, receipt: &Receipt) {
-    if let Some(peak) = receipt.peak_rss_bytes.filter(|_| receipt.bytes_in > 0) {
-        let ratio = per_byte.entry(receipt.layer.clone()).or_insert(0.0);
-        *ratio = ratio.max(peak as f64 / receipt.bytes_in as f64);
-    }
+/// The memory that a step that reads `bytes_in` reserves: its estimated `peak`, else the smallest
+/// measured peak of its layer or, when that is more, its input bytes times the peak per input byte
+/// of the measured step of its layer that read the most. The per-byte peak of a step that read
+/// little is mostly the fixed memory of a process. `None` when neither is known: the step reserves
+/// the whole memory, so that it runs alone.
+fn reservation(peak: Option<u64>, measured: Option<&Measured>, bytes_in: u64) -> Option<u64> {
+    peak.or_else(|| {
+        let Measured { smallest, largest: (read, most) } = *measured?;
+        Some(smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64))
+    })
+}
+
+/// Add the peak of `receipt` to what the measured steps of its layer tell.
+fn learn(measured: &mut HashMap<String, Measured>, receipt: &Receipt) {
+    let Some(peak) = receipt.peak_rss_bytes.filter(|_| receipt.own_process && receipt.bytes_in > 0) else {
+        return;
+    };
+    let read = (receipt.bytes_in, peak);
+    let layer = measured.entry(receipt.layer.clone()).or_insert(Measured { smallest: peak, largest: read });
+    layer.smallest = layer.smallest.min(peak);
+    layer.largest = layer.largest.max(read);
 }
 
 /// Whether a step with `key` keeps `output` of the serving release: the keys are the same, and the
@@ -1147,22 +1163,20 @@ pub fn died(store: &Store, holder: &crate::lock::Holder) -> bool {
 
 /// Whether a process of the session `pid` runs. A detached run leads its session, so the programs
 /// of its steps stay in the session after it ended, each step in a process group of its own.
-/// Elsewhere than on Linux, whether a process of the process group `pid` runs.
+#[cfg(target_os = "linux")]
 fn session_alive(pid: u32) -> bool {
-    #[cfg(target_os = "linux")]
-    if let Ok(sid @ 1..) = libc::pid_t::try_from(pid) {
-        let Ok(processes) = fs::read_dir("/proc") else { return true };
-        let mut pids = processes.flatten().filter_map(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok());
-        // SAFETY: getsid reads the session of a process.
-        return pids.any(|process| unsafe { libc::getsid(process) } == sid);
-    }
-    #[cfg(unix)]
-    if let Ok(pid @ 1..) = libc::pid_t::try_from(pid) {
-        // SAFETY: signal 0 only checks that a process of the group exists.
-        let found = unsafe { libc::kill(-pid, 0) } == 0;
-        return found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-    }
-    false
+    let Ok(sid @ 1..) = libc::pid_t::try_from(pid) else { return false };
+    let Ok(processes) = fs::read_dir("/proc") else { return true };
+    let mut pids = processes.flatten().filter_map(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok());
+    // SAFETY: getsid reads the session of a process.
+    pids.any(|process| unsafe { libc::getsid(process) } == sid)
+}
+
+/// Only Linux lists the processes of a session. Elsewhere a session counts as running, so only
+/// `unlock` frees the lock of a run that died.
+#[cfg(not(target_os = "linux"))]
+fn session_alive(_: u32) -> bool {
+    true
 }
 
 /// Whether the process `pid` runs.
@@ -1752,6 +1766,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
                 wall_ms: 0,
                 cpu_ms: None,
                 peak_rss_bytes: Some(peak),
+                own_process: true,
                 bytes_in: 5,
                 bytes_out: 0,
                 metrics: BTreeMap::new(),
