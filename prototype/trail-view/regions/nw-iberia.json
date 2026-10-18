@@ -1,1 +1,8 @@
-{ "name": "Northwest Iberian montane forests", "ecoregion": 800, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Northwest Iberian montane forests",
+ "ecoregion": 800,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "nw-iberia",
+ "about": "A ring of granite, slate and quartzite mountains around the northern Meseta, from the Ourense and León ranges, Sanabria, El Bierzo and the Trás-os-Montes plateau over the Sierra de la Demanda to the Sistema Central from the Serra da Estrela to Gredos, with outliers in the Villuercas, the Montes de Toledo and São Mamede: Pyrenean oak and chestnut woods, pine plantations and broom and heather heath on rounded ridges, hay meadows with ash and poplar in the valleys, glacial lakes and granite cirques on the high summits, and stone villages under slate or tile roofs. No split: the ring has no coast and no island side, and one haze, weather and grade fit it; its wetter north-west, its summer-dry south and its snowy cirques differ in Sentinel-2 colour, the seasonal ramps, the barren rule and the snowline, the tree bands carry oak and chestnut below pine, birch, broom and juniper, IGME rock colour covers Spain, and the house style goes by subdivision."
+}
