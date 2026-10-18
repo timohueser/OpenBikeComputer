@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trail View review</title>
+    <style>
+      /* lil-gui's dark theme, at a size for reading. */
+      :root {
+        --page: #16181b;
+        --panel: #1f1f1f;
+        --title: #111111;
+        --widget: #424242;
+        --hover: #4f4f4f;
+        --line: #2c2f33;
+        --text: #ebebeb;
+        --muted: #9ba1a8;
+        --blue: #2cc9ff;
+        --green: #a2db3c;
+        --amber: #ffb347;
+        --mono: Menlo, Monaco, Consolas, monospace;
+        color-scheme: dark;
+      }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid;
+        grid-template-columns: 290px 1fr;
+        background: var(--page);
+        color: var(--text);
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      }
+      nav { overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+      main { overflow-y: auto; padding: 20px 28px 48px; }
+      h1, h2, h3, p { margin: 0; }
+      button, textarea { font: inherit; color: inherit; }
+      button {
+        background: var(--widget);
+        border: 0;
+        border-radius: 3px;
+        padding: 5px 12px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: var(--hover); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      :focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+      a { color: var(--blue); }
+      .muted { color: var(--muted); }
+      .wide { grid-column: 1 / -1; }
+      .mono { font-family: var(--mono); font-size: 12px; }
+
+      nav header { position: sticky; top: 0; padding: 12px 14px; background: var(--title); }
+      nav h1 { font-size: 14px; font-weight: 600; }
+      nav h2 { padding: 14px 14px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+      nav button {
+        display: grid;
+        grid-template-columns: 10px 1fr auto;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 5px 14px;
+        border-radius: 0;
+        background: none;
+        text-align: left;
+      }
+      nav button[aria-current="true"] { background: var(--widget); }
+      nav button span:nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--widget); }
+      .dot.in-review { background: var(--amber); }
+      .dot.approved { background: var(--green); }
+
+      .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 18px; }
+      .head h1 { font-size: 20px; font-weight: 600; }
+      .head > div:first-child { flex: 1; min-width: 300px; }
+      .pill { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 9px; font-size: 11px; vertical-align: 3px; background: var(--widget); }
+      .pill.in-review { background: var(--amber); color: #111; }
+      .pill.approved { background: var(--green); color: #111; }
+      .rounds { display: flex; align-items: center; gap: 4px; }
+      .rounds button[aria-pressed="true"] { background: var(--blue); color: #111; }
+      .approve { background: #3d5a1e; }
+      .approve:hover:not(:disabled) { background: #4c7024; }
+
+      section { margin-top: 26px; }
+      section > h2 { margin-bottom: 10px; font-size: 15px; font-weight: 600; }
+      article { margin-top: 18px; padding: 14px 16px 16px; background: var(--panel); border-radius: 4px; }
+      article > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
+      article h3 { font-size: 15px; font-weight: 600; }
+      .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+      .pair > h4 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+      figure { margin: 0; }
+      figure img { display: block; width: 100%; border-radius: 3px; cursor: zoom-in; background: var(--title); }
+      figcaption { margin-top: 3px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+      .empty { display: grid; place-items: center; min-height: 80px; border: 1px dashed var(--line); border-radius: 3px; color: var(--muted); }
+
+      .thread { display: grid; gap: 8px; }
+      .comment { padding: 7px 10px; border-left: 3px solid var(--widget); background: rgba(255, 255, 255, 0.03); }
+      .comment.agent { border-left-color: var(--blue); }
+      .comment.approval { border-left-color: var(--green); }
+      .comment p { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .comment small { display: block; margin-bottom: 2px; color: var(--muted); }
+      .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; margin-top: 8px; }
+      textarea {
+        min-height: 38px;
+        padding: 7px 9px;
+        resize: vertical;
+        background: var(--title);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+      }
+      .composer .error { grid-column: 1 / -1; color: var(--amber); }
+
+      dialog { max-width: 96vw; max-height: 96vh; padding: 0; border: 0; outline: 0; background: var(--title); color: var(--text); }
+      dialog::backdrop { background: rgba(0, 0, 0, 0.8); }
+      dialog img { display: block; max-width: 96vw; max-height: calc(96vh - 32px); cursor: zoom-out; }
+      dialog p { padding: 6px 10px; font-size: 12px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <nav aria-label="Regions"></nav>
+    <main></main>
+    <dialog><img alt="" /><p></p></dialog>
+    <script type="module" src="/src/review.ts"></script>
+  </body>
+</html>

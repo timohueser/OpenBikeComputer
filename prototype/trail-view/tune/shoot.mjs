@@ -3,18 +3,22 @@
 //
 //   npm run shoot -- <spot>[,<spot>…] [--yaw 0,90,180,270] [--pitch 0] [--vfov 60] [--hour 15]
 //        [--season summer] [--weather sunny] [--no-photo] [--time] [--out dir] [--swiftshader]
+//        [--round n [--region short]]
 //
-// Shots land in ~/.cache/obc/trail-view/shots/ and, with --out, are copied to <dir>/. Prints one
+// Shots land in ~/.cache/obc/trail-view/shots/ and, with --out, are copied to <dir>/. --round
+// copies them into review round <n> of the spot's region (tune/review.mjs): the short of the
+// spots/<short>.json that holds the spot, else --region. Prints one
 // JSON line per spot: the files, the WebGL renderer, near and total triangles, page errors, and
 // with --time the median frame time. Without a GPU, pass --swiftshader: WebGL2 then runs on the
 // CPU, the same picture at about 2 s a frame, so its frame times say nothing about the product.
 
-import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
+import { known, REVIEW } from './review.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
 const SHOTS = join(homedir(), '.cache/obc/trail-view/shots');
@@ -25,12 +29,31 @@ const { values, positionals } = parseArgs({
     yaw: { type: 'string' }, pitch: { type: 'string', default: '0' }, vfov: { type: 'string', default: '60' },
     hour: { type: 'string', default: '15' }, season: { type: 'string', default: 'summer' },
     weather: { type: 'string', default: 'sunny' }, 'no-photo': { type: 'boolean' }, time: { type: 'boolean' },
-    out: { type: 'string' }, swiftshader: { type: 'boolean' },
+    out: { type: 'string' }, swiftshader: { type: 'boolean' }, round: { type: 'string' }, region: { type: 'string' },
   },
 });
-if (!positionals.length) {
-  console.error('usage: npm run shoot -- <spot>[,<spot>…] [options]; see the head of tune/shoot.mjs');
+const fail = (message) => {
+  console.error(message);
   process.exit(2);
+};
+if (!positionals.length || (values.round && !/^[1-9]\d*$/.test(values.round))) {
+  fail('usage: npm run shoot -- <spot>[,<spot>…] [options]; see the head of tune/shoot.mjs');
+}
+const spots = positionals.flatMap((p) => p.split(','));
+
+// The review folder of each spot, checked before anything renders.
+const reviewOf = {};
+if (values.round) {
+  const folder = join(ROOT, 'spots');
+  const files = existsSync(folder) ? readdirSync(folder).filter((f) => f.endsWith('.json')) : [];
+  const listed = Object.fromEntries(files.flatMap((f) => JSON.parse(readFileSync(join(folder, f), 'utf8')).map((s) => [s.id, f.slice(0, -5)])));
+  for (const spot of spots) {
+    const short = listed[spot] ?? values.region;
+    if (!short) fail(`--round: no spots/<short>.json holds ${spot}; name its region with --region <short>`);
+    if (values.region && values.region !== short) fail(`--round: spots/${short}.json holds ${spot}, not --region ${values.region}`);
+    if (!known(short)) fail(`--round: ${short} is not a region short name: see tune/ecoregions.json`);
+    reviewOf[spot] = join(REVIEW, short, values.round);
+  }
 }
 
 const browser = await chromium.launch({
@@ -55,9 +78,9 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => message.type() === 'error' && errors.push(message.text()));
   // The page opens on the first spot, so it does not load another one first.
-  await page.goto(`${server.resolvedUrls.local[0]}#spot=${positionals[0].split(',')[0]}`);
+  await page.goto(`${server.resolvedUrls.local[0]}#spot=${spots[0]}`);
   await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
-  for (const spot of positionals.flatMap((p) => p.split(','))) {
+  for (const spot of spots) {
     const result = await page.evaluate(async (o) => {
       const tv = window.trailView;
       const frames = (n) => new Promise((resolve) => { const step = () => (n-- ? requestAnimationFrame(step) : resolve()); step(); });
@@ -95,6 +118,10 @@ try {
       return times.sort((a, b) => a - b)[times.length >> 1];
     }) : undefined;
     const files = result.files.filter(Boolean).map((name) => {
+      if (reviewOf[spot]) {
+        mkdirSync(reviewOf[spot], { recursive: true });
+        copyFileSync(join(SHOTS, name), join(reviewOf[spot], name));
+      }
       if (!values.out) return join(SHOTS, name);
       mkdirSync(values.out, { recursive: true });
       copyFileSync(join(SHOTS, name), join(values.out, name));
