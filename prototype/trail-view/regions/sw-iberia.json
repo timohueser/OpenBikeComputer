@@ -1,1 +1,8 @@
-{ "name": "Southwest Iberian Mediterranean sclerophyllous and mixed forests", "ecoregion": 805, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Southwest Iberian Mediterranean sclerophyllous and mixed forests",
+ "ecoregion": 805,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "sw-iberia",
+ "about": "The Atlantic side of Mediterranean Iberia, from the pine and eucalyptus hills of central Portugal and the Arrábida over the Alentejo's cork-oak montado, the windswept plateau and cliffs of the Costa Vicentina, the schist hills of Monchique and the Caldeirão and the Algarve's limestone barrocal and ochre cliffs to the stone pines and marshes of Doñana and the cork forests of the Cádiz sierras: green from the autumn rains to May, straw-gold in summer, with whitewashed montes and villages under low tiled roofs. No split: one Atlantic-tempered haze, weather and grade fit the whole region; its schist, limestone, sand and marsh differ in Sentinel-2 colour, the seasonal ramps, the barren rule and IGME rock colour in Spain, the few summits (Fóia, Trevim, Aljibe) stay below any snowline, windswept_m and the swell bearing carry the exposed west coast against the sheltered south coast, and one house style fits both countries."
+}
