@@ -586,10 +586,12 @@ void main() {
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
   // Woodland seen from afar is crowns and the shade between them, darker than its leaves, not one
-  // flat colour; past a few metres a pixel the pattern becomes its mean.
+  // flat colour: soft clumps of two sizes, never a regular net, fading to their mean once a pixel
+  // on the surface is larger than a crown.
   if (g.tree > 0.0) {
-    float detail = 1.0 - smoothstep(0.4, 1.5, footprint);
-    float crowns = detail > 0.0 ? mix(0.55, smoothstep(0.0, 0.45, cells(vWorld.xy, 6.0).y), detail) : 0.55;
+    float detail = 1.0 - smoothstep(0.6, 2.5, surfaceSize);
+    float clumps = 0.65 * noise(vWorld.xy / 3.5) + 0.35 * noise(vWorld.xy / 11.0 + 7.0);
+    float crowns = mix(0.55, smoothstep(0.3, 0.62, clumps), detail);
     albedo *= mix(1.0, 0.42 + 0.48 * crowns, g.tree * (1.0 - g.road));
   }
   // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond,
