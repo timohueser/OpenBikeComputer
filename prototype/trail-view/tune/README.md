@@ -145,7 +145,7 @@ Phase 1 needs no bakes. All regions can run it, four at a time.
 3. **Split decision.** Avoid splits. First use the rules that exist: Sentinel-2 colour, the NDVI
    ramps (one per season where needed), the barren rule, tree elevation bands, the snowline,
    `windswept_m`, `turf_deg`, and culture by country or subdivision. Split only where a key that
-   applies at the eye (haze, weather, grade, ramps) must change across stable geography, such as an
+   applies at the eye (haze, weather, grade) must change across stable geography, such as an
    island side, a massif or a coast strip. Never draw contour rings. Ask the coordinator for a height rule
    instead. Write the decision and the reason into the region's `about` and the tracking issue.
 
@@ -226,15 +226,15 @@ regression set and every approved spot before and after, and asks the owner.
 - Do not shoot a spot while it bakes.
 - Bake again only after a bake key changes: a spot key other than `name`, or a region's `leaf`,
   `cliffs`, `summits`, `relief` or subregion areas. A look or pack change needs only new shots.
-- The region at the eye paints the whole panorama. Choose spots whose view stays mostly in the
-  region, and judge only that terrain.
+- Each texel's region paints its ground, the eye's region the sky. Choose spots whose view stays
+  mostly in the region, and judge only that terrain.
 - North of 65° N, judge spring and summer. The winter and autumn mosaics there are mostly empty.
 - New spot ids are `<short>-<place>`. Existing ids stay as they are: bakes, shots and the source
   caches are kept per spot id.
 
 ## Data sources
 
-- Every spot has GLO-30, ESA WorldCover, Sentinel-2 colour and OpenStreetMap.
+- Every spot has GLO-30, WorldCover, Sentinel-2, CORINE, EGDI and IGME 5000 geology, and OSM.
 - National DTMs that need no key, at 1 to 5 m: `ch`, `de-bw` and the other `de-*`, `at`, `uk`
   (England), `no`, `fr`, `es`, `scot`, `it-bz`. Do not use sub-metre sources for the tune. They are
   4 to 8 GB per spot.

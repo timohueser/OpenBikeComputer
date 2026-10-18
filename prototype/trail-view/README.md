@@ -31,8 +31,8 @@ The machine for the Europe tune is set up as [tune/README.md](tune/README.md#lin
 | `photo` | A `peak-view-photos` fixture name: it gives position, ground and camera. Or `{url, credit, heading_deg, pitch_deg, vfov_deg, roll_deg}` for a third-party photograph |
 | `eye_above_ground_m`, `ground_m` | The eye above the ground (1.6 m), and the ground height where the DTM is wrong |
 | `dtm` | A national DTM: `ch`, `de-bw` and the other `de-*`, `at`, `uk`, `no`, `fr`, `es`, `it-bz`, `us`, `scot`. Without one, the spot is GLO-30 only |
-| `landcover` | `nlcm` (Ireland) or `habmos` (Scotland): habitats over ±5 km |
-| `geology` | `igme` (Spain): rock colour and hardness from the 1:50 000 map |
+| `landcover` | `nlcm` (Ireland) or `habmos` (Scotland): materials over ±5 km |
+| `geology` | `igme` (Spain): the lithology over ±5 km from the 1:50 000 map |
 
 A region inherits all it does not say from the one it `extends`: objects merge, anything else
 replaces. `regions/<short>.json` is the ecoregion `short` of `tune/ecoregions.json` and extends
@@ -43,22 +43,27 @@ on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`.
 bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root first), `country`
 (lower-case ISO 3166-1 code from `tune/countries.json`, else the nearest country within 25 km),
 `subdivision` (the country's first level from the same file, such as `es-ga` or `gr-l`) and `tz`
-(from timezonefinder). The page draws `meta.region` for that place at the clock of `meta.tz`. An
-older bake has none of them: it takes its spots file's region and UTC.
+(from timezonefinder). The page draws `meta.region`'s sky, sea and roads at the clock of
+`meta.tz`, and each texel's ground by its region in `meta.regions`.
 
 | Region key | What it sets |
 |---|---|
 | `ecoregion` | The RESOLVE id of the ecoregion, on `<short>.json` only |
 | `leaf`, `pack` | Default leaf type, the asset pack |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
-| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
-| `look.ramps.<class>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
+| `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
+| `look.ramps.<cover>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
+| `look.materials.<id>` | `{"colour"}` paints a material of `materials.json` over its cover's ramp |
+| `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; `world.json` holds the defaults, `rock` the unknown |
+| `look.cliff` | Cliff walls, whatever their lithology |
+| `look.bare_luma` | The barren ground's luma, one or one per quarter, against which the satellite lightens or darkens bare ground |
+| Applies where the eye is | `snap`, `sea`, `swell`, `roads`, `roadLine`, haze, mist, light, `grade`, `weather` |
 
 A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its short. It keys its trees,
 ground plants and herds by species, so a child adds or changes one and `null` drops one. An entry
 whose key is not a model id names its `model`; a stand-in also gives its own species' `latin`.
 Trees go by leaf type and elevation; a plant model with `cover: "shrub"` stands as a shrub. Herds go
-by habitat, or by the WorldCover classes a habitat stands for. An ecoregion owns its regions and
+by material. An ecoregion owns its regions and
 packs; two that share a look keep a copy each. Models and house styles are shared. A pack's `style`
 and a look's `roadLine` may be a map by place, `{"es-ga": …, "es": …, "*": …}`: the subdivision's
 entry, else the country's, else `"*"`. Spain, France and Italy are by region (`es-ga`, `fr-occ`,
@@ -71,15 +76,32 @@ Needs `uv` and the GDAL command-line tools on `PATH` (the bakes so far used 3.13
 them, and for the CDSE keys when it reads colour, before it starts. Run from the repository root:
 
 ```sh
-uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
+uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3] [--baseline]
+# --baseline: without the spot's landcover and geology maps, as a place that has none
 ```
+
+| Layer | Per texel and level |
+|---|---|
+| `material-k` | A material of `materials.json` |
+| `litho-k` | A lithology of `materials.json` on land, 0 unknown |
+| `region-k` | An index into `meta.regions`: the deepest subregion whose `where` holds the texel, under its ecoregion in `tune/ecoregions.json` |
+
+| Step | Material and lithology from | Levels | Names |
+|---|---|---|---|
+| 1 | WorldCover's class; sea and inland water as they settle | all | every texel |
+| 2 | Heath: open ground that Sentinel-2 sees as red as green while it grows | k ≤ 6 | where it fits (`REFINES`) |
+| 3 | OSM `leaf_type` forests | ±5 km | where it fits |
+| 4 | CORINE Land Cover 2018, one image per spot and level in `_sources/clc/` | all | where it fits |
+| 5 | OSM natural and landuse areas | ±10 km | where it fits |
+| 6 | The spot's `landcover` map | ±5 km | every land texel |
+| 7 | Lithology: EGDI 1:1 000 000 (676 MB), IGME 5000 (48 MB) where EGDI names none, both in `_sources/lithology/`; then the spot's `geology` map on ±5 km | all | every land texel |
 
 - A rebake keeps the Sentinel-2 levels, most of a bake's time, while the spot stays at the
   position in its `meta.json`. `--colour` reads them again. `--dtm-levels 3` stops the DTM at
   ±5 km instead of ±10 km, about 1 GB of tiles.
 - Bakes can run side by side. Each shared source is a lock in `_sources/locks/`: `overpass`,
-  `cdse`, `dtm-<key>`, `glo30`, `landcover-<key>` and `worldcover`. A bake that waits prints
-  `waiting for <name>`. Cached answers are written whole or not at all.
+  `cdse`, `dtm-<key>`, `glo30`, `landcover-<key>`, `clc`, `lithology` and `worldcover`. A bake that
+  waits prints `waiting for <name>`. Cached answers are written whole or not at all.
 - GLO-30 comes from `~/.cache/obcm/dem/` where it exists, else from the public COGs. WorldCover
   comes from its public COGs. The Sentinel-2 quarterly mosaics come from CDSE S3 with the keys in
   `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads them.
@@ -89,8 +111,9 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
   squares; where it was never flown the spot is GLO-30 only.
 - Overpass queries, each cached per position in `_sources/osm/`: highways and forests (±5 km)
   with buildings (±2.5 km); water and multipolygon water (±10 km); walls, hedges, orchards, aretes
-  and ridges (±5 km); lifts (±10 km); and the coastline (±10 km). Named summits with a
-  height, for `summits`, come in 5° tiles in `_sources/osm/summits/` that every spot shares.
+  and ridges (±5 km); natural and landuse areas (±10 km); lifts (±10 km); and the coastline (±10
+  km). Named summits with a height, for `summits`, come in 5° tiles in `_sources/osm/summits/` that
+  every spot shares.
 - Roads are graded into the heights: level across, smoothed along, with banks of at most 40°.
   Trees stand on tree pixels within 1 km, as tall as the canopy (GLO-30 minus the DTM), or 5 to
   9 m without a DTM.
@@ -112,9 +135,10 @@ curl -LO https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz && tar xzf os
 (cd osm-3s_v*/ && ./configure --enable-lz4 --prefix=$OVERPASS && make -j install)
 curl -LO https://download.geofabrik.de/europe-latest.osm.pbf
 osmium tags-filter europe-latest.osm.pbf w/highway w/landuse=forest,orchard,reservoir,vineyard \
-  w/natural=wood,water,coastline,arete,ridge w/building w/waterway=river,stream,canal,riverbank \
-  w/barrier=wall,retaining_wall,hedge w/aerialway r/natural=water r/waterway=riverbank \
-  r/landuse=reservoir n/natural=peak,volcano -o trail-view.osm.pbf
+  w/natural=wood,water,coastline,arete,ridge,bare_rock,scree,shingle,sand,beach,heath,wetland,grassland \
+  w/building w/waterway=river,stream,canal,riverbank w/barrier=wall,retaining_wall,hedge w/aerialway \
+  r/natural=water,bare_rock,scree,shingle,sand,beach,heath,wetland,grassland r/waterway=riverbank \
+  r/landuse=reservoir,vineyard,orchard n/natural=peak,volcano -o trail-view.osm.pbf
 mkdir $OVERPASS/db && osmium cat trail-view.osm.pbf -f osm -o - |
   $OVERPASS/bin/update_database --db-dir=$OVERPASS/db --compression-method=lz4 --map-compression-method=lz4
 ln -s $OVERPASS ~/.cache/obc/trail-view/_sources/overpass
