@@ -90,7 +90,8 @@ pub fn run(root: &Path, run: &Run, request: &Request, stop: &AtomicBool) -> Resu
                 // The step ends with the engine, also when the kernel kills the engine.
                 #[cfg(target_os = "linux")]
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 || libc::getppid() as u32 != engine {
-                    return Err(std::io::Error::other("the engine ended"));
+                    // No allocation between fork and exec: another thread can hold the malloc lock.
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
                 }
                 Ok(())
             });
