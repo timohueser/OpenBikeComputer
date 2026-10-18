@@ -3447,6 +3447,7 @@ dependencies = [
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "rayon",
  "rusqlite",
  "serde_json",
  "sha2 0.11.0",

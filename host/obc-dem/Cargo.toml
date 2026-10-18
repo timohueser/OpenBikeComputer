@@ -18,7 +18,7 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 [features]
 default = ["dem"]
 dem = ["geotiff", "fetch"]
-geotiff = ["dep:tiff", "dep:serde_json"]
+geotiff = ["dep:tiff", "dep:serde_json", "dep:rayon"]
 fetch = ["dep:obc-data"]
 # The terrain of the planner maps: Terrarium WebP tiles in MBTiles.
 terrarium = ["dem", "dep:image", "dep:rusqlite"]
@@ -59,6 +59,9 @@ serde_json = { workspace = true, optional = true }
 # `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
 # credit from data/sources.toml.
 obc-data = { workspace = true, optional = true }
+# `geotiff` only: a planner terrain bake decodes the GLO-30 squares of a row and fills a row of
+# tiles on every core.
+rayon = { version = "1", optional = true }
 image = { workspace = true, features = ["webp"], optional = true }
 rusqlite = { workspace = true, features = ["bundled"], optional = true }
 
