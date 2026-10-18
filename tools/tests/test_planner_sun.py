@@ -82,6 +82,11 @@ class SunIndexTest(unittest.TestCase):
             packed, index = self.grid_request(root, source, request)
             self.assertEqual(sum(name.endswith(".pmtiles") for name in index["files"]), 2)
             def bake(terrain, output, *options, terrain_grid_sha256):
+                found = {}
+                for path in terrain.archives.values():
+                    with path.open("rb") as stream:
+                        found.update(all_tiles(MmapSource(stream)))
+                self.assertEqual(found, tiles)
                 self.assertEqual({tile: terrain.get(*tile) for tile in tiles}, tiles)
                 for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "max_zoom"):
                     self.assertEqual(terrain.header[key], original_header[key])
@@ -92,14 +97,56 @@ class SunIndexTest(unittest.TestCase):
                 sun.step(request)
             self.assertEqual((Path(request["output"]) / "sun/sun.pmtiles").read_bytes(), b"baked archive")
             self.assertEqual(list(Path(request["output"]).iterdir()), [Path(request["output"]) / "sun"])
-            entry = next(value for name, value in index["files"].items() if name.endswith(".pmtiles"))
-            (packed / "objects" / entry["transport"]["sha256"]).write_bytes(b"tampered")
+            files = dict(index["files"])
+            first, second = (name for name in files if name.endswith(".pmtiles"))
+            index["files"][first], index["files"][second] = files[second], files[first]
+            (packed / "index.json").write_bytes(runtime.encoded(index))
+            request["output"] = str(root / "misplaced")
+            Path(request["output"]).mkdir()
+            with patch.object(sun, "bake", side_effect=AssertionError("A misplaced tile must not bake")):
+                with self.assertRaisesRegex(ValueError, "another grid archive"):
+                    sun.step(request)
+            index["files"] = files
+            (packed / "index.json").write_bytes(runtime.encoded(index))
+            (packed / "objects" / files[first]["transport"]["sha256"]).write_bytes(b"tampered")
             request["output"] = str(root / "retry")
             Path(request["output"]).mkdir()
             with patch.object(sun, "bake", side_effect=AssertionError("Tampered grid must not bake")):
                 with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
                     sun.step(request)
             self.assertFalse((Path(request["output"]) / "sun/sun.pmtiles").exists())
+
+    def test_bands_of_one_tile_row_trace_what_one_band_traces(self):
+        """Every ray on bowl terrain rises to its full distance, which reaches past the next tile row, so a band
+        that holds too few rows around it gives other horizons."""
+        from tools.planner_map_archive import tile_window
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            coverage, bounds = [7.95, 47.0, 8.3, 47.35], [8.1, 47.1, 8.15, 47.25]
+            west, north, east, south = tile_window(coverage, 12)
+            source = root / "terrain.mbtiles"
+            with sqlite3.connect(source) as db:
+                db.executescript("CREATE TABLE metadata(name TEXT, value TEXT);"
+                                 "CREATE TABLE tiles(zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);")
+                db.executemany("INSERT INTO metadata VALUES (?,?)", [("format", "webp"), ("minzoom", "12"),
+                    ("maxzoom", "12"), ("bounds", ",".join(map(str, coverage))), ("attribution", "Terrain credit")])
+                for y in range(north, south):
+                    for x in range(west, east):
+                        py, px = np.mgrid[y * 512:(y + 1) * 512, x * 512:(x + 1) * 512]
+                        bowl = np.round(np.hypot(px - (west + east) * 256, py - (north + south) * 256) / 2)
+                        db.execute("INSERT INTO tiles VALUES (12,?,?,?)",
+                                   (x, (1 << 12) - 1 - y, sun.encode(bowl.astype(np.int16))))
+            request = {"options": {"bounds": bounds, "time_zone": "Europe/Berlin", "distance_m": 10000,
+                                   "horizon_samples": 2, "horizon_directions": 6}}
+            self.grid_request(root, source, request)
+            archives = []
+            for band in (1, 64):
+                request["output"] = str(root / f"band-{band}")
+                Path(request["output"]).mkdir()
+                with patch.object(horizons, "BAND", band):
+                    sun.step(request)
+                archives.append((Path(request["output"]) / "sun/sun.pmtiles").read_bytes())
+            self.assertEqual(archives[0], archives[1])
 
     def test_grid_composition_requires_the_exact_consumed_terrain_manifest(self):
         from tools import planner_grid

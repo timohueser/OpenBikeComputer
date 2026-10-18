@@ -12,6 +12,7 @@ from pmtiles.reader import Reader, all_tiles
 from pmtiles.tile import zxy_to_tileid
 from pmtiles.writer import Writer
 
+from . import step_pool
 from .planner_map_archive import tile_window
 
 CURVE, UNKNOWN, TILE = 1 / (2 * 6371008.8), 32767, 512
@@ -220,18 +221,19 @@ def load_arrays(terrain, index, rows, distance, executor):
     return arrays, origins
 
 
-# Zoom 12 tile rows that trace together. A band also decodes the rows that its rays reach, about 5 on each side
-# at 30 km, so a wider band decodes fewer rows twice and holds more.
+# Zoom 12 tile rows that trace together. A band also decodes the rows that its rays reach on each side, 5.4 rows at
+# 30 km and 55.4° N, so a wider band decodes fewer rows twice and holds more.
 BAND = 16
 
 
 def add_horizons(terrain, index, output, bounds, samples=32, directions=72, workers=None):
     """Trace the horizons of the zoom 12 tiles of `bounds` from the Tiles `terrain` and the sun index `index`, in
-    bands of BAND tile rows on `workers` threads, by default one per core: the trace releases the interpreter lock."""
+    bands of BAND tile rows on `workers` threads, by default one per core that the process may use: the trace releases
+    the interpreter lock."""
     from concurrent.futures import ThreadPoolExecutor
     from .planner_sun import Tiles
     with tempfile.TemporaryDirectory(prefix=".horizon-", dir=output.parent) as directory, \
-            ThreadPoolExecutor(workers or os.cpu_count()) as executor:
+            ThreadPoolExecutor(workers or step_pool.cores()) as executor:
         detail = Path(directory) / "detail.pmtiles"
         with index.open("rb") as stream, detail.open("wb") as target:
             reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))

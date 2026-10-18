@@ -19,7 +19,7 @@ from pmtiles.reader import Reader
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
-from . import planner_offline as offline, planner_runtime as runtime, step_request
+from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
 from .planner_grid_maps import MAP_ZOOM
 from .planner_map_archive import tile_window
 
@@ -96,7 +96,10 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
         header = dict(terrain.header)
         coverage = terrain_coverage(header, bounds, distance_m)
 
-        @lru_cache(maxsize=30)
+        # Each index tile that a thread bakes reads 25 terrain tiles, and its neighbours read some of them too.
+        workers = step_pool.cores()
+
+        @lru_cache(maxsize=25 * workers)
         def heights(x, y):
             data = terrain.get(DEM_ZOOM, x, y)
             if data is None:
@@ -134,7 +137,7 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
 
         count, payload = 0, 0
         # WebP, zlib and numpy release the interpreter lock, so the tiles of a zoom bake on threads.
-        with (stage / "sun.pmtiles").open("wb") as target, ThreadPoolExecutor(os.cpu_count()) as executor:
+        with (stage / "sun.pmtiles").open("wb") as target, ThreadPoolExecutor(workers) as executor:
             writer = Writer(target)
             try:
                 for z in range(INDEX_ZOOM, -1, -1):
@@ -161,6 +164,19 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     print(json.dumps({"index_tiles": count, "index_payload_bytes": payload, "archive_bytes": output.stat().st_size}))
 
 
+def tiles_of(read, header, offset=None, length=None):
+    """The z, x, y of every tile of a PMTiles archive, from its directories alone."""
+    from pmtiles.tile import deserialize_directory, tileid_to_zxy
+
+    if offset is None:
+        offset, length = header["root_offset"], header["root_length"]
+    for entry in deserialize_directory(read(offset, length)):
+        if entry.run_length:
+            yield from (tileid_to_zxy(tile_id) for tile_id in range(entry.tile_id, entry.tile_id + entry.run_length))
+        else:
+            yield from tiles_of(read, header, header["leaf_directory_offset"] + entry.offset, entry.length)
+
+
 def terrain_grid(request, directory):
     """The terrain Tiles of the grid archives, each verified once; the grid manifest is their identity."""
     source = step_request.view(request["layers"]["planner/terrain/grid"], directory / "source")
@@ -184,7 +200,7 @@ def terrain_grid(request, directory):
                 raise ValueError("Terrain grid archives must be stored as they are")
             parts[Path(name).stem] = source / "objects" / entry["sha256"]
             entries.append(entry)
-    with ThreadPoolExecutor(os.cpu_count()) as pool:
+    with ThreadPoolExecutor(step_pool.cores()) as pool:
         list(pool.map(offline.verify, parts.values(), entries))
     if not parts:
         from .planner_geo import bounds as parse_bounds
@@ -197,14 +213,20 @@ def terrain_grid(request, directory):
                              (round(value * 1e7) for value in bounds)))}
         return None, header, metadata, digest
     headers = []
-    for path in parts.values():
+    for part, path in parts.items():
         with path.open("rb") as stream:
-            headers.append(Reader(lambda offset, length: os.pread(stream.fileno(), length, offset)).header())
-        if headers[-1]["tile_type"] != TileType.WEBP or headers[-1]["tile_compression"] != Compression.NONE:
-            raise ValueError("Use uncompressed WebP terrain")
-        keys = ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")
-        if any(headers[-1][key] != headers[0][key] for key in keys):
-            raise ValueError("Terrain grid archive headers differ")
+            read = lambda offset, length: os.pread(stream.fileno(), length, offset)
+            headers.append(Reader(read).header())
+            if headers[-1]["tile_type"] != TileType.WEBP or headers[-1]["tile_compression"] != Compression.NONE:
+                raise ValueError("Use uncompressed WebP terrain")
+            keys = ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")
+            if any(headers[-1][key] != headers[0][key] for key in keys):
+                raise ValueError("Terrain grid archive headers differ")
+            # A tile is read from the archive of its zoom-11 tile only, so one in another archive would be lost.
+            for z, x, y in tiles_of(read, headers[-1]):
+                level = min(z, MAP_ZOOM)
+                if part != f"{level}-{x >> (z - level)}-{y >> (z - level)}":
+                    raise ValueError("Terrain tile belongs to another grid archive")
     header = {**headers[-1], "min_zoom": min(h["min_zoom"] for h in headers), "max_zoom": max(h["max_zoom"] for h in headers)}
     return Tiles(parts, header, metadata), header, metadata, digest
 
