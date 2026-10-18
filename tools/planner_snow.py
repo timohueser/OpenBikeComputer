@@ -35,7 +35,7 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_geo as geo, step_request
+from . import planner_geo as geo, step_pool, step_request
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
@@ -308,29 +308,6 @@ def below(baking, z, x, y, read, tiles):
     return body
 
 
-def worker_count():
-    """One worker for each core that this process can use, and one at most for each GB of free memory: a worker
-    holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N (measured with two seasons)."""
-    cores = len(os.sched_getaffinity(0))
-    try:
-        with open("/proc/meminfo") as meminfo:
-            free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
-    except (OSError, StopIteration):
-        return cores
-    return max(1, min(cores, free >> 30))
-
-
-def end_with(parent):
-    """Make this worker end when the bake process `parent` ends, also when a signal kills it."""
-    import ctypes
-    import signal
-
-    PR_SET_PDEATHSIG = 1
-    ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-    if os.getppid() != parent:
-        os._exit(1)
-
-
 def chunk_tiles(x, y, part):
     """The gzip tiles of chunk tile x/y and below, whose bounds part is `part`, in a worker process."""
     tiles = {}
@@ -344,12 +321,11 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
 
     `sources` is [(name, planes)], the finest first: `planes(bounds)` gives the season planes and their grid around
     the bounds of one chunk tile. In each season, a pixel takes the first source that has data there. The finest
-    source sets the max zoom, the smoothing and the metadata. On Linux the chunks bake in `workers` processes, by
-    default as `worker_count` says. Their tiles wait in a file beside the output, and the archive takes them in tile
-    order, so its bytes do not depend on which chunk ends first.
+    source sets the max zoom, the smoothing and the metadata. The chunks bake in a `step_pool.pool` of `workers`.
+    Their tiles wait in a file beside the output, and the archive takes them in tile order, so its bytes do not
+    depend on which chunk ends first.
     """
-    import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import as_completed
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
@@ -390,13 +366,7 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
         x1, y1 = geo.mercator(east, south, baking.chunk)
         _baking = baking
         try:
-            if sys.platform == "linux":
-                fork = multiprocessing.get_context("fork")
-                pool = ProcessPoolExecutor(workers or worker_count(), mp_context=fork, initializer=end_with,
-                                           initargs=(os.getpid(),))
-            else:
-                # A fork is not safe on macOS: there the chunks bake in threads.
-                pool = ThreadPoolExecutor(workers or 4)
+            pool = step_pool.pool(workers)
             try:
                 # `as_completed` lets go of each chunk once it gave it, so its tiles do not stay in memory.
                 for done in as_completed([pool.submit(chunk_tiles, x, y, part)

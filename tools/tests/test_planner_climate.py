@@ -179,20 +179,21 @@ class SourceTest(unittest.TestCase):
             # Chunk 19 holds the end of the years: it is final for this bake only from `final` on.
             self.chunk(cache, 19, final - 1)
             with self.assertRaisesRegex(ValueError, "not in the cache"):
-                sources[0].read("t2m", "19.1.2")
+                sources[0].path("t2m", "19.1.2")
             newest = self.chunk(cache, 19, final)
             self.assertEqual(sources[0].path("t2m", "19.1.2"), newest)
-            self.assertTrue(np.isnan(sources[0].read("t2m", "19.1.2")).all())  # a chunk that the store omits
+            self.assertTrue(np.isnan(sources[0].read(newest)).all())  # a chunk that the store omits
             with self.assertRaisesRegex(ValueError, "not in the cache"):
-                sources[1].read("t2m", "19.1.2")
+                sources[1].path("t2m", "19.1.2")
             # Chunk 17 ends years earlier: once final, it serves this bake and every yearly update.
             self.chunk(cache, 17, 18 * climate.TIME_CHUNK + margin - 1)
             with self.assertRaisesRegex(ValueError, "not in the cache"):
-                sources[0].read("t2m", "17.1.2")
+                sources[0].path("t2m", "17.1.2")
             complete = self.chunk(cache, 17, 18 * climate.TIME_CHUNK + margin)
             self.assertEqual([source.path("t2m", "17.1.2") for source in sources], [complete, complete])
-            self.assertEqual(sources[0].digests["t2m"], {name: path.name.split(".")[4] for name, path in
-                                                         (("19.1.2", newest), ("17.1.2", complete))})
+            newest.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "damaged"):
+                sources[0].read(newest)
 
 
 class FakeSource(climate.Source):
@@ -203,8 +204,10 @@ class FakeSource(climate.Source):
 
     def path(self, variable, name):
         self.digests[variable][name] = hashlib.sha256(name.encode()).hexdigest()
+        return Path(variable, name)
 
-    def read(self, variable, name):
+    def read(self, path):
+        variable, name = path.parent.name, path.name
         seed = [*map(int, name.split(".")), list(climate.SOURCE).index(variable)]
         noise = np.random.default_rng(seed).random((climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS))
         scale, base = {"t2m": (10, 280), "u10": (4, -2), "v10": (4, -2), "tp": (0.0005, 0)}[variable]
