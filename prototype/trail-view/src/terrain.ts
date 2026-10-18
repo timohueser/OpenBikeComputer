@@ -68,6 +68,8 @@ function fetchToward(bake: Bake, bearing: number): Float32Array {
 /** How far the clouds drift in an hour of the day, in metres east and north: slow enough for a day played in 30 s. */
 const DRIFT_PER_HOUR = [2000, 700];
 
+/** The cloud layer is drawn at least this far above the eye: a deck below it is not drawn. */
+const CLOUD_ABOVE_EYE_M = 200;
 /** The cloud map covers this many metres around the eye, 1024 texels across. */
 const CLOUD_REACH_M = 40_000;
 
@@ -224,7 +226,7 @@ export class Terrain {
       classes: { value: null },
       s2: { value: null },
       s2Levels: { value: 0 },
-      ramps: { value: [] as THREE.Color[] },
+      ramps: { value: Array.from({ length: 33 }, () => new THREE.Color()) },
       snap: { value: 0.4 },
       rock: { value: new THREE.Color() },
       cliffRock: { value: new THREE.Color() },
@@ -462,12 +464,12 @@ export class Terrain {
   }
 
   /** The cloud layer, wet and rain; the clouds stand where the hour has drifted them. */
-  setWeather(weather: Weather, hour: number): void {
+  setWeather(weather: Weather, hour: number, eyeAltitude: number): void {
     const u = this.uniforms;
     this.weather = weather;
     u.cloudCover.value = weather.cover;
     u.cloudEdge.value = NOISE_MEAN + NOISE_SPREAD * probit(1 - weather.cover);
-    u.cloudBase.value = weather.base;
+    u.cloudBase.value = Math.max(weather.base - eyeAltitude, CLOUD_ABOVE_EYE_M);
     u.cloudDark.value = weather.dark;
     u.cloudDrift.value.set(DRIFT_PER_HOUR[0] * hour, DRIFT_PER_HOUR[1] * hour);
     u.wet.value = weather.wet;

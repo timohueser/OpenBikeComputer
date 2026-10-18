@@ -42,7 +42,7 @@
   "hazeKm": 18,
   "grade": { "shadow": [-0.003, 0.0, 0.008], "light": [0.005, 0.003, -0.004], "saturation": 0.95 },
   "weather": {
-   "sunny": { "cover": 0.5, "base": 1100, "dark": 0.4, "zenith": "#5574a6", "horizon": "#d6dee8", "grey": 0.35, "towers": 0 }
+   "sunny": { "cover": 0.5, "base": 1300, "dark": 0.4, "zenith": "#5574a6", "horizon": "#d6dee8", "grey": 0.35, "towers": 0 }
   },
   "outcrops": 0.6,
   "rock": "#86847d",

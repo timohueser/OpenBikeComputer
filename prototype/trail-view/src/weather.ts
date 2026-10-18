@@ -6,7 +6,7 @@ import type { Light } from './light';
 export interface Weather {
   /** Share of the sky under cloud, 0–1. */
   cover: number;
-  /** Cloud base in metres above the eye. Ground above it stands in the cloud. */
+  /** Cloud base in metres above sea level, a climate fact; drawn at least 200 m above the eye. */
   base: number;
   /** How dark a thick cloud's underside is, 0–1. */
   dark: number;
@@ -27,9 +27,9 @@ export interface Weather {
 }
 
 export const WEATHERS: Record<string, Weather> = {
-  sunny: { cover: 0.14, base: 1800, dark: 0.35, sun: 1, ambient: 1, grey: 0, zenith: '#7f8a96', horizon: '#b4bcc4', haze: 1, wet: 0, rain: 0 },
-  cloudy: { cover: 0.62, base: 1100, dark: 0.6, sun: 0.95, ambient: 1.15, grey: 0.5, zenith: '#7f8a96', horizon: '#b4bcc4', haze: 0.7, wet: 0, rain: 0 },
-  rainy: { cover: 0.97, base: 350, dark: 0.85, sun: 0.6, ambient: 0.9, grey: 0.9, zenith: '#59626c', horizon: '#878e95', haze: 0.3, wet: 1, rain: 1 },
+  sunny: { cover: 0.14, base: 2200, dark: 0.35, sun: 1, ambient: 1, grey: 0, zenith: '#7f8a96', horizon: '#b4bcc4', haze: 1, wet: 0, rain: 0 },
+  cloudy: { cover: 0.62, base: 1500, dark: 0.6, sun: 0.95, ambient: 1.15, grey: 0.5, zenith: '#7f8a96', horizon: '#b4bcc4', haze: 0.7, wet: 0, rain: 0 },
+  rainy: { cover: 0.97, base: 800, dark: 0.85, sun: 0.6, ambient: 0.9, grey: 0.9, zenith: '#59626c', horizon: '#878e95', haze: 0.3, wet: 1, rain: 1 },
 };
 
 const luminance = (c: THREE.Color) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;

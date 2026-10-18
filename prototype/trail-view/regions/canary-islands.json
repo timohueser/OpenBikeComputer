@@ -23,7 +23,7 @@
   "swell": 340,
   "grade": { "shadow": [0.008, 0.009, 0.016], "light": [0.01, 0.005, -0.005], "saturation": 1.04 },
   "weather": {
-   "sunny": { "cover": 0.2, "base": 1200, "zenith": "#2c66b8", "horizon": "#a8c6e4", "grey": 0.5 }
+   "sunny": { "cover": 0.2, "base": 1500, "zenith": "#2c66b8", "horizon": "#a8c6e4", "grey": 0.5 }
   }
  }
 }

@@ -14,7 +14,7 @@
    "broad": ["#7a7d48", "#6b7a42", "#5a723b"]
   },
   "weather": {
-   "sunny": { "cover": 0.3, "base": 900, "dark": 0.3 }
+   "sunny": { "cover": 0.3, "base": 1300, "dark": 0.3 }
   },
   "hazeKm": 50,
   "speckle": { "colour": "#48532e", "share": 0.3, "size_m": 3 }

@@ -9,7 +9,7 @@
   "snap": 0.3,
   "hazeKm": 120,
   "weather": {
-   "sunny": { "cover": 0.05, "zenith": "#1f58b0", "horizon": "#9cbce0", "grey": 0.6 }
+   "sunny": { "cover": 0.05, "base": 3500, "zenith": "#1f58b0", "horizon": "#9cbce0", "grey": 0.6 }
   }
  }
 }

@@ -1,1 +1,9 @@
-{ "name": "Alps", "extends": "switzerland", "where": [ [6.8, 45.8, 10.5, 47.0] ], "pack": "alps" }
+{
+ "name": "Alps",
+ "extends": "switzerland",
+ "where": [ [6.8, 45.8, 10.5, 47.0] ],
+ "pack": "alps",
+ "look": {
+  "weather": { "sunny": { "base": 2900 }, "cloudy": { "base": 2200 }, "rainy": { "base": 1400 } }
+ }
+}

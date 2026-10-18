@@ -36,6 +36,12 @@ export interface RegionLook {
   snap: number;
   /** Haze distance at sea level, in km. */
   hazeKm: number;
+  /** Scale height of the haze in metres, and the top of the valley mist above sea level (0 none). */
+  hazeHeight: number;
+  mistTop: number;
+  /** Width of the steps between the three light bands, and the share of smooth light kept. */
+  softness: number;
+  gradient: number;
   /** Ramps that replace palette.ts's for these WorldCover classes, low NDVI to high. */
   ramps?: Ramps;
   /** Ramps for one season over `ramps`, as winter-green Mediterranean hills need. */

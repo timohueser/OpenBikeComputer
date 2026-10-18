@@ -95,8 +95,8 @@ async function select(id: string): Promise<void> {
   const dtmSky = skyline(dtm, meta.size);
   const sky = { dtm: dtmSky, glo30: glo30 === dtm ? dtmSky : skyline(glo30, meta.size) };
   loaded = { bake, region, ground: { dtm, glo30 }, sky, sighted: [] };
-  look.snap = region.look.snap;
-  look.hazeKm = region.look.hazeKm;
+  const { snap, hazeKm, hazeHeight, mistTop, softness, gradient } = region.look;
+  Object.assign(look, { snap, hazeKm, hazeHeight, mistTop, softness, gradient });
   terrain.setLook(look);
   readout.region = region.chain.join(' › ');
   const shot = meta.photo;
@@ -124,7 +124,7 @@ async function select(id: string): Promise<void> {
   status.textContent = '';
   quarters.clear();
   surfaceChanged();
-  seasonChanged();
+  await seasonChanged();
 }
 
 /** Sentinel-2 quarters of the current preset, by season index, loaded once each. */
@@ -164,7 +164,7 @@ function lightChanged(refreshShadows = true): void {
   const weather = { ...WEATHERS[state.weather], ...regional.weather?.[state.weather as 'sunny'] };
   const light = lightAt(lat, lon, SEASONS[state.season], state.hour, tz);
   terrain.setLight(weatherLight(light, weather), refreshShadows);
-  terrain.setWeather(weather, state.hour);
+  terrain.setWeather(weather, state.hour, loaded.bake.meta.eye_m + state.rise);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
   readout.sun = `${clock(Math.round(state.hour * 60))} · altitude ${light.altitude.toFixed(1)}°, bearing ${bearing.toFixed(0)}°`;
   requestRender();
@@ -246,7 +246,7 @@ function render(): void {
     camera.near = pass.near;
     camera.far = pass.far;
     camera.updateProjectionMatrix();
-    if (scene === terrain.far) readout.triangles = `${(terrain.prepare(camera) / 1e6).toFixed(2)} M per frame`;
+    if (scene === terrain.far) readout.triangles = `${(terrain.prepare(camera) / 1e6).toFixed(2)} M per frame, ${(terrain.nearField.triangles / 1e6).toFixed(2)} M near`;
     else renderer.clearDepth();
     renderer.render(scene, camera);
   }
@@ -262,6 +262,14 @@ function render(): void {
   if (state.peaks) placeLabels(labels, camera, loaded.sighted);
   else labels.innerHTML = '';
   drawCompass(compass, camera, loaded.sighted, state.pitch);
+  writeHash();
+}
+
+/** The view in the address, so a reload or a link shows it again: spot, season, hour, weather, camera. */
+function writeHash(): void {
+  const camera: Record<string, string> = photoLocked() ? { photo: '1' } : { yaw: state.yaw.toFixed(1), pitch: state.pitch.toFixed(1), vfov: state.vfov.toFixed(1) };
+  const hash = new URLSearchParams({ spot: state.preset, season: state.season.split(' ')[0], hour: state.hour.toFixed(2), weather: state.weather, ...camera }).toString();
+  if (location.hash.slice(1) !== hash) history.replaceState(null, '', `#${hash}`);
 }
 
 /** The played day runs from DAY[0] to DAY[1] o'clock in DAY_S seconds, and starts over. */
@@ -313,8 +321,8 @@ function skylines(cast: boolean, photographed: boolean): Line[] {
 }
 
 /** The photograph beside the render from its camera, at the photograph's size, written by the dev server. */
-async function saveSideBySide(): Promise<void> {
-  if (!loaded?.bake.meta.photo || !photo.naturalWidth) return;
+async function saveSideBySide(): Promise<string | null> {
+  if (!loaded?.bake.meta.photo || !photo.naturalWidth) return null;
   const { naturalWidth: width, naturalHeight: height } = photo;
   state.photoCamera = true;
   renderer.setPixelRatio(1);
@@ -341,11 +349,11 @@ async function saveSideBySide(): Promise<void> {
   }
   renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
   layout();
-  await save(out, `-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
+  return save(out, `-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
 /** The current view with its lines, at the canvas's own resolution. */
-async function saveView(): Promise<void> {
+async function saveView(): Promise<string | null> {
   render();
   const out = document.createElement('canvas');
   out.width = lines.width;
@@ -354,10 +362,11 @@ async function saveView(): Promise<void> {
   ctx.drawImage(renderer.domElement, 0, 0);
   ctx.drawImage(lines, 0, 0);
   if (state.peaks && loaded) drawLabels(ctx, camera, out.width, out.height, loaded.sighted);
-  await save(out, `-${Math.round(state.yaw)}-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
+  return save(out, `-${Math.round(state.yaw)}-${clock(Math.round(state.hour * 60)).replace(':', '')}`);
 }
 
-async function save(canvas: HTMLCanvasElement, suffix: string): Promise<void> {
+/** Written by the dev server into the bakes' shots/; the file name, or null when that failed. */
+async function save(canvas: HTMLCanvasElement, suffix: string): Promise<string | null> {
   const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
   const { id, dtm_levels, half0_m } = loaded!.bake.meta;
   const reach = glo30Only() ? 'glo30' : `dtm${(half0_m * 2 ** (dtm_levels - 1)) / 1000}km`;
@@ -365,6 +374,7 @@ async function save(canvas: HTMLCanvasElement, suffix: string): Promise<void> {
   const name = `${id}-${reach}-q${Object.keys(SEASONS).indexOf(state.season) + 1}${weather}${suffix}.png`;
   const response = await fetch(`/__shot/${name}`, { method: 'POST', body: blob });
   readout.frame = response.ok ? `saved shots/${name}` : `saving failed: ${response.status}`;
+  return response.ok ? name : null;
 }
 
 function unlock(): void {
@@ -510,14 +520,15 @@ aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }
 const style = gui.addFolder('Look').close();
 style.add(look, 'snap', 0, 1, 0.01).name('palette snap').listen();
 style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)').listen();
-style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)');
-style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)');
-style.add(look, 'softness', 0.005, 0.3, 0.005).name('band softness');
-style.add(look, 'gradient', 0, 1, 0.01).name('smooth light kept');
+style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)').listen();
+style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)').listen();
+style.add(look, 'softness', 0.005, 0.3, 0.005).name('band softness').listen();
+style.add(look, 'gradient', 0, 1, 0.01).name('smooth light kept').listen();
 style.onChange(() => {
   terrain.setLook(look);
   requestRender();
 });
+// The six keys paste into a region's look as they are.
 style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, 'copy').name('copy look JSON');
 const facts = gui.addFolder('Readout').close();
 facts.add(readout, 'region').listen().disable();
@@ -538,8 +549,23 @@ tools.add(state, 'rise', 0, 400, 5).name('raise eye (m)').onChange(surfaceChange
 tools.add({ measure }, 'measure').name('measure 60 frames');
 tools.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
 tools.add({ saveView }, 'saveView').name('save view');
-// For scripted checks from the console.
-Object.assign(window, { trailView: { gui, state, look, align, render, layout, terrain, renderer, loaded: () => loaded } });
+// For scripted shots (tune/shoot.mjs) and checks from the console.
+Object.assign(window, {
+  trailView: { gui, state, look, align, render, layout, terrain, renderer, loaded: () => loaded, select, seasonChanged, lightChanged, saveView, saveSideBySide, seasons: Object.keys(SEASONS) },
+});
 
+const linked = new URLSearchParams(location.hash.slice(1));
+if (presets.some((p) => p.id === linked.get('spot'))) state.preset = linked.get('spot')!;
+state.season = Object.keys(SEASONS).find((s) => s.startsWith(`${linked.get('season')} `)) ?? state.season;
+state.hour = Number(linked.get('hour') ?? state.hour);
+if (linked.get('weather')! in WEATHERS) state.weather = linked.get('weather')!;
+gui.controllersRecursive().forEach((c) => c.updateDisplay());
 terrain.setLook(look);
-select(state.preset).catch((error: Error) => (status.textContent = error.message));
+select(state.preset)
+  .then(() => {
+    if (!linked.has('yaw')) return;
+    state.photoCamera = false;
+    Object.assign(state, { yaw: Number(linked.get('yaw')), pitch: Number(linked.get('pitch') ?? 0), vfov: Number(linked.get('vfov') ?? state.vfov) });
+    layout();
+  })
+  .catch((error: Error) => (status.textContent = error.message));
