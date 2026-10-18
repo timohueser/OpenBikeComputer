@@ -22,8 +22,9 @@
 //! overlay is only guaranteed to agree when handed identical inputs.
 //!
 //! Work is organised band, then LOD, then cell, so a level's merged feature set is built once and
-//! every cell of the band reads it, and only that band's levels are resident. Cells within a band
-//! are cut in parallel; nothing in a cell's bytes depends on which thread produced it.
+//! every cell of the band reads it. Only one level is resident: its cells keep their encoded bytes,
+//! and the set is dropped before the next level is prepared. Cells are cut in parallel; nothing in
+//! a cell's bytes depends on which thread produced it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,7 +39,7 @@ use obc_map_core::cell::{cell_path, has_contours};
 use crate::serialize::serialize_lods_streaming;
 use obc_draw::ingest::Ingested;
 use obc_draw::semantic::build_semantic_levels;
-use obc_draw::serialize::Node;
+use obc_draw::serialize::{serialize_tree, Node, Region};
 use obc_elevation::{ElevationSource, NullElevation};
 use obc_map_core::config::Config;
 use obc_map_core::grid::{cells_intersecting, Band, BandTable, CellId, UBox, GRID_ORIGIN};
@@ -51,7 +52,7 @@ use obc_pbf::bbox::Bbox;
 use obc_places::metadata::Poi;
 use obc_places::routing::RoutableWay;
 
-use obc_draw::cut::{merge_key, prepare_lod, LodSet, PreparedSemantic};
+use obc_draw::cut::{merge_key, prepare_lod, PreparedSemantic};
 
 /// Filename of the cutter's provenance sidecar, written **last** (see [`cut_ingested`]).
 pub const MANIFEST_NAME: &str = "cells.json";
@@ -306,36 +307,46 @@ pub fn cut_ingested(
         .map(|band| (band, select_cells(band, extract, &opts.select)))
         .filter(|(_, cells)| !cells.is_empty())
         .collect();
-    let mut last_band = HashMap::new();
-    for (index, (band, _)) in bands.iter().enumerate() {
-        for &lod in &band.lods {
-            last_band.insert(merge_key(ing, config, lod, &semantic_scheme), index);
-        }
+    // A merged set stays in the memo until the last level that reads it.
+    let mut last_level = HashMap::new();
+    for (index, &lod) in bands.iter().flat_map(|(band, _)| &band.lods).enumerate() {
+        last_level.insert(merge_key(ing, config, lod, &semantic_scheme), index);
     }
     let mut merged_sets = HashMap::new();
-    for (index, (band, cells)) in bands.into_iter().enumerate() {
+    let mut level = 0;
+    for (band, cells) in bands {
         progress.stage(
             Phase::Quadtree,
             format!("Cutting band {} (2^{} µdeg): {} cell(s)...", band.id, band.cell_log2, cells.len()),
         );
 
-        // Per-band preparation, done once and read by every cell of the band.
-        let lod_sets: Vec<LodSet<'_>> = band
-            .lods
-            .iter()
-            .map(|&l| {
-                prepare_lod(
-                    ing,
-                    config,
-                    l,
-                    band.cell_log2,
-                    PreparedSemantic { features: semantic_levels[l].as_deref(), scheme: &semantic_scheme },
-                    &mut merged_sets,
-                    progress,
-                )
-            })
-            .collect();
-        merged_sets.retain(|key, _| last_band[key] > index);
+        let mut regions: Vec<Vec<(usize, Region)>> = cells.iter().map(|_| Vec::new()).collect();
+        let mut had_geometry = vec![false; cells.len()];
+        for &lod in &band.lods {
+            let set = prepare_lod(
+                ing,
+                config,
+                lod,
+                band.cell_log2,
+                PreparedSemantic { features: semantic_levels[lod].as_deref(), scheme: &semantic_scheme },
+                &mut merged_sets,
+                progress,
+            );
+            merged_sets.retain(|key, _| last_level[key] > level);
+            level += 1;
+            let encoded: Vec<(Region, bool)> = cells
+                .par_iter()
+                .map(|cell| {
+                    let root = set.cell_tree(*cell, chunk_size, progress);
+                    (serialize_tree(&root, chunk_size), node_has_features(&root))
+                })
+                .collect();
+            for (k, (region, geometry)) in encoded.into_iter().enumerate() {
+                regions[k].push((lod, region));
+                had_geometry[k] |= geometry;
+            }
+            progress.check()?;
+        }
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let band_terrain = terrain_set.as_ref().filter(|_| reads_terrain(config, band));
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
@@ -343,7 +354,9 @@ pub fn cut_ingested(
 
         let written: Vec<Result<CellArtifact, String>> = cells
             .par_iter()
-            .map(|cell| {
+            .zip(regions)
+            .zip(had_geometry)
+            .map(|((cell, regions), had_geometry)| {
                 if progress.is_cancelled() {
                     return Err("cancelled".into());
                 }
@@ -355,8 +368,6 @@ pub fn cut_ingested(
                     None => NavGraph::default(),
                     Some(prep) => prep.cell_graph(*cell, config.routing.min_component_edges),
                 };
-                let trees: Vec<(usize, Node)> =
-                    lod_sets.iter().map(|set| (set.lod, set.cell_tree(*cell, chunk_size, progress))).collect();
                 // One sampler per cell: it opens only the OBCT containers this square touches, and
                 // an `ElevationSource` is `&mut` by design (it caches tiles), so it cannot be shared
                 // across rayon workers. A cell outside the supplied terrain gets an empty sampler,
@@ -387,7 +398,8 @@ pub fn cut_ingested(
                     config,
                     &styles,
                     chunk_size,
-                    trees,
+                    regions,
+                    had_geometry,
                     &pois,
                     &cell_landmarks,
                     &peaks.select(&pois),
@@ -462,7 +474,8 @@ fn write_cell(
     config: &Config,
     styles: &[obc_map_core::serialize::Style],
     chunk_size: usize,
-    trees: Vec<(usize, Node)>,
+    regions: Vec<(usize, Region)>,
+    had_geometry: bool,
     pois: &[Poi],
     landmarks: &[obc_pack::landmark_map::Landmark],
     peaks: &obc_pack::peak_map::Peaks,
@@ -478,8 +491,7 @@ fn write_cell(
     }
     let file = std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
     let mut w = std::io::BufWriter::new(file);
-    let had_geometry = trees.iter().any(|(_, tree)| node_has_features(tree));
-    let mut trees: Vec<Option<(usize, Node)>> = trees.into_iter().map(Some).collect();
+    let mut regions: Vec<Option<(usize, Region)>> = regions.into_iter().map(Some).collect();
     let (bytes, dropped) = serialize_lods_streaming(
         &mut w,
         config.lods.len(),
@@ -493,10 +505,10 @@ fn write_cell(
         &config.routing.profiles,
         terrain,
         |i| {
-            // In band gives its tree; out of band gives an empty region, so band membership
+            // In band gives its region; out of band gives an empty region, so band membership
             // never shows up in the bytes.
-            let root = trees.iter_mut().find(|t| t.as_ref().is_some_and(|(l, _)| *l == i)).and_then(Option::take);
-            (root.map(|(_, n)| n), chunk_size, config.lods[i].max_mpp)
+            let region = regions.iter_mut().find(|r| r.as_ref().is_some_and(|(l, _)| *l == i)).and_then(Option::take);
+            (region.map(|(_, r)| r), chunk_size, config.lods[i].max_mpp)
         },
     )
     .map_err(|e| format!("write {}: {e}", path.display()))?;

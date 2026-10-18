@@ -677,7 +677,7 @@ mod tests {
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
         let list = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
-        fetched(&store, obc_draw::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
+        fetched(&store, obc_bake::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
@@ -911,7 +911,7 @@ mod tests {
             match parts[..] {
                 ["device" | "planner", "source", ..] | ["device", "region-osm" | "osm"] | ["planner", "osm"] => "osm",
                 ["device", "reference" | "terrain", _] => "device/terrain",
-                ["device", "coarse" | "mid" | "fine" | "network", _] => "device/map",
+                ["device", "map", _] => "device/map",
                 ["device", "landmark-content" | "peak-content", ..] | ["device", "landmarks" | "peaks", _] => {
                     "device/landmarks"
                 }

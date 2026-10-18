@@ -16,8 +16,6 @@ external-fixtures = []
 
 [dependencies]
 obc-map-core = { workspace = true }
-obc-draw = { workspace = true }
-obc-network = { workspace = true }
 obc-osm = { workspace = true }
 # Real assembly and reader verification before publishing map picks.
 obcm-assemble = { workspace = true, features = ["cli"] }
@@ -43,6 +41,8 @@ axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time"] }
 
 [dev-dependencies]
+# The authored coarse and mid geometry of the map-cell fixture.
+obc-draw = { workspace = true }
 # A stand-in for the Nominatim archive in the planner build test.
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }

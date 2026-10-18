@@ -3422,7 +3422,6 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-map-core",
- "obc-network",
  "obc-osm",
  "obc-pack",
  "obc-search-bake",
@@ -3645,7 +3644,6 @@ dependencies = [
 name = "obc-network"
 version = "0.1.0"
 dependencies = [
- "obc-data",
  "obc-elevation",
  "obc-formats",
  "obc-map-core",

@@ -225,29 +225,6 @@ fn two_runs_are_byte_identical() {
     let ids = |s: &CutSummary| s.cells.iter().map(|c| (c.band.clone(), c.id.to_string())).collect::<Vec<_>>();
     assert_eq!(ids(&sa), ids(&sb));
     assert!(ta.contains_key("cells.json"), "the provenance sidecar is written");
-
-    let cfg = config();
-    let (source, ways) = fixture(&cfg);
-    let metadata = obc_places::osm::Places { pois: source.pois.clone(), links: source.landmark_links.clone(), ways };
-    let split = Scratch::new("independent-bands");
-    for band in bands().bands {
-        let cells: Vec<_> = sa.cells.iter().filter(|cell| cell.band == band.id).map(|cell| cell.id).collect();
-        let job = obc_map_core::cell::Job {
-            band,
-            leaf: CellId::containing(22, LAT, SEAM),
-            partial: cells.iter().map(ToString::to_string).collect(),
-            cells,
-        };
-        let output = split.path().join(&job.band.id);
-        if job.band.has_nav() || job.band.has_poi() {
-            obc_network::step::write_cells(&job, &cfg, &metadata, None, &output, &Progress::silent()).unwrap();
-        } else {
-            obc_draw::step::write_cells(&job, &cfg, &source, &output, &Progress::silent()).unwrap();
-        }
-        for cell in sa.cells.iter().filter(|cell| cell.band == job.band.id) {
-            assert_eq!(open(&output.join(&cell.path)), ta[&cell.path], "independent {} bytes", cell.path);
-        }
-    }
 }
 
 // --- adjacency ---------------------------------------------------------------------------------
