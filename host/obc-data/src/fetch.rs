@@ -13,6 +13,7 @@ pub use tools::basemap_jar;
 /// Where a fetch writes what it requested upstream, for the run journal.
 pub(crate) type Acquisition<'a> = &'a mut Option<serde_json::Value>;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use self::http::{Expect, Http};
@@ -346,20 +347,31 @@ pub(crate) fn merge(
         return Err(format!("{source}@{version}: the local snapshot has another source or version"));
     }
     let before = snapshot.files.len();
+    // A record can have tens of thousands of files: the files of the record by URL, and their URL by
+    // name. The first file of a URL or a name counts, as in a search of the list: an older build
+    // could record a name twice.
+    let (mut by_url, mut by_name) = (HashMap::new(), HashMap::new());
+    for (at, file) in snapshot.files.iter().enumerate() {
+        by_url.entry(file.url.clone()).or_insert(at);
+        by_name.entry(file.name.clone()).or_insert_with(|| file.url.clone());
+    }
     for file in files {
-        if let Some(old) = snapshot.file(&file.url).filter(|old| old.sha256 != file.sha256) {
+        let old = by_url.get(&file.url).map(|&at| &snapshot.files[at]);
+        if let Some(old) = old.filter(|old| old.sha256 != file.sha256) {
             return Err(format!(
                 "{source}@{version}: {} now has the SHA-256 {}, but the record has {}",
                 file.url, file.sha256, old.sha256
             ));
         }
-        if let Some(old) = snapshot.files.iter().find(|old| old.name == file.name && old.url != file.url) {
-            return Err(format!("{source}@{version}: the name {} is of {} and {}", file.name, old.url, file.url));
+        if let Some(url) = by_name.get(&file.name).filter(|url| **url != file.url) {
+            return Err(format!("{source}@{version}: the name {} is of {url} and {}", file.name, file.url));
         }
-        if let Some(old) = snapshot.file(&file.url).filter(|old| old.name != file.name || old.size != file.size) {
+        if let Some(old) = old.filter(|old| old.name != file.name || old.size != file.size) {
             return Err(format!("{source}@{version}: {} has another name or size than {}", file.url, old.name));
         }
-        if snapshot.file(&file.url).is_none() {
+        if old.is_none() {
+            by_url.insert(file.url.clone(), snapshot.files.len());
+            by_name.insert(file.name.clone(), file.url.clone());
             snapshot.files.push(file.clone());
         }
     }
@@ -966,6 +978,12 @@ pub(crate) mod tests {
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
         let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
+        assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
+
+        // An older build could record a name twice: the first file of the name counts.
+        let files = vec![file("https://h/1/a.tif", "aa"), file("https://h/2/a.tif", "aa")];
+        store.put_snapshot(&Snapshot { source: "land".into(), version: "v2".into(), files }).unwrap();
+        let err = record(&store, "land", "v2", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
         assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
     }
 

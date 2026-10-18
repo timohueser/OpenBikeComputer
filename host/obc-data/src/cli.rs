@@ -404,10 +404,15 @@ struct PreparedOn {
 }
 
 /// The [`PreparedOn`] of source `id` on each of `targets`.
-fn prepared_on(targets: &BTreeMap<String, crate::target::Target>, id: &str) -> BTreeMap<String, PreparedOn> {
+fn prepared_on(
+    store: &Store,
+    targets: &BTreeMap<String, crate::target::Target>,
+    id: &str,
+) -> BTreeMap<String, PreparedOn> {
     let read = |target| -> Result<PreparedOn, String> {
         let versions = crate::prepared::versions(target, id)?;
-        let lock = crate::lock::holder(&crate::prepared::folder(target, id))?.map(overview::Lock::of);
+        let lock =
+            crate::lock::holder(&crate::prepared::folder(target, id))?.map(|holder| overview::Lock::of(store, holder));
         Ok(PreparedOn { versions, lock, error: None })
     };
     let on = |target| read(target).unwrap_or_else(|e| PreparedOn { versions: Vec::new(), lock: None, error: Some(e) });
@@ -466,7 +471,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
         let prepared = match source.fetch.kind {
-            crate::sources::FetchKind::Prepared => prepared_on(&all, &source.id),
+            crate::sources::FetchKind::Prepared => prepared_on(&store, &all, &source.id),
             _ => BTreeMap::new(),
         };
         let refreshable = source_cli::moves(&source);
@@ -642,9 +647,18 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::tests::Scratch;
+
+    /// The functions of the Rust steps of the tests of the commands.
+    pub(crate) const FUNCTIONS: [&crate::engine::Function; 5] = [
+        &update_cli::tests::WAIT_FOR_GATE,
+        &update_cli::tests::COPY_EARTH,
+        &update_cli::tests::SPLIT_LINES,
+        &update_cli::tests::COPY_LEAF,
+        &prepare_cli::tests::COPY,
+    ];
 
     #[test]
     fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {
@@ -656,13 +670,14 @@ mod tests {
         let lock = r#"{"state": "held", "machine": "bake", "run": "r1", "review": null, "phase": "build", "heartbeat": "2026-09-03T00:00:00Z"}"#;
         std::fs::write(folder.join("lock.json"), lock).unwrap();
         let targets = BTreeMap::from([("prod".to_string(), crate::target::Target::Dir(dir.0.clone()))]);
-        let on = prepared_on(&targets, "wiki");
+        let store = Store::at(dir.0.join("store"));
+        let on = prepared_on(&store, &targets, "wiki");
         let lock = on["prod"].lock.as_ref().unwrap();
         assert_eq!((on["prod"].versions[0].version.as_str(), lock.holder.machine.as_str()), ("2026-09-01", "bake"));
         assert!(lock.stale);
 
         std::fs::write(folder.join("versions.json"), "[").unwrap();
-        let on = prepared_on(&targets, "wiki");
+        let on = prepared_on(&store, &targets, "wiki");
         assert!(on["prod"].error.as_ref().unwrap().contains("versions.json"), "{:?}", on["prod"].error);
     }
 }

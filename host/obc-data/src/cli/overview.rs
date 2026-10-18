@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{cells, freshness, listing, print_json, print_table, Code, Error};
-use crate::engine::runs::Limits;
+use crate::engine::runs::{self, Limits};
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::lock::{self, Holder};
@@ -155,11 +155,14 @@ pub struct Lock {
     /// Whether the last heartbeat is as old as `unlock` needs, by the clock of this machine: the
     /// run likely ended without freeing the lock.
     pub stale: bool,
+    /// Whether the run ran on this machine and its process ended: the next run takes the lock
+    /// over.
+    pub died: bool,
 }
 
 impl Lock {
-    pub fn of(holder: Holder) -> Self {
-        Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder }
+    pub fn of(store: &Store, holder: Holder) -> Self {
+        Lock { stale: lock::stale_at(&holder) <= crate::date::now(), died: runs::died(store, &holder), holder }
     }
 }
 
@@ -214,12 +217,16 @@ pub fn overview(
                 }
             }
         }
-        if let Some(Lock { holder, .. }) = &target.lock {
+        if let Some(Lock { holder, died, .. }) = &target.lock {
             let (done, total) =
                 holder.progress.iter().fold((0, 0), |(done, total), layer| (done + layer.done, total + layer.total));
             let held = format!(
-                "run {} of `{}`, {}, {done} of {total} steps, heartbeat {}",
-                holder.run, holder.machine, holder.phase, holder.heartbeat
+                "run {} of `{}`, {}, {done} of {total} steps, heartbeat {}{}",
+                holder.run,
+                holder.machine,
+                holder.phase,
+                holder.heartbeat,
+                if *died { "; its process ended, so the next run takes the lock over" } else { "" }
             );
             rows.push(vec!["  lock".into(), held]);
         }
@@ -310,7 +317,7 @@ fn state(
         _ => format!("obc data update {name} --dry-run"),
     };
     match lock::holder(target) {
-        Ok(holder) => state.lock = holder.map(Lock::of),
+        Ok(holder) => state.lock = holder.map(|holder| Lock::of(store, holder)),
         Err(error) => state.lock_error = Some(error),
     }
     let judged = (|| -> Result<(), Error> {
@@ -371,7 +378,7 @@ fn state(
     if let Err(error) = judged {
         (state.error, state.fix) = (Some(error.message), Some(error.fix));
     }
-    if let Some(Lock { holder, .. }) = &state.lock {
+    if let Some(Lock { holder, died: false, .. }) = &state.lock {
         state.next = Some(format!("wait for run {} of `{}` to end", holder.run, holder.machine));
     }
     state

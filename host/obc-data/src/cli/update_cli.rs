@@ -274,7 +274,7 @@ pub(super) fn update(
     machine: Option<&MachineCheck>,
     run: &mut Run,
 ) -> Result<Updated, Error> {
-    locked(target, run, |run, held| {
+    locked(store, target, run, |run, held| {
         let prepared = prepare(root, store, http, target, code, edit, &asked.only, machine, Some(run))?;
         if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
             return Err(lost(&format!("target `{}`", target.0)));
@@ -286,24 +286,34 @@ pub(super) fn update(
 
 /// Do `work` while the run holds the lock of `target`: a thread writes the heartbeat, and the lock
 /// is free again at the end. When another run takes the lock, the run stops. SIGINT and SIGTERM
-/// stop the run, so it frees the lock.
+/// stop the run, so it frees the lock. A lock that a run of this machine in `store` kept when its
+/// process ended, the run takes over.
 pub(super) fn locked<T>(
+    store: &Store,
     (name, target): (&str, &Target),
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    locked_as((&format!("target `{name}`"), &format!("obc data unlock {name}")), target, run, work)
+    locked_as(store, (&format!("target `{name}`"), &format!("obc data unlock {name}")), target, run, work)
 }
 
 /// [`locked`] for the lock of `target`, which messages name `label` and `unlock` frees.
 pub(super) fn locked_as<T>(
+    store: &Store,
     (label, unlock): (&str, &str),
     target: &Target,
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
     crate::engine::runs::stop_on_signals();
-    let held = Held::take(target, run.id(), crate::date::now()).map_err(|refused| match refused {
+    let now = crate::date::now();
+    let taken = match Held::take(target, run.id(), now) {
+        Err(lock::Refused::Held(holder)) if runs::died(store, &holder) => {
+            Held::take_over(target, run.id(), now, Some(&holder)).map(|held| (held, Some(holder.run)))
+        }
+        taken => taken.map(|held| (held, None)),
+    };
+    let (held, over) = taken.map_err(|refused| match refused {
         lock::Refused::Held(holder) => {
             Code::Blocked.error(format!("{label}: {}", lock::held_by(&holder))).fix(format!(
                 "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
@@ -318,6 +328,9 @@ pub(super) fn locked_as<T>(
             .error(format!("{label}: {e}"))
             .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK)),
     })?;
+    if let Some(dead) = over {
+        run.line(&format!("{label}: run {dead} ended without freeing the lock; this run took it over"))?;
+    }
     let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
     let result = std::thread::scope(|scope| {
         let held = &held;
@@ -1020,6 +1033,7 @@ fn defined(settings: &mut Settings, region: Region) -> Result<(), Error> {
 pub(super) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, snapshot, write, Fixture};
+    use crate::engine::Function;
     use crate::product::{Pointer, Steps, Unplanned};
     use crate::release::POINTERS;
 
@@ -1081,8 +1095,12 @@ pub(super) mod tests {
             }
             if root.join("gate").exists() {
                 static GATE: crate::engine::Layer = crate::engine::Layer { name: "gate", ..crate::engine::tests::TEST };
-                let mut step =
-                    crate::engine::tests::step("counter/gate", Vec::new(), "gate.txt", crate::engine::Run::Rust(gate));
+                let mut step = crate::engine::tests::step(
+                    "counter/gate",
+                    Vec::new(),
+                    "gate.txt",
+                    crate::engine::Run::Rust(&WAIT_FOR_GATE),
+                );
                 (step.layer, step.options) =
                     (&GATE, serde_json::json!({ "gate": root.join("gate").display().to_string() }));
                 return Ok(vec![step].into());
@@ -1095,7 +1113,7 @@ pub(super) mod tests {
             static EARTH: crate::engine::Layer = crate::engine::Layer { name: "earth", ..crate::engine::tests::TEST };
             let read = vec![snapshot("natural-earth", &version, &["earth.zip"])];
             let mut step =
-                crate::engine::tests::step("counter/earth", read, "earth.zip", crate::engine::Run::Rust(earth));
+                crate::engine::tests::step("counter/earth", read, "earth.zip", crate::engine::Run::Rust(&COPY_EARTH));
             step.layer = &EARTH;
             Ok(vec![step].into())
         }
@@ -1147,6 +1165,8 @@ pub(super) mod tests {
     }
 
     /// A step that writes `waiting` in the folder `gate` of its options, and waits for `open` there.
+    pub(in crate::cli) static WAIT_FOR_GATE: Function = Function { name: "test/gate", run: gate };
+
     fn gate(request: &crate::engine::Request) -> Result<(), String> {
         let gate = Path::new(request.options["gate"].as_str().unwrap());
         write(&gate.join("waiting"), "");
@@ -1182,15 +1202,21 @@ pub(super) mod tests {
         static SPLIT: Layer = Layer { name: "split", readers: &[], ..crate::engine::tests::TEST };
         static SPLIT_2: Layer = Layer { revision: 2, ..SPLIT };
         static LEAVES: Layer = Layer { name: "leaves", shape: Shape::Tiled, ..crate::engine::tests::TEST };
-        let mut split = step("counter/split", vec![snapshot("head", &head, &["head.txt"])], "split", Run::Rust(split));
+        let mut split =
+            step("counter/split", vec![snapshot("head", &head, &["head.txt"])], "split", Run::Rust(&SPLIT_LINES));
         (split.layer, split.client) = (if root.join("split-2").exists() { &SPLIT_2 } else { &SPLIT }, Client::None);
         let leaf = |leaf: &str| {
             let read = Input::Step { name: "counter/split".into(), files: vec![format!("split/{leaf}")] };
-            Step { layer: &LEAVES, ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(copy)) }
+            Step {
+                layer: &LEAVES,
+                ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(&COPY_LEAF))
+            }
         };
         let second = (!root.join("one-leaf").exists()).then(|| leaf("0001-0002"));
         Ok([split, leaf("0001-0001")].into_iter().chain(second).collect::<Vec<_>>().into())
     }
+
+    pub(in crate::cli) static SPLIT_LINES: Function = Function { name: "test/counter-split", run: split };
 
     fn split(request: &crate::engine::Request) -> Result<(), String> {
         let head = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
@@ -1202,10 +1228,14 @@ pub(super) mod tests {
         Ok(())
     }
 
+    pub(in crate::cli) static COPY_LEAF: Function = Function { name: "test/counter-leaf", run: copy };
+
     fn copy(request: &crate::engine::Request) -> Result<(), String> {
         let read = request.layers["counter/split"].values().next().ok_or("no leaf")?;
         std::fs::copy(read, request.output.join("leaf.txt")).map(drop).map_err(|e| e.to_string())
     }
+
+    pub(in crate::cli) static COPY_EARTH: Function = Function { name: "test/earth", run: earth };
 
     fn earth(request: &crate::engine::Request) -> Result<(), String> {
         let copied = std::fs::copy(&request.snapshots["natural-earth"]["earth.zip"], request.output.join("earth.zip"));
@@ -1903,6 +1933,48 @@ pub(super) mod tests {
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_update_takes_over_the_lock_that_a_run_of_this_machine_kept_when_its_process_ended() {
+        let fixture = fixture("update-died");
+        fixture.with_sources(&[]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let dead = Run::create(&fixture.store, ["update", "local"]).unwrap();
+        // The process ends without freeing the lock, as on an out-of-memory kill, and a program of
+        // one of its steps still runs in the session that the run led.
+        std::mem::forget(lock::Held::take(&target, dead.id(), crate::date::now()).unwrap());
+        let status_file = dead.status_file();
+        drop(dead);
+        let mut program = std::process::Command::new("sleep");
+        // SAFETY: setsid is async-signal-safe.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(program.arg("60"), || match libc::setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            })
+        };
+        let mut program = program.spawn().unwrap();
+        let mut status: serde_json::Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+        status["pid"] = program.id().into();
+        std::fs::write(&status_file, serde_json::to_vec(&status).unwrap()).unwrap();
+        let Some((lock::LockFile::Held(mut holder), _)) = lock::read(&target).unwrap() else { panic!("free") };
+
+        holder.machine = "elsewhere".into();
+        let lock_file = fixture.scratch.0.join("local").join(lock::LOCK);
+        std::fs::write(&lock_file, serde_json::to_vec(&lock::LockFile::Held(holder.clone())).unwrap()).unwrap();
+        let refused = update(&fixture, &target, region).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "only this machine knows that the process of its run ended");
+
+        holder.machine = crate::machine();
+        std::fs::write(&lock_file, serde_json::to_vec(&lock::LockFile::Held(holder)).unwrap()).unwrap();
+        let refused = update(&fixture, &target, region).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "a program of the run still runs");
+        program.kill().unwrap();
+        program.wait().unwrap();
+        update(&fixture, &target, region).unwrap();
+        assert_eq!(lock::read(&target).unwrap().unwrap().0, lock::LockFile::Free, "the run frees it");
+    }
+
     std::thread_local! {
         /// The clock of a wait for the follower: each sleep moves it on.
         static CLOCK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
@@ -1942,7 +2014,7 @@ pub(super) mod tests {
         let base = release::serving(target).unwrap();
         let wait = Wait { give_up, now: || CLOCK.get(), sleep: |every| CLOCK.set(CLOCK.get() + every), ..Wait::RUN };
         let mut run = Run::create(&fixture.store, ["update", "local"]).unwrap();
-        let switched = locked(("local", target), &mut run, |run, held| {
+        let switched = locked(&fixture.store, ("local", target), &mut run, |run, held| {
             switch_to(("local", target), base.as_ref(), id, &Http::new(), Some(wait), (run, held))
         });
         crate::cli::api::finish_run(run, switched)

@@ -1,6 +1,7 @@
 """Bake conservative terrain maxima for the sunlight worker."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import hashlib
 import io
@@ -18,7 +19,8 @@ from pmtiles.reader import Reader
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
-from . import planner_offline as offline, planner_runtime as runtime, step_request
+from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
+from .planner_grid_maps import MAP_ZOOM
 from .planner_map_archive import tile_window
 
 SIZE, DEM_ZOOM, INDEX_ZOOM, UNKNOWN = 512, 12, 10, 32767
@@ -63,18 +65,43 @@ def terrain_coverage(header, bounds, distance_m):
     return coverage
 
 
+class Tiles:
+    """The header, metadata and tiles of one PMTiles archive, or of the grid archives of one: {`z-x-y`: path}.
+    A grid archive holds its zoom-11 tile and the zoom-12 tiles in it; a tile of a lower zoom has its own."""
+
+    def __init__(self, archives, header, metadata):
+        self.archives, self.header, self.metadata = archives, header, metadata
+
+    @classmethod
+    def archive(cls, path):
+        with path.open("rb") as stream:
+            reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
+            return cls({None: path}, reader.header(), reader.metadata())
+
+    def get(self, z, x, y):
+        level = min(z, MAP_ZOOM)
+        name = None if None in self.archives else f"{level}-{x >> (z - level)}-{y >> (z - level)}"
+        if name not in self.archives:
+            return None
+        with self.archives[name].open("rb") as stream:
+            return Reader(lambda offset, length: os.pread(stream.fileno(), length, offset)).get(z, x, y)
+
+
 def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, horizon_directions=72, *, terrain_grid_sha256=None):
+    """Write the sun archive from the Tiles `terrain`."""
     if output.exists():
         raise ValueError("Output exists; choose a fresh path")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with terrain.open("rb") as stream, tempfile.TemporaryDirectory(prefix=".sun-", dir=output.parent) as folder:
-        reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
-        header = reader.header()
+    with tempfile.TemporaryDirectory(prefix=".sun-", dir=output.parent) as folder:
+        header = dict(terrain.header)
         coverage = terrain_coverage(header, bounds, distance_m)
 
-        @lru_cache(maxsize=30)
+        # Each index tile that a thread bakes reads 25 terrain tiles, and its neighbours read some of them too.
+        workers = step_pool.cores()
+
+        @lru_cache(maxsize=25 * workers)
         def heights(x, y):
-            data = reader.get(DEM_ZOOM, x, y)
+            data = terrain.get(DEM_ZOOM, x, y)
             if data is None:
                 return np.full((SIZE, SIZE), UNKNOWN, np.int16)
             rgba = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))
@@ -87,41 +114,45 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
 
         # Use every finest terrain tile, including the context outside the displayed region.
         stage = Path(folder)
+
+        def index_tile(z, x, y):
+            if z == INDEX_ZOOM:
+                vertices = np.full((SIZE * 4 + 1, SIZE * 4 + 1), UNKNOWN, np.int16)
+                for dy in range(5):
+                    for dx in range(5):
+                        h, w = min(SIZE, vertices.shape[0] - dy * SIZE), min(SIZE, vertices.shape[1] - dx * SIZE)
+                        vertices[dy * SIZE:dy * SIZE + h, dx * SIZE:dx * SIZE + w] = heights(x * 4 + dx, y * 4 + dy)[:h, :w]
+                values = maxima(vertices, 4)
+            else:
+                children = np.full((SIZE * 2, SIZE * 2), UNKNOWN, np.int16)
+                for dy in range(2):
+                    for dx in range(2):
+                        child = stage / f"{z + 1}-{x * 2 + dx}-{y * 2 + dy}.npy"
+                        if child.exists():
+                            children[dy * SIZE:(dy + 1) * SIZE, dx * SIZE:(dx + 1) * SIZE] = np.load(child)
+                values = children.reshape(SIZE, 2, SIZE, 2).max(axis=(1, 3))
+            values = quantize(values)
+            np.save(stage / f"{z}-{x}-{y}.npy", values)
+            return encode(values)
+
         count, payload = 0, 0
-        with (stage / "sun.pmtiles").open("wb") as target:
+        # WebP, zlib and numpy release the interpreter lock, so the tiles of a zoom bake on threads.
+        with (stage / "sun.pmtiles").open("wb") as target, ThreadPoolExecutor(workers) as executor:
             writer = Writer(target)
             try:
                 for z in range(INDEX_ZOOM, -1, -1):
                     west, north, east, south = tile_window(coverage, z)
-                    for y in range(north, south):
-                        for x in range(west, east):
-                            if z == INDEX_ZOOM:
-                                vertices = np.full((SIZE * 4 + 1, SIZE * 4 + 1), UNKNOWN, np.int16)
-                                for dy in range(5):
-                                    for dx in range(5):
-                                        h, w = min(SIZE, vertices.shape[0] - dy * SIZE), min(SIZE, vertices.shape[1] - dx * SIZE)
-                                        vertices[dy * SIZE:dy * SIZE + h, dx * SIZE:dx * SIZE + w] = heights(x * 4 + dx, y * 4 + dy)[:h, :w]
-                                values = maxima(vertices, 4)
-                            else:
-                                children = np.full((SIZE * 2, SIZE * 2), UNKNOWN, np.int16)
-                                for dy in range(2):
-                                    for dx in range(2):
-                                        child = stage / f"{z + 1}-{x * 2 + dx}-{y * 2 + dy}.npy"
-                                        if child.exists():
-                                            children[dy * SIZE:(dy + 1) * SIZE, dx * SIZE:(dx + 1) * SIZE] = np.load(child)
-                                values = children.reshape(SIZE, 2, SIZE, 2).max(axis=(1, 3))
-                            values = quantize(values)
-                            np.save(stage / f"{z}-{x}-{y}.npy", values)
-                            data = encode(values)
-                            writer.write_tile(zxy_to_tileid(z, x, y), data)
-                            count, payload = count + 1, payload + len(data)
+                    tiles = [(x, y) for y in range(north, south) for x in range(west, east)]
+                    for (x, y), data in zip(tiles, executor.map(lambda tile, z=z: index_tile(z, *tile), tiles)):
+                        writer.write_tile(zxy_to_tileid(z, x, y), data)
+                        count, payload = count + 1, payload + len(data)
                     print(f"Sun index zoom {z}: {count} tiles, {payload / 1e6:.2f} MB", flush=True)
                 binding = ({"terrain_grid_sha256": terrain_grid_sha256} if terrain_grid_sha256 is not None
-                           else {"terrain_sha256": hashlib.file_digest(stream, "sha256").hexdigest()})
+                           else {"terrain_sha256": runtime.digest(terrain.archives[None])})
                 metadata = {"sun_format": 1, "dem_zoom": DEM_ZOOM, "index_zoom": INDEX_ZOOM,
                             "distance_m": distance_m, "timezone": timezone, "bound_step": BOUND_STEP,
                             **binding,
-                            "attribution": reader.metadata().get("attribution", ""),
+                            "attribution": terrain.metadata.get("attribution", ""),
                             "bounds": bounds, "coverage": coverage}
                 header.update(min_zoom=0, max_zoom=INDEX_ZOOM, tile_type=TileType.WEBP, tile_compression=Compression.NONE)
                 writer.finalize(header, metadata)
@@ -133,10 +164,21 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     print(json.dumps({"index_tiles": count, "index_payload_bytes": payload, "archive_bytes": output.stat().st_size}))
 
 
-def terrain_grid(request, directory):
-    """Reconstruct only verified terrain payloads; the grid manifest is their identity."""
-    from pmtiles.reader import MmapSource, all_tiles
+def tiles_of(read, header, offset=None, length=None):
+    """The z, x, y of every tile of a PMTiles archive, from its directories alone."""
+    from pmtiles.tile import deserialize_directory, tileid_to_zxy
 
+    if offset is None:
+        offset, length = header["root_offset"], header["root_length"]
+    for entry in deserialize_directory(read(offset, length)):
+        if entry.run_length:
+            yield from (tileid_to_zxy(tile_id) for tile_id in range(entry.tile_id, entry.tile_id + entry.run_length))
+        else:
+            yield from tiles_of(read, header, header["leaf_directory_offset"] + entry.offset, entry.length)
+
+
+def terrain_grid(request, directory):
+    """The terrain Tiles of the grid archives, each verified once; the grid manifest is their identity."""
     source = step_request.view(request["layers"]["planner/terrain/grid"], directory / "source")
     index = json.loads((source / "index.json").read_bytes())
     if index["format"] != 1 or index["kind"] != "terrain" or index["map_zoom"] != 11:
@@ -145,12 +187,21 @@ def terrain_grid(request, directory):
         runtime.relative_path(name)
         if name != "maps/terrain.json" and not (Path(name).parent.as_posix() == "maps/tiles/terrain" and name.endswith(".pmtiles")):
             raise ValueError("Terrain grid selects an unrelated file")
-    offline.materialize(source, directory, index, ("maps/terrain.json", "maps/tiles/terrain/"))
+    offline.materialize(source, directory, index, ("maps/terrain.json",))
     metadata = json.loads((directory / "maps/terrain.json").read_bytes())
     if metadata != index["metadata"]:
         raise ValueError("Terrain grid metadata differs")
     digest = hashlib.sha256(runtime.encoded(index)).hexdigest()
-    parts = [directory / name for name in sorted(index["files"]) if name.endswith(".pmtiles")]
+    # A grid archive is stored as it is, so its object is the archive, and one hash verifies it.
+    parts, entries = {}, []
+    for name, entry in sorted(index["files"].items()):
+        if name.endswith(".pmtiles"):
+            if entry["transport"] != {"bytes": entry["bytes"], "sha256": entry["sha256"], "encoding": "identity"}:
+                raise ValueError("Terrain grid archives must be stored as they are")
+            parts[Path(name).stem] = source / "objects" / entry["sha256"]
+            entries.append(entry)
+    with ThreadPoolExecutor(step_pool.cores()) as pool:
+        list(pool.map(offline.verify, parts.values(), entries))
     if not parts:
         from .planner_geo import bounds as parse_bounds
         bounds = parse_bounds(metadata["bounds"] if isinstance(metadata["bounds"], str)
@@ -161,33 +212,23 @@ def terrain_grid(request, directory):
                   **dict(zip(("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7"),
                              (round(value * 1e7) for value in bounds)))}
         return None, header, metadata, digest
-    archive = directory / "terrain.pmtiles"
-    header = None
-    with archive.open("wb") as stream:
-        writer = Writer(stream)
-        try:
-            for part in parts:
-                with part.open("rb") as selected:
-                    read = MmapSource(selected)
-                    actual = Reader(read).header()
-                    if actual["tile_type"] != TileType.WEBP or actual["tile_compression"] != Compression.NONE:
-                        raise ValueError("Use uncompressed WebP terrain")
-                    keys = ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")
-                    if header is not None and any(actual[key] != header[key] for key in keys):
-                        raise ValueError("Terrain grid archive headers differ")
-                    header = actual
-                    for tile, data in all_tiles(read):
-                        z, x, y = tile
-                        level = min(z, index["map_zoom"])
-                        if part.name != f"{level}-{x >> (z-level)}-{y >> (z-level)}.pmtiles":
-                            raise ValueError("Terrain tile belongs to another grid archive")
-                        writer.write_tile(zxy_to_tileid(*tile), data)
-            writer.finalize(dict(header), metadata)
-        finally:
-            writer.tile_f.close()
-    with archive.open("rb") as stream:
-        header = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset)).header()
-    return archive, header, metadata, digest
+    headers = []
+    for part, path in parts.items():
+        with path.open("rb") as stream:
+            read = lambda offset, length: os.pread(stream.fileno(), length, offset)
+            headers.append(Reader(read).header())
+            if headers[-1]["tile_type"] != TileType.WEBP or headers[-1]["tile_compression"] != Compression.NONE:
+                raise ValueError("Use uncompressed WebP terrain")
+            keys = ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")
+            if any(headers[-1][key] != headers[0][key] for key in keys):
+                raise ValueError("Terrain grid archive headers differ")
+            # A tile is read from the archive of its zoom-11 tile only, so one in another archive would be lost.
+            for z, x, y in tiles_of(read, headers[-1]):
+                level = min(z, MAP_ZOOM)
+                if part != f"{level}-{x >> (z - level)}-{y >> (z - level)}":
+                    raise ValueError("Terrain tile belongs to another grid archive")
+    header = {**headers[-1], "min_zoom": min(h["min_zoom"] for h in headers), "max_zoom": max(h["max_zoom"] for h in headers)}
+    return Tiles(parts, header, metadata), header, metadata, digest
 
 
 def step(request=None):
@@ -228,7 +269,8 @@ def main():
     if len(bounds) != 4 or not all(math.isfinite(value) for value in bounds) or not (-180 <= bounds[0] < bounds[2] <= 180 and -85 < bounds[1] < bounds[3] < 85) or not 0 < args.distance_m <= 30000:
         parser.error("Provide four bounds and a search distance up to 30000 metres")
     ZoneInfo(args.time_zone)
-    bake(args.terrain, args.output, bounds, args.time_zone, args.distance_m, args.horizon_samples, args.horizon_directions)
+    bake(Tiles.archive(args.terrain), args.output, bounds, args.time_zone, args.distance_m, args.horizon_samples,
+         args.horizon_directions)
 
 
 if __name__ == "__main__":

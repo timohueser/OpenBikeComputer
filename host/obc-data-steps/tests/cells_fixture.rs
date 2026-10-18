@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use obc_bake::cut::{cut, CutOptions};
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{view, Receipt, Request, Run, Step};
+use obc_data::engine::{view, Function, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
 use obc_data::product::{Inputs, Product, Unplanned, Wanted};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
@@ -149,11 +149,23 @@ fn land_zip(path: &Path) {
     shp.extend((record.len() as i32 / 2).to_be_bytes());
     shp.extend(record);
     let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-    let options: zip::write::FileOptions<'_, ()> = Default::default();
+    let options = zip::write::SimpleFileOptions::default();
     zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
     zip.write_all(&shp).unwrap();
     zip.finish().unwrap();
 }
+
+/// The child process of a Rust step of the test runs it here.
+#[test]
+fn obc_data_step() {
+    let fakes = [&COPY, &LANDMARK_CONTENT, &PEAK_CONTENT, &MALFORMED_NETWORK];
+    obc_data::engine::child(&[obc_data_steps::FUNCTIONS, &fakes].concat());
+}
+
+static COPY: Function = Function { name: "test/copy", run: copy };
+static LANDMARK_CONTENT: Function = Function { name: "test/landmark-content", run: landmark_content };
+static PEAK_CONTENT: Function = Function { name: "test/peak-content", run: peak_content };
+static MALFORMED_NETWORK: Function = Function { name: "test/malformed-network", run: malformed_network };
 
 /// The OSM of each leaf: the extract as it is.
 fn copy(request: &Request) -> Result<(), String> {
@@ -219,9 +231,9 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     for step in &mut steps {
         match step.name.as_str() {
-            "device/osm" => step.run = Run::Rust(copy),
-            name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(landmark_content),
-            name if name.starts_with("device/peak-content/") => step.run = Run::Rust(peak_content),
+            "device/osm" => step.run = Run::Rust(&COPY),
+            name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(&LANDMARK_CONTENT),
+            name if name.starts_with("device/peak-content/") => step.run = Run::Rust(&PEAK_CONTENT),
             _ => {}
         }
     }
@@ -378,7 +390,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     for step in &mut steps {
         if step.name == "device/map/0037-0033" {
             step.options["malformed_fixture"] = serde_json::to_value(&built).unwrap();
-            step.run = Run::Rust(malformed_network);
+            step.run = Run::Rust(&MALFORMED_NETWORK);
         }
     }
     let changed = plan(&store, &steps).unwrap();

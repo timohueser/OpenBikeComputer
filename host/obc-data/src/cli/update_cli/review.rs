@@ -12,7 +12,7 @@ use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
-use crate::engine::{leaf, partition, Input, Reader, Run, Shape, Step};
+use crate::engine::{leaf, partition, Input, Reader, Shape, Step};
 use crate::product::{Note, RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
@@ -115,11 +115,8 @@ pub struct Downloads {
 pub struct ReviewCost {
     /// The estimated times of the bakes, added as if one ran after another.
     pub wall_ms: u64,
-    /// The highest estimated peak of one bake that runs in its own process.
+    /// The highest estimated peak of one bake.
     pub peak_rss_bytes: Option<u64>,
-    /// The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper
-    /// bound, not the peak of a step. It refuses nothing.
-    pub process_peak_rss_bytes: Option<u64>,
     /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
     /// What goes to the target: the files of the bakes that a client reads, and the copies under
@@ -361,8 +358,6 @@ pub fn review(parts: Parts) -> Review {
         cost.unknown.size.push(fetch);
     }
     cost.store_bytes += downloads.bytes;
-    let in_process: BTreeSet<&str> =
-        steps.iter().filter(|step| matches!(step.run, Run::Rust(_))).map(|step| step.name.as_str()).collect();
     for build in &bakes {
         let Some(estimate) = build.estimate else {
             cost.unknown.estimate.push(build.step.clone());
@@ -371,19 +366,14 @@ pub fn review(parts: Parts) -> Review {
         cost.wall_ms += estimate.wall_ms;
         cost.store_bytes += estimate.bytes_out;
         cost.upload_bytes += estimate.client_bytes;
-        let peak = match in_process.contains(build.step.as_str()) {
-            true => &mut cost.process_peak_rss_bytes,
-            false => &mut cost.peak_rss_bytes,
-        };
         match estimate.peak_rss_bytes {
-            Some(bytes) => *peak = (*peak).max(Some(bytes)),
+            Some(bytes) => cost.peak_rss_bytes = cost.peak_rss_bytes.max(Some(bytes)),
             None => cost.unknown.peak.push(build.step.clone()),
         }
     }
-    let own: Vec<&Build> = bakes.iter().filter(|build| !in_process.contains(build.step.as_str())).collect();
     let mut machine = machine.clone();
     let planner = bakes.iter().any(|build| build.step.starts_with("planner/"));
-    machine.refusals = refusals(&machine, (&own, planner), cost.store_bytes);
+    machine.refusals = refusals(&machine, (&bakes, planner), cost.store_bytes);
 
     let changes_settings = serving.is_some_and(|serving| serving.settings != *settings);
     let switches = !changes.is_empty() || changes_settings;
@@ -418,10 +408,9 @@ pub fn review(parts: Parts) -> Review {
     }
 }
 
-/// Why `machine` cannot bake `own`, the bakes that run in their own process, and write
-/// `store_bytes`; with `planner`, also bake planner steps. Only a child process has a peak of its
-/// own (`wait4`), so only such a bake can need more memory than the machine has.
-fn refusals(machine: &MachineCheck, (own, planner): (&[&Build], bool), store_bytes: u64) -> Vec<String> {
+/// Why `machine` cannot bake `bakes` and write `store_bytes`; with `planner`, also bake planner
+/// steps.
+fn refusals(machine: &MachineCheck, (bakes, planner): (&[Build], bool), store_bytes: u64) -> Vec<String> {
     let mut refusals = Vec::new();
     if planner && !machine.planner_missing.is_empty() {
         refusals.push(format!(
@@ -430,7 +419,7 @@ fn refusals(machine: &MachineCheck, (own, planner): (&[&Build], bool), store_byt
         ));
     }
     if let Some(memory) = machine.memory_bytes {
-        for build in own {
+        for build in bakes {
             if let Some(peak) =
                 build.estimate.and_then(|estimate| estimate.peak_rss_bytes).filter(|peak| *peak > memory)
             {
@@ -545,9 +534,6 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     );
     if let Some(peak) = cost.peak_rss_bytes {
         text += &format!(", peak {} memory", size(peak));
-    }
-    if let Some(peak) = cost.process_peak_rss_bytes {
-        text += &format!(", process peak {}", size(peak));
     }
     let Unknown { estimate, peak, size: sizes } = &cost.unknown;
     let unknown: Vec<String> = [

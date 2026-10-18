@@ -13,6 +13,12 @@ the planner layers; `obc data` does not install them.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
+Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
+in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
+function that is not there fails its step. A test binary that runs a Rust step needs a test
+`obc_data_step` that calls `obc_data::engine::child` with its functions. Without that test, the
+step fails because it did not write its output.
+
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
 settings of a target (region, optional layers, refresh policies) are in the release that it
@@ -72,8 +78,9 @@ An update runs in a process of its own: Ctrl-C ends only the following of its lo
 `obc data runs RUN --stop` stops it. An update that stops keeps what it baked: run it again. The
 previous release stays as the rollback of the target. A target takes one update or rollback at a
 time: the run holds `lock.json` of the target, and another run refuses to start. A run that fails
-or stops frees the lock. A crash or an out-of-memory kill keeps it:
-`obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
+or stops frees the lock. A crash or an out-of-memory kill keeps it; the next run on the same
+machine takes it over. From another machine, `obc data unlock TARGET --from MACHINE` frees it
+after 10 minutes without a heartbeat.
 
 `cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
 in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.

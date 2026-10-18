@@ -27,7 +27,7 @@ use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
-use crate::readers;
+use crate::{functions, readers};
 
 pub(crate) mod catalog;
 mod shared_content;
@@ -319,8 +319,8 @@ fn file(
 /// The compiled landmarks or peaks of the region, from their capture, the `.poly` and the extract.
 fn content(collection: &str, inputs: Vec<Input>) -> Step {
     let run = match collection {
-        "landmarks" => obc_pack::step::landmark_content,
-        _ => obc_pack::step::peak_content,
+        "landmarks" => &functions::LANDMARK_CONTENT,
+        _ => &functions::PEAK_CONTENT,
     };
     Step {
         layer: &DEVICE_LANDMARKS,
@@ -345,9 +345,9 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
     let run = match collection {
         "landmarks" => {
             inputs.push(Input::Step { name: "device/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] });
-            obc_pack::step::landmarks
+            &functions::LANDMARKS
         }
-        _ => obc_pack::step::peaks,
+        _ => &functions::PEAKS,
     };
     inputs.push(Input::step(content_layer(collection)));
     Step {
@@ -408,7 +408,7 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
         inputs: vec![extract],
         options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
         outputs: vec!["osm".into()],
-        run: Run::Rust(obc_osm::step::osm),
+        run: Run::Rust(&functions::OSM),
         client: Client::None,
     }
 }
@@ -449,7 +449,7 @@ fn map_cells(config: &Config, leaf: LeafId, map: &LeafCells, land_polygons: &str
             "partial_cells": map.partial,
         }),
         outputs: vec!["cells".into()],
-        run: Run::Rust(obc_bake::step::map),
+        run: Run::Rust(&functions::MAP),
         client: Client::All,
     }
 }
@@ -593,7 +593,7 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
         outputs: vec!["terrain".into(), "metadata".into()],
-        run: Run::Rust(obc_dem::step::terrain),
+        run: Run::Rust(&functions::TERRAIN),
         // The map cells and the catalog read the metadata: a target holds it for another machine.
         client: Client::Paths(vec!["metadata".into(), "terrain".into()]),
     }
@@ -640,7 +640,7 @@ pub(crate) mod tests {
 
     use obc_data::engine::plan::{plan, Kept, Plan};
     use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-    use obc_data::engine::Request;
+    use obc_data::engine::{Function, Request};
     use obc_data::fetch::http::Http;
     use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
     use obc_pack::step::CAPTURES;
@@ -802,6 +802,8 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) static FAKE: Function = Function { name: "test/terrain", run: fake };
+
     fn fake(request: &Request) -> Result<(), String> {
         std::fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
         std::fs::create_dir(request.output.join("metadata")).map_err(|e| e.to_string())?;
@@ -922,7 +924,7 @@ pub(crate) mod tests {
             let (inputs, regions) = grimsel(&store, version);
             let mut steps = map_steps(&root(), &inputs, &regions, &store).unwrap().steps;
             steps.retain(|step| step.name.starts_with("device/terrain/"));
-            steps.iter_mut().for_each(|step| step.run = Run::Rust(fake));
+            steps.iter_mut().for_each(|step| step.run = Run::Rust(&FAKE));
             steps
         };
         let names: Vec<String> = steps(OLD).iter().map(|step| step.name.clone()).collect();

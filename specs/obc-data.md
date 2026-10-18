@@ -465,11 +465,14 @@ A step declares:
 | `options` | A JSON object |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
-| `run` | A Rust function in the process, a command (a program and its arguments), or a Python command. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
+| `run` | A Rust function of the binary, a command (a program and its arguments), or a Python command. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
-One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
-enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
-or sorted keys for JSON objects).
+Each step runs in a child process. A Rust step runs the binary again as `<binary> obc_data_step
+<function>`, and that process runs the function that the binary registered with that name
+(`obc_data::engine::child`). A function name is `<crate>/<function>` in kebab-case. One binary
+links the Rust steps of every product, so Cargo unifies their features. A step crate enables
+every feature its bytes depend on itself, or makes its bytes independent of it (structs, or
+sorted keys for JSON objects).
 
 A Python command runs `uv run`. The engine sets `UV_PYTHON` to the interpreter that `uv python
 find --system --offline --no-python-downloads` selects for the project, with an explicit
@@ -511,8 +514,8 @@ another build.
 
 ### The step contract
 
-A step gets a request. A command reads it as JSON on standard input; a Rust function gets the
-same fields.
+A step gets a request as JSON on standard input. The child process of a Rust step reads it and
+gives the same fields to its function.
 
 | Key | Value |
 | --- | --- |
@@ -524,10 +527,15 @@ same fields.
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
 
-A command starts in the repository root. Its standard output and standard error go to the
-standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
+A step starts in the repository root, in a process group of its own. On Linux it gets SIGKILL
+when the engine ends; the programs that it started can stay. Its standard output and
+standard error go to the standard error of the engine. Exit status 0 is success. When a Rust
+function fails, its child process writes the error as the last line of standard error and exits
+with 1. The objects are read-only. While a step
 runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
-when the step ends, also when it fails. A failed step writes no receipt. A declared directory may be empty when the step creates it.
+when the step ends, also when it fails. `TMPDIR` of a step is the empty directory `tmp` there, beside
+`output`; a step makes no other file with that name. A program puts no socket in `TMPDIR`: its path
+can be longer than the 108 bytes of a socket path. A failed step writes no receipt. A declared directory may be empty when the step creates it.
 A declared output that does not exist is an error.
 
 ### Offline
@@ -563,8 +571,9 @@ ends.
 | `files` | One item per file: `path` in the layer, `size` in bytes and `sha256`, sorted by `path` |
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
-| `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs, and of each program that the step runs and waits for, such as Osmium. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far, or the peak of a program that the step ran, such as Osmium, when that is more: an upper bound |
+| `cpu_ms` | User and system time in milliseconds of the process of the step and of the children that it waited for, such as Osmium (`wait4`). `null` when the system does not report it |
+| `peak_rss_bytes` | The peak resident set of the process of the step, or of the largest child that it waited for. It is not the sum of processes that run at the same time. Linux starts the peak of a forked process at the resident set of the engine, which runs no step itself. `null` when the system does not report it |
+| `own_process` | Whether the step ran in a process of its own. Without it (`false` when absent), `cpu_ms` and `peak_rss_bytes` can be those of the engine, and no estimate reads the peak |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -596,7 +605,8 @@ fetch. An `id` names a group only in the plan that it comes from.
 The estimate of a build is `wall_ms`, `bytes_out`, `client_bytes` (the size of the files that a
 client reads) and `peak_rss_bytes` of the newest receipt, by `built`, of the same step with the same
 options. Without one, it is the `cost` of the output of the step in the serving release, else the
-newest receipt of the step, or `null`. The `bytes` of a fetch is the size of its files in the
+newest receipt of the step, or `null`. Its `peak_rss_bytes` is `null` unless it comes from a
+receipt with `own_process`: the cost in a release does not tell whose peak it is. The `bytes` of a fetch is the size of its files in the
 record of the version. When that record does not list them all, it is the size in the record of
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
@@ -645,10 +655,21 @@ after a refresh of the extract, does not bake on any machine.
 
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
-- Independent Rust and command steps run in parallel within the same job and memory limits.
-- The sum of the estimated peaks (`peak_rss_bytes` of the estimate) of the steps that run at the
-  same time is not more than the physical memory of the machine. A step without an estimated
-  peak counts as the whole memory. A step whose estimate is more than the memory runs alone.
+- Independent steps run in parallel within the job and memory limits.
+- Of the steps that can start, the step with the longest chain of planned steps from it to the
+  end of the run starts first: its estimated `wall_ms` and that of the longest chain of the steps
+  that read it. A step without an estimate counts as the longest.
+- The memory that the steps that run at the same time reserve is not more than the physical
+  memory of the machine. A step reserves its estimated peak (`peak_rss_bytes` of the estimate).
+  A step without one reserves from the measured steps of its layer, the receipts with
+  `own_process`, a peak and input bytes, in the store or of this run: their smallest peak, or,
+  when that is more, its input bytes (`bytes_in`) times the peak per input byte of the measured
+  step that read the most. The peak per input byte of a step that read little is mostly the fixed
+  memory of a process. A step of a layer without a measured step reserves the whole memory, so the
+  first step of such a layer runs alone. A step that reserves more than the memory runs alone. A
+  step with worker processes reserves its largest process, not their sum.
+- A step that does not fit in the free memory holds back the steps after it, so that it starts
+  first.
 - After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
   that run finish. The layers that the run built stay in the store, so the next update reuses
   them: it continues after the failed step.
@@ -666,7 +687,7 @@ process never started.
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
   waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
   for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
-  unchanged), its fetches and steps (each `unchanged` or not), the
+  unchanged), its fetches and steps (each `unchanged` or not, with when it started and ended, in milliseconds after the start of the run), the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
@@ -677,8 +698,9 @@ process never started.
   A leaf is baked when one of its steps baked, and unchanged when all of its steps are.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
-  run, once. The signal ends a step program. A Rust step that runs fails within seconds, at its
-  next `check_stop`. A detached run whose process finds it at its start does nothing more. A run that
+  run, once. When a run stops, the process group of each step that runs gets SIGTERM: the step
+  ends with the programs that it started, and fails. A detached run whose process finds it at its
+  start does nothing more. A run that
   stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
   detached `serve`.
 
@@ -856,7 +878,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
-| `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies and reconstructs the portable terrain tiles |
+| `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies the portable terrain tiles and reads them from their grid archives |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow` or `sun`. It reads only the archive of its producer.
@@ -1132,12 +1154,15 @@ it.
   tag. Else another run took the lock: the run stops and changes nothing more. The write at the start of the phase `switch` checks this immediately before the
   switch. After the switch, a lost lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
-  frees the lock too, and a run that a signal stopped before the switch does not switch. A second
+  it fails or panics. When another run took the lock meanwhile, the run reports that. SIGINT and SIGTERM stop the run before its next fetch, step or phase, and
+  end the steps that run, so it frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
-  the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
-  run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
+  the lock. On its machine, on Linux, the next run of the same store takes the lock over at once, with a
+  conditional write, and writes that to its log: the store shows that the process of the run
+  ended (see [Runs](#runs)), and no process of its session runs, such as a program of a
+  step. On another machine, `obc data unlock TARGET --from MACHINE` frees the
+  lock of a run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
@@ -1255,13 +1280,10 @@ the store only, and it never writes to the target.
   step. `upload_bytes` is the size of the files of the bakes that a client reads, and of the copies
   under `sources/` that the serving release does not name, as the store records them. `unknown`
   lists each bake without an estimate or without a peak, and each fetch whose size is not known,
-  also of a new copy that the store lacks yet. `process_peak_rss_bytes` is the highest peak of a
-  bake that runs in the `obc` process: the peak of that process, not of the step.
+  also of a new copy that the store lacks yet.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
-  listing. A bake that runs in its own process and whose estimated peak is more than the memory,
-  or fetches, downloads and bakes that leave less than 4 GiB free on the disk, refuse the update.
-  The memory check covers only the steps that run in their own process, where `wait4` gives the
-  peak of the step.
+  listing. A bake whose estimated peak is more than the memory, or fetches, downloads and bakes
+  that leave less than 4 GiB free on the disk, refuse the update.
 - `after`: the release that becomes the rollback, and the rollback of now, which the collection
   drops, with the keys that the serving release does not name: what it deletes at most.
 - `args`: the arguments after `obc data` that start the update of this review.
@@ -1633,7 +1655,8 @@ each app, the run that holds its lock or why `lock.json` cannot be read, the reg
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
-the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
+the next step is to wait for that run, unless its process ended on this machine: then the next
+update takes the lock over. It fetches only small metadata, and checks upstream with the
 checks of the last hour. A target that serves nothing has the next command
 `obc data update TARGET --region ID`. For an R2 target, the next command is the review
 (`--dry-run`): its update needs the id that the owner approved.
@@ -3105,6 +3128,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Lock": {
       "description": "The run that holds the lock of a target, as its `lock.json` says.",
       "properties": {
+        "died": {
+          "description": "Whether the run ran on this machine and its process ended: the next run takes the lock\nover.",
+          "type": "boolean"
+        },
         "heartbeat": {
           "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
           "type": "string"
@@ -3153,7 +3180,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "phase",
         "heartbeat",
         "progress",
-        "stale"
+        "stale",
+        "died"
       ],
       "type": "object"
     },
@@ -4159,16 +4187,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ReviewCost": {
       "properties": {
         "peak_rss_bytes": {
-          "description": "The highest estimated peak of one bake that runs in its own process.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "process_peak_rss_bytes": {
-          "description": "The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper\nbound, not the peak of a step. It refuses nothing.",
+          "description": "The highest estimated peak of one bake.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -4202,7 +4221,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "wall_ms",
         "peak_rss_bytes",
-        "process_peak_rss_bytes",
         "store_bytes",
         "upload_bytes",
         "unknown"
@@ -4342,6 +4360,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "end_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "error": {
           "default": null,
           "type": [
@@ -4377,6 +4404,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": "",
           "type": "string"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it ended, in milliseconds after the start of the run; `null` before.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "version": {
           "default": "",
           "type": "string"
@@ -4396,6 +4433,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "resolved",
         "params",
+        "start_ms",
+        "end_ms",
         "bytes",
         "wall_ms",
         "error"
@@ -4420,6 +4459,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunStep": {
       "properties": {
         "bytes_out": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_ms": {
           "default": null,
           "format": "uint64",
           "minimum": 0,
@@ -4471,6 +4519,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": false,
           "type": "boolean"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it finished or failed, in milliseconds after the start of the run;\n`null` before. An unchanged step does not start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "step": {
           "default": "",
           "type": "string"
@@ -4504,6 +4562,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "reused",
         "unchanged",
+        "start_ms",
+        "end_ms",
         "wall_ms",
         "peak_rss_bytes",
         "bytes_out",

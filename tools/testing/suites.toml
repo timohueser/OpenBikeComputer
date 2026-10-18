@@ -96,6 +96,7 @@ triggers = [
   "pyproject.toml",
   "uv.lock",
   "tools/step_request.py",
+  "tools/step_pool.py",
   "tools/data_registry.py",
   "tools/planner_*.py",
   "tools/planner_mvt_verify.mjs",

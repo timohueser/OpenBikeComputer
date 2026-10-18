@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::plan::Plan;
-use super::{build_step, order, prepare, reusable, Built, Receipt, Shape, Step};
+use super::plan::{Build, Plan};
+use super::{build_step, order, panicked, prepare, reusable, Built, Receipt, Shape, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::release::Output;
@@ -297,7 +297,7 @@ impl Run {
         self.dir.join(STATUS)
     }
 
-    fn line(&mut self, text: &str) -> Result<(), String> {
+    pub(crate) fn line(&mut self, text: &str) -> Result<(), String> {
         let at = date::timestamp(date::now());
         let line = format!("{} {text}\n", &at[11..19]);
         self.log.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.status.id))
@@ -305,6 +305,7 @@ impl Run {
 
     /// Apply `event` to the status, and give its line of the log.
     fn apply(&mut self, event: &Event) -> String {
+        let at = Some(self.start.elapsed().as_millis() as u64);
         let status = &mut self.status;
         match event.clone() {
             Event::Phase { phase } => {
@@ -329,7 +330,7 @@ impl Run {
             }
             Event::FetchStarted { source, version, params } => {
                 let line = format!("{} fetch started", fetched(&source, &version, &params));
-                status.fetch(source, version, params);
+                status.fetch(source, version, params).start_ms = at;
                 line
             }
             Event::FetchFinished { source, version, params, resolved, acquisition, bytes: size, wall_ms } => {
@@ -342,13 +343,13 @@ impl Run {
                 status.bytes_fetched += size;
                 let fetch = status.fetch(source, version, params);
                 (fetch.bytes, fetch.wall_ms, fetch.resolved) = (Some(size), Some(wall_ms), Some(resolved));
-                fetch.acquisition = acquisition;
+                (fetch.acquisition, fetch.end_ms) = (acquisition, at);
                 line
             }
             Event::FetchFailed { source, version, params, error, acquisition } => {
                 let line = format!("{} fetch failed: {error}", fetched(&source, &version, &params));
                 let fetch = status.fetch(source, version, params);
-                (fetch.error, fetch.acquisition) = (Some(error), acquisition);
+                (fetch.error, fetch.acquisition, fetch.end_ms) = (Some(error), acquisition, at);
                 line
             }
             Event::StepStarted { step } => {
@@ -358,7 +359,7 @@ impl Run {
                     layer.leaves_baking.extend(leaf.clone());
                     layer.started.get_or_insert_with(|| date::timestamp(date::now()));
                 }
-                status.step(&step);
+                status.step(&step).start_ms = at;
                 line
             }
             Event::StepFinished { step, reused, unchanged, receipt } => {
@@ -392,6 +393,7 @@ impl Run {
                 (run_step.wall_ms, run_step.bytes_out) =
                     if unchanged { (None, None) } else { (Some(receipt.wall_ms), Some(receipt.bytes_out)) };
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
+                run_step.end_ms = at;
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
                 line
             }
@@ -400,7 +402,8 @@ impl Run {
                 if let Some((layer, Some(leaf))) = self.planned.get(&step) {
                     status.layers[*layer].leaves_baking.retain(|baking| baking != leaf);
                 }
-                status.step(&step).error = Some(error);
+                let failed = status.step(&step);
+                (failed.error, failed.end_ms) = (Some(error), at);
                 line
             }
         }
@@ -486,15 +489,12 @@ impl Run {
         self.plan_layers(plan, &ordered)?;
         self.fetch(context, plan)?;
 
-        // A step whose peak is not known reserves the whole memory, so it runs alone.
-        let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));
-        let planned: HashMap<&str, (u64, Option<&str>, bool)> = plan
-            .builds()
-            .map(|build| {
-                let peak = build.estimate.and_then(|estimate| estimate.peak_rss_bytes);
-                (build.step.as_str(), (cost(peak), build.key.as_deref(), build.again))
-            })
-            .collect();
+        let planned: HashMap<&str, &Build> = plan.builds().map(|build| (build.step.as_str(), build)).collect();
+        let peak = |build: &Build| build.estimate.and_then(|estimate| estimate.peak_rss_bytes);
+        let mut measured = HashMap::new();
+        if limits.memory_bytes.is_some() && planned.values().any(|build| peak(build).is_none()) {
+            store.layers()?.iter().for_each(|receipt| learn(&mut measured, receipt));
+        }
         // The planned steps and the layers that they read, in dependency order.
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
@@ -505,6 +505,7 @@ impl Run {
         let position: HashMap<&str, usize> =
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
+        longest_first(&mut pending, &planned);
         let outdated = "the plan is outdated; plan again";
         let mut done: HashMap<&str, Output> = HashMap::new();
         let mut ready = HashMap::new();
@@ -512,14 +513,13 @@ impl Run {
         let mut failure: Option<String> = None;
         let (mut running, mut reserved) = (0, 0);
         let (sender, receiver) = mpsc::channel();
-        // Set when the run stops, so that a Rust step stops in its loops: a program gets the
-        // signal of `stop`.
-        let steps_stop: Arc<AtomicBool> = Arc::default();
+        // Set when the run stops: the process group of each step that runs gets SIGTERM.
+        let steps_stop = AtomicBool::new(false);
         std::thread::scope(|scope| loop {
             if failure.is_none() {
                 failure = self.check_stop(store).err();
             }
-            let mut i = 0;
+            let (mut i, mut held) = (0, false);
             while failure.is_none() && i < pending.len() {
                 if let Err(error) = self.check_stop(store) {
                     failure = Some(error);
@@ -530,7 +530,7 @@ impl Run {
                     i += 1;
                     continue;
                 }
-                let Some(&(cost, key, again)) = planned.get(step.name.as_str()) else {
+                let Some(&build) = planned.get(step.name.as_str()) else {
                     // A layer that a planned step reads: the release keeps it, or the store has it,
                     // unless the plan is old.
                     pending.remove(i);
@@ -556,6 +556,7 @@ impl Run {
                     }
                     continue;
                 };
+                let (key, again) = (build.key.as_deref(), build.again);
                 // A step prepares once, also while it waits for a slot, and an unchanged step takes
                 // none.
                 let prepared = match ready.remove(step.name.as_str()) {
@@ -596,8 +597,18 @@ impl Run {
                         prepared
                     }
                 };
+                // A step that reserves more than the memory runs alone, as one that reserves all.
+                let cost = match (&prepared, limits.memory_bytes) {
+                    (Ok((receipt, _)), Some(memory)) => {
+                        let reserved = reservation(peak(build), measured.get(&receipt.layer), receipt.bytes_in);
+                        reserved.map_or(memory, |reserved| reserved.min(memory))
+                    }
+                    _ => 0,
+                };
                 let over = limits.memory_bytes.is_some_and(|memory| reserved + cost > memory);
-                if running >= limits.jobs || (running > 0 && over) {
+                // A step that does not fit holds back the steps after it, so that it starts first.
+                held |= running > 0 && over;
+                if running >= limits.jobs || held {
                     ready.insert(step.name.as_str(), prepared);
                     i += 1;
                     continue;
@@ -649,6 +660,7 @@ impl Run {
             reserved -= cost;
             match result {
                 Ok(result) => {
+                    learn(&mut measured, &result.receipt);
                     let receipt = Box::new(result.receipt.clone());
                     let event = Event::StepFinished {
                         step: step.name.clone(),
@@ -777,6 +789,54 @@ impl Run {
     }
 }
 
+/// Order `pending`, a dependency order, so that the step with the longest chain of planned steps
+/// from it to the end of the run comes first: its estimated time and that of the longest chain of
+/// the steps that read it. A step without an estimate counts as the longest. A step comes before
+/// each step that reads it, so the order stays a dependency order.
+fn longest_first(pending: &mut [&Step], planned: &HashMap<&str, &Build>) {
+    let mut readers: HashMap<&str, Vec<&str>> = HashMap::new();
+    for step in pending.iter() {
+        step.reads().for_each(|name| readers.entry(name).or_default().push(&step.name));
+    }
+    let mut chain: HashMap<&str, u64> = HashMap::new();
+    for step in pending.iter().rev() {
+        let wall = planned.get(step.name.as_str()).map_or(0, |build| build.estimate.map_or(u64::MAX, |e| e.wall_ms));
+        let after = readers.get(step.name.as_str()).into_iter().flatten().map(|reader| chain[reader]).max();
+        chain.insert(&step.name, wall.saturating_add(after.unwrap_or(0)));
+    }
+    pending.sort_by_key(|step| std::cmp::Reverse(chain[step.name.as_str()]));
+}
+
+/// What the measured steps of a layer tell of the memory of its other steps: the smallest peak,
+/// and the input bytes and the peak of the step that read the most.
+struct Measured {
+    smallest: u64,
+    largest: (u64, u64),
+}
+
+/// The memory that a step that reads `bytes_in` reserves: its estimated `peak`, else the smallest
+/// measured peak of its layer or, when that is more, its input bytes times the peak per input byte
+/// of the measured step of its layer that read the most. The per-byte peak of a step that read
+/// little is mostly the fixed memory of a process. `None` when neither is known: the step reserves
+/// the whole memory, so that it runs alone.
+fn reservation(peak: Option<u64>, measured: Option<&Measured>, bytes_in: u64) -> Option<u64> {
+    peak.or_else(|| {
+        let Measured { smallest, largest: (read, most) } = *measured?;
+        Some(smallest.max((bytes_in as f64 * most as f64 / read as f64).ceil() as u64))
+    })
+}
+
+/// Add the peak of `receipt` to what the measured steps of its layer tell.
+fn learn(measured: &mut HashMap<String, Measured>, receipt: &Receipt) {
+    let Some(peak) = receipt.peak_rss_bytes.filter(|_| receipt.own_process && receipt.bytes_in > 0) else {
+        return;
+    };
+    let read = (receipt.bytes_in, peak);
+    let layer = measured.entry(receipt.layer.clone()).or_insert(Measured { smallest: peak, largest: read });
+    layer.smallest = layer.smallest.min(peak);
+    layer.largest = layer.largest.max(read);
+}
+
 /// Whether a step with `key` keeps `output` of the serving release: the keys are the same, and the
 /// store has each file that no client reads, so a step that reads it finds every file.
 fn keeps(store: &Store, output: &Output, key: &str) -> bool {
@@ -788,7 +848,7 @@ fn keeps(store: &Store, output: &Output, key: &str) -> bool {
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 /// Whether SIGINT or SIGTERM came: the run of this process stops before its next fetch, step or
-/// phase, and a Rust step that runs stops at its next [`super::check_stop`].
+/// phase, and the steps that run get SIGTERM.
 pub fn signalled() -> bool {
     SIGNALLED.load(Ordering::Relaxed)
 }
@@ -815,12 +875,6 @@ extern "C" fn on_signal(signal: libc::c_int) {
         }
     }
     crate::fetch::http::stop();
-}
-
-fn panicked(payload: Box<dyn std::any::Any + Send>) -> String {
-    let message = payload.downcast_ref::<&str>().map(|text| text.to_string());
-    let message = message.or_else(|| payload.downcast_ref::<String>().cloned());
-    format!("it panicked: {}", message.unwrap_or_default())
 }
 
 /// Whether `id` has the form of a run id: `YYYY-MM-DD-HHMMSS`, and `-N` for a later run in the
@@ -941,6 +995,9 @@ pub struct RunFetch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
+    /// When it started and when it ended, in milliseconds after the start of the run; `null` before.
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
     pub wall_ms: Option<u64>,
@@ -956,6 +1013,10 @@ pub struct RunStep {
     pub reused: bool,
     /// It kept its output of the serving release: its key is the key of that output.
     pub unchanged: bool,
+    /// When it started and when it finished or failed, in milliseconds after the start of the run;
+    /// `null` before. An unchanged step does not start.
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
     /// `null` while it runs, when it failed, and when it is unchanged.
     pub wall_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
@@ -1058,20 +1119,64 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
         }
     };
     let died = match status.state {
-        State::Running => Some("its process ended before it finished"),
-        State::Starting if !alive(status.pid) => Some("its process never started"),
+        State::Running => Some(("its process ended before it finished", ENDED)),
+        State::Starting if !alive(status.pid) => Some(("its process never started", "Run its command again.")),
         _ => None,
     };
-    if let Some(message) = died.filter(|_| !running) {
+    if let Some((message, fix)) = died.filter(|_| !running) {
         status.state = State::Failed;
         status
             .phases
             .iter_mut()
             .filter(|phase| phase.state == State::Running)
             .for_each(|phase| phase.state = State::Failed);
-        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
+        status.layers.iter_mut().for_each(|layer| layer.leaves_baking.clear());
+        // A step that started and did not finish has no layer and no error yet.
+        let building: Vec<&str> = status
+            .steps
+            .iter()
+            .filter(|step| step.layer.is_empty() && step.error.is_none())
+            .map(|step| step.step.as_str())
+            .collect();
+        let message = match building.is_empty() {
+            true => message.to_string(),
+            false => format!("{message}, while it built {}", building.join(", ")),
+        };
+        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, fix));
     }
     Ok(status)
+}
+
+/// The fix of a run whose process ended before it finished.
+const ENDED: &str = "A process that ends without an error was often stopped by the kernel, for lack of memory \
+                     or at a restart; the system log names it. Run its command again: it takes over a lock that \
+                     the run kept, and reuses what the run built.";
+
+/// Whether `holder` is a run of this machine in `store` whose process ended, and no process of its
+/// session runs, such as a program of a step: it cannot free the lock that it holds, so the next
+/// run takes the lock over.
+pub fn died(store: &Store, holder: &crate::lock::Holder) -> bool {
+    holder.machine == crate::machine()
+        && status(store, &holder.run)
+            .is_ok_and(|status| !matches!(status.state, State::Running | State::Starting) && !session_alive(status.pid))
+}
+
+/// Whether a process of the session `pid` runs. A detached run leads its session, so the programs
+/// of its steps stay in the session after it ended, each step in a process group of its own.
+#[cfg(target_os = "linux")]
+fn session_alive(pid: u32) -> bool {
+    let Ok(sid @ 1..) = libc::pid_t::try_from(pid) else { return false };
+    let Ok(processes) = fs::read_dir("/proc") else { return true };
+    let mut pids = processes.flatten().filter_map(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok());
+    // SAFETY: getsid reads the session of a process.
+    pids.any(|process| unsafe { libc::getsid(process) } == sid)
+}
+
+/// Only Linux lists the processes of a session. Elsewhere a session counts as running, so only
+/// `unlock` frees the lock of a run that died.
+#[cfg(not(target_os = "linux"))]
+fn session_alive(_: u32) -> bool {
+    true
 }
 
 /// Whether the process `pid` runs.
@@ -1311,13 +1416,12 @@ pub fn bytes(n: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::plan::Estimate;
-    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary, write, JOIN};
-    use crate::engine::{Input, Request, Run as StepRun};
+    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary, write, JOIN, NAMED};
+    use crate::engine::{Function, Input, Request, Run as StepRun};
     use crate::store::Requested;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The log of run `id`, without the time of each line.
     fn logged(store: &Store, id: &str) -> Vec<String> {
@@ -1361,6 +1465,10 @@ mod tests {
         let steps: Vec<(&str, &[String])> =
             resumed.steps.iter().map(|s| (s.step.as_str(), s.users.as_slice())).collect();
         assert_eq!(steps, [("test/join", &["test/count".to_string()][..]), ("test/count", &[][..])]);
+        assert!(
+            resumed.steps.iter().all(|step| step.start_ms <= step.end_ms && step.start_ms.is_some()),
+            "{resumed:?}"
+        );
         let last = view(&fixture.store, &runs[0].id).unwrap();
         assert_eq!(last.status.steps[0].last_wall_ms, resumed.steps[0].wall_ms);
         assert_eq!(last.log.last().map(|line| &line[9..18]), Some("finished "));
@@ -1368,16 +1476,12 @@ mod tests {
         assert_eq!(error.as_deref(), Some(&err["step `test/join`: ".len()..]));
     }
 
-    fn named(request: &Request) -> Result<(), String> {
-        std::fs::write(request.output.join("out.txt"), &request.step).map_err(|e| e.to_string())
-    }
-
     #[test]
     fn a_run_shows_the_leaves_of_a_tiled_layer_that_bake_and_that_finished() {
         static TILED: crate::engine::Layer = crate::engine::Layer { shape: Shape::Tiled, ..crate::engine::tests::TEST };
         let fixture = fixture("runs-leaves");
         let mut steps: Vec<Step> = ["test/0001-0002", "test/0001-0003"]
-            .map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(named)))
+            .map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(&NAMED)))
             .into();
         steps.iter_mut().for_each(|step| step.layer = &TILED);
         let plan = fixture.plan(&steps).unwrap();
@@ -1415,34 +1519,42 @@ mod tests {
         assert!(stop(&fixture.store, &id).unwrap_err().contains("does not run"));
     }
 
-    /// The store of the run of [`stopped_while_it_runs`].
-    static STOPPED_STORE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    pub(crate) static STOPPED: Function = Function { name: "test/stopped", run: stopped_while_it_runs };
 
-    /// A step that writes the stop file of its run, as `obc data runs RUN --stop` does, and runs
-    /// until it sees the stop.
-    fn stopped_while_it_runs(_: &Request) -> Result<(), String> {
-        let store = Store::at(STOPPED_STORE.get().unwrap().clone());
+    /// A step that starts `sleep 30` and writes its process id to the option `sleep`, writes the
+    /// stop file of its run in the store of the option `store`, as `obc data runs RUN --stop` does,
+    /// and waits for the sleep.
+    fn stopped_while_it_runs(request: &Request) -> Result<(), String> {
+        let mut sleep = std::process::Command::new("sleep").arg("30").spawn().map_err(|e| e.to_string())?;
+        let option = |name: &str| PathBuf::from(request.options[name].as_str().unwrap());
+        std::fs::write(option("sleep"), sleep.id().to_string()).map_err(|e| e.to_string())?;
+        let store = Store::at(option("store"));
         std::fs::write(store.run(&list(&store)?[0].id).join(STOP), "").map_err(|e| e.to_string())?;
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(30) {
-            crate::engine::check_stop()?;
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
+        sleep.wait().map(drop).map_err(|e| e.to_string())
     }
 
+    #[cfg(unix)]
     #[test]
-    fn a_stop_during_a_rust_step_ends_the_step_and_the_run_as_stopped() {
-        let fixture = fixture("runs-stop-in-process");
-        STOPPED_STORE.set(fixture.store.root().to_path_buf()).unwrap();
-        let steps =
-            [step("test/long", vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(stopped_while_it_runs))];
+    fn a_stop_ends_each_step_that_runs_with_the_programs_that_it_started() {
+        let fixture = fixture("runs-stop-step");
+        let sleep = fixture.scratch.0.join("sleep");
+        let mut long = step("test/long", vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(&STOPPED));
+        long.options = serde_json::json!({"sleep": sleep, "store": fixture.store.root()});
+        let steps = [long];
         let start = Instant::now();
         let error = fixture.run(&steps, &fixture.plan(&steps).unwrap(), Limits::machine()).unwrap_err();
         assert!(start.elapsed() < Duration::from_secs(10), "the step stops in seconds: {:?}", start.elapsed());
         assert_eq!(error, "step `test/long`: the run stopped");
         let run = &list(&fixture.store).unwrap()[0];
         assert_eq!(status(&fixture.store, &run.id).unwrap().state, State::Stopped);
+        // The sleep was in the process group of the step.
+        let pid: libc::pid_t = std::fs::read_to_string(&sleep).unwrap().parse().unwrap();
+        // SAFETY: a signal 0 only checks that the process exists.
+        let ended = || unsafe { libc::kill(pid, 0) } != 0;
+        while !ended() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ended(), "the sleep ended");
     }
 
     #[test]
@@ -1501,7 +1613,7 @@ mod tests {
             "test/upper",
             vec![snapshot("head", "1", &["head.txt"])],
             "upper.txt",
-            StepRun::Rust(crate::engine::tests::upper),
+            StepRun::Rust(&crate::engine::tests::UPPERCASE),
         )];
         let plan = fixture.plan(&steps).unwrap();
         let mut run = Run::create(&fixture.store, ["apply", "test"]).unwrap();
@@ -1550,13 +1662,15 @@ mod tests {
         let fixture = fixture("runs-interrupted");
         let mut run = Run::create(&fixture.store, ["build", "test"]).unwrap();
         run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
+        run.record(&Event::StepStarted { step: "test/upper".into() }).unwrap();
+        run.flush().unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Running);
         let id = run.id().to_string();
         drop(run);
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Failed);
         assert_eq!(status(&fixture.store, &id).unwrap().phases[0].state, State::Failed);
         let ended = follow(&fixture.store, &id, |_, _| Ok(())).unwrap().unwrap();
-        assert_eq!(ended.error.unwrap().message, "its process ended before it finished");
+        assert_eq!(ended.error.unwrap().message, "its process ended before it finished, while it built test/upper");
 
         std::fs::create_dir(fixture.store.run("2026-01-01-000000")).unwrap();
         let empty = list(&fixture.store).unwrap().pop().unwrap();
@@ -1584,58 +1698,107 @@ time.sleep(0.3)
 open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time()}')
 ";
 
-    /// Whether two independent command steps with these estimated peaks ran at the same time.
-    fn together(name: &str, peaks: [Option<u64>; 2], memory_bytes: u64) -> bool {
-        let fixture = fixture(name);
+    /// Run the independent command steps `test/<name>`, in this order, each with its estimate or
+    /// none, with `memory_bytes`. Gives the start and end of each.
+    fn spans(
+        fixture: &crate::engine::tests::Fixture,
+        steps: &[(&str, Option<Estimate>)],
+        memory_bytes: u64,
+    ) -> HashMap<String, (f64, f64)> {
         write(&fixture.root().join("sleep.py"), SLEEP);
         let command = || StepRun::Command(vec!["python3".into(), "sleep.py".into()]);
-        let steps: Vec<Step> =
-            ["test/a", "test/b"].map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", command())).into();
+        let estimates: HashMap<String, _> =
+            steps.iter().map(|(name, estimate)| (format!("test/{name}"), *estimate)).collect();
+        let steps: Vec<Step> = steps
+            .iter()
+            .map(|(name, _)| step(&format!("test/{name}"), vec![snapshot("head", "1", &[])], "out.txt", command()))
+            .collect();
         let mut plan = fixture.plan(&steps).unwrap();
-        for (build, peak) in plan.groups.iter_mut().flat_map(|group| &mut group.builds).zip(peaks) {
-            build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, client_bytes: 0, peak_rss_bytes: peak });
+        for build in plan.groups.iter_mut().flat_map(|group| &mut group.builds) {
+            build.estimate = estimates[&build.step];
         }
         let built = fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: Some(memory_bytes) }).unwrap();
-        let spans: Vec<(f64, f64)> = built
-            .iter()
-            .map(|built| {
-                let text = std::fs::read_to_string(fixture.store.object(&built.receipt.files[0].sha256)).unwrap();
-                let (start, end) = text.split_once(' ').unwrap();
-                (start.parse().unwrap(), end.parse().unwrap())
-            })
-            .collect();
-        spans[0].0 < spans[1].1 && spans[1].0 < spans[0].1
+        let span = |built: &Built| {
+            let text = std::fs::read_to_string(fixture.store.object(&built.receipt.files[0].sha256)).unwrap();
+            let (start, end) = text.split_once(' ').unwrap();
+            (built.receipt.step[5..].to_string(), (start.parse().unwrap(), end.parse().unwrap()))
+        };
+        built.iter().map(span).collect()
+    }
+
+    fn estimate(wall_ms: u64, peak_rss_bytes: Option<u64>) -> Option<Estimate> {
+        Some(Estimate { wall_ms, bytes_out: 0, client_bytes: 0, peak_rss_bytes })
+    }
+
+    fn overlap(a: (f64, f64), b: (f64, f64)) -> bool {
+        a.0 < b.1 && b.0 < a.1
+    }
+
+    /// Whether two independent command steps with these estimated peaks ran at the same time.
+    fn together(fixture: &crate::engine::tests::Fixture, peaks: [Option<u64>; 2], memory_bytes: u64) -> bool {
+        let spans = spans(fixture, &[("a", estimate(0, peaks[0])), ("b", estimate(0, peaks[1]))], memory_bytes);
+        overlap(spans["a"], spans["b"])
     }
 
     #[test]
     fn the_steps_that_run_together_fit_in_the_memory_budget() {
-        assert!(together("runs-memory-fits", [Some(600), Some(600)], 1200));
-        assert!(!together("runs-memory-over", [Some(600), Some(600)], 1000));
-        assert!(!together("runs-memory-alone", [Some(1500), Some(100)], 1000), "a step over the budget runs alone");
-        assert!(!together("runs-memory-unknown", [None, Some(100)], 1000), "a step with no estimate runs alone");
-    }
+        assert!(together(&fixture("runs-memory-fits"), [Some(600), Some(600)], 1200));
+        assert!(!together(&fixture("runs-memory-over"), [Some(600), Some(600)], 1000));
+        let alone = fixture("runs-memory-alone");
+        assert!(!together(&alone, [Some(1500), Some(100)], 1000), "a step over the budget runs alone");
+        let unknown = fixture("runs-memory-unknown");
+        assert!(!together(&unknown, [None, Some(100)], 1000), "a step of a layer without a peak runs alone");
 
-    static RUNNING: AtomicUsize = AtomicUsize::new(0);
-    static MOST: AtomicUsize = AtomicUsize::new(0);
-
-    fn tracked(request: &Request) -> Result<(), String> {
-        let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
-        MOST.fetch_max(now, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(200));
-        RUNNING.fetch_sub(1, Ordering::SeqCst);
-        std::fs::write(request.output.join("out.txt"), &request.step).map_err(|e| e.to_string())
+        // A receipt of the layer measured 100 bytes for 5 bytes of input: a step without an
+        // estimate that reads 5 bytes reserves 100.
+        let measured = |fixture: &crate::engine::tests::Fixture, peak: u64| {
+            let receipt = Receipt {
+                layer: "test".into(),
+                step: "test/old".into(),
+                format: 1,
+                revision: 1,
+                key: crate::store::sha256_hex(b"old"),
+                inputs: Vec::new(),
+                options: serde_json::json!({}),
+                digest: String::new(),
+                files: Vec::new(),
+                built: "2026-10-01T00:00:00Z".into(),
+                wall_ms: 0,
+                cpu_ms: None,
+                peak_rss_bytes: Some(peak),
+                own_process: true,
+                bytes_in: 5,
+                bytes_out: 0,
+                metrics: BTreeMap::new(),
+            };
+            fixture.store.put_layer(&receipt).unwrap();
+        };
+        let scaled = fixture("runs-memory-scaled");
+        measured(&scaled, 100);
+        assert!(together(&scaled, [None, Some(100)], 1000), "it reserves the peak per input byte of its layer");
+        let large = fixture("runs-memory-scaled-large");
+        measured(&large, 600);
+        assert!(!together(&large, [None, Some(600)], 1000));
     }
 
     #[test]
-    fn independent_rust_steps_run_in_parallel() {
-        let fixture = fixture("runs-in-process");
-        let steps: Vec<Step> = ["test/a", "test/b"]
-            .map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", StepRun::Rust(tracked)))
-            .into();
-        let plan = fixture.plan(&steps).unwrap();
-        fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: None }).unwrap();
-        assert_eq!(MOST.load(Ordering::SeqCst), 2);
+    fn the_first_step_of_a_layer_without_a_peak_runs_alone_and_the_others_reserve_its_peak() {
+        let spans = spans(&fixture("runs-memory-learn"), &[("a", None), ("b", None), ("c", None)], 1 << 30);
+        assert!(!overlap(spans["a"], spans["b"]) && !overlap(spans["a"], spans["c"]), "{spans:?}");
+        assert!(overlap(spans["b"], spans["c"]), "{spans:?}");
     }
+
+    #[test]
+    fn the_longest_step_starts_first_and_holds_back_the_steps_after_it_until_it_fits() {
+        let steps =
+            [("c", estimate(1000, Some(100))), ("b", estimate(2000, Some(600))), ("a", estimate(3000, Some(600)))];
+        let spans = spans(&fixture("runs-longest"), &steps, 1000);
+        assert!(spans["b"].0 > spans["a"].1, "b does not fit beside a: {spans:?}");
+        assert!(spans["c"].0 > spans["a"].1, "c waits for b, which is longer: {spans:?}");
+        assert!(overlap(spans["b"], spans["c"]), "{spans:?}");
+    }
+
+    pub(crate) static FIRST_FILE: Function = Function { name: "test/first-file", run: first_file };
 
     fn first_file(request: &Request) -> Result<(), String> {
         let file = request.snapshots["land"].values().next().ok_or("no file")?;
@@ -1654,7 +1817,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             params: vec![("tile".into(), "a".into())],
             files: Vec::new(),
         };
-        let mut steps = [step("test/copy", vec![tile], "copy.bin", StepRun::Rust(first_file))];
+        let mut steps = [step("test/copy", vec![tile], "copy.bin", StepRun::Rust(&FIRST_FILE))];
         let plan = fixture.plan(&steps).unwrap();
         let fetch = &plan.groups[0].fetches[0];
         assert_eq!(
