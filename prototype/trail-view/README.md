@@ -9,10 +9,122 @@ in a draft pull request from this branch.
 | Path | What it is |
 |---|---|
 | `bake.py` | Bakes one spot into `~/.cache/obc/trail-view/<spot>/` |
-| `spots/*.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
-| `regions/*.json` | Rulesets: where a region applies, its terrain rules and its look |
-| `packs/*.json`, `styles/*.json` | Asset packs: the trees, plants, herds and houses a region draws |
-| `index.html`, `src/` | The Vite + TypeScript + three.js page |
+| `spots/<short>.json` | The viewpoints of one region, with the data each one bakes from |
+| `regions/<short>.json`, `regions/<short>.<sub>.json` | Rulesets: an ecoregion and its subregions, their terrain rules and their look |
+| `packs/`, `styles/` | Asset packs (the trees, plants, herds and house style a region draws) and the shared house styles |
+| `src/models/` | One file per tree, plant and animal model, and the building kinds |
+| `index.html`, `models.html`, `review.html`, `src/` | The view, the model sheet and the review page: Vite, TypeScript and three.js |
+| `tune/` | The Europe tune: its instructions ([tune/README.md](tune/README.md)), the baseline ecoregions and country borders with the scripts that make them, and the commands below |
+
+## Linux setup
+
+One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32 GB RAM and
+300 GB disk. Run the agents as a normal user, not root.
+
+1. Packages. `python3-gdal` brings `gdal_proximity.py`.
+
+   ```sh
+   sudo apt install -y git curl ca-certificates gdal-bin python3-gdal build-essential gh
+   ```
+
+2. uv:
+
+   ```sh
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. Node 24 LTS, Claude Code, GitHub and a git identity:
+
+   ```sh
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+   source ~/.nvm/nvm.sh && nvm install 24
+   npm install -g @anthropic-ai/claude-code
+   claude                      # log in, then quit
+   gh auth login
+   git config --global user.name "<name>"
+   git config --global user.email "<email>"
+   ```
+
+4. The whole repository: the page imports `builder/web`, and bake.py imports `host/obc-dem`.
+
+   ```sh
+   git clone https://github.com/timohueser/OpenBikeComputer.git
+   cd OpenBikeComputer && git checkout archive/trail-view-prototype
+   python3 tools/fixtures.py sync peak-view-photos   # the photographs of the Alps spots
+   ```
+
+5. The CDSE keys, from the Mac. Never print the file.
+
+   ```sh
+   ssh box mkdir -p .config/openbikecomputer
+   scp ~/.config/openbikecomputer/cdse-s3.env box:.config/openbikecomputer/
+   ssh box chmod 600 .config/openbikecomputer/cdse-s3.env
+   ```
+
+6. Optional, from the Mac: the bakes and source caches, about 8 GB of downloads less.
+
+   ```sh
+   ssh box mkdir -p .cache/obc/trail-view
+   rsync -a --exclude shots --exclude review ~/.cache/obc/trail-view/ box:.cache/obc/trail-view/
+   ```
+
+7. The page and headless Chromium, in `prototype/trail-view`:
+
+   ```sh
+   npm ci && npx playwright install --with-deps chromium
+   ```
+
+8. A GPU only if the machine has one: its vendor driver, then `sudo apt install -y libvulkan1
+   vulkan-tools` and `vulkaninfo --summary`. Without a GPU, add `--swiftshader` to every
+   `npm run shoot`. It renders the same picture on the CPU at about 2 s a frame.
+
+9. Smoke test, from the repository root:
+
+   ```sh
+   uv run prototype/trail-view/bake.py healy-pass
+   cd prototype/trail-view && npm run shoot -- healy-pass --time
+   ```
+
+## Spots, regions and packs
+
+`spots/<short>.json` lists the spots of one region. A spot's walk starts at `regions/<short>.json`.
+
+| Spot key | What it is |
+|---|---|
+| `id`, `name` | A lower-case slug, unique across the files, and the name in the page |
+| `lat`, `lon`, `heading`, `pitch` | The eye and the first view |
+| `photo` | A `peak-view-photos` fixture name: it gives position, ground and camera. Or `{url, credit, heading_deg, pitch_deg, vfov_deg, roll_deg}` for a third-party photograph |
+| `eye_above_ground_m`, `ground_m` | The eye above the ground (1.6 m), and the ground height where the DTM is wrong |
+| `dtm` | A national DTM: `ch`, `de-bw` and the other `de-*`, `at`, `uk`, `no`, `fr`, `es`, `it-bz`, `us`, `scot`. Without one, the spot is GLO-30 only |
+| `landcover` | `nlcm` (Ireland) or `habmos` (Scotland): habitats over ±5 km |
+| `geology` | `igme` (Spain): rock colour and hardness from the 1:50 000 map |
+
+A region inherits all it does not say from the one it `extends`: objects merge, anything else
+replaces. `regions/<short>.json` is the ecoregion `short` of `tune/ecoregions.json` and extends
+`world`. `regions/<short>.<sub>.json` is a subregion that covers `where`: boxes `[west, south, east,
+north]` or rings of `[lon, lat]`. The walk steps into the subregion that holds the eye, the smallest
+on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`.
+
+bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root first), `country`
+(lower-case ISO 3166-1 code from `tune/countries.json`, else the nearest country within 25 km) and
+`tz` (from timezonefinder). The page draws `meta.region` for `meta.country` at the clock of
+`meta.tz`. An older bake has none of them: it takes its spots file's region and UTC.
+
+| Region key | What it sets |
+|---|---|
+| `ecoregion` | The RESOLVE id of the ecoregion, on `<short>.json` only |
+| `leaf`, `pack` | Default leaf type, the asset pack |
+| `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
+| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
+| `look.ramps.<class>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
+
+A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its short. It keys its trees,
+ground plants and herds by species, so a child adds or changes one and `null` drops one. An entry
+whose key is not a model id names its `model`; a stand-in also gives its own species' `latin`.
+Trees go by leaf type and elevation; a plant model with `cover: "shrub"` stands as a shrub. Herds go
+by habitat, or by the WorldCover classes a habitat stands for. An ecoregion owns its regions and
+packs; two that share a look keep a copy each. Models and house styles are shared. A pack's `style`
+and a look's `roadLine` may be a map by country, `{"ie": …, "*": …}`.
 
 ## Bake
 
@@ -21,132 +133,91 @@ Needs `uv` and GDAL 3.13 on `PATH`: `gdalwarp`, `gdal_translate`, `gdalbuildvrt`
 colour, before it starts. Run from the repository root:
 
 ```sh
-uv run prototype/trail-view/bake.py hahnen
+uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
 ```
 
-- A spot lives in `spots/<region>.json`. Its own keys name its data: `dtm`, `landcover` and
-  `geology`. Without them it is GLO-30 and WorldCover only.
-- bake.py walks from `regions/<region>.json` into the subregions that hold the eye (see
-  [Regions and packs](#regions-and-packs)). It writes the region to `meta.region` and the chain,
-  root first, to `meta.chain`.
-- `meta.country` is the lower-case ISO 3166-1 code of the country in `tune/countries.json` that
-  holds the eye, else of the nearest one within 25 km: the borders are simplified to about 1 km,
-  so a cliff top can lie outside them. `tune/countries.py` makes the file from Natural Earth's
-  1:50m borders of Europe and the USA. `meta.tz` comes from timezonefinder.
-- Bakes can run side by side on one machine. Each shared source is a lock in `_sources/locks/`:
-  `overpass` (one query at a time), `cdse` (one account), `dtm-<key>` (a national DTM and its
-  downloads), `glo30` (tile downloads), `landcover-<key>` and `worldcover` (its tile list). A bake
-  that waits prints `waiting for <name>`. The kernel frees a lock when its bake stops. Cached
-  answers are written whole or not at all.
-- GLO-30 tiles come from `~/.cache/obcm/dem/` where they exist, else from the public COGs.
-- A spot's national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
-  `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
-  zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m, `fr` RGE ALTI at 2 m
-  and `es` MDT05 at 5 m, the last three in 3 km requests. `scot` is Scotland's LiDAR Phase 1 at
-  1 m, fetched in 10 km squares by bake.py; where it was never flown the place is GLO-30 only.
-- Third-party photographs download to `_sources/photos/`. They are never committed.
-- The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
-  and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance
-  to the nearest road edge, the road's surface and its half-width (OSM `width`, else by surface
-  and class). Roads are graded into the heights: level across, smoothed along, with banks of at
-  most 40°; bridges keep the ground under them. Within ±2.5 km the page draws bridges as stone
-  decks with parapets, arches and piers; ways OSM splits mid-span are joined first, and
-  `bridge=boardwalk` stays a road on the ground. Trees stand on tree pixels within 1 km, as tall as
-  the canopy (GLO-30 minus the DTM). A GLO-30-only place cannot measure a canopy, so its trees
-  stand 5 to 9 m.
-- Water comes from a second cached Overpass query over ±10 km: rivers, canals and streams by
-  their `width` tag or a default, and water areas; a third brings multipolygon lakes and rivers.
-  The water levels hold the share of each pixel under water, from a 4× finer grid, and each water
-  pixel's distance to land. Streams count only off tree pixels. WorldCover water that OSM does not map stays water only where its surface is
-  flat; shadows and gullies take the nearest land class.
-- Another cached Overpass query over ±5 km brings walls, hedges, orchards, aretes and ridges, and
-  one over ±10 km brings cable cars and ski lifts. The page adds pylons where OSM maps a lift
-  station to station only.
-- One more cached Overpass query over ±10 km brings OSM's coastline. Where there is one, the sea
-  lies where it says, to the texel, and WorldCover water within 50 m of the sea is shore unless OSM
-  maps water there.
-- Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land lies
-  at sea level, and the land edge rises a little toward the cliff top, averaged over 5 m so the
-  rim is a shelf, not spikes.
-- Habitat levels (±5 km) come from the spot's open land cover map (`landcover`): Ireland's
-  National Land Cover Map 2018 (`nlcm`; its feature service returns 2000 polygons in about 75 s)
-  or NatureScot's Habitat Map of Scotland (`habmos`, one WFS request, EUNIS codes). Polygons are
-  cached in `_sources/<landcover>/`.
-- A spot with `geology: "igme"` takes its rock colour from IGME's 1:50 000 geological map of
-  Spain: each unit's description picks the colour, and variegated units are drawn in bands.
-- The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
-- The peaks come from one more cached Overpass query over 320 km, which takes minutes.
-- A rebake keeps the Sentinel-2 levels, which take most of a bake's time, while the spot stays at
-  the position in its `meta.json`. `--colour` reads them again.
-- The photographs come from the `peak-view-photos` fixture package in
-  `~/.cache/openbikecomputer/fixtures/`.
-- WorldCover is read from its public COGs. The Sentinel-2 quarterly mosaics are read from CDSE
-  S3 with the keys in `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads
-  them.
-- A place takes 5 to 12 minutes and about 100 MB, most of it the four Sentinel-2 quarters. A first
-  bake in Baden-Württemberg or the US spends most of its time on the DTM.
+- A rebake keeps the Sentinel-2 levels, most of a bake's time, while the spot stays at the
+  position in its `meta.json`. `--colour` reads them again. `--dtm-levels 3` stops the DTM at
+  ±5 km instead of ±10 km, about 1 GB of tiles.
+- Bakes can run side by side. Each shared source is a lock in `_sources/locks/`: `overpass`,
+  `cdse`, `dtm-<key>`, `glo30`, `landcover-<key>` and `worldcover`. A bake that waits prints
+  `waiting for <name>`. Cached answers are written whole or not at all.
+- GLO-30 comes from `~/.cache/obcm/dem/` where it exists, else from the public COGs. WorldCover
+  comes from its public COGs. The Sentinel-2 quarterly mosaics come from CDSE S3 with the keys in
+  `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads them.
+- The DTM comes through the `host/obc-dem/reference` adapters into `_sources/<dtm>/`. `us`, `fr`
+  and `es` go in 3 km requests. A `de-bw` zip becomes GeoTIFF and its XYZ text is deleted. `scot`
+  is Scotland's LiDAR Phase 1 in 10 km squares; where it was never flown the spot is GLO-30 only.
+- Overpass queries, each cached per position in `_sources/osm/`: highways and forests (±5 km)
+  with buildings (±2.5 km); water and multipolygon water (±10 km); walls, hedges, orchards, aretes
+  and ridges (±5 km); lifts (±10 km); the coastline (±10 km); and peaks over 320 km, which takes
+  minutes.
+- Roads are graded into the heights: level across, smoothed along, with banks of at most 40°.
+  Trees stand on tree pixels within 1 km, as tall as the canopy (GLO-30 minus the DTM), or 5 to
+  9 m without a DTM.
+- WorldCover water that OSM does not map stays water only where it is flat. With an OSM coastline,
+  the sea lies where it says. Where GLO-30 is the only elevation, cliff coasts are made sheer.
+- `nlcm` returns 2000 polygons in about 75 s; `habmos` is one WFS request. Third-party photographs
+  download to `_sources/photos/`. Never commit them.
+- A spot takes 5 to 12 minutes and about 100 MB. A first bake in Baden-Württemberg or the US
+  spends most of its time on the DTM.
 
-## Spots, regions and packs
+## Commands
 
-A region inherits all it does not say from the one it `extends`: objects merge, anything else
-replaces. `regions/<short>.json` is an ecoregion of `tune/ecoregions.json`, `<short>.<sub>.json` a
-subregion that covers `where` (boxes `[west, south, east, north]` or rings of `[lon, lat]`).
-A spot's walk starts at the region of its spots file. It steps into the subregion that holds the
-spot, the smallest on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`. bake.py
-walks and writes the region to `meta.region`; the page reads it from there.
-
-| Key | What it sets |
-|---|---|
-| `leaf`, `pack` | Default leaf type, the asset pack |
-| `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
-| `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
-
-Generic rules take their numbers from the region; the data picks where they act. IGME's geology
-gives rock colour and hardness: hard rock stands as outcrops and crags, soft marl and clay keep
-their scrub. A fine land cover map overrules WorldCover where it has a habitat.
-
-A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its ecoregion and keys its trees
-and herds by species, so a child adds or changes one and `null` drops one. Trees go by leaf type
-and elevation; a plant model listed with `cover: "shrub"` stands as a shrub. Herds go by habitat,
-or by the WorldCover classes a habitat stands for where no land cover map gives one. An ecoregion
-owns its regions and packs; two that share a look keep a copy each. Models and house styles
-(`styles/`) are shared. A pack's `style` and a look's `roadLine` may be a map by country,
-`{"ie": …, "*": …}`: `meta.country` picks its entry, else `"*"`.
-
-## Open
+Run these in `prototype/trail-view`.
 
 ```sh
-cd prototype/trail-view && npm ci && npm run dev
+npm run dev                                   # the view at http://localhost:5180/
+npm run check                                 # tsc, then tune/check.mjs
+npm run check -- --assets                     # also every model and the stand-in census
+npm run shoot -- <spot>[,<spot>…] [options]   # headless shots
+node tune/comment.mjs <short> [--spot <id>] [--round <n>] <text…>
 ```
 
-Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.json` runs the same.
-`http://localhost:5180/models.html` shows every model of a pack at each level of detail.
+- Port 5180 is strict: a second `npm run dev` fails. Serve another worktree with
+  `npx vite --port 518N`. `.claude/launch.json` has a `trail-view` entry for 5180.
+- `npm run check` reports one line per problem, with the file and the key path: unknown keys,
+  wrong types, missing references, areas out of order or outside Europe, duplicate spot ids,
+  spots more than 10 km outside their ecoregion, a region or pack of another short, and two models
+  with one Latin name. The page runs the same check at load and shows the errors in its status line.
+- `models.html` shows every model of a pack at each level of detail.
+
+| `npm run shoot` option | What it does |
+|---|---|
+| `--yaw a,b`, `--pitch`, `--vfov` | The views; the spot's heading by default |
+| `--hour`, `--season`, `--weather` | 15, `summer` and `sunny` by default |
+| `--no-photo` | No photograph side by side |
+| `--time` | Also the median frame time |
+| `--out <dir>` | Copies the shots there too |
+| `--swiftshader` | WebGL on the CPU, for a machine without a GPU |
+| `--round <n>` | Copies the shots into review round n of the spot's region; `--region <short>` names it for a spot outside `spots/` |
+
+Shots land in `~/.cache/obc/trail-view/shots/` as
+`<spot>-<surface>-q<quarter>[-<weather>][-<yaw>]-<hhmm>.png`; a side by side has no yaw. Each spot
+prints one JSON line with its files, the renderer, the triangles and the page errors.
+
+`review.html` is the owner's review page. It lists the 45 baseline regions and the Cascades test
+region by status: no shots, in review, approved. A region shows each spot's reference photo, each
+round beside the previous round, a link to the live view, and comment boxes. A comment or an
+approval belongs to the round on the screen; approve works on the newest round only. A newer round
+puts a region back in review. Rounds live in `~/.cache/obc/trail-view/review/<short>/<n>/`, comments
+in `review/<short>/comments.jsonl`.
+
+## The view
 
 - "spot" picks a place by region, "season" one day of the year, "time of day" the local hour.
-- "weather" is sunny, cloudy or rainy (`src/weather.ts`): one cloud layer above the eye, its
-  shadows, wet ground and rain. "play day" sweeps 4:30 to 22:30 in 36 s, and the clouds drift
-  with the hour.
-- Drag to look, scroll to change the field of view. Either one leaves the photo camera.
-- "free movement": W A S D or the arrows walk over the ground, Q and E lower and raise the eye,
-  Shift runs; "back to the spot" returns. Detail is made for the spot: plants stand within 60 m
-  of it, trees within 1 km, and the finest ground within 1.25 km.
-- "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border between
-  the two. "align camera" moves a photograph's camera; "copy camera JSON" copies it for
-  `spots/`. Red is the skyline read off the photograph, cyan the skyline cast through the
-  active surface.
-- The season (one day each, 2025) also picks the Sentinel-2 quarter and the palette.
-- The near field comes from the region's pack: trees by leaf type and
-  elevation, ground plants by land cover within 60 m, rocks on steep ground, ridges, shores and
-  mapped bare rock, crags along mapped crests, and houses fitted to OSM footprints by their
-  `building` value and size. OSM ruins, castles and lighthouses draw as landmarks, and lifts
-  within 6 km as stations, pylons, cables and carriers. Ground plants take their hue from the
-  ground under them.
-- "Readout" › "region" shows the chain of regions that applies, root first.
-- "Look" tunes palette snap (0: Sentinel-2 chroma, 1: class palette alone), haze, mist and the
-  light bands; "copy look JSON" copies the values.
-- "Tools": "raise eye" lifts the eye as a drone would. "save side by side" and "save view" write
-  PNGs to `~/.cache/obc/trail-view/shots/`, named with the preset, the surface, the quarter and the
-  clock time.
+  The season also picks the Sentinel-2 quarter and the palette.
+- "weather" is sunny, cloudy or rainy: one cloud layer, its shadows, wet ground and rain. "play
+  day" sweeps 4:30 to 22:30 in 36 s.
+- Drag to look, scroll to change the field of view. "free movement": W A S D or the arrows walk,
+  Q and E lower and raise the eye, Shift runs. Plants stand within 60 m of the spot, trees within
+  1 km.
+- "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border.
+  "align camera" moves a photograph's camera, and "copy camera JSON" copies it for `spots/`. Red
+  is the skyline read off the photograph, cyan the cast skyline.
+- "Readout" › "region" shows the chain of regions, root first.
+- "Look" tunes palette snap, haze, mist and the light bands; "copy look JSON" copies them.
+- "Tools": "raise eye" lifts the eye. "save side by side" and "save view" write shots.
 
 ## What will bite you
 
@@ -169,3 +240,5 @@ Then open `http://localhost:5180/`. The `trail-view` entry in `.claude/launch.js
   without `finish()` is too dark.
 - The sun model is the planner's `sun.ts`, imported as `planner-sun`. `tsc` reads
   `src/planner-sun.d.ts` instead, because the planner's own imports need builder/web's packages.
+- A photo block without `heading_deg` and `pitch_deg` stops bake.py. Estimate them, bake, then
+  align the camera in the page.
