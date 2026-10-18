@@ -142,6 +142,36 @@ impl DemTile {
     /// free of them: a tile that survives this is a regular geographic post grid whose every sample
     /// position is one multiply away.
     pub fn open(path: &Path) -> Result<DemTile, String> {
+        let (mut dec, tile) = Self::read_header(path)?;
+        let (rows, cols, name) = (tile.rows, tile.cols, || path.display().to_string());
+        // The samples, flipped once.
+        let image = dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?;
+        let north_up: Vec<f32> = match image {
+            DecodingResult::F32(v) => v,
+            DecodingResult::F64(v) => v.into_iter().map(|x| x as f32).collect(),
+            DecodingResult::I16(v) => v.into_iter().map(f32::from).collect(),
+            DecodingResult::U16(v) => v.into_iter().map(f32::from).collect(),
+            _ => return Err(format!("{}: unsupported sample type — a DEM must be float or 16-bit integer", name())),
+        };
+        if north_up.len() != rows * cols {
+            return Err(format!("{}: decoded {} samples for a {cols}×{rows} raster", name(), north_up.len()));
+        }
+        let mut data = vec![0f32; rows * cols];
+        for row in 0..rows {
+            let src = &north_up[(rows - 1 - row) * cols..(rows - row) * cols];
+            data[row * cols..(row + 1) * cols].copy_from_slice(src);
+        }
+        Ok(DemTile { data, ..tile })
+    }
+
+    /// The checks of [`DemTile::open`] that need no sample: a caller that decodes the tile later
+    /// finds a file that is not a DEM tile before it starts.
+    pub fn check(path: &Path) -> Result<(), String> {
+        Self::read_header(path).map(|_| ())
+    }
+
+    /// The decoder of the tile at `path`, and the tile without its samples.
+    fn read_header(path: &Path) -> Result<(Decoder<BufReader<File>>, DemTile), String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut dec =
             Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: not a readable TIFF ({e})", path.display()))?;
@@ -168,34 +198,17 @@ impl DemTile {
             .ok()
             .and_then(|s| s.trim().trim_end_matches('\0').parse::<f64>().ok());
 
-        // The samples, flipped once.
-        let image = dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?;
-        let north_up: Vec<f32> = match image {
-            DecodingResult::F32(v) => v,
-            DecodingResult::F64(v) => v.into_iter().map(|x| x as f32).collect(),
-            DecodingResult::I16(v) => v.into_iter().map(f32::from).collect(),
-            DecodingResult::U16(v) => v.into_iter().map(f32::from).collect(),
-            _ => return Err(format!("{}: unsupported sample type — a DEM must be float or 16-bit integer", name())),
-        };
-        if north_up.len() != rows * cols {
-            return Err(format!("{}: decoded {} samples for a {cols}×{rows} raster", name(), north_up.len()));
-        }
-        let mut data = vec![0f32; rows * cols];
-        for row in 0..rows {
-            let src = &north_up[(rows - 1 - row) * cols..(rows - row) * cols];
-            data[row * cols..(row + 1) * cols].copy_from_slice(src);
-        }
-
-        Ok(DemTile {
+        let tile = DemTile {
             south_lat_deg: north_lat_deg - step_lat_deg * (rows - 1) as f64,
             west_lon_deg,
             step_lat_deg,
             step_lon_deg,
             rows,
             cols,
-            data,
+            data: Vec::new(),
             nodata,
-        })
+        };
+        Ok((dec, tile))
     }
 
     /// Posts along each axis, `(rows, cols)`.

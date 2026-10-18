@@ -152,9 +152,14 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
 
     let mut levels: Vec<Level> = (0..=12).map(|z| Level::new(z, bounds)).collect();
     // The northmost pending pixel row decides the squares: no pending row needs one north of them.
+    let mut last = None;
     while let Some(level) = levels.iter_mut().filter(|level| level.next().is_some()).max_by_key(|level| level.next()) {
         let decoded = squares(level.next().expect("pending"));
-        terrain.load(decoded.clone())?;
+        if last.as_ref() != Some(&decoded) {
+            eprintln!("Terrain at latitude {}", decoded.end());
+            terrain.load(decoded.clone())?;
+            last = Some(decoded.clone());
+        }
         level.fill(terrain, &decoded, &spool)?;
     }
 

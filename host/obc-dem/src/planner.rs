@@ -54,16 +54,18 @@ pub struct Terrain {
 
 impl Terrain {
     /// The GLO-30 files `glo30`, in the order of [`tiles`], with their `credit`, and the reference
-    /// archive at `reference`, for heights in `bounds`. No square is decoded until [`Terrain::load`].
+    /// archive at `reference`, for heights in `bounds`. Each file is hashed and its header checked;
+    /// no square is decoded until [`Terrain::load`].
     pub fn open(
         glo30: &[(TileId, PathBuf)],
         credit: &str,
         reference: Option<&Path>,
         bounds: [f64; 4],
     ) -> Result<Self, String> {
-        let hashes = glo30
-            .par_iter()
-            .map(|(_, path)| hash_file(path).map(|(sha256, _)| sha256).map_err(|e| format!("{}: {e}", path.display())));
+        let hashes = glo30.par_iter().map(|(_, path)| {
+            DemTile::check(path)?;
+            hash_file(path).map(|(sha256, _)| sha256).map_err(|e| format!("{}: {e}", path.display()))
+        });
         let mut identities = hashes.collect::<Result<Vec<_>, _>>()?;
         let mut files = BTreeMap::<_, Vec<_>>::new();
         for (tile, path) in glo30 {
@@ -103,6 +105,10 @@ impl Terrain {
     /// GLO-30 answers from the squares that [`Terrain::load`] decoded, which must hold
     /// [`squares`] of `lat`.
     pub fn height(&self, lat: i32, lon: i32, recent: &mut Recent) -> Result<Option<f64>, String> {
+        debug_assert!(
+            squares(lat).all(|lat| self.loaded.contains(&lat) || !self.glo30.contains_key(&lat)),
+            "the GLO-30 squares of {lat} µdeg are not loaded"
+        );
         let mut best = None;
         if let Some(archive) = &self.reference {
             let window = Window {
