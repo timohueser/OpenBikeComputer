@@ -432,9 +432,7 @@ fn selection(
 /// The files of `snapshot` that `selected` names, or all of them when it names none, and the
 /// selected names that the snapshot lacks.
 fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRecord>, Vec<&'a str>) {
-    let files = snapshot.files.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)).collect();
-    let missing = selected.iter().filter(|name| !snapshot.files.iter().any(|file| &file.name == *name));
-    (files, missing.map(String::as_str).collect())
+    chosen(&snapshot.files, |file| &file.name, selected)
 }
 
 /// The object of each file that a snapshot input with these fields reads, by file name, or `None`
@@ -457,9 +455,21 @@ pub fn snapshot_files(
 /// The files of a layer that `selected` names, or all of them when it names none, and the selected
 /// paths that the layer lacks.
 pub(crate) fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
-    let chosen = files.iter().filter(|file| selected.is_empty() || selected.contains(&file.path)).collect();
-    let missing = selected.iter().filter(|path| !files.iter().any(|file| &file.path == *path));
-    (chosen, missing.map(String::as_str).collect())
+    chosen(files, |file| &file.path, selected)
+}
+
+/// The items whose name `selected` names, or all of them when it names none, and the selected
+/// names that no item has. A record can have tens of thousands of files, so names are looked up
+/// in sets.
+fn chosen<'a, T>(
+    items: &'a [T],
+    name: impl Fn(&'a T) -> &'a String,
+    selected: &'a [String],
+) -> (Vec<&'a T>, Vec<&'a str>) {
+    let wanted: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    let chosen = items.iter().filter(|item| selected.is_empty() || wanted.contains(name(item).as_str())).collect();
+    let present: HashSet<&str> = items.iter().map(|item| name(item).as_str()).collect();
+    (chosen, selected.iter().map(String::as_str).filter(|wanted| !present.contains(wanted)).collect())
 }
 
 /// The digest of the files of a layer that `selected` names: what a step that reads them keys.
