@@ -459,17 +459,26 @@ pub(crate) fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -
 }
 
 /// The items whose name `selected` names, or all of them when it names none, and the selected
-/// names that no item has. A record can have tens of thousands of files, so names are looked up
-/// in sets.
+/// names that no item has. A record can have tens of thousands of files, so one pass looks the
+/// names up in sets.
 fn chosen<'a, T>(
     items: &'a [T],
     name: impl Fn(&'a T) -> &'a String,
     selected: &'a [String],
 ) -> (Vec<&'a T>, Vec<&'a str>) {
+    if selected.is_empty() {
+        return (items.iter().collect(), Vec::new());
+    }
     let wanted: HashSet<&str> = selected.iter().map(String::as_str).collect();
-    let chosen = items.iter().filter(|item| selected.is_empty() || wanted.contains(name(item).as_str())).collect();
-    let present: HashSet<&str> = items.iter().map(|item| name(item).as_str()).collect();
-    (chosen, selected.iter().map(String::as_str).filter(|wanted| !present.contains(wanted)).collect())
+    let mut found = HashSet::new();
+    let chosen = items
+        .iter()
+        .filter(|item| {
+            let name = name(item).as_str();
+            wanted.contains(name) && (found.insert(name) || true)
+        })
+        .collect();
+    (chosen, selected.iter().map(String::as_str).filter(|name| !found.contains(name)).collect())
 }
 
 /// The digest of the files of a layer that `selected` names: what a step that reads them keys.

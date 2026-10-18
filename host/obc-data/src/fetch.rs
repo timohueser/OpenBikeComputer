@@ -348,11 +348,13 @@ pub(crate) fn merge(
     }
     let before = snapshot.files.len();
     // A record can have tens of thousands of files: the files of the record by URL, and their URL by
-    // name.
-    let mut by_url: HashMap<String, usize> =
-        snapshot.files.iter().enumerate().map(|(at, file)| (file.url.clone(), at)).collect();
-    let mut by_name: HashMap<String, String> =
-        snapshot.files.iter().map(|file| (file.name.clone(), file.url.clone())).collect();
+    // name. The first file of a URL or a name counts, as in a search of the list: an older build
+    // could record a name twice.
+    let (mut by_url, mut by_name) = (HashMap::new(), HashMap::new());
+    for (at, file) in snapshot.files.iter().enumerate() {
+        by_url.entry(file.url.clone()).or_insert(at);
+        by_name.entry(file.name.clone()).or_insert_with(|| file.url.clone());
+    }
     for file in files {
         let old = by_url.get(&file.url).map(|&at| &snapshot.files[at]);
         if let Some(old) = old.filter(|old| old.sha256 != file.sha256) {
@@ -976,6 +978,12 @@ pub(crate) mod tests {
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
         let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
+        assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
+
+        // An older build could record a name twice: the first file of the name counts.
+        let files = vec![file("https://h/1/a.tif", "aa"), file("https://h/2/a.tif", "aa")];
+        store.put_snapshot(&Snapshot { source: "land".into(), version: "v2".into(), files }).unwrap();
+        let err = record(&store, "land", "v2", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
         assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
     }
 
