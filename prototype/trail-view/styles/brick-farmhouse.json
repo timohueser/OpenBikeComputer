@@ -1,0 +1,20 @@
+{
+ "name": "Brick farmhouse",
+ "about": "Red brick on a fieldstone plinth under a steep, half-hipped roof of red or dark tile; the barns are brick too.",
+ "pitch": [42, 50],
+ "eave": 0.4,
+ "verge": 0.3,
+ "hip": 0.3,
+ "timber": "none",
+ "shutters": false,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#8a3f2e", "#7e392b", "#95462f", "#843d30"],
+  "wood": ["#5a4030"],
+  "roof": ["#c2643f", "#b8593a", "#cf7048", "#45403d", "#3c3836"],
+  "door": ["#3f5a3a", "#5a4030", "#f0ede5"],
+  "shutter": ["#3f5a3a"],
+  "plinth": "#7f7a72",
+  "chimney": "#7e392b"
+ }
+}
