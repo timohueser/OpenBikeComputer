@@ -4,6 +4,7 @@
  "extends": "world",
  "leaf": "needleleaved",
  "pack": "alps",
+ "about": "The arc of the Alps from the Maritime Alps over Savoy, the Valais, the Bernese Oberland and central Switzerland, Tyrol, Bavaria, Salzburg, the Dolomites and the Hohe Tauern to the Julian Alps: spruce and fir forest with beech on the outer ranges, larch up to the treeline and in the dry inner valleys, hay meadows and summer pastures with wooden barns, chalets and farmhouses, high passes above the trees, grey limestone and granite, pale dolomite walls and glaciers. One split: alps.insubric, the lake district from Lago Maggiore to Lake Garda, because its summer haze comes from the Po plain and its olive groves, holm oak and cypress grow at the same heights as the apple orchards of the Adige and Rhône valleys, so no tree elevation band can keep them apart. No split for the dry inner valleys such as the Valais, the Aosta valley, the Vinschgau, the Engadin and the Briançonnais: Sentinel-2 colour and the NDVI ramps carry their brown summer slopes, and their outlines would follow the valley floors like contour rings. Across the whole arc the belts from beech to spruce, larch, mountain pine and rock come from the tree elevation bands, the barren rule and the snowline, and the houses from culture by country.",
  "look": {
   "weather": { "sunny": { "base": 2900 }, "cloudy": { "base": 2200 }, "rainy": { "base": 1400 } }
  }

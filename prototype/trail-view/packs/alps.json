@@ -1,14 +1,30 @@
 {
  "name": "Alps",
  "extends": "base",
+ "about": "Norway spruce with silver fir in the montane forests, beech and sycamore on the outer ranges, larch up to the treeline, mountain pine and alpenrose above it; ash, grey alder, birch, aspen, rowan and whitebeam in the valleys and on the avalanche slopes; sessile, downy and pedunculate oak, lime, hornbeam, sweet chestnut and hop hornbeam on the warm low slopes; alpine flowers and bilberry, cottongrass in the fens; chalets, and farmhouses with steep half-hipped roofs in Slovenia. Hawthorn stands in for the apple orchards.",
  "trees": {
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 2000], "weight": 5 },
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1500], "weight": 2 },
   "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [1400, 2300], "weight": 3 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 1 },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
-  "alpenrose": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 3, "evergreen": true }
+  "alpenrose": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 3, "evergreen": true },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1650], "weight": 4 },
+  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 2 },
+  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 2000], "weight": 1 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1900], "weight": 0.5 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [700, 2100], "weight": 1 },
+  "whitebeam": { "model": "hawthorn", "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 0.5 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 1 },
+  "pedunculate-oak": { "model": "european-beech", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 900], "weight": 1 },
+  "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 800], "weight": 1 },
+  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
+  "hop-hornbeam": { "model": "sycamore-maple", "latin": "Ostrya carpinifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 }
  },
- "ground": {"alpine-flowers": {}, "bilberry": {}},
- "style": "chalet"
+ "ground": {"alpine-flowers": {}, "bilberry": {}, "bog-cotton": { "on": ["wetland"] }},
+ "orchard": "hawthorn",
+ "style": { "si": "black-forest-farmhouse", "*": "chalet" }
 }
