@@ -1,0 +1,39 @@
+{
+ "name": "Sarmatic mixed forests",
+ "extends": "base",
+ "about": "Norway spruce and Scots pine with silver and downy birch, aspen and grey alder; pedunculate oak, small-leaved lime, Norway maple and ash on the richer moraine; black alder in the wet hollows, rowan, hazel, juniper on the dry pastures and grey willow by the ditches; bilberry, lingonberry and heather under the pines, fern and bracken, reed on the lake shores, bog cotton on the raised bogs and fireweed on the clearings; dairy cattle, a few sheep and horses; red wooden farms in Scandinavia, log and plank houses in the Baltic states, Belarus and Russia.",
+ "trees": {
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "pedunculate-oak": { "model": "sycamore-maple", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "norway-maple": { "model": "sycamore-maple", "latin": "Acer platanoides", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
+ },
+ "ground": {
+  "bilberry": {},
+  "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub", "moss"], "height": [0.1, 0.25], "share": 0.2 },
+  "heather": {},
+  "fern": {},
+  "bracken": {},
+  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "bog-cotton": {},
+  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.05, "clumped": true }
+ },
+ "herds": {
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [5, 20], "on": ["pasture"] },
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "orchard": "hawthorn",
+ "style": "wood-cabin"
+}
