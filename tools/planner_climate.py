@@ -312,7 +312,8 @@ class Source:
     A cached chunk is named `T.Y.X.HOURS.SHA256`: its Zarr key, the store's hour count when it was
     downloaded, and the SHA-256 of its compressed bytes. It serves a bake when that hour count reaches
     its threshold, so every hour it holds for the bake was final data. An empty file is a chunk that the
-    store omits because it has no data.
+    store omits because it has no data. The SHA-256 of the name is the identity of the chunk in the
+    fingerprint: the download and the store of `obc data` check it, so a read does not hash again.
     """
 
     def __init__(self, final_hour, key=None, cache=CACHE):
@@ -329,7 +330,9 @@ class Source:
         threshold = self.threshold(name)
         found = [path for path in (self.cache / variable).glob(f"{name}.*") if int(path.name.split(".")[3]) >= threshold]
         if found:
-            return max(found, key=lambda path: int(path.name.split(".")[3]))
+            path = max(found, key=lambda path: int(path.name.split(".")[3]))
+            self.digests[variable][name] = path.name.split(".")[4]
+            return path
         if self.key is None:
             raise ValueError(f"Source chunk {variable}/{name} is not in the cache")
         self.layout = self.layout or stores(self.key)
@@ -351,15 +354,11 @@ class Source:
             if older != path:
                 older.unlink()
         self.downloaded += len(data)
+        self.digests[variable][name] = path.name.split(".")[4]
         return path
 
     def read(self, variable, name):
-        path = self.path(variable, name)
-        data = path.read_bytes()
-        checksum = hashlib.sha256(data).hexdigest()
-        if checksum != path.name.split(".")[4]:
-            raise ValueError(f"Cached source chunk is damaged: {path}")
-        self.digests[variable][name] = checksum
+        data = self.path(variable, name).read_bytes()
         shape = (TIME_CHUNK, CHUNK_ROWS, CHUNK_COLS)
         return blosc(data, "<f4").reshape(shape) if data else np.full(shape, np.nan, np.float32)
 
@@ -397,7 +396,7 @@ def final_hour(first_year):
 
 
 def download(region, first_year, source, workers=8):
-    """Make every source chunk of the bake a path in the cache of `source`."""
+    """Make every source chunk of the bake a path in the cache of `source`, with its SHA-256 in the fingerprint."""
     _, _, times, spatial = chunk_plan(region, first_year)
     names = [(variable, f"{t}.{y}.{x}") for y, x in spatial for variable in SOURCE for t in times]
     with ThreadPoolExecutor(workers) as pool:
@@ -411,32 +410,54 @@ def fetch_sources(bounds, first_year, out):
     orography(region, key, cache=out)
 
 
-def climate(region, first_year, source, workers=8):
-    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid."""
+# What the bake of the spatial chunks reads: its worker processes fork from it.
+_chunking = None
+
+
+def chunk_climate(y, x):
+    """The grid rows and columns of spatial chunk (y, x) and their weekly fields, monthly means and wind rose,
+    in a worker process."""
+    region, first_year, source, start, end, times = _chunking
+    zarr_rows, zarr_cols = region.zarr_index()
+    rows = np.flatnonzero(zarr_rows // CHUNK_ROWS == y)
+    cols = np.flatnonzero(zarr_cols // CHUNK_COLS == x)
+    values = {}
+    for variable in SOURCE:
+        series = np.concatenate([source.read(variable, f"{t}.{y}.{x}") for t in times])
+        series = series[start - times[0] * TIME_CHUNK:end - times[0] * TIME_CHUNK]
+        cells = series[:, zarr_rows[rows] % CHUNK_ROWS][:, :, zarr_cols[cols] % CHUNK_COLS]
+        values[variable] = cells.reshape(len(series), -1).astype(np.float64)
+    lon = np.broadcast_to(region.lon[cols], (len(rows), len(cols))).ravel()
+    return rows, cols, aggregate(values, lon, first_year)
+
+
+def climate(region, first_year, source, workers=None):
+    """Weekly fields, monthly mean temperatures and the wind rose over the padded region grid. The spatial
+    chunks bake in `workers` processes, by default one per core; each one fills its own cells."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    global _chunking
     start, end, times, spatial = chunk_plan(region, first_year)
-    download(region, first_year, source, workers)
+    download(region, first_year, source)
     shape = (len(region.rows), len(region.cols))
     weekly = {name: np.full((YEARS, WEEKS, *shape), np.nan) for name in WEEKLY}
     monthly = {name: np.full((12, *shape), np.nan) for name in ("tmax", "tmin")}
     rose = np.full((12, SECTORS, *shape), np.nan)
-    zarr_rows, zarr_cols = region.zarr_index()
-    for y, x in spatial:
-        rows = np.flatnonzero(zarr_rows // CHUNK_ROWS == y)
-        cols = np.flatnonzero(zarr_cols // CHUNK_COLS == x)
-        values = {}
-        for variable in SOURCE:
-            series = np.concatenate([source.read(variable, f"{t}.{y}.{x}") for t in times])
-            series = series[start - times[0] * TIME_CHUNK:end - times[0] * TIME_CHUNK]
-            cells = series[:, zarr_rows[rows] % CHUNK_ROWS][:, :, zarr_cols[cols] % CHUNK_COLS]
-            values[variable] = cells.reshape(len(series), -1).astype(np.float64)
-        lon = np.broadcast_to(region.lon[cols], (len(rows), len(cols))).ravel()
-        w, m, r = aggregate(values, lon, first_year)
-        grid = np.ix_(rows, cols)
-        for name in weekly:
-            weekly[name][(slice(None), slice(None), *grid)] = w[name].reshape(YEARS, WEEKS, len(rows), len(cols))
-        for name in monthly:
-            monthly[name][(slice(None), *grid)] = m[name].reshape(12, len(rows), len(cols))
-        rose[(slice(None), slice(None), *grid)] = r.reshape(12, SECTORS, len(rows), len(cols))
+    _chunking = (region, first_year, source, start, end, times)
+    pool = ProcessPoolExecutor(workers or os.cpu_count(), mp_context=multiprocessing.get_context("fork"))
+    try:
+        for done in as_completed([pool.submit(chunk_climate, y, x) for y, x in spatial]):
+            rows, cols, (w, m, r) = done.result()
+            grid = np.ix_(rows, cols)
+            for name in weekly:
+                weekly[name][(slice(None), slice(None), *grid)] = w[name].reshape(YEARS, WEEKS, len(rows), len(cols))
+            for name in monthly:
+                monthly[name][(slice(None), *grid)] = m[name].reshape(12, len(rows), len(cols))
+            rose[(slice(None), slice(None), *grid)] = r.reshape(12, SECTORS, len(rows), len(cols))
+    finally:
+        pool.shutdown(cancel_futures=True)
+        _chunking = None
     return weekly, monthly, rose
 
 

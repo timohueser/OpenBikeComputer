@@ -191,9 +191,8 @@ class SourceTest(unittest.TestCase):
                 sources[0].read("t2m", "17.1.2")
             complete = self.chunk(cache, 17, 18 * climate.TIME_CHUNK + margin)
             self.assertEqual([source.path("t2m", "17.1.2") for source in sources], [complete, complete])
-            newest.write_bytes(b"changed")
-            with self.assertRaisesRegex(ValueError, "damaged"):
-                sources[0].read("t2m", "19.1.2")
+            self.assertEqual(sources[0].digests["t2m"], {name: path.name.split(".")[4] for name, path in
+                                                         (("19.1.2", newest), ("17.1.2", complete))})
 
 
 class FakeSource(climate.Source):
@@ -203,13 +202,12 @@ class FakeSource(climate.Source):
         super().__init__(0)
 
     def path(self, variable, name):
-        return None
+        self.digests[variable][name] = hashlib.sha256(name.encode()).hexdigest()
 
     def read(self, variable, name):
         seed = [*map(int, name.split(".")), list(climate.SOURCE).index(variable)]
         noise = np.random.default_rng(seed).random((climate.TIME_CHUNK, climate.CHUNK_ROWS, climate.CHUNK_COLS))
         scale, base = {"t2m": (10, 280), "u10": (4, -2), "v10": (4, -2), "tp": (0.0005, 0)}[variable]
-        self.digests[variable][name] = hashlib.sha256(name.encode()).hexdigest()
         return (base + scale * noise).astype(np.float32)
 
 
