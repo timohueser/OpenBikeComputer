@@ -35,6 +35,9 @@ it("shows a run as it goes, and Stop posts exactly the args that it shows", asyn
     try {
         await vi.waitFor(() => expect(text()).toContain("Layers in this run"));
         expect(text()).toContain("3 of 6 · about 30 min left");
+        // Three steps ran at once at most.
+        expect(document.querySelector('[aria-labelledby="timeline"] .soft')?.textContent).toBe("7 steps · at most 3 at a time");
+        expect([...document.querySelectorAll(".legend li")].map((item) => item.textContent)).toEqual(["device step", "planner step", "fetch", "running"]);
         expect(text()).toContain("laptop · load 6.2 on 10 cores · RAM 12 GB free · store 412 GB free");
         expect(text()).toContain(`The last 4 lines of ${run.log_path}.`);
         expect(document.querySelector("h1")?.textContent).toBe("update local");

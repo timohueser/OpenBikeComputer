@@ -667,7 +667,7 @@ process never started.
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
   waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
   for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
-  unchanged), its fetches and steps (each `unchanged` or not), the
+  unchanged), its fetches and steps (each `unchanged` or not, with when it started and ended, in milliseconds after the start of the run), the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
@@ -4352,6 +4352,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "end_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "error": {
           "default": null,
           "type": [
@@ -4387,6 +4396,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": "",
           "type": "string"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it ended, in milliseconds after the start of the run; `null` before.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "version": {
           "default": "",
           "type": "string"
@@ -4406,6 +4425,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "resolved",
         "params",
+        "start_ms",
+        "end_ms",
         "bytes",
         "wall_ms",
         "error"
@@ -4430,6 +4451,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunStep": {
       "properties": {
         "bytes_out": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_ms": {
           "default": null,
           "format": "uint64",
           "minimum": 0,
@@ -4481,6 +4511,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": false,
           "type": "boolean"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it finished or failed, in milliseconds after the start of the run;\n`null` before. An unchanged step does not start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "step": {
           "default": "",
           "type": "string"
@@ -4514,6 +4554,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "reused",
         "unchanged",
+        "start_ms",
+        "end_ms",
         "wall_ms",
         "peak_rss_bytes",
         "bytes_out",

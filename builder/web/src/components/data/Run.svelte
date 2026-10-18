@@ -10,6 +10,7 @@
     import Failure from "./Failure.svelte";
     import Layers from "./Layers.svelte";
     import Phases from "./Phases.svelte";
+    import Timeline from "./Timeline.svelte";
 
     let { id, status }: { id: string; status: Status | null } = $props();
 
@@ -117,6 +118,8 @@
     {/if}
 
     {#if view.phases.length}<Phases entered={view.phases} />{/if}
+
+    <Timeline {view} {now} />
 
     {#if live && status}
         {@const machine = status.machine}
