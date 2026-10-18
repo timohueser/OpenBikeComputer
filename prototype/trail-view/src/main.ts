@@ -37,18 +37,27 @@ const problems = validate();
 if (problems.length) console.error(problems.join('\n'));
 const idle = problems.length ? `${problems.length} data errors (npm run check): ${problems[0]}` : '';
 
-/** Every spot, with the region its file spots/<region>.json names. */
-const SPOTS = Object.entries(import.meta.glob<{ id: string; name: string }[]>('../spots/*.json', { eager: true, import: 'default' })).flatMap(
-  ([path, spots]) => spots.map((spot) => ({ ...spot, region: path.split('/').pop()!.replace(/\.json$/, '') })),
+/** The spots of each region, from its file spots/<region>.json. */
+const REGION_SPOTS = Object.fromEntries(
+  Object.entries(import.meta.glob<{ id: string; name: string }[]>('../spots/*.json', { eager: true, import: 'default' })).map(
+    ([path, spots]) => [path.split('/').pop()!.replace(/\.json$/, ''), spots],
+  ),
 );
+const SPOTS = Object.entries(REGION_SPOTS).flatMap(([region, spots]) => spots.map((spot) => ({ ...spot, region })));
+/** The tune's status of each region, which only its coordinator writes. A region it does not name is not started. */
+const STATUS: Record<string, string> = await fetch('/status.json', { cache: 'no-store' })
+  .then((response) => response.json())
+  .catch(() => ({}));
 
 const DTM = 'national DTM';
 const GLO30 = 'GLO-30 only';
 const state = {
+  region: SPOTS[0].region,
   preset: SPOTS[0].id,
   surface: DTM,
   photoCamera: true,
-  wipe: 0.5,
+  /** The reference photograph in a corner of the view. */
+  reference: true,
   photoSkyline: true,
   castSkyline: true,
   peaks: true,
@@ -101,7 +110,11 @@ async function select(id: string): Promise<void> {
   selecting = id;
   status.textContent = `Loading ${id}…`;
   loaded = null;
+  frame.style.visibility = 'hidden';
   photo.removeAttribute('src');
+  Object.assign(state, { preset: id, region: SPOTS.find((spot) => spot.id === id)!.region });
+  regionPicker.updateDisplay();
+  spotPicker.options(spotsOf(state.region));
   const bake = await loadBake(id);
   if (selecting !== id) return;
   const { meta } = bake;
@@ -145,6 +158,7 @@ async function select(id: string): Promise<void> {
   state.pitch = meta.photo?.pitch_deg ?? meta.pitch ?? 0;
   element('#credits').textContent = meta.credits.join(' · ');
   status.textContent = idle;
+  frame.style.visibility = '';
   quarters.clear();
   surfaceChanged();
   await seasonChanged();
@@ -274,9 +288,7 @@ function render(): void {
     renderer.render(scene, camera);
   }
   if (WEATHERS[state.weather].rain) renderer.render(terrain.overlay, camera);
-  const locked = photoLocked();
-  photo.style.display = locked ? '' : 'none';
-  photo.style.clipPath = `inset(0 ${(100 * (1 - state.wipe)).toFixed(2)}% 0 0)`;
+  photo.hidden = !state.reference || !photo.naturalWidth;
   const ctx = lines.getContext('2d')!;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, lines.width, lines.height);
@@ -422,6 +434,9 @@ frame.addEventListener('pointermove', (event) => {
   requestRender();
 });
 frame.addEventListener('pointerup', () => (drag = null));
+// A click enlarges the reference photograph to the frame, and another puts it back in its corner.
+photo.addEventListener('pointerdown', (event) => event.stopPropagation());
+photo.addEventListener('click', () => photo.classList.toggle('large'));
 frame.addEventListener(
   'wheel',
   (event) => {
@@ -490,8 +505,21 @@ function measure(): void {
 }
 
 const gui = new GUI({ title: 'Trail View', width: 340 });
-const spots = Object.fromEntries(SPOTS.map((spot) => [`${spot.region} · ${spot.name}`, spot.id]));
-gui.add(state, 'preset', spots).name('spot').onChange(select);
+const shown = (error: Error) => (status.textContent = error.message);
+const spotsOf = (region: string) => Object.fromEntries(REGION_SPOTS[region].map((spot) => [spot.name, spot.id]));
+const regions = Object.fromEntries(Object.keys(REGION_SPOTS).map((short) => [`${short} · ${STATUS[short] ?? 'not started'}`, short]));
+const regionPicker = gui.add(state, 'region', regions).onChange((short: string) => {
+  const first = REGION_SPOTS[short][0];
+  if (first) return select(first.id).catch(shown);
+  selecting = '';
+  loaded = null;
+  state.preset = '';
+  spotPicker.options({});
+  frame.style.visibility = 'hidden';
+  status.textContent = `${short} has no spots yet`;
+});
+const spotPicker = gui.add(state, 'preset', spotsOf(state.region)).name('spot').onChange((id: string) => select(id).catch(shown));
+gui.add(state, 'reference').name('reference photo').onChange(requestRender);
 gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
 gui.add(state, 'hour', 0, 24, 0.05).name('time of day').listen().onChange(() => lightChanged());
 gui.add(state, 'weather', Object.keys(WEATHERS)).onChange(() => {
@@ -524,7 +552,6 @@ gui.add(state, 'peaks').onChange(requestRender);
 const shot = gui.addFolder('Photo').close();
 shot.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
 shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
-shot.add(state, 'wipe', 0, 1, 0.01).onChange(requestRender);
 shot.add(state, 'photoSkyline').name('photo skyline (red)').onChange(requestRender);
 shot.add(state, 'castSkyline').name('cast skyline (cyan)').onChange(requestRender);
 // Align a photograph's camera here, then save it back to its spot in spots/.
@@ -595,4 +622,4 @@ select(state.preset)
     Object.assign(state, { yaw: Number(linked.get('yaw')), pitch: Number(linked.get('pitch') ?? 0), vfov: Number(linked.get('vfov') ?? state.vfov) });
     layout();
   })
-  .catch((error: Error) => (status.textContent = error.message));
+  .catch(shown);

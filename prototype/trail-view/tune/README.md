@@ -102,8 +102,8 @@ Run bake.py from the repository root. Run every other command in `prototype/trai
 
 The coordinator works in this order and reports to the owner in its chat after each step:
 
-1. **Demo.** Build the demo (see "Demo") and serve it. Tell the owner how to open it, and wait
-   for the owner's OK.
+1. **Demo.** Serve the demo (see "Demo"). Tell the owner how to open it, and wait for the
+   owner's OK.
 2. **Tracking issue.** Ask the owner, then open one GitHub issue, "Trail View: Europe tune", for
    the batch plan and the census. Fix the regression set: every spot in `spots/` at the start of
    the tune, and later every spot of an approved region.
@@ -115,7 +115,7 @@ The coordinator works in this order and reports to the owner in its chat after e
 
 - **Owner.** Looks at the demo and gives feedback and approvals to the coordinator, in its chat.
   Registers API keys.
-- **Coordinator.** The session in the clone, on `archive/trail-view-prototype`. It builds the
+- **Coordinator.** The session in the clone, on `archive/trail-view-prototype`. It serves the
   demo, runs phase 1 and the census, plans the batches, starts the region agents, passes the
   owner's feedback to them, keeps the region status, lands their branches, owns the frozen files
   and renders the regression set after each shared change. It asks the owner before every push.
@@ -245,7 +245,7 @@ regression set and every approved spot before and after, and asks the owner.
 
 ## Demo
 
-The coordinator builds the demo first, from `index.html`:
+The demo is `index.html`:
 
 - Pick a region, then one of its spots.
 - The spot's reference photo is a small overlay in a corner. The owner can hide or show it, and
@@ -254,7 +254,7 @@ The coordinator builds the demo first, from `index.html`:
   The status is one file, `~/.cache/obc/trail-view/status.json` (`{"<short>": "<status>"}`).
   Only the coordinator writes it. Every checkout serves the bake cache, so every slot's demo
   shows the same status.
-- No comment boxes: feedback goes to the coordinator. `review.html` and `tune/comment.mjs` can go.
+- No comment boxes: feedback goes to the coordinator.
 
 The coordinator's checkout serves the done regions on port 5180, and slot N the region it tunes
 on port 518N. From the Mac:

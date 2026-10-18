@@ -13,7 +13,7 @@ in a draft pull request from this branch.
 | `regions/<short>.json`, `regions/<short>.<sub>.json` | Rulesets: an ecoregion and its subregions, their terrain rules and their look |
 | `packs/`, `styles/` | Asset packs (the trees, plants, herds and house style a region draws) and the shared house styles |
 | `src/models/` | One file per tree, plant and animal model, and the building kinds |
-| `index.html`, `models.html`, `review.html`, `src/` | The view, the model sheet and the review page: Vite, TypeScript and three.js |
+| `index.html`, `models.html`, `src/` | The view and the model sheet: Vite, TypeScript and three.js |
 | `tune/` | The Europe tune: its instructions ([tune/README.md](tune/README.md)), the baseline ecoregions and country borders with the scripts that make them, and the commands below |
 
 ## Linux setup
@@ -106,7 +106,6 @@ npm run dev                                   # the view at http://localhost:518
 npm run check                                 # tsc, then tune/check.mjs
 npm run check -- --assets                     # also every model and the stand-in census
 npm run shoot -- <spot>[,<spot>…] [options]   # headless shots
-node tune/comment.mjs <short> [--spot <id>] [--round <n>] <text…>
 ```
 
 - Port 5180 is strict: a second `npm run dev` fails. Serve another worktree with
@@ -125,30 +124,24 @@ node tune/comment.mjs <short> [--spot <id>] [--round <n>] <text…>
 | `--time` | Also the median frame time |
 | `--out <dir>` | Copies the shots there too |
 | `--swiftshader` | WebGL on the CPU, for a machine without a GPU |
-| `--round <n>` | Copies the shots into review round n of the spot's region; `--region <short>` names it for a spot outside `spots/` |
 
 Shots land in `~/.cache/obc/trail-view/shots/` as
 `<spot>-<surface>-q<quarter>[-<weather>][-<yaw>]-<hhmm>.png`; a side by side has no yaw. Each spot
 prints one JSON line with its files, the renderer, the triangles and the page errors.
 
-`review.html` is the owner's review page. It lists the 45 baseline regions and the Cascades test
-region by status: no shots, in review, approved. A region shows each spot's reference photo, each
-round beside the previous round, a link to the live view, and comment boxes. A comment or an
-approval belongs to the round on the screen; approve works on the newest round only. A newer round
-puts a region back in review. Rounds live in `~/.cache/obc/trail-view/review/<short>/<n>/`, comments
-in `review/<short>/comments.jsonl`.
-
 ## The view
 
-- "spot" picks a place by region, "season" one day of the year, "time of day" the local hour.
-  The season also picks the Sentinel-2 quarter and the palette.
+- "region" picks a spots file and shows its tune status from `~/.cache/obc/trail-view/status.json`,
+  "spot" one of its spots, "season" one day of the year, "time of day" the local hour. The season
+  also picks the Sentinel-2 quarter and the palette.
+- "reference photo" shows the spot's photograph in a corner. A click enlarges it to the view; with
+  "photo camera" on, the two then cover each other exactly.
 - "weather" is sunny, cloudy or rainy: one cloud layer, its shadows, wet ground and rain. "play
   day" sweeps 4:30 to 22:30 in 36 s.
 - Drag to look, scroll to change the field of view. "free movement": W A S D or the arrows walk,
   Q and E lower and raise the eye, Shift runs. Plants stand within 60 m of the spot, trees within
   1 km.
-- "Photo": "photo camera" frames the view like the photograph; "wipe" moves the border.
-  "align camera" moves a photograph's camera, and "copy camera JSON" copies it for `spots/`. Red
+- "Photo": "photo camera" frames the view like the photograph. "align camera" moves a photograph's camera, and "copy camera JSON" copies it for `spots/`. Red
   is the skyline read off the photograph, cyan the cast skyline.
 - "Readout" › "region" shows the chain of regions, root first.
 - "Look" tunes palette snap, haze, mist and the light bands; "copy look JSON" copies them.
