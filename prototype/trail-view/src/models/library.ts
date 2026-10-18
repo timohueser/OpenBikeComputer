@@ -8,7 +8,8 @@ import { unit } from './shape';
 import { grow, type Lod, type Season, type Tree } from './trees';
 
 /** WorldCover classes a ground plant stands on. */
-export type Cover = 'tree' | 'shrub' | 'grass' | 'crop' | 'bare' | 'wetland' | 'moss';
+export const COVERS = ['tree', 'shrub', 'grass', 'crop', 'bare', 'wetland', 'moss'] as const;
+export type Cover = (typeof COVERS)[number];
 
 /** Where a ground plant grows, how tall it stands, and the share of grid points it takes there. */
 export interface Ground {

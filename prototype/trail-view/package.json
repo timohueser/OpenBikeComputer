@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && node tune/check.mjs",
     "shoot": "node tune/shoot.mjs"
   },
   "dependencies": {

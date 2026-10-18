@@ -6,7 +6,7 @@ import { lightAt, SEASONS } from './light';
 import { drawCompass, drawLabels, drawLines, placeLabels, type Line } from './overlay';
 import { SEASONS as SEASON_NAMES } from './models/trees';
 import { DECIDUOUS, ramps } from './palette';
-import { regionNamed, type Region } from './regions';
+import { regionNamed, validate, type Region } from './regions';
 import { WEATHERS, weatherLight } from './weather';
 import { BINS, CURVATURE, rms, sightedPeaks, skyline, surface, type Sighted, type Skyline, type Surface } from './skyline';
 import { FAR_PASS, NEAR_PASS, Terrain, type Look } from './terrain';
@@ -31,6 +31,11 @@ renderer.autoClear = false;
 const camera = new THREE.PerspectiveCamera(60, 1, FAR_PASS.near, FAR_PASS.far);
 camera.up.set(0, 0, 1);
 const terrain = new Terrain();
+
+/** Data errors stay in the status line after every load, as npm run check prints them. */
+const problems = validate();
+if (problems.length) console.error(problems.join('\n'));
+const idle = problems.length ? `${problems.length} data errors (npm run check): ${problems[0]}` : '';
 
 /** Every spot, with the region its file spots/<region>.json names. */
 const SPOTS = Object.entries(import.meta.glob<{ id: string; name: string }[]>('../spots/*.json', { eager: true, import: 'default' })).flatMap(
@@ -139,7 +144,7 @@ async function select(id: string): Promise<void> {
   state.yaw = meta.photo?.heading_deg ?? meta.heading ?? 0;
   state.pitch = meta.photo?.pitch_deg ?? meta.pitch ?? 0;
   element('#credits').textContent = meta.credits.join(' · ');
-  status.textContent = '';
+  status.textContent = idle;
   quarters.clear();
   surfaceChanged();
   await seasonChanged();
