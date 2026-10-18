@@ -50,7 +50,7 @@ obc-fixtures = { path = "../obc-fixtures" }
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }
 # The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [[test]]
 name = "terrain_fixture"
