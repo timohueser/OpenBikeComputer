@@ -1,1 +1,8 @@
-{ "name": "Pyrenees conifer and mixed forests", "ecoregion": 676, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Pyrenees conifer and mixed forests",
+ "ecoregion": 676,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "pyrenees",
+ "about": "Steep valleys and high passes from the Basque hills to the Canigou: beech and silver fir on the wet Atlantic north side, Scots pine, downy oak and box on the drier south side, mountain pine and alpenrose up to the treeline, then wide grass and broom slopes with cattle, sheep and horses below grey granite and pale limestone peaks; hay meadows, ash trees and stone barns in the valleys, and stone villages with steep slate roofs. No split: the wet north and the sunny south meet at the crest, where most passes and views stand and look over both sides, so a line along the crest would change the haze and weather in the middle of a view, and from west to east the climate dries without a stable line; Sentinel-2 colour and seasonal NDVI ramps carry the summer-dry south and east, the tree elevation bands carry the belts from oak to beech, fir, pine and pasture, and the barren rule with igme rock colour carries the bare limestone."
+}
