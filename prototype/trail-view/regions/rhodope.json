@@ -1,1 +1,8 @@
-{ "name": "Rodope montane mixed forests", "ecoregion": 678, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Rodope montane mixed forests",
+ "ecoregion": 678,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "rhodope",
+ "about": "Rounded ridges of dark spruce and Scots pine over hay meadows and villages of stone and whitewash under grey slab or red tile roofs, from the Rhodopes over Rila and Pirin to the beech forests and long grassy ridges of the Stara Planina; oak and hornbeam on the lower slopes, black pine and white cliffs in the marble gorges, and above the trees dwarf pine, juniper and mat-grass under the bare granite and marble summits of Rila and Pirin. No split: one continental mountain haze, weather and grade fit the whole region, and the warmer Greek and Macedonian slopes differ from the Stara Planina only in Sentinel-2 colour and the oak bands; the oak, beech, pine and spruce belts and the dwarf pine above them are carried by the tree elevation bands, the high cirques by the barren rule and the snowline, the hay meadows and high pastures by Sentinel-2 colour, and the houses by culture by country."
+}

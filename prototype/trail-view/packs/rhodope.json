@@ -1,0 +1,47 @@
+{
+ "name": "Rodope Mountains",
+ "extends": "base",
+ "about": "Sessile, Turkey, Hungarian and downy oak with hornbeam, hop-hornbeam and manna ash on the lower slopes, oriental hornbeam scrub on the dry ones; beech with silver fir and sycamore above, Norway spruce and Scots pine over the Rhodope plateaus, black pine on marble and in the gorges, birch, aspen and rowan in the clearings; Macedonian and Bosnian pine at the treeline of Rila and Pirin, dwarf mountain pine and dwarf juniper above it; hazel, hawthorn and juniper on the pastures, prickly juniper on the warm slopes; bilberry, ferns, bracken, mat-grass on the high pastures and alpine flowers; flocks of sheep, brown cattle, goats and horses; plastered houses with tile roofs. Hawthorn stands in for the plum and apple orchards.",
+ "trees": {
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 800], "weight": 1 },
+  "turkey-oak": { "model": "european-beech", "latin": "Quercus cerris", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 2 },
+  "hungarian-oak": { "model": "european-beech", "latin": "Quercus frainetto", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 900], "weight": 2 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 3 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 2 },
+  "hop-hornbeam": { "model": "sycamore-maple", "latin": "Ostrya carpinifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
+  "manna-ash": { "model": "sycamore-maple", "latin": "Fraxinus ornus", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1700], "weight": 5 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1700], "weight": 1 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1800], "weight": 1 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1700], "weight": 1 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [1000, 2000], "weight": 1 },
+  "black-pine": { "model": "scots-pine", "latin": "Pinus nigra", "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1500], "weight": 3 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [900, 2000], "weight": 5 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [900, 1700], "weight": 2 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [1000, 2100], "weight": 6 },
+  "macedonian-pine": { "model": "scots-pine", "latin": "Pinus peuce", "leaf": "needleleaved", "cover": "tree", "elevation": [1600, 2200], "weight": 2 },
+  "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1500, 2200], "weight": 1 },
+  "oriental-hornbeam": { "model": "hawthorn", "latin": "Carpinus orientalis", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 900], "weight": 2 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 2 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1300], "weight": 1 },
+  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1, "evergreen": true },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [400, 1700], "weight": 1, "evergreen": true },
+  "juniper": { "model": "mountain-pine", "latin": "Juniperus communis subsp. nana", "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2500], "weight": 4, "evergreen": true },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1800, 2600], "weight": 4, "evergreen": true }
+ },
+ "ground": {
+  "bilberry": {},
+  "fern": {},
+  "bracken": {},
+  "alpine-flowers": {},
+  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 100], "on": ["pasture", "rough", "heath"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "rough"] },
+  "goat": { "groups": 1, "size": [3, 15], "on": ["rough", "scrub", "rock"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "rough"] }
+ },
+ "orchard": "hawthorn",
+ "style": "village-house"
+}
