@@ -1,0 +1,36 @@
+{
+ "name": "Southeast Iberian shrubs and woodlands",
+ "extends": "base",
+ "about": "Esparto, albardín and albaida steppe with palmito, lentisk, Phoenician juniper, lotus jujube and retama scrub; Aleppo pine plantings on the sierras, sandarac trees in the Sierra de Cartagena, holm oak only high in Carrascoy; olives, carobs, almonds and date palms round the cortijos, prickly pears and agaves on the old terraces, oleander, tamarisk and red gum in the ramblas; goats and sheep. Holm oak stands in for olives, carobs and lemons in the orchards.",
+ "trees": {
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 4 },
+  "sandarac-tree": { "model": "western-red-cedar", "latin": "Tetraclinis articulata", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 0.5 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1100], "weight": 1 },
+  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 2 },
+  "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "date-palm": { "model": "canary-palm", "latin": "Phoenix dactylifera", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5, "evergreen": true },
+  "river-red-gum": { "model": "laurel", "latin": "Eucalyptus camaldulensis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5, "evergreen": true },
+  "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 3 },
+  "lotus-jujube": { "model": "holm-oak", "latin": "Ziziphus lotus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
+  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 0.5 },
+  "tamarisk": { "model": "hawthorn", "latin": "Tamarix canariensis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 0.5 }
+ },
+ "ground": {
+  "esparto": {},
+  "albardin": { "model": "esparto", "latin": "Lygeum spartum", "on": ["bare"], "height": [0.3, 0.6], "share": 0.2 },
+  "garrigue": {},
+  "fan-palm": {},
+  "albaida": { "model": "tabaiba", "latin": "Anthyllis cytisoides", "on": ["shrub", "bare"], "height": [0.4, 1.0], "share": 0.12 },
+  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
+  "century-plant": { "model": "tajinaste", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+ },
+ "herds": {
+  "goat": { "groups": 2, "size": [10, 40], "on": ["rough", "scrub", "rock"] },
+  "sheep": { "groups": 1, "size": [20, 80], "on": ["pasture", "rough"] }
+ },
+ "orchard": "holm-oak",
+ "style": "canarian-house"
+}
