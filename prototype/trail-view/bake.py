@@ -11,12 +11,15 @@ metres east and north. Level k is 1024² px over ±1.25 km · 2^k.
 """
 
 import argparse
+import fcntl
 import gzip
+import http.client
 import json
 import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -26,6 +29,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +40,9 @@ from pyproj import CRS, Transformer
 # Certificates are checked against the system's trust store, as curl does: Spain's IGN serves a
 # chain whose root Python's own bundle does not hold.
 truststore.inject_into_ssl()
+# urllib tries every IPv6 address for its full timeout before IPv4, and IPv6 to some CDNs hangs.
+_getaddrinfo = socket.getaddrinfo
+socket.getaddrinfo = lambda host, port, family=0, *rest, **kw: _getaddrinfo(host, port, socket.AF_INET, *rest, **kw)
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -223,6 +230,8 @@ WALL_HALF_M = 1500.0
 WALL_PIECE_M = 8.0
 ORCHARD_SPACING_M = 7.0
 
+# Many Linux GDAL packages install it as gdal_proximity.py only.
+PROXIMITY = shutil.which("gdal_proximity") or "gdal_proximity.py"
 GDAL_OPTIONS = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.vrt",
                 "GDAL_HTTP_MAX_RETRY": "4", "GDAL_HTTP_RETRY_DELAY": "5"}
 
@@ -239,6 +248,28 @@ CREDITS = {
     "osm": "© OpenStreetMap contributors (ODbL)",
     "photo": "Photograph © Timo Hüser, CC BY 4.0",
 }
+
+
+@contextmanager
+def machine_lock(name: str):
+    """`name` for this bake alone among the bakes on this machine; the kernel frees it when one dies."""
+    path = SOURCES / "locks" / f"{name}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"  waiting for {name}", flush=True)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """The whole file or none of it, so a bake cut short leaves no half file for the next to read."""
+    part = path.with_name(f"{path.name}.{os.getpid()}.part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.write_text(text, encoding="utf-8")
+    os.replace(part, path)
 
 
 def fixture_photo(name: str) -> Path:
@@ -327,8 +358,7 @@ def glo30_tiles(bbox, download: bool) -> list[str]:
     downloaded first when the warp reads it at full resolution."""
     listing = SOURCES / "glo30-tiles.txt"
     if not listing.exists():
-        listing.parent.mkdir(parents=True, exist_ok=True)
-        listing.write_bytes(urllib.request.urlopen(f"{GLO30_S3}/tileList.txt", timeout=120).read())
+        write_atomic(listing, urllib.request.urlopen(f"{GLO30_S3}/tileList.txt", timeout=120).read().decode())
     published = set(listing.read_text().split())
     west, south, east, north = bbox
     tiles = []
@@ -341,7 +371,8 @@ def glo30_tiles(bbox, download: bool) -> list[str]:
             if local.exists() or cached.exists():
                 tiles.append(str(local if local.exists() else cached))
             elif name in published and download:
-                tiles.append(str(http_download(f"{GLO30_S3}/{name}/{name}.tif", cached)))
+                with machine_lock("glo30"):
+                    tiles.append(str(http_download(f"{GLO30_S3}/{name}/{name}.tif", cached)))
             elif name in published:
                 tiles.append(f"/vsicurl/{GLO30_S3}/{name}/{name}.tif")
     return tiles
@@ -446,22 +477,22 @@ def bw_rasters(bbox) -> list[Path]:
 def worldcover_tiles(bbox) -> list[str]:
     """Every published WorldCover tile the box touches. A tile wholly over the sea does not exist."""
     known_path = SOURCES / "worldcover-tiles.json"
-    known = json.loads(known_path.read_text()) if known_path.exists() else {}
     west, south, east, north = bbox
     tiles = []
-    for lat in range(math.floor(south / 3) * 3, math.floor(north / 3) * 3 + 1, 3):
-        for lon in range(math.floor(west / 3) * 3, math.floor(east / 3) * 3 + 1, 3):
-            url = WORLDCOVER.format(f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}{'E' if lon >= 0 else 'W'}{abs(lon):03d}")
-            if url not in known:
-                try:
-                    urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60)
-                    known[url] = True
-                except urllib.error.HTTPError:
-                    known[url] = False
-            if known[url]:
-                tiles.append(f"/vsicurl/{url}")
-    known_path.parent.mkdir(parents=True, exist_ok=True)
-    known_path.write_text(json.dumps(known, indent=1))
+    with machine_lock("worldcover"):
+        known = json.loads(known_path.read_text()) if known_path.exists() else {}
+        for lat in range(math.floor(south / 3) * 3, math.floor(north / 3) * 3 + 1, 3):
+            for lon in range(math.floor(west / 3) * 3, math.floor(east / 3) * 3 + 1, 3):
+                url = WORLDCOVER.format(f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}{'E' if lon >= 0 else 'W'}{abs(lon):03d}")
+                if url not in known:
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60)
+                        known[url] = True
+                    except urllib.error.HTTPError:
+                        known[url] = False
+                if known[url]:
+                    tiles.append(f"/vsicurl/{url}")
+        write_atomic(known_path, json.dumps(known, indent=1))
     return tiles
 
 
@@ -831,7 +862,7 @@ def shore_distance(water: np.ndarray, half: float, work: Path) -> np.ndarray:
     with rasterio.open(src, "w", driver="GTiff", height=SIZE, width=SIZE, count=1, dtype="uint8",
                        transform=rasterio.transform.from_bounds(-half, -half, half, half, SIZE, SIZE)) as f:
         f.write((~water).astype(np.uint8)[None])
-    subprocess.run(["gdal_proximity", "-q", str(src), str(dst), "-values", "1", "-distunits", "GEO", "-ot", "Float32",
+    subprocess.run([PROXIMITY, "-q", str(src), str(dst), "-values", "1", "-distunits", "GEO", "-ot", "Float32",
                     "-maxdist", str(SHORE_REACH_M), "-nodata", str(SHORE_REACH_M)], check=True)
     with rasterio.open(dst) as f:
         return np.minimum(f.read(1), SHORE_REACH_M) * water
@@ -1080,24 +1111,24 @@ def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -
 
 def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
     """The land cover map's polygons over the habitat levels as WGS84 rings with their habitat,
-    cached like `osm_ways`. The service pages 2000 polygons at a time, slowly, so pages run three
+    cached per position. The service pages 2000 polygons at a time, slowly, so pages run three
     at once."""
     cached = SOURCES / "nlcm" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
-        half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        query = {"where": "1=1", "geometry": f"{w},{s},{e},{n}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
-                 "spatialRel": "esriSpatialRelIntersects", "outFields": "LEVEL_2_VALUE", "outSR": 4326, "f": "json"}
-        get = lambda **extra: json.loads(urllib.request.urlopen(
-            f"{NLCM[0]}/query?{urllib.parse.urlencode({**query, **extra})}", timeout=600).read())
-        count = get(returnCountOnly="true", returnGeometry="false")["count"]
-        with ThreadPoolExecutor(3) as pool:
-            pages = pool.map(lambda offset: get(returnGeometry="true", resultOffset=offset, resultRecordCount=2000),
-                             range(0, count, 2000))
-            rows = [[f["geometry"]["rings"], f["attributes"]["LEVEL_2_VALUE"]] for page in pages for f in page["features"]
-                    if f.get("geometry")]
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(json.dumps(rows))
+        with machine_lock("landcover-nlcm"):
+            half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+            w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+            query = {"where": "1=1", "geometry": f"{w},{s},{e},{n}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
+                     "spatialRel": "esriSpatialRelIntersects", "outFields": "LEVEL_2_VALUE", "outSR": 4326, "f": "json"}
+            get = lambda **extra: json.loads(urllib.request.urlopen(
+                f"{NLCM[0]}/query?{urllib.parse.urlencode({**query, **extra})}", timeout=600).read())
+            count = get(returnCountOnly="true", returnGeometry="false")["count"]
+            with ThreadPoolExecutor(3) as pool:
+                pages = pool.map(lambda offset: get(returnGeometry="true", resultOffset=offset, resultRecordCount=2000),
+                                 range(0, count, 2000))
+                rows = [[f["geometry"]["rings"], f["attributes"]["LEVEL_2_VALUE"]] for page in pages for f in page["features"]
+                        if f.get("geometry")]
+            write_atomic(cached, json.dumps(rows))
     habitat = lambda value: next((h for word, h in NLCM_WORDS if word in (value or "").lower()), "none")
     return [(rings, habitat(value)) for rings, value in json.loads(cached.read_text())]
 
@@ -1107,20 +1138,20 @@ def habmos(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list,
     `nlcm`. One request: the service returns up to a million features."""
     cached = SOURCES / "habmos" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
-        half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": HABMOS[1],
-                 "outputFormat": "application/json", "srsName": "EPSG:4326",
-                 "bbox": f"{s},{w},{n},{e},urn:ogc:def:crs:EPSG::4326"}
-        request = urllib.request.Request(f"{HABMOS[0]}?{urllib.parse.urlencode(query)}", headers={"User-Agent": USER_AGENT})
-        features = json.loads(urllib.request.urlopen(request, timeout=600).read())["features"]
-        rows = []
-        for f in features:
-            geometry = f.get("geometry") or {}
-            polygons = [geometry["coordinates"]] if geometry.get("type") == "Polygon" else geometry.get("coordinates", [])
-            rows += [[rings, f["properties"].get("HABITAT_CODE")] for rings in polygons]
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(json.dumps(rows))
+        with machine_lock("landcover-habmos"):
+            half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+            w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+            query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": HABMOS[1],
+                     "outputFormat": "application/json", "srsName": "EPSG:4326",
+                     "bbox": f"{s},{w},{n},{e},urn:ogc:def:crs:EPSG::4326"}
+            request = urllib.request.Request(f"{HABMOS[0]}?{urllib.parse.urlencode(query)}", headers={"User-Agent": USER_AGENT})
+            features = json.loads(urllib.request.urlopen(request, timeout=600).read())["features"]
+            rows = []
+            for f in features:
+                geometry = f.get("geometry") or {}
+                polygons = [geometry["coordinates"]] if geometry.get("type") == "Polygon" else geometry.get("coordinates", [])
+                rows += [[rings, f["properties"].get("HABITAT_CODE")] for rings in polygons]
+            write_atomic(cached, json.dumps(rows))
 
     def habitat(code: str | None) -> str:
         matches = [prefix for prefix in HABMOS_CODES if (code or "").startswith(prefix)]
@@ -1219,78 +1250,76 @@ def encode(heights: np.ndarray) -> bytes:
 
 
 def overpass(query: str) -> str:
-    for attempt in range(4):
-        request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
-                                         data=urllib.parse.urlencode({"data": query}).encode())
-        try:
-            with urllib.request.urlopen(request, timeout=900) as response:
-                return response.read().decode()
-        except (urllib.error.HTTPError, TimeoutError) as error:
-            # Overpass answers 429 and 500 to 504, or not at all, when it is busy.
-            busy = isinstance(error, TimeoutError) or error.code in (429, 500, 502, 503, 504)
-            if not busy or attempt == 3:
-                raise
+    """Overpass's answer, from each public instance in turn while they are busy. One query at a
+    time on this machine, as the public instances ration queries per address."""
+    with machine_lock("overpass"):
+        for attempt in range(4):
+            request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
+                                             data=urllib.parse.urlencode({"data": query}).encode())
+            try:
+                with urllib.request.urlopen(request, timeout=900) as response:
+                    text = response.read().decode()
+                # A query that runs out of time or memory still answers 200, with an error remark.
+                if query.startswith("[out:json]") and "error" in (remark := json.loads(text).get("remark", "")):
+                    raise http.client.HTTPException(remark)
+                return text
+            except (OSError, http.client.HTTPException) as error:
+                # Busy is 429 or 500 to 504, a dropped connection, or no answer at all.
+                if isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                    raise
             time.sleep(60 * (attempt + 1))
 
 
-def overpass_peaks(lat: float, lon: float, radius: float) -> list[tuple[float, float, str, str]]:
-    text = overpass(f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
-                    f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
-    rows = []
-    for line in text.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 4:
-            rows.append((float(parts[0]), float(parts[1]), parts[2], parts[3]))
-    return rows
+def cached_overpass(path: Path, query: str) -> str:
+    """Overpass's answer, cached at `path`, because a bake is rerun far more often than OSM changes."""
+    if not path.exists():
+        write_atomic(path, overpass(query))
+    return path.read_text(encoding="utf-8")
+
+
+def osm(preset_id: str, lat: float, lon: float, layer: str, statements: str) -> list[dict]:
+    """The ways and relations, with their geometry, that the statements find, cached per position."""
+    text = cached_overpass(SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}{layer}.json",
+                           f"[out:json][timeout:600];({statements});out geom;")
+    return [element for element in json.loads(text)["elements"] if element.get("geometry") or element.get("members")]
+
+
+def overpass_box(to_wgs84, half: float) -> str:
+    """±half metres around the eye as an Overpass box: south, west, north, east."""
+    w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+    return f"{s},{w},{n},{e}"
+
+
+def osm_peaks(preset_id: str, lat: float, lon: float) -> list[list[str]]:
+    """Named peaks and volcanoes out to the last level, 320 km, as lat, lon, ele, name."""
+    radius = HALF0_M * 2 ** (LEVELS - 1)
+    text = cached_overpass(SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_peaks.csv",
+                           f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
+                           f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
+    return [row for row in (line.split("\t") for line in text.splitlines()) if len(row) == 4]
 
 
 def osm_ways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """Highways and forests with a leaf type over the road levels, buildings over BUILDING_HALF_M,
-    with their geometry. Cached per position, because a bake is rerun far more often than OSM
-    changes."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
-    if not cached.exists():
-        half = HALF0_M * 2 ** (ROAD_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        bw, bs, be, bn = to_wgs84.transform_bounds(-BUILDING_HALF_M, -BUILDING_HALF_M, BUILDING_HALF_M,
-                                                   BUILDING_HALF_M, densify_pts=21)
-        box, near = f"{s},{w},{n},{e}", f"{bs},{bw},{bn},{be}"
-        text = overpass(f'[out:json][timeout:600];(way["highway"]({box});'
-                        f'way["landuse"="forest"]["leaf_type"]({box});way["natural"="wood"]["leaf_type"]({box});'
-                        f'way["building"]({near}););out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+    """Highways and forests with a leaf type over the road levels, buildings over BUILDING_HALF_M."""
+    box, near = overpass_box(to_wgs84, HALF0_M * 2 ** (ROAD_LEVELS - 1)), overpass_box(to_wgs84, BUILDING_HALF_M)
+    return osm(preset_id, lat, lon, "", f'way["highway"]({box});way["landuse"="forest"]["leaf_type"]({box});'
+               f'way["natural"="wood"]["leaf_type"]({box});way["building"]({near});')
 
 
 def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """Waterways and water areas over the water levels, cached like `osm_ways`. Lakes and wide
-    rivers mapped as multipolygon relations come from `osm_water_areas`."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_water.json"
-    if not cached.exists():
-        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        box = f"{s},{w},{n},{e}"
-        text = overpass(f'[out:json][timeout:600];(way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
-                        f'way["natural"="water"]({box});way["landuse"="reservoir"]({box}););out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+    """Waterways and water areas over the water levels. Lakes and wide rivers mapped as
+    multipolygon relations come from `osm_water_areas`."""
+    box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
+    return osm(preset_id, lat, lon, "_water", f'way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
+               f'way["natural"="water"]({box});way["landuse"="reservoir"]({box});')
 
 
 def osm_water_areas(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Lakes, reservoirs and wide rivers mapped as multipolygon relations over the water levels,
-    cached like `osm_ways`, each with its member ways' roles and geometry."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_waterareas.json"
-    if not cached.exists():
-        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        box = f"{s},{w},{n},{e}"
-        text = overpass(f'[out:json][timeout:600];(relation["natural"="water"]({box});'
-                        f'relation["waterway"="riverbank"]({box});relation["landuse"="reservoir"]({box}););out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [relation for relation in json.loads(cached.read_text())["elements"] if relation.get("members")]
+    each with its member ways' roles and geometry."""
+    box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
+    return osm(preset_id, lat, lon, "_waterareas", f'relation["natural"="water"]({box});'
+               f'relation["waterway"="riverbank"]({box});relation["landuse"="reservoir"]({box});')
 
 
 def close_rings(lines: list[np.ndarray]) -> list[np.ndarray]:
@@ -1312,30 +1341,17 @@ def close_rings(lines: list[np.ndarray]) -> list[np.ndarray]:
 
 
 def osm_coastline(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """OSM's coastline over the water levels, cached like `osm_ways`: lines with the land on their
-    left, mapped from imagery to a few metres, gullies and stacks included."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_coast.json"
-    if not cached.exists():
-        half = HALF0_M * 2 ** (WATER_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        text = overpass(f'[out:json][timeout:600];way["natural"="coastline"]({s},{w},{n},{e});out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+    """OSM's coastline over the water levels: lines with the land on their left, mapped from imagery
+    to a few metres, gullies and stacks included."""
+    box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
+    return osm(preset_id, lat, lon, "_coast", f'way["natural"="coastline"]({box});')
 
 
 def osm_features(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """Walls, hedges, orchards, aretes and ridges over the road levels, cached like `osm_ways`."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_features.json"
-    if not cached.exists():
-        half = HALF0_M * 2 ** (ROAD_LEVELS - 1)
-        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
-        box = f"{s},{w},{n},{e}"
-        text = overpass(f'[out:json][timeout:600];('
-                        f'way["barrier"~"^(wall|retaining_wall|hedge)$"]({box});way["natural"~"^(arete|ridge)$"]({box});way["landuse"="orchard"]({box}););out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+    """Walls, hedges, orchards, aretes and ridges over the road levels."""
+    box = overpass_box(to_wgs84, HALF0_M * 2 ** (ROAD_LEVELS - 1))
+    return osm(preset_id, lat, lon, "_features", f'way["barrier"~"^(wall|retaining_wall|hedge)$"]({box});'
+               f'way["natural"~"^(arete|ridge)$"]({box});way["landuse"="orchard"]({box});')
 
 
 # Lifts the page draws, with cables and pylons, out to ±10 km where a gondola still shows.
@@ -1344,15 +1360,9 @@ AERIALWAY_HALF_M = 10000.0
 
 
 def osm_aerialways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
-    """Cable cars, gondolas and ski lifts over AERIALWAY_HALF_M, cached like `osm_ways`."""
-    cached = SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_aerialways.json"
-    if not cached.exists():
-        w, s, e, n = to_wgs84.transform_bounds(-AERIALWAY_HALF_M, -AERIALWAY_HALF_M, AERIALWAY_HALF_M,
-                                               AERIALWAY_HALF_M, densify_pts=21)
-        text = overpass(f'[out:json][timeout:600];way["aerialway"~"^({"|".join(AERIALWAYS)})$"]({s},{w},{n},{e});out geom;')
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_text(text)
-    return [way for way in json.loads(cached.read_text())["elements"] if way.get("geometry")]
+    """Cable cars, gondolas and ski lifts over AERIALWAY_HALF_M."""
+    box = overpass_box(to_wgs84, AERIALWAY_HALF_M)
+    return osm(preset_id, lat, lon, "_aerialways", f'way["aerialway"~"^({"|".join(AERIALWAYS)})$"]({box});')
 
 
 def landmark(tags: dict) -> str:
@@ -1369,10 +1379,18 @@ def elevation_tag(text: str) -> float | None:
     return float(match.group(1).replace(",", ".")) if match else None
 
 
-def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> None:
+def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
+    if missing := [tool for tool in ("gdalwarp", "gdal_translate", "gdalbuildvrt", PROXIMITY) if not shutil.which(tool)]:
+        sys.exit(f"bake.py needs GDAL 3.13 on PATH; not found: {', '.join(missing)}")
     out = CACHE / preset["id"]
-    out.mkdir(parents=True, exist_ok=True)
     lat, lon = preset["lat"], preset["lon"]
+    # Colour takes most of a bake's time, so a rebake keeps it while the spot stays where it was.
+    s2 = {(k, q): out / f"s2-q{q}-{k}.bin.gz" for k in range(S2_LEVELS) for q in range(1, 5)}
+    before = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+    colour = colour or (before.get("lat"), before.get("lon")) != (lat, lon) or not all(path.exists() for path in s2.values())
+    if colour:
+        cdse_credentials()
+    out.mkdir(parents=True, exist_ok=True)
     frame = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
     to_wgs84 = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:4326", always_xy=True)
     region = region_at(lat, lon)
@@ -1384,17 +1402,13 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
     def metres(way: dict) -> np.ndarray:
         return np.array(to_frame.transform([n["lon"] for n in way["geometry"]], [n["lat"] for n in way["geometry"]])).T
 
-    if not skip_peaks:
-        radius = HALF0_M * 2 ** (LEVELS - 1)
-        raw = overpass_peaks(lat, lon, radius)
-        xs, ys = to_frame.transform([r[1] for r in raw], [r[0] for r in raw])
-        peaks = [[round(x), round(y), elevation_tag(ele), name]
-                 for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
-        blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
-        (out / "peaks.json").write_bytes(blob)
-        sizes.append(("-", "peaks", len(blob)))
-    summits = [(x, y, ele) for x, y, ele, _ in json.loads((out / "peaks.json").read_text())
-               if ele is not None] if (out / "peaks.json").exists() else []
+    raw = osm_peaks(preset["id"], lat, lon)
+    xs, ys = to_frame.transform([float(r[1]) for r in raw], [float(r[0]) for r in raw])
+    peaks = [[round(x), round(y), elevation_tag(ele), name] for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
+    blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
+    (out / "peaks.json").write_bytes(blob)
+    sizes.append(("-", "peaks", len(blob)))
+    summits = [(x, y, ele) for x, y, ele, _ in peaks if ele is not None]
 
     ways = osm_ways(preset["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
@@ -1451,7 +1465,8 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
         dtm_paths = []
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
-            dtm_paths = dtm_rasters(dtm, to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
+            with machine_lock(f"dtm-{dtm}"):
+                dtm_paths = dtm_rasters(dtm, to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
             if not dtm_paths:
                 print(f"  no {dtm} DTM here: GLO-30 only", flush=True)
                 dtm = None
@@ -1523,19 +1538,19 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
             print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
-        if skip_colour:
-            sizes += [(k, f"s2-q{q}", (out / f"s2-q{q}-{k}.bin.gz").stat().st_size) for k in range(S2_LEVELS) for q in range(1, 5)]
+        if not colour:
+            sizes += [(k, f"s2-q{q}", path.stat().st_size) for (k, q), path in s2.items()]
         else:
-            cdse_credentials()
-            half = HALF0_M * 2 ** (S2_LEVELS - 1)
-            quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
-            print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
-            for k in range(S2_LEVELS):
-                for q, texels in s2_level(k, frame, quarters, work).items():
-                    blob = pack(texels)
-                    (out / f"s2-q{q}-{k}.bin.gz").write_bytes(blob)
-                    sizes.append((k, f"s2-q{q}", len(blob)))
-                print(f"  colour level {k}", flush=True)
+            with machine_lock("cdse"):
+                half = HALF0_M * 2 ** (S2_LEVELS - 1)
+                quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
+                print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
+                for k in range(S2_LEVELS):
+                    for q, texels in s2_level(k, frame, quarters, work).items():
+                        blob = pack(texels)
+                        s2[k, q].write_bytes(blob)
+                        sizes.append((k, f"s2-q{q}", len(blob)))
+                    print(f"  colour level {k}", flush=True)
         barren_median = ndvimax_levels(out)
         sizes += [(k, "ndvimax", (out / f"ndvimax-{k}.bin.gz").stat().st_size) for k in range(S2_LEVELS)]
 
@@ -1581,11 +1596,11 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
     print(f"  ground {ground:.1f} m; at the origin the DTM says {origin.get('dtm', float('nan')):.1f} m, "
           f"GLO-30 {origin['glo30']:.1f} m")
 
-    credits = [CREDITS["glo30"]] + ([CREDITS[dtm]] if dtm else []) + [CREDITS["worldcover"], CREDITS["s2"]]
+    credits = [CREDITS["glo30"]] + ([CREDITS.get(dtm) or DTM_SOURCES[dtm].credit(time.strftime("%Y-%m-%d"))] if dtm else [])
+    credits += [CREDITS["worldcover"], CREDITS["s2"]]
     credits += [geology[2]] if geology else []
     credits += [landcover[1]] if habitats else []
-    if (out / "peaks.json").exists():
-        credits.append(CREDITS["osm"])
+    credits.append(CREDITS["osm"])
 
     meta = {key: preset[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in preset}
     above = preset.get("eye_above_ground_m", PHONE_M)
@@ -1613,12 +1628,12 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("preset")
-    parser.add_argument("--skip-peaks", action="store_true", help="keep the peaks.json of an earlier bake")
-    parser.add_argument("--skip-colour", action="store_true", help="keep the Sentinel-2 levels of an earlier bake")
+    parser.add_argument("--colour", action="store_true",
+                        help="read the Sentinel-2 levels again; a rebake keeps them while the spot stays where it was")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
                         help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
     args = parser.parse_args()
-    bake(load_preset(args.preset), args.skip_peaks, args.skip_colour, args.dtm_levels)
+    bake(load_preset(args.preset), args.colour, args.dtm_levels)
 
 
 if __name__ == "__main__":

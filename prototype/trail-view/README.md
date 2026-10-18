@@ -16,12 +16,19 @@ in a draft pull request from this branch.
 
 ## Bake
 
-Needs GDAL 3.13 on `PATH` and `uv`. Run from the repository root:
+Needs `uv` and GDAL 3.13 on `PATH`: `gdalwarp`, `gdal_translate`, `gdalbuildvrt`, and
+`gdal_proximity` or `gdal_proximity.py`. A bake checks for them, and for the CDSE keys when it reads
+colour, before it starts. Run from the repository root:
 
 ```sh
 uv run prototype/trail-view/bake.py hahnen
 ```
 
+- Bakes can run side by side on one machine. Each shared source is a lock in `_sources/locks/`:
+  `overpass` (one query at a time), `cdse` (one account), `dtm-<key>` (a national DTM and its
+  downloads), `glo30` (tile downloads), `landcover-<key>` and `worldcover` (its tile list). A bake
+  that waits prints `waiting for <name>`. The kernel frees a lock when its bake stops. Cached
+  answers are written whole or not at all.
 - GLO-30 tiles come from `~/.cache/obcm/dem/` where they exist, else from the public COGs.
 - The national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
   `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
@@ -59,8 +66,9 @@ uv run prototype/trail-view/bake.py hahnen
 - In Spain, rock colour comes from IGME's 1:50 000 geological map: each unit's description picks
   the colour, and variegated units are drawn in bands.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
-- `--skip-peaks` keeps an earlier `peaks.json`. The Overpass query covers 320 km and takes minutes.
-- `--skip-colour` keeps the Sentinel-2 levels of an earlier bake, which take most of a bake's time.
+- The peaks come from one more cached Overpass query over 320 km, which takes minutes.
+- A rebake keeps the Sentinel-2 levels, which take most of a bake's time, while the spot stays at
+  the position in its `meta.json`. `--colour` reads them again.
 - The photographs come from the `peak-view-photos` fixture package in
   `~/.cache/openbikecomputer/fixtures/`.
 - WorldCover is read from its public COGs. The Sentinel-2 quarterly mosaics are read from CDSE
