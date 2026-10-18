@@ -1,1 +1,8 @@
-{ "name": "Dinaric Mountains mixed forests", "ecoregion": 660, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Dinaric Mountains mixed forests",
+ "ecoregion": 660,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "dinaric",
+ "about": "Long limestone ranges from the Slovenian karst over Gorski kotar, the Velebit and the Bosnian and Montenegrin mountains to the Prokletije: dark beech and silver fir forest with spruce in the cold hollows, black pine on dolomite and canyon walls, karst poljes with hay meadows and seasonal lakes, pale high pastures full of sinkholes and white rock, mountain pine and Bosnian pine above the trees, deep canyons such as the Tara, and villages of plastered or stone houses with steep roofs. No split: the range has one mountain climate with wet winters and summer storms, and it changes from the wet north-west to the warmer south-east without a stable line, while the Adriatic slopes belong to illyria; the beech, fir, spruce and pine belts are carried by the tree elevation bands, the bare limestone by the barren rule and the snowline, the green poljes and the summer-dry high pastures by Sentinel-2 colour and seasonal NDVI ramps, and the houses by culture by country."
+}
