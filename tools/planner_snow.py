@@ -262,87 +262,176 @@ def overpass_trails(bounds):
             time.sleep(60 * (attempt + 1))
 
 
-def bake(sources, first_season, seasons, bounds, output, credit, workers=4):
+# What a chunk of the bake that runs reads: its worker processes fork from it, so they read the
+# planes of its sources without a copy.
+Baking = namedtuple("Baking", "sources bounds top chunk seasons smooth")
+_baking = None
+
+
+def area(bounds, z, x, y):
+    """The part of the bounds in tile z/x/y, or None."""
+    west, south, east, north = bounds
+    w, s, e, n_ = geo.tile_bounds(z, x, y)
+    if w >= east or e <= west or s >= north or n_ <= south:
+        return None
+    return max(w, west), max(s, south), min(e, east), min(n_, north)
+
+
+def keep(tiles, z, x, y, body):
+    """Add the gzip bytes of tile z/x/y to `tiles` when it has data."""
+    from pmtiles.tile import zxy_to_tileid
+
+    if (body != NO_DATA).any():
+        tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
+
+
+def below(baking, z, x, y, read, tiles):
+    """The body of tile z/x/y, at or below its chunk, from `read`: the planes and grids of the sources around the
+    chunk. Its tiles and those below go into `tiles`."""
+    if area(baking.bounds, z, x, y) is None:
+        return None
+    if z == baking.top:
+        body = None
+        for planes, grid in read:
+            if body is not None and not (body == NO_DATA).any():
+                break
+            sampled = sample(planes, grid, z, x, y)
+            body = sampled if body is None else np.where(body == NO_DATA, sampled, body)
+        west, south, east, north = baking.bounds
+        lon_c, lat_c = tile_lonlat(z, x, y)
+        outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
+        body[:, :, outside] = NO_DATA
+    else:
+        children = {(dx, dy): below(baking, z + 1, 2 * x + dx, 2 * y + dy, read, tiles) for dx in (0, 1) for dy in (0, 1)}
+        body = parent(children, baking.seasons, baking.smooth)
+    keep(tiles, z, x, y, body)
+    return body
+
+
+def worker_count():
+    """One worker for each core that this process can use, and one at most for each GB of free memory: a worker
+    holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N (measured with two seasons)."""
+    cores = len(os.sched_getaffinity(0))
+    try:
+        with open("/proc/meminfo") as meminfo:
+            free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
+    except (OSError, StopIteration):
+        return cores
+    return max(1, min(cores, free >> 30))
+
+
+def end_with(parent):
+    """Make this worker end when the bake process `parent` ends, also when a signal kills it."""
+    import ctypes
+    import signal
+
+    PR_SET_PDEATHSIG = 1
+    ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    if os.getppid() != parent:
+        os._exit(1)
+
+
+def chunk_tiles(x, y, part):
+    """The gzip tiles of chunk tile x/y and below, whose bounds part is `part`, in a worker process."""
+    tiles = {}
+    read = [planes(part) for _, planes in _baking.sources]
+    below(_baking, _baking.chunk, x, y, read, tiles)
+    return tiles
+
+
+def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
     """Write the archive with the attribution `credit`; return the tile count.
 
     `sources` is [(name, planes)], the finest first: `planes(bounds)` gives the season planes and their grid around
     the bounds of one chunk tile. In each season, a pixel takes the first source that has data there. The finest
-    source sets the max zoom, the smoothing and the metadata. The chunks bake in `workers` threads: numpy, zlib and
-    GDAL release the GIL. CDSE S3 allows 4 connections per user.
+    source sets the max zoom, the smoothing and the metadata. On Linux the chunks bake in `workers` processes, by
+    default as `worker_count` says. Their tiles wait in a file beside the output, and the archive takes them in tile
+    order, so its bytes do not depend on which chunk ends first.
     """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
+    global _baking
     name = sources[0][0]
     top = max_zoom(SOURCES[name]["resolution_m"], bounds)
-    chunk = min(CHUNK_ZOOM, top)
+    baking = Baking(sources, bounds, top, min(CHUNK_ZOOM, top), seasons, SOURCES[name]["smooth"])
     west, south, east, north = bounds
-    tiles = {}
-
-    def area(z, x, y):
-        """The part of the bounds in tile z/x/y, or None."""
-        w, s, e, n_ = geo.tile_bounds(z, x, y)
-        if w >= east or e <= west or s >= north or n_ <= south:
-            return None
-        return max(w, west), max(s, south), min(e, east), min(n_, north)
-
-    def build(z, x, y, read=None):
-        """The body of tile z/x/y from `read`, the planes and grids of the sources around its chunk. Its tiles and
-        those below go into `tiles`."""
-        if area(z, x, y) is None:
-            return None
-        if z == chunk and read is None:
-            return chunks[x, y].result()
-        if z == top:
-            body = None
-            for planes, grid in read:
-                if body is not None and not (body == NO_DATA).any():
-                    break
-                sampled = sample(planes, grid, z, x, y)
-                body = sampled if body is None else np.where(body == NO_DATA, sampled, body)
-            lon_c, lat_c = tile_lonlat(z, x, y)
-            outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
-            body[:, :, outside] = NO_DATA
-        else:
-            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, read) for dx in (0, 1) for dy in (0, 1)}
-            body = parent(children, seasons, SOURCES[name]["smooth"])
-        if (body != NO_DATA).any():
-            tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
-        return body
-
-    x0, y0 = geo.mercator(west, north, chunk)
-    x1, y1 = geo.mercator(east, south, chunk)
-    pool = ThreadPoolExecutor(workers)
-    try:
-        read = lambda part: [planes(part) for _, planes in sources]
-        chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, read(part)), x, y, part)
-                  for x in range(int(x0), int(x1) + 1)
-                  for y in range(int(y0), int(y1) + 1) if (part := area(chunk, x, y))}
-        build(0, 0, 0)
-    finally:
-        pool.shutdown(cancel_futures=True)
     output.parent.mkdir(parents=True, exist_ok=True)
-    e7 = lambda value: round(value * 1e7)
-    with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".snow-", delete=False) as stream:
+    with tempfile.TemporaryFile(dir=output.parent, prefix=".snow-tiles-") as spill:
+        index = {}
+
+        def store(tiles):
+            for tile_id, data in tiles.items():
+                index[tile_id] = (spill.tell(), len(data))
+                spill.write(data)
+
+        def above(z, x, y):
+            """The body of tile z/x/y, at or above the chunks, from the tiles of the chunks."""
+            if area(bounds, z, x, y) is None:
+                return None
+            if z == baking.chunk:
+                at = index.get(zxy_to_tileid(z, x, y))
+                if at is None:
+                    return np.full((seasons, 2, TILE, TILE), NO_DATA, np.uint8)
+                spill.seek(at[0])
+                body = np.frombuffer(gzip.decompress(spill.read(at[1])), np.uint8).reshape(seasons, 2, TILE, TILE)
+                spill.seek(0, os.SEEK_END)
+                return body
+            children = {(dx, dy): above(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)}
+            body = parent(children, seasons, baking.smooth)
+            tiles = {}
+            keep(tiles, z, x, y, body)
+            store(tiles)
+            return body
+
+        x0, y0 = geo.mercator(west, north, baking.chunk)
+        x1, y1 = geo.mercator(east, south, baking.chunk)
+        _baking = baking
         try:
-            writer = Writer(stream)
-            for tile_id in sorted(tiles):
-                writer.write_tile(tile_id, tiles[tile_id])
-            meta = SOURCES[name]
-            writer.finalize({
-                "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
-                "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
-                "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
-            }, {
-                "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
-                "resolution_m": meta["resolution_m"], "attribution": credit,
-            })
-            stream.flush()
-            os.replace(stream.name, output)
-        except BaseException:
-            os.unlink(stream.name)
-            raise
-    return len(tiles)
+            if sys.platform == "linux":
+                fork = multiprocessing.get_context("fork")
+                pool = ProcessPoolExecutor(workers or worker_count(), mp_context=fork, initializer=end_with,
+                                           initargs=(os.getpid(),))
+            else:
+                # A fork is not safe on macOS: there the chunks bake in threads.
+                pool = ThreadPoolExecutor(workers or 4)
+            try:
+                # `as_completed` lets go of each chunk once it gave it, so its tiles do not stay in memory.
+                for done in as_completed([pool.submit(chunk_tiles, x, y, part)
+                                          for x in range(int(x0), int(x1) + 1)
+                                          for y in range(int(y0), int(y1) + 1)
+                                          if (part := area(bounds, baking.chunk, x, y))]):
+                    store(done.result())
+            finally:
+                pool.shutdown(cancel_futures=True)
+        finally:
+            _baking = None
+        above(0, 0, 0)
+
+        e7 = lambda value: round(value * 1e7)
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=".snow-", delete=False) as stream:
+            try:
+                writer = Writer(stream)
+                for tile_id in sorted(index):
+                    spill.seek(index[tile_id][0])
+                    writer.write_tile(tile_id, spill.read(index[tile_id][1]))
+                meta = SOURCES[name]
+                writer.finalize({
+                    "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
+                    "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
+                    "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
+                }, {
+                    "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
+                    "resolution_m": meta["resolution_m"], "attribution": credit,
+                })
+                stream.flush()
+                os.replace(stream.name, output)
+            except BaseException:
+                os.unlink(stream.name)
+                raise
+    return len(index)
 
 
 def http_json(url, body=None):
@@ -494,7 +583,7 @@ def cdse_credentials():
 @functools.cache
 def laea_footprint(path):
     """The bounds of raster `path` in EPSG:3035. Each chunk of a bake tests every file, and `transform_bounds` holds
-    the GIL while it sets up a new transform, so each file pays for it once."""
+    the GIL while it sets up a new transform, so each file pays for it once in each process."""
     import rasterio
     from rasterio.warp import transform_bounds
 
@@ -663,7 +752,9 @@ def main():
         modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy)
         source = lambda chunk: modis
         credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
-    count = bake([(args.source, source)], seasons.start, len(seasons), bounds, output, credit)
+    # CDSE S3 allows 4 connections per user.
+    workers = 4 if args.source == "copernicus-hr-wsi" else None
+    count = bake([(args.source, source)], seasons.start, len(seasons), bounds, output, credit, workers)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
                       "total_s": round(time.monotonic() - start)}))
 

@@ -432,9 +432,7 @@ fn selection(
 /// The files of `snapshot` that `selected` names, or all of them when it names none, and the
 /// selected names that the snapshot lacks.
 fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRecord>, Vec<&'a str>) {
-    let files = snapshot.files.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)).collect();
-    let missing = selected.iter().filter(|name| !snapshot.files.iter().any(|file| &file.name == *name));
-    (files, missing.map(String::as_str).collect())
+    chosen(&snapshot.files, |file| &file.name, selected)
 }
 
 /// The object of each file that a snapshot input with these fields reads, by file name, or `None`
@@ -457,9 +455,30 @@ pub fn snapshot_files(
 /// The files of a layer that `selected` names, or all of them when it names none, and the selected
 /// paths that the layer lacks.
 pub(crate) fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
-    let chosen = files.iter().filter(|file| selected.is_empty() || selected.contains(&file.path)).collect();
-    let missing = selected.iter().filter(|path| !files.iter().any(|file| &file.path == *path));
-    (chosen, missing.map(String::as_str).collect())
+    chosen(files, |file| &file.path, selected)
+}
+
+/// The items whose name `selected` names, or all of them when it names none, and the selected
+/// names that no item has. A record can have tens of thousands of files, so one pass looks the
+/// names up in sets.
+fn chosen<'a, T>(
+    items: &'a [T],
+    name: impl Fn(&'a T) -> &'a String,
+    selected: &'a [String],
+) -> (Vec<&'a T>, Vec<&'a str>) {
+    if selected.is_empty() {
+        return (items.iter().collect(), Vec::new());
+    }
+    let wanted: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    let mut found = HashSet::new();
+    let chosen = items
+        .iter()
+        .filter(|item| {
+            let name = name(item).as_str();
+            wanted.contains(name) && (found.insert(name) || true)
+        })
+        .collect();
+    (chosen, selected.iter().map(String::as_str).filter(|name| !found.contains(name)).collect())
 }
 
 /// The digest of the files of a layer that `selected` names: what a step that reads them keys.
@@ -967,6 +986,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(first[2].receipt.files[0].path, "count/lines.txt");
 
         assert_eq!(fixture.plan(&pipeline()).unwrap().builds().count(), 0, "the store has every layer");
+    }
+
+    #[test]
+    fn a_program_writes_its_temporary_files_in_the_work_of_its_step() {
+        let fixture = fixture("engine-temporary");
+        let script = "import json, os, sys, tempfile\nrequest = json.load(sys.stdin)\n\
+                      with tempfile.NamedTemporaryFile() as spool:\n    \
+                      open(os.path.join(request['output'], 'temp.txt'), 'w').write(os.path.dirname(spool.name))\n";
+        write(&fixture.root().join("temp.py"), script);
+        let temp = step("test/temp", Vec::new(), "temp.txt", Run::Command(vec!["python3".into(), "temp.py".into()]));
+        let receipt = &fixture.build(&[temp]).unwrap()[0].receipt;
+        let used = fs::read_to_string(fixture.store.object(&receipt.files[0].sha256)).unwrap();
+        assert_eq!(Path::new(&used), fixture.store.partial(&format!("layer-{}", receipt.key)).join("tmp"));
+        assert!(!Path::new(&used).exists(), "the engine removes it with the work of the step");
     }
 
     #[test]

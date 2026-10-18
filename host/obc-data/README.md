@@ -72,8 +72,9 @@ An update runs in a process of its own: Ctrl-C ends only the following of its lo
 `obc data runs RUN --stop` stops it. An update that stops keeps what it baked: run it again. The
 previous release stays as the rollback of the target. A target takes one update or rollback at a
 time: the run holds `lock.json` of the target, and another run refuses to start. A run that fails
-or stops frees the lock. A crash or an out-of-memory kill keeps it:
-`obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
+or stops frees the lock. A crash or an out-of-memory kill keeps it; the next run on the same
+machine takes it over. From another machine, `obc data unlock TARGET --from MACHINE` frees it
+after 10 minutes without a heartbeat.
 
 `cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
 in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
