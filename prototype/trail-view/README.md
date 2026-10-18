@@ -178,7 +178,6 @@ prints one JSON line with its files, the renderer, the triangles and the page er
   eye can be metres above the DTM's.
 - A level blends into the next over its outer tenth. A skyline in that band is part GLO-30 even
   with the DTM on.
-- The dev server sends `*.bin.gz` with `Content-Encoding: gzip`, so the browser unpacks them.
 - OSM tags volcanoes `natural=volcano`, not `natural=peak`; the summit query asks for both.
 - The local Overpass holds only the tags of its filter. A new Overpass query in bake.py finds
   nothing there until its tags are in the filter and the database is imported again.
