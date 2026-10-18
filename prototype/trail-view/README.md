@@ -111,7 +111,7 @@ sudo apt install -y libexpat1-dev zlib1g-dev liblz4-dev osmium-tool
 curl -LO https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz && tar xzf osm-3s_latest.tar.gz
 (cd osm-3s_v*/ && ./configure --enable-lz4 --prefix=$OVERPASS && make -j install)
 curl -LO https://download.geofabrik.de/europe-latest.osm.pbf
-osmium tags-filter europe-latest.osm.pbf w/highway w/landuse=forest,orchard,reservoir \
+osmium tags-filter europe-latest.osm.pbf w/highway w/landuse=forest,orchard,reservoir,vineyard \
   w/natural=wood,water,coastline,arete,ridge w/building w/waterway=river,stream,canal,riverbank \
   w/barrier=wall,retaining_wall,hedge w/aerialway r/natural=water r/waterway=riverbank \
   r/landuse=reservoir n/natural=peak,volcano -o trail-view.osm.pbf
