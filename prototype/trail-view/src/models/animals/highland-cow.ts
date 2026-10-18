@@ -92,7 +92,7 @@ function highlandCow(seed: number): THREE.BufferGeometry {
 
 export default {
   name: 'Highland cow',
-  latin: 'Bos taurus',
+  latin: 'Bos taurus (Highland)',
   build: highlandCow,
   height_m: 1.3,
 } satisfies Animal;

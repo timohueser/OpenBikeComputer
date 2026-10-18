@@ -197,7 +197,8 @@ Each region agent repeats these steps:
 An asset is a tree, plant or animal model (`src/models/trees/`, `plants/` or `animals/<id>.ts`), a
 house style (`styles/<id>.json`) or a building kind (`src/models/buildings.ts`). Its id is the
 English name as a slug, for example `pedunculate-oak`. Its file holds the Latin name. One Latin
-name has one model; `npm run check` fails on two.
+name has one model; `npm run check` fails on two. A breed or look of one species is a model of its
+own, with the breed after the species: `Bos taurus (Highland)`, `Bos taurus (Holstein-Friesian)`.
 
 - Before you build an asset, claim it:
   `mkdir -p ~/.cache/obc/trail-view/_claims/<kind> && mkdir ~/.cache/obc/trail-view/_claims/<kind>/<id>`,

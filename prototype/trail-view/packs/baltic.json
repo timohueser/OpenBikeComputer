@@ -28,7 +28,7 @@
   "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "groups": 2, "size": [5, 20], "on": ["pasture"] },
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [5, 20], "on": ["pasture"] },
   "sheep": { "groups": 2, "size": [5, 30], "on": ["pasture", "rough", "heath"] },
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
  },

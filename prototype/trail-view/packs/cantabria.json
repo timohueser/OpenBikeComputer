@@ -20,7 +20,7 @@
  },
  "ground": {"bracken": {}, "heather": {}, "heather-bloom": {}, "fern": {}, "bilberry": {}},
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus", "groups": 8, "size": [3, 12], "on": ["pasture", "rough"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 8, "size": [3, 12], "on": ["pasture", "rough"] },
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 3, "size": [3, 10], "on": ["heath", "rough"] },
   "sheep": { "groups": 2, "size": [5, 20], "on": ["pasture", "rough", "heath"] },
   "goat": { "groups": 2, "size": [3, 10], "on": ["rough", "scrub", "rock"] }
