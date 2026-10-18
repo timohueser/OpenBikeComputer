@@ -1,0 +1,41 @@
+{
+ "name": "Scandinavian coastal conifer forests",
+ "extends": "base",
+ "about": "Downy birch with Scots pine on the rock, planted Norway and Sitka spruce, rowan, aspen and grey alder, and sessile oak and hazel on the sunny fjord sides of the south; juniper on the heath; heather, crowberry, bilberry and lingonberry, bracken and fern, deergrass, bog cotton and bog myrtle on the mires, foxglove by the roads and lyme grass on the beaches; sheep, Old Norwegian sheep on the coastal heath all year, goats, Norwegian Red cattle and Fjord horses by the farms; red wooden barns and boathouses, white wooden houses.",
+ "trees": {
+  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 8 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 }
+ },
+ "ground": {
+  "heather": {},
+  "heather-bloom": {},
+  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "bare"], "share": 0.2 },
+  "bilberry": {},
+  "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub"], "height": [0.1, 0.25], "share": 0.15 },
+  "bracken": {},
+  "fern": {},
+  "moor-grass": {},
+  "bog-cotton": {},
+  "bog-myrtle": { "model": "alpenrose", "latin": "Myrica gale", "on": ["wetland", "moss"], "height": [0.5, 1.2], "share": 0.15, "clumped": true },
+  "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true },
+  "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [3, 10], "on": ["pasture", "rough"] },
+  "old-norwegian-sheep": { "model": "sheep", "latin": "Ovis aries (Old Norwegian)", "groups": 2, "size": [3, 12], "on": ["heath", "rough"] },
+  "goat": { "groups": 1, "size": [4, 15], "on": ["rough", "scrub"] },
+  "norwegian-red-cattle": { "model": "highland-cow", "latin": "Bos taurus (Norwegian Red)", "groups": 2, "size": [3, 10], "on": ["pasture"] },
+  "fjord-horse": { "model": "highland-cow", "latin": "Equus caballus (Fjord)", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "style": "wood-cabin",
+ "houses": "cottage"
+}
