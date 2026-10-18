@@ -8,9 +8,9 @@ in a draft pull request from this branch.
 
 | Path | What it is |
 |---|---|
-| `bake.py` | Bakes one preset into `~/.cache/obc/trail-view/<preset>/` |
+| `bake.py` | Bakes one spot into `~/.cache/obc/trail-view/<spot>/` |
 | `presets.json` | The viewpoints. A `photo` name takes position and camera from the `peak-view-photos` fixture; a `photo` object names a third-party photograph by URL, with its credit and the camera aligned in the page |
-| `regions/*.json` | Rulesets: where a region applies, its data sources and terrain rules, and its look |
+| `regions/*.json` | Rulesets: where a region applies, its terrain rules and its look |
 | `packs/*.json` | Asset packs: the trees, plants, herds and houses a region draws |
 | `index.html`, `src/` | The Vite + TypeScript + three.js page |
 
@@ -24,13 +24,22 @@ colour, before it starts. Run from the repository root:
 uv run prototype/trail-view/bake.py hahnen
 ```
 
+- A spot lives in `spots/<region>.json`. Its own keys name its data: `dtm`, `landcover` and
+  `geology`. Without them it is GLO-30 and WorldCover only.
+- bake.py walks from `regions/<region>.json` into the subregions that hold the eye (see
+  [Regions and packs](#regions-and-packs)). It writes the region to `meta.region` and the chain,
+  root first, to `meta.chain`.
+- `meta.country` is the lower-case ISO 3166-1 code of the country in `tune/countries.json` that
+  holds the eye, else of the nearest one within 25 km: the borders are simplified to about 1 km,
+  so a cliff top can lie outside them. `tune/countries.py` makes the file from Natural Earth's
+  1:50m borders of Europe and the USA. `meta.tz` comes from timezonefinder.
 - Bakes can run side by side on one machine. Each shared source is a lock in `_sources/locks/`:
   `overpass` (one query at a time), `cdse` (one account), `dtm-<key>` (a national DTM and its
   downloads), `glo30` (tile downloads), `landcover-<key>` and `worldcover` (its tile list). A bake
   that waits prints `waiting for <name>`. The kernel frees a lock when its bake stops. Cached
   answers are written whole or not at all.
 - GLO-30 tiles come from `~/.cache/obcm/dem/` where they exist, else from the public COGs.
-- The national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
+- A spot's national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
   `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
   zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m, `fr` RGE ALTI at 2 m
   and `es` MDT05 at 5 m, the last three in 3 km requests. `scot` is Scotland's LiDAR Phase 1 at
@@ -59,12 +68,12 @@ uv run prototype/trail-view/bake.py hahnen
 - Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land lies
   at sea level, and the land edge rises a little toward the cliff top, averaged over 5 m so the
   rim is a shelf, not spikes.
-- Habitat levels (±5 km) come from the region's open land cover map (`landcover`): Ireland's
+- Habitat levels (±5 km) come from the spot's open land cover map (`landcover`): Ireland's
   National Land Cover Map 2018 (`nlcm`; its feature service returns 2000 polygons in about 75 s)
   or NatureScot's Habitat Map of Scotland (`habmos`, one WFS request, EUNIS codes). Polygons are
   cached in `_sources/<landcover>/`.
-- In Spain, rock colour comes from IGME's 1:50 000 geological map: each unit's description picks
-  the colour, and variegated units are drawn in bands.
+- A spot with `geology: "igme"` takes its rock colour from IGME's 1:50 000 geological map of
+  Spain: each unit's description picks the colour, and variegated units are drawn in bands.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
 - The peaks come from one more cached Overpass query over 320 km, which takes minutes.
 - A rebake keeps the Sentinel-2 levels, which take most of a bake's time, while the spot stays at
@@ -79,17 +88,16 @@ uv run prototype/trail-view/bake.py hahnen
 
 ## Regions and packs
 
-A region is a ruleset in `regions/<name>.json`. It names the region it `extends` and the areas it
-covers (`where`: boxes `[west, south, east, north]` or rings of `[lon, lat]`); a spot takes the
-deepest region whose area holds it, the smallest on a tie, so `world` › `ireland` › `irish-coast`,
-and on Tenerife the north and Las Cañadas rings win over the island's box. A region inherits all
-it does not say: objects merge, anything else replaces. bake.py and the page (`src/regions.ts`)
-resolve the same files.
+A region is a ruleset in `regions/<name>.json` that names the region it `extends`. A subregion
+also names the areas it covers (`where`: boxes `[west, south, east, north]` or rings of
+`[lon, lat]`). A spot's walk starts at the region of its spots file. It steps into the subregion
+that holds the spot, the smallest on a tie, until none does: `world` › `celtic` ›
+`celtic.irish-coast`. A region inherits all it does not say: objects merge, anything else
+replaces. bake.py walks; the page reads the region from `meta.region`.
 
 | Key | What it sets |
 |---|---|
-| `tz`, `leaf`, `pack` | Time zone, default leaf type, the asset pack |
-| `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`, `habmos`), rock colour (`igme`) |
+| `leaf`, `pack` | Default leaf type, the asset pack |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
 | `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 

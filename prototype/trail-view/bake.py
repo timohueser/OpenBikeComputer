@@ -1,8 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "truststore==0.10.4"]
+# dependencies = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3", "truststore==0.10.4", "timezonefinder==9.0.0"]
 # ///
-"""Bake one Trail View preset into ~/.cache/obc/trail-view/<preset>/.
+"""Bake one Trail View spot into ~/.cache/obc/trail-view/<spot>/.
 
     uv run prototype/trail-view/bake.py hahnen
 
@@ -36,6 +36,7 @@ import numpy as np
 import rasterio
 import truststore
 from pyproj import CRS, Transformer
+from timezonefinder import TimezoneFinder
 
 # Certificates are checked against the system's trust store, as curl does: Spain's IGN serves a
 # chain whose root Python's own bundle does not hold.
@@ -65,7 +66,7 @@ HALF0_M = 1250.0
 # The national DTM covers k ≤ 3, ±10 km. The owner chose it after ±5 km put the Rigidalstock
 # ridge, 4.7 km from Brunni, into the blend toward GLO-30.
 DTM_LEVELS = 4
-# The height above the ground the Peak View photographs were taken from. A preset can raise its
+# The height above the ground the Peak View photographs were taken from. A spot can raise its
 # eye with `eye_above_ground_m`, as a lookout's deck stands above the summit rocks.
 PHONE_M = 1.6
 NODATA = -32768.0
@@ -157,9 +158,15 @@ SEA_LEVEL_M = 3.0
 RIM_SMOOTH_M = 5.0
 # OSM bridge values for a way that lies on the ground: a road like any other, not a deck.
 GROUND_BRIDGES = {"no", "boardwalk", "low_water_crossing"}
-# Regions are rulesets in regions/: which DTM, land cover and geology a place uses and how its
-# coast is shaped come from the deepest region whose box holds the eye (see src/regions.ts).
+# A spot names its data sources (dtm, landcover, geology); its region, the ruleset in regions/
+# that region_of finds, says how its terrain is shaped. spots/<region>.json holds the spots whose
+# region walk starts at regions/<region>.json.
+SPOTS = HERE / "spots"
 REGIONS = HERE / "regions"
+# Country borders, simplified to about a kilometre (tune/countries.py): an eye outside every one
+# takes the nearest within this reach, as a cliff top the simplified coast leaves in the sea.
+COUNTRIES = HERE / "tune/countries.json"
+COUNTRY_REACH_M = 25_000.0
 
 # Geology for rock colour on k < ROCK_LEVELS: IGME's continuous 1:50 000 map, layer 1 is the
 # units' fill. Its colours are cartographic, so each unit's own lithology text picks the colour.
@@ -198,7 +205,7 @@ HARDNESS = [
     ("toba", 0.5),
 ]
 # Fine habitats for the ground mosaic on k < HABITAT_LEVELS, in one vocabulary whatever the source;
-# the page's region kit paints each. The source is the best open land cover whose box holds the eye.
+# the page's region kit paints each. The spot's `landcover` names the source.
 HABITATS = ("none", "rock", "heath", "bog", "bracken", "rough", "pasture", "scrub", "hedge", "sand", "saltmarsh", "built",
             "water")
 HABITAT_LEVELS = 3
@@ -310,47 +317,71 @@ def area_of(area: list) -> float:
     return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(area, area[1:] + area[:1]))) / 2
 
 
-def region_at(lat: float, lon: float) -> dict:
-    """The deepest region whose area holds the point, the smallest on a tie, merged over its
-    parents, with its id."""
+def region_of(start: str, lat: float, lon: float) -> tuple[list[str], dict]:
+    """The region ids from world down to the point's region, and their rules merged. The walk
+    starts at `start` and steps into the subregion of the current region whose `where` holds the
+    point, the smallest on a tie, until none does."""
     table = {path.stem: json.loads(path.read_text()) for path in REGIONS.glob("*.json")}
-
-    def chain(name: str) -> list[str]:
-        return chain(table[name]["extends"]) + [name] if "extends" in table[name] else [name]
-
-    fits = [(len(chain(name)), -area_of(area), name) for name, region in table.items()
-            for area in region.get("where", []) if holds(area, lat, lon)]
-    name = max(fits)[2] if fits else "world"
+    if start not in table:
+        sys.exit(f"spots/{start}.json has no region: regions/{start}.json is missing")
+    chain = [start]
+    while "extends" in table[chain[0]]:
+        chain.insert(0, table[chain[0]]["extends"])
+    while fits := [(area_of(area), name) for name, region in table.items() if region.get("extends") == chain[-1]
+                   for area in region.get("where", []) if holds(area, lat, lon)]:
+        chain.append(min(fits)[1])
     region = {}
-    for step in chain(name):
-        region = merge(region, {k: v for k, v in table[step].items() if k not in ("extends", "where", "about")})
-    return region | {"id": name}
+    for name in chain:
+        region = merge(region, {k: v for k, v in table[name].items() if k not in ("extends", "where", "about")})
+    return chain, region
 
 
-def load_preset(preset_id: str) -> dict:
-    presets = {p["id"]: p for p in json.loads((HERE / "presets.json").read_text())}
-    if preset_id not in presets:
-        sys.exit(f"unknown preset {preset_id!r}; presets.json has {', '.join(presets)}")
-    preset = dict(presets[preset_id])
-    photo = preset.get("photo")
+def country_at(lat: float, lon: float) -> str | None:
+    """The ISO 3166-1 alpha-2 code, lower case, of the country that holds the point, else of the
+    nearest one within COUNTRY_REACH_M."""
+    nearest, reach = None, COUNTRY_REACH_M
+    for country in json.loads(COUNTRIES.read_text())["countries"]:
+        (x0, y0), (x1, y1) = np.array([pair for ring in country["rings"] for pair in zip(ring, ring[1:])]).transpose(1, 2, 0)
+        # Even-odd over every ring of the country: a hole's crossings cancel its polygon's.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            crossings = ((y0 > lat) != (y1 > lat)) & (lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0))
+        if crossings.sum() % 2:
+            return country["iso"]
+        # Metres on a plane through the point: close enough to tell COUNTRY_REACH_M.
+        sx, sy = 111_320.0 * math.cos(math.radians(lat)), 111_320.0
+        ax, ay, dx, dy = (x0 - lon) * sx, (y0 - lat) * sy, (x1 - x0) * sx, (y1 - y0) * sy
+        t = np.clip(-(ax * dx + ay * dy) / np.maximum(dx * dx + dy * dy, 1e-9), 0, 1)
+        if (d := float(np.hypot(ax + t * dx, ay + t * dy).min())) < reach:
+            nearest, reach = country["iso"], d
+    return nearest
+
+
+def load_spot(spot_id: str) -> dict:
+    """The spot from spots/*.json, with `file`: the name of its spots file, where its region walk starts."""
+    spots = {spot["id"]: spot | {"file": path.stem} for path in sorted(SPOTS.glob("*.json"))
+             for spot in json.loads(path.read_text())}
+    if spot_id not in spots:
+        sys.exit(f"unknown spot {spot_id!r}; spots/ has {', '.join(spots)}")
+    spot = dict(spots[spot_id])
+    photo = spot.get("photo")
     if isinstance(photo, str):
         # A Peak View fixture: position, ground and camera come with the photograph.
         fixture = json.loads((PHOTO_JSON / f"{photo}.json").read_text())
-        preset.update(lat=fixture["lat"], lon=fixture["lon"], ground_m=fixture["ground_m"])
-        preset["photo"] = {key: fixture[key] for key in
-                           ("heading_deg", "pitch_deg", "lens_mm", "columns", "rms_limit_deg", "subject")}
-        preset["photo"]["credit"] = CREDITS["photo"]
-        preset["photo_source"] = fixture_photo(photo)
+        spot.update(lat=fixture["lat"], lon=fixture["lon"], ground_m=fixture["ground_m"])
+        spot["photo"] = {key: fixture[key] for key in
+                         ("heading_deg", "pitch_deg", "lens_mm", "columns", "rms_limit_deg", "subject")}
+        spot["photo"]["credit"] = CREDITS["photo"]
+        spot["photo_source"] = fixture_photo(photo)
     elif photo:
         # A third-party photograph, kept in the cache only; its camera was aligned in the page.
         suffix = Path(urllib.parse.urlparse(photo["url"]).path).suffix.lower()
-        preset["photo_source"] = http_download(photo["url"], SOURCES / "photos" / f"{preset_id}{suffix}",
-                                               headers={"User-Agent": USER_AGENT})
-        preset["photo"] = {key: value for key, value in photo.items() if key != "url"}
-    if preset.get("photo"):
-        preset["photo"]["file"] = "photo.jpg"
-        preset.update(heading=preset["photo"]["heading_deg"], pitch=preset["photo"]["pitch_deg"])
-    return preset
+        spot["photo_source"] = http_download(photo["url"], SOURCES / "photos" / f"{spot_id}{suffix}",
+                                             headers={"User-Agent": USER_AGENT})
+        spot["photo"] = {key: value for key, value in photo.items() if key != "url"}
+    if spot.get("photo"):
+        spot["photo"]["file"] = "photo.jpg"
+        spot.update(heading=spot["photo"]["heading_deg"], pitch=spot["photo"]["pitch_deg"])
+    return spot
 
 
 def glo30_tiles(bbox, download: bool) -> list[str]:
@@ -1109,11 +1140,11 @@ def scatter_trees(classes0, roads0, water0, canopy0, leaf0, default_leaf: str) -
     return np.stack([x, y, height, broad.astype(np.float32)], axis=-1).astype(np.float32)
 
 
-def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
+def nlcm(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
     """The land cover map's polygons over the habitat levels as WGS84 rings with their habitat,
     cached per position. The service pages 2000 polygons at a time, slowly, so pages run three
     at once."""
-    cached = SOURCES / "nlcm" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
+    cached = SOURCES / "nlcm" / f"{spot_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
         with machine_lock("landcover-nlcm"):
             half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
@@ -1133,10 +1164,10 @@ def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, s
     return [(rings, habitat(value)) for rings, value in json.loads(cached.read_text())]
 
 
-def habmos(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
+def habmos(spot_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
     """HabMoS polygons over the habitat levels as WGS84 rings with their habitat, cached like
     `nlcm`. One request: the service returns up to a million features."""
-    cached = SOURCES / "habmos" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
+    cached = SOURCES / "habmos" / f"{spot_id}_{lat:.5f}_{lon:.5f}.json"
     if not cached.exists():
         with machine_lock("landcover-habmos"):
             half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
@@ -1160,7 +1191,7 @@ def habmos(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list,
     return [(rings, habitat(code)) for rings, code in json.loads(cached.read_text())]
 
 
-# Land cover maps by a region's `landcover` key: the polygons, and their credit.
+# Land cover maps by a spot's `landcover` key: the polygons, and their credit.
 LANDCOVER = {"nlcm": (nlcm, NLCM[1]), "habmos": (habmos, HABMOS[2])}
 
 
@@ -1279,9 +1310,9 @@ def cached_overpass(path: Path, query: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def osm(preset_id: str, lat: float, lon: float, layer: str, statements: str) -> list[dict]:
+def osm(spot_id: str, lat: float, lon: float, layer: str, statements: str) -> list[dict]:
     """The ways and relations, with their geometry, that the statements find, cached per position."""
-    text = cached_overpass(SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}{layer}.json",
+    text = cached_overpass(SOURCES / "osm" / f"{spot_id}_{lat:.5f}_{lon:.5f}{layer}.json",
                            f"[out:json][timeout:600];({statements});out geom;")
     return [element for element in json.loads(text)["elements"] if element.get("geometry") or element.get("members")]
 
@@ -1292,35 +1323,35 @@ def overpass_box(to_wgs84, half: float) -> str:
     return f"{s},{w},{n},{e}"
 
 
-def osm_peaks(preset_id: str, lat: float, lon: float) -> list[list[str]]:
+def osm_peaks(spot_id: str, lat: float, lon: float) -> list[list[str]]:
     """Named peaks and volcanoes out to the last level, 320 km, as lat, lon, ele, name."""
     radius = HALF0_M * 2 ** (LEVELS - 1)
-    text = cached_overpass(SOURCES / "osm" / f"{preset_id}_{lat:.5f}_{lon:.5f}_peaks.csv",
+    text = cached_overpass(SOURCES / "osm" / f"{spot_id}_{lat:.5f}_{lon:.5f}_peaks.csv",
                            f'[out:csv(::lat,::lon,ele,name;false)][timeout:600];'
                            f'node["natural"~"^(peak|volcano)$"]["name"](around:{radius:.0f},{lat},{lon});out;')
     return [row for row in (line.split("\t") for line in text.splitlines()) if len(row) == 4]
 
 
-def osm_ways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_ways(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Highways and forests with a leaf type over the road levels, buildings over BUILDING_HALF_M."""
     box, near = overpass_box(to_wgs84, HALF0_M * 2 ** (ROAD_LEVELS - 1)), overpass_box(to_wgs84, BUILDING_HALF_M)
-    return osm(preset_id, lat, lon, "", f'way["highway"]({box});way["landuse"="forest"]["leaf_type"]({box});'
+    return osm(spot_id, lat, lon, "", f'way["highway"]({box});way["landuse"="forest"]["leaf_type"]({box});'
                f'way["natural"="wood"]["leaf_type"]({box});way["building"]({near});')
 
 
-def osm_water(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_water(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Waterways and water areas over the water levels. Lakes and wide rivers mapped as
     multipolygon relations come from `osm_water_areas`."""
     box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
-    return osm(preset_id, lat, lon, "_water", f'way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
+    return osm(spot_id, lat, lon, "_water", f'way["waterway"~"^(river|stream|canal|riverbank)$"]({box});'
                f'way["natural"="water"]({box});way["landuse"="reservoir"]({box});')
 
 
-def osm_water_areas(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_water_areas(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Lakes, reservoirs and wide rivers mapped as multipolygon relations over the water levels,
     each with its member ways' roles and geometry."""
     box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
-    return osm(preset_id, lat, lon, "_waterareas", f'relation["natural"="water"]({box});'
+    return osm(spot_id, lat, lon, "_waterareas", f'relation["natural"="water"]({box});'
                f'relation["waterway"="riverbank"]({box});relation["landuse"="reservoir"]({box});')
 
 
@@ -1342,17 +1373,17 @@ def close_rings(lines: list[np.ndarray]) -> list[np.ndarray]:
     return rings
 
 
-def osm_coastline(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_coastline(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """OSM's coastline over the water levels: lines with the land on their left, mapped from imagery
     to a few metres, gullies and stacks included."""
     box = overpass_box(to_wgs84, HALF0_M * 2 ** (WATER_LEVELS - 1))
-    return osm(preset_id, lat, lon, "_coast", f'way["natural"="coastline"]({box});')
+    return osm(spot_id, lat, lon, "_coast", f'way["natural"="coastline"]({box});')
 
 
-def osm_features(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_features(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Walls, hedges, orchards, aretes and ridges over the road levels."""
     box = overpass_box(to_wgs84, HALF0_M * 2 ** (ROAD_LEVELS - 1))
-    return osm(preset_id, lat, lon, "_features", f'way["barrier"~"^(wall|retaining_wall|hedge)$"]({box});'
+    return osm(spot_id, lat, lon, "_features", f'way["barrier"~"^(wall|retaining_wall|hedge)$"]({box});'
                f'way["natural"~"^(arete|ridge)$"]({box});way["landuse"="orchard"]({box});')
 
 
@@ -1361,10 +1392,10 @@ AERIALWAYS = ("cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "
 AERIALWAY_HALF_M = 10000.0
 
 
-def osm_aerialways(preset_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
+def osm_aerialways(spot_id: str, lat: float, lon: float, to_wgs84) -> list[dict]:
     """Cable cars, gondolas and ski lifts over AERIALWAY_HALF_M."""
     box = overpass_box(to_wgs84, AERIALWAY_HALF_M)
-    return osm(preset_id, lat, lon, "_aerialways", f'way["aerialway"~"^({"|".join(AERIALWAYS)})$"]({box});')
+    return osm(spot_id, lat, lon, "_aerialways", f'way["aerialway"~"^({"|".join(AERIALWAYS)})$"]({box});')
 
 
 def landmark(tags: dict) -> str:
@@ -1381,11 +1412,15 @@ def elevation_tag(text: str) -> float | None:
     return float(match.group(1).replace(",", ".")) if match else None
 
 
-def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
+def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     if missing := [tool for tool in ("gdalwarp", "gdal_translate", "gdalbuildvrt", PROXIMITY) if not shutil.which(tool)]:
         sys.exit(f"bake.py needs GDAL 3.13 on PATH; not found: {', '.join(missing)}")
-    out = CACHE / preset["id"]
-    lat, lon = preset["lat"], preset["lon"]
+    out = CACHE / spot["id"]
+    lat, lon = spot["lat"], spot["lon"]
+    chain, region = region_of(spot["file"], lat, lon)
+    country, tz = country_at(lat, lon), TimezoneFinder().timezone_at(lng=lon, lat=lat)
+    dtm = spot.get("dtm")
+    print(f"  region {chain[-1]}, country {country}, {tz}", flush=True)
     # Colour takes most of a bake's time, so a rebake keeps it while the spot stays where it was.
     s2 = {(k, q): out / f"s2-q{q}-{k}.bin.gz" for k in range(S2_LEVELS) for q in range(1, 5)}
     before = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
@@ -1395,16 +1430,13 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
     out.mkdir(parents=True, exist_ok=True)
     frame = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
     to_wgs84 = Transformer.from_crs(CRS.from_proj4(frame), "EPSG:4326", always_xy=True)
-    region = region_at(lat, lon)
-    dtm = region.get("dtm")
-    print(f"  region {region['id']}", flush=True)
     sizes = []
     to_frame = Transformer.from_crs("EPSG:4326", CRS.from_proj4(frame), always_xy=True)
 
     def metres(way: dict) -> np.ndarray:
         return np.array(to_frame.transform([n["lon"] for n in way["geometry"]], [n["lat"] for n in way["geometry"]])).T
 
-    raw = osm_peaks(preset["id"], lat, lon)
+    raw = osm_peaks(spot["id"], lat, lon)
     xs, ys = to_frame.transform([float(r[1]) for r in raw], [float(r[0]) for r in raw])
     peaks = [[round(x), round(y), elevation_tag(ele), name] for x, y, (_, _, ele, name) in zip(xs, ys, raw)]
     blob = json.dumps(peaks, ensure_ascii=False, separators=(",", ":")).encode()
@@ -1412,7 +1444,7 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
     sizes.append(("-", "peaks", len(blob)))
     summits = [(x, y, ele) for x, y, ele, _ in peaks if ele is not None]
 
-    ways = osm_ways(preset["id"], lat, lon, to_wgs84)
+    ways = osm_ways(spot["id"], lat, lon, to_wgs84)
     codes = {name: i + 1 for i, name in enumerate(ROAD_WIDTHS)}
     roads = [(metres(w), codes[surface], road_width(w["tags"], surface), w["tags"].get("bridge", "no") not in GROUND_BRIDGES)
              for w in ways if "highway" in w["tags"] and (surface := road_surface(w["tags"]))]
@@ -1426,7 +1458,7 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
     print(f"  OSM: {len(roads)} roads, {len(forests)} forests with a leaf type, "
           f"{sum('building' in w['tags'] for w in ways)} buildings", flush=True)
     rivers, streams, lakes = [], [], []
-    for way in osm_water(preset["id"], lat, lon, to_wgs84):
+    for way in osm_water(spot["id"], lat, lon, to_wgs84):
         tags, xy = way["tags"], metres(way)
         closed = way["geometry"][0] == way["geometry"][-1]
         # A rambla or a seasonal pond is a dry bed most of the year.
@@ -1438,16 +1470,16 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
         elif closed and tags.get("waterway") != "stream":
             lakes.append(xy)
     islands = []
-    for relation in osm_water_areas(preset["id"], lat, lon, to_wgs84):
+    for relation in osm_water_areas(spot["id"], lat, lon, to_wgs84):
         if relation["tags"].get("intermittent") == "yes" or relation["tags"].get("seasonal") == "yes":
             continue
         members = [m for m in relation["members"] if m.get("type") == "way" and m.get("geometry")]
         lakes += close_rings([metres(m) for m in members if m.get("role") != "inner"])
         islands += close_rings([metres(m) for m in members if m.get("role") == "inner"])
     print(f"  OSM water: {len(rivers)} rivers and canals, {len(streams)} streams, {len(lakes)} areas", flush=True)
-    coast = [metres(way) for way in osm_coastline(preset["id"], lat, lon, to_wgs84)]
+    coast = [metres(way) for way in osm_coastline(spot["id"], lat, lon, to_wgs84)]
     print(f"  OSM coastline: {len(coast)} ways", flush=True)
-    features = osm_features(preset["id"], lat, lon, to_wgs84)
+    features = osm_features(spot["id"], lat, lon, to_wgs84)
     tagged = lambda key, *values: [w for w in features if w["tags"].get(key) in values]
     walls = [(metres(w), 1 if w["tags"]["barrier"] == "hedge" else 0) for w in tagged("barrier", "wall", "retaining_wall", "hedge")]
     # Crests: the DEM rounds a knife-edge ridge off, so the page stands crags along it.
@@ -1455,10 +1487,10 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
     orchards = [metres(w) for w in tagged("landuse", "orchard") if w["geometry"][0] == w["geometry"][-1]]
     print(f"  OSM features: {len(walls)} walls and hedges, "
           f"{len(orchards)} orchards", flush=True)
-    geology = GEOLOGY.get(region.get("geology"))
+    geology = GEOLOGY.get(spot.get("geology"))
     units: dict[int, str] = {}
-    landcover = LANDCOVER.get(region.get("landcover"))
-    habitats = landcover[0](preset["id"], lat, lon, to_wgs84) if landcover else []
+    landcover = LANDCOVER.get(spot.get("landcover"))
+    habitats = landcover[0](spot["id"], lat, lon, to_wgs84) if landcover else []
     if habitats:
         print(f"  land cover: {len(habitats)} polygons", flush=True)
 
@@ -1515,7 +1547,7 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
                 (out / f"road-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "road", len(blob)))
             if geology and k < ROCK_LEVELS:
-                blob = pack(rock_level(region["geology"], k, frame, bbox, work, units))
+                blob = pack(rock_level(spot["geology"], k, frame, bbox, work, units))
                 (out / f"rock-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "rock", len(blob)))
             if habitats and k < HABITAT_LEVELS:
@@ -1588,13 +1620,13 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
 
     # The OSM line runs station to station; a vertex between is a pylon.
     lifts = [[way["tags"]["aerialway"], [round(float(v), 1) for v in metres(way).ravel()]]
-             for way in osm_aerialways(preset["id"], lat, lon, to_wgs84)]
+             for way in osm_aerialways(spot["id"], lat, lon, to_wgs84)]
     blob = json.dumps(lifts, separators=(",", ":")).encode()
     (out / "aerialways.json").write_bytes(blob)
     sizes.append(("-", "aerialways", len(blob)))
     print(f"  {len(trees)} trees, {len(buildings)} buildings", flush=True)
 
-    ground = preset.get("ground_m", origin.get("dtm", origin["glo30"]))
+    ground = spot.get("ground_m", origin.get("dtm", origin["glo30"]))
     print(f"  ground {ground:.1f} m; at the origin the DTM says {origin.get('dtm', float('nan')):.1f} m, "
           f"GLO-30 {origin['glo30']:.1f} m")
 
@@ -1604,17 +1636,17 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
     credits += [landcover[1]] if habitats else []
     credits.append(CREDITS["osm"])
 
-    meta = {key: preset[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in preset}
-    above = preset.get("eye_above_ground_m", PHONE_M)
+    meta = {key: spot[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in spot}
+    above = spot.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
                 dtm=dtm, s2_levels=S2_LEVELS, barren_median=barren_median, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
-                credits=credits)
-    if "photo_source" in preset:
-        shutil.copyfile(preset["photo_source"], out / "photo.jpg")
-        meta["photo"] = preset["photo"]
-        credits.append(preset["photo"]["credit"])
+                region=chain[-1], chain=chain, country=country, tz=tz, credits=credits)
+    if "photo_source" in spot:
+        shutil.copyfile(spot["photo_source"], out / "photo.jpg")
+        meta["photo"] = spot["photo"]
+        credits.append(spot["photo"]["credit"])
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
 
     print(f"\n{'level':>5} {'layer':>6} {'bytes':>10}")
@@ -1629,13 +1661,13 @@ def bake(preset: dict, colour: bool, dtm_levels: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("preset")
+    parser.add_argument("spot")
     parser.add_argument("--colour", action="store_true",
                         help="read the Sentinel-2 levels again; a rebake keeps them while the spot stays where it was")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
                         help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
     args = parser.parse_args()
-    bake(load_preset(args.preset), args.colour, args.dtm_levels)
+    bake(load_spot(args.spot), args.colour, args.dtm_levels)
 
 
 if __name__ == "__main__":
