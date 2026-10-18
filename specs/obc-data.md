@@ -4169,16 +4169,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ReviewCost": {
       "properties": {
         "peak_rss_bytes": {
-          "description": "The highest estimated peak of one bake that runs in its own process.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "process_peak_rss_bytes": {
-          "description": "The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper\nbound, not the peak of a step. It refuses nothing.",
+          "description": "The highest estimated peak of one bake.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -4212,7 +4203,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "wall_ms",
         "peak_rss_bytes",
-        "process_peak_rss_bytes",
         "store_bytes",
         "upload_bytes",
         "unknown"

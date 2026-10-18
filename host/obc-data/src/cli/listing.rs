@@ -232,7 +232,7 @@ fn add_steps(
 fn same(a: &Step, b: &Step) -> bool {
     use crate::engine::Run;
     let run = |step: &Step| match &step.run {
-        Run::Rust(_) => (0, None),
+        Run::Rust(function) => (0, Some(vec![function.name.to_string()])),
         Run::Command(argv) => (1, Some(argv.clone())),
         Run::Python(argv) => (2, Some(argv.clone())),
     };

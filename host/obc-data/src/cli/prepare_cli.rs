@@ -631,7 +631,7 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::cli::update_cli::tests::region;
     use crate::engine::tests::{fixture, write, Fixture};
@@ -740,7 +740,7 @@ mod tests {
                 inputs: vec![read],
                 options: serde_json::json!({}),
                 outputs: vec!["copy.txt".into()],
-                run: StepRun::Rust(copy),
+                run: StepRun::Rust(&COPY),
                 client: Client::All,
             };
             Ok(vec![step].into())
@@ -767,6 +767,9 @@ mod tests {
             Pointer { key: POINTERS[1], step: "reader/copy", path: "copy.txt" }
         }
     }
+
+    pub(in crate::cli) static COPY: crate::engine::Function =
+        crate::engine::Function { name: "test/sample-copy", run: copy };
 
     fn copy(request: &Request) -> Result<(), String> {
         fs::copy(&request.snapshots["sample"]["a.txt"], request.output.join("copy.txt"))

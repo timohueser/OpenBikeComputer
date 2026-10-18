@@ -23,9 +23,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::device::{invalid, text, TILE_LIST};
-use crate::python;
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
+use crate::{functions, python};
 
 /// The offline Protomaps map, with its fonts and sprites.
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
@@ -103,7 +103,7 @@ struct Routing {
     profiles: Vec<String>,
 }
 
-mod catalog;
+pub(crate) mod catalog;
 
 pub struct Planner;
 
@@ -207,7 +207,7 @@ impl Planner {
                 inputs: vec![Input::Step { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }],
                 options: json!({"path": "osm.pbf"}),
                 outputs: vec!["osm.pbf".into()],
-                run: Run::Rust(obc_data::engine::pass),
+                run: Run::Rust(&obc_data::engine::PASS),
                 client: Client::None,
             }
         } else {
@@ -239,7 +239,7 @@ impl Planner {
             inputs: tiles(coverage, &land, &glo30),
             options: json!({"bounds": coverage, "attribution": attribution(GLO30)}),
             outputs: vec!["terrain.mbtiles".into()],
-            run: Run::Rust(obc_dem::step::planner_terrain),
+            run: Run::Rust(&functions::PLANNER_TERRAIN),
             client: Client::All,
         };
         // The last part of the id: the old planner names its files after it.
@@ -257,7 +257,7 @@ impl Planner {
                 "terrain_attribution": attribution(GLO30),
             }),
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
-            run: Run::Rust(planner_router_build::step::step),
+            run: Run::Rust(&functions::ROUTING),
             client: Client::All,
         };
         let overlays = python(
@@ -295,7 +295,7 @@ impl Planner {
             inputs: vec![Input::step(osm.name.clone()), Input::step(policy.name.clone())],
             options: json!({"country": countries[0].to_lowercase()}),
             outputs: vec!["search.jsonl.zst".into()],
-            run: Run::Rust(obc_search_bake::step::step),
+            run: Run::Rust(&functions::SEARCH),
             client: Client::None,
         };
         let records = Step {
@@ -469,7 +469,7 @@ impl Planner {
             inputs: std::iter::once(Input::step("planner/index")).chain(indexes()).collect(),
             options: json!({"origins": origins}),
             outputs: vec!["catalog.json".into()],
-            run: Run::Rust(catalog::pointer),
+            run: Run::Rust(&functions::PLANNER_CATALOG),
             client: Client::All,
         });
         match wanted.is_empty() {

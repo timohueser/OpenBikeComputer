@@ -6,8 +6,8 @@
 pub mod changes;
 pub mod plan;
 mod process;
-pub use process::{check_stop, peak_rss, python_executable, run_child};
-pub(crate) use process::{copy_errors, ended};
+pub use process::{child, peak_rss, python_executable};
+pub(crate) use process::{copy_errors, ended, panicked};
 
 pub mod runs;
 pub mod state;
@@ -16,7 +16,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -135,20 +134,30 @@ impl Input {
     }
 }
 
+/// How a step runs: each in a child process that starts in the repository root, with the request
+/// as JSON on standard input.
 pub enum Run {
-    /// A function in this process. One binary links every product, so Cargo unifies their
-    /// features: a step crate enables every feature its bytes depend on itself, or makes its bytes
-    /// independent of it (structs, or sorted keys for JSON objects).
-    Rust(fn(&Request) -> Result<(), String>),
-    /// A program and its arguments, started in the repository root with the request as JSON on
-    /// standard input. No argument names a path outside the repository root.
+    /// A function of this binary, in a child process of the binary (see [`child`]). One binary
+    /// links every product, so Cargo unifies their features: a step crate enables every feature its
+    /// bytes depend on itself, or makes its bytes independent of it (structs, or sorted keys for
+    /// JSON objects).
+    Rust(&'static Function),
+    /// A program and its arguments. No argument names a path outside the repository root.
     Command(Vec<String>),
     /// A command that runs `uv run`: it also gets the interpreter of [`python_executable`].
     Python(Vec<String>),
 }
 
+/// A function that Rust steps run, with the name that the child process of a step finds it by.
+pub struct Function {
+    /// `<crate>/<function>`, kebab-case, the same in each build. A test binary reads it as the name
+    /// of a test, and a name with `/` names no test.
+    pub name: &'static str,
+    pub run: fn(&Request) -> Result<(), String>,
+}
+
 /// What a step reads and where it writes.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
     pub step: String,
     /// Source id, then file name, then object path.
@@ -325,6 +334,14 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
         }
         if !names.insert(step.name.as_str()) {
             return Err(format!("step `{}` is listed twice", step.name));
+        }
+        if let Run::Rust(function) = &step.run {
+            if !function.name.contains('/') || !function.name.split('/').all(crate::is_kebab) {
+                return Err(format!(
+                    "step `{}`: the function `{}` is not `<crate>/<function>`",
+                    step.name, function.name
+                ));
+            }
         }
         if let (Shape::Partitioned(partitions), None) = (step.layer.shape, partition(step)) {
             return Err(format!(
@@ -503,9 +520,14 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// The functions of the Rust steps of this crate.
+pub const FUNCTIONS: &[&Function] = &[&PASS];
+
 /// A step whose files are the one file of its snapshot or selected step inputs, at the path of
 /// the option `path`: files that other steps read, whatever gives their bytes.
-pub fn pass(request: &Request) -> Result<(), String> {
+pub static PASS: Function = Function { name: "obc-data/pass", run: pass };
+
+fn pass(request: &Request) -> Result<(), String> {
     let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
     let files: Vec<&PathBuf> =
         request.snapshots.values().chain(request.layers.values()).flat_map(BTreeMap::values).collect();
@@ -640,8 +662,8 @@ fn reusable(store: &Store, key: &str) -> Result<Option<Receipt>, String> {
 }
 
 /// Reuse the layer of the prepared key, or run the step and record its layer. With `again`, run
-/// the step also when the store has the layer: its receipt replaces the stored one. A Rust step
-/// fails at its next [`check_stop`] once `stop` is set.
+/// the step also when the store has the layer: its receipt replaces the stored one. Once `stop` is
+/// set, the step gets SIGTERM and fails.
 fn build_step(
     store: &Store,
     root: &Path,
@@ -649,7 +671,7 @@ fn build_step(
     mut receipt: Receipt,
     mut request: Request,
     again: bool,
-    stop: &Arc<AtomicBool>,
+    stop: &AtomicBool,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
     if let Some(mut stored) = reusable(store, &receipt.key)?.filter(|_| !again) {
@@ -675,14 +697,10 @@ fn execute(
     step: &Step,
     request: &Request,
     receipt: &mut Receipt,
-    stop: &Arc<AtomicBool>,
+    stop: &AtomicBool,
 ) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
-    let usage = match &step.run {
-        Run::Rust(function) => process::in_process(Arc::clone(stop), || function(request)),
-        Run::Command(argv) => process::run(root, argv, request, false),
-        Run::Python(argv) => process::run(root, argv, request, true),
-    }?;
+    let usage = process::run(root, &step.run, request, stop)?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the metrics are not a JSON object: {e}"))?,
@@ -916,15 +934,36 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         fixture
     }
 
-    pub(crate) fn upper(request: &Request) -> Result<(), String> {
+    /// The child process of a Rust step of a test runs it here.
+    #[test]
+    fn obc_data_step() {
+        let mut functions = vec![&UPPERCASE, &COUNT, &NAMED, &SEA, &SPLIT, &ONE, &NOTHING, &EXTRA, &LINK, &PEAK];
+        functions.extend([&runs::tests::STOPPED, &runs::tests::FIRST_FILE, &plan::tests::LOWER]);
+        functions.extend([&changes::tests::PART, &changes::tests::LOUDER]);
+        functions.extend(crate::cli::tests::FUNCTIONS);
+        child(&functions);
+    }
+
+    pub(crate) static UPPERCASE: Function = Function { name: "test/upper", run: upper };
+
+    fn upper(request: &Request) -> Result<(), String> {
         let text = fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
         fs::write(request.output.join("upper.txt"), text.to_uppercase()).map_err(|e| e.to_string())
     }
+
+    static COUNT: Function = Function { name: "test/count", run: count };
 
     fn count(request: &Request) -> Result<(), String> {
         let text = fs::read_to_string(&request.layers["test/join"]["joined.txt"]).map_err(|e| e.to_string())?;
         fs::create_dir(request.output.join("count")).map_err(|e| e.to_string())?;
         fs::write(request.output.join("count/lines.txt"), text.lines().count().to_string()).map_err(|e| e.to_string())
+    }
+
+    /// Writes the name of its step to `out.txt`.
+    pub(crate) static NAMED: Function = Function { name: "test/named", run: named };
+
+    fn named(request: &Request) -> Result<(), String> {
+        fs::write(request.output.join("out.txt"), &request.step).map_err(|e| e.to_string())
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, output: &str, run: Run) -> Step {
@@ -954,9 +993,9 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     pub(crate) fn pipeline() -> Vec<Step> {
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![Input::step("test/join")], "count", Run::Rust(count)),
+            step("test/count", vec![Input::step("test/join")], "count", Run::Rust(&COUNT)),
             step("test/join", vec![Input::step("test/upper"), snapshot("tail", "1", &[])], "joined.txt", python),
-            step("test/upper", vec![snapshot("head", "1", &["head.txt"])], "upper.txt", Run::Rust(upper)),
+            step("test/upper", vec![snapshot("head", "1", &["head.txt"])], "upper.txt", Run::Rust(&UPPERCASE)),
         ]
     }
 
@@ -988,6 +1027,36 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(fixture.plan(&pipeline()).unwrap().builds().count(), 0, "the store has every layer");
     }
 
+    static SEA: Function = Function { name: "test/sea", run: sea };
+
+    fn sea(request: &Request) -> Result<(), String> {
+        fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
+        write_atomic(&request.output.join("metadata/empty.json"), b"[\"13/10000/10000\"]")
+    }
+
+    /// Holds 400 MiB for a moment.
+    static PEAK: Function = Function { name: "test/peak", run: peak };
+
+    fn peak(request: &Request) -> Result<(), String> {
+        let held = std::hint::black_box(vec![1u8; 400 << 20]);
+        fs::write(request.output.join("upper.txt"), &held[..1]).map_err(|e| e.to_string())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_receipt_has_the_peak_of_its_own_step() {
+        let fixture = fixture("engine-peak");
+        let steps = [
+            step("test/peak", vec![snapshot("head", "1", &[])], "upper.txt", Run::Rust(&PEAK)),
+            step("test/named", vec![Input::step("test/peak")], "out.txt", Run::Rust(&NAMED)),
+        ];
+        let built = fixture.build(&steps).unwrap();
+        let peak = |at: usize| built[at].receipt.peak_rss_bytes.unwrap();
+        assert!(peak(0) > 400 << 20, "{}", peak(0));
+        assert!(peak(1) < 200 << 20, "not the peak of the step before: {}", peak(1));
+        assert!(built.iter().all(|built| built.receipt.cpu_ms.is_some()));
+    }
+
     #[test]
     fn a_program_writes_its_temporary_files_in_the_work_of_its_step() {
         let fixture = fixture("engine-temporary");
@@ -1005,14 +1074,10 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     #[test]
     fn an_empty_client_directory_retains_metadata_and_missing_outputs_still_fail() {
         let fixture = fixture("engine-empty-client");
-        fn sea(request: &Request) -> Result<(), String> {
-            fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
-            write_atomic(&request.output.join("metadata/empty.json"), b"[\"13/10000/10000\"]")
-        }
         let sea = || Step {
             outputs: vec!["terrain".into(), "metadata".into()],
             client: Client::Paths(vec!["terrain".into()]),
-            ..step("test/sea", Vec::new(), "", Run::Rust(sea))
+            ..step("test/sea", Vec::new(), "", Run::Rust(&SEA))
         };
         let built = fixture.build(&[sea()]).unwrap();
         assert_eq!(
@@ -1085,36 +1150,42 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(err, "fetch head@1: no source `head` in data/sources.toml");
     }
 
+    static SPLIT: Function = Function { name: "test/split", run: split };
+
+    fn split(request: &Request) -> Result<(), String> {
+        fs::create_dir(request.output.join("leaves")).map_err(|e| e.to_string())?;
+        for (name, object) in &request.snapshots["head"] {
+            fs::copy(object, request.output.join("leaves").join(name)).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    static ONE: Function = Function { name: "test/one", run: one };
+
+    fn one(request: &Request) -> Result<(), String> {
+        assert_eq!(request.layer_files.keys().collect::<Vec<_>>(), request.layers.keys().collect::<Vec<_>>());
+        let files = &request.layer_files["test/leaves"];
+        assert_eq!(
+            files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+            request.layers["test/leaves"].keys().collect::<Vec<_>>()
+        );
+        assert_eq!((files[0].sha256.as_str(), files[0].size), (sha256_hex(b"head\n").as_str(), 5));
+        let [object] = request.layers["test/leaves"].values().collect::<Vec<_>>()[..] else {
+            return Err("the step reads more than one file".into());
+        };
+        fs::copy(object, request.output.join("one.txt")).map(drop).map_err(|e| e.to_string())
+    }
+
     #[test]
     fn a_layer_input_keys_and_passes_only_the_files_it_selects() {
-        fn split(request: &Request) -> Result<(), String> {
-            fs::create_dir(request.output.join("leaves")).map_err(|e| e.to_string())?;
-            for (name, object) in &request.snapshots["head"] {
-                fs::copy(object, request.output.join("leaves").join(name)).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-        fn one(request: &Request) -> Result<(), String> {
-            assert_eq!(request.layer_files.keys().collect::<Vec<_>>(), request.layers.keys().collect::<Vec<_>>());
-            let files = &request.layer_files["test/leaves"];
-            assert_eq!(
-                files.iter().map(|file| &file.path).collect::<Vec<_>>(),
-                request.layers["test/leaves"].keys().collect::<Vec<_>>()
-            );
-            assert_eq!((files[0].sha256.as_str(), files[0].size), (sha256_hex(b"head\n").as_str(), 5));
-            let [object] = request.layers["test/leaves"].values().collect::<Vec<_>>()[..] else {
-                return Err("the step reads more than one file".into());
-            };
-            fs::copy(object, request.output.join("one.txt")).map(drop).map_err(|e| e.to_string())
-        }
         let steps = |file: &str| {
             vec![
-                step("test/leaves", vec![snapshot("head", "1", &[])], "leaves", Run::Rust(split)),
+                step("test/leaves", vec![snapshot("head", "1", &[])], "leaves", Run::Rust(&SPLIT)),
                 step(
                     "test/one",
                     vec![Input::Step { name: "test/leaves".into(), files: vec![file.into()] }],
                     "one.txt",
-                    Run::Rust(one),
+                    Run::Rust(&ONE),
                 ),
             ]
         };
@@ -1128,30 +1199,34 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert!(err.contains("step `test/leaves` has no file leaves/x.txt"), "{err}");
     }
 
+    static NOTHING: Function = Function { name: "test/nothing", run: |_| Ok(()) };
+
+    static EXTRA: Function = Function { name: "test/extra", run: extra };
+
+    fn extra(request: &Request) -> Result<(), String> {
+        upper(request)?;
+        fs::write(request.output.join("extra.txt"), "").map_err(|e| e.to_string())
+    }
+
+    static LINK: Function = Function { name: "test/link", run: link };
+
+    fn link(request: &Request) -> Result<(), String> {
+        symlink(Path::new("/etc/hostname"), &request.output.join("upper.txt")).map_err(|e| e.to_string())
+    }
+
     #[test]
     fn a_step_that_breaks_its_contract_fails_and_leaves_no_receipt_and_no_work() {
-        fn nothing(_: &Request) -> Result<(), String> {
-            Ok(())
-        }
-        fn extra(request: &Request) -> Result<(), String> {
-            upper(request)?;
-            fs::write(request.output.join("extra.txt"), "").map_err(|e| e.to_string())
-        }
-        #[cfg(unix)]
-        fn link(request: &Request) -> Result<(), String> {
-            std::os::unix::fs::symlink("/etc/hostname", request.output.join("upper.txt")).map_err(|e| e.to_string())
-        }
         let fixture = fixture("engine-contract");
         let head = || vec![snapshot("head", "1", &[])];
-        let mut cases = vec![
-            (Run::Rust(nothing), "did not write its output upper.txt"),
-            (Run::Rust(extra), "wrote extra.txt, which is not one of its outputs"),
+        let cases = [
+            (Run::Rust(&NOTHING), "did not write its output upper.txt"),
+            (Run::Rust(&EXTRA), "wrote extra.txt, which is not one of its outputs"),
+            (Run::Rust(&LINK), "wrote upper.txt, which is not a file or a directory"),
+            (Run::Rust(&Function { name: "upper", run: upper }), "the function `upper` is not `<crate>/<function>`"),
             (Run::Command(vec!["/usr/bin/true".into()]), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), "argument --in=/tmp names a path"),
             (Run::Python(vec!["x".into(), "a/../../b".into()]), "argument a/../../b names a path"),
         ];
-        #[cfg(unix)]
-        cases.push((Run::Rust(link), "wrote upper.txt, which is not a file or a directory"));
         for (run, expected) in cases {
             let err = fixture.build(&[step("test/bad", head(), "upper.txt", run)]).err().unwrap();
             assert!(err.contains(expected), "{err}");

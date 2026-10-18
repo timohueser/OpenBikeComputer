@@ -304,11 +304,13 @@ pub(crate) fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, S
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::runs::Limits;
     use crate::engine::tests::{fixture, pipeline, snapshot, step};
-    use crate::engine::{Request, Run};
+    use crate::engine::{Function, Request, Run};
+
+    pub(crate) static LOWER: Function = Function { name: "test/lower", run: lower };
 
     fn lower(request: &Request) -> Result<(), String> {
         let text = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
@@ -319,7 +321,7 @@ mod tests {
     fn steps(version: &str) -> Vec<Step> {
         let mut steps = pipeline();
         let head = vec![snapshot("head", version, &["head.txt"])];
-        steps.push(step("test/lower", head, "lower.txt", Run::Rust(lower)));
+        steps.push(step("test/lower", head, "lower.txt", Run::Rust(&LOWER)));
         steps
     }
 

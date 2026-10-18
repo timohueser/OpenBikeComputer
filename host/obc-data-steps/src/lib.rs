@@ -2,6 +2,7 @@
 //! producers of prepared sources.
 
 pub mod device;
+mod functions;
 pub mod planner;
 mod readers;
 mod region_sources;
@@ -15,6 +16,8 @@ use obc_data::product::Product;
 use serde_json::Value;
 
 pub const PRODUCTS: &[&dyn Product] = &[&device::Device, &planner::Planner];
+
+pub use functions::FUNCTIONS;
 
 /// The producers of the prepared sources.
 pub const PREPARED: &[&dyn Prepared] = &[&terrain_reference::TERRAIN_REFERENCE, &wiki::WIKI];
@@ -61,6 +64,12 @@ pub(crate) fn python(
 
 #[cfg(test)]
 mod tests {
+    /// The child process of a Rust step of a test runs it here.
+    #[test]
+    fn obc_data_step() {
+        obc_data::engine::child(&[super::FUNCTIONS, &[&crate::device::tests::FAKE]].concat());
+    }
+
     #[test]
     fn the_products_fill_each_pointer_of_a_release_once() {
         let mut keys: Vec<&str> = super::PRODUCTS.iter().map(|product| product.pointer().key).collect();

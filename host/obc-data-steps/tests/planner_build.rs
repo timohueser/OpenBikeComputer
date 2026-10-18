@@ -10,7 +10,7 @@ use std::process::Command;
 
 use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{digest, Built, Input, Request, Run, Step};
+use obc_data::engine::{digest, Built, Function, Input, Request, Run, Step};
 use obc_data::fetch::http::Http;
 use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
@@ -44,6 +44,12 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
     if !params.is_empty() {
         store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
     }
+}
+
+/// The child process of a Rust step of the test runs it here.
+#[test]
+fn obc_data_step() {
+    obc_data::engine::child(&[obc_data_steps::FUNCTIONS, &[&LOCAL_FILES]].concat());
 }
 
 #[test]
@@ -114,11 +120,11 @@ time_zone = "Europe/Berlin"
             if step.name == "planner/basemap" {
                 step.inputs = vec![Input::step("planner/places")];
                 step.options = serde_json::json!({"kind": "planner/basemap"});
-                step.run = Run::Rust(local_files);
+                step.run = Run::Rust(&LOCAL_FILES);
             } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {
                 step.inputs.clear();
                 step.options = serde_json::json!({"kind": step.name});
-                step.run = Run::Rust(local_files);
+                step.run = Run::Rust(&LOCAL_FILES);
             }
         }
         steps
@@ -381,6 +387,8 @@ for name, entry in catalog['files'].items():
         obc_data::engine::Client::None;
     assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
 }
+
+static LOCAL_FILES: Function = Function { name: "test/local-files", run: local_files };
 
 fn local_files(request: &Request) -> Result<(), String> {
     if request.options["kind"] == "planner/basemap" {
