@@ -1,1 +1,8 @@
-{ "name": "South Apennine mixed montane forests", "ecoregion": 802, "extends": "world", "leaf": "mixed" }
+{
+ "name": "South Apennine mixed montane forests",
+ "ecoregion": 802,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "south-apennines",
+ "about": "The mountain islands of the southern Apennines and northern Sicily: the Picentini, the Alburni and the Cervati, the Lucanian Apennines and the Pollino, the Sila, the Aspromonte and the Serre, the Nebrodi, the Madonie and Etna. Roads climb from chestnut, Turkey oak and holm oak into tall beech forest with silver fir; the granite plateau of the Sila holds lakes in Calabrian pine forest, and the Aspromonte pine, fir and beech; Bosnian pines stand on the pale limestone ridges of the Pollino above pastures that turn to straw in summer, with grey cattle, horses and black pigs, below stone villages with low tile roofs; on Etna, black lava flows cut through pine and birch forest. One split, Etna (south-apennines.etna), between the Simeto and the Alcantara valleys: its bare ground is black lava, but the barren rule only shades barren ground against the spot's own median, so Etna needs its own bare ramp and rock where the rest of the region's scree and outcrops are pale limestone or grey granite; Etna also has its own birch, broom and milk-vetch. No other split: the belts from oak and chestnut to beech, fir and pine, then juniper and open summits, come from the tree elevation bands, the barren rule and the snowline; the green spring and the straw-coloured late summer come from Sentinel-2 colour and seasonal NDVI ramps; and one Mediterranean mountain climate gives one haze, weather and grade from the Picentini to the Madonie. The one candidate for a further subregion is the granite Sila and Aspromonte, if their shots show that the limestone rock colour is wrong there."
+}

@@ -1,0 +1,48 @@
+{
+ "name": "South Apennine mixed montane forests",
+ "extends": "base",
+ "about": "Beech forest from about 900 m to the treeline at 2100 m, with silver fir, Italian maple, sycamore and holly; Calabrian pine forests on the Sila, the Aspromonte and Etna; Bosnian pines on the limestone ridges of the Pollino; Turkey, Hungarian, downy and sessile oak, sweet chestnut, Italian alder, hop hornbeam and manna ash below the beech, holm oak on rocky slopes and cork oak low in Sicily; tree heath, Spanish and common broom, hawthorn, hazel and prickly juniper in the clearings, common juniper on the pastures and dwarf juniper above the trees; bracken in the open woods, ferns, asphodel on the grazed ground, mat-grass on the Sila pastures, rush-leaved moor-grass on the limestone summits and alpine flowers; flocks of sheep and goats, grey Podolica cattle, free-ranging horses and black pigs; stone villages with low tile roofs.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 2150], "weight": 8 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1800], "weight": 2 },
+  "corsican-pine": { "model": "scots-pine", "latin": "Pinus nigra subsp. laricio", "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1950], "weight": 4 },
+  "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1400, 2250], "weight": 1.5 },
+  "turkey-oak": { "model": "european-beech", "latin": "Quercus cerris", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1300], "weight": 3 },
+  "hungarian-oak": { "model": "european-beech", "latin": "Quercus frainetto", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 1 },
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 1.5 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1500], "weight": 0.5 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1300], "weight": 2 },
+  "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 0.5 },
+  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1300], "weight": 3 },
+  "italian-alder": { "model": "silver-birch", "latin": "Alnus cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1.5 },
+  "hop-hornbeam": { "model": "sycamore-maple", "latin": "Ostrya carpinifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1300], "weight": 1.5 },
+  "manna-ash": { "model": "sycamore-maple", "latin": "Fraxinus ornus", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 1 },
+  "italian-maple": { "model": "sycamore-maple", "latin": "Acer opalus", "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1700], "weight": 1 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1800], "weight": 0.5 },
+  "holly": { "model": "holm-oak", "latin": "Ilex aquifolium", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1700], "weight": 0.5 },
+  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 2 },
+  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 2 },
+  "common-broom": { "model": "gorse", "latin": "Cytisus scoparius", "leaf": "broadleaved", "cover": "shrub", "elevation": [600, 1700], "weight": 1.5 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1600], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
+  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [600, 1900], "weight": 1 },
+  "juniper": { "model": "mountain-pine", "latin": "Juniperus communis subsp. nana", "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2500], "weight": 2 }
+ },
+ "ground": {
+  "bracken": {},
+  "fern": {},
+  "alpine-flowers": {},
+  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
+  "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.15 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [15, 60], "on": ["pasture", "rough"] },
+  "goat": { "groups": 2, "size": [4, 15], "on": ["rough", "scrub", "rock"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Podolica)", "groups": 2, "size": [4, 15], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [3, 12], "on": ["pasture", "rough"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [3, 10], "on": ["rough", "scrub"] }
+ },
+ "style": "village-house"
+}
