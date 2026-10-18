@@ -1,1 +1,8 @@
-{ "name": "Baltic mixed forests", "ecoregion": 647, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Baltic mixed forests",
+ "ecoregion": 647,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "baltic",
+ "about": "Low moraine country around the western Baltic, from eastern Jutland, the Danish isles and Scania over Holstein and Mecklenburg to Pomerania and Kashubia: wide fields of grain and rape with hedgerows, beech woods on the hills, many lakes, whitewashed and red-brick villages, and a coast of bays, lagoons, white chalk cliffs and pine-backed dunes. No split: the land stays below 330 m and has no massif or island side that needs its own haze, weather or grade; the change from beech to pine and from field to heath and dune is carried by Sentinel-2 colour, the barren rule and the tree bands, and the change from Danish to German and Polish houses by the house style by country."
+}
