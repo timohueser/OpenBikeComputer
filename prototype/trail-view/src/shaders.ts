@@ -6,6 +6,8 @@ const LEVELS = /* glsl */ `
 precision highp sampler2DArray;
 uniform float half0;
 uniform float levels;
+/** Height texels per side of a level; the other layers have 1024. */
+uniform float heightSize;
 
 /** The finest level that holds p; levels or more beyond the last. */
 float levelOf(vec2 p) {
@@ -86,7 +88,7 @@ const MESH_LEVEL = /* glsl */ `
  */
 float meshZ(vec2 p, bool ground) {
   float spacing = length(p) * max(exp(ringStep) - 1.0, 6.2831853 / azimuths);
-  float level = clamp(log2(max(spacing / (2.0 * half0 / 1024.0), 1.0)), levelOf(p), levels - 1.0);
+  float level = clamp(log2(max(spacing / (2.0 * half0 / heightSize), 1.0)), levelOf(p), levels - 1.0);
   float k = floor(level);
   float z = ground ? groundZ(k, p) : surfaceZ(k, p);
   if (level > k) z = mix(z, ground ? groundZ(k + 1.0, p) : surfaceZ(k + 1.0, p), level - k);
@@ -623,7 +625,7 @@ vec3 cells(vec2 p, float size) {
  * interpolated across them would smear slope into teeth down the fall line.
  */
 vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
-  float kf = min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0))) + coarser, levels - 1.0);
+  float kf = min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / heightSize), 1.0))) + coarser, levels - 1.0);
   float k = floor(kf);
   vec4 slope = texture(normals, vec3(uvOn(k, p), k));
   if (kf > k) slope = mix(slope, texture(normals, vec3(uvOn(k + 1.0, p), k + 1.0)), kf - k);
@@ -936,9 +938,9 @@ out vec4 colour;
 
 void main() {
   float k = deriveLevel;
-  float e = 2.0 * half0 * exp2(k) / 1024.0;
-  vec2 uv = gl_FragCoord.xy / 1024.0;
-  vec2 p = vec2(uv.x - 0.5, 0.5 - uv.y) * 2.0 * e * 512.0;
+  float e = 2.0 * half0 * exp2(k) / heightSize;
+  vec2 uv = gl_FragCoord.xy / heightSize;
+  vec2 p = vec2(uv.x - 0.5, 0.5 - uv.y) * e * heightSize;
   float east = surfaceZ(k, p + vec2(e, 0.0));
   float west = surfaceZ(k, p - vec2(e, 0.0));
   float north = surfaceZ(k, p + vec2(0.0, e));
@@ -1099,7 +1101,7 @@ void main() {
   vec2 toward = sunDir.xy / across;
   float slope = sunDir.z / across;
   float k = min(levelOf(p), levels - 1.0);
-  float pixel = 2.0 * half0 * exp2(k) / 1024.0;
+  float pixel = 2.0 * half0 * exp2(k) / heightSize;
   float z = surfaceZ(k, p) + 0.25 * pixel;
   float d = max(1.5 * pixel, 0.012 * r);
   float growth = pow(200000.0 / d, 1.0 / float(STEPS - 1));

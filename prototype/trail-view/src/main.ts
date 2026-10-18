@@ -114,9 +114,9 @@ async function select(id: string): Promise<void> {
   terrain.setBake(bake, region);
   const area = meta.size * meta.size;
   const canopy = [...Array(meta.dtm_levels).keys()].map((k) => Float32Array.from(bake.canopy.subarray(k * area, (k + 1) * area), (v) => v / 4));
-  const dtm = surface(bake.surface, meta.size, meta.half0_m, meta.eye_above_ground_m, canopy);
+  const dtm = surface(bake.surface, meta.half0_m, meta.eye_above_ground_m, canopy);
   const glo30 = meta.dtm_levels
-    ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.size, meta.half0_m, meta.eye_above_ground_m)
+    ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.half0_m, meta.eye_above_ground_m)
     : dtm;
   loaded = { bake, region, ground: { dtm, glo30 } };
   const { snap, hazeKm, hazeHeight, mistTop, softness, gradient } = region.look;

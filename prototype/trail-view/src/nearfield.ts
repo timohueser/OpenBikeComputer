@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { groundAt, HABITATS, type Bake, type Building, type Habitat } from './bake';
+import { groundAt, HABITATS, heightAtTexel, type Bake, type Building, type Habitat } from './bake';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import type { Pack, Region } from './regions';
 import { bridges } from './bridges';
@@ -371,12 +371,12 @@ export class NearField {
       const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), bake.meta.water_levels - 1);
       const half = half0_m * 2 ** k;
       const p = (2 * half) / size;
-      const i = Math.floor((half - y) / p) * size + Math.floor((x + half) / p);
-      return bake.classes[(k * size * size + i) * 2 + 1] > 127 && bake.surface[k][i] + eye_m < 2;
+      const [col, row] = [Math.floor((x + half) / p), Math.floor((half - y) / p)];
+      return bake.classes[(k * size * size + row * size + col) * 2 + 1] > 127 && heightAtTexel(bake, k, col, row) + eye_m < 2;
     };
     // The strand: low ground by the sea, beach or storm-washed rock, where nothing grows.
     const strand = (x: number, y: number) =>
-      bake.surface[0][texel(x, y)] + eye_m < STRAND_M[1] &&
+      groundAt(bake, x, y) + eye_m < STRAND_M[1] &&
       [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * STRAND_M[0], y + Math.cos((a * Math.PI) / 4) * STRAND_M[0]));
     const exposed = (x: number, y: number) =>
       windswept > 0 && [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * windswept, y + Math.cos((a * Math.PI) / 4) * windswept));
@@ -384,7 +384,7 @@ export class NearField {
     const shrubs = pack.trees.filter((s) => s.cover === 'shrub');
     // Shrubs keep to their elevation band, as trees do, where any shrub fits there.
     const shrubAt = (x: number, y: number) => {
-      const elevation = bake.surface[0][texel(x, y)] + eye_m;
+      const elevation = groundAt(bake, x, y) + eye_m;
       const fits = shrubs.filter((s) => elevation >= s.elevation[0] && elevation <= s.elevation[1]);
       return pick(fits.length ? fits : shrubs).tree;
     };
@@ -404,7 +404,7 @@ export class NearField {
       }
       if (!standing.length) continue;
       const leaf = trees[i + 3] > 0.5 ? 'broadleaved' : 'needleleaved';
-      const elevation = bake.surface[0][texel(x, y)] + eye_m;
+      const elevation = groundAt(bake, x, y) + eye_m;
       // The elevation band outranks the leaf type, which is often only the region's guess.
       const inBand = standing.filter((s) => elevation >= s.elevation[0] && elevation <= s.elevation[1]);
       const fits = inBand.filter((s) => s.leaf === leaf);

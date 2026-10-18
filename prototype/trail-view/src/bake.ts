@@ -22,6 +22,8 @@ export interface Meta {
   eye_above_ground_m: number;
   levels: number;
   size: number;
+  /** Height texels per side of a level; an older bake has `size`. */
+  height_size?: number;
   half0_m: number;
   /** Levels k < dtm_levels carry a national DTM; `glo30` holds GLO-30 for the same levels. */
   dtm_levels: number;
@@ -177,9 +179,18 @@ export async function loadBake(id: string): Promise<Bake> {
   };
 }
 
+export const heightSize = (meta: Meta) => meta.height_size ?? meta.size;
+
+/** The height above the eye at texel (i, j) of the other layers' grid on level k. */
+export function heightAtTexel(bake: Bake, k: number, i: number, j: number): number {
+  const f = heightSize(bake.meta) / bake.meta.size;
+  return bake.surface[k][j * f * heightSize(bake.meta) + i * f];
+}
+
 /** The bare ground's height above the eye at x, y, bilinear from the finest level that holds it. */
 export function groundAt(bake: Bake, x: number, y: number): number {
-  const { size, half0_m, levels } = bake.meta;
+  const { half0_m, levels } = bake.meta;
+  const size = heightSize(bake.meta);
   const k = Math.min(Math.max(0, Math.ceil(Math.log2(Math.max(Math.abs(x), Math.abs(y), 1) / half0_m))), levels - 1);
   const half = half0_m * 2 ** k;
   const px = (2 * half) / size;

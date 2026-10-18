@@ -30,9 +30,11 @@ export const BLANKET = [800, 1200];
  * an eye `above` metres over this surface at the origin, so a coarse surface never buries the eye.
  * `canopy` holds canopy heights for the first levels, laid on as the blanket.
  */
-export function surface(levels: Float32Array[], size: number, half0: number, above: number, canopy: Float32Array[] = []): Surface {
+export function surface(levels: Float32Array[], half0: number, above: number, canopy: Float32Array[] = []): Surface {
   const last = levels.length - 1;
+  // Each level is square; heights and canopy have their own sizes.
   const bilinear = (data: Float32Array, k: number, x: number, y: number) => {
+    const size = Math.sqrt(data.length);
     const half = half0 * 2 ** k;
     const scale = size / (2 * half);
     const u = (x + half) * scale - 0.5;

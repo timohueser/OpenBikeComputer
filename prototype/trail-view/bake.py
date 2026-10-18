@@ -7,7 +7,8 @@
     uv run prototype/trail-view/bake.py hahnen
 
 Every raster is warped into one azimuthal-equidistant frame centred on the eye, so x and y are
-metres east and north. Level k is 1024² px over ±1.25 km · 2^k.
+metres east and north. Level k covers ±1.25 km · 2^k: HEIGHT_SIZE² heights, SIZE² texels
+for every other layer.
 """
 
 import argparse
@@ -62,6 +63,9 @@ SOURCES = CACHE / "_sources"
 
 LEVELS = 9
 SIZE = 1024
+# Heights lie on a finer grid than the other layers: the national DTMs hold 1 to 2 m, and at SIZE
+# a ridge 5 km away came from 10 to 20 m texels.
+HEIGHT_SIZE = 2048
 HALF0_M = 1250.0
 # The national DTM covers k ≤ 3, ±10 km. The owner chose it after ±5 km put the Rigidalstock
 # ridge, 4.7 km from Brunni, into the blend toward GLO-30.
@@ -417,11 +421,11 @@ def glo30_tiles(bbox, download: bool) -> list[str]:
 
 
 def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work: Path,
-         threads: bool = True) -> np.ndarray:
-    """Every band of the inputs on level grid `half`, as float32 with NODATA."""
+         threads: bool = True, size: int = SIZE) -> np.ndarray:
+    """Every band of the inputs on level grid `half`, size² texels, as float32 with NODATA."""
     out = Path(tempfile.mkdtemp(dir=work)) / "warp.tif"
     cmd = ["gdalwarp", "-q", "-overwrite", "-t_srs", frame, "-te", str(-half), str(-half), str(half), str(half),
-           "-ts", str(SIZE), str(SIZE), "-r", resampling, "-ot", "Float32", "-dstnodata", str(NODATA)]
+           "-ts", str(size), str(size), "-r", resampling, "-ot", "Float32", "-dstnodata", str(NODATA)]
     if threads:
         cmd += ["-multi", "-wo", "NUM_THREADS=ALL_CPUS"]
     if not overviews:
@@ -435,16 +439,29 @@ def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work
 
 def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
     half = HALF0_M * 2**k
-    px = 2 * half / SIZE
+    px = 2 * half / HEIGHT_SIZE
     # Upsampling 30 m cells needs interpolation, cubic so the cells do not show as facets;
     # downsampling keeps each summit with max.
     resampling = "cubic" if px < GLO30_PX_M else "max"
-    # COG overviews are averaged, which flattens summits; past k = 5 (156 m px) that costs
+    # COG overviews are averaged, which flattens summits; past k = 5 (78 m texels) that costs
     # under 0.03° and saves reading full-resolution remote tiles.
-    heights = warp(glo30_tiles(bbox, download=k <= 5), frame, half, resampling, overviews=k > 5, work=work)[0]
+    heights = warp(glo30_tiles(bbox, download=k <= 5), frame, half, resampling, overviews=k > 5, work=work,
+                   size=HEIGHT_SIZE)[0]
     # Missing tiles are sea.
     heights[heights == NODATA] = 0.0
     return heights
+
+
+def coarse(heights: np.ndarray) -> np.ndarray:
+    """Heights on the other layers' grid: the mean of each block of texels."""
+    f = heights.shape[0] // SIZE
+    return heights.reshape(SIZE, f, SIZE, f).mean(axis=(1, 3))
+
+
+def fine(layer: np.ndarray) -> np.ndarray:
+    """A layer on the heights' grid, each texel repeated."""
+    f = HEIGHT_SIZE // SIZE
+    return layer.repeat(f, axis=0).repeat(f, axis=1)
 
 
 def dtm_rasters(key: str, bbox) -> list[Path]:
@@ -792,9 +809,10 @@ def grade_roads(heights: np.ndarray, roads: list[tuple[np.ndarray, int, float, b
     """Heights with the roads built into them. A road lies level across at its centreline's
     height, which is smoothed along it, and the ground beside it is cut or filled to it at no more
     than GRADE_BANK. Bridges keep the ground under them."""
-    px = 2 * half / SIZE
+    size = heights.shape[0]
+    px = 2 * half / size
     lines = [(xy, width) for xy, _, width, bridge in roads if not bridge]
-    distance, nearest, along = edge_distance(lines, half, SIZE, ROAD_REACH_M)
+    distance, nearest, along = edge_distance(lines, half, size, ROAD_REACH_M)
     near = np.flatnonzero(nearest)
     near = near[np.argsort(nearest.flat[near], kind="stable")]
     groups = np.split(near, np.flatnonzero(np.diff(nearest.flat[near])) + 1)
@@ -808,8 +826,8 @@ def grade_roads(heights: np.ndarray, roads: list[tuple[np.ndarray, int, float, b
         s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
         steps = np.linspace(0, s[-1], max(2, int(s[-1] / px) + 1))
         x, y = np.interp(steps, s, xy[:, 0]), np.interp(steps, s, xy[:, 1])
-        u = np.clip((x + half) / px - 0.5, 0, SIZE - 1.001)
-        v = np.clip((half - y) / px - 0.5, 0, SIZE - 1.001)
+        u = np.clip((x + half) / px - 0.5, 0, size - 1.001)
+        v = np.clip((half - y) / px - 0.5, 0, size - 1.001)
         i, j = u.astype(int), v.astype(int)
         fu, fv = u - i, v - j
         z = ((heights[j, i] * (1 - fu) + heights[j, i + 1] * fu) * (1 - fv)
@@ -935,7 +953,8 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
     sea = coast_sea.copy() if coast_sea is not None else water & (heights <= SEA_LEVEL_M)
     if not sea.any():
         return heights
-    px = 2 * half / SIZE
+    size = heights.shape[0]
+    px = 2 * half / size
     # GLO-30 smears a cliff over the sea beside it too: water joined to the sea within reach of
     # the shore is sea, however high the DEM puts it. Twice the cliff reach, so a lough behind a
     # cliff top keeps its level.
@@ -952,12 +971,12 @@ def sharpen_coast(heights: np.ndarray, classes: np.ndarray, half: float, cliffs:
         near = grown
     gy, gx = np.gradient(box_mean(distance, 1))
     norm = np.maximum(np.hypot(gx, gy), 1e-6)
-    rows, cols = np.mgrid[0:SIZE, 0:SIZE].astype(np.float32)
+    rows, cols = np.mgrid[0:size, 0:size].astype(np.float32)
 
     def inland(reach: float) -> np.ndarray:
         """Bilinear height `reach` texels inland of each texel."""
-        y = np.clip(rows + gy / norm * reach, 0, SIZE - 1.001)
-        x = np.clip(cols + gx / norm * reach, 0, SIZE - 1.001)
+        y = np.clip(rows + gy / norm * reach, 0, size - 1.001)
+        x = np.clip(cols + gx / norm * reach, 0, size - 1.001)
         y0, x0 = y.astype(int), x.astype(int)
         fy, fx = y - y0, x - x0
         return ((heights[y0, x0] * (1 - fx) + heights[y0, x0 + 1] * fx) * (1 - fy)
@@ -986,7 +1005,7 @@ def sharpen_relief(heights: np.ndarray, half: float, rule: dict) -> np.ndarray:
     """GLO-30 heights with the relief finer than its 30 m cells brought back by an unsharp mask:
     ridges stand sharper and gullies cut deeper, by the region's amount of the difference from the
     mean over radius_m. Only where a texel is finer than the radius."""
-    px = 2 * half / SIZE
+    px = 2 * half / heights.shape[0]
     r = round(rule["radius_m"] / px)
     if r < 3 or rule["amount"] <= 0:
         return heights
@@ -998,14 +1017,15 @@ def sharpen_summits(heights: np.ndarray, summits: list, half: float, rule: dict)
     its 30 m cells, which hides the drop from anyone standing on top. Within the region's reach_m of
     a peak with a surveyed height, the top rises to that height and the ground falls away as a cone
     toward the height found at the reach in each direction, never more than max_cut_m below GLO-30."""
-    px = 2 * half / SIZE
+    size = heights.shape[0]
+    px = 2 * half / size
     reach = rule["reach_m"]
     out = heights.copy()
     for x, y, ele in summits:
         if max(abs(x), abs(y)) >= half - reach:
             continue
-        i0, i1 = max(int((x - reach + half) / px), 0), min(int((x + reach + half) / px) + 1, SIZE)
-        j0, j1 = max(int((half - y - reach) / px), 0), min(int((half - y + reach) / px) + 1, SIZE)
+        i0, i1 = max(int((x - reach + half) / px), 0), min(int((x + reach + half) / px) + 1, size)
+        j0, j1 = max(int((half - y - reach) / px), 0), min(int((half - y + reach) / px) + 1, size)
         cols = (np.arange(i0, i1) + 0.5) * px - half
         rows = half - (np.arange(j0, j1) + 0.5) * px
         dx, dy = np.meshgrid(cols - x, rows - y)
@@ -1017,7 +1037,7 @@ def sharpen_summits(heights: np.ndarray, summits: list, half: float, rule: dict)
         # The ground at the reach straight out from the peak, bilinear.
         u = (x + dx / np.maximum(d, 1e-6) * reach + half) / px - 0.5
         v = (half - (y + dy / np.maximum(d, 1e-6) * reach)) / px - 0.5
-        ui, vi = np.clip(u.astype(int), 0, SIZE - 2), np.clip(v.astype(int), 0, SIZE - 2)
+        ui, vi = np.clip(u.astype(int), 0, size - 2), np.clip(v.astype(int), 0, size - 2)
         fu, fv = np.clip(u - ui, 0, 1), np.clip(v - vi, 0, 1)
         rim = ((heights[vi, ui] * (1 - fu) + heights[vi, ui + 1] * fu) * (1 - fv)
                + (heights[vi + 1, ui] * (1 - fu) + heights[vi + 1, ui + 1] * fu) * fv)
@@ -1126,9 +1146,10 @@ def canopy_of(glo30: np.ndarray, dtm: np.ndarray, classes: np.ndarray, half: flo
 
 def sample(level: np.ndarray, half: float, x, y):
     """Nearest texel of a level at metres east and north."""
-    px = 2 * half / SIZE
-    i = np.clip(((np.asarray(x) + half) / px).astype(int), 0, SIZE - 1)
-    j = np.clip(((half - np.asarray(y)) / px).astype(int), 0, SIZE - 1)
+    size = level.shape[0]
+    px = 2 * half / size
+    i = np.clip(((np.asarray(x) + half) / px).astype(int), 0, size - 1)
+    j = np.clip(((half - np.asarray(y)) / px).astype(int), 0, size - 1)
     return level[j, i]
 
 
@@ -1538,7 +1559,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
             if not dtm_paths:
                 print(f"  no {dtm} DTM here: GLO-30 only", flush=True)
                 dtm = None
-        centre = slice(SIZE // 2 - 1, SIZE // 2 + 1)
+        centre = slice(HEIGHT_SIZE // 2 - 1, HEIGHT_SIZE // 2 + 1)
         origin = {}
         for k in range(LEVELS):
             half = HALF0_M * 2**k
@@ -1548,21 +1569,21 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 origin["glo30"] = float(glo30[centre, centre].mean())
             heights = glo30
             if dtm and k < dtm_levels:
-                fine = warp(dtm_paths, frame, half, "average", overviews=False, work=work)[0]
-                gaps = fine == NODATA
-                fine[gaps] = glo30[gaps]
+                national = warp(dtm_paths, frame, half, "average", overviews=False, work=work, size=HEIGHT_SIZE)[0]
+                gaps = national == NODATA
+                national[gaps] = glo30[gaps]
                 if k == 0:
-                    origin["dtm"] = float(fine[centre, centre].mean())
-                heights = fine
+                    origin["dtm"] = float(national[centre, centre].mean())
+                heights = national
                 blob = encode(glo30)
                 (out / f"glo30-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "glo30", len(blob)))
             wet = osm_wet(rivers, lakes, islands, half) if k < WATER_LEVELS else None
-            classes, sea = class_level(k, frame, bbox, heights, work, coast if k < WATER_LEVELS else None, wet)
+            classes, sea = class_level(k, frame, bbox, coarse(heights), work, coast if k < WATER_LEVELS else None, wet)
             if heights is glo30:
                 heights = sharpen_relief(heights, half, region["relief"])
                 heights = sharpen_summits(heights, summits, half, region["summits"])
-                heights = sharpen_coast(heights, classes, half, region["cliffs"], sea)
+                heights = sharpen_coast(heights, fine(classes), half, region["cliffs"], None if sea is None else fine(sea))
                 if k == 0:
                     origin["glo30"] = float(heights[centre, centre].mean())
             if k < ROAD_LEVELS and roads:
@@ -1594,7 +1615,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 (out / f"water-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "water", len(blob)))
             if dtm and k < dtm_levels:
-                canopy = canopy_of(glo30, heights, classes, half)
+                canopy = canopy_of(coarse(glo30), coarse(heights), classes, half)
                 blob = pack(np.round(canopy * 4).astype(np.uint8))
                 (out / f"canopy-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "canopy", len(blob)))
@@ -1603,7 +1624,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 canopy0 = canopy if dtm else None
             if k == 1:
                 heights1 = heights
-            print(f"  level {k}: ±{half / 1000:g} km, {2 * half / SIZE:.2f} m px, "
+            print(f"  level {k}: ±{half / 1000:g} km, {2 * half / HEIGHT_SIZE:.2f} m heights, "
                   f"{heights.min():.0f}–{heights.max():.0f} m", flush=True)
 
         if not colour:
@@ -1673,7 +1694,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     meta = {key: spot[key] for key in ("id", "lat", "lon", "heading", "pitch") if key in spot}
     above = spot.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
-                levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
+                levels=LEVELS, size=SIZE, height_size=HEIGHT_SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
                 dtm=dtm, s2_levels=S2_LEVELS, barren_median=barren_median, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
                 region=chain[-1], chain=chain, country=country, subdivision=subdivision, tz=tz,

@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three';
-import { HABITATS, type Bake } from './bake';
+import { HABITATS, heightAtTexel, heightSize, type Bake } from './bake';
 import type { Light } from './light';
 import type { Region } from './regions';
 import { NearField } from './nearfield';
@@ -55,7 +55,7 @@ function fetchToward(bake: Bake, bearing: number): Float32Array {
       for (let ii = 0; ii < size; ii++) {
         const i = di > 0 ? size - 1 - ii : ii;
         const t = base + j * size + i;
-        if (bake.classes[t * 2 + 1] < 128 || bake.surface[k][j * size + i] + eye_m > 2) continue;
+        if (bake.classes[t * 2 + 1] < 128 || heightAtTexel(bake, k, i, j) + eye_m > 2) continue;
         const [ni, nj] = [i + di, j + dj];
         const ahead = ni < 0 || nj < 0 || ni >= size || nj >= size ? coarser(ni, nj) : fetch[base + nj * size + ni];
         fetch[t] = Math.min(FETCH_M, ahead + step);
@@ -209,6 +209,7 @@ export class Terrain {
     const u = (this.uniforms = {
       heights: { value: null },
       half0: { value: 1250 },
+      heightSize: { value: 1024 },
       levels: { value: 9 },
       dtmLevels: { value: 0 },
       glo30Only: { value: false },
@@ -337,16 +338,17 @@ export class Terrain {
   /** Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced. */
   setBake(bake: Bake, region: Region): void {
     const { size, levels, half0_m, dtm_levels } = bake.meta;
+    const fine = heightSize(bake.meta);
     const layers = [...bake.surface, ...bake.glo30];
-    const data = new Uint16Array(size * size * layers.length);
+    const data = new Uint16Array(fine * fine * layers.length);
     const Float16 = (globalThis as { Float16Array?: new (a: Float32Array) => ArrayLike<number> & { buffer: ArrayBuffer } })
       .Float16Array;
     layers.forEach((layer, i) => {
       const half = Float16 ? new Uint16Array(new Float16(layer).buffer) : layer.map(THREE.DataUtils.toHalfFloat);
-      data.set(half, i * size * size);
+      data.set(half, i * fine * fine);
     });
     this.texture?.dispose();
-    const texture = new THREE.DataArrayTexture(data, size, size, layers.length);
+    const texture = new THREE.DataArrayTexture(data, fine, fine, layers.length);
     texture.type = THREE.HalfFloatType;
     texture.format = THREE.RedFormat;
     texture.internalFormat = 'R16F';
@@ -357,6 +359,7 @@ export class Terrain {
     const u = this.uniforms;
     u.heights.value = texture;
     u.half0.value = half0_m;
+    u.heightSize.value = fine;
     u.levels.value = levels;
     u.dtmLevels.value = dtm_levels;
     this.classes?.dispose();
@@ -422,7 +425,7 @@ export class Terrain {
     u.rockMap.value = this.rockMap ?? this.classes;
     u.rockLevels.value = rock_levels;
     this.normals?.dispose();
-    this.normals = new THREE.WebGLArrayRenderTarget(size, size, levels, {
+    this.normals = new THREE.WebGLArrayRenderTarget(fine, fine, levels, {
       type: THREE.HalfFloatType,
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
