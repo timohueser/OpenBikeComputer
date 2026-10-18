@@ -495,6 +495,7 @@ gui.add(state, 'buildings').onChange((on: boolean) => {
   terrain.nearField.buildings.visible = on;
   requestRender();
 });
+gui.add({ models: () => open('/models.html', '_blank') }, 'models').name('models and missing species');
 const shot = gui.addFolder('Photo').close();
 shot.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
 shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);

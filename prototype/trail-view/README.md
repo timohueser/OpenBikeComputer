@@ -167,6 +167,7 @@ prints one JSON line with its files, the renderer, the triangles and the page er
   1 km.
 - "Photo": "photo camera" frames the view like the photograph. "align camera" moves a
   photograph's camera, and "copy camera JSON" copies it for `spots/`.
+- "models and missing species" opens `models.html` in a new tab.
 - "Readout" › "region" shows the chain of regions, root first.
 - "Look" tunes palette snap, haze, mist and the light bands; "copy look JSON" copies them.
 - "Tools": "raise eye" lifts the eye. "save side by side" and "save view" write shots.
