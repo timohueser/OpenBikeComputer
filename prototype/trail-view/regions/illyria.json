@@ -1,1 +1,8 @@
-{ "name": "Illyrian deciduous forests", "ecoregion": 794, "extends": "world", "leaf": "broadleaved" }
+{
+ "name": "Illyrian deciduous forests",
+ "ecoregion": 794,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "illyria",
+ "about": "The Adriatic and Ionian coast belt from the Trieste karst and the Istrian hill towns over the Kvarner, the Velebit coast and Dalmatia to the Bay of Kotor, the Albanian hills and Epirus: grey-green downy oak and oriental hornbeam scrub on white limestone, dry stone walls round olive groves, vineyards and pastures, holm oak maquis and Aleppo pine on the coast, bare karst slopes and islands where the bura strips them, cypresses and stone villages with low red tile roofs, and in the south wide valleys of fields under high bare limestone ranges. No split: the belt has one sub-Mediterranean climate that grows warmer and drier to the south without a stable line, so one haze, weather and grade fit it; the green Istrian flysch, the bare Velebit coast and the summer-dry Albanian maquis differ in Sentinel-2 colour, seasonal NDVI ramps and the barren rule, the oak, pine and beech belts of the southern ranges in the tree elevation bands and the snowline, and the houses in culture by country."
+}
