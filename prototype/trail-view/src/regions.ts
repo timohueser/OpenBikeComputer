@@ -60,8 +60,8 @@ const byCountry = (check: Check): Check => (v, p) =>
 /** West, south, east, north. */
 type Bounds = [number, number, number, number];
 const WORLD: Bounds = [-180, -90, 180, 90];
-/** The baseline ecoregions' reach; a region of a short with an ecoregion keeps its areas inside. */
-const EUROPE: Bounds = [-32, 27, 45, 72];
+/** tune/ecoregions.py's clip: a region of a short with an ecoregion keeps its areas inside. */
+const EUROPE: Bounds = [-32, 27, 60, 72];
 const point = ([w, s, e, n]: Bounds): Check => (v, p) =>
   Array.isArray(v) && v.length === 2 && v[0] >= w && v[0] <= e && v[1] >= s && v[1] <= n ? [] : wrong(p, `${said(v)} is not a [lon, lat] within ${w}..${e}, ${s}..${n}`);
 /** A box [west, south, east, north] or a ring of three or more [lon, lat]. */
