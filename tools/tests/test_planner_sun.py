@@ -82,12 +82,9 @@ class SunIndexTest(unittest.TestCase):
             packed, index = self.grid_request(root, source, request)
             self.assertEqual(sum(name.endswith(".pmtiles") for name in index["files"]), 2)
             def bake(terrain, output, *options, terrain_grid_sha256):
-                with terrain.open("rb") as stream:
-                    read = MmapSource(stream)
-                    self.assertEqual(dict(all_tiles(read)), tiles)
-                    header = Reader(read).header()
-                    for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7"):
-                        self.assertEqual(header[key], original_header[key])
+                self.assertEqual({tile: terrain.get(*tile) for tile in tiles}, tiles)
+                for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "max_zoom"):
+                    self.assertEqual(terrain.header[key], original_header[key])
                 self.assertEqual(terrain_grid_sha256, hashlib.sha256(runtime.encoded(index)).hexdigest())
                 self.assertEqual(output.relative_to(Path(request["output"])).as_posix(), "sun/sun.pmtiles")
                 output.write_bytes(b"baked archive")
