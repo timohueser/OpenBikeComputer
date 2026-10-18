@@ -309,12 +309,11 @@ pub(super) fn locked_as<T>(
     let now = crate::date::now();
     let taken = match Held::take(target, run.id(), now) {
         Err(lock::Refused::Held(holder)) if runs::died(store, &holder) => {
-            run.line(&format!("{label}: run {} ended without freeing the lock; this run takes it over", holder.run))?;
-            Held::take_over(target, run.id(), now, Some(&holder))
+            Held::take_over(target, run.id(), now, Some(&holder)).map(|held| (held, Some(holder.run)))
         }
-        taken => taken,
+        taken => taken.map(|held| (held, None)),
     };
-    let held = taken.map_err(|refused| match refused {
+    let (held, over) = taken.map_err(|refused| match refused {
         lock::Refused::Held(holder) => {
             Code::Blocked.error(format!("{label}: {}", lock::held_by(&holder))).fix(format!(
                 "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
@@ -329,6 +328,9 @@ pub(super) fn locked_as<T>(
             .error(format!("{label}: {e}"))
             .fix(format!("Read {} of the target: another build of `obc data` can have written it, and a run can hold it. Wait for that run, or use that build.", lock::LOCK)),
     })?;
+    if let Some(dead) = over {
+        run.line(&format!("{label}: run {dead} ended without freeing the lock; this run took it over"))?;
+    }
     let (stop, (done, wait), file) = (run.stopper(), mpsc::channel::<()>(), run.status_file());
     let result = std::thread::scope(|scope| {
         let held = &held;
@@ -1920,9 +1922,17 @@ pub(super) mod tests {
         fixture.with_sources(&[]);
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let dead = Run::create(&fixture.store, ["update", "local"]).unwrap();
-        // The process ends without freeing the lock, as on an out-of-memory kill.
+        // The process ends without freeing the lock, as on an out-of-memory kill, and a program of
+        // one of its steps still runs in the process group that the run led.
         std::mem::forget(lock::Held::take(&target, dead.id(), crate::date::now()).unwrap());
+        let status_file = dead.status_file();
         drop(dead);
+        let mut program = std::process::Command::new("sleep");
+        std::os::unix::process::CommandExt::process_group(program.arg("60"), 0);
+        let mut program = program.spawn().unwrap();
+        let mut status: serde_json::Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+        status["pid"] = program.id().into();
+        std::fs::write(&status_file, serde_json::to_vec(&status).unwrap()).unwrap();
         let Some((lock::LockFile::Held(mut holder), _)) = lock::read(&target).unwrap() else { panic!("free") };
 
         holder.machine = "elsewhere".into();
@@ -1933,6 +1943,10 @@ pub(super) mod tests {
 
         holder.machine = crate::machine();
         std::fs::write(&lock_file, serde_json::to_vec(&lock::LockFile::Held(holder)).unwrap()).unwrap();
+        let refused = update(&fixture, &target, region).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "a program of the run still runs");
+        program.kill().unwrap();
+        program.wait().unwrap();
         update(&fixture, &target, region).unwrap();
         assert_eq!(lock::read(&target).unwrap().unwrap().0, lock::LockFile::Free, "the run frees it");
     }

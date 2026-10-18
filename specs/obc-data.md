@@ -1137,7 +1137,8 @@ it.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
   the lock. On its machine, the next run of the same store takes the lock over at once, with a
   conditional write, and writes that to its log: the store shows that the process of the run
-  ended (see [Runs](#runs)). On another machine, `obc data unlock TARGET --from MACHINE` frees the
+  ended (see [Runs](#runs)), and no process of its process group runs, such as a program of a
+  step. On another machine, `obc data unlock TARGET --from MACHINE` frees the
   lock of a run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
