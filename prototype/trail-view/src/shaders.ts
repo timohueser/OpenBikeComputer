@@ -606,12 +606,14 @@ void main() {
   float surfaceSize = max(length(dFdx(vWorld)), length(dFdy(vWorld)));
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
-  // Where the mesh stands well above the finest ground, or slopes far more steeply than it, it is
-  // a slope the mesh smoothed out of detail finer than its triangles, as at a sea cliff's foot a
-  // kilometre off: it is cliff, lit like the cliff beside it, not the flat sea under it.
+  Ground g = groundAt(vWorld.xy, footprint);
+  // Where the mesh slopes far more steeply than the finest ground, or stands well above water, it
+  // is a slope the mesh smoothed out of detail finer than its triangles, as at a sea cliff's foot a
+  // kilometre off: it is cliff, lit like the cliff beside it, not the flat sea under it. Over land
+  // the lift says nothing, as the DTM and GLO-30 under it differ by metres.
   vec3 facet = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   facet *= sign(facet.z);
-  float skirt = max(smoothstep(1.0, 4.0, vLift), smoothstep(0.25, 0.5, n.z - facet.z));
+  float skirt = max(smoothstep(1.0, 4.0, vLift) * smoothstep(0.3, 0.6, g.water), smoothstep(0.25, 0.5, n.z - facet.z));
   // How flat the ground is at the pixel's own level: water lies only where it is.
   float level = mix(n.z, facet.z, skirt);
   // A cliff spans few texels across and many metres up, so its fine slopes would streak down
@@ -628,7 +630,6 @@ void main() {
     n = normalize(mix(n, coarse, towards));
     open = mix(open, coarseOpen, towards);
   }
-  Ground g = groundAt(vWorld.xy, footprint);
   // Steep open ground is rock, banded in strata by height; trees and roads hold on to it. Where
   // the geological map reaches, the rock takes its unit's colour. Variegated clays erode into
   // badlands, so their beds show on gentler slopes: red, white and green-grey, streaked by gullies.

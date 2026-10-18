@@ -63,7 +63,7 @@ const WINTER_SNOW_BELOW_M = 800;
 /** Ground plants on a jittered 1 m grid within this many metres, all of them within THIN_M. */
 const GROUND_RADIUS_M = 60;
 const THIN_M = 20;
-/** Shrub species on half the points of a jittered grid on shrubland within this many metres. */
+/** Shrub species on half the points of a jittered grid on shrubland within this many metres, a third as many on sparse ground. */
 const SHRUB_RADIUS_M = 500;
 const SHRUB_SPACING_M = 5;
 const SHRUB_SHARE = 0.5;
@@ -430,8 +430,12 @@ export class NearField {
       for (let y = -SHRUB_RADIUS_M; y < SHRUB_RADIUS_M; y += SHRUB_SPACING_M) {
         for (let x = -SHRUB_RADIUS_M; x < SHRUB_RADIUS_M; x += SHRUB_SPACING_M) {
           const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
-          const scrub = (classAt(sx, sy) === CLASS.shrub || habitatAt(sx, sy) === 'scrub') && !exposed(sx, sy);
-          if (rand() > SHRUB_SHARE || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M || !scrub) continue;
+          const kind = classAt(sx, sy);
+          const scrub = (kind === CLASS.shrub || habitatAt(sx, sy) === 'scrub') && !exposed(sx, sy);
+          // WorldCover's bare class is "bare or sparse vegetation": scattered shrubs, a third as dense.
+          const sparse = kind === CLASS.bare && habitatAt(sx, sy) !== 'rock' && !exposed(sx, sy);
+          const share = scrub ? SHRUB_SHARE : sparse ? SHRUB_SHARE / 3 : 0;
+          if (rand() > share || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M) continue;
           if (this.offGround(bake, sx, sy, px)) continue;
           const species = pick(shrubs).tree;
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
