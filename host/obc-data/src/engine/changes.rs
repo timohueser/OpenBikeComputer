@@ -130,13 +130,13 @@ pub fn update(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::plan::outputs;
     use crate::engine::runs::Limits;
     use crate::engine::state::{Cause as Why, Field, OPTIONS};
     use crate::engine::tests::{fixture, layered, summary, Fixture, REVISED, TEST};
-    use crate::engine::{Request, Run};
+    use crate::engine::{Function, Request, Run};
 
     /// The id, the cause, the layers and the drops of a group.
     type Outline = (String, Option<Cause>, Vec<String>, Vec<String>);
@@ -199,12 +199,8 @@ mod tests {
             shape: crate::engine::Shape::Partitioned(&["east", "west"]),
             ..TEST
         };
-        fn copy(request: &Request) -> Result<(), String> {
-            let read = request.snapshots.values().flat_map(|files| files.values()).next().ok_or("no file")?;
-            std::fs::copy(read, request.output.join("part.txt")).map(drop).map_err(|e| e.to_string())
-        }
         let part =
-            |name: &str, read: Input| Step { layer: &ROUTING, ..step(name, vec![read], "part.txt", Run::Rust(copy)) };
+            |name: &str, read: Input| Step { layer: &ROUTING, ..step(name, vec![read], "part.txt", Run::Rust(&PART)) };
         let steps = |head: &str| {
             let west = part("test/routing/west", snapshot("tail", "1", &["tail.txt"]));
             vec![part("test/routing/east", snapshot("head", head, &["head.txt"])), west]
@@ -229,6 +225,15 @@ mod tests {
     }
 
     /// `test/upper` with an exclamation mark: other files of the same key.
+    pub(crate) static PART: Function = Function { name: "test/part", run: part };
+
+    fn part(request: &Request) -> Result<(), String> {
+        let read = request.snapshots.values().flat_map(|files| files.values()).next().ok_or("no file")?;
+        std::fs::copy(read, request.output.join("part.txt")).map(drop).map_err(|e| e.to_string())
+    }
+
+    pub(crate) static LOUDER: Function = Function { name: "test/louder", run: louder };
+
     fn louder(request: &Request) -> Result<(), String> {
         let text = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
         std::fs::write(request.output.join("upper.txt"), text.to_uppercase() + "!").map_err(|e| e.to_string())
@@ -240,7 +245,7 @@ mod tests {
         let release = released(&fixture, &layered());
         // The store gets other files for the key of `test/upper`.
         let mut louder_steps = layered();
-        louder_steps[2].run = Run::Rust(louder);
+        louder_steps[2].run = Run::Rust(&LOUDER);
         let named = super::update(&fixture.store, &louder_steps, &by_step(&release), &Newer::new(), &names(&["upper"]))
             .unwrap();
         fixture.run(&louder_steps, &named.plan, Limits::machine()).unwrap();

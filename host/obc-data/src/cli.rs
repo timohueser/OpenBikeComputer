@@ -647,9 +647,18 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::tests::Scratch;
+
+    /// The functions of the Rust steps of the tests of the commands.
+    pub(crate) const FUNCTIONS: [&crate::engine::Function; 5] = [
+        &update_cli::tests::WAIT_FOR_GATE,
+        &update_cli::tests::COPY_EARTH,
+        &update_cli::tests::SPLIT_LINES,
+        &update_cli::tests::COPY_LEAF,
+        &prepare_cli::tests::COPY,
+    ];
 
     #[test]
     fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {

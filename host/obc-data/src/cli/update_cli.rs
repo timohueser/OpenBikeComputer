@@ -1033,6 +1033,7 @@ fn defined(settings: &mut Settings, region: Region) -> Result<(), Error> {
 pub(super) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, snapshot, write, Fixture};
+    use crate::engine::Function;
     use crate::product::{Pointer, Steps, Unplanned};
     use crate::release::POINTERS;
 
@@ -1094,8 +1095,12 @@ pub(super) mod tests {
             }
             if root.join("gate").exists() {
                 static GATE: crate::engine::Layer = crate::engine::Layer { name: "gate", ..crate::engine::tests::TEST };
-                let mut step =
-                    crate::engine::tests::step("counter/gate", Vec::new(), "gate.txt", crate::engine::Run::Rust(gate));
+                let mut step = crate::engine::tests::step(
+                    "counter/gate",
+                    Vec::new(),
+                    "gate.txt",
+                    crate::engine::Run::Rust(&WAIT_FOR_GATE),
+                );
                 (step.layer, step.options) =
                     (&GATE, serde_json::json!({ "gate": root.join("gate").display().to_string() }));
                 return Ok(vec![step].into());
@@ -1108,7 +1113,7 @@ pub(super) mod tests {
             static EARTH: crate::engine::Layer = crate::engine::Layer { name: "earth", ..crate::engine::tests::TEST };
             let read = vec![snapshot("natural-earth", &version, &["earth.zip"])];
             let mut step =
-                crate::engine::tests::step("counter/earth", read, "earth.zip", crate::engine::Run::Rust(earth));
+                crate::engine::tests::step("counter/earth", read, "earth.zip", crate::engine::Run::Rust(&COPY_EARTH));
             step.layer = &EARTH;
             Ok(vec![step].into())
         }
@@ -1160,6 +1165,8 @@ pub(super) mod tests {
     }
 
     /// A step that writes `waiting` in the folder `gate` of its options, and waits for `open` there.
+    pub(in crate::cli) static WAIT_FOR_GATE: Function = Function { name: "test/gate", run: gate };
+
     fn gate(request: &crate::engine::Request) -> Result<(), String> {
         let gate = Path::new(request.options["gate"].as_str().unwrap());
         write(&gate.join("waiting"), "");
@@ -1195,15 +1202,21 @@ pub(super) mod tests {
         static SPLIT: Layer = Layer { name: "split", readers: &[], ..crate::engine::tests::TEST };
         static SPLIT_2: Layer = Layer { revision: 2, ..SPLIT };
         static LEAVES: Layer = Layer { name: "leaves", shape: Shape::Tiled, ..crate::engine::tests::TEST };
-        let mut split = step("counter/split", vec![snapshot("head", &head, &["head.txt"])], "split", Run::Rust(split));
+        let mut split =
+            step("counter/split", vec![snapshot("head", &head, &["head.txt"])], "split", Run::Rust(&SPLIT_LINES));
         (split.layer, split.client) = (if root.join("split-2").exists() { &SPLIT_2 } else { &SPLIT }, Client::None);
         let leaf = |leaf: &str| {
             let read = Input::Step { name: "counter/split".into(), files: vec![format!("split/{leaf}")] };
-            Step { layer: &LEAVES, ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(copy)) }
+            Step {
+                layer: &LEAVES,
+                ..step(&format!("counter/leaf/{leaf}"), vec![read], "leaf.txt", Run::Rust(&COPY_LEAF))
+            }
         };
         let second = (!root.join("one-leaf").exists()).then(|| leaf("0001-0002"));
         Ok([split, leaf("0001-0001")].into_iter().chain(second).collect::<Vec<_>>().into())
     }
+
+    pub(in crate::cli) static SPLIT_LINES: Function = Function { name: "test/counter-split", run: split };
 
     fn split(request: &crate::engine::Request) -> Result<(), String> {
         let head = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
@@ -1215,10 +1228,14 @@ pub(super) mod tests {
         Ok(())
     }
 
+    pub(in crate::cli) static COPY_LEAF: Function = Function { name: "test/counter-leaf", run: copy };
+
     fn copy(request: &crate::engine::Request) -> Result<(), String> {
         let read = request.layers["counter/split"].values().next().ok_or("no leaf")?;
         std::fs::copy(read, request.output.join("leaf.txt")).map(drop).map_err(|e| e.to_string())
     }
+
+    pub(in crate::cli) static COPY_EARTH: Function = Function { name: "test/earth", run: earth };
 
     fn earth(request: &crate::engine::Request) -> Result<(), String> {
         let copied = std::fs::copy(&request.snapshots["natural-earth"]["earth.zip"], request.output.join("earth.zip"));
@@ -1916,6 +1933,7 @@ pub(super) mod tests {
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn an_update_takes_over_the_lock_that_a_run_of_this_machine_kept_when_its_process_ended() {
         let fixture = fixture("update-died");
@@ -1923,12 +1941,18 @@ pub(super) mod tests {
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let dead = Run::create(&fixture.store, ["update", "local"]).unwrap();
         // The process ends without freeing the lock, as on an out-of-memory kill, and a program of
-        // one of its steps still runs in the process group that the run led.
+        // one of its steps still runs in the session that the run led.
         std::mem::forget(lock::Held::take(&target, dead.id(), crate::date::now()).unwrap());
         let status_file = dead.status_file();
         drop(dead);
         let mut program = std::process::Command::new("sleep");
-        std::os::unix::process::CommandExt::process_group(program.arg("60"), 0);
+        // SAFETY: setsid is async-signal-safe.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(program.arg("60"), || match libc::setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            })
+        };
         let mut program = program.spawn().unwrap();
         let mut status: serde_json::Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
         status["pid"] = program.id().into();

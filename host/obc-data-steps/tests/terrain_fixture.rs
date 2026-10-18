@@ -143,6 +143,12 @@ fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTre
     files.map(|file| (file.path.clone(), std::fs::read(store.object(&file.sha256)).unwrap())).collect()
 }
 
+/// The child process of a Rust step of the test runs it here.
+#[test]
+fn obc_data_step() {
+    obc_data::engine::child(obc_data_steps::FUNCTIONS);
+}
+
 #[test]
 fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_grimsel() {
     let tile = obc_fixtures::file("assistant-terrain", format!("{STEM}.tif"));

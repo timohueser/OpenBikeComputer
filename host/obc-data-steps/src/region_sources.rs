@@ -223,7 +223,7 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
                 .collect(),
             options: json!({}),
             outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
-            run: Run::Rust(obc_osm::step::area),
+            run: Run::Rust(&crate::functions::AREA),
             client: Client::None,
         })
         .collect()

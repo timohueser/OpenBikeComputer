@@ -489,6 +489,7 @@ mod tests {
             wall_ms: 0,
             cpu_ms: None,
             peak_rss_bytes: None,
+            own_process: true,
             bytes_in: 0,
             bytes_out: 0,
             metrics: Default::default(),

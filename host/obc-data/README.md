@@ -13,6 +13,12 @@ the planner layers; `obc data` does not install them.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
+Each step runs in a process of its own. A Rust step shows as `obc-data obc_data_step FUNCTION`
+in `ps`. Add the function of a new Rust step to `host/obc-data-steps/src/functions.rs`: a
+function that is not there fails its step. A test binary that runs a Rust step needs a test
+`obc_data_step` that calls `obc_data::engine::child` with its functions. Without that test, the
+step fails because it did not write its output.
+
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
 settings of a target (region, optional layers, refresh policies) are in the release that it
