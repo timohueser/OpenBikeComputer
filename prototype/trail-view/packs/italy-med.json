@@ -31,7 +31,7 @@
  },
  "herds": {
   "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "rough"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus", "groups": 1, "size": [3, 12], "on": ["pasture"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 12], "on": ["pasture"] },
   "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 6], "on": ["pasture"] },
   "goat": { "groups": 1, "size": [4, 12], "on": ["rough", "scrub", "rock"] }
  },
