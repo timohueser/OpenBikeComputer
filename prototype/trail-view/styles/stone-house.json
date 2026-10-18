@@ -1,0 +1,20 @@
+{
+ "name": "Stone house",
+ "about": "Bare pale limestone under a low roof of faded curved tile, with green or brown shutters or plain stone window surrounds.",
+ "pitch": [16, 24],
+ "eave": 0.25,
+ "verge": 0.12,
+ "hip": 0,
+ "timber": "none",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#dcd2bd", "#d2c6ad", "#c8b898", "#e3dbc9", "#bdb09a"],
+  "wood": ["#6b4e36"],
+  "roof": ["#ad6849", "#a0613f", "#97644f", "#b6744f"],
+  "door": ["#5e4434", "#4d6a4a", "#6b4e36"],
+  "shutter": ["#4d6a4a", "#5e4434", "#3f5f55", "#c9bda6"],
+  "plinth": "#a89c86",
+  "chimney": "#cfc3ab"
+ }
+}
