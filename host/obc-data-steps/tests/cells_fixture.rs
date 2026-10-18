@@ -1,10 +1,10 @@
 //! The map cells of `obc data update` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
-//! in for the Osmium crop of `device/osm`. The step cuts fine and network, which read the terrain:
-//! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
-//! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
-//! compile of a capture, and give one artifact each.
+//! in for the Osmium crop of `device/osm`. The step cuts every band, and each cell has the bytes of
+//! [`GOLDEN`]; fine and network, which read the terrain, are also compared with a cut of the leaf.
+//! A compiled landmark and a compiled peak on the summit of the extract stand in for the compile of
+//! a capture, and give one artifact each.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -35,6 +35,14 @@ const AREA: &str = "europe/grimsel-east";
 /// The Grimsel east of the leaf edge at 8.388608°: one terrain cell, whose source box lies in the
 /// one captured tile.
 const REGION: &str = "name = \"Grimsel east\"\nkind = \"box\"\nbox = [8.39, 46.48261, 8.46007, 46.66]\n";
+/// The SHA-256 of the one cell of each band in the leaf, as the four band steps of commit
+/// `d0c0650c2` wrote them. Other bytes are other device data: change these only on purpose.
+const GOLDEN: [(&str, &str); 4] = [
+    ("cells/coarse/0300/0264.obcm", "102e30645708264eddfe7bdf14967b7f1622a846ef941732d5178065c55b84ea"),
+    ("cells/fine/1201/1056.obcm", "eb62f326018cb804d3ada8b187c020ab44216ab73a90f39d01eb0d43c1639de1"),
+    ("cells/mid/0600/0528.obcm", "eb0668a70925b83daca7c3561a46515f2b21d502eba10ac0d387a417a4b0b3f4"),
+    ("cells/network/1201/1056.obcm", "33bc91069aac63b08a78ccd3ac4ca2cb5c4c5afe5424a778e6735fb2fe861542"),
+];
 
 struct Temp(PathBuf);
 
@@ -214,7 +222,6 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             "device/osm" => step.run = Run::Rust(copy),
             name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(landmark_content),
             name if name.starts_with("device/peak-content/") => step.run = Run::Rust(peak_content),
-            name if name.starts_with("device/map/") => step.run = Run::Rust(fine_and_network),
             _ => {}
         }
     }
@@ -237,6 +244,9 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let objects = |layer: &str| -> BTreeMap<String, PathBuf> {
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
+    let map_cells = layers["device/map/0037-0033"].files.iter().filter(|file| file.path.ends_with(".obcm"));
+    let map_cells: BTreeMap<&str, &str> = map_cells.map(|file| (file.path.as_str(), file.sha256.as_str())).collect();
+    assert_eq!(map_cells, BTreeMap::from(GOLDEN));
 
     let release = composed(&store, &steps);
     let named: BTreeMap<String, _> = Device.named(&release.outputs).unwrap().into_iter().collect();
@@ -364,9 +374,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let refused = Device.verify(&root, None, &release, &store).unwrap_err();
     assert!(refused.contains("artifact"), "{refused}");
     std::fs::rename(backup, path).unwrap();
+    let built = objects("device/map/0037-0033");
     for step in &mut steps {
         if step.name == "device/map/0037-0033" {
-            step.options["malformed_fixture"] = true.into();
+            step.options["malformed_fixture"] = serde_json::to_value(&built).unwrap();
             step.run = Run::Rust(malformed_network);
         }
     }
@@ -431,89 +442,18 @@ fn peak_content(request: &Request) -> Result<(), String> {
     write_content(request, "peaks/peaks.json", content)
 }
 
-/// The map step over fine and network, and authored coarse and mid geometry, serialized with the
-/// same style and profile tables as the real cuts.
-fn fine_and_network(request: &Request) -> Result<(), String> {
-    use obc_bake::serialize::serialize_lods;
-    use obc_draw::serialize::{Feature, Kind, LodLayer, Node};
-    let mut options = request.options.clone();
-    let cells = options["cells"].as_object_mut().ok_or("missing cells")?;
-    let authored: Vec<_> = ["coarse", "mid"].into_iter().filter_map(|band| Some((band, cells.remove(band)?))).collect();
-    let table = BandTable::recommended();
-    let sizes: Vec<String> = cells.keys().map(|band| format!("{}/", table.band(band).unwrap().cell_log2)).collect();
-    let partial = options["partial_cells"].as_array_mut().ok_or("missing partial cells")?;
-    partial.retain(|id| sizes.iter().any(|size| id.as_str().unwrap().starts_with(size.as_str())));
-    obc_bake::step::map(&Request {
-        step: request.step.clone(),
-        snapshots: request.snapshots.clone(),
-        layers: request.layers.clone(),
-        layer_files: request.layer_files.clone(),
-        options,
-        output: request.output.clone(),
-        metrics: request.metrics.clone(),
-    })?;
-    let config = Config::parse(include_str!("../../../builder/presets/schema.json"))?;
-    for (band, cells) in authored {
-        let band = table.band(band).ok_or("missing band definition")?;
-        for pair in cells.as_array().ok_or("missing cells")? {
-            let id = CellId::new(
-                band.cell_log2,
-                pair[0].as_i64().ok_or("invalid row")?,
-                pair[1].as_i64().ok_or("invalid column")?,
-            )?;
-            let square = id.square();
-            let feature = Feature {
-                style_id: config.styles()[0].id,
-                kind: Kind::Line,
-                rings: vec![vec![
-                    ((square.0 + 100) as f64 / 1e6, (square.1 + 100) as f64 / 1e6),
-                    ((square.2 - 100) as f64 / 1e6, (square.3 - 100) as f64 / 1e6),
-                ]],
-            };
-            let lods: Vec<_> = config
-                .lods
-                .iter()
-                .enumerate()
-                .map(|(level, lod)| LodLayer {
-                    max_mpp: lod.max_mpp,
-                    chunk_size: config.chunk_size,
-                    root: Node::Leaf {
-                        bbox: square,
-                        features: if band.lods.contains(&level) { vec![feature.clone()] } else { Vec::new() },
-                    },
-                })
-                .collect();
-            let (body, dropped) = serialize_lods(
-                &lods,
-                &config.styles(),
-                config.marker_color,
-                square,
-                &[],
-                &Default::default(),
-                &config.routing.profiles,
-                &mut obc_elevation::NullElevation,
-            );
-            assert_eq!(dropped, 0);
-            write_atomic(&request.output.join(obc_map_core::cell::cell_path(band, &id)), &body)?;
-        }
-        write_atomic(&request.output.join(format!("cells/{}/empty.json", band.id)), b"[]")?;
-    }
-    Ok(())
-}
-
-/// A structurally invalid payload whose valid header lets metadata generation complete.
+/// The cells of the first build, with a structurally invalid network payload whose valid header
+/// lets metadata generation complete.
 fn malformed_network(request: &Request) -> Result<(), String> {
-    fine_and_network(request)?;
-    let width = obc_map_core::grid::id_width(18);
-    let pair = &request.options["cells"]["network"][0];
-    let path = request.output.join(format!(
-        "cells/network/{:0width$}/{:0width$}.obcm",
-        pair[0].as_i64().ok_or("row")?,
-        pair[1].as_i64().ok_or("column")?
-    ));
+    let built = request.options["malformed_fixture"].as_object().ok_or("no built cells")?;
+    for (path, object) in built {
+        let bytes = std::fs::read(object.as_str().ok_or("no object path")?).map_err(|e| e.to_string())?;
+        write_atomic(&request.output.join(path), &bytes)?;
+    }
+    let network = built.keys().find(|path| path.starts_with("cells/network/") && path.ends_with(".obcm"));
     std::fs::OpenOptions::new()
         .write(true)
-        .open(path)
+        .open(request.output.join(network.ok_or("no network cell")?))
         .map_err(|e| e.to_string())?
         .set_len(obc_formats::obcm::HEADER_LEN as u64)
         .map_err(|e| e.to_string())

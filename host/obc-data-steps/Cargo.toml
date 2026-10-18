@@ -41,8 +41,6 @@ axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time"] }
 
 [dev-dependencies]
-# The authored coarse and mid geometry of the map-cell fixture.
-obc-draw = { workspace = true }
 # A stand-in for the Nominatim archive in the planner build test.
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }

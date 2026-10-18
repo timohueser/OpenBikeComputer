@@ -106,6 +106,10 @@ impl Job {
                 .ok_or(format!("a cell of `{}` is not [i, j] of the band", band.id))?;
             ids.sort_unstable();
             ids.dedup();
+            // The cutter reads an empty selection as every cell that meets the leaf.
+            if ids.is_empty() {
+                return Err(format!("band `{}` has no cells", band.id));
+            }
             cells.push((band, ids));
         }
         if let Some(band) = listed.keys().find(|id| !cells.iter().any(|(band, _)| &band.id == *id)) {

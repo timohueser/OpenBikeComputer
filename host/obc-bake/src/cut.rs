@@ -22,11 +22,14 @@
 //! overlay is only guaranteed to agree when handed identical inputs.
 //!
 //! Work is organised band, then LOD, then cell, so a level's merged feature set is built once and
-//! every cell of the band reads it. Only one level is resident: its cells keep their encoded bytes,
-//! and the set is dropped before the next level is prepared. Cells are cut in parallel; nothing in
-//! a cell's bytes depends on which thread produced it.
+//! every cell of the band reads it. The cutter prepares one level set at a time and drops it before
+//! the next; a merged set that a later level reads stays in the memo until that level. Each cell
+//! appends its encoded level to a spill file under [`SPILL_DIR`], so the encoded band is on disk,
+//! not in memory, until the cell is written. Cells are cut in parallel; nothing in a cell's bytes
+//! depends on which thread produced it.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -56,6 +59,10 @@ use obc_draw::cut::{merge_key, prepare_lod, PreparedSemantic};
 
 /// Filename of the cutter's provenance sidecar, written **last** (see [`cut_ingested`]).
 pub const MANIFEST_NAME: &str = "cells.json";
+
+/// The directory below the output directory that holds the encoded levels of the cells of a band
+/// until they are written. A successful cut removes it.
+pub const SPILL_DIR: &str = ".levels";
 
 /// One source extract a cell was baked from.
 ///
@@ -320,7 +327,12 @@ pub fn cut_ingested(
             format!("Cutting band {} (2^{} µdeg): {} cell(s)...", band.id, band.cell_log2, cells.len()),
         );
 
-        let mut regions: Vec<Vec<(usize, Region)>> = cells.iter().map(|_| Vec::new()).collect();
+        let spill = out_dir.join(SPILL_DIR).join(&band.id);
+        if !band.lods.is_empty() {
+            std::fs::create_dir_all(&spill).map_err(|e| format!("create {}: {e}", spill.display()))?;
+        }
+        let spills: Vec<PathBuf> = cells.iter().map(|cell| spill.join(format!("{}-{}", cell.i, cell.j))).collect();
+        let mut levels: Vec<Vec<Spilled>> = cells.iter().map(|_| Vec::new()).collect();
         let mut had_geometry = vec![false; cells.len()];
         for &lod in &band.lods {
             let set = prepare_lod(
@@ -334,15 +346,17 @@ pub fn cut_ingested(
             );
             merged_sets.retain(|key, _| last_level[key] > level);
             level += 1;
-            let encoded: Vec<(Region, bool)> = cells
+            let encoded: Vec<Result<(Spilled, bool), String>> = cells
                 .par_iter()
-                .map(|cell| {
+                .zip(&spills)
+                .map(|(cell, path)| {
                     let root = set.cell_tree(*cell, chunk_size, progress);
-                    (serialize_tree(&root, chunk_size), node_has_features(&root))
+                    Ok((spill_level(path, lod, serialize_tree(&root, chunk_size))?, node_has_features(&root)))
                 })
                 .collect();
-            for (k, (region, geometry)) in encoded.into_iter().enumerate() {
-                regions[k].push((lod, region));
+            for (k, encoded) in encoded.into_iter().enumerate() {
+                let (spilled, geometry) = encoded?;
+                levels[k].push(spilled);
                 had_geometry[k] |= geometry;
             }
             progress.check()?;
@@ -354,12 +368,14 @@ pub fn cut_ingested(
 
         let written: Vec<Result<CellArtifact, String>> = cells
             .par_iter()
-            .zip(regions)
+            .zip(&spills)
+            .zip(&levels)
             .zip(had_geometry)
-            .map(|((cell, regions), had_geometry)| {
+            .map(|(((cell, spill), levels), had_geometry)| {
                 if progress.is_cancelled() {
                     return Err("cancelled".into());
                 }
+                let regions = read_levels(spill, levels)?;
                 let mut pois: Vec<Poi> = poi_cells
                     .get(&(cell.i, cell.j))
                     .map(|ix| ix.iter().map(|&k| ing.pois[k as usize].clone()).collect())
@@ -427,6 +443,10 @@ pub fn cut_ingested(
              LOD simplify tolerance",
             summary.dropped
         ));
+    }
+    match std::fs::remove_dir_all(out_dir.join(SPILL_DIR)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("remove {SPILL_DIR}: {e}")),
+        _ => {}
     }
     write_manifest(out_dir, config, opts, extract, &summary)?;
     progress.stage(
@@ -512,7 +532,6 @@ fn write_cell(
         },
     )
     .map_err(|e| format!("write {}: {e}", path.display()))?;
-    use std::io::Write;
     w.flush().map_err(|e| format!("flush {}: {e}", path.display()))?;
     drop(w);
 
@@ -530,6 +549,54 @@ fn write_cell(
         nav_edges: graph.edges.len(),
         empty: !had_geometry && pois.is_empty() && landmarks.is_empty() && graph.nodes.is_empty() && dropped == 0,
     })
+}
+
+/// One encoded level of a cell in its spill file. The levels follow each other in the file.
+struct Spilled {
+    lod: usize,
+    index: usize,
+    nodes: u32,
+    chunks: usize,
+    chunk_count: u32,
+    dropped: usize,
+}
+
+/// Append one encoded level to the spill file of a cell.
+fn spill_level(
+    path: &Path,
+    lod: usize,
+    (index, nodes, chunks, chunk_count, dropped): Region,
+) -> Result<Spilled, String> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    file.write_all(&index)
+        .and_then(|()| file.write_all(&chunks))
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(Spilled { lod, index: index.len(), nodes, chunks: chunks.len(), chunk_count, dropped })
+}
+
+/// The encoded levels of a cell from its spill file, which is then removed.
+fn read_levels(path: &Path, levels: &[Spilled]) -> Result<Vec<(usize, Region)>, String> {
+    if levels.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    std::fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+    let mut at = 0;
+    let mut take = |len: usize| {
+        at += len;
+        bytes[at - len..at].to_vec()
+    };
+    Ok(levels
+        .iter()
+        .map(|level| {
+            let (index, chunks) = (take(level.index), take(level.chunks));
+            (level.lod, (index, level.nodes, chunks, level.chunk_count, level.dropped))
+        })
+        .collect())
 }
 
 fn node_has_features(node: &Node) -> bool {

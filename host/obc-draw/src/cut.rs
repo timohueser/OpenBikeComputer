@@ -76,7 +76,7 @@ pub fn merge_key(ing: &Ingested, config: &Config, lod: usize, scheme: &SemanticS
 /// optional fill-dissolve and line-stitch passes, plus a semantic tier's prebuilt coverage — and
 /// index it by cell.
 ///
-/// The merge memo shares identical input sets until their last band. The `min_lod` filters select nested sets,
+/// The merge memo shares identical input sets until their last level. The `min_lod` filters select nested sets,
 /// so their count identifies the set for a given semantic filter and line merge mode. Each level
 /// memoizes simplification when a cell first uses a feature. Semantic coverage is already simplified
 /// globally, so `presimplified` exempts it from that pass.
