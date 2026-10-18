@@ -352,7 +352,10 @@ export function validate(): string[] {
   for (const [kind, table, root] of [['region', REGIONS, 'world'], ['pack', PACKS, 'base'], ['style', STYLES, '']] as const) {
     for (const [name, { extends: up }] of Object.entries(table)) {
       const file = `${kind}s/${name}.json`;
-      if (root && name !== root && up !== root && short(up) !== short(name)) add(file, [`extends: ${said(up)} is not ${root} or a ${kind} of ${short(name)}`]);
+      // A subregion is only ever entered from its own short, so it may not extend the root.
+      const sub = kind === 'region' && name.includes('.');
+      if (root && name !== root && (sub || up !== root) && short(up) !== short(name)) add(file, [`extends: ${said(up)} is not ${sub ? '' : `${root} or `}a ${kind} of ${short(name)}`]);
+      if (sub && !(table[name] as { where?: unknown }).where) add(file, ['where: a subregion needs its areas']);
       if (up === undefined) continue;
       if (!table[up]) add(file, [`extends: no ${kind}s/${up}.json`]);
       const loop = [name];

@@ -13,7 +13,8 @@ This file holds only the instructions.
 One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32 GB RAM and
 300 GB disk. Run the agents as a normal user, not root.
 
-1. Packages. `python3-gdal` brings `gdal_proximity.py`.
+1. Packages. `python3-gdal` brings `gdal_proximity.py`. The bakes so far ran on GDAL 3.13 on the
+   Mac; Ubuntu 24.04 brings 3.8, and the smoke test in step 9 shows whether it works.
 
    ```sh
    sudo apt install -y git curl ca-certificates gdal-bin python3-gdal build-essential gh
@@ -23,6 +24,7 @@ One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32
 
    ```sh
    curl -LsSf https://astral.sh/uv/install.sh | sh
+   source ~/.local/bin/env          # or open a new shell
    ```
 
 3. Node 24 LTS, Claude Code, GitHub and a git identity:
@@ -45,7 +47,8 @@ One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32
    python3 tools/fixtures.py sync peak-view-photos   # the photographs of the Alps spots
    ```
 
-5. The CDSE keys, from the Mac. Never print the file.
+5. The CDSE keys, from the Mac. `box` is the Linux machine's SSH alias (`Host box` in
+   `~/.ssh/config`). Never print the file.
 
    ```sh
    ssh box mkdir -p .config/openbikecomputer
@@ -53,7 +56,8 @@ One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32
    ssh box chmod 600 .config/openbikecomputer/cdse-s3.env
    ```
 
-6. Optional, from the Mac: the bakes and source caches, about 8 GB of downloads less.
+6. Optional, from the Mac: the bakes and source caches, about 8 GB of downloads less. The Mac's
+   bakes are current for this branch. Without them, step 10 bakes every spot once.
 
    ```sh
    ssh box mkdir -p .cache/obc/trail-view
@@ -70,19 +74,42 @@ One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32
    vulkan-tools` and `vulkaninfo --summary`. Without a GPU, add `--swiftshader` to every
    `npm run shoot`. It renders the same picture on the CPU at about 2 s a frame.
 
-9. Smoke test, from the repository root:
+9. Smoke test, from the repository root. The JSON line names the WebGL `renderer`. If it names
+   SwiftShader on a machine with a GPU, the Vulkan path does not work: use `--swiftshader` and
+   write it into the tracking issue.
 
    ```sh
    uv run prototype/trail-view/bake.py healy-pass
    cd prototype/trail-view && npm run shoot -- healy-pass --time
    ```
 
+10. Only when the caches did not come from the Mac, or a bake's `meta.json` has no `region`: bake
+    every spot once, from the repository root. A rebake keeps the colour and the OSM answers, so
+    it takes about a minute a spot.
+
+    ```sh
+    for id in $(python3 -c "import json, glob; print(' '.join(s['id'] for f in sorted(glob.glob('prototype/trail-view/spots/*.json')) for s in json.load(open(f))))"); do uv run prototype/trail-view/bake.py "$id"; done
+    ```
+
 ## Start
 
-On the Linux box, finish the setup above. Then start one Claude Code session in the coordinator
-worktree and give it this message:
+On the Linux box, finish the setup above. Then start one Claude Code session in the clone from
+step 4, which is the coordinator's checkout, and give it this message:
 
 > Read prototype/trail-view/tune/README.md and act as the coordinator of the Europe tune.
+
+The coordinator's first steps:
+
+1. Ask the owner, then open one GitHub issue, "Trail View: Europe tune". It holds the batch plan,
+   the census table and the status of each region.
+2. Fix the regression set: every spot in `spots/` at the start of the tune, and later every spot
+   of an approved region.
+3. Make one worktree per region agent, from the repository root, and run `npm ci` in its
+   `prototype/trail-view`:
+
+   ```sh
+   git worktree add ../tune-<short> -b tune/<short> archive/trail-view-prototype
+   ```
 
 Run bake.py from the repository root. Run every other command in `prototype/trail-view`.
 
@@ -186,15 +213,16 @@ regression set and every approved spot before and after, and asks the owner.
 ## Rules for the shared machine
 
 - Reach Overpass only through bake.py. It holds a lock for the whole machine.
-- Do not run `npm run dev`: its port 5180 is strict. Slot N serves its worktree for the owner with
-  `npx vite --port 518N`.
+- The coordinator serves its checkout for the owner with `npx vite --port 5180`, and slot N its
+  worktree with `npx vite --port 518N`.
 - Do not shoot a spot while it bakes.
 - Bake again only after a bake key changes: a spot key other than `name`, or a region's `leaf`,
   `cliffs`, `summits`, `relief` or subregion areas. A look or pack change needs only new shots.
 - The region at the eye paints the whole panorama. Choose spots whose view stays mostly in the
   region, and judge only that terrain.
 - North of 65° N, judge spring and summer. The winter and autumn mosaics there are mostly empty.
-- Spot ids are `<short>-<place>`. Bakes and shots are kept per spot id.
+- New spot ids are `<short>-<place>`. Existing ids stay as they are: bakes, shots and the source
+  caches are kept per spot id.
 
 ## Data sources
 
@@ -210,8 +238,14 @@ regression set and every approved spot before and after, and asks the owner.
 
 ## Review page
 
-Each slot serves `review.html`. The owner opens it from the Mac through an SSH tunnel:
-`ssh -N -L 518N:localhost:518N box`, then `http://localhost:518N/review.html`. The page lists
-the regions with their status, the spots with their reference photos, each round beside the
-previous one, links to the live view, and a comment box per region and per spot. A comment or an
-approval belongs to the round on the screen.
+Each checkout serves `review.html` with its own spots. The owner opens a region in review on the
+port of the slot that tunes it, and approved regions on the coordinator's port 5180. From the Mac:
+
+```sh
+ssh -N -L 5180:localhost:5180 -L 5181:localhost:5181 -L 5182:localhost:5182 -L 5183:localhost:5183 -L 5184:localhost:5184 box
+```
+
+Then open `http://localhost:518N/review.html`. The page lists the regions with their status, the
+spots with their reference photos, each round beside the previous one, links to the live view,
+and a comment box per region and per spot. A comment or an approval belongs to the round on the
+screen.

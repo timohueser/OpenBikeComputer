@@ -63,9 +63,9 @@ and a look's `roadLine` may be a map by country, `{"ie": …, "*": …}`.
 
 ## Bake
 
-Needs `uv` and GDAL 3.13 on `PATH`: `gdalwarp`, `gdal_translate`, `gdalbuildvrt`, and
-`gdal_proximity` or `gdal_proximity.py`. A bake checks for them, and for the CDSE keys when it reads
-colour, before it starts. Run from the repository root:
+Needs `uv` and the GDAL command-line tools on `PATH` (the bakes so far used 3.13): `gdalwarp`,
+`gdal_translate`, `gdalbuildvrt`, and `gdal_proximity` or `gdal_proximity.py`. A bake checks for
+them, and for the CDSE keys when it reads colour, before it starts. Run from the repository root:
 
 ```sh
 uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]

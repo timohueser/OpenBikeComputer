@@ -12,7 +12,7 @@
 // with --time the median frame time. Without a GPU, pass --swiftshader: WebGL2 then runs on the
 // CPU, the same picture at about 2 s a frame, so its frame times say nothing about the product.
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -57,11 +57,15 @@ if (values.round) {
 }
 
 const browser = await chromium.launch({
-  args: values.swiftshader ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : ['--ignore-gpu-blocklist', '--enable-gpu'],
+  // Headless Chromium on Linux draws WebGL on the CPU unless it is told to use Vulkan.
+  args: values.swiftshader ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+    : process.platform === 'linux' ? ['--use-angle=vulkan', '--enable-features=Vulkan', '--disable-vulkan-surface', '--ignore-gpu-blocklist']
+      : ['--ignore-gpu-blocklist', '--enable-gpu'],
 });
 // Each run has its own server and dependency cache, so parallel agents do not share either.
+const cacheDir = mkdtempSync(join(tmpdir(), 'trail-view-vite-'));
 const server = await createServer({
-  root: ROOT, configFile: join(ROOT, 'vite.config.ts'), cacheDir: mkdtempSync(join(tmpdir(), 'trail-view-vite-')),
+  root: ROOT, configFile: join(ROOT, 'vite.config.ts'), cacheDir,
   server: { port: 0, strictPort: false, hmr: false, watch: null }, logLevel: 'error',
 });
 try {
@@ -132,4 +136,5 @@ try {
 } finally {
   await browser.close();
   await server.close();
+  rmSync(cacheDir, { recursive: true, force: true });
 }

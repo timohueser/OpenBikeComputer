@@ -1414,12 +1414,16 @@ def elevation_tag(text: str) -> float | None:
 
 def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     if missing := [tool for tool in ("gdalwarp", "gdal_translate", "gdalbuildvrt", PROXIMITY) if not shutil.which(tool)]:
-        sys.exit(f"bake.py needs GDAL 3.13 on PATH; not found: {', '.join(missing)}")
+        sys.exit(f"bake.py needs the GDAL command-line tools on PATH (Ubuntu: gdal-bin, python3-gdal); not found: {', '.join(missing)}")
     out = CACHE / spot["id"]
     lat, lon = spot["lat"], spot["lon"]
     chain, region = region_of(spot["file"], lat, lon)
     country, tz = country_at(lat, lon), TimezoneFinder().timezone_at(lng=lon, lat=lat)
     dtm = spot.get("dtm")
+    # A typo would otherwise fail only after minutes of Overpass and warping.
+    for key, known in (("dtm", {*DTM_SOURCES, *BOXED, "scot"}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
+        if spot.get(key) and spot[key] not in known:
+            sys.exit(f"{spot['id']}: unknown {key} {spot[key]!r}; known: {', '.join(sorted(known))}")
     print(f"  region {chain[-1]}, country {country}, {tz}", flush=True)
     # Colour takes most of a bake's time, so a rebake keeps it while the spot stays where it was.
     s2 = {(k, q): out / f"s2-q{q}-{k}.bin.gz" for k in range(S2_LEVELS) for q in range(1, 5)}

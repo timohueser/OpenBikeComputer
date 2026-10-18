@@ -4,14 +4,15 @@
 //
 //   node tune/check.mjs [--assets]        (npm run check runs tsc first)
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'vite';
 
 const ROOT = join(import.meta.dirname, '..');
+const cacheDir = mkdtempSync(join(tmpdir(), 'trail-view-vite-'));
 const server = await createServer({
-  root: ROOT, configFile: false, logLevel: 'error', appType: 'custom', cacheDir: mkdtempSync(join(tmpdir(), 'trail-view-vite-')),
+  root: ROOT, configFile: false, logLevel: 'error', appType: 'custom', cacheDir,
   server: { middlewareMode: true, hmr: false, ws: false, watch: null }, optimizeDeps: { noDiscovery: true },
 });
 try {
@@ -55,4 +56,5 @@ try {
   }
 } finally {
   await server.close();
+  rmSync(cacheDir, { recursive: true, force: true });
 }
