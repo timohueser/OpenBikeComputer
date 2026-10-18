@@ -53,12 +53,64 @@ where
     }
 }
 
+/// The decimicro `(lon, lat)` of every node of a source, backed by a `Vec` sorted by id: 16 flat
+/// bytes per node and a binary search, because this store is the memory floor of a large ingest.
+/// A sorted PBF pushes ids in order, so [`NodeCoords::freeze`] sorts nothing there. Lookups on an
+/// unfrozen store would silently miss, so freezing is the type's one rule.
+#[derive(Default)]
+pub struct NodeCoords(Vec<(i64, (i32, i32))>);
+
+impl NodeCoords {
+    #[inline]
+    pub fn push(&mut self, id: i64, decimicro_lon: i32, decimicro_lat: i32) {
+        self.0.push((id, (decimicro_lon, decimicro_lat)));
+    }
+
+    /// End the fill phase. On a duplicate id the first location wins.
+    pub fn freeze(&mut self) {
+        if !self.0.is_sorted_by_key(|n| n.0) {
+            self.0.sort_by_key(|n| n.0);
+        }
+        self.0.dedup_by_key(|n| n.0);
+        self.0.shrink_to_fit();
+    }
+
+    #[inline]
+    pub fn get(&self, id: i64) -> Option<(i32, i32)> {
+        self.0.binary_search_by_key(&id, |n| n.0).ok().map(|i| self.0[i].1)
+    }
+
+    pub fn contains(&self, id: i64) -> bool {
+        self.get(id).is_some()
+    }
+
+    /// Add a later frozen source's nodes that this one does not have, so the first source wins.
+    pub fn merge(&mut self, later: NodeCoords) {
+        if self.0.is_empty() {
+            self.0 = later.0;
+            return;
+        }
+        let earlier = std::mem::take(&mut self.0);
+        let mut merged = Vec::with_capacity(earlier.len() + later.0.len());
+        let (mut a, mut b) = (earlier.into_iter().peekable(), later.0.into_iter().peekable());
+        while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+            match x.0.cmp(&y.0) {
+                std::cmp::Ordering::Less => merged.extend(a.next()),
+                std::cmp::Ordering::Equal => _ = b.next(),
+                std::cmp::Ordering::Greater => merged.extend(b.next()),
+            }
+        }
+        merged.extend(a.chain(b));
+        self.0 = merged;
+    }
+}
+
 /// Resolve a way's node refs to degree coordinates. `None` if any node is missing, and the caller
 /// then drops the way (osmium's `InvalidLocationError`).
-pub fn resolve_coords(refs: &[i64], nodes: &HashMap<i64, (i32, i32)>) -> Option<Vec<(f64, f64)>> {
+pub fn resolve_coords(refs: &[i64], nodes: &NodeCoords) -> Option<Vec<(f64, f64)>> {
     let mut coords = Vec::with_capacity(refs.len());
-    for r in refs {
-        let &(dx, dy) = nodes.get(r)?;
+    for &r in refs {
+        let (dx, dy) = nodes.get(r)?;
         coords.push((to_deg(dx), to_deg(dy)));
     }
     Some(coords)
@@ -162,22 +214,22 @@ pub fn harvest(
         ways: Vec<i64>,
     }
     let merging = paths.len() > 1;
-    let mut nodes = HashMap::new();
+    let mut nodes = NodeCoords::default();
     let mut node_pois = Keyed::new(merging);
     let mut relations = Keyed::new(merging);
     let mut links = Keyed::new(merging);
     let (mut seen_relations, mut seen_links) = (HashSet::new(), HashSet::new());
     for (index, path) in paths.iter().enumerate() {
-        let mut source_nodes = HashMap::new();
+        let mut source_nodes = NodeCoords::default();
         let mut source_pois = Keyed::new(merging);
         scan_blobs(path, None, progress, |el| {
             match el {
                 Element::Node(n) => {
-                    source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                    source_nodes.push(n.id(), n.decimicro_lon(), n.decimicro_lat());
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
                 }
                 Element::DenseNode(n) => {
-                    source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                    source_nodes.push(n.id(), n.decimicro_lon(), n.decimicro_lat());
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
                 }
                 Element::Relation(r) => {
@@ -210,12 +262,11 @@ pub fn harvest(
             seen_links.extend(links.keys().iter().copied());
         }
         if merging {
-            source_pois.retain_keys(|id| !nodes.contains_key(&id));
+            source_pois.retain_keys(|id| !nodes.contains(id));
         }
         node_pois.append(source_pois);
-        for (id, coordinates) in source_nodes {
-            nodes.entry(id).or_insert(coordinates);
-        }
+        source_nodes.freeze();
+        nodes.merge(source_nodes);
     }
     if merging {
         node_pois.sort();
@@ -277,4 +328,28 @@ pub fn harvest(
     pois.retain(|p| p.subtype != 0);
     progress.log(poi::format_counts(&pois, dropped));
     Ok(Places { pois, links: landmark_links, ways })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NodeCoords;
+
+    /// An unsorted source still resolves, and on a duplicate id the first location wins, within a
+    /// source and across a merge.
+    #[test]
+    fn node_coords_first_location_wins() {
+        let mut first = NodeCoords::default();
+        for (id, lon) in [(5, 50), (1, 10), (5, 51), (3, 30)] {
+            first.push(id, lon, 0);
+        }
+        first.freeze();
+        let mut later = NodeCoords::default();
+        for (id, lon) in [(2, 20), (3, 31), (9, 90)] {
+            later.push(id, lon, 0);
+        }
+        later.freeze();
+        first.merge(later);
+        let lons: Vec<_> = (0..10).map(|id| first.get(id).map(|c| c.0)).collect();
+        assert_eq!(lons, [None, Some(10), Some(20), Some(30), None, Some(50), None, None, None, Some(90)]);
+    }
 }
