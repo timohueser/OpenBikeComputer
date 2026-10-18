@@ -1,0 +1,20 @@
+{
+ "name": "Slate and stone house",
+ "about": "Grey and brown rubble stone under a steep roof of dark slate, with wooden shutters in brown or ox red.",
+ "pitch": [38, 50],
+ "eave": 0.35,
+ "verge": 0.25,
+ "hip": 0,
+ "timber": "none",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#8f877b", "#9c9385", "#7f786e", "#a39a8a", "#8a7d6c"],
+  "wood": ["#5a4636", "#6b5440"],
+  "roof": ["#4a4d52", "#55585d", "#3f4247"],
+  "door": ["#5a4636", "#6b3a2c", "#4a3a2e"],
+  "shutter": ["#5a4636", "#6e3a2c", "#4c5a48"],
+  "plinth": "#6f6a62",
+  "chimney": "#8f877b"
+ }
+}
