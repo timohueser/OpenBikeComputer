@@ -1,0 +1,20 @@
+{
+ "name": "Whitewashed house",
+ "about": "White or pale blue limewash over a blue plinth, with blue or green window trims and doors, under a low hipped roof of red tile, grey sheet or green tin.",
+ "pitch": [20, 28],
+ "eave": 0.55,
+ "verge": 0.55,
+ "hip": 1,
+ "timber": "none",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#f6f5f0", "#f2f1eb", "#f6f5f0", "#dce9ef", "#d6ebe6"],
+  "wood": ["#6b5440"],
+  "roof": ["#b0583a", "#a5523a", "#9a9fa2", "#8a9094", "#5d7d64"],
+  "door": ["#3f6caa", "#4f8a6a", "#5a4030"],
+  "shutter": ["#3f6caa", "#5a98cc", "#4f8a6a"],
+  "plinth": "#5f7f9f",
+  "chimney": "#f2f1eb"
+ }
+}
