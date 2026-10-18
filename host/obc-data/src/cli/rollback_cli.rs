@@ -50,7 +50,7 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
     }
     let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
     let follower = matches!(target, Target::R2(_));
-    let result = rollback((&args.target, &target), args.expect.as_deref(), &mut run, follower);
+    let result = rollback(&store, (&args.target, &target), args.expect.as_deref(), &mut run, follower);
     let rolled = super::api::finish_run(run, result)?;
     if json {
         return print_json(&rolled);
@@ -63,12 +63,13 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
 /// and, with `follower`, as for an R2 target, that the follower of the target serves its planner
 /// release, while the run holds the lock of the target.
 pub(super) fn rollback(
+    store: &Store,
     (name, target): (&str, &Target),
     expect: Option<&str>,
     run: &mut Run,
     follower: bool,
 ) -> Result<RolledBack, Error> {
-    update_cli::locked((name, target), run, |run, held| {
+    update_cli::locked(store, (name, target), run, |run, held| {
         let rolled = switch((name, target), expect, (run, held), follower)?;
         Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rolled.0, rollback: rolled.1 })
     })
@@ -144,7 +145,7 @@ mod tests {
         expect: Option<&str>,
     ) -> Result<RolledBack, Error> {
         let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
-        let rolled = super::rollback(("local", target), expect, &mut run, false);
+        let rolled = super::rollback(&fixture.store, ("local", target), expect, &mut run, false);
         crate::cli::api::finish_run(run, rolled)
     }
 
@@ -202,7 +203,7 @@ mod tests {
         let before = std::fs::read(dir.join(release::SERVING)).unwrap();
 
         let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
-        let refused = super::rollback(("local", &target), None, &mut run, true);
+        let refused = super::rollback(&fixture.store, ("local", &target), None, &mut run, true);
         let refused = crate::cli::api::finish_run(run, refused).unwrap_err();
         assert_eq!(refused.code, Code::Blocked);
         let reason = "not ready: the search service stopped: exit status 1; nothing changed";

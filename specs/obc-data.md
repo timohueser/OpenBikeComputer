@@ -667,7 +667,7 @@ process never started.
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
   waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
   for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
-  unchanged), its fetches and steps (each `unchanged` or not), the
+  unchanged), its fetches and steps (each `unchanged` or not, with when it started and ended, in milliseconds after the start of the run), the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
@@ -1137,8 +1137,11 @@ it.
   frees the lock too, and a run that a signal stopped before the switch does not switch. A second
   signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
-  the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
-  run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
+  the lock. On its machine, the next run of the same store takes the lock over at once, with a
+  conditional write, and writes that to its log: the store shows that the process of the run
+  ended (see [Runs](#runs)), and no process of its process group runs, such as a program of a
+  step. On another machine, `obc data unlock TARGET --from MACHINE` frees the
+  lock of a run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
   heartbeats that did not come. It asks first. When that run continues, its next write fails,
   and it does not switch.
 - The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
@@ -1634,7 +1637,8 @@ each app, the run that holds its lock or why `lock.json` cannot be read, the reg
 each layer against the steps of now, the blocked steps, the notes of the layers as in the
 [review](#review), the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
-the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
+the next step is to wait for that run, unless its process ended on this machine: then the next
+update takes the lock over. It fetches only small metadata, and checks upstream with the
 checks of the last hour. A target that serves nothing has the next command
 `obc data update TARGET --region ID`. For an R2 target, the next command is the review
 (`--dry-run`): its update needs the id that the owner approved.
@@ -3106,6 +3110,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Lock": {
       "description": "The run that holds the lock of a target, as its `lock.json` says.",
       "properties": {
+        "died": {
+          "description": "Whether the run ran on this machine and its process ended: the next run takes the lock\nover.",
+          "type": "boolean"
+        },
         "heartbeat": {
           "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
           "type": "string"
@@ -3154,7 +3162,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "phase",
         "heartbeat",
         "progress",
-        "stale"
+        "stale",
+        "died"
       ],
       "type": "object"
     },
@@ -4343,6 +4352,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "end_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "error": {
           "default": null,
           "type": [
@@ -4378,6 +4396,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": "",
           "type": "string"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it ended, in milliseconds after the start of the run; `null` before.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "version": {
           "default": "",
           "type": "string"
@@ -4397,6 +4425,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "resolved",
         "params",
+        "start_ms",
+        "end_ms",
         "bytes",
         "wall_ms",
         "error"
@@ -4421,6 +4451,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunStep": {
       "properties": {
         "bytes_out": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_ms": {
           "default": null,
           "format": "uint64",
           "minimum": 0,
@@ -4472,6 +4511,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": false,
           "type": "boolean"
         },
+        "start_ms": {
+          "default": null,
+          "description": "When it started and when it finished or failed, in milliseconds after the start of the run;\n`null` before. An unchanged step does not start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "step": {
           "default": "",
           "type": "string"
@@ -4505,6 +4554,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "reused",
         "unchanged",
+        "start_ms",
+        "end_ms",
         "wall_ms",
         "peak_rss_bytes",
         "bytes_out",

@@ -191,6 +191,8 @@ export interface Holder {
     waiting?: string;
     /** Whether the heartbeat is old enough for `unlock`: the run likely ended without freeing the lock. */
     stale: boolean;
+    /** Whether the run ran on this machine and its process ended: the next update takes the lock over. */
+    died: boolean;
 }
 
 /** The runs of other machines, from the locks of the targets that they change. */
@@ -242,7 +244,19 @@ export interface RunView extends RunSummary {
     /** The releases that it switched its target to. */
     switched: string[];
     /** Each fetch that it started; `bytes` is `null` while it runs and when it failed. */
-    fetches: { source: string; version: string; params: [string, string][]; bytes: number | null; error: string | null }[];
+    fetches: {
+        source: string;
+        version: string;
+        params: [string, string][];
+        /** When it started and ended, in milliseconds after the start of the run. */
+        start_ms?: number | null;
+        end_ms?: number | null;
+        bytes: number | null;
+        wall_ms: number | null;
+        error: string | null;
+    }[];
+    /** Each step that it started or kept. */
+    steps: RunStep[];
     /** `kept` names the steps whose layers the store keeps for the next update. */
     error: { code: string; message: string; fix: string; kept: string[] } | null;
     /** The last lines of its log. */
@@ -251,6 +265,23 @@ export interface RunView extends RunSummary {
     log_path: string;
     /** The review that a run of `update --plan` wrote; `null` for another run and until the plan is done. */
     review: Review | null;
+}
+
+/** A step of a run. `layer` is empty until it finishes; `wall_ms` is `null` while it runs, when it
+ *  failed and when it is unchanged. A reused step has the wall time of the run that built it. */
+export interface RunStep {
+    step: string;
+    layer: string;
+    reused: boolean;
+    unchanged: boolean;
+    /** When it started and when it finished or failed, in milliseconds after the start of the run.
+     *  An unchanged step does not start. */
+    start_ms?: number | null;
+    end_ms?: number | null;
+    wall_ms: number | null;
+    peak_rss_bytes: number | null;
+    bytes_out: number | null;
+    error: string | null;
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is

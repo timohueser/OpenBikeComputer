@@ -500,7 +500,7 @@ mod tests {
         let name = "c4871013".repeat(8);
         let object = dir.join("objects").join(&name);
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&object).unwrap());
-        let options: zip::write::FileOptions<'_, ()> = Default::default();
+        let options = zip::write::SimpleFileOptions::default();
         zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
         std::io::Write::write_all(&mut zip, b"shapefile").unwrap();
         zip.finish().unwrap();

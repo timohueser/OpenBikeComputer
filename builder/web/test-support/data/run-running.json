@@ -16,8 +16,18 @@
         {"layer": "planner/search", "total": 3, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T10:21:30Z"},
         {"layer": "device/catalog", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": null}
     ],
-    "fetches": [],
-    "steps": [],
+    "fetches": [
+        {"source": "geofabrik-extracts", "version": "2026-10-11", "resolved": "2026-10-11", "params": [], "start_ms": 4000, "end_ms": 370000, "bytes": 6251752730, "wall_ms": 366000, "error": null}
+    ],
+    "steps": [
+        {"step": "device/landmark-content", "layer": "device/landmarks", "reused": false, "unchanged": false, "start_ms": 370000, "end_ms": 410000, "wall_ms": 40000, "peak_rss_bytes": 2100000000, "bytes_out": 49800000, "reads": ["geofabrik-extracts", "wiki"], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "planner/search/dump", "layer": "planner/search", "reused": false, "unchanged": false, "start_ms": 390000, "end_ms": 810000, "wall_ms": 420000, "peak_rss_bytes": 3100000000, "bytes_out": 812000000, "reads": ["planner/osm"], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "device/coarse/0037-0032", "layer": "device/map", "reused": false, "unchanged": false, "start_ms": 410000, "end_ms": 1010000, "wall_ms": 600000, "peak_rss_bytes": 4200000000, "bytes_out": 3100000, "reads": ["device/osm"], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "device/coarse/0037-0033", "layer": "device/map", "reused": false, "unchanged": false, "start_ms": 410000, "end_ms": 1310000, "wall_ms": 900000, "peak_rss_bytes": 7300000000, "bytes_out": 10500000, "reads": ["device/osm"], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "device/coarse/0038-0032", "layer": "device/map", "reused": false, "unchanged": false, "start_ms": 1020000, "end_ms": 1720000, "wall_ms": 700000, "peak_rss_bytes": 4600000000, "bytes_out": 3000000, "reads": ["device/osm"], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "device/coarse/0038-0033", "layer": "", "reused": false, "unchanged": false, "start_ms": 1310000, "end_ms": null, "wall_ms": null, "peak_rss_bytes": null, "bytes_out": null, "reads": [], "error": null, "users": [], "last_wall_ms": null},
+        {"step": "device/coarse/0036-0032", "layer": "", "reused": false, "unchanged": false, "start_ms": 1720000, "end_ms": null, "wall_ms": null, "peak_rss_bytes": null, "bytes_out": null, "reads": [], "error": null, "users": [], "last_wall_ms": null}
+    ],
     "bytes_fetched": 2469606195,
     "bytes_built": 0,
     "error": null,

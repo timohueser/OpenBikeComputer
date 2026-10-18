@@ -297,7 +297,7 @@ impl Run {
         self.dir.join(STATUS)
     }
 
-    fn line(&mut self, text: &str) -> Result<(), String> {
+    pub(crate) fn line(&mut self, text: &str) -> Result<(), String> {
         let at = date::timestamp(date::now());
         let line = format!("{} {text}\n", &at[11..19]);
         self.log.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.status.id))
@@ -305,6 +305,7 @@ impl Run {
 
     /// Apply `event` to the status, and give its line of the log.
     fn apply(&mut self, event: &Event) -> String {
+        let at = Some(self.start.elapsed().as_millis() as u64);
         let status = &mut self.status;
         match event.clone() {
             Event::Phase { phase } => {
@@ -329,7 +330,7 @@ impl Run {
             }
             Event::FetchStarted { source, version, params } => {
                 let line = format!("{} fetch started", fetched(&source, &version, &params));
-                status.fetch(source, version, params);
+                status.fetch(source, version, params).start_ms = at;
                 line
             }
             Event::FetchFinished { source, version, params, resolved, acquisition, bytes: size, wall_ms } => {
@@ -342,13 +343,13 @@ impl Run {
                 status.bytes_fetched += size;
                 let fetch = status.fetch(source, version, params);
                 (fetch.bytes, fetch.wall_ms, fetch.resolved) = (Some(size), Some(wall_ms), Some(resolved));
-                fetch.acquisition = acquisition;
+                (fetch.acquisition, fetch.end_ms) = (acquisition, at);
                 line
             }
             Event::FetchFailed { source, version, params, error, acquisition } => {
                 let line = format!("{} fetch failed: {error}", fetched(&source, &version, &params));
                 let fetch = status.fetch(source, version, params);
-                (fetch.error, fetch.acquisition) = (Some(error), acquisition);
+                (fetch.error, fetch.acquisition, fetch.end_ms) = (Some(error), acquisition, at);
                 line
             }
             Event::StepStarted { step } => {
@@ -358,7 +359,7 @@ impl Run {
                     layer.leaves_baking.extend(leaf.clone());
                     layer.started.get_or_insert_with(|| date::timestamp(date::now()));
                 }
-                status.step(&step);
+                status.step(&step).start_ms = at;
                 line
             }
             Event::StepFinished { step, reused, unchanged, receipt } => {
@@ -392,6 +393,7 @@ impl Run {
                 (run_step.wall_ms, run_step.bytes_out) =
                     if unchanged { (None, None) } else { (Some(receipt.wall_ms), Some(receipt.bytes_out)) };
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
+                run_step.end_ms = at;
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
                 line
             }
@@ -400,7 +402,8 @@ impl Run {
                 if let Some((layer, Some(leaf))) = self.planned.get(&step) {
                     status.layers[*layer].leaves_baking.retain(|baking| baking != leaf);
                 }
-                status.step(&step).error = Some(error);
+                let failed = status.step(&step);
+                (failed.error, failed.end_ms) = (Some(error), at);
                 line
             }
         }
@@ -941,6 +944,9 @@ pub struct RunFetch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
+    /// When it started and when it ended, in milliseconds after the start of the run; `null` before.
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
     pub wall_ms: Option<u64>,
@@ -956,6 +962,10 @@ pub struct RunStep {
     pub reused: bool,
     /// It kept its output of the serving release: its key is the key of that output.
     pub unchanged: bool,
+    /// When it started and when it finished or failed, in milliseconds after the start of the run;
+    /// `null` before. An unchanged step does not start.
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
     /// `null` while it runs, when it failed, and when it is unchanged.
     pub wall_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
@@ -1058,20 +1068,58 @@ pub fn status(store: &Store, id: &str) -> Result<Status, String> {
         }
     };
     let died = match status.state {
-        State::Running => Some("its process ended before it finished"),
-        State::Starting if !alive(status.pid) => Some("its process never started"),
+        State::Running => Some(("its process ended before it finished", ENDED)),
+        State::Starting if !alive(status.pid) => Some(("its process never started", "Run its command again.")),
         _ => None,
     };
-    if let Some(message) = died.filter(|_| !running) {
+    if let Some((message, fix)) = died.filter(|_| !running) {
         status.state = State::Failed;
         status
             .phases
             .iter_mut()
             .filter(|phase| phase.state == State::Running)
             .for_each(|phase| phase.state = State::Failed);
-        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, "Run its command again."));
+        status.layers.iter_mut().for_each(|layer| layer.leaves_baking.clear());
+        // A step that started and did not finish has no layer and no error yet.
+        let building: Vec<&str> = status
+            .steps
+            .iter()
+            .filter(|step| step.layer.is_empty() && step.error.is_none())
+            .map(|step| step.step.as_str())
+            .collect();
+        let message = match building.is_empty() {
+            true => message.to_string(),
+            false => format!("{message}, while it built {}", building.join(", ")),
+        };
+        status.error.get_or_insert_with(|| RunError::new(RUN_FAILED, message, fix));
     }
     Ok(status)
+}
+
+/// The fix of a run whose process ended before it finished.
+const ENDED: &str = "A process that ends without an error was often stopped by the kernel, for lack of memory \
+                     or at a restart; the system log names it. Run its command again: it takes over a lock that \
+                     the run kept, and reuses what the run built.";
+
+/// Whether `holder` is a run of this machine in `store` whose process ended, and no process of its
+/// process group runs, such as a program of a step: it cannot free the lock that it holds, so the
+/// next run takes the lock over.
+pub fn died(store: &Store, holder: &crate::lock::Holder) -> bool {
+    holder.machine == crate::machine()
+        && status(store, &holder.run)
+            .is_ok_and(|status| !matches!(status.state, State::Running | State::Starting) && !group_alive(status.pid))
+}
+
+/// Whether a process of the process group `pid` runs. A detached run leads its group, so the
+/// programs of its steps stay in the group after it ended.
+fn group_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    if let Ok(pid @ 1..) = libc::pid_t::try_from(pid) {
+        // SAFETY: signal 0 only checks that a process of the group exists.
+        let found = unsafe { libc::kill(-pid, 0) } == 0;
+        return found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    false
 }
 
 /// Whether the process `pid` runs.
@@ -1361,6 +1409,10 @@ mod tests {
         let steps: Vec<(&str, &[String])> =
             resumed.steps.iter().map(|s| (s.step.as_str(), s.users.as_slice())).collect();
         assert_eq!(steps, [("test/join", &["test/count".to_string()][..]), ("test/count", &[][..])]);
+        assert!(
+            resumed.steps.iter().all(|step| step.start_ms <= step.end_ms && step.start_ms.is_some()),
+            "{resumed:?}"
+        );
         let last = view(&fixture.store, &runs[0].id).unwrap();
         assert_eq!(last.status.steps[0].last_wall_ms, resumed.steps[0].wall_ms);
         assert_eq!(last.log.last().map(|line| &line[9..18]), Some("finished "));
@@ -1550,13 +1602,15 @@ mod tests {
         let fixture = fixture("runs-interrupted");
         let mut run = Run::create(&fixture.store, ["build", "test"]).unwrap();
         run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
+        run.record(&Event::StepStarted { step: "test/upper".into() }).unwrap();
+        run.flush().unwrap();
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Running);
         let id = run.id().to_string();
         drop(run);
         assert_eq!(list(&fixture.store).unwrap()[0].state, State::Failed);
         assert_eq!(status(&fixture.store, &id).unwrap().phases[0].state, State::Failed);
         let ended = follow(&fixture.store, &id, |_, _| Ok(())).unwrap().unwrap();
-        assert_eq!(ended.error.unwrap().message, "its process ended before it finished");
+        assert_eq!(ended.error.unwrap().message, "its process ended before it finished, while it built test/upper");
 
         std::fs::create_dir(fixture.store.run("2026-01-01-000000")).unwrap();
         let empty = list(&fixture.store).unwrap().pop().unwrap();
