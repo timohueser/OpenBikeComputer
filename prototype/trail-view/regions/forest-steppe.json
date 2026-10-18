@@ -1,1 +1,8 @@
-{ "name": "East European forest steppe", "ecoregion": 661, "extends": "world", "leaf": "mixed" }
+{
+ "name": "East European forest steppe",
+ "ecoregion": 661,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "forest-steppe",
+ "about": "A rolling loess plain between the mixed forests and the steppe, from the Jijia plain and the Prut hills in Romania and Moldova over Podolia and the Dnieper uplands to the Central Russian and Volga uplands and the Bashkir foothills: wide fields of wheat, maize and sunflowers on black earth, oak and lime woods on the ridges and in the ravines, birch and aspen groves in the east, pine on the sandy river terraces, willows along the rivers and the village ponds, shelterbelts of poplar and black locust, vineyards and orchards in Moldavia, and long villages of plastered houses in their gardens. No split: the land stays below about 500 m in one continental climate that grows drier and colder from west to east only gradually, so one haze, weather and grade fit it; fields, woods, meadow steppe and water are Sentinel-2 colour with the NDVI ramps, the pine on the sands comes from OSM's leaf type, and the change from the plastered houses of Moldavia, Ukraine and the Black Earth region to the log houses of the Volga is culture by country and subdivision."
+}

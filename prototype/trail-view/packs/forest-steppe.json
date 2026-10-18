@@ -1,0 +1,47 @@
+{
+ "name": "East European forest steppe",
+ "extends": "base",
+ "about": "Pedunculate oak with small-leaved lime, ash, Norway, field and Tatarian maple and field elm in the woods and ravines; hornbeam, sessile oak and silver lime in Moldavia and Podolia, downy oak on the dry southern hills; silver birch and aspen in groves in the east, Scots pine on the sandy river terraces; white willow, black and white poplar and black alder along the rivers and ponds; black locust and poplar in the shelterbelts, wild pear alone in the fields, walnut in the villages and along the roads; blackthorn, steppe cherry, hawthorn, dog rose and hazel at the wood edges and on the ravine slopes, sea buckthorn planted on the eroded slopes, grey willow in the wet hollows; feather grass on the meadow steppe of the slopes, reed in the ponds; fields of wheat, barley, maize, sunflowers, sugar beet and rapeseed, which have no model yet, vineyards, and apple and plum orchards in Moldavia; Simmental cattle, Zackel sheep, goats and horses near the villages; plastered village houses, and log houses in Russia outside the Black Earth south. Hawthorn stands in for the fruit orchards.",
+ "trees": {
+  "pedunculate-oak": { "model": "sycamore-maple", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 6 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 600], "weight": 1 },
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 600], "weight": 2 },
+  "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "silver-lime": { "model": "sycamore-maple", "latin": "Tilia tomentosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "norway-maple": { "model": "sycamore-maple", "latin": "Acer platanoides", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "field-maple": { "model": "sycamore-maple", "latin": "Acer campestre", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "tatarian-maple": { "model": "hawthorn", "latin": "Acer tataricum", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "field-elm": { "model": "sycamore-maple", "latin": "Ulmus minor", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "wild-pear": { "model": "hawthorn", "latin": "Pyrus pyraster", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "walnut": { "model": "sycamore-maple", "latin": "Juglans regia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "black-locust": { "model": "sycamore-maple", "latin": "Robinia pseudoacacia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 3 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
+  "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
+  "white-willow": { "model": "silver-birch", "latin": "Salix alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
+  "black-poplar": { "model": "silver-birch", "latin": "Populus nigra", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "blackthorn": { "model": "hawthorn", "latin": "Prunus spinosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 3 },
+  "steppe-cherry": { "model": "hawthorn", "latin": "Prunus fruticosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "dog-rose": { "model": "hawthorn", "latin": "Rosa canina", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "sea-buckthorn": { "model": "hawthorn", "latin": "Hippophae rhamnoides", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
+ },
+ "ground": {
+  "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["grass", "bare"], "height": [0.4, 0.8], "share": 0.1 },
+  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
+ },
+ "herds": {
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 20], "on": ["pasture"] },
+  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 1, "size": [20, 100], "on": ["pasture", "rough"] },
+  "goat": { "groups": 1, "size": [1, 6], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "ru-bel": "village-house", "ru-vor": "village-house", "ru": "wood-cabin", "*": "village-house" }
+}
