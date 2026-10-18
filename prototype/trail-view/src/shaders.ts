@@ -397,7 +397,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren);
+  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water));
 }
 
 /** The level whose pixel matches the screen footprint at p, with the fraction toward the next. */
@@ -792,9 +792,10 @@ void main() {
     vec2 tilt = vec2(cell.z, fract(cell.x * 7.13)) - 0.5;
     n = normalize(n + vec3(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
-  // Barren ground keeps its own colour on a steep slope, so a cinder cone is no cliff. Sea cliffs:
-  // wet and dark where the waves reach, orange lichen in the spray above.
-  vec3 face = mix(rockLevels > 0.0 ? stone : cliffRock, g.albedo, g.barren) * strata;
+  // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°, so a
+  // cinder cone is no cliff; walls past about 47° are rock. Sea cliffs: wet and dark where the
+  // waves reach, orange lichen in the spray above.
+  vec3 face = mix(rockLevels > 0.0 ? stone : cliffRock, g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
   // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
   // cliff reads; they fade where a pixel spans a bed.
   float along = dot(vWorld.xy, strike);

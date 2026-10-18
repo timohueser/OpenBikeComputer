@@ -7,6 +7,7 @@
  "about": "The high caldera and Teide above the clouds: pumice, black and rust lava, retama domes and red tajinaste spikes under a deep sky.",
  "look": {
   "snap": 0.3,
+  "ramps": { "bare": ["#8c7866", "#8a7a62", "#88785e"] },
   "hazeKm": 120,
   "weather": {
    "sunny": { "cover": 0.05, "base": 3500, "zenith": "#1f58b0", "horizon": "#9cbce0", "grey": 0.6 }

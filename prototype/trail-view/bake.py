@@ -1259,8 +1259,10 @@ def overpass(query: str) -> str:
             try:
                 with urllib.request.urlopen(request, timeout=900) as response:
                     text = response.read().decode()
-                # A query that runs out of time or memory still answers 200, with an error remark.
-                if query.startswith("[out:json]") and "error" in (remark := json.loads(text).get("remark", "")):
+                # A query that runs out of time or memory still answers 200: JSON with an error
+                # remark, CSV with nothing at all.
+                remark = json.loads(text).get("remark", "") if query.startswith("[out:json]") else "" if text.strip() else "error: no rows"
+                if "error" in remark:
                     raise http.client.HTTPException(remark)
                 return text
             except (OSError, http.client.HTTPException) as error:
