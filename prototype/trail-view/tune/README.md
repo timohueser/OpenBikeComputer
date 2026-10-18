@@ -239,6 +239,9 @@ regression set and every approved spot before and after, and asks the owner.
   (England), `no`, `fr`, `es`, `scot`, `it-bz`. Do not use sub-metre sources for the tune. They are
   4 to 8 GB per spot.
 - Land cover maps: `nlcm` (Ireland), `habmos` (Scotland). Geology: `igme` (Spain).
+- No country- or source-specific logic in the product: a national dataset only makes the shared
+  ground materials more precise at bake time, and the renderer, the shaders and the region rules
+  never know which source a place has.
 - A better source behind an API key is welcome if the key is free and easy to get. Agents
   cannot sign up. Write the source, its resolution, its licence and the sign-up steps into the
   tracking issue. The owner registers and puts the key in `~/.config/openbikecomputer/`.
