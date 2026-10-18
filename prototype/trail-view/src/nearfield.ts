@@ -71,13 +71,14 @@ const CRAG_HEIGHT_M: [number, number] = [1.5, 3.5];
 const STONE_RADIUS_M = 60;
 const STONE_SPACING_M = 1.2;
 
-/** OSM building values that draw nothing, draw as a barn or shed, or draw as a block. */
+/** OSM building values that draw nothing, draw as a barn or shed, as a church or as a block. */
 const SKIPPED = new Set(['roof', 'ruins', 'construction', 'carport', 'storage_tank', 'bunker']);
 const SHEDS = new Set(['barn', 'farm_auxiliary', 'shed', 'garage', 'garages', 'stable', 'cowshed', 'hut', 'sty', 'greenhouse', 'boathouse']);
+const CHURCHES = new Set(['church', 'chapel', 'cathedral']);
 const BLOCKS = new Set([
   'apartments', 'residential', 'hotel', 'commercial', 'retail', 'office', 'industrial', 'warehouse', 'school', 'public', 'civic',
   'hospital', 'university', 'college', 'terrace', 'dormitory', 'train_station', 'supermarket', 'kindergarten', 'sports_hall',
-  'government', 'manufacture', 'service', 'church',
+  'government', 'manufacture', 'service',
 ]);
 /** Blocks of these kinds are one tall storey or two, not flats. */
 const LOW = new Set(['industrial', 'warehouse', 'supermarket', 'retail', 'manufacture', 'sports_hall', 'service']);
@@ -107,6 +108,7 @@ type Instances = number[];
 /** The pack house for an OSM building value and its footprint area. */
 function kindOf(tag: string, area: number): BuildingKind {
   if (SHEDS.has(tag)) return 'barn';
+  if (CHURCHES.has(tag)) return 'church';
   if (tag === 'farm') return 'farmhouse';
   if (BLOCKS.has(tag)) return area < 260 ? 'house' : 'block';
   if (area < 30) return 'barn';
