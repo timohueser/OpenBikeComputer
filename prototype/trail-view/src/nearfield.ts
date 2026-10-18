@@ -92,6 +92,8 @@ const TREELESS = new Set<Habitat>(['rock', 'heath', 'bog', 'bracken', 'rough', '
 const HERD_RADIUS_M = 400;
 const HERD_SPREAD_M = 14;
 const ANIMAL_M: Record<AnimalName, number> = { sheep: 0.95, 'highland-cow': 1.3, goat: 1.05 };
+/** Ground within this many metres of the sea and below this height above it is strand: bare. */
+const STRAND_M: [number, number] = [25, 6];
 /** Lifts within the near pass's far plane. */
 const LIFT_REACH_M = 6000;
 /** A crest within this many metres drops more than CREST_DROP_M within CREST_ARM_M to both sides. */
@@ -398,6 +400,10 @@ export class NearField {
       const i = Math.floor((half - y) / p) * size + Math.floor((x + half) / p);
       return bake.classes[(k * size * size + i) * 2 + 1] > 127 && bake.surface[k][i] + eye_m < 2;
     };
+    // The strand: low ground by the sea, beach or storm-washed rock, where nothing grows.
+    const strand = (x: number, y: number) =>
+      bake.surface[0][texel(x, y)] + eye_m < STRAND_M[1] &&
+      [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * STRAND_M[0], y + Math.cos((a * Math.PI) / 4) * STRAND_M[0]));
     const exposed = (x: number, y: number) =>
       windswept > 0 && [0, 1, 2, 3, 4, 5, 6, 7].some((a) => seaAt(x + Math.sin((a * Math.PI) / 4) * windswept, y + Math.cos((a * Math.PI) / 4) * windswept));
     const standing = pack.trees.filter((s) => s.cover === 'tree');
@@ -436,7 +442,7 @@ export class NearField {
           const sparse = kind === CLASS.bare && habitatAt(sx, sy) !== 'rock' && !exposed(sx, sy);
           const share = scrub ? SHRUB_SHARE : sparse ? SHRUB_SHARE / 3 : 0;
           if (rand() > share || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M) continue;
-          if (this.offGround(bake, sx, sy, px)) continue;
+          if (this.offGround(bake, sx, sy, px) || strand(sx, sy)) continue;
           const species = pick(shrubs).tree;
           const height = SHRUB_HEIGHT_M[0] + rand() * (SHRUB_HEIGHT_M[1] - SHRUB_HEIGHT_M[0]);
           add(shrubKey(species, Math.hypot(sx, sy)), sx, sy, height, heading(species));
@@ -544,7 +550,7 @@ export class NearField {
     for (let y = -GROUND_RADIUS_M; y < GROUND_RADIUS_M; y += 1) {
       for (let x = -GROUND_RADIUS_M; x < GROUND_RADIUS_M; x += 1) {
         const [gx, gy] = [x + rand() - 0.5, y + rand() - 0.5];
-        if (Math.hypot(gx, gy) > GROUND_RADIUS_M || Math.hypot(gx, gy) < 1.5 || this.offGround(bake, gx, gy, px)) continue;
+        if (Math.hypot(gx, gy) > GROUND_RADIUS_M || Math.hypot(gx, gy) < 1.5 || this.offGround(bake, gx, gy, px) || strand(gx, gy)) continue;
         const kind = classAt(gx, gy);
         const share = (p: PlantName, i: number) => GROUND[p].share * (GROUND[p].clumped ? 2.5 * smooth(0.55, 0.7, patchAt(gx, gy, i)) : 1);
         const name = ground.find((p, i) => grows(p, kind, gx, gy) && rand() < share(p, i));
