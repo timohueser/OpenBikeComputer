@@ -9,6 +9,7 @@ use obc_data::engine::Request;
 use serde_json::Value;
 
 use crate::bake::{published_cell, write_cell_file};
+use crate::fetch::TileId;
 use crate::geotiff::{DemMosaic, DemTile};
 use crate::reference::ReferenceArchive;
 
@@ -107,10 +108,10 @@ pub fn bounds(options: &Value) -> Result<[f64; 4], String> {
 }
 
 /// The GLO-30 files of the request, in the order of [`crate::planner::tiles`] of `bounds`.
-pub fn glo30(request: &Request, bounds: [f64; 4]) -> Vec<PathBuf> {
+pub fn glo30(request: &Request, bounds: [f64; 4]) -> Vec<(TileId, PathBuf)> {
     let files = request.snapshots.get(GLO30).into_iter().flatten();
     let files: BTreeMap<&str, &PathBuf> =
         files.map(|(name, path)| (name.rsplit('/').next().unwrap_or(name), path)).collect();
-    let tiles = crate::planner::tiles(bounds);
-    tiles.iter().filter_map(|tile| files.get(tile.file_name().as_str()).map(|path| path.to_path_buf())).collect()
+    let tiles = crate::planner::tiles(bounds).into_iter();
+    tiles.filter_map(|tile| files.get(tile.file_name().as_str()).map(|path| (tile, path.to_path_buf()))).collect()
 }
