@@ -1,0 +1,34 @@
+{
+ "name": "Central European mixed forests",
+ "extends": "base",
+ "about": "Scots pine on the sands, oak, hornbeam, lime and birch on the loams, spruce in the north-east, beech in the west; alder and willow in the wet valleys, reed and sedge in the fens, feather grass and juniper on dry limestone; dairy cattle, a few sheep and horses; plastered houses in the west, log houses in Lithuania and Belarus, whitewashed houses in Podolia and Moldova.",
+ "trees": {
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 6 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
+  "pedunculate-oak": { "model": "european-beech", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 1 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 2 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
+  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
+  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1 }
+ },
+ "ground": {
+  "bilberry": {},
+  "fern": {},
+  "bracken": {},
+  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "tussock-sedge": { "model": "moor-grass", "latin": "Carex elata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.4 },
+  "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
+ },
+ "herds": {
+  "dairy-cattle": { "model": "highland-cow", "groups": 3, "size": [3, 12], "on": ["pasture"] },
+  "sheep": { "groups": 1, "size": [6, 20], "on": ["pasture", "rough"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "lt": "wood-cabin", "by": "wood-cabin", "ua": "village-house", "md": "village-house", "ro": "village-house", "*": "house" }
+}
