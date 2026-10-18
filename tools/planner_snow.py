@@ -308,6 +308,29 @@ def below(baking, z, x, y, read, tiles):
     return body
 
 
+def worker_count():
+    """One worker for each core that this process can use, and one at most for each GB of free memory: a worker
+    holds the planes of one chunk, about 0.6 GB for nine seasons of HR-WSI at 48° N (measured with two seasons)."""
+    cores = len(os.sched_getaffinity(0))
+    try:
+        with open("/proc/meminfo") as meminfo:
+            free = next(int(line.split()[1]) << 10 for line in meminfo if line.startswith("MemAvailable:"))
+    except (OSError, StopIteration):
+        return cores
+    return max(1, min(cores, free >> 30))
+
+
+def end_with(parent):
+    """Make this worker end when the bake process `parent` ends, also when a signal kills it."""
+    import ctypes
+    import signal
+
+    PR_SET_PDEATHSIG = 1
+    ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    if os.getppid() != parent:
+        os._exit(1)
+
+
 def chunk_tiles(x, y, part):
     """The gzip tiles of chunk tile x/y and below, whose bounds part is `part`, in a worker process."""
     tiles = {}
@@ -321,9 +344,9 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
 
     `sources` is [(name, planes)], the finest first: `planes(bounds)` gives the season planes and their grid around
     the bounds of one chunk tile. In each season, a pixel takes the first source that has data there. The finest
-    source sets the max zoom, the smoothing and the metadata. The chunks bake in `workers` processes, by default
-    one per core. Their tiles wait in a file beside the output, and the archive takes them in tile order, so its
-    bytes do not depend on which chunk ends first.
+    source sets the max zoom, the smoothing and the metadata. On Linux the chunks bake in `workers` processes, by
+    default as `worker_count` says. Their tiles wait in a file beside the output, and the archive takes them in tile
+    order, so its bytes do not depend on which chunk ends first.
     """
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -366,15 +389,24 @@ def bake(sources, first_season, seasons, bounds, output, credit, workers=None):
         x0, y0 = geo.mercator(west, north, baking.chunk)
         x1, y1 = geo.mercator(east, south, baking.chunk)
         _baking = baking
-        pool = ProcessPoolExecutor(workers or os.cpu_count(), mp_context=multiprocessing.get_context("fork"))
         try:
-            chunks = [pool.submit(chunk_tiles, x, y, part)
-                      for x in range(int(x0), int(x1) + 1)
-                      for y in range(int(y0), int(y1) + 1) if (part := area(bounds, baking.chunk, x, y))]
-            for done in as_completed(chunks):
-                store(done.result())
+            if sys.platform == "linux":
+                fork = multiprocessing.get_context("fork")
+                pool = ProcessPoolExecutor(workers or worker_count(), mp_context=fork, initializer=end_with,
+                                           initargs=(os.getpid(),))
+            else:
+                # A fork is not safe on macOS: there the chunks bake in threads.
+                pool = ThreadPoolExecutor(workers or 4)
+            try:
+                # `as_completed` lets go of each chunk once it gave it, so its tiles do not stay in memory.
+                for done in as_completed([pool.submit(chunk_tiles, x, y, part)
+                                          for x in range(int(x0), int(x1) + 1)
+                                          for y in range(int(y0), int(y1) + 1)
+                                          if (part := area(bounds, baking.chunk, x, y))]):
+                    store(done.result())
+            finally:
+                pool.shutdown(cancel_futures=True)
         finally:
-            pool.shutdown(cancel_futures=True)
             _baking = None
         above(0, 0, 0)
 
@@ -551,7 +583,7 @@ def cdse_credentials():
 @functools.cache
 def laea_footprint(path):
     """The bounds of raster `path` in EPSG:3035. Each chunk of a bake tests every file, and `transform_bounds` holds
-    the GIL while it sets up a new transform, so each file pays for it once."""
+    the GIL while it sets up a new transform, so each file pays for it once in each process."""
     import rasterio
     from rasterio.warp import transform_bounds
 
