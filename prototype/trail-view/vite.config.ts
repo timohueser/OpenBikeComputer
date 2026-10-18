@@ -62,16 +62,22 @@ export default defineConfig({
           let body = '';
           request.on('data', (chunk: Buffer) => (body += chunk));
           request.on('end', () => {
-            let posted: { text?: unknown; spot?: unknown; approve?: unknown };
+            let posted: { text?: unknown; spot?: unknown; approve?: unknown; round?: unknown };
             try {
               posted = JSON.parse(body);
             } catch {
               return send(response, 400);
             }
-            const { text, spot, approve } = posted;
+            const { text, spot, approve, round } = posted;
             if (typeof text !== 'string' || !text.trim() || text.length > 20_000) return send(response, 400);
             if (spot !== undefined && (typeof spot !== 'string' || !/^[\w.-]+$/.test(spot))) return send(response, 400);
-            send(response, 200, comment(short, { spot, text: text.trim(), by: 'owner', approve: approve === true }));
+            // The round the page shows: a comment belongs to the shots the owner looked at.
+            if (typeof round !== 'number' || !Number.isInteger(round)) return send(response, 400);
+            try {
+              send(response, 200, comment(short, { round, spot, text: text.trim(), by: 'owner', approve: approve === true }));
+            } catch (error) {
+              send(response, 409, { error: (error as Error).message });
+            }
           });
         });
       },

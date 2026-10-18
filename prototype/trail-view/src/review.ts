@@ -69,17 +69,18 @@ function figure(shown: Shown[], at: number, caption: string): HTMLElement {
   return h('figure', {}, h('a', { href: shown[at].src, onclick: open }, h('img', { src: shown[at].src, alt: shown[at].caption, loading: 'lazy' })), h('figcaption', { textContent: caption }));
 }
 
-/** Round n beside round n − 1; prefix is the spot id the file names start with. */
-function shots(short: string, n: number, before: string[], after: string[], prefix: string): HTMLElement[] {
+/** Round n beside the round before it, 0 for none; prefix is the spot id the file names start with. */
+function shots(short: string, previous: number, n: number, before: string[], after: string[], prefix: string): HTMLElement[] {
   if (!before.length && !after.length) return [h('p', { className: 'muted wide', textContent: n ? `No shots in round ${n}.` : 'No shots yet.' })];
   const label = (file: string) => file.slice(prefix.length, -'.png'.length);
+  const round = (i: number) => (i ? n : previous);
   return [
-    h('h4', { textContent: n > 1 ? `Round ${n - 1}` : 'No earlier round' }),
+    h('h4', { textContent: previous ? `Round ${previous}` : 'No earlier round' }),
     h('h4', { textContent: `Round ${n}` }),
     ...pairs(before, after).flatMap((row) => {
-      const cells = row.map((file, i) => file && { round: n - 1 + i, file });
+      const cells = row.map((file, i) => file && { round: round(i), file });
       const shown = cells.filter((c) => !!c).map((c) => ({ src: `/review/${short}/${c.round}/${encodeURIComponent(c.file)}`, caption: `Round ${c.round} · ${c.file}` }));
-      return cells.map((c, i) => (c ? figure(shown, shown.length > 1 ? i : 0, label(c.file)) : h('div', { className: 'empty', textContent: n - 1 + i ? `not in round ${n - 1 + i}` : 'first round' })));
+      return cells.map((c, i) => (c ? figure(shown, shown.length > 1 ? i : 0, label(c.file)) : h('div', { className: 'empty', textContent: round(i) ? `not in round ${round(i)}` : 'first round' })));
     }),
   ];
 }
@@ -91,8 +92,11 @@ function thread(comments: Comment[], ids: Set<string>): HTMLElement[] {
   });
 }
 
-/** A comment box, and its post: Send, ⌘/Ctrl + Enter, or an approval that sends the box's text. */
-function composer(short: string, placeholder: string, spot?: string): [HTMLElement, (approve?: boolean) => Promise<void>] {
+/**
+ * A comment box, and its post: Send, ⌘/Ctrl + Enter, or an approval that sends the box's text. Each
+ * post names the round on the screen, which the server stamps.
+ */
+function composer(short: string, placeholder: string, round: () => number, spot?: string): [HTMLElement, (approve?: boolean) => Promise<void>] {
   const text = h('textarea', { placeholder, ariaLabel: placeholder, rows: 2 });
   const error = h('p', { className: 'error', hidden: true });
   const send = h('button', { textContent: 'Send' });
@@ -101,7 +105,7 @@ function composer(short: string, placeholder: string, spot?: string): [HTMLEleme
     if (!body) return;
     send.disabled = true;
     const response = await fetch(`/__comment/${short}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: body, spot, approve }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: body, spot, approve, round: round() }),
     }).catch(() => null);
     send.disabled = false;
     error.hidden = !!response?.ok;
@@ -119,8 +123,8 @@ function composer(short: string, placeholder: string, spot?: string): [HTMLEleme
   return [h('div', { className: 'composer' }, text, send, error), post];
 }
 
-function spotArticle(short: string, spot: Spot) {
-  const [box] = composer(short, `Comment on ${spot.name}…`, spot.id);
+function spotArticle(short: string, spot: Spot, round: () => number) {
+  const [box] = composer(short, `Comment on ${spot.name}…`, round, spot.id);
   const grid = h('div', { className: 'pair' });
   const comments = h('div', { className: 'thread' });
   const region = h('span', { className: 'mono muted' });
@@ -149,12 +153,13 @@ function open(short: string): void {
   const known = new Set(ids);
   const pill = h('span', { className: 'pill' });
   const chips = h('div', { className: 'rounds' });
-  const [box, post] = composer(short, `Comment on ${region.name}…`);
+  let shown = 0;
+  const [box, post] = composer(short, `Comment on ${region.name}…`, () => shown);
   const approve = h('button', { className: 'approve', onclick: () => post(true) });
   const comments = h('div', { className: 'thread' });
   const loose = h('div', { className: 'pair' });
   const looseSection = h('section', { hidden: true }, h('h2', { textContent: 'Shots of no listed spot' }), loose);
-  const articles = spots.map((spot) => spotArticle(short, spot));
+  const articles = spots.map((spot) => spotArticle(short, spot, () => shown));
   main.replaceChildren(
     h('div', { className: 'head' },
       h('div', {}, h('h1', {}, region.name, pill), h('p', { className: 'muted', textContent: [short, ...region.countries].join(' · ') })),
@@ -178,20 +183,22 @@ function open(short: string): void {
     const numbers = Object.keys(review.rounds).map(Number).sort((a, b) => a - b);
     const newest = numbers.at(-1) ?? 0;
     const n = chosen !== null && numbers.includes(chosen) ? chosen : newest;
+    const previous = numbers[numbers.indexOf(n) - 1] ?? 0;
+    shown = n;
     pill.className = `pill ${status.replace(' ', '-')}`;
     pill.textContent = STATUS[status];
     chips.replaceChildren(...(numbers.length ? [h('span', { className: 'muted', textContent: 'Round' })] : []), ...numbers.map((r) =>
       h('button', { textContent: String(r), ariaPressed: String(r === n), onclick: () => ((chosen = r === newest ? null : r), update(review)) })));
     approve.textContent = newest ? `Approve round ${newest}` : 'Approve';
-    approve.disabled = status !== 'in review';
+    approve.disabled = status !== 'in review' || n !== newest;
     comments.replaceChildren(...thread(review.comments.filter((c) => !c.spot || !known.has(c.spot)), known));
     const of = (round: number, id?: string) => (review.rounds[round] ?? []).filter((f) => spotOf(f, ids) === id);
     for (const [i, spot] of spots.entries()) {
-      articles[i].grid.replaceChildren(...shots(short, n, of(n - 1, spot.id), of(n, spot.id), `${spot.id}-`));
+      articles[i].grid.replaceChildren(...shots(short, previous, n, of(previous, spot.id), of(n, spot.id), `${spot.id}-`));
       articles[i].comments.replaceChildren(...thread(review.comments.filter((c) => c.spot === spot.id), known));
     }
-    looseSection.hidden = !of(n - 1).length && !of(n).length;
-    loose.replaceChildren(...shots(short, n, of(n - 1), of(n), ''));
+    looseSection.hidden = !of(previous).length && !of(n).length;
+    loose.replaceChildren(...shots(short, previous, n, of(previous), of(n), ''));
   };
   view = { short, update };
 }

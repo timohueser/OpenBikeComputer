@@ -48,9 +48,14 @@ export function status(short) {
   return comments(short).some((c) => c.approve && c.round >= round) ? 'approved' : 'in review';
 }
 
-/** Appends one comment, stamped with the time and, unless it names one, the newest round. */
+/**
+ * Appends one comment, stamped with the time and its round: the one it names, else the newest. The
+ * round must exist; round 0, before the first, takes comments but no approval.
+ */
 export function comment(short, { round, spot, text, by, approve }) {
-  const line = { time: new Date().toISOString(), round: round ?? newest(short), spot, text, by, approve: approve || undefined };
+  const at = round ?? newest(short);
+  if (at ? !(at in rounds(short)) : approve || newest(short)) throw new Error(`${short} has no round ${at}`);
+  const line = { time: new Date().toISOString(), round: at, spot, text, by, approve: approve || undefined };
   mkdirSync(join(REVIEW, short), { recursive: true });
   appendFileSync(join(REVIEW, short, 'comments.jsonl'), `${JSON.stringify(line)}\n`);
   return line;

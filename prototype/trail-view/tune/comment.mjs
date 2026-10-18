@@ -21,4 +21,9 @@ if (!known(short)) {
   process.exit(2);
 }
 const round = values.round && Number(values.round);
-console.log(JSON.stringify(comment(short, { round, spot: values.spot, text, by: 'agent' })));
+try {
+  console.log(JSON.stringify(comment(short, { round, spot: values.spot, text, by: 'agent' })));
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
