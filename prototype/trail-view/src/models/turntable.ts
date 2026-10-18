@@ -1,12 +1,14 @@
 /**
- * The model sheet behind models.html: each model of a pack, at each level of detail, on its own
- * turntable in the toon light of the marmot scene. One canvas behind the page draws every view
- * box in turn. Under reduced motion each view holds a still picture instead, so a full-page
- * screenshot shows every model.
+ * The model sheet behind models.html: every model with the regions that draw it, the census of
+ * species that only a stand-in draws, or each model of one pack at each level of detail. Each model
+ * turns on its own turntable in the toon light of the marmot scene. One canvas behind the page
+ * draws every view box in turn. Under reduced motion each view holds a still picture instead, so a
+ * full-page screenshot shows every model.
  */
 
 import * as THREE from 'three';
 import { BUILDING_KINDS, building, buildingLabel, type BuildingKind } from './buildings';
+import { regionsOf, standIns, USES } from './census';
 import { PACK_NAMES, packNamed } from '../regions';
 import { animal, ANIMALS, plant, PLANTS, tree, TREES } from './library';
 import { hex, paint, soft, triangles } from './shape';
@@ -22,6 +24,17 @@ const FOOTPRINTS: Record<BuildingKind, [number, number, number?]> = {
 };
 
 const MEADOW: Record<Season, string> = { winter: '#b4b08e', spring: '#a8c46a', summer: '#a6c66d', autumn: '#b8b272' };
+
+/** The sheets that are not a pack's, by their chip labels. Their chips come first. */
+const SHEETS: Record<string, string> = { all: 'All models', missing: 'Missing' };
+
+/** Each kind of model, with its nearest level of detail in a season. */
+const KINDS: { title: string; models: Record<string, { name: string; latin: string }>; build: (id: string, season: Season) => THREE.BufferGeometry }[] = [
+  { title: 'Trees', models: TREES, build: (id, season) => tree(id, season, 0) },
+  { title: 'Plants', models: PLANTS, build: (id, season) => plant(id, season) },
+  { title: 'Animals', models: ANIMALS, build: (id) => animal(id) },
+];
+const kindOf = (id: string) => KINDS.find(({ models }) => id in models)!;
 
 interface Cell {
   view: HTMLElement;
@@ -70,17 +83,9 @@ camera.lookAt(0, 0, 0);
 const sheet = document.getElementById('sheet')!;
 let cells: Cell[] = [];
 
-/** A view box with its label, holding one model scaled to fit a unit sphere. */
-function cell(row: HTMLElement, geo: THREE.BufferGeometry, title: string, detail: string): void {
-  const box = row.appendChild(document.createElement('div'));
-  box.className = 'cell';
-  const view = box.appendChild(document.createElement('div'));
-  view.className = 'view';
-  const label = box.appendChild(document.createElement('div'));
-  label.className = 'label';
-  label.append(Object.assign(document.createElement('b'), { textContent: title }));
-  label.append(Object.assign(document.createElement('span'), { textContent: `${detail} · ${triangles(geo).toLocaleString('en')} triangles` }));
-
+/** A view box in `parent`, holding one model scaled to fit a unit sphere. */
+function turntable(parent: HTMLElement, geo: THREE.BufferGeometry): void {
+  const view = block(parent, 'view');
   geo.computeBoundingBox();
   const { min, max } = geo.boundingBox!;
   const centre = min.clone().add(max).multiplyScalar(0.5);
@@ -96,24 +101,68 @@ function cell(row: HTMLElement, geo: THREE.BufferGeometry, title: string, detail
   cells.push({ view, model, base: (min.z - centre.z) / radius, disc: Math.min(1.1, Math.max(0.6, 1.3 * reach)) });
 }
 
+/** A view box over its label: the title, then the detail with the model's triangles. */
+function cell(row: HTMLElement, geo: THREE.BufferGeometry, title: string, detail: string): HTMLElement {
+  const box = block(row, 'cell');
+  turntable(box, geo);
+  const label = block(box, 'label');
+  label.append(el('b', title), el('span', `${detail} · ${triangles(geo).toLocaleString('en')} triangles`));
+  return label;
+}
+
+const el = (tag: string, text: string) => Object.assign(document.createElement(tag), { textContent: text });
+
+/** A line of a label: its lead, then the regions. */
+function drawnIn(label: HTMLElement, lead: HTMLElement, regions: string[]): void {
+  label.appendChild(document.createElement('p')).append(lead, ` ${regions.join(', ') || 'no region'}`);
+}
+
 function heading(parent: HTMLElement, text: string, level: 'h2' | 'h3' = 'h2'): void {
-  parent.append(Object.assign(document.createElement(level), { textContent: text }));
+  parent.append(el(level, text));
 }
 
 function block(parent: HTMLElement, className: string): HTMLElement {
   return parent.appendChild(Object.assign(document.createElement('div'), { className }));
 }
 
-function show(packName: string, season: Season): void {
-  for (const { model } of cells) {
-    scene.remove(model);
-    (model.children[0] as THREE.Mesh).geometry.dispose();
+/** Every model by kind: the regions that draw it as itself, and the species it stands in for. */
+function allModels(season: Season): void {
+  for (const { title, models, build } of KINDS) {
+    heading(sheet, `${title} · ${Object.keys(models).length} models`);
+    const row = block(sheet, 'row start');
+    for (const [id, { name, latin }] of Object.entries(models)) {
+      const uses = USES.filter((use) => use.model === id);
+      const label = cell(row, build(id, season), name, latin);
+      drawnIn(label, el('strong', 'Drawn in'), regionsOf(uses.filter((use) => !use.latin)));
+      const stands = standIns(uses);
+      if (stands.length) label.appendChild(document.createElement('p')).append(el('strong', 'Stands in for'));
+      for (const [species, of] of stands) drawnIn(label, el('i', species), regionsOf(of));
+    }
   }
-  cells = [];
-  sheet.replaceChildren();
-  ground.geometry.dispose();
-  ground.geometry = paint(soft(new THREE.CircleGeometry(1, 48)), hex(MEADOW[season]));
+}
 
+/** One card per species that only a stand-in draws: its aliases, the stand-in models and the regions. */
+function missing(season: Season): void {
+  const census = standIns(USES);
+  for (const kind of KINDS) {
+    const species = census.filter(([, uses]) => kindOf(uses[0].model) === kind);
+    if (!species.length) continue;
+    heading(sheet, `${kind.title} · ${species.length} species`);
+    const row = block(sheet, 'row start');
+    for (const [latin, uses] of species) {
+      const box = block(row, 'cell');
+      const views = block(box, 'views');
+      for (const model of new Set(uses.map((use) => use.model))) turntable(views, kindOf(model).build(model, season));
+      const label = block(box, 'label');
+      label.appendChild(document.createElement('b')).append(el('i', latin));
+      for (const alias of new Set(uses.map((use) => `${use.id} → ${kindOf(use.model).models[use.model].name}`))) label.append(el('span', alias));
+      drawnIn(label, el('strong', 'Drawn in'), regionsOf(uses));
+    }
+  }
+}
+
+/** Each model of a pack at each level of detail, and its buildings. */
+function packSheet(packName: string, season: Season): void {
   const kit = packNamed(packName);
   heading(sheet, 'Trees');
   const forest = block(sheet, 'species');
@@ -144,17 +193,32 @@ function show(packName: string, season: Season): void {
     const [width, depth, wall] = FOOTPRINTS[kind];
     cell(town, building(kind, kit.style, { width, depth, wall, seed: i + 1 }), buildingLabel(kind), `${width} × ${depth} m`);
   });
+}
+
+function show(name: string, season: Season): void {
+  for (const { model } of cells) {
+    scene.remove(model);
+    (model.children[0] as THREE.Mesh).geometry.dispose();
+  }
+  cells = [];
+  sheet.replaceChildren();
+  ground.geometry.dispose();
+  ground.geometry = paint(soft(new THREE.CircleGeometry(1, 48)), hex(MEADOW[season]));
+  if (name === 'all') allModels(season);
+  else if (name === 'missing') missing(season);
+  else packSheet(name, season);
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('.chips button')) {
-    button.setAttribute('aria-pressed', String(button.value === packName || button.value === season));
+    button.setAttribute('aria-pressed', String(button.value === name || button.value === season));
   }
-  history.replaceState(null, '', `#${packName}/${season}`);
+  history.replaceState(null, '', `#${name}/${season}`);
   if (still) cells.forEach(picture);
 }
 
+const KITS = [...Object.keys(SHEETS), ...PACK_NAMES];
 const [hashKit, hashSeason] = location.hash.slice(1).split('/');
 const state = {
-  kit: PACK_NAMES.includes(hashKit) ? hashKit : 'alps',
+  kit: KITS.includes(hashKit) ? hashKit : 'all',
   season: ((SEASONS as readonly string[]).includes(hashSeason) ? hashSeason : 'summer') as Season,
 };
 
@@ -206,7 +270,7 @@ function draw(time: number): void {
 }
 
 const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-chips('kits', PACK_NAMES, (k) => packNamed(k).name, (k) => (state.kit = k));
+chips('kits', KITS, (k) => SHEETS[k] ?? packNamed(k).name, (k) => (state.kit = k));
 chips('seasons', SEASONS, (s) => s[0].toUpperCase() + s.slice(1), (s) => (state.season = s as Season));
 show(state.kit, state.season);
 if (!still) renderer.setAnimationLoop(draw);

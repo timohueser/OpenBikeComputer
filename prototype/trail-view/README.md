@@ -137,7 +137,8 @@ npm run shoot -- <spot>[,<spot>…] [options]   # headless shots
   wrong types, missing references, areas out of order or outside Europe, duplicate spot ids,
   spots more than 10 km outside their ecoregion, a region or pack of another short, and two models
   with one Latin name. The page runs the same check at load and shows the errors in its status line.
-- `models.html` shows every model of a pack at each level of detail.
+- `models.html` shows every model with the regions that draw it, the census of species that only a
+  stand-in draws, and every model of a pack at each level of detail.
 
 | `npm run shoot` option | What it does |
 |---|---|
