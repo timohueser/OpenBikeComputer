@@ -7,7 +7,6 @@
   "retama": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1900, 3200], "weight": 4 },
   "tajinaste": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1900, 2700], "weight": 0.5 }
  },
- "ground": ["grass"],
  "herds": {
   "goat": { "groups": 3, "size": [3, 9], "on": ["rough", "scrub", "rock"] }
  },

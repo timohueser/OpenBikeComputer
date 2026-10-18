@@ -1,11 +1,11 @@
 /**
- * Tree species, each at three levels of detail from one builder. A tree is 1 tall with its trunk
- * base at the origin and z up; the instanced shader scales it by the tree's height. The season
- * only changes vertex colours.
+ * The tree builder: a species file in trees/ says what a tree is, and this draws it at three levels
+ * of detail. A tree is 1 tall with its trunk base at the origin and z up; the instanced shader
+ * scales it by the tree's height. The season only changes vertex colours.
  */
 
 import * as THREE from 'three';
-import { hash, hex, lathe, limb, lump, merge, paint, place, random, smooth, soft, unit, v3, type Vec } from './shape';
+import { domed, GOLDEN, hash, hex, lathe, limb, lump, merge, paint, place, ramp, random, sheet, smooth, soft, unit, v3, type Ramp, type Sheet, type Vec } from './shape';
 
 /** The order of SEASONS in light.ts. */
 export const SEASONS = ['winter', 'spring', 'summer', 'autumn'] as const;
@@ -25,9 +25,6 @@ const DETAIL = [
   { sides: 6, rows: 3, tiers: 3, trunk: [4, 1], lumps: 5, ico: 0 },
 ] as const;
 
-/** Shade, body and lit-tip colour. */
-type Ramp = [string, string, string];
-
 interface Bark {
   /** Trunk radius at the ground, and the root flare in trunk radii. */
   trunk: number;
@@ -44,9 +41,15 @@ interface Bark {
   scars?: number;
 }
 
-interface Conifer extends Bark {
-  form: 'conifer';
+interface Base extends Bark {
   name: string;
+  latin: string;
+  /** Placed at the heading it is built in, as a tree the wind bends must be; others turn at random. */
+  keepsHeading?: true;
+}
+
+interface Conifer extends Base {
+  form: 'conifer';
   /** Crown base height and crown radius there, in tree heights. */
   base: number;
   radius: number;
@@ -72,9 +75,8 @@ interface Conifer extends Bark {
   sprouts?: number;
 }
 
-interface Broadleaf extends Bark {
+interface Broadleaf extends Base {
   form: 'broadleaf';
-  name: string;
   /** Where the trunk divides. A bush has no trunk. */
   fork: number;
   /** Crown centre height and half-sizes along x, y and z. */
@@ -102,377 +104,12 @@ interface Broadleaf extends Bark {
   flecks?: Partial<Record<Season, [string, number]>>;
 }
 
-type Tree = Conifer | Broadleaf;
+/** A species file in trees/. */
+export type Tree = Conifer | Broadleaf;
 
-const TREES = {
-  'norway-spruce': {
-    form: 'conifer',
-    name: 'Norway spruce',
-    base: 0.06,
-    radius: 0.17,
-    shape: (t) => (1 - t) ** 0.95,
-    overlap: 1.9,
-    droop: 0.16,
-    lobes: 7,
-    jitter: 0.08,
-    trunk: 0.018,
-    flare: 1.8,
-    bark: ['#4f3426', '#6e4a35'],
-    needles: {
-      winter: ['#1f3a33', '#2d5444', '#557a56'],
-      spring: ['#24453a', '#33664b', '#9cc35c'],
-      summer: ['#22433a', '#33664b', '#6f9c58'],
-      autumn: ['#22413a', '#31604a', '#638f52'],
-    },
-  },
-  'silver-fir': {
-    form: 'conifer',
-    name: 'Silver fir',
-    base: 0.1,
-    radius: 0.2,
-    // Columnar, with the blunt top of an older fir.
-    shape: (t) => 1 - t ** 2.2,
-    overlap: 1.6,
-    droop: 0.06,
-    lobes: 8,
-    jitter: 0.06,
-    trunk: 0.02,
-    flare: 1.6,
-    bark: ['#5a5852', '#8a877e'],
-    needles: {
-      winter: ['#203d33', '#2f5644', '#4d7553'],
-      spring: ['#264a3d', '#3a6e50', '#8fbf68'],
-      summer: ['#244639', '#386a4e', '#76a25e'],
-      autumn: ['#23443a', '#36664c', '#6c9658'],
-    },
-    under: '#86a597',
-  },
-  'european-larch': {
-    form: 'conifer',
-    name: 'European larch',
-    base: 0.08,
-    radius: 0.24,
-    shape: (t) => (1 - t) ** 0.85,
-    overlap: 0.95,
-    droop: 0.35,
-    lobes: 5,
-    jitter: 0.25,
-    trunk: 0.017,
-    flare: 1.7,
-    bark: ['#5e3a28', '#7a4e36'],
-    needles: {
-      winter: 'bare',
-      spring: ['#5f9447', '#8fc25e', '#c6e58d'],
-      summer: ['#4b7a3c', '#6d9e4c', '#a5c96f'],
-      autumn: ['#9a6a24', '#c99632', '#ecc458'],
-    },
-    twigs: ['#5e5048', '#7d6c60', '#9a887a'],
-  },
-  'douglas-fir': {
-    form: 'conifer',
-    name: 'Douglas fir',
-    base: 0.3,
-    radius: 0.18,
-    shape: (t) => (1 - t) ** 0.8,
-    overlap: 1.7,
-    droop: 0.14,
-    lobes: 6,
-    jitter: 0.3,
-    trunk: 0.022,
-    flare: 1.6,
-    bark: ['#3e271c', '#5a3a2a'],
-    needles: {
-      winter: ['#1e3a33', '#2c5446', '#4d7458'],
-      spring: ['#22443a', '#34654e', '#86b06a'],
-      summer: ['#20423a', '#33624d', '#6a9460'],
-      autumn: ['#20403a', '#325f4b', '#64905c'],
-    },
-  },
-  'western-hemlock': {
-    form: 'conifer',
-    name: 'Western hemlock',
-    base: 0.08,
-    radius: 0.16,
-    shape: (t) => 1 - t,
-    overlap: 1.9,
-    droop: 0.24,
-    lobes: 8,
-    jitter: 0.1,
-    nod: 0.06,
-    trunk: 0.017,
-    flare: 1.7,
-    bark: ['#4a3024', '#6a4a3a'],
-    needles: {
-      winter: ['#203d30', '#2f5a42', '#5a8256'],
-      spring: ['#264a3a', '#3a7050', '#9cc76e'],
-      summer: ['#244736', '#386c4c', '#7cab60'],
-      autumn: ['#234534', '#36684a', '#74a25c'],
-    },
-  },
-  'western-red-cedar': {
-    form: 'conifer',
-    name: 'Western red cedar',
-    base: 0.1,
-    radius: 0.24,
-    shape: (t) => (1 - t) ** 1.3,
-    overlap: 1.8,
-    droop: 0.34,
-    lobes: 9,
-    jitter: 0.12,
-    trunk: 0.03,
-    // The buttressed foot of an old cedar.
-    flare: 2.6,
-    bark: ['#5e2f1e', '#8a4e34'],
-    needles: {
-      winter: ['#2a4a2e', '#40683c', '#6f9050'],
-      spring: ['#2e5432', '#4a7a40', '#a4c462'],
-      summer: ['#2d5131', '#47763f', '#8db458'],
-      autumn: ['#2c4f30', '#45733e', '#86ad54'],
-    },
-  },
-  'sycamore-maple': {
-    form: 'broadleaf',
-    name: 'Sycamore maple',
-    fork: 0.32,
-    crown: [0.6, 0.42, 0.42, 0.38],
-    trunk: 0.05,
-    flare: 1.5,
-    bark: ['#5f564d', '#8a7e70'],
-    leaves: {
-      winter: 'bare',
-      spring: ['#4f7a35', '#78a84a', '#b2d070'],
-      summer: ['#365f2c', '#4f7f38', '#7aa651'],
-      autumn: ['#7a5a26', '#b08a36', '#dcb752'],
-    },
-    twigs: ['#6e625a', '#8e8076', '#a89a8e'],
-  },
-  'european-beech': {
-    form: 'broadleaf',
-    name: 'European beech',
-    fork: 0.4,
-    crown: [0.66, 0.34, 0.34, 0.34],
-    trunk: 0.04,
-    flare: 1.4,
-    bark: ['#6f716c', '#a2a29a'],
-    leaves: {
-      // Beech holds its dead leaves through the winter.
-      winter: ['#6a4026', '#8a5a34', '#a8764a'],
-      spring: ['#6aa63e', '#94c855', '#c9e98a'],
-      summer: ['#335c28', '#4a7c35', '#73a24c'],
-      autumn: ['#7e3a18', '#b45e26', '#e08a3c'],
-    },
-    twigs: ['#5e5a56', '#7c7670', '#97908a'],
-  },
-  hawthorn: {
-    form: 'broadleaf',
-    name: 'Hawthorn, wind-bent',
-    fork: 0.3,
-    crown: [0.55, 0.6, 0.42, 0.24],
-    // Leans downwind of the Atlantic westerlies, so it must keep its heading when placed.
-    sweep: 0.8,
-    trunk: 0.06,
-    flare: 1.3,
-    bark: ['#4a3d36', '#6a5a50'],
-    leaves: {
-      winter: 'bare',
-      spring: ['#3a5e2c', '#557d3a', '#86a85a'],
-      summer: ['#2f5226', '#456e33', '#6c9448'],
-      autumn: ['#5a5a2e', '#7a7038', '#9a8a4a'],
-    },
-    twigs: ['#4c3f3a', '#665650', '#80706a'],
-    flecks: { spring: ['#f6f1e6', 0.55], autumn: ['#a3242a', 0.35] },
-  },
-  gorse: {
-    form: 'broadleaf',
-    name: 'Gorse',
-    fork: 0,
-    crown: [0.5, 0.85, 0.75, 0.5],
-    trunk: 0,
-    flare: 1,
-    bark: ['#4a3d36', '#6a5a50'],
-    leaves: {
-      winter: ['#28391f', '#3b5229', '#5c7239'],
-      spring: ['#2e4424', '#435e2e', '#6a8042'],
-      summer: ['#2e4424', '#435e2e', '#6a8042'],
-      autumn: ['#2c4022', '#40592c', '#647a40'],
-    },
-    twigs: ['#4c3f3a', '#665650', '#80706a'],
-    // Gorse flowers a little in every month and floods yellow in spring.
-    flecks: { winter: ['#f2c230', 0.25], spring: ['#f6c62c', 0.6], summer: ['#f2c230', 0.2], autumn: ['#f2c230', 0.12] },
-  },
-  'aleppo-pine': {
-    form: 'broadleaf',
-    name: 'Aleppo pine',
-    fork: 0.5,
-    crown: [0.76, 0.42, 0.42, 0.26],
-    open: true,
-    // A bent, leaning trunk; it takes a random heading like any other tree.
-    sweep: 0.22,
-    trunk: 0.035,
-    flare: 1.4,
-    bark: ['#5a4038', '#8a6a5c'],
-    leaves: {
-      winter: ['#46573f', '#677a58', '#94a67c'],
-      spring: ['#4a5e42', '#6f8460', '#a8bb88'],
-      summer: ['#4a5c42', '#6d825e', '#a3b585'],
-      autumn: ['#48593f', '#6b7f5b', '#9eaf80'],
-    },
-    twigs: ['#5a4038', '#7a5a4c', '#8a6a5c'],
-  },
-  'holm-oak': {
-    form: 'broadleaf',
-    name: 'Holm oak',
-    fork: 0.24,
-    crown: [0.56, 0.46, 0.46, 0.38],
-    stems: 3,
-    trunk: 0.04,
-    flare: 1.4,
-    bark: ['#3e3a35', '#5e5850'],
-    leaves: {
-      winter: ['#26301e', '#3a4a2a', '#5a6a40'],
-      spring: ['#29381f', '#3f542b', '#6c8646'],
-      summer: ['#25331d', '#3a4e29', '#5f7740'],
-      autumn: ['#26321e', '#3b4d2a', '#5e7240'],
-    },
-    twigs: ['#3e3a35', '#5e5850', '#7a736a'],
-  },
-  'scots-pine': {
-    form: 'broadleaf',
-    name: 'Scots pine',
-    fork: 0.5,
-    crown: [0.78, 0.36, 0.3, 0.25],
-    open: true,
-    stagger: true,
-    pads: true,
-    sweep: 0.1,
-    trunk: 0.025,
-    flare: 1.5,
-    // Grey plates on the lower trunk, the fox-orange of the upper trunk and limbs.
-    bark: ['#4e3e34', '#c0663a'],
-    fade: [0.25, 0.45],
-    leaves: {
-      winter: ['#223b37', '#3a6258', '#6f9283'],
-      spring: ['#25423c', '#406c5f', '#86a893'],
-      summer: ['#24413b', '#3f6a5e', '#7d9f8c'],
-      autumn: ['#24403a', '#3e685c', '#7a9a88'],
-    },
-    twigs: ['#7a4430', '#a85a38', '#c0663a'],
-  },
-  'silver-birch': {
-    form: 'broadleaf',
-    name: 'Silver birch',
-    fork: 0.34,
-    crown: [0.64, 0.27, 0.27, 0.34],
-    open: true,
-    stagger: true,
-    weep: 0.6,
-    trunk: 0.015,
-    flare: 1.6,
-    bark: ['#3a3430', '#eeebe4'],
-    fade: [0.02, 0.12],
-    marks: ['#1e1a18', 0.45],
-    leaves: {
-      winter: 'bare',
-      spring: ['#5a8a32', '#8ec04c', '#cfe886'],
-      summer: ['#4a7029', '#76a03c', '#b6d266'],
-      autumn: ['#9a7418', '#d4a62a', '#f2d45a'],
-    },
-    twigs: ['#4a3436', '#6a4e4c', '#866a64'],
-  },
-  laurel: {
-    form: 'broadleaf',
-    name: 'Laurel forest tree',
-    fork: 0.38,
-    // Taller and narrower than the holm oak.
-    crown: [0.6, 0.32, 0.32, 0.42],
-    stems: 4,
-    trunk: 0.022,
-    flare: 1.5,
-    // Moss climbs the trunks in the cloud forest.
-    bark: ['#4a5236', '#6e675c'],
-    // Glossy: deep shade, bright lit tops.
-    leaves: {
-      winter: ['#1a3a26', '#1f452b', '#5a964a'],
-      spring: ['#1b3c27', '#22492d', '#6aa452'],
-      summer: ['#1a3b26', '#21472c', '#5e9c4c'],
-      autumn: ['#1a3a26', '#1f452b', '#5a964a'],
-    },
-    twigs: ['#4a453c', '#6e675c', '#8a8276'],
-  },
-  'canary-palm': {
-    form: 'broadleaf',
-    name: 'Canary Island date palm',
-    fork: 0.66,
-    crown: [0.7, 0.36, 0.36, 0.3],
-    fronds: 48,
-    trunk: 0.045,
-    neck: 1,
-    flare: 1.3,
-    bark: ['#5e5040', '#8a7860'],
-    scars: 7,
-    leaves: {
-      winter: ['#2e4a26', '#557a34', '#a4bc5e'],
-      spring: ['#2f4c27', '#587e36', '#a8c062'],
-      summer: ['#2e4a26', '#557a34', '#a4bc5e'],
-      autumn: ['#2e4a26', '#557a34', '#a4bc5e'],
-    },
-    twigs: ['#5e5040', '#7a6a54', '#8a7860'],
-  },
-  'dragon-tree': {
-    form: 'broadleaf',
-    name: 'Dragon tree',
-    fork: 0.4,
-    crown: [0.76, 0.46, 0.46, 0.28],
-    branching: [3, 3, 3],
-    trunk: 0.08,
-    // The trunk swells towards its crown.
-    neck: 1.05,
-    flare: 1.5,
-    bark: ['#6a655a', '#9a968a'],
-    leaves: {
-      winter: ['#2e4636', '#4f6e52', '#9ab486'],
-      spring: ['#2f4837', '#527254', '#a0ba8a'],
-      summer: ['#2e4636', '#4f6e52', '#9ab486'],
-      autumn: ['#2e4636', '#4f6e52', '#9ab486'],
-    },
-    twigs: ['#6e6a60', '#8e8a7e', '#a8a498'],
-  },
-  'canary-pine': {
-    form: 'conifer',
-    name: 'Canary Island pine',
-    base: 0.45,
-    radius: 0.21,
-    shape: (t) => (1 - t) ** 0.6,
-    overlap: 0.8,
-    droop: 0.6,
-    lobes: 4,
-    jitter: 0.4,
-    tufts: true,
-    sprouts: 8,
-    trunk: 0.024,
-    flare: 1.6,
-    // Old fires char the foot of the trunk.
-    bark: ['#3e3430', '#86766a'],
-    needles: {
-      winter: ['#2c5430', '#4a8240', '#a0bf62'],
-      spring: ['#2f5a32', '#4f8a42', '#b0cc68'],
-      summer: ['#2e5831', '#4d8741', '#a8c862'],
-      autumn: ['#2d5631', '#4b8540', '#a4c460'],
-    },
-  },
-} satisfies Record<string, Tree>;
-
-export type TreeName = keyof typeof TREES;
-export const TREE_NAMES = Object.keys(TREES) as TreeName[];
-
-export const treeLabel = (name: TreeName) => TREES[name].name;
-
-export function tree(name: TreeName, season: Season, lod: Lod, seed = 1): THREE.BufferGeometry {
-  const spec: Tree = TREES[name];
+export function grow(spec: Tree, season: Season, lod: Lod, seed: number): THREE.BufferGeometry {
   return unit(spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed));
 }
-
-const ramp = (r: Ramp) => r.map(hex) as [THREE.Color, THREE.Color, THREE.Color];
 
 /** Bands of marks up a near marked trunk; each holds up to two dashes. */
 const BANDS = 18;
@@ -543,45 +180,17 @@ function scarred(r: number, flare: number, bark: [string, string], n: number, to
     const radius = r * (1 + (flare - 1) * (1 - smooth(0, 4 * r, z))) * (raised ? 1.15 : 1);
     return v3(radius * Math.cos(a), radius * Math.sin(a), z);
   };
-  const sheet = cards();
+  const cards = sheet();
   for (let i = 0; i * h < top; i++) {
     for (let k = i % 2; k < 2 * n; k += 2) {
       const c = corner(i, k, true);
       const ring = [corner(i, k + 1), corner(i + 1, k), corner(i, k - 1), corner(i - 1, k)];
       const plate = foot.clone().lerp(bole, smooth(0, 0.5 * top, c.z));
       const groove = plate.clone().multiplyScalar(0.55);
-      for (let e = 0; e < 4; e++) sheet.add([c, ring[e], ring[(e + 1) % 4]], [plate, groove, groove]);
+      for (let e = 0; e < 4; e++) cards.add([c, ring[e], ring[(e + 1) % 4]], [plate, groove, groove]);
     }
   }
-  return sheet.build();
-}
-
-/**
- * Loose triangles with their own colours. Without a centre the faces stay flat; with one, normals
- * point out from it, leaning up, so a crown of thin leaves lights as one round crown.
- */
-function cards() {
-  const position: number[] = [];
-  const normal: number[] = [];
-  const color: number[] = [];
-  return {
-    add(corners: THREE.Vector3[], colours: THREE.Color[], centre?: THREE.Vector3) {
-      const flat = v3().subVectors(corners[1], corners[0]).cross(v3().subVectors(corners[2], corners[0])).normalize();
-      corners.forEach((p, i) => {
-        const n = centre ? p.clone().sub(centre).normalize().lerp(v3(0, 0, 1), 0.3).normalize() : flat;
-        position.push(p.x, p.y, p.z);
-        normal.push(n.x, n.y, n.z);
-        colours[i].toArray(color, color.length);
-      });
-    },
-    build() {
-      return new THREE.BufferGeometry()
-        .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
-        .setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
-        .setAttribute('color', new THREE.Float32BufferAttribute(color, 3))
-        .setIndex(Array.from({ length: position.length / 3 }, (_, i) => i));
-    },
-  };
+  return cards.build();
 }
 
 // One tier of branches, radius 1 and height 1: out along the underside to the rim, then up to the tip.
@@ -803,8 +412,6 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): THR
   return geo;
 }
 
-const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-
 /**
  * Fronds arch out of a knob of leaf bases, the young ones upright and the old ones hanging. Near
  * the eye each leaflet is one card, so a frond reads as a comb: 48 fronds of 11 pairs. Further off
@@ -815,8 +422,8 @@ function palm(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand: 
   const count = [spec.fronds!, 36, 16][lod];
   const segments = [11, 4, 2][lod];
   const base = v3(0, 0, spec.fork);
-  const centre = v3(0, 0, cz);
-  const sheet = cards();
+  const light = domed(v3(0, 0, cz), v3(1, 1, 1), 0.3);
+  const cards = sheet();
   for (let f = 0; f < count; f++) {
     const age = (f + 0.5) / count;
     const rise = THREE.MathUtils.lerp(1.3, -0.6, age) + 0.15 * (rand() - 0.5);
@@ -846,18 +453,18 @@ function palm(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand: 
       const rib = (s: number) => root(s).lerp(rim(s), 0.25);
       for (const sign of [-1, 1]) {
         const ep = leaflet(p, s, sign);
-        if (lod === 0) sheet.add([p, q, ep], [root(s), root(s), rim(s)], centre);
+        if (lod === 0) cards.add([p, q, ep], [root(s), root(s), rim(s)], light);
         else {
-          sheet.add([p, q, ep], [rib(s), rib(t), rim(s)], centre);
+          cards.add([p, q, ep], [rib(s), rib(t), rim(s)], light);
           // The tip narrows to a point.
-          if (j < segments - 1) sheet.add([q, leaflet(q, t, sign), ep], [rib(t), rim(t), rim(s)], centre);
+          if (j < segments - 1) cards.add([q, leaflet(q, t, sign), ep], [rib(t), rim(t), rim(s)], light);
         }
       }
     }
   }
   // Leaf bases far off are as green as the fronds around them, lest they read as a nut.
   const knob = paint(place(soft(lump((lod ? 1.3 : 1.7) * spec.trunk, lod ? 0 : 1), 0.1 * spec.trunk, 30), { at: base }), hex('#6a5a3c').lerp(deep, lod ? 0.6 : 0));
-  return [sheet.build(), knob];
+  return [cards.build(), knob];
 }
 
 /**
@@ -875,7 +482,7 @@ function dragon(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand
   const fork = v3(0, 0, spec.fork);
   // A collar where the limbs leave the trunk, so the trunk swells into them.
   const parts = lod < 2 ? [paint(place(soft(lump(1.1 * spec.trunk, lod ? 0 : 1), 0.08 * spec.trunk, 30), { at: fork }), bark)] : [];
-  const sheet = cards();
+  const cards = sheet();
   const grow = (from: THREE.Vector3, a0: number, a1: number, level: number, r: number) => {
     const m = levels[level];
     for (let c = 0; c < m; c++) {
@@ -887,36 +494,37 @@ function dragon(spec: Broadleaf, lod: Lod, [deep, mid, tip]: THREE.Color[], rand
       const to = v3(d * Math.cos(a), d * Math.sin(a), z);
       parts.push(limb(from.toArray(), to.toArray(), r, bark, 0, [6, 4, 3][lod]));
       if (level + 1 < levels.length) grow(to, a0 + (c * (a1 - a0)) / m, a0 + ((c + 1) * (a1 - a0)) / m, level + 1, 0.75 * r);
-      else if (lod === 2) bowl(sheet, to, a, 0.7 * rx, size, [deep, mid, tip]);
+      else if (lod === 2) bowl(cards, to, a, 0.7 * rx, size, [deep, mid, tip]);
       else {
-        rosette(sheet, to, size, blades, [deep, mid, tip], rand);
+        rosette(cards, to, size, blades, [deep, mid, tip], rand);
         // A heart fills the rosette between its blades.
         parts.push(paint(place(soft(lump(0.38 * size, 0)), { at: to.clone().setZ(to.z + 0.15 * size) }), deep.clone().lerp(mid, 0.5)));
       }
     }
   };
   grow(fork, 0, 2 * Math.PI, 0, 0.8 * spec.trunk);
-  return [...parts, sheet.build()];
+  return [...parts, cards.build()];
 }
 
 /**
  * A far group of rosettes: a bowl of 8 triangles from a limb's end, out towards `heading`, its
  * rim ragged so its top edge reads as blades.
  */
-function bowl(sheet: ReturnType<typeof cards>, at: THREE.Vector3, heading: number, radius: number, height: number, [deep, mid, tip]: THREE.Color[]): void {
+function bowl(cards: Sheet, at: THREE.Vector3, heading: number, radius: number, height: number, [deep, mid, tip]: THREE.Color[]): void {
   const rim = at.clone().add(v3(0.5 * radius * Math.cos(heading), 0.5 * radius * Math.sin(heading), height));
-  const centre = rim.clone().setZ(rim.z - 2 * height);
+  const light = domed(rim.clone().setZ(rim.z - 2 * height), v3(1, 1, 1), 0.3);
   const point = (k: number) => {
     const a = heading + (k / 8) * 2 * Math.PI;
     const out = k % 2 ? 0.7 : 1;
     return rim.clone().add(v3(out * radius * Math.cos(a), out * radius * Math.sin(a), (out - 0.75) * height));
   };
   const [spike, notch] = [mid.clone().lerp(tip, 0.15), deep.clone().lerp(mid, 0.3)];
-  for (let k = 0; k < 8; k++) sheet.add([at, point(k), point(k + 1)], [deep, k % 2 ? notch : spike, k % 2 ? spike : notch], centre);
+  for (let k = 0; k < 8; k++) cards.add([at, point(k), point(k + 1)], [deep, k % 2 ? notch : spike, k % 2 ? spike : notch], light);
 }
 
 /** Stiff sword leaves up and out from one point, only the outer ring drooping. */
-function rosette(sheet: ReturnType<typeof cards>, at: THREE.Vector3, size: number, count: number, [deep, mid, tip]: THREE.Color[], rand: () => number): void {
+function rosette(cards: Sheet, at: THREE.Vector3, size: number, count: number, [deep, mid, tip]: THREE.Color[], rand: () => number): void {
+  const light = domed(at, v3(1, 1, 1), 0.3);
   for (let j = 0; j < count; j++) {
     const a = j * GOLDEN + 0.5 * rand();
     const t = (j + 0.5) / count;
@@ -924,7 +532,7 @@ function rosette(sheet: ReturnType<typeof cards>, at: THREE.Vector3, size: numbe
     const reach = size * (0.8 + 0.35 * rand());
     const end = at.clone().add(v3(Math.sin(polar) * Math.cos(a), Math.sin(polar) * Math.sin(a), Math.cos(polar)).multiplyScalar(reach));
     const side = v3(-Math.sin(a), Math.cos(a), 0).multiplyScalar(0.14 * reach);
-    sheet.add([at.clone().sub(side), at.clone().add(side), end], [deep, deep, mid.clone().lerp(tip, smooth(0.5, 0, polar) + 0.3 * rand())], at);
+    cards.add([at.clone().sub(side), at.clone().add(side), end], [deep, deep, mid.clone().lerp(tip, smooth(0.5, 0, polar) + 0.3 * rand())], light);
   }
 }
 

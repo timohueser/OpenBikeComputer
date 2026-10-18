@@ -12,6 +12,22 @@ export type Shade = THREE.Color | ((p: THREE.Vector3, n: THREE.Vector3) => THREE
 
 export const v3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 export const hex = (h: string) => new THREE.Color(h);
+export const UP = v3(0, 0, 1);
+export const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
+/** Shade, body and lit-tip colour. */
+export type Ramp = [string, string, string];
+export const ramp = (r: Ramp) => r.map(hex) as [THREE.Color, THREE.Color, THREE.Color];
+
+/** A ramp's colour at `t`, clamped to [0, 1]: the shade at 0, the body at 0.5, the tip at 1. */
+export function rampAt([shade, body, tip]: THREE.Color[], t: number): THREE.Color {
+  const u = Math.min(1, Math.max(0, t));
+  return u < 0.5 ? shade.clone().lerp(body, u * 2) : body.clone().lerp(tip, u * 2 - 1);
+}
+
+/** Darker at the root, lit at the tip, by height. */
+export const byHeight = ([deep, mid, tip]: THREE.Color[], top: number) => (p: THREE.Vector3) =>
+  deep.clone().lerp(mid, smooth(0, 0.4 * top, p.z)).lerp(tip, smooth(0.5 * top, top, p.z));
 
 export function smooth(a: number, b: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -173,6 +189,89 @@ export function ribbon(points: Vec[], side: Vec, width: (t: number) => number, s
     nrm.setXYZ(i, n.x, n.y, n.z);
   }
   return strip;
+}
+
+/**
+ * A leaf or blade from `base` towards angle `a`. It leaves at `tilt` from vertical, and its tip
+ * drops `arch` lengths below that line.
+ */
+export function blade(base: Vec, a: number, length: number, tilt: number, arch: number, width: (t: number) => number, segments: number) {
+  const out: Vec = [Math.cos(a), Math.sin(a), 0];
+  const along = (s: number): Vec => [
+    base[0] + out[0] * Math.sin(tilt) * s * length,
+    base[1] + out[1] * Math.sin(tilt) * s * length,
+    base[2] + (Math.cos(tilt) * s - arch * s * s) * length,
+  ];
+  return ribbon([base, along(0.5), along(1)], [-out[1], out[0], 0], width, segments);
+}
+
+/** Normals out from a dome around `centre` with half-sizes `size`, leaning `lift` of the way up. */
+export const domed = (centre: THREE.Vector3, size: THREE.Vector3, lift: number) => (p: THREE.Vector3) =>
+  p.clone().sub(centre).divide(size).normalize().lerp(UP, lift).normalize();
+
+/** Sets each normal to the one `light` gives its vertex, so many small parts light as one round bush. */
+export function relight(geo: THREE.BufferGeometry, light: (p: THREE.Vector3) => THREE.Vector3): THREE.BufferGeometry {
+  const pos = geo.getAttribute('position');
+  const nrm = geo.getAttribute('normal');
+  const p = v3();
+  for (let i = 0; i < pos.count; i++) {
+    const n = light(p.fromBufferAttribute(pos, i));
+    nrm.setXYZ(i, n.x, n.y, n.z);
+  }
+  return geo;
+}
+
+/**
+ * Loose triangles with their own colours. `light` gives each corner its normal, as `domed` does
+ * so that many thin leaves light as one round crown; without it a face stays flat.
+ */
+export function sheet() {
+  const position: number[] = [];
+  const normal: number[] = [];
+  const color: number[] = [];
+  return {
+    add(corners: THREE.Vector3[], colours: THREE.Color[], light?: (p: THREE.Vector3) => THREE.Vector3) {
+      const flat = v3().subVectors(corners[1], corners[0]).cross(v3().subVectors(corners[2], corners[0])).normalize();
+      corners.forEach((p, i) => {
+        const n = light ? light(p) : flat;
+        position.push(p.x, p.y, p.z);
+        normal.push(n.x, n.y, n.z);
+        colours[i].toArray(color, color.length);
+      });
+    },
+    build: () =>
+      new THREE.BufferGeometry()
+        .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+        .setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
+        .setAttribute('color', new THREE.Float32BufferAttribute(color, 3))
+        .setIndex(Array.from({ length: position.length / 3 }, (_, i) => i)),
+  };
+}
+
+export type Sheet = ReturnType<typeof sheet>;
+
+/** A tuft of a cushion: centre x and y, radius and height. */
+export type Tuft = [number, number, number, number];
+
+/**
+ * `middle` and `count` lower tufts round it, each `d` out, `r` wide and `h` tall plus up to
+ * `[dd, dr, dh]` more, and up to `turn` radians past its even place in the ring.
+ */
+export function tufts(middle: Tuft, count: number, turn: number, [d, r, h]: Vec, [dd, dr, dh]: Vec, rand: () => number): Tuft[] {
+  const out = [middle];
+  for (let k = 0; k < count; k++) {
+    const a = (k / count) * 2 * Math.PI + rand() * turn;
+    const at = d + dd * rand();
+    out.push([at * Math.cos(a), at * Math.sin(a), r + dr * rand(), h + dh * rand()]);
+  }
+  return out;
+}
+
+/** A low six-sided cone, `size` of the tuft wide and `height` of it tall, that fills the gaps in a tuft with shade. */
+export function core(cards: Sheet, [x, y, r, h]: Tuft, foot: THREE.Color, top: THREE.Color, size: number, height: number) {
+  const light = domed(v3(x, y, 0), v3(r, r, h), 0.3);
+  const ring = (s: number) => v3(x + size * r * Math.cos((s * Math.PI) / 3), y + size * r * Math.sin((s * Math.PI) / 3), -0.02);
+  for (let s = 0; s < 6; s++) cards.add([ring(s), ring(s + 1), v3(x, y, height * h)], [foot, foot, top], light);
 }
 
 /** Scales a model uniformly so its top is at z = 1. */

@@ -9,5 +9,5 @@
   "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 4 },
   "canary-pine": { "elevation": [900, 2200] }
  },
- "ground": ["tabaiba", "grass"]
+ "ground": {"tabaiba": {}}
 }

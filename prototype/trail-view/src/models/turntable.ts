@@ -1,15 +1,16 @@
 /**
  * The model sheet behind models.html: each model of a pack, at each level of detail, on its own
  * turntable in the toon light of the marmot scene. One canvas behind the page draws every view
- * box in turn.
+ * box in turn. Under reduced motion each view holds a still picture instead, so a full-page
+ * screenshot shows every model.
  */
 
 import * as THREE from 'three';
 import { BUILDING_KINDS, building, buildingLabel, type BuildingKind } from './buildings';
 import { PACK_NAMES, packNamed } from '../regions';
-import { plant, plantLabel, type PlantName } from './plants';
+import { animal, ANIMALS, plant, PLANTS, tree, TREES } from './library';
 import { hex, paint, soft, triangles } from './shape';
-import { LOD_RANGE_M, SEASONS, tree, treeLabel, TREE_NAMES, type Lod, type Season, type TreeName } from './trees';
+import { LOD_RANGE_M, SEASONS, type Lod, type Season } from './trees';
 
 /** Width, depth and wall height in metres for each kind on the sheet. */
 const FOOTPRINTS: Record<BuildingKind, [number, number, number?]> = {
@@ -120,14 +121,23 @@ function show(packName: string, season: Season): void {
     const [low, high] = species.elevation;
     const lods = block(forest, 'lods');
     const name = species.tree;
-    const isTree = TREE_NAMES.includes(name as TreeName);
-    heading(lods, `${isTree ? treeLabel(name as TreeName) : plantLabel(name as PlantName)} · ${species.leaf}, on ${species.cover} · ${low}–${high} m · weight ${species.weight}`, 'h3');
-    if (!isTree) cell(lods, plant(name as PlantName, season), 'shrub', 'one LOD');
-    else for (const lod of [0, 1, 2] as Lod[]) cell(lods, tree(name as TreeName, season, lod), `LOD ${lod}`, `within ${LOD_RANGE_M[lod]} m`);
+    const isTree = name in TREES;
+    heading(lods, `${(isTree ? TREES : PLANTS)[name].name} (${species.id}) · ${species.leaf}, on ${species.cover} · ${low}–${high} m · weight ${species.weight}`, 'h3');
+    if (!isTree) cell(lods, plant(name, season), 'shrub', 'one LOD');
+    else for (const lod of [0, 1, 2] as Lod[]) cell(lods, tree(name, season, lod), `LOD ${lod}`, `within ${LOD_RANGE_M[lod]} m`);
   }
   heading(sheet, 'Ground plants');
   const plants = block(sheet, 'row');
-  for (const name of kit.ground) cell(plants, plant(name, season), plantLabel(name), 'one LOD');
+  for (const { id, plant: name } of kit.ground) cell(plants, plant(name, season), `${PLANTS[name].name} (${id})`, 'one LOD');
+  if (kit.herds.length) {
+    heading(sheet, 'Herds');
+    const herds = block(sheet, 'species');
+    for (const { id, animal: name, groups, size, on } of kit.herds) {
+      const coats = block(herds, 'lods');
+      heading(coats, `${ANIMALS[name].name} (${id}) · ${groups} groups of ${size[0]}–${size[1]} · on ${on.join(', ')}`, 'h3');
+      for (const seed of [0, 1, 2]) cell(coats, animal(name, seed), `Seed ${seed}`, `${ANIMALS[name].height_m} m tall`);
+    }
+  }
   heading(sheet, `Buildings · ${kit.style.name}`);
   const town = block(sheet, 'row');
   BUILDING_KINDS.forEach((kind, i) => {
@@ -139,6 +149,7 @@ function show(packName: string, season: Season): void {
     button.setAttribute('aria-pressed', String(button.value === packName || button.value === season));
   }
   history.replaceState(null, '', `#${packName}/${season}`);
+  if (still) cells.forEach(picture);
 }
 
 const [hashKit, hashSeason] = location.hash.slice(1).split('/');
@@ -157,11 +168,26 @@ function chips(id: string, values: readonly string[], labels: (value: string) =>
     });
   }
 }
-chips('kits', PACK_NAMES, (k) => packNamed(k).name, (k) => (state.kit = k));
-chips('seasons', SEASONS, (s) => s[0].toUpperCase() + s.slice(1), (s) => (state.season = s as Season));
-show(state.kit, state.season);
+/** One cell's model on the turntable, turned `turn` radians, into the current viewport. */
+function render({ model, base, disc }: Cell, aspect: number, turn: number): void {
+  camera.aspect = aspect;
+  camera.updateProjectionMatrix();
+  model.rotation.z = 0.6 + turn;
+  model.visible = true;
+  ground.position.z = base;
+  ground.scale.setScalar(disc);
+  renderer.render(scene, camera);
+  model.visible = false;
+}
 
-const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Renders a cell once and keeps the picture in its view box. */
+function picture(cell: Cell): void {
+  const { width, height } = cell.view.getBoundingClientRect();
+  renderer.setSize(width, height, false);
+  render(cell, width / height, 0);
+  const image = cell.view.appendChild(Object.assign(document.createElement('canvas'), { width: canvas.width, height: canvas.height }));
+  image.getContext('2d')!.drawImage(canvas, 0, 0);
+}
 
 function draw(time: number): void {
   const [width, height] = [innerWidth, innerHeight];
@@ -170,19 +196,17 @@ function draw(time: number): void {
   renderer.setScissorTest(false);
   renderer.clear();
   renderer.setScissorTest(true);
-  for (const { view, model, base, disc } of cells) {
-    const r = view.getBoundingClientRect();
+  for (const cell of cells) {
+    const r = cell.view.getBoundingClientRect();
     if (r.bottom < 0 || r.top > height || r.right < 0 || r.left > width) continue;
     renderer.setViewport(r.left, height - r.bottom, r.width, r.height);
     renderer.setScissor(r.left, height - r.bottom, r.width, r.height);
-    camera.aspect = r.width / r.height;
-    camera.updateProjectionMatrix();
-    model.rotation.z = still ? 0.6 : 0.6 + time * 0.0004;
-    model.visible = true;
-    ground.position.z = base;
-    ground.scale.setScalar(disc);
-    renderer.render(scene, camera);
-    model.visible = false;
+    render(cell, r.width / r.height, time * 0.0004);
   }
 }
-renderer.setAnimationLoop(draw);
+
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+chips('kits', PACK_NAMES, (k) => packNamed(k).name, (k) => (state.kit = k));
+chips('seasons', SEASONS, (s) => s[0].toUpperCase() + s.slice(1), (s) => (state.season = s as Season));
+show(state.kit, state.season);
+if (!still) renderer.setAnimationLoop(draw);

@@ -7,7 +7,7 @@
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 }
  },
- "ground": ["grass", "moor-grass", "heather", "heather-bloom", "bracken", "bog-cotton"],
+ "ground": {"moor-grass": {}, "bracken": {}, "bog-cotton": {}},
  "herds": {
   "sheep": { "groups": 6 },
   "highland-cow": { "groups": 2, "size": [2, 6], "on": ["pasture", "rough"] }

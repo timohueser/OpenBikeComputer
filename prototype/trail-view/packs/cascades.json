@@ -6,7 +6,7 @@
   "western-hemlock": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1800], "weight": 4 },
   "western-red-cedar": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 }
  },
- "ground": ["fern", "huckleberry", "grass"],
+ "ground": {"fern": {}, "huckleberry": {}},
  "style": {
   "name": "Wood cabin",
   "pitch": [26, 36],

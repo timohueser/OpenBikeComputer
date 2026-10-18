@@ -7,15 +7,15 @@
  */
 
 import type { Habitat } from './bake';
-import type { AnimalName } from './models/animals';
 import type { BuildingStyle } from './models/buildings';
-import type { PlantName } from './models/plants';
-import type { TreeName } from './models/trees';
+import { ANIMALS, PLANTS, TREES, type Ground } from './models/library';
 import type { Weather } from './weather';
 
 export interface Species {
+  /** Its key in the pack. */
+  id: string;
   /** A tree model, or a plant model that stands as a shrub. */
-  tree: TreeName | PlantName;
+  tree: string;
   /** The OSM leaf_type it stands for, and the WorldCover class it stands on. */
   leaf: 'needleleaved' | 'broadleaved';
   cover: 'tree' | 'shrub';
@@ -87,21 +87,22 @@ export interface RegionLook {
 }
 
 /**
- * The models a region draws. In the files, trees and herds are objects keyed by species, so a pack
- * adds to its parent's or changes one, and null drops one; a species key that is not its model's
- * name names the model in `model`.
+ * The models a region draws. In the files, trees, ground plants and herds are objects keyed by
+ * species, so a pack adds to its parent's or changes one, and null drops one; a species key that is
+ * not its model's id names the model in `model`. A ground plant's entry changes what its plant
+ * file says of where it grows.
  */
 export interface Pack {
   name: string;
   trees: Species[];
-  ground: PlantName[];
+  ground: (Ground & { id: string; plant: string })[];
   style: BuildingStyle;
   /** What cottages and houses change from the style, where they differ from farms. */
   houses?: Partial<BuildingStyle>;
   /** The tree that stands in OSM orchards; without one, the pack's broadleaves do. */
-  orchard?: TreeName;
+  orchard?: string;
   /** Herds near the eye: how many groups of how many, on which habitats (on WorldCover grass without a map). */
-  herds?: { animal: AnimalName; groups: number; size: [number, number]; on: Habitat[] }[];
+  herds: { id: string; animal: string; groups: number; size: [number, number]; on: Habitat[] }[];
 }
 
 export interface Region {
@@ -175,9 +176,19 @@ export const PACK_NAMES = Object.keys(PACKS).filter((name) => name !== 'base');
 
 export function packNamed(name: string): Pack {
   const pack = resolve(PACKS, name);
-  const listed = <T>(table: unknown, key: string) =>
+  const unknown = (species: string, model: unknown) => new Error(`pack ${name}: ${species} names unknown model ${model}`);
+  const listed = <T>(table: unknown, key: string, ...models: Record<string, unknown>[]) =>
     Object.entries((table ?? {}) as Record<string, Record<string, unknown> | null>)
       .filter(([, entry]) => entry)
-      .map(([id, entry]) => ({ [key]: entry!.model ?? id, ...entry }) as T);
-  return { ...pack, trees: listed<Species>(pack.trees, 'tree'), herds: listed<NonNullable<Pack['herds']>[number]>(pack.herds, 'animal') } as unknown as Pack;
+      .map(([id, entry]) => {
+        const model = (entry!.model ?? id) as string;
+        if (!models.some((m) => model in m)) throw unknown(id, model);
+        return { id, [key]: model, ...entry } as T;
+      });
+  const trees = listed<Species>(pack.trees, 'tree', TREES, PLANTS);
+  const tall = trees.find((s) => s.cover === 'tree' && !(s.tree in TREES));
+  if (tall) throw new Error(`pack ${name}: ${tall.id} stands as a tree, but ${tall.tree} is not a tree model`);
+  if (pack.orchard !== undefined && !((pack.orchard as string) in TREES)) throw unknown('orchard', pack.orchard);
+  const ground = listed<Pack['ground'][number]>(pack.ground, 'plant', PLANTS).map((g) => ({ ...PLANTS[g.plant].ground, ...g }));
+  return { ...pack, trees, ground, herds: listed(pack.herds, 'animal', ANIMALS) } as unknown as Pack;
 }

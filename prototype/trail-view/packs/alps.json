@@ -9,7 +9,7 @@
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
   "alpenrose": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 3, "evergreen": true }
  },
- "ground": ["grass", "alpine-flowers", "bilberry"],
+ "ground": {"alpine-flowers": {}, "bilberry": {}},
  "style": {
   "name": "Chalet",
   "pitch": [18, 26],

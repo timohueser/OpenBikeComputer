@@ -2,7 +2,7 @@
  "name": "Atlantic uplands",
  "extends": "base",
  "about": "Wet, windswept hills by the Atlantic: grass, heather and moor, sheep on the hill, and one-storey cottages, rendered white, with slate roofs and a chimney at each gable.",
- "ground": ["grass", "heather", "heather-bloom"],
+ "ground": {"heather": {}, "heather-bloom": {}},
  "herds": {
   "sheep": { "groups": 10, "size": [2, 8], "on": ["pasture", "rough", "heath", "bog"] }
  },

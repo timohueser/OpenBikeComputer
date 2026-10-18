@@ -10,5 +10,5 @@
   "faya": { "model": "holm-oak", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 5, "evergreen": true },
   "codeso": { "model": "gorse", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 2000], "weight": 3 }
  },
- "ground": ["grass", "fern"]
+ "ground": {"fern": {}}
 }

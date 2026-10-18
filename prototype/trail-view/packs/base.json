@@ -2,7 +2,7 @@
  "name": "Base",
  "about": "What a place draws when no pack says more: grass, and plain houses.",
  "trees": {},
- "ground": ["grass"],
+ "ground": {"grass": {}},
  "style": {
   "name": "House",
   "pitch": [30, 40],
