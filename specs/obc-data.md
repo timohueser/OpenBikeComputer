@@ -665,7 +665,7 @@ process never started.
   `running`, `ok`, `failed` or `stopped`), each phase that it entered with its state and why it
   waits (`waiting`, see [Router ready](#router-ready)), the progress of each layer that it bakes (when its first step started, steps done of the total, and
   for a tiled layer the leaves done, the leaves that bake now and the leaves whose steps are all
-  unchanged), its fetches and steps (each `unchanged` or not), the
+  unchanged), its fetches and steps (each `unchanged` or not, with when it started and, for a step that built, its CPU time), the
   releases that it switched the target to, and its error with the code, the fix and the steps
   whose layers the store keeps. The run replaces it with one rename, at most each second while
   events come, at each phase and at the start of each fetch. A reader ignores keys that it does not
@@ -4376,6 +4376,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": "",
           "type": "string"
         },
+        "started": {
+          "default": null,
+          "description": "When it started, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version": {
           "default": "",
           "type": "string"
@@ -4395,6 +4403,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "resolved",
         "params",
+        "started",
         "bytes",
         "wall_ms",
         "error"
@@ -4420,6 +4429,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "properties": {
         "bytes_out": {
           "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cpu_ms": {
+          "default": null,
+          "description": "The CPU time of its build in this run; `null` when it did not build.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -4470,6 +4489,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "default": false,
           "type": "boolean"
         },
+        "started": {
+          "default": null,
+          "description": "When it started, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a step that the run did not start,\nsuch as an unchanged one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "step": {
           "default": "",
           "type": "string"
@@ -4503,7 +4530,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "reused",
         "unchanged",
+        "started",
         "wall_ms",
+        "cpu_ms",
         "peak_rss_bytes",
         "bytes_out",
         "reads",

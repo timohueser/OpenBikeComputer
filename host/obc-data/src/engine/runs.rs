@@ -329,7 +329,7 @@ impl Run {
             }
             Event::FetchStarted { source, version, params } => {
                 let line = format!("{} fetch started", fetched(&source, &version, &params));
-                status.fetch(source, version, params);
+                status.fetch(source, version, params).started = Some(date::timestamp(date::now()));
                 line
             }
             Event::FetchFinished { source, version, params, resolved, acquisition, bytes: size, wall_ms } => {
@@ -358,7 +358,7 @@ impl Run {
                     layer.leaves_baking.extend(leaf.clone());
                     layer.started.get_or_insert_with(|| date::timestamp(date::now()));
                 }
-                status.step(&step);
+                status.step(&step).started = Some(date::timestamp(date::now()));
                 line
             }
             Event::StepFinished { step, reused, unchanged, receipt } => {
@@ -392,6 +392,7 @@ impl Run {
                 (run_step.wall_ms, run_step.bytes_out) =
                     if unchanged { (None, None) } else { (Some(receipt.wall_ms), Some(receipt.bytes_out)) };
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
+                run_step.cpu_ms = receipt.cpu_ms.filter(|_| !reused && !unchanged);
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
                 line
             }
@@ -941,6 +942,8 @@ pub struct RunFetch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
+    /// When it started, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub started: Option<String>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
     pub wall_ms: Option<u64>,
@@ -956,8 +959,13 @@ pub struct RunStep {
     pub reused: bool,
     /// It kept its output of the serving release: its key is the key of that output.
     pub unchanged: bool,
+    /// When it started, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a step that the run did not start,
+    /// such as an unchanged one.
+    pub started: Option<String>,
     /// `null` while it runs, when it failed, and when it is unchanged.
     pub wall_ms: Option<u64>,
+    /// The CPU time of its build in this run; `null` when it did not build.
+    pub cpu_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
     pub bytes_out: Option<u64>,
     /// The inputs that it read.
@@ -1361,8 +1369,11 @@ mod tests {
         let steps: Vec<(&str, &[String])> =
             resumed.steps.iter().map(|s| (s.step.as_str(), s.users.as_slice())).collect();
         assert_eq!(steps, [("test/join", &["test/count".to_string()][..]), ("test/count", &[][..])]);
+        assert!(resumed.steps.iter().all(|step| step.started.is_some() && step.cpu_ms.is_some()), "{resumed:?}");
         let last = view(&fixture.store, &runs[0].id).unwrap();
         assert_eq!(last.status.steps[0].last_wall_ms, resumed.steps[0].wall_ms);
+        let count = last.status.steps.iter().find(|step| step.step == "test/count").unwrap();
+        assert!(count.reused && count.cpu_ms.is_none(), "a reused step has no CPU time in this run: {count:?}");
         assert_eq!(last.log.last().map(|line| &line[9..18]), Some("finished "));
         let error = view(&fixture.store, &failed.id).unwrap().status.steps[1].error.clone();
         assert_eq!(error.as_deref(), Some(&err["step `test/join`: ".len()..]));
