@@ -1,1 +1,8 @@
-{ "name": "Scandinavian Montane Birch forest and grasslands", "ecoregion": 780, "extends": "world", "leaf": "broadleaved" }
+{
+ "name": "Scandinavian Montane Birch forest and grasslands",
+ "ecoregion": 780,
+ "extends": "world",
+ "about": "Bare, rounded fjell over a belt of low mountain birch: dwarf birch, willow and crowberry heath with pale reindeer lichen between grey boulders, many lakes, late snow patches and, in the south, glaciers; gravel roads and red or dark wooden cabins. No split: the treeline falls from about 1100 m in the south to near the sea in Finnmark, but WorldCover's tree pixels already place the birch, and Sentinel-2 colour with the NDVI ramps tells lichen heath from grass. Late snow patches lie lower in the north, so a snowline that falls with latitude is a height rule asked of the coordinator, not a split.",
+ "leaf": "broadleaved",
+ "pack": "fjell"
+}
