@@ -97,6 +97,26 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
 - A spot takes 5 to 12 minutes and about 100 MB. A first bake in Baden-Württemberg or the US
   spends most of its time on the DTM.
 
+### Local Overpass
+
+Where `_sources/overpass` exists, bake.py runs every Overpass query with its `bin/osm3s_query` on
+its `db/`, without a server, and not on the public instances. Set it up once per machine, in a
+folder `$OVERPASS` on a large disk:
+
+```sh
+sudo apt install -y libexpat1-dev zlib1g-dev liblz4-dev osmium-tool
+curl -LO https://dev.overpass-api.de/releases/osm-3s_latest.tar.gz && tar xzf osm-3s_latest.tar.gz
+(cd osm-3s_v*/ && ./configure --enable-lz4 --prefix=$OVERPASS && make -j install)
+curl -LO https://download.geofabrik.de/europe-latest.osm.pbf
+osmium tags-filter europe-latest.osm.pbf w/highway w/landuse=forest,orchard,reservoir \
+  w/natural=wood,water,coastline,arete,ridge w/building w/waterway=river,stream,canal,riverbank \
+  w/barrier=wall,retaining_wall,hedge w/aerialway r/natural=water r/waterway=riverbank \
+  r/landuse=reservoir n/natural=peak,volcano -o trail-view.osm.pbf
+mkdir $OVERPASS/db && osmium cat trail-view.osm.pbf -f osm -o - |
+  $OVERPASS/bin/update_database --db-dir=$OVERPASS/db --compression-method=lz4 --map-compression-method=lz4
+ln -s $OVERPASS ~/.cache/obc/trail-view/_sources/overpass
+```
+
 ## Commands
 
 Run these in `prototype/trail-view`.
@@ -155,6 +175,8 @@ prints one JSON line with its files, the renderer, the triangles and the page er
   with the DTM on.
 - The dev server sends `*.bin.gz` with `Content-Encoding: gzip`, so the browser unpacks them.
 - OSM tags volcanoes `natural=volcano`, not `natural=peak`; the summit query asks for both.
+- The local Overpass holds only the tags of its filter. A new Overpass query in bake.py finds
+  nothing there until its tags are in the filter and the database is imported again.
 - A photograph's own coordinates can be a place tag rather than where the camera stood. Check
   that the view at the photo's point shows what the photograph shows.
 - Python checks certificates against the system trust store (`truststore`): Spain's IGN serves a

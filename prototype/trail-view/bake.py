@@ -89,6 +89,9 @@ SCOT_LIDAR = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/phase-1/dt
 BOX_M = 3000
 # Public Overpass instances, tried in turn while one is busy.
 OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
+# A local Overpass where one is installed: bin/osm3s_query and db/. It holds only the tags these
+# queries ask for (README, "Local Overpass").
+LOCAL_OVERPASS = SOURCES / "overpass"
 USER_AGENT = "OpenBikeComputer trail view prototype (https://github.com/timohueser/OpenBikeComputer)"
 
 WORLDCOVER = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif"
@@ -1288,22 +1291,29 @@ def encode(heights: np.ndarray) -> bytes:
     return pack(np.clip(np.round((heights + 500.0) * 10.0), 0, 65535).astype("<u2"))
 
 
+def answered(query: str, text: str) -> str:
+    """The text, unless it is a failed query's: that still answers, as JSON with an error remark
+    or as CSV with nothing at all."""
+    remark = json.loads(text).get("remark", "") if query.startswith("[out:json]") else "" if text.strip() else "error: no rows"
+    if "error" in remark:
+        raise http.client.HTTPException(remark)
+    return text
+
+
 def overpass(query: str) -> str:
-    """Overpass's answer, from each public instance in turn while they are busy. Busy spells last
-    many minutes, so the tries span about half an hour."""
+    """Overpass's answer: from the local Overpass where there is one, else from each public
+    instance in turn while they are busy. Busy spells last many minutes, so the tries span about
+    half an hour."""
+    if LOCAL_OVERPASS.exists():
+        return answered(query, subprocess.run([str(LOCAL_OVERPASS / "bin/osm3s_query"), f"--db-dir={LOCAL_OVERPASS / 'db'}"],
+                                              input=query, capture_output=True, text=True, check=True).stdout)
     tries = 8
     for attempt in range(tries):
         request = urllib.request.Request(OVERPASS[attempt % len(OVERPASS)], headers={"User-Agent": USER_AGENT},
                                          data=urllib.parse.urlencode({"data": query}).encode())
         try:
             with urllib.request.urlopen(request, timeout=900) as response:
-                text = response.read().decode()
-            # A query that runs out of time or memory still answers 200: JSON with an error
-            # remark, CSV with nothing at all.
-            remark = json.loads(text).get("remark", "") if query.startswith("[out:json]") else "" if text.strip() else "error: no rows"
-            if "error" in remark:
-                raise http.client.HTTPException(remark)
-            return text
+                return answered(query, response.read().decode())
         except (OSError, http.client.HTTPException) as error:
             # Busy is 429 or 500 to 504, a dropped connection, or no answer at all.
             if isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
