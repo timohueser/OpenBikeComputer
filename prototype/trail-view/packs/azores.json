@@ -1,0 +1,30 @@
+{
+ "name": "Azores",
+ "extends": "base",
+ "about": "Japanese cedar plantations and sweet pittosporum woods on the mid slopes, faya by the coasts, a few eucalyptus and maritime pines; remnant laurel forest of Azores laurel and Azores holly, with Azores juniper, Azores heather and Azores blueberry in the wet uplands up to the heath on Pico; hydrangea hedges along the roads and fields, kahili ginger and chain fern under the trees, bracken and agapanthus on the verges, heather on the upland heaths; black-and-white dairy cattle on the pastures and a few brown beef cattle; white houses with orange tile roofs and basalt trim. The vines in Pico's lava-walled currais have no model.",
+ "trees": {
+  "japanese-cedar": { "model": "western-red-cedar", "latin": "Cryptomeria japonica", "leaf": "needleleaved", "cover": "tree", "elevation": [100, 1000], "weight": 6 },
+  "sweet-pittosporum": { "model": "holm-oak", "latin": "Pittosporum undulatum", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
+  "faya": { "model": "holm-oak", "latin": "Morella faya", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "azores-laurel": { "model": "laurel", "latin": "Laurus azorica", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1000], "weight": 2 },
+  "azores-holly": { "model": "laurel", "latin": "Ilex azorica", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
+  "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "azores-juniper": { "model": "mountain-pine", "latin": "Juniperus brevifolia", "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1600], "weight": 3 },
+  "azores-heather": { "model": "holm-oak", "latin": "Erica azorica", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 2000], "weight": 4 },
+  "azores-blueberry": { "model": "hawthorn", "latin": "Vaccinium cylindraceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1200], "weight": 1 }
+ },
+ "ground": {
+  "bracken": {},
+  "heather": {},
+  "kahili-ginger": { "model": "bracken", "latin": "Hedychium gardnerianum", "on": ["tree", "shrub"], "height": [1.0, 1.8], "share": 0.15, "clumped": true },
+  "chain-fern": { "model": "fern", "latin": "Woodwardia radicans", "on": ["tree"], "height": [0.6, 1.5], "share": 0.2 },
+  "hydrangea": { "model": "alpenrose", "latin": "Hydrangea macrophylla", "on": ["grass", "shrub"], "height": [0.8, 1.6], "share": 0.03, "clumped": true },
+  "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 4, "size": [5, 30], "on": ["pasture"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 12], "on": ["pasture", "rough"] }
+ },
+ "style": "village-house"
+}

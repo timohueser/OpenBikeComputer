@@ -1,1 +1,8 @@
-{ "name": "Azores temperate mixed forests", "ecoregion": 645, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Azores temperate mixed forests",
+ "ecoregion": 645,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "azores",
+ "about": "Steep volcanic islands in the open Atlantic under a soft and often cloudy sky: bright green dairy pastures inside black basalt walls and hydrangea hedges, dark Japanese cedar plantations and pittosporum woods on the mid slopes, remnant laurel forest with Azores juniper and heather in the wet uplands, crater lakes in deep calderas such as Sete Cidades and Fogo, white houses with orange tile roofs and basalt trim, the lava-walled vineyards of Pico below its bare 2351 m cone, and the cliff-foot fajãs of São Jorge and Flores. No split: the islands lie up to 600 km apart but share one mild, wet oceanic climate, so haze, weather and grade do not change across stable geography; pasture, peat bog and heath differ in Sentinel-2 colour and the NDVI ramps, laurel forest, cedar plantations, juniper and heather and the scoria cone of Pico follow the tree elevation bands, the barren rule and the snowline, the sea cliffs and fajãs follow WorldCover and the cliffs rule, and the whole region is one subdivision (pt-20) for its houses. The orographic cloud cap at about 600 to 1000 m on every island is a height question for the weather, not an area: try mistTop and the cloud base first, then a height rule. Graciosa and Corvo lie outside the ecoregion outline."
+}
