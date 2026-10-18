@@ -1,0 +1,40 @@
+{
+ "name": "Carpathian montane forests",
+ "extends": "base",
+ "about": "Beech with silver fir and sycamore on the slopes, sessile oak, hornbeam and ash low in the valleys, Norway spruce above and in plantations, larch and Swiss stone pine at the treeline; mountain pine, green alder, dwarf juniper and Carpathian rhododendron above it; grey alder along the streams, hazel, hawthorn and juniper on the pastures; bilberry, ferns, mat-grass on the polonynas and alpine flowers; flocks of Zackel sheep, spotted cattle and horses; plastered houses, and log houses in the Hutsul villages.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 6 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1400], "weight": 3 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1500], "weight": 1 },
+  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 800], "weight": 2 },
+  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 700], "weight": 1 },
+  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 900], "weight": 1 },
+  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1300], "weight": 1 },
+  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1700], "weight": 1 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1800], "weight": 6 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
+  "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1800], "weight": 1 },
+  "swiss-stone-pine": { "model": "scots-pine", "latin": "Pinus cembra", "leaf": "needleleaved", "cover": "tree", "elevation": [1300, 1850], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1100], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 900], "weight": 1 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1, "evergreen": true },
+  "green-alder": { "model": "hawthorn", "latin": "Alnus viridis", "leaf": "broadleaved", "cover": "shrub", "elevation": [1300, 1900], "weight": 2 },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2200], "weight": 5, "evergreen": true },
+  "juniper": { "model": "mountain-pine", "latin": "Juniperus communis subsp. nana", "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2200], "weight": 1, "evergreen": true },
+  "carpathian-rhododendron": { "model": "alpenrose", "latin": "Rhododendron myrtifolium", "leaf": "broadleaved", "cover": "shrub", "elevation": [1700, 2300], "weight": 1, "evergreen": true }
+ },
+ "ground": {
+  "bilberry": {},
+  "fern": {},
+  "alpine-flowers": {},
+  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 }
+ },
+ "herds": {
+  "zackel-sheep": { "model": "sheep", "latin": "Ovis aries (Zackel)", "groups": 2, "size": [20, 80], "on": ["pasture", "rough", "heath"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Simmental)", "groups": 2, "size": [3, 15], "on": ["pasture"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 6], "on": ["pasture", "rough"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "ua": "wood-cabin", "*": "house" }
+}
