@@ -1,1 +1,8 @@
-{ "name": "Northeast Spain and Southern France Mediterranean forests", "ecoregion": 799, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Northeast Spain and Southern France Mediterranean forests",
+ "ecoregion": 799,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "catalan-med",
+ "about": "The Mediterranean hills from the Ebro to the Esterel, with the Balearic Islands, the Valencian coast, the Rhône valley almost to Lyon and the hinterland of Nice to the Roya: holm oak woods and maquis, Aleppo pine on the coastal hills, downy oak inland and to the north, cork oak, maritime pine and chestnut on the siliceous Albera, Gavarres, Maures and Esterel, kermes oak garrigue with rosemary, lavender and rockrose on the limestone; pale limestone cliffs and karst on the Montsant, the Sainte-Victoire, the Ardèche gorges and the Serra de Tramuntana, the conglomerate needles of Montserrat and the red porphyry of the Esterel; vineyards, olive and almond terraces, cypresses by the farms, and stone or rendered villages under low tile roofs. No split beyond the Valencian coast: one dry, clear summer with a sea haze covers the whole region, and the Balearic Islands share the climate of the Catalan coast, so one haze, weather and grade serve it; the greener, more deciduous Rhône valley and Ardèche, the summer straw of the garrigues and the green vineyards differ in Sentinel-2 colour and the seasonal NDVI ramps, the belts from Aleppo pine and holm oak through downy oak to black and Scots pine and beech on the Montseny, the Ports and the Ventoux take the tree elevation bands and the snowline, the bare karst takes the barren rule, IGME rock colour carries the Spanish limestone and conglomerate, and the houses go by country. The one candidate for a subregion is the Esterel, whose red porphyry crags may need their own rock colour if the Anthéor shots show them grey."
+}
