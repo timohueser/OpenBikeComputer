@@ -2,7 +2,7 @@
  "name": "Iberian sclerophyllous and semi-deciduous forests",
  "ecoregion": 793,
  "extends": "world",
- "leaf": "mixed",
+ "leaf": "broadleaved",
  "pack": "iberia",
  "about": "The interior of Iberia: the Meseta's wheat plains, vines and flat-topped páramos, the Ebro's gypsum badlands and steppe, holm and cork oak dehesas and montados from Extremadura and the Alentejo to the Sierra Morena, Jaén's sea of olives and the Douro's terraced schist slopes, green in winter and straw-gold in summer under a clear, dry sky. No split beyond the Valencian coast: the region is a plateau and its basins with no island side or coast strip of its own, its high sierras lie mostly in the neighbouring ecoregions and the few inside, such as Mágina, take the snowline; its plains, dehesas, olive groves and badlands differ in colour, rock and trees, which Sentinel-2 colour, the seasonal ramps, the barren rule, IGME geology in Spain, the tree elevation bands and the house style by country already carry."
 }

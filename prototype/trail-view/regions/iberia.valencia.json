@@ -1,6 +1,7 @@
 {
  "name": "Valencian coast",
  "extends": "iberia",
+ "leaf": "mixed",
  "where": [
   [-1.6, 37.6, 0.6, 39.6]
  ],
