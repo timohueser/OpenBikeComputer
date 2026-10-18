@@ -1,0 +1,42 @@
+{
+ "name": "Apennine deciduous montane forests",
+ "extends": "base",
+ "about": "Beech forest with silver fir, sycamore, Italian maple and whitebeam from about 900 to 1800 m; Turkey and downy oak, hop hornbeam, manna ash and sweet chestnut below it; black pine plantings on the slopes and Norway spruce plantings in the north; mountain pine on the Maiella, dwarf juniper above the trees, and common juniper, hawthorn, hazel and broom on the pastures; rush-leaved moor-grass on the limestone slopes, mat-grass and bilberry on the sandstone ridge, alpine flowers, ferns and bracken; large sheep flocks, white Marchigiana cattle, free-ranging horses, goats, and Apennine chamois on the high rock; stone villages with low terracotta roofs.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 8 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [900, 1700], "weight": 1.5 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [1000, 1700], "weight": 0.5 },
+  "black-pine": { "model": "scots-pine", "latin": "Pinus nigra", "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1600], "weight": 2 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1700], "weight": 1 },
+  "italian-maple": { "model": "sycamore-maple", "latin": "Acer opalus", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
+  "whitebeam": { "model": "hawthorn", "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 0.5 },
+  "hop-hornbeam": { "model": "sycamore-maple", "latin": "Ostrya carpinifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1300], "weight": 2 },
+  "manna-ash": { "model": "sycamore-maple", "latin": "Fraxinus ornus", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
+  "turkey-oak": { "model": "european-beech", "latin": "Quercus cerris", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 2 },
+  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
+  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 1.5 },
+  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [600, 1900], "weight": 2 },
+  "juniper": { "model": "mountain-pine", "latin": "Juniperus communis subsp. nana", "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2500], "weight": 3 },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2400], "weight": 1 },
+  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
+  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1 },
+  "common-broom": { "model": "gorse", "latin": "Cytisus scoparius", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 }
+ },
+ "ground": {
+  "alpine-flowers": {},
+  "bilberry": {},
+  "fern": {},
+  "bracken": {},
+  "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 },
+  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "rough"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Marchigiana)", "groups": 2, "size": [4, 15], "on": ["pasture"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 2, "size": [3, 12], "on": ["pasture", "rough"] },
+  "goat": { "groups": 1, "size": [3, 10], "on": ["rough", "scrub", "rock"] },
+  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [3, 12], "on": ["rock", "rough"] }
+ },
+ "style": "village-house"
+}

@@ -1,1 +1,8 @@
-{ "name": "Appenine deciduous montane forests", "ecoregion": 644, "extends": "world", "leaf": "broadleaved" }
+{
+ "name": "Appenine deciduous montane forests",
+ "ecoregion": 644,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "apennines",
+ "about": "The high beech belt of the Apennines, from the Tuscan-Emilian ridge and the Casentino forests to the Monti Sibillini, the Gran Sasso, the Maiella and the Abruzzo national park: dense beech forest from about 900 to 1800 m with patches of silver fir, Turkey oak, hop hornbeam and chestnut below it and black pine plantings on the slopes; above the trees, wide grass and dwarf juniper pastures with horses, white cattle and large sheep flocks below pale limestone peaks and scree in the centre, and bilberry heath and mat-grass on the sandstone ridge in the north; karst basins such as Campo Imperatore and the Piano Grande with their lentil and poppy fields, lakes such as Barrea, and stone villages with low terracotta roofs. No split: the whole region has one mountain climate with wet autumns, snowy winters and summer storms; the belts from oak to beech, juniper and bare rock come from the tree elevation bands, the barren rule and the snowline, the green spring and the straw-coloured late-summer pastures come from Sentinel-2 colour and seasonal NDVI ramps, and the houses come from culture by subdivision. The one candidate for a subregion is the sandstone ridge west of 12.1° E (the Tuscan-Emilian and Casentino pieces), if the Ventasso and Burraia shots show that the pale limestone rock and outcrops of the centre are wrong there."
+}
