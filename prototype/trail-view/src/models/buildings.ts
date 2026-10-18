@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { hex, random } from './shape';
 
-export type BuildingKind = 'cottage' | 'house' | 'farmhouse' | 'barn' | 'block';
+export type BuildingKind = 'cottage' | 'house' | 'farmhouse' | 'barn' | 'block' | 'church';
 
 export interface BuildingStyle {
   name: string;
@@ -57,6 +57,7 @@ const KINDS: Record<BuildingKind, Kind> = {
   farmhouse: { name: 'Farmhouse', storey: 2.8, storeys: 2, window: [0.9, 2.2], door: 1.2 },
   barn: { name: 'Barn or shed', storey: 4.2, storeys: 1, window: [0.7, 6], door: 3, opening: [0.55, 0.75] },
   block: { name: 'Block', storey: 3, storeys: 4, window: [1.4, 2.8], door: 1.6, flat: true },
+  church: { name: 'Church', storey: 6.5, storeys: 1, window: [1.2, 3.6], door: 1.8, opening: [0.3, 0.75] },
 };
 
 export const BUILDING_KINDS = Object.keys(KINDS) as BuildingKind[];
@@ -121,6 +122,9 @@ function cuts(values: number[], end: number): number[] {
 
 export function building(kind: BuildingKind, style: BuildingStyle, { width, depth, wall, pitch, seed = 1, plain = false }: Footprint): THREE.BufferGeometry {
   const k = KINDS[kind];
+  const church = kind === 'church';
+  // A church is masonry under a plain gable in any style.
+  if (church) style = { ...style, hip: 0, timber: 'none', shutters: false, chimneys: 0 };
   const rand = random(seed);
   const pick = (list: string[]) => hex(list[Math.floor(rand() * list.length)]);
   const { palette } = style;
@@ -135,8 +139,12 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
   const timber = kind === 'block' ? 'none' : kind === 'barn' && style.timber !== 'none' ? 'all' : style.timber;
   const shutters = style.shutters && kind !== 'barn';
 
-  const [L, W] = width >= depth ? [width, depth] : [depth, width];
-  const height = wall ?? k.storey * k.storeys;
+  const [length, W] = width >= depth ? [width, depth] : [depth, width];
+  // A church's tower stands at the -x end and its nave fills the rest. OSM's height and levels of
+  // a church describe its tower, so the nave's walls follow its width instead.
+  const tower = church ? Math.min(0.6 * W, length / 3) : 0;
+  const L = length - tower;
+  const height = church ? THREE.MathUtils.clamp(0.6 * W, 3, 14) : wall ?? k.storey * k.storeys;
   const storeys = Math.max(1, Math.round(height / k.storey));
   const storey = height / storeys;
   const [ww, spacing] = k.window;
@@ -181,7 +189,8 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
     const [x, y] = [L / 2 + 0.2, W / 2 + 0.2];
     out.slab([v(-x, -y, height), v(x, -y, height), v(x, y, height), v(-x, y, height)], roof, edge, soffit);
   } else {
-    const t = Math.tan(THREE.MathUtils.degToRad(pitch ?? THREE.MathUtils.lerp(style.pitch[0], style.pitch[1], rand())));
+    const degrees = pitch ?? THREE.MathUtils.lerp(style.pitch[0], style.pitch[1], rand());
+    const t = Math.tan(THREE.MathUtils.degToRad(degrees));
     const Y = W / 2 + style.eave;
     const xEnd = L / 2 + style.verge;
     const ridge = height + (W / 2) * t;
@@ -209,8 +218,37 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
       const x = s * Math.min(L / 2 - 0.6, Math.max(0, xRidge - 0.5));
       out.box(x, 0, 0.7, 0.55, ridge - 1, ridge + ROOF_THICKNESS + 0.9, chimney, plinth);
     }
+    // A steep style's tower ends in a spire, a low one's in a flat pyramid like a campanile's.
+    const spire = THREE.MathUtils.clamp(1.7 * degrees, 40, 82);
+    if (church) steeple(out, -(L + tower) / 2, tower, ridge + tower, spire, { wall: render, plinth, opening: glass, roof, edge, soffit });
   }
 
-  const geo = out.geometry();
+  const geo = out.geometry().translate(tower / 2, 0, 0);
   return width >= depth ? geo : geo.rotateZ(Math.PI / 2);
+}
+
+/** A square tower at (x, 0) with a belfry opening in each face, under a pyramid roof at `pitch` degrees. */
+function steeple(out: Faces, x: number, side: number, height: number, pitch: number, c: Record<'wall' | 'plinth' | 'opening' | 'roof' | 'edge' | 'soffit', THREE.Color>): void {
+  const h = side / 2;
+  const v = (px: number, py: number, z: number) => new THREE.Vector3(x + px, py, z);
+  const corners = [[-h, -h], [h, -h], [h, h], [-h, h]];
+  // Each face is three columns by four rows: plinth, wall, the belfry and the wall above it.
+  const us = [0, side / 4, (3 * side) / 4, side];
+  const zs = [0, PLINTH, height - (2 * side) / 3, height - side / 6, height];
+  corners.forEach(([ax, ay], i) => {
+    const [bx, by] = corners[(i + 1) % 4];
+    const at = (u: number, z: number) => v(ax + ((bx - ax) * u) / side, ay + ((by - ay) * u) / side, z);
+    for (let a = 0; a < 3; a++) {
+      for (let b = 0; b < 4; b++) {
+        const colour = b === 0 ? c.plinth : a === 1 && b === 2 ? c.opening : c.wall;
+        out.poly([at(us[a], zs[b]), at(us[a + 1], zs[b]), at(us[a + 1], zs[b + 1]), at(us[a], zs[b + 1])], colour);
+      }
+    }
+  });
+  const t = Math.tan(THREE.MathUtils.degToRad(pitch));
+  // The overhang shrinks on a steep spire, whose eaves would otherwise hang over the belfry.
+  const e = Math.min(0.3, 0.4 / t);
+  const ring = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => v(sx * (h + e), sy * (h + e), height - e * t));
+  const apex = v(0, 0, height + h * t);
+  ring.forEach((p, i) => out.slab([p, ring[(i + 1) % 4], apex], c.roof, c.edge, c.soffit));
 }

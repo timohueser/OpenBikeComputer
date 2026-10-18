@@ -21,6 +21,7 @@ const FOOTPRINTS: Record<BuildingKind, [number, number, number?]> = {
   farmhouse: [18, 13],
   barn: [12, 8],
   block: [22, 12, 12],
+  church: [22, 10],
 };
 
 const MEADOW: Record<Season, string> = { winter: '#b4b08e', spring: '#a8c46a', summer: '#a6c66d', autumn: '#b8b272' };
