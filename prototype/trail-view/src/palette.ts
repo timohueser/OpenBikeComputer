@@ -5,9 +5,8 @@
  */
 
 import * as THREE from 'three';
-import type { RegionLook } from './regions';
-
-type Ramp = [string, string, string];
+import { SEASONS } from './models/trees';
+import type { Ramp, RegionLook } from './regions';
 
 const FIXED: Record<string, Ramp> = {
   shrub: ['#7a7344', '#6b7a40', '#5a7a3a'],
@@ -66,10 +65,11 @@ export const STONE = ['#9a958a', '#8a857a', '#a8a294'];
 export const HEDGE = ['#3f5a30', '#4a6434', '#36502c'];
 
 /** The 11 class ramps for a season, as 33 colours. */
-const SEASON_NAMES = ['winter', 'spring', 'summer', 'autumn'] as const;
-
 export function ramps(season: number, deciduous: number, land?: RegionLook): THREE.Color[] {
-  const own = { ...land?.ramps, ...land?.seasons?.[SEASON_NAMES[season]] };
+  const own = Object.fromEntries(Object.entries(land?.ramps ?? {}).flatMap(([key, ramp]) => {
+    const now = Array.isArray(ramp) ? ramp : ramp?.[SEASONS[season]];
+    return now ? [[key, now]] : [];
+  }));
   const table: Seasonal = { ...SEASONAL[season], ...own };
   const fixed: typeof FIXED = { ...FIXED, ...own };
   const tree = table.needle.map((needle, i) => new THREE.Color(needle).lerp(new THREE.Color(table.broad[i]), deciduous));

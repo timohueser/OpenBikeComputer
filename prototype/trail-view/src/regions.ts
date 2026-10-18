@@ -13,7 +13,7 @@
 import { HABITATS, type Habitat } from './bake';
 import type { BuildingStyle } from './models/buildings';
 import { ANIMALS, COVERS, PLANTS, TREES, type Ground } from './models/library';
-import { SEASONS } from './models/trees';
+import { SEASONS, type Season } from './models/trees';
 import type { Weather } from './weather';
 
 /** A check returns its problems, each "key.path: what is wrong". */
@@ -103,9 +103,15 @@ const GROUND = object({
 const HERD = object({ model: text, latin: text, groups: number(1, 100), size: span(number(1, 1000), true), on: list(oneOf(...HABITATS)) });
 
 const RAMP_CLASSES = ['shrub', 'grass', 'crop', 'bare', 'built', 'moss', 'needle', 'broad'] as const;
-/** Low to high NDVI per WorldCover class; `needle` and `broad` colour woodland by its leaf. */
-type Ramps = Partial<Record<(typeof RAMP_CLASSES)[number], [string, string, string]>>;
-const RAMPS = each(RAMP_CLASSES, list(colour, 3));
+export type Ramp = [string, string, string];
+/**
+ * Low to high NDVI per WorldCover class; `needle` and `broad` colour woodland by its leaf. A class
+ * holds one ramp for the year or one per season, as winter-green Mediterranean hills need; a season
+ * it leaves out keeps palette.ts's.
+ */
+type Ramps = Partial<Record<(typeof RAMP_CLASSES)[number], Ramp | Partial<Record<Season, Ramp>>>>;
+const RAMP = list(colour, 3);
+const RAMPS = each(RAMP_CLASSES, (v, p) => (Array.isArray(v) ? RAMP(v, p) : each(SEASONS, RAMP)(v, p)));
 
 /** How the ground, sea and air read in a region. */
 export interface RegionLook {
@@ -119,10 +125,8 @@ export interface RegionLook {
   /** Width of the steps between the three light bands, and the share of smooth light kept. */
   softness: number;
   gradient: number;
-  /** Ramps that replace palette.ts's for these WorldCover classes, low NDVI to high. */
+  /** Ramps that replace palette.ts's for these WorldCover classes. A class's value replaces its parent's whole. */
   ramps?: Ramps;
-  /** Ramps for one season over `ramps`, as winter-green Mediterranean hills need. */
-  seasons?: Partial<Record<'winter' | 'spring' | 'summer' | 'autumn', Ramps>>;
   /**
    * Moorland: open ground that Sentinel-2 sees brown rather than green, painted in its own
    * colour with heather patches over a share of it. Heather plants grow there and grass does not.
@@ -169,7 +173,7 @@ const WEATHER = object({
 });
 const LOOK = object({
   snap: number(0, 1), hazeKm: number(1, 500), hazeHeight: number(100, 20_000), mistTop: number(0, 5000),
-  softness: number(0, 1), gradient: number(0, 1), ramps: RAMPS, seasons: each(SEASONS, RAMPS),
+  softness: number(0, 1), gradient: number(0, 1), ramps: RAMPS,
   moor: object({ colour, heather: colour, share: number(0, 1) }),
   speckle: object({ colour, share: number(0, 1), size_m: number(0, 50) }),
   habitats: each(HABITATS, colour), outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
@@ -290,8 +294,10 @@ export const REGION_NAMES = Object.keys(REGIONS);
 /** A region with its look and pack resolved for a spot in `country`. */
 export function regionNamed(id: string, country?: string | null): Region {
   const region = resolve(REGIONS, id) as Omit<Region, 'id' | 'chain' | 'pack'> & { pack: string };
-  const look = { ...region.look, roadLine: local(region.look.roadLine, country) };
-  return { ...region, id, chain: chain(REGIONS, id), look, pack: packNamed(region.pack, country) };
+  const ids = chain(REGIONS, id);
+  const ramps: Ramps = Object.assign({}, ...ids.map((name) => (REGIONS[name].look as RegionLook | undefined)?.ramps));
+  const look = { ...region.look, ramps, roadLine: local(region.look.roadLine, country) };
+  return { ...region, id, chain: ids, look, pack: packNamed(region.pack, country) };
 }
 
 export const PACK_NAMES = Object.keys(PACKS).filter((name) => name !== 'base');
