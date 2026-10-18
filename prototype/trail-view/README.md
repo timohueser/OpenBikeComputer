@@ -18,72 +18,7 @@ in a draft pull request from this branch.
 
 ## Linux setup
 
-One Linux machine bakes and runs the agents of the Europe tune. Plan at least 32 GB RAM and
-300 GB disk. Run the agents as a normal user, not root.
-
-1. Packages. `python3-gdal` brings `gdal_proximity.py`.
-
-   ```sh
-   sudo apt install -y git curl ca-certificates gdal-bin python3-gdal build-essential gh
-   ```
-
-2. uv:
-
-   ```sh
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-3. Node 24 LTS, Claude Code, GitHub and a git identity:
-
-   ```sh
-   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-   source ~/.nvm/nvm.sh && nvm install 24
-   npm install -g @anthropic-ai/claude-code
-   claude                      # log in, then quit
-   gh auth login
-   git config --global user.name "<name>"
-   git config --global user.email "<email>"
-   ```
-
-4. The whole repository: the page imports `builder/web`, and bake.py imports `host/obc-dem`.
-
-   ```sh
-   git clone https://github.com/timohueser/OpenBikeComputer.git
-   cd OpenBikeComputer && git checkout archive/trail-view-prototype
-   python3 tools/fixtures.py sync peak-view-photos   # the photographs of the Alps spots
-   ```
-
-5. The CDSE keys, from the Mac. Never print the file.
-
-   ```sh
-   ssh box mkdir -p .config/openbikecomputer
-   scp ~/.config/openbikecomputer/cdse-s3.env box:.config/openbikecomputer/
-   ssh box chmod 600 .config/openbikecomputer/cdse-s3.env
-   ```
-
-6. Optional, from the Mac: the bakes and source caches, about 8 GB of downloads less.
-
-   ```sh
-   ssh box mkdir -p .cache/obc/trail-view
-   rsync -a --exclude shots --exclude review ~/.cache/obc/trail-view/ box:.cache/obc/trail-view/
-   ```
-
-7. The page and headless Chromium, in `prototype/trail-view`:
-
-   ```sh
-   npm ci && npx playwright install --with-deps chromium
-   ```
-
-8. A GPU only if the machine has one: its vendor driver, then `sudo apt install -y libvulkan1
-   vulkan-tools` and `vulkaninfo --summary`. Without a GPU, add `--swiftshader` to every
-   `npm run shoot`. It renders the same picture on the CPU at about 2 s a frame.
-
-9. Smoke test, from the repository root:
-
-   ```sh
-   uv run prototype/trail-view/bake.py healy-pass
-   cd prototype/trail-view && npm run shoot -- healy-pass --time
-   ```
+The machine for the Europe tune is set up as [tune/README.md](tune/README.md#linux-setup) says.
 
 ## Spots, regions and packs
 
