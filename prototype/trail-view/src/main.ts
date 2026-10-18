@@ -18,11 +18,8 @@ const photo = element<HTMLImageElement>('#photo');
 const compass = element('#compass');
 const status = element('#status');
 
-/**
- * Pixels per CSS pixel at most. The terrain shader is bound by fill, and a painted look keeps its
- * character a little softer: 1.5 on a 2× screen draws 44 % fewer pixels than 2.
- */
-const MAX_PIXEL_RATIO = 1.5;
+/** Pixels per CSS pixel at most: a 2× screen draws at full sharpness. */
+const MAX_PIXEL_RATIO = 2;
 const renderer = new THREE.WebGLRenderer({ canvas: element<HTMLCanvasElement>('#gl'), antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.autoClear = false;

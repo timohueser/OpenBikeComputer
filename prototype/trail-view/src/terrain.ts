@@ -80,7 +80,9 @@ const probit = (p: number) => 4.91 * (p ** 0.14 - (1 - p) ** 0.14);
 const NOISE_MEAN = 0.486;
 const NOISE_SPREAD = 0.123;
 
-const AZIMUTHS = 1536;
+// A steep face seen head-on shows the ring spacing, about 0.67 % of the range: 20 m at 3 km, where
+// the national DTM has 5 to 10 m texels. Coarser rings smear crags and gullies.
+const AZIMUTHS = 3072;
 const WEDGES = 32;
 const PER_WEDGE = AZIMUTHS / WEDGES;
 const WEDGE_DEG = 360 / WEDGES;
@@ -88,7 +90,7 @@ const R0 = 1;
 // The last level's inscribed circle, so every fragment has data and none is discarded: a
 // discard turns off the GPU's hidden-surface removal, and the terrain shader is costly.
 const R1 = 320_000;
-const RINGS = 950;
+const RINGS = 1900;
 const Q = (R1 / R0) ** (1 / (RINGS - 1));
 
 /**
