@@ -57,6 +57,19 @@ const state = {
   yaw: 0,
   pitch: 0,
   vfov: 60,
+  /** A false-colour view of one input, 0 for none. */
+  debug: 0,
+};
+/** The views of `debugColour` in shaders.ts. */
+const DEBUG_VIEWS = {
+  off: 0,
+  'WorldCover class': 1,
+  'NDVI (red), annual max (green)': 2,
+  barren: 3,
+  'steep (red), skirt (blue)': 4,
+  habitat: 5,
+  'snow (red below the snowline)': 6,
+  water: 7,
 };
 const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
 const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', rmsDtm: '–', rmsGlo30: '–', limit: '–', peaks: '–', bytes: '–', triangles: '–', frame: '–' };
@@ -142,7 +155,7 @@ async function seasonChanged(): Promise<void> {
   if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
   const colour = await quarters.get(season)!;
   if (loaded?.bake !== bake || Object.keys(SEASONS).indexOf(state.season) !== season) return;
-  terrain.setColour(colour.data, bake.meta.s2_levels);
+  terrain.setColour(colour.data, bake.meta.s2_levels, bake.meta.barren_median?.[season]);
   readout.colour = `${(colour.bytes / 1e6).toFixed(1)} MB for this season`;
   requestRender();
 }
@@ -265,10 +278,11 @@ function render(): void {
   writeHash();
 }
 
-/** The view in the address, so a reload or a link shows it again: spot, season, hour, weather, camera. */
+/** The view in the address, so a reload or a link shows it again: spot, season, hour, weather, camera, debug view. */
 function writeHash(): void {
   const camera: Record<string, string> = photoLocked() ? { photo: '1' } : { yaw: state.yaw.toFixed(1), pitch: state.pitch.toFixed(1), vfov: state.vfov.toFixed(1) };
-  const hash = new URLSearchParams({ spot: state.preset, season: state.season.split(' ')[0], hour: state.hour.toFixed(2), weather: state.weather, ...camera }).toString();
+  const debug: Record<string, string> = state.debug ? { debug: String(state.debug) } : {};
+  const hash = new URLSearchParams({ spot: state.preset, season: state.season.split(' ')[0], hour: state.hour.toFixed(2), weather: state.weather, ...camera, ...debug }).toString();
   if (location.hash.slice(1) !== hash) history.replaceState(null, '', `#${hash}`);
 }
 
@@ -524,6 +538,7 @@ style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)').list
 style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)').listen();
 style.add(look, 'softness', 0.005, 0.3, 0.005).name('band softness').listen();
 style.add(look, 'gradient', 0, 1, 0.01).name('smooth light kept').listen();
+style.add(state, 'debug', DEBUG_VIEWS).name('debug view').onChange((view: number) => terrain.setDebug(view));
 style.onChange(() => {
   terrain.setLook(look);
   requestRender();
@@ -559,8 +574,10 @@ if (presets.some((p) => p.id === linked.get('spot'))) state.preset = linked.get(
 state.season = Object.keys(SEASONS).find((s) => s.startsWith(`${linked.get('season')} `)) ?? state.season;
 state.hour = Number(linked.get('hour') ?? state.hour);
 if (linked.get('weather')! in WEATHERS) state.weather = linked.get('weather')!;
+state.debug = Number(linked.get('debug')) || 0;
 gui.controllersRecursive().forEach((c) => c.updateDisplay());
 terrain.setLook(look);
+terrain.setDebug(state.debug);
 select(state.preset)
   .then(() => {
     if (!linked.has('yaw')) return;

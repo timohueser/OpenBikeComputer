@@ -100,6 +100,10 @@ MIN_OBSERVATIONS = 3
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes
 # from summer.
 DARK = 0.025
+# Land whose NDVI stays below this in every quarter is barren: the page's barren weight passes 0.5.
+BARREN_NDVI = 0.25
+# The page's snow test starts where every visible band reflects this much.
+SNOW_WHITE = 0.36
 
 # The near field: road surfaces on k < ROAD_LEVELS (±5 km), buildings within BUILDING_HALF_M,
 # instanced trees within TREE_RADIUS_M on a jittered grid of TREE_SPACING_M, about 1.5 trees per
@@ -591,6 +595,26 @@ def s2_level(k: int, frame: str, quarters: dict[int, list[Path]], work: Path) ->
         a = np.where(valid, 1 + np.round((ndvi + 1) / 2 * 254), 0)
         texels[q] = np.stack([*rgb, a], axis=-1).astype(np.uint8)
     return texels
+
+
+def ndvimax_levels(out: Path) -> list[float | None]:
+    """Writes ndvimax-k for k < S2_LEVELS from the colour levels: per texel the most NDVI any
+    quarter saw, in their alpha code. Returns per quarter the median luma of barren land's
+    reflectance, as the page reads it, without white that may be snow."""
+    def read(name: str, bands: int) -> np.ndarray:
+        return np.frombuffer(gzip.decompress((out / name).read_bytes()), np.uint8).reshape(SIZE, SIZE, bands)
+
+    lumas = {q: [] for q in range(1, 5)}
+    for k in range(S2_LEVELS):
+        quarters = {q: read(f"s2-q{q}-{k}.bin.gz", 4) for q in range(1, 5)}
+        most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
+        (out / f"ndvimax-{k}.bin.gz").write_bytes(pack(most))
+        barren = (read(f"class-{k}.bin.gz", 2)[..., 1] < 128) & (most > 0) & ((most - 1.0) / 127 - 1 < BARREN_NDVI)
+        for q, texels in quarters.items():
+            refl = (texels[..., :3] / 255.0) ** 2.2
+            keep = barren & (texels[..., 3] > 0) & (refl.min(axis=-1) < SNOW_WHITE)
+            lumas[q].append(refl[keep] @ (0.3, 0.59, 0.11))
+    return [round(float(np.median(np.concatenate(v))), 4) if sum(map(len, v)) else None for v in lumas.values()]
 
 
 def road_surface(tags: dict) -> str | None:
@@ -1512,6 +1536,8 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
                     (out / f"s2-q{q}-{k}.bin.gz").write_bytes(blob)
                     sizes.append((k, f"s2-q{q}", len(blob)))
                 print(f"  colour level {k}", flush=True)
+        barren_median = ndvimax_levels(out)
+        sizes += [(k, "ndvimax", (out / f"ndvimax-{k}.bin.gz").stat().st_size) for k in range(S2_LEVELS)]
 
     trees = scatter_trees(classes0, road0, water0[..., 0], canopy0, leaf_grid(forests), region["leaf"])
     trees = np.concatenate([trees, orchard_trees(orchards)])
@@ -1565,7 +1591,7 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
     above = preset.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
+                dtm=dtm, s2_levels=S2_LEVELS, barren_median=barren_median, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
                 credits=credits)
     if "photo_source" in preset:
@@ -1579,7 +1605,7 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
         print(f"{row[0]!s:>5} {row[1]:>6} {row[2]:>10,}")
     print(f"{'':>5} {'total':>6} {sum(row[2] for row in sizes):>10,}")
     season = sum(row[2] for row in sizes
-                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3", "rock", "habitat", "walls"))
+                 if row[1] in ("h", "class", "road", "water", "canopy", "trees", "buildings", "peaks", "s2-q3", "ndvimax", "rock", "habitat", "walls"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 

@@ -60,6 +60,8 @@ export interface RegionLook {
   habitats?: Partial<Record<Habitat, string>>;
   /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */
   outcrops: number;
+  /** Where the satellite sees green, a slope stays turf up to this many degrees; rock that holds steeper keeps its own angle. */
+  turf_deg: number;
   /** Slabs and outcrops, and cliff walls unless `cliff` says otherwise. */
   rock: string;
   /** Cliff walls: often darker than sunlit slabs, shaded, wet and lichened. */

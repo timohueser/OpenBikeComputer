@@ -165,6 +165,11 @@ const COLOUR = /* glsl */ `
 uniform sampler2DArray classes;
 uniform sampler2DArray s2;
 uniform float s2Levels;
+// The most NDVI any quarter saw, in the s2 alpha code, for k < ndviMaxLevels.
+uniform sampler2DArray ndviMax;
+uniform float ndviMaxLevels;
+// The season's median luma of barren land's reflectance; 0 without one.
+uniform float barrenMedian;
 uniform vec3 ramps[33];
 uniform float snap;
 uniform sampler2DArray roads;
@@ -202,6 +207,8 @@ struct Ground {
   float moor;
   // Exposed rock on a land cover map, 0–1.
   float bare;
+  // Land no quarter sees green, 0–1: pumice, lava, scree and limestone, whatever WorldCover calls it.
+  float barren;
 };
 
 float luma(vec3 c) {
@@ -262,6 +269,11 @@ Ground groundOn(float k, vec2 p, float footprint) {
   bool seen = s.a > 0.5 / 255.0;
   float ndvi = seen ? (s.a * 255.0 - 1.0) / 127.0 - 1.0 : 0.45;
   float t = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);
+  float barren = 0.0;
+  if (k < ndviMaxLevels) {
+    float most = texture(ndviMax, vec3(uv, k)).r;
+    barren = most > 0.5 / 255.0 ? 1.0 - smoothstep(0.15, 0.35, (most * 255.0 - 1.0) / 127.0 - 1.0) : 0.0;
+  }
   // The four classes around p, each through its ramp, blended as a bilinear sample would be. A
   // wobble of up to half a texel turns WorldCover's 10 m stairs into brush edges.
   vec2 texel = uv * 1024.0 - 0.5;
@@ -276,10 +288,14 @@ Ground groundOn(float k, vec2 p, float footprint) {
     ivec2 o = ivec2(j & 1, j >> 1);
     vec2 cls = texelFetch(classes, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).rg;
     int index = int(cls.r * 255.0 + 0.5);
-    // Unknown ground is painted as grass.
+    // Unknown ground is painted as grass. Where the satellite looks, its snow test decides snow.
     if (index > 10) index = 2;
+    if (index == 6 && seen) index = 5;
     float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-    palette += w * ramp(index, t);
+    vec3 c = ramp(index, t);
+    // Open land no quarter sees green is bare, whatever WorldCover calls it.
+    if (index == 1 || index == 2 || index == 8 || index == 10) c = mix(c, ramp(5, t), barren);
+    palette += w * c;
     water += w * cls.g;
     tree += index == 0 ? w : 0.0;
     rough += index == 1 || index == 2 || index == 5 || index == 8 || index == 10 ? w : 0.0;
@@ -302,6 +318,9 @@ Ground groundOn(float k, vec2 p, float footprint) {
     vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-4));
     albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, snap);
     vec3 refl = pow(s.rgb, vec3(2.2));
+    // Barren ground is as light as the satellite sees it against the place's own barren ground:
+    // pumice light, lava dark.
+    if (barrenMedian > 0.0) albedo *= mix(1.0, clamp(luma(refl) / barrenMedian, 0.6, 1.6), barren);
     // Snow is as blue as it is red; white marl and gypsum are warmer.
     float bright = smoothstep(0.36, 0.5, min(refl.r, min(refl.g, refl.b))) * smoothstep(0.9, 0.97, refl.b / max(refl.r, 1e-3));
     float shaded = step(1.15 * refl.r, refl.b) * step(ndvi, 0.1) * smoothstep(0.03, 0.06, refl.b);
@@ -378,7 +397,12 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare);
+  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren);
+}
+
+/** The level whose pixel matches the screen footprint at p, with the fraction toward the next. */
+float groundLevel(vec2 p, float footprint) {
+  return min(max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0)) + DETAIL), levels - 1.0);
 }
 
 /**
@@ -386,8 +410,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
  * act as the mip chain, blended into the next one like the heights are.
  */
 Ground groundAt(vec2 p, float footprint) {
-  float kf = max(levelOf(p), log2(max(footprint / (2.0 * half0 / 1024.0), 1.0)) + DETAIL);
-  kf = min(kf, levels - 1.0);
+  float kf = groundLevel(p, footprint);
   float k = floor(kf);
   float w = max(kf - k, smoothstep(0.9, 1.0, max(abs(p.x), abs(p.y)) / (half0 * exp2(k))));
   Ground a = groundOn(k, p, footprint);
@@ -395,7 +418,7 @@ Ground groundAt(vec2 p, float footprint) {
   Ground b = groundOn(k + 1.0, p, footprint);
   return Ground(mix(a.albedo, b.albedo, w), mix(a.water, b.water, w), mix(a.tree, b.tree, w), mix(a.snow, b.snow, w),
                 mix(a.road, b.road, w), mix(a.shore, b.shore, w), mix(a.exposure, b.exposure, w), mix(a.rough, b.rough, w), mix(a.lush, b.lush, w),
-                mix(a.moor, b.moor, w), mix(a.bare, b.bare, w));
+                mix(a.moor, b.moor, w), mix(a.bare, b.bare, w), mix(a.barren, b.barren, w));
 }
 `;
 
@@ -559,6 +582,10 @@ uniform float time;
 uniform sampler2DArray rockMap;
 uniform float rockLevels;
 uniform vec3 variegated[3];
+// The cosine of the steepest slope green turf holds: the region's turf_deg.
+uniform float turf;
+// A false-colour view of one input, 0 for the painted ground (DEBUG_VIEWS in main.ts).
+uniform int debugView;
 
 in vec3 vWorld;
 in float vShadow;
@@ -602,6 +629,40 @@ vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
   if (kf > k) slope = mix(slope, texture(normals, vec3(uvOn(k + 1.0, p), k + 1.0)), kf - k);
   open = slope.b;
   return normalize(vec3(-slope.rg, 1.0));
+}
+
+// WorldCover's legend, and one colour per habitat (HABITATS in bake.ts), in sRGB.
+const vec3 CLASS_KEY[11] = vec3[](vec3(0.0, 0.39, 0.0), vec3(1.0, 0.73, 0.13), vec3(1.0, 1.0, 0.3), vec3(0.94, 0.59, 1.0),
+  vec3(0.98, 0.0, 0.0), vec3(0.71), vec3(0.94), vec3(0.0, 0.39, 0.78), vec3(0.0, 0.59, 0.63), vec3(0.0, 0.81, 0.46), vec3(0.98, 0.9, 0.63));
+const vec3 HABITAT_KEY[13] = vec3[](vec3(0.2), vec3(0.7), vec3(0.55, 0.25, 0.5), vec3(0.55, 0.4, 0.2), vec3(0.8, 0.5, 0.1),
+  vec3(0.75, 0.75, 0.3), vec3(0.3, 0.85, 0.2), vec3(0.1, 0.45, 0.1), vec3(0.0, 0.3, 0.15), vec3(1.0, 0.9, 0.6),
+  vec3(0.4, 0.7, 0.6), vec3(0.95, 0.1, 0.1), vec3(0.1, 0.3, 0.9));
+const vec3 UNKNOWN = vec3(0.45, 0.45, 0.6);
+
+/**
+ * The debug views, in sRGB: 1 WorldCover class; 2 NDVI red, its annual max green; 3 barren orange;
+ * 4 steep red, skirt blue; 5 habitat; 6 snow white, red below the snowline; 7 water, pale at the
+ * shore. Blue-grey where the bake has no such level.
+ */
+vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, float altitude) {
+  float k = floor(groundLevel(p, footprint));
+  vec2 uv = uvOn(k, p);
+  ivec3 texel = ivec3(clamp(ivec2(floor(uv * 1024.0)), ivec2(0), ivec2(1023)), int(k));
+  if (debugView == 1) {
+    int index = int(texelFetch(classes, texel, 0).r * 255.0 + 0.5);
+    return index > 10 ? UNKNOWN : CLASS_KEY[index];
+  }
+  if (debugView == 2) {
+    float now = k < s2Levels ? texture(s2, vec3(uv, k)).a : 0.0;
+    float most = k < ndviMaxLevels ? texture(ndviMax, vec3(uv, k)).r : 0.0;
+    if (now < 0.5 / 255.0) return UNKNOWN;
+    return vec3(clamp((now * 255.0 - 1.0) / 127.0 - 1.0, 0.0, 1.0), clamp((most * 255.0 - 1.0) / 127.0 - 1.0, 0.0, 1.0), 0.0);
+  }
+  if (debugView == 3) return k < ndviMaxLevels ? mix(vec3(0.15, 0.4, 0.15), vec3(1.0, 0.55, 0.1), g.barren) : UNKNOWN;
+  if (debugView == 4) return mix(mix(vec3(0.2, 0.35, 0.2), vec3(1.0, 0.25, 0.1), steep), vec3(0.2, 0.4, 1.0), skirt);
+  if (debugView == 5) return k < habitatLevels ? HABITAT_KEY[int(texelFetch(habitatMap, texel, 0).r * 255.0 + 0.5)] : UNKNOWN;
+  if (debugView == 6) return vec3(0.15) + 0.85 * vec3(g.snow, vec2(g.snow * smoothstep(snowline - 200.0, snowline, altitude)));
+  return mix(vec3(0.3, 0.27, 0.22), mix(vec3(0.6, 0.95, 1.0), vec3(0.05, 0.2, 0.65), smoothstep(0.0, 100.0, g.shore)), g.water);
 }
 
 void main() {
@@ -661,11 +722,15 @@ void main() {
   // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
   // bare only where they are near cliffs.
   float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
-  // Where the satellite sees green, a steep slope is turf and scrub on the rock, bare only past
-  // about 57°: Atlantic headlands and Alpine meadows stay green to the cliff edge.
+  // Where the satellite sees green, a steep slope is turf and scrub on the rock up to the region's
+  // turf angle at least: Atlantic headlands stay green to the cliff edge.
   float green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
-  bareFrom = mix(bareFrom, 0.55, green);
+  bareFrom = mix(bareFrom, min(bareFrom, turf), green);
   float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
+  if (debugView > 0) {
+    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt, altitude) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
+    return;
+  }
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
@@ -727,8 +792,9 @@ void main() {
     vec2 tilt = vec2(cell.z, fract(cell.x * 7.13)) - 0.5;
     n = normalize(n + vec3(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
   }
-  // Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
-  vec3 face = (rockLevels > 0.0 ? stone : cliffRock) * strata;
+  // Barren ground keeps its own colour on a steep slope, so a cinder cone is no cliff. Sea cliffs:
+  // wet and dark where the waves reach, orange lichen in the spray above.
+  vec3 face = mix(rockLevels > 0.0 ? stone : cliffRock, g.albedo, g.barren) * strata;
   // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
   // cliff reads; they fade where a pixel spans a bed.
   float along = dot(vWorld.xy, strike);

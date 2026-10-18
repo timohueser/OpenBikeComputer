@@ -31,6 +31,8 @@ export interface Meta {
   dtm: string | null;
   /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces, k < water_levels OSM water. */
   s2_levels: number;
+  /** Per quarter, the median luma of barren land's reflectance; with it, ndvimax levels for k < s2_levels. */
+  barren_median?: (number | null)[];
   road_levels: number;
   water_levels: number;
   /** The water levels' shore distance runs to this many metres. */
@@ -66,6 +68,8 @@ export interface Bake {
   glo30: Float32Array[];
   /** RG8 per texel and level: the class's palette index, and 255 on water. */
   classes: Uint8Array;
+  /** R8 per texel, k < s2_levels where meta.barren_median is set: the most NDVI any quarter saw, in their alpha code. */
+  ndvimax: Uint8Array;
   /** RGB8 per texel, k < road_levels: distance to the nearest road edge in 0.1 m, its surface code and half-width in 0.05 m. */
   roads: Uint8Array;
   /** RG8 per texel, k < water_levels: the share of the texel under OSM water, 0–255, and sqrt(shore distance / shore_reach_m). */
@@ -138,10 +142,11 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, classes, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways, bridges] = await Promise.all([
+  const [surface, glo30, classes, ndvimax, roads, water, rock, habitat, canopy, trees, buildings, walls, peaks, aerialways, bridges] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'class', meta.levels),
+    layers(base, 'ndvimax', meta.barren_median ? meta.s2_levels : 0),
     layers(base, 'road', meta.road_levels),
     layers(base, 'water', meta.water_levels),
     layers(base, 'rock', meta.rock_levels),
@@ -154,13 +159,14 @@ export async function loadBake(id: string): Promise<Bake> {
     optional(`${base}aerialways.json`),
     optional(`${base}bridges.json`),
   ]);
-  const bytes = [...surface, ...glo30, classes, roads, water, rock, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
+  const bytes = [...surface, ...glo30, classes, ndvimax, roads, water, rock, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
   return {
     meta,
     base,
     surface: surface.map((level) => level.data),
     glo30: glo30.map((level) => level.data),
     classes: classes.data,
+    ndvimax: ndvimax.data,
     roads: roads.data,
     water: water.data,
     rock: rock.data,

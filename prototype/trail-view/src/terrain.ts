@@ -167,6 +167,7 @@ export class Terrain {
   private readonly wedges: THREE.Mesh[] = [];
   private texture?: THREE.DataArrayTexture;
   private classes?: THREE.DataArrayTexture;
+  private ndvimax?: THREE.DataArrayTexture;
   private colour?: THREE.DataArrayTexture;
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
@@ -226,6 +227,11 @@ export class Terrain {
       classes: { value: null },
       s2: { value: null },
       s2Levels: { value: 0 },
+      ndviMax: { value: null },
+      ndviMaxLevels: { value: 0 },
+      barrenMedian: { value: 0 },
+      turf: { value: 0.55 },
+      debugView: { value: 0 },
       ramps: { value: Array.from({ length: 33 }, () => new THREE.Color()) },
       snap: { value: 0.4 },
       rock: { value: new THREE.Color() },
@@ -354,6 +360,11 @@ export class Terrain {
     this.classes?.dispose();
     this.classes = arrayTexture(bake.classes, size, levels, THREE.RGFormat, 'RG8');
     u.classes.value = this.classes;
+    const ndviMaxLevels = bake.meta.barren_median ? bake.meta.s2_levels : 0;
+    this.ndvimax?.dispose();
+    this.ndvimax = ndviMaxLevels ? arrayTexture(bake.ndvimax, size, ndviMaxLevels, THREE.RedFormat, 'R8') : undefined;
+    u.ndviMax.value = this.ndvimax ?? this.classes;
+    u.ndviMaxLevels.value = ndviMaxLevels;
     this.canopy?.dispose();
     this.canopy = dtm_levels ? arrayTexture(bake.canopy, size, dtm_levels, THREE.RedFormat, 'R8') : undefined;
     u.canopy.value = this.canopy ?? this.classes;
@@ -384,6 +395,7 @@ export class Terrain {
     u.heather.value.set(land.moor?.heather ?? land.rock);
     u.heatherShare.value = land.moor?.share ?? 0;
     u.outcrops.value = land.outcrops;
+    u.turf.value = Math.cos((land.turf_deg * Math.PI) / 180);
     const { grade } = land;
     u.gradeShadow.value.set(...grade.shadow);
     u.gradeLight.value.set(...grade.light);
@@ -420,12 +432,18 @@ export class Terrain {
     this.shadowsStale = this.surfaceStale = true;
   }
 
-  /** One season's Sentinel-2 levels, or none: the class palette alone. */
-  setColour(data: Uint8Array | null, levels: number): void {
+  /** One season's Sentinel-2 levels and its barren_median, or none: the class palette alone. */
+  setColour(data: Uint8Array | null, levels: number, barrenMedian?: number | null): void {
     this.colour?.dispose();
     this.colour = data ? arrayTexture(data, 1024, levels, THREE.RGBAFormat, 'RGBA8') : undefined;
     this.uniforms.s2.value = this.colour ?? this.classes;
     this.uniforms.s2Levels.value = data ? levels : 0;
+    this.uniforms.barrenMedian.value = barrenMedian ?? 0;
+  }
+
+  /** A false-colour view of one input (DEBUG_VIEWS in main.ts), 0 for none. */
+  setDebug(view: number): void {
+    this.uniforms.debugView.value = view;
   }
 
   /** The season's palette, and the altitude below which white is no snow (none in winter). */
