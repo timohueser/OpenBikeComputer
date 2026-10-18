@@ -1,0 +1,34 @@
+{
+ "name": "Madeira evergreen forests",
+ "extends": "base",
+ "about": "Laurel forest of Madeira laurel, til, vinhático and barbusano with faya; planted eucalyptus, maritime pine, Japanese cedar and sweet chestnut on the mid slopes, canary palms by the villages; tree heath and Madeira bilberry in the heath belt up to the summits, broom, gorse and pride of Madeira on the ridge and the Paul da Serra, fish-stunning spurge on the coastal cliffs; bracken on the moor, chain fern under the laurels, agapanthus on the verges; brown cattle and a few sheep on the Paul da Serra, goats on the cliffs; white and pastel houses with orange tile roofs. Bananas and vines on the low terraces have no model yet, so the pack's broadleaves stand in the orchards.",
+ "trees": {
+  "laurel": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 4 },
+  "til": { "model": "laurel", "latin": "Ocotea foetens", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 4 },
+  "vinhatico": { "model": "laurel", "latin": "Persea indica", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 2 },
+  "barbusano": { "model": "laurel", "latin": "Apollonias barbujana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "faya": { "model": "holm-oak", "latin": "Morella faya", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 3 },
+  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1100], "weight": 1 },
+  "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
+  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [200, 1600], "weight": 4 },
+  "japanese-cedar": { "model": "western-red-cedar", "latin": "Cryptomeria japonica", "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1300], "weight": 1 },
+  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 4 },
+  "madeira-bilberry": { "model": "hawthorn", "latin": "Vaccinium padifolium", "leaf": "broadleaved", "cover": "shrub", "elevation": [800, 1800], "weight": 2 },
+  "common-broom": { "model": "gorse", "latin": "Cytisus scoparius", "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1800], "weight": 3 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1600], "weight": 2 },
+  "pride-of-madeira": { "model": "tajinaste", "latin": "Echium candicans", "leaf": "broadleaved", "cover": "shrub", "elevation": [400, 1700], "weight": 0.5 },
+  "fish-stunning-spurge": { "model": "tabaiba", "latin": "Euphorbia piscatoria", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 3 }
+ },
+ "ground": {
+  "bracken": {},
+  "chain-fern": { "model": "fern", "latin": "Woodwardia radicans", "on": ["tree"], "height": [0.6, 1.5], "share": 0.2 },
+  "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 10], "on": ["pasture", "rough"] },
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough"] },
+  "goat": { "groups": 1, "size": [2, 8], "on": ["scrub", "rock"] }
+ },
+ "style": "village-house"
+}
