@@ -112,7 +112,7 @@ async function select(id: string): Promise<void> {
   if (selecting !== id) return;
   const { meta } = bake;
   // A bake from before meta.region takes the region of its spots file.
-  const region = regionNamed(meta.region ?? SPOTS.find((spot) => spot.id === id)!.region, meta.country);
+  const region = regionNamed(meta.region ?? SPOTS.find((spot) => spot.id === id)!.region, [meta.subdivision, meta.country].filter((place): place is string => !!place));
   Object.assign(state, { x: 0, y: 0 });
   terrain.setBake(bake, region);
   const area = meta.size * meta.size;

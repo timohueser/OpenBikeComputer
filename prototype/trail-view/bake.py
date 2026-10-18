@@ -169,8 +169,9 @@ GROUND_BRIDGES = {"no", "boardwalk", "low_water_crossing"}
 # region walk starts at regions/<region>.json.
 SPOTS = HERE / "spots"
 REGIONS = HERE / "regions"
-# Country borders, simplified to about a kilometre (tune/countries.py): an eye outside every one
-# takes the nearest within this reach, as a cliff top the simplified coast leaves in the sea.
+# Countries and their first-level subdivisions, simplified to about a kilometre (tune/countries.py):
+# an eye outside every one takes the nearest within this reach, as a cliff top the simplified coast
+# leaves in the sea.
 COUNTRIES = HERE / "tune/countries.json"
 COUNTRY_REACH_M = 25_000.0
 
@@ -342,23 +343,23 @@ def region_of(start: str, lat: float, lon: float) -> tuple[list[str], dict]:
     return chain, region
 
 
-def country_at(lat: float, lon: float) -> str | None:
-    """The ISO 3166-1 alpha-2 code, lower case, of the country that holds the point, else of the
-    nearest one within COUNTRY_REACH_M."""
+def place_at(places: list[dict], lat: float, lon: float) -> str | None:
+    """The lower-case ISO code of the place that holds the point, else of the nearest one within
+    COUNTRY_REACH_M."""
     nearest, reach = None, COUNTRY_REACH_M
-    for country in json.loads(COUNTRIES.read_text())["countries"]:
-        (x0, y0), (x1, y1) = np.array([pair for ring in country["rings"] for pair in zip(ring, ring[1:])]).transpose(1, 2, 0)
-        # Even-odd over every ring of the country: a hole's crossings cancel its polygon's.
+    for place in places:
+        (x0, y0), (x1, y1) = np.array([pair for ring in place["rings"] for pair in zip(ring, ring[1:])]).transpose(1, 2, 0)
+        # Even-odd over every ring of the place: a hole's crossings cancel its polygon's.
         with np.errstate(divide="ignore", invalid="ignore"):
             crossings = ((y0 > lat) != (y1 > lat)) & (lon < x0 + (lat - y0) * (x1 - x0) / (y1 - y0))
         if crossings.sum() % 2:
-            return country["iso"]
+            return place["iso"]
         # Metres on a plane through the point: close enough to tell COUNTRY_REACH_M.
         sx, sy = 111_320.0 * math.cos(math.radians(lat)), 111_320.0
         ax, ay, dx, dy = (x0 - lon) * sx, (y0 - lat) * sy, (x1 - x0) * sx, (y1 - y0) * sy
         t = np.clip(-(ax * dx + ay * dy) / np.maximum(dx * dx + dy * dy, 1e-9), 0, 1)
         if (d := float(np.hypot(ax + t * dx, ay + t * dy).min())) < reach:
-            nearest, reach = country["iso"], d
+            nearest, reach = place["iso"], d
     return nearest
 
 
@@ -1448,13 +1449,15 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
     out = CACHE / spot["id"]
     lat, lon = spot["lat"], spot["lon"]
     chain, region = region_of(spot["file"], lat, lon)
-    country, tz = country_at(lat, lon), TimezoneFinder().timezone_at(lng=lon, lat=lat)
+    places = json.loads(COUNTRIES.read_text())
+    country, subdivision = place_at(places["countries"], lat, lon), place_at(places["subdivisions"], lat, lon)
+    tz = TimezoneFinder().timezone_at(lng=lon, lat=lat)
     dtm = spot.get("dtm")
     # A typo would otherwise fail only after minutes of Overpass and warping.
     for key, known in (("dtm", {*DTM_SOURCES, *BOXED, "scot"}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
         if spot.get(key) and spot[key] not in known:
             sys.exit(f"{spot['id']}: unknown {key} {spot[key]!r}; known: {', '.join(sorted(known))}")
-    print(f"  region {chain[-1]}, country {country}, {tz}", flush=True)
+    print(f"  region {chain[-1]}, country {country}, subdivision {subdivision}, {tz}", flush=True)
     # Colour takes most of a bake's time, so a rebake keeps it while the spot stays where it was.
     s2 = {(k, q): out / f"s2-q{q}-{k}.bin.gz" for k in range(S2_LEVELS) for q in range(1, 5)}
     before = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
@@ -1673,7 +1676,8 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 levels=LEVELS, size=SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
                 dtm=dtm, s2_levels=S2_LEVELS, barren_median=barren_median, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 rock_levels=ROCK_LEVELS if geology else 0, habitat_levels=HABITAT_LEVELS if habitats else 0,
-                region=chain[-1], chain=chain, country=country, tz=tz, credits=credits)
+                region=chain[-1], chain=chain, country=country, subdivision=subdivision, tz=tz,
+                credits=credits)
     if "photo_source" in spot:
         shutil.copyfile(spot["photo_source"], out / "photo.jpg")
         meta["photo"] = spot["photo"]

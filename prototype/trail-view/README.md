@@ -14,7 +14,7 @@ in a draft pull request from this branch.
 | `packs/`, `styles/` | Asset packs (the trees, plants, herds and house style a region draws) and the shared house styles |
 | `src/models/` | One file per tree, plant and animal model, and the building kinds |
 | `index.html`, `models.html`, `src/` | The view and the model sheet: Vite, TypeScript and three.js |
-| `tune/` | The Europe tune: its instructions ([tune/README.md](tune/README.md)), the baseline ecoregions and country borders with the scripts that make them, and the commands below |
+| `tune/` | The Europe tune: its instructions ([tune/README.md](tune/README.md)), the baseline ecoregions and the borders of countries and their subdivisions, with the scripts that make them, and the commands below |
 
 ## Linux setup
 
@@ -41,9 +41,10 @@ north]` or rings of `[lon, lat]`. The walk steps into the subregion that holds t
 on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`.
 
 bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root first), `country`
-(lower-case ISO 3166-1 code from `tune/countries.json`, else the nearest country within 25 km) and
-`tz` (from timezonefinder). The page draws `meta.region` for `meta.country` at the clock of
-`meta.tz`. An older bake has none of them: it takes its spots file's region and UTC.
+(lower-case ISO 3166-1 code from `tune/countries.json`, else the nearest country within 25 km),
+`subdivision` (the country's first level from the same file, such as `es-ga` or `gr-l`) and `tz`
+(from timezonefinder). The page draws `meta.region` for that place at the clock of `meta.tz`. An
+older bake has none of them: it takes its spots file's region and UTC.
 
 | Region key | What it sets |
 |---|---|
@@ -59,7 +60,9 @@ whose key is not a model id names its `model`; a stand-in also gives its own spe
 Trees go by leaf type and elevation; a plant model with `cover: "shrub"` stands as a shrub. Herds go
 by habitat, or by the WorldCover classes a habitat stands for. An ecoregion owns its regions and
 packs; two that share a look keep a copy each. Models and house styles are shared. A pack's `style`
-and a look's `roadLine` may be a map by country, `{"ie": …, "*": …}`.
+and a look's `roadLine` may be a map by place, `{"es-ga": …, "es": …, "*": …}`: the subdivision's
+entry, else the country's, else `"*"`. Spain, France and Italy are by region (`es-ga`, `fr-occ`,
+`it-42`); the other countries by Natural Earth's first level. `tune/countries.json` lists the codes.
 
 ## Bake
 

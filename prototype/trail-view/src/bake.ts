@@ -44,6 +44,8 @@ export interface Meta {
   chain?: string[];
   /** ISO 3166-1 alpha-2 in lower case, null off every country. */
   country?: string | null;
+  /** The country's first-level subdivision, lower case as in tune/countries.json, null off every one. */
+  subdivision?: string | null;
   /** The IANA time zone at the spot. */
   tz?: string;
 }

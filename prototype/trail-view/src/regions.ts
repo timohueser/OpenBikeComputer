@@ -3,8 +3,8 @@
  * region is a ruleset: its terrain rules (which bake.py reads) and its look; it names the pack that
  * holds its models, and a pack names its house style. Each file extends a parent and inherits what
  * it does not say: objects merge, anything else replaces. bake.py picks a spot's region and writes
- * it to meta.region. A pack's `style` and a look's `roadLine` may be a map by country,
- * {"ie": …, "*": …}: the spot's country picks its entry, else "*".
+ * it to meta.region. A pack's `style` and a look's `roadLine` may be a map by place,
+ * {"es-ga": …, "es": …, "*": …}: the spot's subdivision picks its entry, else its country, else "*".
  *
  * Beside each interface stands the key table of its file object. validate() checks every file of
  * regions/, packs/, styles/ and spots/ against them: npm run check runs it, and the page at load.
@@ -48,13 +48,13 @@ const each = (names: readonly string[], check: Check) => object(Object.fromEntri
 /** Entries keyed by species, where null drops the parent's. */
 const entries = (entry: Check): Check => (v, p) =>
   !isObject(v) ? wrong(p, `${said(v)} is not an object`) : Object.entries(v).flatMap(([id, x]) => (x === null ? [] : entry(x, `${p}.${id}`)));
-/** A value, or a map by country code with a "*" entry. */
-const byCountry = (check: Check): Check => (v, p) =>
+/** A value, or a map by country or subdivision code with a "*" entry. */
+const byPlace = (check: Check): Check => (v, p) =>
   !isObject(v)
     ? check(v, p)
     : [
         ...('*' in v ? [] : wrong(p, 'has no "*" entry')),
-        ...Object.entries(v).flatMap(([c, x]) => (/^([a-z]{2}|\*)$/.test(c) ? check(x, `${p}.${c}`) : wrong(`${p}.${c}`, 'is not a country code or "*"'))),
+        ...Object.entries(v).flatMap(([c, x]) => (/^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$/.test(c) ? check(x, `${p}.${c}`) : wrong(`${p}.${c}`, 'is not a country or subdivision code or "*"'))),
       ];
 
 /** West, south, east, north. */
@@ -178,7 +178,7 @@ const LOOK = object({
   speckle: object({ colour, share: number(0, 1), size_m: number(0, 50) }),
   habitats: each(HABITATS, colour), outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
   snowline: number(0, 9000), bedding: object({ strike: number(0, 360), dip: number(0, 90) }), roads: list(colour, 6),
-  roadLine: byCountry(colour), sea: object({ deep: colour, shallow: colour }), windswept_m: number(0, 5000), swell: number(0, 360),
+  roadLine: byPlace(colour), sea: object({ deep: colour, shallow: colour }), windswept_m: number(0, 5000), swell: number(0, 360),
   grade: object({ shadow: list(number(-0.1, 0.1), 3), light: list(number(-0.1, 0.1), 3), saturation: number(0, 3) }),
   weather: each(['sunny', 'cloudy', 'rainy'], WEATHER),
 });
@@ -206,7 +206,7 @@ export interface Pack {
 
 const PACK = object({
   name: text, about: text, extends: text, trees: entries(SPECIES), ground: entries(GROUND), herds: entries(HERD),
-  style: byCountry(text), houses: text, orchard: text,
+  style: byPlace(text), houses: text, orchard: text,
 });
 const STYLE = object({
   name: text, about: text, extends: text, pitch: span(number(0, 80)), eave: number(0, 5), verge: number(0, 5), hip: number(0, 1),
@@ -285,24 +285,24 @@ function resolve(table: Record<string, Entry>, id: string): Record<string, unkno
   }, {});
 }
 
-/** A value or a map by country: the country's entry, else "*". */
-const local = <T>(value: T | Record<string, T>, country?: string | null): T =>
-  isObject(value) ? (value[country ?? '*'] ?? value['*']) : value;
+/** A value or a map by place: the entry of the first of the places it has, else "*". */
+const local = <T>(value: T | Record<string, T>, places: string[]): T =>
+  isObject(value) ? value[places.find((place) => place in value) ?? '*'] : value;
 
 export const REGION_NAMES = Object.keys(REGIONS);
 
-/** A region with its look and pack resolved for a spot in `country`. */
-export function regionNamed(id: string, country?: string | null): Region {
+/** A region with its look and pack resolved for a spot in `places`, its subdivision and country. */
+export function regionNamed(id: string, places: string[] = []): Region {
   const region = resolve(REGIONS, id) as Omit<Region, 'id' | 'chain' | 'pack'> & { pack: string };
   const ids = chain(REGIONS, id);
   const ramps: Ramps = Object.assign({}, ...ids.map((name) => (REGIONS[name].look as RegionLook | undefined)?.ramps));
-  const look = { ...region.look, ramps, roadLine: local(region.look.roadLine, country) };
-  return { ...region, id, chain: ids, look, pack: packNamed(region.pack, country) };
+  const look = { ...region.look, ramps, roadLine: local(region.look.roadLine, places) };
+  return { ...region, id, chain: ids, look, pack: packNamed(region.pack, places) };
 }
 
 export const PACK_NAMES = Object.keys(PACKS).filter((name) => name !== 'base');
 
-export function packNamed(name: string, country?: string | null): Pack {
+export function packNamed(name: string, places: string[] = []): Pack {
   const pack = resolve(PACKS, name);
   const style = (id: string) => resolve(STYLES, id) as unknown as BuildingStyle;
   const unknown = (species: string, model: unknown) => new Error(`pack ${name}: ${species} names unknown model ${model}`);
@@ -320,7 +320,7 @@ export function packNamed(name: string, country?: string | null): Pack {
   if (pack.orchard !== undefined && !((pack.orchard as string) in TREES)) throw unknown('orchard', pack.orchard);
   const ground = listed<Pack['ground'][number]>(pack.ground, 'plant', PLANTS).map((g) => ({ ...PLANTS[g.plant].ground, ...g }));
   const houses = pack.houses && style(pack.houses as string);
-  return { ...pack, id: name, trees, ground, herds: listed(pack.herds, 'animal', ANIMALS), style: style(local(pack.style as string, country)), houses } as unknown as Pack;
+  return { ...pack, id: name, trees, ground, herds: listed(pack.herds, 'animal', ANIMALS), style: style(local(pack.style as string, places)), houses } as unknown as Pack;
 }
 
 /** Kilometres from a point to the nearest of these polygons, 0 inside one. */
