@@ -63,13 +63,16 @@ SOURCES = CACHE / "_sources"
 
 LEVELS = 9
 SIZE = 1024
-# Heights lie on a finer grid than the other layers: the national DTMs hold 1 to 2 m, and at SIZE
-# a ridge 5 km away came from 10 to 20 m texels.
+# Heights lie on a finer grid than the other layers, so the k = 3 level still holds the national
+# grid's 10 m: at SIZE its texels are 20 m.
 HEIGHT_SIZE = 2048
 HALF0_M = 1250.0
 # The national DTM covers k ≤ 3, ±10 km. The owner chose it after ±5 km put the Rigidalstock
 # ridge, 4.7 km from Brunni, into the blend toward GLO-30.
 DTM_LEVELS = 4
+# The owner chose a 10 m grid, cubic from the finest national DTM, as the sweet spot of detail
+# against the data a Europe-wide grid needs. Every DTM level is read from it.
+NATIONAL_GRID_M = 10.0
 # The height above the ground the Peak View photographs were taken from. A spot can raise its
 # eye with `eye_above_ground_m`, as a lookout's deck stands above the summit rocks.
 PHONE_M = 1.6
@@ -421,9 +424,10 @@ def glo30_tiles(bbox, download: bool) -> list[str]:
 
 
 def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work: Path,
-         threads: bool = True, size: int = SIZE) -> np.ndarray:
-    """Every band of the inputs on level grid `half`, size² texels, as float32 with NODATA."""
-    out = Path(tempfile.mkdtemp(dir=work)) / "warp.tif"
+         threads: bool = True, size: int = SIZE, keep: Path | None = None) -> np.ndarray:
+    """Every band of the inputs on level grid `half`, size² texels, as float32 with NODATA; with
+    `keep`, the raster also stays there."""
+    out = keep or Path(tempfile.mkdtemp(dir=work)) / "warp.tif"
     cmd = ["gdalwarp", "-q", "-overwrite", "-t_srs", frame, "-te", str(-half), str(-half), str(half), str(half),
            "-ts", str(size), str(size), "-r", resampling, "-ot", "Float32", "-dstnodata", str(NODATA)]
     if threads:
@@ -433,7 +437,8 @@ def warp(inputs, frame: str, half: float, resampling: str, overviews: bool, work
     subprocess.run(cmd + [str(p) for p in inputs] + [str(out)], check=True, env={**os.environ, **GDAL_OPTIONS})
     with rasterio.open(out) as src:
         bands = src.read()
-    shutil.rmtree(out.parent)
+    if not keep:
+        shutil.rmtree(out.parent)
     return bands
 
 
@@ -1551,12 +1556,15 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        dtm_paths = []
+        grid = work / "national.tif"
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
             with machine_lock(f"dtm-{dtm}"):
                 dtm_paths = dtm_rasters(dtm, to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
-            if not dtm_paths:
+            if dtm_paths:
+                warp(dtm_paths, frame, half, "cubic", overviews=False, work=work,
+                     size=round(2 * half / NATIONAL_GRID_M), keep=grid)
+            else:
                 print(f"  no {dtm} DTM here: GLO-30 only", flush=True)
                 dtm = None
         centre = slice(HEIGHT_SIZE // 2 - 1, HEIGHT_SIZE // 2 + 1)
@@ -1569,7 +1577,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int) -> None:
                 origin["glo30"] = float(glo30[centre, centre].mean())
             heights = glo30
             if dtm and k < dtm_levels:
-                national = warp(dtm_paths, frame, half, "average", overviews=False, work=work, size=HEIGHT_SIZE)[0]
+                national = warp([grid], frame, half, "cubic", overviews=False, work=work, size=HEIGHT_SIZE)[0]
                 gaps = national == NODATA
                 national[gaps] = glo30[gaps]
                 if k == 0:

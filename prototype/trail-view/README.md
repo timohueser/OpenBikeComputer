@@ -83,9 +83,10 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
 - GLO-30 comes from `~/.cache/obcm/dem/` where it exists, else from the public COGs. WorldCover
   comes from its public COGs. The Sentinel-2 quarterly mosaics come from CDSE S3 with the keys in
   `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads them.
-- The DTM comes through the `host/obc-dem/reference` adapters into `_sources/<dtm>/`. `us`, `fr`
-  and `es` go in 3 km requests. A `de-bw` zip becomes GeoTIFF and its XYZ text is deleted. `scot`
-  is Scotland's LiDAR Phase 1 in 10 km squares; where it was never flown the spot is GLO-30 only.
+- The DTM comes through the `host/obc-dem/reference` adapters into `_sources/<dtm>/`. Every DTM
+  level reads one cubic 10 m grid of it. `us`, `fr` and `es` go in 3 km requests. A `de-bw` zip
+  becomes GeoTIFF and its XYZ text is deleted. `scot` is Scotland's LiDAR Phase 1 in 10 km
+  squares; where it was never flown the spot is GLO-30 only.
 - Overpass queries, each cached per position in `_sources/osm/`: highways and forests (±5 km)
   with buildings (±2.5 km); water and multipolygon water (±10 km); walls, hedges, orchards, aretes
   and ridges (±5 km); lifts (±10 km); and the coastline (±10 km). Named summits with a
@@ -97,8 +98,7 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3]
   the sea lies where it says. Where GLO-30 is the only elevation, cliff coasts are made sheer.
 - `nlcm` returns 2000 polygons in about 75 s; `habmos` is one WFS request. Third-party photographs
   download to `_sources/photos/`. Never commit them.
-- A spot takes 5 to 12 minutes and about 100 MB. A first bake in Baden-Württemberg or the US
-  spends most of its time on the DTM.
+- A first bake in Baden-Württemberg or the US spends most of its time on the DTM.
 
 ### Local Overpass
 
