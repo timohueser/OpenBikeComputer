@@ -117,11 +117,14 @@ NONE, WATER, SEA = MATERIAL["none"], MATERIAL["inland-water"], MATERIAL["sea"]
 WORLDCOVER_MATERIALS = {10: "forest", 20: "scrub", 30: "grassland", 40: "arable", 50: "built-up", 60: "sparse",
                         70: "glacier", 80: "inland-water", 90: "marsh", 95: "marsh", 100: "moss-lichen"}
 # The materials a coarser map may name more precisely: the same structure, or open ground of
-# another name. WorldCover's 10 m keeps the structure; a 100 m map only names it.
+# another name. WorldCover's 10 m keeps the structure; a 100 m map only names it. The satellite
+# finds heath on open ground (OPEN) and tells it from green grass and scrub, which a map's heath
+# or bog then leaves as they are.
 OPEN = {"grassland", "scrub", "sparse", "moss-lichen", "marsh"}
+UNJUDGED = OPEN - {"grassland", "scrub"}
 REFINES = {
     "needleleaf-forest": {"forest"}, "broadleaf-forest": {"forest"}, "mixed-forest": {"forest"},
-    "sclerophyllous-scrub": {"scrub"}, "heath": OPEN, "bog": OPEN | {"heath"},
+    "sclerophyllous-scrub": {"scrub"}, "heath": UNJUDGED, "bog": UNJUDGED | {"heath"},
     "pasture": {"grassland"}, "rough-grass": {"grassland"}, "wet-grassland": {"grassland"}, "salt-marsh": {"marsh"},
     "rice": {"arable"}, "vineyard": {"arable"}, "orchard": {"arable"}, "olive-grove": {"arable"},
     "bare-soil": {"sparse"}, "bare-rock": {"sparse"}, "scree": {"sparse", "bare-rock"}, "sand": {"sparse"},
@@ -1931,7 +1934,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
                 blob = pack(most)
                 (out / f"ndvimax-{k}.bin.gz").write_bytes(blob)
                 sizes.append((k, "ndvimax", len(blob)))
-                material = refine(material, np.where(satellite_heath(quarters, most), MATERIAL["heath"], NONE).astype(np.uint8))
+                material[satellite_heath(quarters, most) & np.isin(material, [MATERIAL[m] for m in OPEN])] = MATERIAL["heath"]
             if k < ROAD_LEVELS:
                 material = refine(material, polygons_level(forests, half))
             if (clc := clc_level(spot["id"], lat, lon, k, frame, work)).any():
