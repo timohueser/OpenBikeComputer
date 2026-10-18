@@ -213,8 +213,8 @@ own, with the breed after the species: `Bos taurus (Highland)`, `Bos taurus (Hol
 ## Frozen files
 
 During a batch, region agents do not edit `regions/world.json`, `packs/base.json`, `bake.py`,
-`src/shaders.ts`, `src/terrain.ts`, `src/nearfield.ts`, `src/palette.ts`, `src/light.ts`,
-`src/weather.ts`, `src/regions.ts` or `src/models/shape.ts`. A region agent that needs a change
+`materials.json`, `src/shaders.ts`, `src/terrain.ts`, `src/rules.ts`, `src/nearfield.ts`,
+`src/palette.ts`, `src/light.ts`, `src/weather.ts`, `src/regions.ts` or `src/models/shape.ts`. A region agent that needs a change
 asks the coordinator. The coordinator makes one shared change at a time. It renders the
 regression set and every approved spot before and after, and asks the owner.
 
