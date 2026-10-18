@@ -1,1 +1,8 @@
-{ "name": "Italian sclerophyllous and semi-deciduous forests", "ecoregion": 795, "extends": "world", "leaf": "mixed" }
+{
+ "name": "Italian sclerophyllous and semi-deciduous forests",
+ "ecoregion": 795,
+ "extends": "world",
+ "about": "The hill country of the Riviera and peninsular Italy, from Nice and Liguria through the Langhe, Tuscany, Umbria, northern Lazio and the Marche to Basilicata: olive and vine terraces, wheat and sunflower fields that turn to straw in summer, downy and Turkey oak woods, holm oak maquis and stone, maritime and Aleppo pines on the coasts, cypress rows, chestnut and beech on the volcanic and higher hills, clay badlands, and stone, brick or rendered villages on the hilltops. No split: summer straw and winter-green grass in the south, green vineyards in the Langhe and maquis on the coasts differ in Sentinel-2 colour and NDVI, chestnut and beech come with the tree bands, and houses go by country, so one haze, weather and grade serve the whole region. The one candidate for a subregion is the Po side of the Apennine watershed (Langhe, Monferrato, the Emilian foothills), whose summer haze and winter valley fog may need their own look if the La Morra shots show it.",
+ "leaf": "broadleaved",
+ "pack": "italy-med"
+}
