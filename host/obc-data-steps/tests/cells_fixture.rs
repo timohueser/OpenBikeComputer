@@ -141,7 +141,7 @@ fn land_zip(path: &Path) {
     shp.extend((record.len() as i32 / 2).to_be_bytes());
     shp.extend(record);
     let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-    let options: zip::write::FileOptions<'_, ()> = Default::default();
+    let options = zip::write::SimpleFileOptions::default();
     zip.start_file("land-polygons-split-3857/land_polygons.shp", options).unwrap();
     zip.write_all(&shp).unwrap();
     zip.finish().unwrap();
