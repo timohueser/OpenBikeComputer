@@ -1148,7 +1148,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     #[test]
     fn a_leaf_is_the_last_part_of_a_step_name_of_the_form_i_j() {
-        assert_eq!(leaf("device/coarse/0037-0033"), Some("0037-0033"));
+        assert_eq!(leaf("device/map/0037-0033"), Some("0037-0033"));
         assert_eq!(leaf("device/landmark-content"), None);
         assert_eq!(leaf("device/landmark-content/europe-alps"), None);
     }

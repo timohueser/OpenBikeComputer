@@ -1,6 +1,6 @@
 //! The device maps. Each step covers one leaf of the `2^23` grid that the region touches:
-//! `device/terrain/<i>-<j>` writes the terrain cells of the region in leaf `(i, j)`, `device/<band>/<i>-<j>`
-//! its map cells of one band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
+//! `device/terrain/<i>-<j>` writes the terrain cells of the region in leaf `(i, j)`, `device/map/<i>-<j>`
+//! its map cells of every band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
 //! and peak artifacts per network cell. No client reads the files of the intermediate steps:
 //! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
 //! (`terrain-reference/<key>`) that the terrain cells of the leaf read, and
@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
+use obc_bake::step::LAND;
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Step};
 use obc_data::prepared::{Manifest, MANIFEST};
 use obc_data::product::{read, version, BlockedLayer, Inputs, Note, Pointer, Product, Steps, Unplanned, Wanted};
@@ -20,8 +21,8 @@ use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::cell_window;
 use obc_dem::reference::TILE_LOG2;
 use obc_dem::step::GLO30;
-use obc_draw::step::LAND;
 use obc_formats::{obcm, obct};
+use obc_map_core::config::{Config, CELL_SCHEMA};
 use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
@@ -164,26 +165,23 @@ impl Device {
             }
         }
         let source_coverage = &selection.coverage;
-        let mut osm_leaves = BTreeSet::new();
+        let mut maps: BTreeMap<LeafId, LeafCells> = BTreeMap::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
-            let config =
-                obc_map_core::config::Config::parse(obc_map_core::config::CELL_SCHEMA).map_err(Unplanned::Failed)?;
-            let reads_terrain = obc_map_core::cell::has_contours(&config, &band) || band.has_nav() || band.has_poi();
             let boundary = source_coverage.boundary_cells(band.cell_log2);
             for (leaf, cells) in leaves(outlines, band.cell_log2) {
-                osm_leaves.insert(leaf);
-                let partial = cells
-                    .iter()
-                    .filter(|cell| !source_coverage.covers(**cell, &boundary))
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                steps.push(map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain));
+                let map = maps.entry(leaf).or_default();
+                let partial = cells.iter().filter(|cell| !source_coverage.covers(**cell, &boundary));
+                map.partial.extend(partial.map(ToString::to_string));
                 if band.has_nav() {
-                    network.insert(leaf, cells);
+                    network.insert(leaf, cells.clone());
                 }
+                map.bands.push((band.clone(), cells));
             }
         }
+        let config = Config::parse(CELL_SCHEMA).map_err(Unplanned::Failed)?;
+        steps.extend(maps.iter().map(|(&leaf, map)| map_cells(&config, leaf, map, &land_polygons)));
+        let osm_leaves: BTreeSet<LeafId> = maps.into_keys().collect();
         steps.extend(content.steps);
         for collection in ["landmarks", "peaks"] {
             for (&leaf, cells) in &network {
@@ -415,44 +413,44 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
     }
 }
 
-/// The map cells of one band in one leaf, from the OSM of the leaf, the land polygons and, for a
-/// band whose bytes read heights, the terrain of the leaf.
-fn map_cells(
-    band: &Band,
-    leaf: LeafId,
-    cells: &[CellId],
-    partial: Vec<String>,
-    land_polygons: &str,
-    reads_terrain: bool,
-) -> Step {
+/// The map cells of one leaf: the cells of each band that the outline touches, and the ids of
+/// those that the source coverage does not hold.
+#[derive(Default)]
+struct LeafCells {
+    bands: Vec<(Band, Vec<CellId>)>,
+    partial: BTreeSet<String>,
+}
+
+/// The map cells of every band in one leaf, from the OSM of the leaf, the land polygons and, when
+/// the bytes of a band read heights, the terrain of the leaf.
+fn map_cells(config: &Config, leaf: LeafId, map: &LeafCells, land_polygons: &str) -> Step {
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
     let osm = Input::Step { name: "device/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] };
     let mut inputs = vec![osm];
-    if !band.lods.is_empty() {
+    if map.bands.iter().any(|(band, _)| !band.lods.is_empty()) {
         inputs.push(land_polygons);
     }
-    if reads_terrain {
+    if map.bands.iter().any(|(band, _)| obc_bake::cut::reads_terrain(config, band)) {
         inputs.push(Input::step(leaf_layer("device/terrain", leaf)));
     }
+    let cells: serde_json::Map<_, _> = map
+        .bands
+        .iter()
+        .map(|(band, cells)| (band.id.clone(), cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>().into()))
+        .collect();
     Step {
         layer: &DEVICE_MAP,
-        name: leaf_layer(&format!("device/{}", band.id), leaf),
+        name: leaf_layer("device/map", leaf),
         inputs,
         options: serde_json::json!({
-            "band": band.id,
-            "partial_cells": partial,
             "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
-            "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
+            "cells": cells,
+            "partial_cells": map.partial,
         }),
-        outputs: vec!["cells".into(), "metadata".into()],
-        run: Run::Rust(if band.has_nav() || band.has_poi() {
-            &functions::NETWORK_CELLS
-        } else {
-            &functions::DRAW_CELLS
-        }),
-        // The catalog reads the metadata: a target holds it for the bake of another machine.
-        client: Client::Paths(vec!["cells".into(), "metadata".into()]),
+        outputs: vec!["cells".into()],
+        run: Run::Rust(&functions::MAP),
+        client: Client::All,
     }
 }
 
@@ -974,7 +972,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_band_reads_the_osm_of_its_leaf_the_land_and_the_terrain_when_its_bytes_have_heights() {
+    fn a_leaf_map_reads_the_osm_of_its_leaf_the_land_and_the_terrain_and_lists_every_band() {
         let temp = temp("bands");
         let store = Store::at(temp.0.join("store"));
         let (inputs, regions) = freiburg(&store);
@@ -1004,15 +1002,10 @@ pub(crate) mod tests {
             }),
             "content publishes compact source bundles only"
         );
-        assert_eq!(reads("device/coarse/0037-0032"), [osm, LAND]);
-        for band in ["mid", "fine"] {
-            assert_eq!(
-                reads(&format!("device/{band}/0037-0032")),
-                [osm, LAND, "device/terrain/0037-0032 []"],
-                "{band}"
-            );
-        }
-        assert_eq!(reads("device/network/0037-0032"), [osm, "device/terrain/0037-0032 []"]);
+        assert_eq!(reads("device/map/0037-0032"), [osm, LAND, "device/terrain/0037-0032 []"]);
+        let map = steps.iter().find(|step| step.name == "device/map/0037-0032").unwrap();
+        let bands: Vec<&String> = map.options["cells"].as_object().unwrap().keys().collect();
+        assert_eq!(bands, ["coarse", "mid", "fine", "network"]);
     }
 
     /// An extract without a Wikimedia link asks for no shared content: the content reads only the
@@ -1037,9 +1030,9 @@ pub(crate) mod tests {
         assert_eq!(reads("device/peak-content"), content);
         assert_eq!(reads("device/landmarks/0037-0032"), ["device/osm", "device/landmark-content"]);
         assert_eq!(reads("device/peaks/0037-0032"), ["device/peak-content"]);
-        let network = steps.iter().find(|step| step.name == "device/network/0037-0032").unwrap();
+        let map = steps.iter().find(|step| step.name == "device/map/0037-0032").unwrap();
         let landmarks = steps.iter().find(|step| step.name == "device/landmarks/0037-0032").unwrap();
-        assert_eq!(landmarks.options["cells"], network.options["cells"], "an artifact per network cell");
+        assert_eq!(landmarks.options["cells"], map.options["cells"]["network"], "an artifact per network cell");
     }
 
     /// The release output of `step` as it is declared, without files, at `format`.
@@ -1136,8 +1129,8 @@ pub(crate) mod tests {
         let content = |read: &String| read.ends_with("-content") || CAPTURES.contains(&read.as_str());
         let named =
             |prefix: &str| -> Vec<&Step> { steps.iter().filter(|step| step.name.starts_with(prefix)).collect() };
-        let cells = ["coarse", "mid", "fine", "network"].map(|band| format!("device/{band}/"));
-        for step in cells.iter().flat_map(|prefix| named(prefix)) {
+        assert!(!named("device/map/").is_empty());
+        for step in named("device/map/") {
             assert!(!reads(step).iter().any(content), "{}", step.name);
         }
         assert!(!named("device/terrain/").is_empty());

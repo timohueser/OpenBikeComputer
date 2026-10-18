@@ -1,5 +1,5 @@
 //! Full-map composition over independently encoded drawing and network sections.
-use obc_draw::serialize::{serialize_tree, LodLayer, Node};
+use obc_draw::serialize::{serialize_tree, LodLayer, Region};
 use obc_elevation::ElevationSource;
 use obc_formats::obcm::{LOD_ENTRY_LEN, POI_HOURS_REF_NONE};
 use obc_map_core::serialize::{
@@ -106,20 +106,19 @@ pub fn serialize_lods(
 }
 
 /// The production writer, and the streaming counterpart to [`serialize_lods`]: the same byte stream,
-/// but it builds, serializes and drops one LOD tree at a time, so peak memory is about one tree plus
-/// one LOD's chunk bytes.
+/// but it takes one encoded LOD at a time, so peak memory is about one LOD's bytes.
 ///
 /// The POI and nav section offsets are not known until every LOD is sized, so the header and a
 /// zeroed LOD table go out with placeholders, and step 5 seeks back and patches them. Returns
 /// `(bytes_written, dropped_features)`, the latter counting chunk-overflow drops so the CLI can
 /// warn.
 ///
-/// `build(i)` yields LOD `i`'s `(root, chunk_size, max_mpp)`, called once per level in order; each
-/// tree is dropped before the next call. A `None` root writes an empty region: no index, no chunk,
-/// and the single-`0` offset table a chunkless LOD needs. A cell artifact depends on that, because
-/// it writes the complete ladder with its out-of-band levels empty so that band membership never
-/// appears in the bytes, and `Index Node Count == 0` is the predicate a reader caches at mount to
-/// skip a level with no I/O at all.
+/// `build(i)` yields LOD `i`'s `(region, chunk_size, max_mpp)`, called once per level in order. A
+/// `None` region writes an empty region: no index, no chunk, and the single-`0` offset table a
+/// chunkless LOD needs. A cell artifact depends on that, because it writes the complete ladder with
+/// its out-of-band levels empty so that band membership never appears in the bytes, and
+/// `Index Node Count == 0` is the predicate a reader caches at mount to skip a level with no I/O at
+/// all.
 #[allow(clippy::too_many_arguments)]
 pub fn serialize_lods_streaming<W, F>(
     w: &mut W,
@@ -137,7 +136,7 @@ pub fn serialize_lods_streaming<W, F>(
 ) -> io::Result<(u64, usize)>
 where
     W: Write + Seek,
-    F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
+    F: FnMut(usize) -> (Option<Region>, usize, Option<f64>),
 {
     let mut dropped = 0usize;
     let schedules: Vec<_> = pois
@@ -155,12 +154,7 @@ where
     let peak_bytes = obc_pack::peak_map::serialize(peaks).map_err(io::Error::other)?;
     let mut writer = MapWriter::new(w, lod_count, styles, marker_color, global_bbox)?;
     for i in 0..lod_count {
-        let (root, chunk_size, max_mpp) = build(i);
-        let region = root.map(|root| {
-            let out = serialize_tree(&root, chunk_size);
-            drop(root);
-            out
-        });
+        let (region, chunk_size, max_mpp) = build(i);
         let bytes = region.as_ref().map(|(index, nodes, chunks, count, _)| LodBytes {
             index,
             nodes: *nodes,
@@ -179,7 +173,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obc_draw::serialize::{Feature, Kind};
+    use obc_draw::serialize::{Feature, Kind, Node};
     use obc_elevation::NullElevation;
     use obc_map_core::config::LineStyle;
     #[test]
@@ -287,7 +281,7 @@ mod tests {
                 nav,
                 &profiles,
                 &mut NullElevation,
-                |i| (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp),
+                |i| (Some(serialize_tree(&lods[i].root, lods[i].chunk_size)), lods[i].chunk_size, lods[i].max_mpp),
             )
             .unwrap();
 

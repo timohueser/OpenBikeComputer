@@ -11,8 +11,7 @@ pub static PEAK_CONTENT: Function = Function { name: "obc-pack/peak-content", ru
 pub static LANDMARKS: Function = Function { name: "obc-pack/landmarks", run: obc_pack::step::landmarks };
 pub static PEAKS: Function = Function { name: "obc-pack/peaks", run: obc_pack::step::peaks };
 pub static DEVICE_CATALOG: Function = Function { name: "obc-pack/catalog", run: obc_pack::catalog::engine::build };
-pub static NETWORK_CELLS: Function = Function { name: "obc-network/cells", run: obc_network::step::cells };
-pub static DRAW_CELLS: Function = Function { name: "obc-draw/cells", run: obc_draw::step::cells };
+pub static MAP: Function = Function { name: "obc-bake/map", run: obc_bake::step::map };
 pub static TERRAIN: Function = Function { name: "obc-dem/terrain", run: obc_dem::step::terrain };
 pub static PLANNER_TERRAIN: Function =
     Function { name: "obc-dem/planner-terrain", run: obc_dem::step::planner_terrain };
@@ -30,8 +29,7 @@ pub const FUNCTIONS: &[&Function] = &[
     &LANDMARKS,
     &PEAKS,
     &DEVICE_CATALOG,
-    &NETWORK_CELLS,
-    &DRAW_CELLS,
+    &MAP,
     &TERRAIN,
     &PLANNER_TERRAIN,
     &ROUTING,
