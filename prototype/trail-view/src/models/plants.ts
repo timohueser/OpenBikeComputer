@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { hash, hex, lump, merge, paint, place, random, ribbon, smooth, soft, tube, unit, v3, type Vec } from './shape';
+import { MOUNTAIN } from './mountain';
 import { SUCCULENTS } from './succulents';
 import type { Season } from './trees';
 
@@ -575,6 +576,7 @@ const PLANTS = {
   'bog-cotton': { name: 'Bog cotton', build: (season: Season, seed: number) => bogCotton(season, random(seed)) },
   'moor-grass': { name: 'Moor grass', build: (season: Season, seed: number) => moorGrass(season, random(seed)) },
   ...SUCCULENTS,
+  ...MOUNTAIN,
 };
 
 export type PlantName = keyof typeof PLANTS;

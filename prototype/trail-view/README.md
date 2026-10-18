@@ -26,7 +26,8 @@ uv run prototype/trail-view/bake.py hahnen
 - The national DTM (`dtm`) is fetched with the `host/obc-dem/reference` adapters into
   `~/.cache/obc/trail-view/_sources/<dtm>/`: `ch` swissALTI3D 2 m, `de-bw` LGL DGM1 (each 2 km
   zip is converted to GeoTIFF and its XYZ text deleted), `us` 3DEP at 2 m, `fr` RGE ALTI at 2 m
-  and `es` MDT05 at 5 m, the last three in 3 km requests.
+  and `es` MDT05 at 5 m, the last three in 3 km requests. `scot` is Scotland's LiDAR Phase 1 at
+  1 m, fetched in 10 km squares by bake.py; where it was never flown the place is GLO-30 only.
 - Third-party photographs download to `_sources/photos/`. They are never committed.
 - The near field comes from one Overpass query per position, cached in `_sources/osm/`: highways
   and forests with `leaf_type` over ±5 km, buildings over ±2.5 km. Road levels hold the distance

@@ -6,7 +6,7 @@
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1200], "weight": 3 },
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 5 }
  },
- "ground": ["grass", "fern"],
+ "ground": ["grass", "fern", "bilberry"],
  "orchard": "hawthorn",
  "houses": {
   "name": "Town house",

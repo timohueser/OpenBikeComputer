@@ -75,6 +75,9 @@ FR_2M = BilWmsSource("fr", "France", "RGE ALTI 2 m", 2.0, FR.licence, FR.vertica
 # latitude, so a row further from the pole can overrun a service's 2000 px cap; 3 km boxes stay
 # far below it at these resolutions.
 BOXED = {"us": US_2M, "fr": FR_2M, "es": ES}
+# Scotland's Phase 1 LiDAR DTM: 1 m GeoTIFFs in British National Grid, one per 10 km OS square,
+# on a public bucket. It was flown in patches (Glen Coe, not Torridon or Skye).
+SCOT_LIDAR = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/phase-1/dtm/27700/gridded/{}_1M_DTM_PHASE1.tif"
 BOX_M = 3000
 # Public Overpass instances, tried in turn while one is busy.
 OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
@@ -208,6 +211,7 @@ CREDITS = {
     "us": "USGS 3D Elevation Program, public domain",
     "fr": "RGE ALTI © IGN, Licence Ouverte",
     "es": "MDT05 © Instituto Geográfico Nacional, CC BY 4.0",
+    "scot": "LiDAR Phase 1 DTM, Crown copyright Scottish Government, SEPA and Scottish Water (2012), OGL v3",
     "worldcover": "ESA WorldCover 10 m 2021 v200 © ESA WorldCover project, CC BY 4.0",
     "s2": f"Contains modified Copernicus Sentinel data {S2_YEAR} (Sentinel-2 quarterly mosaics)",
     "osm": "© OpenStreetMap contributors (ODbL)",
@@ -353,6 +357,8 @@ def glo30_level(k: int, frame: str, bbox, work: Path) -> np.ndarray:
 def dtm_rasters(key: str, bbox) -> list[Path]:
     if key == "de-bw":
         return bw_rasters(bbox)
+    if key == "scot":
+        return scot_rasters(bbox)
     if key in BOXED:
         west, south, east, north = bbox
         rows = math.ceil((north - south) * 111_320 / BOX_M)
@@ -362,6 +368,25 @@ def dtm_rasters(key: str, bbox) -> list[Path]:
                  for i in range(rows) for j in range(cols)]
         return [path for box in boxes for path in BOXED[key].fetch(box, SOURCES / key)]
     return DTM_SOURCES[key].fetch(bbox, SOURCES / key)
+
+
+def os_square(e: int, n: int) -> str:
+    """The OS grid reference of the 10 km square holding British National Grid metres e, n."""
+    letters = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+    e100, n100 = e // 100_000, n // 100_000
+    first = (19 - n100) - (19 - n100) % 5 + (e100 + 10) // 5
+    second = (19 - n100) * 5 % 25 + e100 % 5
+    return f"{letters[first]}{letters[second]}{e // 10_000 % 10}{n // 10_000 % 10}"
+
+
+def scot_rasters(bbox) -> list[Path]:
+    """Scotland's LiDAR DTM tiles over the box; squares it never flew are absent."""
+    xs, ys = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True).transform(
+        [bbox[0], bbox[2], bbox[0], bbox[2]], [bbox[1], bbox[1], bbox[3], bbox[3]])
+    squares = {os_square(e, n) for e in range(int(min(xs)) // 10_000 * 10_000, int(max(xs)) + 1, 10_000)
+               for n in range(int(min(ys)) // 10_000 * 10_000, int(max(ys)) + 1, 10_000)}
+    paths = [http_download(SCOT_LIDAR.format(name), SOURCES / "scot" / f"{name}.tif", optional=True) for name in sorted(squares)]
+    return [path for path in paths if path]
 
 
 def bw_rasters(bbox) -> list[Path]:
@@ -1157,6 +1182,9 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
             dtm_paths = dtm_rasters(dtm, to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
+            if not dtm_paths:
+                print(f"  no {dtm} DTM here: GLO-30 only", flush=True)
+                dtm = None
         centre = slice(SIZE // 2 - 1, SIZE // 2 + 1)
         origin = {}
         for k in range(LEVELS):

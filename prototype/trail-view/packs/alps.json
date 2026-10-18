@@ -5,9 +5,11 @@
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 2000], "weight": 5 },
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1500], "weight": 2 },
   "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [1400, 2300], "weight": 3 },
-  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 1 }
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 1 },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
+  "alpenrose": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 3, "evergreen": true }
  },
- "ground": ["grass", "alpine-flowers"],
+ "ground": ["grass", "alpine-flowers", "bilberry"],
  "style": {
   "name": "Chalet",
   "pitch": [18, 26],

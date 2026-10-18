@@ -6,6 +6,7 @@
  ],
  "about": "North and west of the Highland Boundary Fault: tawny moor and dark crags over glens and lochs, birch and pine low down, a low grey Atlantic sky.",
  "pack": "highlands",
+ "dtm": "scot",
  "cliffs": {
   "reach_m": 35,
   "raise_m": 30
