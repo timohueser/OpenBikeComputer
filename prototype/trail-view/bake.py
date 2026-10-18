@@ -192,6 +192,14 @@ NLCM_WORDS = [("exposed rock", "rock"), ("heath", "heath"), ("bog", "bog"), ("pe
               ("coastal sediments", "sand"), ("mudflat", "sand"), ("saltmarsh", "saltmarsh"), ("artificial", "built"),
               ("buildings", "built"), ("ways", "built"), ("bare soil", "built"), ("water", "water"),
               ("lakes", "water"), ("rivers", "water")]
+# NatureScot's Habitat Map of Scotland, without overlaps or mosaics, over WFS; its EUNIS codes for
+# each habitat, the longest matching prefix winning. Woodland keeps WorldCover's trees.
+HABMOS = ("https://ogc.nature.scot/geoserver/ows", "habitatsandspecies:habmosnvccleaned",
+          "Contains NatureScot information licensed under the Open Government Licence v3.0")
+HABMOS_CODES = {"F4": "heath", "F2": "heath", "D1": "bog", "D2": "bog", "D4": "bog", "H2": "rock", "H3": "rock",
+                "B3": "rock", "E5.3": "bracken", "E5": "rough", "E1": "rough", "E3": "rough", "E4": "rough", "E2": "pasture", "I": "pasture",
+                "F3": "scrub", "F9": "scrub", "G5": "scrub", "B1": "sand", "A2.5": "saltmarsh", "C1": "water",
+                "C2": "water", "C3": "water", "J": "built"}
 # Burn order: broad covers first, so the small and linear ones they hold stay on top.
 HABITAT_ORDER = ("pasture", "rough", "heath", "bog", "bracken", "saltmarsh", "sand", "scrub", "water", "built", "rock", "hedge")
 
@@ -924,6 +932,37 @@ def nlcm(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, s
     return [(rings, habitat(value)) for rings, value in json.loads(cached.read_text())]
 
 
+def habmos(preset_id: str, lat: float, lon: float, to_wgs84) -> list[tuple[list, str]]:
+    """HabMoS polygons over the habitat levels as WGS84 rings with their habitat, cached like
+    `nlcm`. One request: the service returns up to a million features."""
+    cached = SOURCES / "habmos" / f"{preset_id}_{lat:.5f}_{lon:.5f}.json"
+    if not cached.exists():
+        half = HALF0_M * 2 ** (HABITAT_LEVELS - 1)
+        w, s, e, n = to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21)
+        query = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": HABMOS[1],
+                 "outputFormat": "application/json", "srsName": "EPSG:4326",
+                 "bbox": f"{s},{w},{n},{e},urn:ogc:def:crs:EPSG::4326"}
+        request = urllib.request.Request(f"{HABMOS[0]}?{urllib.parse.urlencode(query)}", headers={"User-Agent": USER_AGENT})
+        features = json.loads(urllib.request.urlopen(request, timeout=600).read())["features"]
+        rows = []
+        for f in features:
+            geometry = f.get("geometry") or {}
+            polygons = [geometry["coordinates"]] if geometry.get("type") == "Polygon" else geometry.get("coordinates", [])
+            rows += [[rings, f["properties"].get("HABITAT_CODE")] for rings in polygons]
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(rows))
+
+    def habitat(code: str | None) -> str:
+        matches = [prefix for prefix in HABMOS_CODES if (code or "").startswith(prefix)]
+        return HABMOS_CODES[max(matches, key=len)] if matches else "none"
+
+    return [(rings, habitat(code)) for rings, code in json.loads(cached.read_text())]
+
+
+# Land cover maps by a region's `landcover` key: the polygons, and their credit.
+LANDCOVER = {"nlcm": (nlcm, NLCM[1]), "habmos": (habmos, HABMOS[2])}
+
+
 def habitat_level(polygons: list[tuple[list, str]], to_frame, half: float) -> np.ndarray:
     """R8 on level k: the index into HABITATS of each texel, 0 where the map has none."""
     from rasterio.features import rasterize
@@ -1172,7 +1211,8 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
           f"{len(orchards)} orchards", flush=True)
     geology = GEOLOGY.get(region.get("geology"))
     units: dict[int, str] = {}
-    habitats = nlcm(preset["id"], lat, lon, to_wgs84) if region.get("landcover") == "nlcm" else []
+    landcover = LANDCOVER.get(region.get("landcover"))
+    habitats = landcover[0](preset["id"], lat, lon, to_wgs84) if landcover else []
     if habitats:
         print(f"  land cover: {len(habitats)} polygons", flush=True)
 
@@ -1304,7 +1344,7 @@ def bake(preset: dict, skip_peaks: bool, skip_colour: bool, dtm_levels: int) -> 
 
     credits = [CREDITS["glo30"]] + ([CREDITS[dtm]] if dtm else []) + [CREDITS["worldcover"], CREDITS["s2"]]
     credits += [geology[2]] if geology else []
-    credits += [NLCM[1]] if habitats else []
+    credits += [landcover[1]] if habitats else []
     if (out / "peaks.json").exists():
         credits.append(CREDITS["osm"])
 

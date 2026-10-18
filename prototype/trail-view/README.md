@@ -45,9 +45,10 @@ uv run prototype/trail-view/bake.py hahnen
   station to station only.
 - Where GLO-30 is the only elevation, the bake makes cliff coasts sheer: the sea beside land lies
   at sea level, and the land edge rises a little toward the cliff top.
-- Habitat levels (±5 km) come from the best open land cover map whose box holds the eye. Today
-  that is Ireland's National Land Cover Map 2018 only. Its feature service returns 2000 polygons
-  in about 75 s; they are cached in `_sources/nlcm/`.
+- Habitat levels (±5 km) come from the region's open land cover map (`landcover`): Ireland's
+  National Land Cover Map 2018 (`nlcm`; its feature service returns 2000 polygons in about 75 s)
+  or NatureScot's Habitat Map of Scotland (`habmos`, one WFS request, EUNIS codes). Polygons are
+  cached in `_sources/<landcover>/`.
 - In Spain, rock colour comes from IGME's 1:50 000 geological map: each unit's description picks
   the colour, and variegated units are drawn in bands.
 - The DTM covers ±10 km, about 1 GB of tiles per place. `--dtm-levels 3` stops it at ±5 km.
@@ -73,7 +74,7 @@ resolve the same files.
 | Key | What it sets |
 |---|---|
 | `tz`, `leaf`, `pack` | Time zone, default leaf type, the asset pack |
-| `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`), rock colour (`igme`) |
+| `dtm`, `landcover`, `geology` | Data sources: national DTM, fine land cover (`nlcm`, `habmos`), rock colour (`igme`) |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
 | `look` | Ramps per land cover class, moor, speckle (scattered bushes), habitat colours, outcrops, rock, cliff, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 

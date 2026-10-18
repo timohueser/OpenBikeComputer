@@ -324,7 +324,9 @@ Ground groundOn(float k, vec2 p, float footprint) {
       ivec2 o = ivec2(j & 1, j >> 1);
       int code = int(texelFetch(habitatMap, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).r * 255.0 + 0.5);
       float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-      paint += w * habitatPaint[code].a * vec4(habitatPaint[code].rgb, 1.0);
+      // Mapped rock is crag and grass ledges together: where the satellite sees green, a ledge.
+      float ledge = code == 1 ? smoothstep(0.35, 0.6, ndvi) : 0.0;
+      paint += w * habitatPaint[code].a * (1.0 - ledge) * vec4(habitatPaint[code].rgb, 1.0);
       mapped += code > 0 ? w : 0.0;
       wild += code == 2 || code == 3 ? w : 0.0;
       bare += code == 1 ? w : 0.0;

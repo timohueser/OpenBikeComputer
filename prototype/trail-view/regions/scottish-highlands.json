@@ -7,6 +7,7 @@
  "about": "North and west of the Highland Boundary Fault: tawny moor and dark crags over glens and lochs, birch and pine low down, a low grey Atlantic sky.",
  "pack": "highlands",
  "dtm": "scot",
+ "landcover": "habmos",
  "cliffs": {
   "reach_m": 35,
   "raise_m": 30
@@ -26,6 +27,17 @@
    "winter": { "grass": ["#97805a", "#8a7a52", "#71704a"] }
   },
   "moor": { "colour": "#6f5c3a", "heather": "#5e4552", "share": 0.35 },
+  "habitats": {
+   "rock": "#727068",
+   "heath": "#5f5338",
+   "bog": "#8c7348",
+   "bracken": "#7a7a3c",
+   "rough": "#8a7d4e",
+   "pasture": "#6e8445",
+   "scrub": "#55602f",
+   "sand": "#cfc4a2",
+   "saltmarsh": "#7c8a60"
+  },
   "snap": 0.8,
   "hazeKm": 18,
   "grade": { "shadow": [-0.003, 0.0, 0.008], "light": [0.005, 0.003, -0.004], "saturation": 0.95 },
