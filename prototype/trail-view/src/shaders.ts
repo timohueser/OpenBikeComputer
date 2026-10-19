@@ -900,7 +900,9 @@ void main() {
     vec2 wobble = 2.2 * (vec2(noise(vWorld.xy / 4.0), noise(vWorld.xy / 4.0 + 19.0)) - 0.5);
     vec2 q = vWorld.xy + wobble;
     vec3 cell = cells(vec2(dot(q, along) / ribs, dot(q, vec2(-along.y, along.x))), 7.0);
-    float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y);
+    // A painted slab reads flat close by: within 80 m of the spot the rock and stone models stand
+    // there instead.
+    float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y) * smoothstep(30.0, 80.0, length(vWorld.xy));
     vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
     // Close by, exposed rock is gravel between the slabs; the stones on it are models.
     if (exposed > 0.0 && footprint < 0.5) {
