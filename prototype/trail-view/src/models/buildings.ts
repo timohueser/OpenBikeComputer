@@ -27,6 +27,8 @@ export interface BuildingStyle {
   /** A wooden balcony in the shutters' colour along the front of each upper floor. */
   balconies?: boolean;
   chimneys: 0 | 1 | 2;
+  /** A church tower's top: an onion dome, else a spire as steep as the roof allows. */
+  spire?: 'onion';
   /** Storeys of a cottage or a house that OSM gives no height; by default the kind's. */
   storeys?: number;
   /** Each building takes one colour from each list. */
@@ -74,6 +76,8 @@ const GLASS = '#36424c';
 const FLAT_ROOF = '#7a766e';
 const ROOF_THICKNESS = 0.3;
 const PLINTH = 0.35;
+/** An onion dome, its lantern and its spike, bottom up: radius and height as shares of the tower's half side. */
+const ONION = [[0.55, 0], [0.8, 0.35], [0.8, 0.7], [0.55, 1.05], [0.22, 1.35], [0.1, 1.6], [0.1, 1.9], [0.2, 2.05], [0.06, 2.3], [0, 2.9]];
 /** How far a balcony stands out from its wall, and how wide a frame's posts and beams are. */
 const BALCONY_M = 0.9;
 const BEAM_M = 0.2;
@@ -241,7 +245,7 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
       out.box(x, 0, 0.7, 0.55, ridge - 1, ridge + ROOF_THICKNESS + 0.9, chimney, plinth);
     }
     // A steep style's tower ends in a spire, a low one's in a flat pyramid like a campanile's.
-    const spire = THREE.MathUtils.clamp(1.7 * degrees, 40, 82);
+    const spire = style.spire ?? THREE.MathUtils.clamp(1.7 * degrees, 40, 82);
     if (church) steeple(out, -(L + tower) / 2, tower, ridge + tower, spire, { wall: render, plinth, opening: glass, roof, edge, soffit });
   }
 
@@ -249,8 +253,8 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
   return width >= depth ? geo : geo.rotateZ(Math.PI / 2);
 }
 
-/** A square tower at (x, 0) with a belfry opening in each face, under a pyramid roof at `pitch` degrees. */
-function steeple(out: Faces, x: number, side: number, height: number, pitch: number, c: Record<'wall' | 'plinth' | 'opening' | 'roof' | 'edge' | 'soffit', THREE.Color>): void {
+/** A square tower at (x, 0) with a belfry opening in each face, under a pyramid roof at `top` degrees or an onion dome. */
+function steeple(out: Faces, x: number, side: number, height: number, top: number | 'onion', c: Record<'wall' | 'plinth' | 'opening' | 'roof' | 'edge' | 'soffit', THREE.Color>): void {
   const h = side / 2;
   const v = (px: number, py: number, z: number) => new THREE.Vector3(x + px, py, z);
   const corners = [[-h, -h], [h, -h], [h, h], [-h, h]];
@@ -267,7 +271,18 @@ function steeple(out: Faces, x: number, side: number, height: number, pitch: num
       }
     }
   });
-  const t = Math.tan(THREE.MathUtils.degToRad(pitch));
+  if (top === 'onion') {
+    // A cornice caps the tower, and the dome rises from it in rings of eight.
+    out.slab([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => v(sx * (h + 0.3), sy * (h + 0.3), height)), c.roof, c.edge, c.soffit);
+    const ring = ([r, z]: number[]) =>
+      Array.from({ length: 8 }, (_, i) => v(r * h * Math.cos((i * Math.PI) / 4), r * h * Math.sin((i * Math.PI) / 4), height + ROOF_THICKNESS + z * h));
+    ONION.slice(1).forEach((upper, k) => {
+      const [a, b] = [ring(ONION[k]), ring(upper)];
+      a.forEach((p, i) => out.poly([p, a[(i + 1) % 8], b[(i + 1) % 8], b[i]], c.roof));
+    });
+    return;
+  }
+  const t = Math.tan(THREE.MathUtils.degToRad(top));
   // The overhang shrinks on a steep spire, whose eaves would otherwise hang over the belfry.
   const e = Math.min(0.3, 0.4 / t);
   const ring = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => v(sx * (h + e), sy * (h + e), height - e * t));
