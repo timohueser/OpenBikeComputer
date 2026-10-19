@@ -39,5 +39,5 @@
   "alpine-ibex": { "model": "goat", "latin": "Capra ibex", "groups": 1, "size": [2, 6], "on": ["bare-rock", "scree"] }
  },
  "orchard": "hawthorn",
- "style": { "si": "black-forest-farmhouse", "it-21": "slate-stone-house", "it-23": "slate-stone-house", "it-25": "slate-stone-house", "ch-ti": "slate-stone-house", "fr-pac": "slate-stone-house", "*": "chalet" }
+ "style": { "si": "black-forest-farmhouse", "it-21": "slate-stone-house", "it-23": "slate-stone-house", "it-25": "slate-stone-house", "ch-ti": "slate-stone-house", "fr-pac": "slate-stone-house", "de-by": "bavarian-chalet", "at": "bavarian-chalet", "*": "chalet" }
 }
