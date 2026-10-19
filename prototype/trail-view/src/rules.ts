@@ -13,7 +13,8 @@ import { SEASONS } from './models/trees';
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names
- * one; a colour per lithology, alpha 1 where it is banded; then one texel each for the cliff
+ * one; per material the share of the satellite's hue its paint keeps; a colour per lithology,
+ * alpha 1 where it is banded; then one texel each for the cliff
  * colour (alpha 1 where the region names one), the heather (alpha its share), the speckle (alpha
  * its share), the terrain scalars (outcrops, cos turf_deg, snow_share, speckle size), the bedding
  * plane's normal (alpha the season's bare_luma, 0 for none) and the palette snap; then the sea's
@@ -21,11 +22,12 @@ import { SEASONS } from './models/trees';
  */
 export const SLOT = (() => {
   const materials = 3 * COVER_ORDER.length;
-  const lithologies = materials + MATERIALS.length;
+  const satellite = materials + MATERIALS.length;
+  const lithologies = satellite + MATERIALS.length;
   const cliff = lithologies + LITHOLOGIES.length;
   const roads = cliff + 8;
   return {
-    materials, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
+    materials, satellite, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
     sea: cliff + 6, roads, roadLine: roads + ROADS.length, count: roads + ROADS.length + 1,
   };
 })();
@@ -42,6 +44,7 @@ function packRules(regions: Region[], season: number): Float32Array {
       const yearly = look.materials?.[id]?.colour;
       const paint = typeof yearly === 'string' ? yearly : yearly?.[SEASONS[season]];
       set(SLOT.materials + i, colour(paint ?? '#000'), paint ? 1 : 0);
+      set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, 0, 0], 1);
     });
     LITHOLOGIES.forEach((id, i) => {
       const rock = look.lithology?.[id];

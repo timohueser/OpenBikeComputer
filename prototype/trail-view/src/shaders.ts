@@ -189,6 +189,7 @@ const float ROUGH[${MATERIALS.length}] = float[](${flags(ROUGH)});
 const float HARDNESS[${LITHOLOGIES.length}] = float[](${HARDNESS.map((h) => h.toFixed(3)).join(', ')});
 const int HEATH = ${MATERIALS.indexOf('heath')};
 const int SLOT_MATERIALS = ${SLOT.materials};
+const int SLOT_SATELLITE = ${SLOT.satellite};
 const int SLOT_LITHOLOGIES = ${SLOT.lithologies};
 const int SLOT_CLIFF = ${SLOT.cliff};
 const int SLOT_HEATHER = ${SLOT.heather};
@@ -374,6 +375,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
   float hardness = 0.0;
   int region = 0;
   float nearest = 0.0;
+  int material = 0;
   ivec3 cells[4];
   for (int j = 0; j < 4; j++) {
     cells[j] = ivec3(texelFetch(ground, ivec3(clamp(corner + ivec2(j & 1, j >> 1), ivec2(0), ivec2(1023)), int(k)), 0).rgb * 255.0 + 0.5);
@@ -415,6 +417,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
     if (w > nearest) {
       nearest = w;
       region = own;
+      material = cell.r;
     }
   }
   // OSM water: rivers narrower than a WorldCover pixel, and lakes, as coverage from a finer grid.
@@ -427,6 +430,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
     shore = osm.g * osm.g * shoreReach;
   }
   vec3 albedo = palette;
+  vec3 painted = paint.rgb / max(paint.a, 1e-4);
   if (seen) {
     // The satellite gives chroma only: brightness comes from the palette and the sun, because
     // the mosaics carry their own shadows.
@@ -438,8 +442,11 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
     // light, lava dark.
     float bareLuma = rule(region, SLOT_BEDDING).a;
     if (bareLuma > 0.0) albedo *= mix(1.0, clamp(luma(refl) / bareLuma, 0.6, 1.6), barren);
+    // The paint keeps its nearest material's share of the satellite's hue, at its own brightness.
+    float keep = paint.a > 0.0 ? rule(region, SLOT_SATELLITE + material).x : 0.0;
+    if (keep > 0.0) painted = mix(painted, shown * (luma(painted) / max(luma(shown), 1e-4)), keep);
   }
-  albedo = mix(albedo, paint.rgb / max(paint.a, 1e-4), paint.a * (1.0 - water));
+  albedo = mix(albedo, painted, paint.a * (1.0 - water));
 
   // A road paints where the distance to the nearest road edge is negative; the distance is linear
   // across an edge, so filtering keeps the edge sharp to a pixel. Its surface comes from the four

@@ -137,10 +137,12 @@ export interface RegionLook {
   speckle?: { colour: string; share: number; size_m: number };
   /**
    * A colour per material (materials.json), painted over its cover's ramp, for the year or per season
-   * as bracken turns rust in autumn; a material or season without one keeps the ramp. `stones`
-   * replaces the material's share of ground strewn with stones.
+   * as bracken turns rust in autumn; a material or season without one keeps the ramp. The paint keeps
+   * `satellite` (0–1) of the satellite's hue at its own brightness, so heather moor and grassy fell
+   * that one material holds still differ. `stones` replaces the material's share of ground strewn
+   * with stones.
    */
-  materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; stones?: number }>>;
+  materials?: Partial<Record<string, { colour?: string | Partial<Record<Season, string>>; satellite?: number; stones?: number }>>;
   /** A colour per lithology for slabs, crags and cliffs, drawn in red, white and green beds where `banded`. */
   lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
   /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, and how far exposed rock shows as rock, 0–1. */
@@ -185,7 +187,7 @@ const LOOK = object({
   softness: number(0, 1), gradient: number(0, 1), ramps: RAMPS,
   moor: object({ heather: colour, share: number(0, 1) }),
   speckle: object({ colour, share: number(0, 1), size_m: number(0, 50) }),
-  materials: each(MATERIALS, object({ colour: (v, p) => (typeof v === 'string' ? colour(v, p) : each(SEASONS, colour)(v, p)), stones: number(0, 1) })), lithology: each(LITHOLOGIES.slice(1), object({ colour, banded: oneOf(true) })),
+  materials: each(MATERIALS, object({ colour: (v, p) => (typeof v === 'string' ? colour(v, p) : each(SEASONS, colour)(v, p)), satellite: number(0, 1), stones: number(0, 1) })), lithology: each(LITHOLOGIES.slice(1), object({ colour, banded: oneOf(true) })),
   bare_luma: (v, p) => (Array.isArray(v) ? list(number(0, 1), 4)(v, p) : number(0, 1)(v, p)),
   outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
   snow_share: number(0, 1), bedding: object({ strike: number(0, 360), dip: number(0, 90) }), roads: list(colour, 6),
