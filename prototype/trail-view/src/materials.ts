@@ -19,7 +19,7 @@ export const HARDNESS = vocabulary.lithologies.map((l) => l.hardness);
 const code = (id: string) => MATERIALS.indexOf(id);
 /** Heath and bog: where the heather grows and the moor plants stand. */
 export const MOOR = new Set(['heath', 'bog'].map(code));
-/** Exposed rock: crag and turf ledges together, strewn with stones, where nothing is planted. */
+/** Exposed rock: crag and turf ledges together. It shows as slabs, stones and bare ground as far as the region's outcrops and the rock's hardness say. */
 export const ROCKY = new Set(['bare-rock', 'scree'].map(code));
 /** Open, unfarmed ground: slabs break through it and bushes stand on it. Pasture is cleared. */
 export const ROUGH = new Set(

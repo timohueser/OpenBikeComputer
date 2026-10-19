@@ -349,6 +349,9 @@ export class NearField {
       const { look } = kitAt(x, y);
       return look.lithology?.[LITHOLOGIES[at(bake.litho, x, y)]]?.colour ?? look.rock;
     };
+    // How far exposed rock shows as rock at x, y, 0 to 1, as the terrain's `exposed`.
+    const exposedAt = (x: number, y: number) =>
+      ROCKY.has(materialAt(x, y)) ? smooth(0, 0.6, kitAt(x, y).look.outcrops) * smooth(0.2, 0.6, HARDNESS[at(bake.litho, x, y)]) : 0;
     const groups = new Map<string, Instances>();
     // One stream of random numbers per kind of object, so placing one kind never moves another.
     let rand = random(7);
@@ -413,8 +416,9 @@ export class NearField {
         const [sx, sy] = [x + (rand() - 0.5) * SHRUB_SPACING_M, y + (rand() - 0.5) * SHRUB_SPACING_M];
         const material = materialAt(sx, sy);
         const { shrubs } = kitAt(sx, sy);
-        // Bare ground is mostly "bare or sparse vegetation": scattered shrubs, a third as dense; exposed rock holds none.
-        const share = COVER_OF[material] === 'shrub' ? SHRUB_SHARE : COVER_OF[material] === 'bare' && !ROCKY.has(material) ? SHRUB_SHARE / 3 : 0;
+        // Bare ground is mostly "bare or sparse vegetation": scattered shrubs, a third as dense, and
+        // fewer as far as it shows as exposed rock.
+        const share = COVER_OF[material] === 'shrub' ? SHRUB_SHARE : COVER_OF[material] === 'bare' ? (SHRUB_SHARE / 3) * (1 - exposedAt(sx, sy)) : 0;
         if (rand() > share || !shrubs.length || Math.hypot(sx, sy) > SHRUB_RADIUS_M || Math.hypot(sx, sy) < ROCK_CLEAR_M) continue;
         if (exposed(sx, sy) || this.offGround(bake, sx, sy, px) || strand(sx, sy)) continue;
         const species = shrubAt(shrubs, sx, sy);
@@ -437,9 +441,9 @@ export class NearField {
         const slope = Math.hypot(h(rx + 3, ry) - h(rx - 3, ry), h(rx, ry + 3) - h(rx, ry - 3)) / 6;
         const ridge = h(rx, ry) - (h(rx + 12, ry) + h(rx - 12, ry) + h(rx, ry + 12) + h(rx, ry - 12)) / 4;
         const sea = [[15, 0], [-15, 0], [0, 15], [0, -15]].some(([dx, dy]) => water(rx + dx, ry + dy)) ? 1 : 0;
-        const mapped = ROCKY.has(material) ? 0.9 : 0;
         // Hard rock, karst above all, breaks through even where the ground is level.
         const hardness = HARDNESS[bake.litho[texel(rx, ry)]];
+        const mapped = 0.9 * exposedAt(rx, ry);
         const hard = 0.3 + 1.4 * hardness;
         // Boulders do not lie on faces steeper than about 40°.
         if (slope > 0.85) continue;
@@ -507,14 +511,13 @@ export class NearField {
     for (let y = -STONE_RADIUS_M; y < STONE_RADIUS_M; y += STONE_SPACING_M) {
       for (let x = -STONE_RADIUS_M; x < STONE_RADIUS_M; x += STONE_SPACING_M) {
         const [sx, sy] = [x + (rand() - 0.5) * STONE_SPACING_M, y + (rand() - 0.5) * STONE_SPACING_M];
-        if (Math.hypot(sx, sy) < 1.5 || Math.hypot(sx, sy) > STONE_RADIUS_M || !ROCKY.has(materialAt(sx, sy)) || rand() > 0.5) continue;
+        if (Math.hypot(sx, sy) < 1.5 || Math.hypot(sx, sy) > STONE_RADIUS_M || rand() > 0.5 * exposedAt(sx, sy)) continue;
         add(`rock|${rand() < 0.5 ? 'slab' : 'boulder'}|${stoneAt(sx, sy)}`, sx, sy, 0.08 + 0.25 * rand() ** 2, rand() * 2 * Math.PI);
       }
     }
 
     // In a region with moor, moor plants grow on its heath and bog, on grass there too, and lush ones off it.
     const grows = ({ on, habitat }: Pack['ground'][number], material: number, look: Region['look']) => {
-      if (ROCKY.has(material)) return false;
       const cover = COVER_OF[material];
       const onCover = (on as string[]).includes(cover);
       if (look.moor && habitat) return (habitat === 'moor') === MOOR.has(material) && (onCover || cover === 'grass');
@@ -525,6 +528,8 @@ export class NearField {
       for (let x = -GROUND_RADIUS_M; x < GROUND_RADIUS_M; x += 1) {
         const [gx, gy] = [x + rand() - 0.5, y + rand() - 0.5];
         if (Math.hypot(gx, gy) > GROUND_RADIUS_M || Math.hypot(gx, gy) < 1.5 || this.offGround(bake, gx, gy, px) || strand(gx, gy)) continue;
+        // Nothing grows where exposed rock shows as rock.
+        if (rand() < exposedAt(gx, gy)) continue;
         const material = materialAt(gx, gy);
         const { plants, look } = kitAt(gx, gy);
         const share = (p: Pack['ground'][number], i: number) => p.share * (p.clumped ? 2.5 * smooth(0.55, 0.7, patchAt(gx, gy, i)) : 1);

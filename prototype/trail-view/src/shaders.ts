@@ -795,8 +795,10 @@ void main() {
   float rocky = terrain.x * g.rough * (1.0 - g.road) * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z))
     + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor + 0.8 * (hardness - 0.5) - 0.3, 0.0, 1.0)
     * 1.6 * smoothstep(0.3, 0.65, noise(vWorld.xy / 70.0)) * mix(0.3, 1.7, hardness) * (1.0 - 0.7 * green);
-  // Exposed rock is outcrops in turf, about a third rock.
-  rocky = max(rocky, 0.35 * g.bare);
+  // Exposed rock shows as slabs and gravel as far as the region's outcrops are strong, a third of
+  // it rock among turf; loose cinder and soft clay form neither.
+  float exposed = g.bare * smoothstep(0.0, 0.6, terrain.x) * smoothstep(0.2, 0.6, hardness);
+  rocky = max(rocky, 0.35 * exposed);
   // Slab cells only where a pixel can show them; past that, rock is its share of colour.
   if (rocky > 0.0 && footprint >= 4.0) albedo = mix(albedo, stone * 0.92, 0.45 * rocky);
   if (rocky > 0.0 && footprint < 4.0) {
@@ -810,9 +812,9 @@ void main() {
     float slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y);
     vec3 face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
     // Close by, exposed rock is gravel between the slabs; the stones on it are models.
-    if (g.bare > 0.0 && footprint < 0.5) {
+    if (exposed > 0.0 && footprint < 0.5) {
       float grit = 0.78 + 0.3 * noise(vWorld.xy / 0.35) + 0.12 * noise(vWorld.xy / 2.5);
-      float close = g.bare * (1.0 - slab) * (1.0 - smoothstep(0.2, 0.5, footprint));
+      float close = exposed * (1.0 - slab) * (1.0 - smoothstep(0.2, 0.5, footprint));
       face = mix(face, stone * vec3(1.02, 1.0, 0.95) * grit, close);
       slab = max(slab, close);
     }

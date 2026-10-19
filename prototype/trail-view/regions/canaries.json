@@ -17,7 +17,6 @@
   "hazeKm": 60,
   "outcrops": 0.25,
   "rock": "#5c5550",
-  "cliff": "#4a4542",
   "snowline": 3500,
   "sea": { "deep": "#1d4c78", "shallow": "#357f9c" },
   "swell": 340,
