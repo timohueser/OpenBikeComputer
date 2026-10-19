@@ -24,8 +24,8 @@
   "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1600], "weight": 1 },
-  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 2, "evergreen": true },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 2, "evergreen": true },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 2 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 2 },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2500], "weight": 4, "evergreen": true }
  },
  "ground": {

@@ -18,7 +18,7 @@
   "swiss-stone-pine": { "model": "scots-pine", "latin": "Pinus cembra", "leaf": "needleleaved", "cover": "tree", "elevation": [1300, 1850], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1100], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 900], "weight": 1 },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1, "evergreen": true },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1 },
   "green-alder": { "model": "hawthorn", "latin": "Alnus viridis", "leaf": "broadleaved", "cover": "shrub", "elevation": [1300, 1900], "weight": 2 },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2200], "weight": 5, "evergreen": true },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2200], "weight": 1, "evergreen": true },

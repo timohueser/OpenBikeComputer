@@ -24,8 +24,8 @@
   "oriental-hornbeam": { "model": "hawthorn", "latin": "Carpinus orientalis", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 900], "weight": 2 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1300], "weight": 1 },
-  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1, "evergreen": true },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [400, 1700], "weight": 1, "evergreen": true },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [400, 1700], "weight": 1 },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2500], "weight": 4, "evergreen": true },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1800, 2600], "weight": 4, "evergreen": true }
  },

@@ -15,7 +15,7 @@
   "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
   "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2, "evergreen": true },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },

@@ -1,7 +1,7 @@
 {
  "name": "Aegean",
  "extends": "base",
- "about": "Kermes oak, lentisk and tree heath maquis with phrygana cushions; olives, holm oak, valonia and downy oak, plane trees in the valleys and cypresses by the villages; Aleppo and Calabrian pine low down, black pine, Greek fir, chestnut and beech on the massifs, Bosnian pine at the Olympus treeline; goats and sheep. Holm oak stands in for olives in the orchards.",
+ "about": "Kermes oak, lentisk and tree heath maquis with phrygana cushions; olives, holm oak, valonia and downy oak, plane trees in the valleys and cypresses by the villages; Aleppo and Calabrian pine low down, black pine, Greek fir, chestnut and beech on the massifs, Bosnian pine at the Olympus treeline; goats and sheep. The orchards are olive groves.",
  "trees": {
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
   "calabrian-pine": { "model": "aleppo-pine", "latin": "Pinus brutia", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 },
@@ -29,6 +29,6 @@
   "goat": { "groups": 3, "size": [4, 12], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "sheep": { "groups": 2, "size": [6, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "holm-oak",
+ "orchard": "olive",
  "style": { "gr-l": "whitewashed-house", "gr-f": "village-house", "*": "stone-house" }
 }

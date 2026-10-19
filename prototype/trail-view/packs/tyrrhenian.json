@@ -1,7 +1,7 @@
 {
  "name": "Tyrrhenian-Adriatic sclerophyllous and mixed forests",
  "extends": "base",
- "about": "Holm oak and cork oak woods, downy oak inland, Macedonian oak on the Murge, sweet chestnut and dwarf juniper high in the Sardinian mountains; lentisk, myrtle, strawberry tree, tree heath, kermes oak, Phoenician and prickly juniper and tree spurge in the maquis, Spanish broom by the roads and oleander in the stream beds; Aleppo, stone and maritime pine on the coasts, eucalyptus windbreaks in Sardinia and Sicily, cypresses by the farms; olives, carobs and almonds in the fields; rockrose and garrigue cushions, diss grass tussocks, dwarf fan palms, asphodel, prickly pears and agaves on the dry ground; large flocks of sheep, goats, brown cattle, a few horses, donkeys and free-ranging pigs. Holm oak stands in for olives in the orchards.",
+ "about": "Holm oak and cork oak woods, downy oak inland, Macedonian oak on the Murge, sweet chestnut and dwarf juniper high in the Sardinian mountains; lentisk, myrtle, strawberry tree, tree heath, kermes oak, Phoenician and prickly juniper and tree spurge in the maquis, Spanish broom by the roads and oleander in the stream beds; Aleppo, stone and maritime pine on the coasts, eucalyptus windbreaks in Sardinia and Sicily, cypresses by the farms; olives, carobs and almonds in the fields; rockrose and garrigue cushions, diss grass tussocks, dwarf fan palms, asphodel, prickly pears and agaves on the dry ground; large flocks of sheep, goats, brown cattle, a few horses, donkeys and free-ranging pigs. The orchards are olive groves.",
  "trees": {
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1300], "weight": 5 },
   "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 3 },
@@ -46,6 +46,6 @@
   "donkey": { "model": "highland-cow", "latin": "Equus asinus", "groups": 1, "size": [1, 4], "on": ["rough-grass", "wet-grassland", "grassland", "pasture", "arable"] },
   "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
  },
- "orchard": "holm-oak",
+ "orchard": "olive",
  "style": { "mt": "canarian-house", "it-75": "canarian-house", "*": "village-house" }
 }

@@ -19,7 +19,7 @@
   "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1200, 2100], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1300], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1200], "weight": 1 },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1600], "weight": 2, "evergreen": true },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1600], "weight": 2 },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 4, "evergreen": true }
  },

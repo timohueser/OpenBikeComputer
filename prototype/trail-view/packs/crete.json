@@ -1,7 +1,7 @@
 {
  "name": "Crete",
  "extends": "base",
- "about": "Olive groves above all, carob low down, Calabrian pine on the south and east slopes, Italian cypress, kermes oak, holm oak and Cretan maple in the mountain forests, oriental plane in the valleys, valonia oak and sweet chestnut in the west; kermes oak, lentisk, tree heath, Spanish broom and oleander in the maquis and the stream beds, prickly juniper and Cretan barberry up to the bare summits; thorny burnet phrygana and asphodel on the grazed ground; goats and sheep. Holm oak stands in for olives in the orchards.",
+ "about": "Olive groves above all, carob low down, Calabrian pine on the south and east slopes, Italian cypress, kermes oak, holm oak and Cretan maple in the mountain forests, oriental plane in the valleys, valonia oak and sweet chestnut in the west; kermes oak, lentisk, tree heath, Spanish broom and oleander in the maquis and the stream beds, prickly juniper and Cretan barberry up to the bare summits; thorny burnet phrygana and asphodel on the grazed ground; goats and sheep. The orchards are olive groves.",
  "trees": {
   "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
   "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
@@ -30,6 +30,6 @@
   "goat": { "groups": 3, "size": [5, 30], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
- "orchard": "holm-oak",
+ "orchard": "olive",
  "style": "canarian-house"
 }

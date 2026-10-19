@@ -1,7 +1,7 @@
 {
  "name": "Illyrian deciduous forests",
  "extends": "base",
- "about": "Downy oak with oriental hornbeam, hop hornbeam, manna ash and Montpellier maple on the karst, Turkey oak and sweet chestnut on the Istrian flysch, Macedonian, Hungarian and valonia oak and oriental plane in Montenegro, Albania and Epirus; holm oak, lentisk, kermes oak, strawberry tree, tree heath and Phoenician juniper in the coastal maquis, bay laurel on the Kvarner and in the Bay of Kotor; Christ's thorn, smoke tree, prickly and common juniper, hawthorn and Spanish broom on the pastures; Aleppo and stone pine on the coast, black pine and beech on the mountains; olive groves, cypresses by the villages; sage, rockrose and asphodel on the stony ground; flocks of sheep and goats, a few small Busha cattle and donkeys; stone houses with low tile roofs. Holm oak stands in for olives in the orchards.",
+ "about": "Downy oak with oriental hornbeam, hop hornbeam, manna ash and Montpellier maple on the karst, Turkey oak and sweet chestnut on the Istrian flysch, Macedonian, Hungarian and valonia oak and oriental plane in Montenegro, Albania and Epirus; holm oak, lentisk, kermes oak, strawberry tree, tree heath and Phoenician juniper in the coastal maquis, bay laurel on the Kvarner and in the Bay of Kotor; Christ's thorn, smoke tree, prickly and common juniper, hawthorn and Spanish broom on the pastures; Aleppo and stone pine on the coast, black pine and beech on the mountains; olive groves, cypresses by the villages; sage, rockrose and asphodel on the stony ground; flocks of sheep and goats, a few small Busha cattle and donkeys; stone houses with low tile roofs. The orchards are olive groves.",
  "trees": {
   "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 5 },
   "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1200], "weight": 2 },
@@ -46,6 +46,6 @@
   "cattle": { "model": "highland-cow", "latin": "Bos taurus (Busha)", "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable"] },
   "donkey": { "model": "highland-cow", "latin": "Equus asinus", "groups": 1, "size": [1, 3], "on": ["rough-grass", "wet-grassland", "grassland", "pasture", "arable"] }
  },
- "orchard": "holm-oak",
+ "orchard": "olive",
  "style": { "al": "village-house", "*": "stone-house" }
 }

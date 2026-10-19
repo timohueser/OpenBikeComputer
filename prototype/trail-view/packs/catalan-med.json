@@ -1,7 +1,7 @@
 {
  "name": "Northeast Spain and Southern France Mediterranean forests",
  "extends": "base",
- "about": "Holm oak above all, Aleppo pine on the coastal hills and downy oak inland; cork oak, maritime pine, sweet chestnut, strawberry tree and tree heath on the siliceous massifs, stone pine on the coast, black and Scots pine and beech on the high ranges, hop hornbeam behind Nice; kermes oak and holm oak scrub, lentisk, Phoenician and prickly juniper, box and Spanish broom in the garrigue and maquis, with rosemary, rockrose, lavender, asphodel and diss grass; olives, carobs and cypresses by the farms, ash and white poplar along the rivers, reeds in the Ebro delta and the Camargue; sheep and goats, horses and cattle on the Camargue marshes; low tile-roofed village houses. Holm oak stands in for the olive orchards.",
+ "about": "Holm oak above all, Aleppo pine on the coastal hills and downy oak inland; cork oak, maritime pine, sweet chestnut, strawberry tree and tree heath on the siliceous massifs, stone pine on the coast, black and Scots pine and beech on the high ranges, hop hornbeam behind Nice; kermes oak and holm oak scrub, lentisk, Phoenician and prickly juniper, box and Spanish broom in the garrigue and maquis, with rosemary, rockrose, lavender, asphodel and diss grass; olives, carobs and cypresses by the farms, ash and white poplar along the rivers, reeds in the Ebro delta and the Camargue; sheep and goats, horses and cattle on the Camargue marshes; low tile-roofed village houses. The orchards are olive groves.",
  "trees": {
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1200], "weight": 5 },
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
@@ -43,6 +43,6 @@
   "horse": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "salt-marsh"] },
   "cattle": { "model": "brown-cattle", "groups": 1, "size": [5, 20], "on": ["pasture", "grassland", "arable", "salt-marsh"] }
  },
- "orchard": "holm-oak",
+ "orchard": "olive",
  "style": "village-house"
 }

@@ -31,7 +31,7 @@
   "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [100, 1500], "weight": 2 },
   "purging-broom": { "model": "gorse", "latin": "Cytisus oromediterraneus", "leaf": "broadleaved", "cover": "shrub", "elevation": [900, 1800], "weight": 1 },
-  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [100, 1300], "weight": 1, "evergreen": true },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [100, 1300], "weight": 1 },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1200, 1650], "weight": 3, "evergreen": true }
  },
  "ground": {
