@@ -96,6 +96,9 @@ FR_2M = BilWmsSource("fr", "France", "RGE ALTI 2 m", 2.0, FR.licence, FR.vertica
 # latitude, so a row further from the pole can overrun a service's 2000 px cap; 3 km boxes stay
 # far below it at these resolutions.
 BOXED = {"us": US_2M, "fr": FR_2M, "es": ES}
+# A boxed service resamples on request and blends its void sentinel into the ground along the
+# void's edge, at sea and at the border. No land these DTMs cover lies below −100 m.
+VOID_BELOW_M = -100.0
 # Scotland's Phase 1 LiDAR DTM: 1 m GeoTIFFs in British National Grid, one per 10 km OS square,
 # on a public bucket. It was flown in patches (Glen Coe, not Torridon or Skye).
 SCOT_LIDAR = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/phase-1/dtm/27700/gridded/{}_1M_DTM_PHASE1.tif"
@@ -664,8 +667,26 @@ def dtm_rasters(key: str, bbox) -> list[Path]:
         boxes = [(west + (east - west) * j / cols, south + (north - south) * i / rows,
                   west + (east - west) * (j + 1) / cols, south + (north - south) * (i + 1) / rows)
                  for i in range(rows) for j in range(cols)]
-        return [path for box in boxes for path in BOXED[key].fetch(box, SOURCES / key)]
+        # Four requests at once, as the DTM adapters' PARALLEL_REQUESTS allows a public service.
+        with ThreadPoolExecutor(4) as pool:
+            fetched = list(pool.map(lambda box: BOXED[key].fetch(box, SOURCES / key), boxes))
+        return [voided(path) for paths in fetched for path in paths]
     return DTM_SOURCES[key].fetch(bbox, SOURCES / key)
+
+
+def voided(path: Path) -> Path:
+    """The cached tile, with every value below VOID_BELOW_M made its nodata, once and in place."""
+    with rasterio.open(path) as src:
+        band, profile = src.read(1), src.profile
+    nodata = profile["nodata"] if profile["nodata"] is not None else NODATA
+    void = (band < VOID_BELOW_M) & (band != nodata)
+    if void.any():
+        band[void] = nodata
+        part = path.with_name(path.name + ".part")
+        with rasterio.open(part, "w", **(profile | {"nodata": nodata})) as dst:
+            dst.write(band, 1)
+        os.replace(part, path)
+    return path
 
 
 def os_square(e: int, n: int) -> str:
