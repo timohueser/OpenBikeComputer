@@ -18,8 +18,11 @@ export interface BuildingStyle {
   verge: number;
   /** Share of the roof height hipped at the gable ends: 0 is a gable, 1 a full hip. */
   hip: number;
-  /** Which walls are timber rather than render. */
-  timber: 'none' | 'upper' | 'all';
+  /**
+   * Which walls are timber rather than render. A `frame` is render with the posts and beams of the
+   * upper floors in the wood colour, and shutters to match.
+   */
+  timber: 'none' | 'upper' | 'all' | 'frame';
   shutters: boolean;
   /** A wooden balcony in the shutters' colour along the front of each upper floor. */
   balconies?: boolean;
@@ -71,8 +74,9 @@ const GLASS = '#36424c';
 const FLAT_ROOF = '#7a766e';
 const ROOF_THICKNESS = 0.3;
 const PLINTH = 0.35;
-/** How far a balcony stands out from its wall. */
+/** How far a balcony stands out from its wall, and how wide a frame's posts and beams are. */
 const BALCONY_M = 0.9;
+const BEAM_M = 0.2;
 
 /** Flat-shaded triangles with one colour each. */
 class Faces {
@@ -141,9 +145,9 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
   const [sill, lintel] = k.opening ?? [0.35, 0.8];
   // A barn door is planks, darker than the barn's own boards.
   const door = kind === 'barn' ? wood.clone().multiplyScalar(0.55) : pick(palette.door);
-  const shutter = pick(palette.shutter);
-  const [plinth, chimney, glass] = [hex(palette.plinth), hex(palette.chimney), hex(GLASS)];
   const timber = kind === 'block' ? 'none' : kind === 'barn' && style.timber !== 'none' ? 'all' : style.timber;
+  const shutter = timber === 'frame' ? wood : pick(palette.shutter);
+  const [plinth, chimney, glass] = [hex(palette.plinth), hex(palette.chimney), hex(GLASS)];
   const shutters = style.shutters && kind !== 'barn';
 
   const [length, W] = width >= depth ? [width, depth] : [depth, width];
@@ -155,6 +159,7 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
   const height = church ? THREE.MathUtils.clamp(0.6 * W, 3, 14) : wall ?? k.storey * ((dwelling && style.storeys) || k.storeys);
   const storeys = Math.max(1, Math.round(height / k.storey));
   const storey = height / storeys;
+  const frame = timber === 'frame' && !plain && storeys > 1;
   const [ww, spacing] = k.window;
   const out = new Faces();
 
@@ -169,10 +174,15 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
     const front = w === 0;
     const doorAt = n % 2 ? windows[(n - 1) / 2] : len / 2;
     const shutterHalf = ww / 2 + (shutters ? 0.45 * ww : 0);
+    // A frame's posts stand at the corners and between the windows, its beams along each upper
+    // floor and under the eaves.
+    const posts = frame ? Array.from({ length: n + 1 }, (_, i) => (len * i) / n) : [];
+    const beams = frame ? [...Array.from({ length: storeys - 1 }, (_, s) => (s + 1) * storey), height - BEAM_M] : [];
     const edges = windows.flatMap((c) => [c - ww / 2, c + ww / 2, c - shutterHalf, c + shutterHalf]);
-    const us = plain ? [0, len] : cuts(front ? [...edges, doorAt - k.door / 2, doorAt + k.door / 2] : edges, len);
+    const timbers = posts.flatMap((p) => [p - BEAM_M / 2, p + BEAM_M / 2]);
+    const us = plain ? [0, len] : cuts([...edges, ...timbers, ...(front ? [doorAt - k.door / 2, doorAt + k.door / 2] : [])], len);
     const levels = Array.from({ length: storeys }, (_, s) => [s * storey, (s + sill) * storey, (s + lintel) * storey]).flat();
-    const zs = cuts(plain ? [PLINTH, storey] : [PLINTH, ...levels], height);
+    const zs = cuts(plain ? [PLINTH, storey] : [PLINTH, ...levels, ...beams.flatMap((b) => [b, b + BEAM_M])], height);
     const cell = (u: number, z: number) => {
       const s = Math.min(storeys - 1, Math.floor(z / storey));
       const opening = !plain && z > (s + sill) * storey && z < (s + lintel) * storey;
@@ -180,7 +190,8 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
       if (opening && windows.some((c) => Math.abs(u - c) < ww / 2)) return glass;
       if (opening && windows.some((c) => Math.abs(u - c) < shutterHalf)) return shutter;
       if (z < PLINTH) return plinth;
-      return timber === 'all' || (timber === 'upper' && z > storey) ? wood : render;
+      const framed = z > storey && (posts.some((p) => Math.abs(u - p) < BEAM_M / 2) || beams.some((b) => z > b && z < b + BEAM_M));
+      return timber === 'all' || (timber === 'upper' && z > storey) || framed ? wood : render;
     };
     for (let i = 0; i + 1 < us.length; i++) {
       for (let j = 0; j + 1 < zs.length; j++) {
@@ -219,7 +230,7 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
     // Gable walls reach up to the roof's underside, flat-topped where a hip covers them.
     const topZ = Math.min(ridge, hipZ + style.verge * t);
     const topY = (ridge - topZ) / t;
-    const gable = timber === 'none' ? render : wood;
+    const gable = timber === 'all' || timber === 'upper' ? wood : render;
     for (const s of [1, -1]) {
       const x = (s * L) / 2;
       out.poly([v(x, -s * W / 2, height), v(x, s * W / 2, height), v(x, s * topY, topZ), v(x, -s * topY, topZ)], gable);
