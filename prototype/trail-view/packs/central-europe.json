@@ -5,29 +5,29 @@
  "trees": {
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 6 },
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
-  "pedunculate-oak": { "model": "european-beech", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
-  "sessile-oak": { "model": "european-beech", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 1 },
-  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 1 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
   "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 2 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
-  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
   "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
-  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1 }
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1 }
  },
  "ground": {
   "bilberry": {},
   "fern": {},
   "bracken": {},
-  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
   "tussock-sedge": { "model": "moor-grass", "latin": "Carex elata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.4 },
   "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["bare"], "height": [0.4, 0.8], "share": 0.3 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 3, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "dairy-cattle": { "groups": 3, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
   "sheep": { "groups": 1, "size": [6, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
+  "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": { "ua-07": "log-house", "ua-18": "log-house", "ua-56": "log-house", "ua-74": "log-house", "de-bb": "brick-farmhouse", "pl-wn": "brick-farmhouse", "lt": "log-house", "by": "log-house", "ua": "whitewashed-house", "md": "whitewashed-house", "ro": "whitewashed-house", "*": "house" }

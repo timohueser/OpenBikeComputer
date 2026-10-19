@@ -6,7 +6,7 @@
   "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 4 },
   "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 150], "weight": 3 },
-  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 }
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 }
  },
  "ground": {
   "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 },

@@ -7,16 +7,16 @@
   "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 450], "weight": 2 },
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
   "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 4 },
-  "sessile-oak": { "model": "sycamore-maple", "latin": "Quercus petraea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 350], "weight": 2 },
-  "pedunculate-oak": { "model": "sycamore-maple", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
-  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 350], "weight": 2 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
-  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
   "holly": { "model": "holm-oak", "latin": "Ilex aquifolium", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 350], "weight": 1 },
-  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 3 },
   "blackthorn": { "model": "hawthorn", "latin": "Prunus spinosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 250], "weight": 1 },
-  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 2 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 2 },
   "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 3 },
   "fuchsia": { "model": "hawthorn", "latin": "Fuchsia magellanica", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 150], "weight": 1 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 3 },
@@ -42,9 +42,9 @@
  "herds": {
   "blackface-sheep": { "model": "sheep", "latin": "Ovis aries (Scottish Blackface)", "groups": 5, "size": [2, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "bog"] },
   "sheep": { "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
+  "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": { "ie": "irish-cottage", "*": "highland-cottage" }
 }

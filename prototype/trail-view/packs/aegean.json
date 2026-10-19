@@ -5,21 +5,21 @@
  "trees": {
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
   "calabrian-pine": { "model": "aleppo-pine", "latin": "Pinus brutia", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 },
-  "black-pine": { "model": "scots-pine", "latin": "Pinus nigra", "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1800], "weight": 3 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1800], "weight": 3 },
   "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1700, 2500], "weight": 2 },
   "greek-fir": { "model": "silver-fir", "latin": "Abies cephalonica", "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1700], "weight": 3 },
-  "italian-cypress": { "model": "western-red-cedar", "latin": "Cupressus sempervirens", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 800], "weight": 0.5 },
+  "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 800], "weight": 0.5 },
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
   "kermes-oak": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1200], "weight": 2 },
-  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
   "valonia-oak": { "model": "european-beech", "latin": "Quercus ithaburensis subsp. macrolepis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 1 },
-  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 2 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 2 },
   "oriental-plane": { "model": "sycamore-maple", "latin": "Platanus orientalis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
-  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 2 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 2 },
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1900], "weight": 2 },
   "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
-  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
-  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 1 }
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 1 }
  },
  "ground": {
   "garrigue": {},

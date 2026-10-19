@@ -9,8 +9,8 @@
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
   "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
-  "rowan": { "model": "hawthorn", "latin": "Sorbus aucuparia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
-  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
   "tea-leaved-willow": { "model": "hawthorn", "latin": "Salix phylicifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
   "dwarf-birch": { "model": "huckleberry", "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 1 }
  },
@@ -27,9 +27,9 @@
   "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.05, "clumped": true }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "dairy-cattle": { "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
   "sheep": { "groups": 1, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
+  "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "style": { "se": "falu-red-house", "fi": "falu-red-house", "no": "falu-red-house", "*": "log-house" }
 }

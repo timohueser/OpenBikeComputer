@@ -5,17 +5,17 @@
  "trees": {
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1800], "weight": 6 },
   "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
-  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
   "portuguese-oak": { "model": "european-beech", "latin": "Quercus faginea", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1 },
   "pyrenean-oak": { "model": "european-beech", "latin": "Quercus pyrenaica", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1600], "weight": 1 },
   "narrow-leaved-ash": { "model": "sycamore-maple", "latin": "Fraxinus angustifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
-  "stone-pine": { "model": "aleppo-pine", "latin": "Pinus pinea", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
-  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 2 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 2 },
   "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1800], "weight": 3 },
   "gum-rockrose": { "model": "garrigue", "latin": "Cistus ladanifer", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
   "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
-  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1500], "weight": 1 }
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1500], "weight": 1 }
  },
  "ground": {
   "garrigue": { "share": 0.1 },
@@ -24,7 +24,7 @@
  "herds": {
   "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable"] },
   "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },
  "orchard": "holm-oak",

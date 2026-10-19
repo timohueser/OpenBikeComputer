@@ -5,20 +5,20 @@
  "trees": {
   "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 5 },
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 3 },
-  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 3 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 3 },
   "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
   "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
   "algerian-oak": { "model": "european-beech", "latin": "Quercus canariensis", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1000], "weight": 0.5 },
-  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1200], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1200], "weight": 1 },
   "narrow-leaved-ash": { "model": "sycamore-maple", "latin": "Fraxinus angustifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
   "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
-  "stone-pine": { "model": "aleppo-pine", "latin": "Pinus pinea", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
-  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 3 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 3 },
   "gum-rockrose": { "model": "garrigue", "latin": "Cistus ladanifer", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 4 },
   "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 3 },
   "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
   "strawberry-tree": { "model": "holm-oak", "latin": "Arbutus unedo", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 2 },
-  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
   "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 }
  },
@@ -26,14 +26,14 @@
   "garrigue": {},
   "fan-palm": {},
   "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
-  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.2, "clumped": true }
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.2, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable"] }
+  "horse": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "holm-oak",
  "style": "village-house"

@@ -4,19 +4,19 @@
  "about": "Beech on the moraine hills, oak, hornbeam, ash and lime in the mixed woods, Scots pine on the coastal sands and dunes, spruce plantations; alder and willow in the wet hollows, hawthorn, hazel and blackthorn in the hedgerows, juniper on dry pasture and heath; reed on the lake shores and lagoons, marram on the dunes, heather on the heaths; dairy cattle, sheep on the dikes and heaths, horses; whitewashed farms in Denmark and Scania, red brick in Germany and Poland.",
  "trees": {
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 5 },
-  "pedunculate-oak": { "model": "sycamore-maple", "latin": "Quercus robur", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
-  "hornbeam": { "model": "european-beech", "latin": "Carpinus betulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
-  "common-ash": { "model": "sycamore-maple", "latin": "Fraxinus excelsior", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
   "small-leaved-lime": { "model": "sycamore-maple", "latin": "Tilia cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
-  "black-alder": { "model": "silver-birch", "latin": "Alnus glutinosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 2 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 2 },
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 4 },
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
-  "hazel": { "model": "hawthorn", "latin": "Corylus avellana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "blackthorn": { "model": "hawthorn", "latin": "Prunus spinosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
   "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 },
-  "common-juniper": { "model": "mountain-pine", "latin": "Juniperus communis", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
  },
  "ground": {
   "bilberry": {},
@@ -24,13 +24,13 @@
   "bracken": {},
   "heather": {},
   "heather-bloom": {},
-  "common-reed": { "model": "moor-grass", "latin": "Phragmites australis", "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
   "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable"] },
+  "dairy-cattle": { "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable"] },
   "sheep": { "groups": 2, "size": [5, 30], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
+  "horse": { "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "orchard": "hawthorn",
  "style": { "dk": "cottage", "se": "cottage", "*": "brick-farmhouse" }

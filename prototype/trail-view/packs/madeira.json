@@ -9,13 +9,13 @@
   "barbusano": { "model": "laurel", "latin": "Apollonias barbujana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
   "faya": { "model": "holm-oak", "latin": "Morella faya", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
   "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 3 },
-  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1100], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1100], "weight": 1 },
   "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
-  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [200, 1600], "weight": 4 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [200, 1600], "weight": 4 },
   "japanese-cedar": { "model": "western-red-cedar", "latin": "Cryptomeria japonica", "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1300], "weight": 1 },
-  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 4 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 4 },
   "madeira-bilberry": { "model": "hawthorn", "latin": "Vaccinium padifolium", "leaf": "broadleaved", "cover": "shrub", "elevation": [800, 1800], "weight": 2 },
-  "common-broom": { "model": "gorse", "latin": "Cytisus scoparius", "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1800], "weight": 3 },
+  "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1800], "weight": 3 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1600], "weight": 2 },
   "pride-of-madeira": { "model": "tajinaste", "latin": "Echium candicans", "leaf": "broadleaved", "cover": "shrub", "elevation": [400, 1700], "weight": 0.5 },
   "fish-stunning-spurge": { "model": "tabaiba", "latin": "Euphorbia piscatoria", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 3 }
@@ -26,7 +26,7 @@
   "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "sheep": { "groups": 1, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland"] },
   "goat": { "groups": 1, "size": [2, 8], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
  },

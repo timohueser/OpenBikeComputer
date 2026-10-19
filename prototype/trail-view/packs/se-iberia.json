@@ -6,7 +6,7 @@
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 4 },
   "sandarac-tree": { "model": "western-red-cedar", "latin": "Tetraclinis articulata", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 0.5 },
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1100], "weight": 1 },
-  "olive": { "model": "holm-oak", "latin": "Olea europaea", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 2 },
   "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
   "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
   "date-palm": { "model": "canary-palm", "latin": "Phoenix dactylifera", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5, "evergreen": true },

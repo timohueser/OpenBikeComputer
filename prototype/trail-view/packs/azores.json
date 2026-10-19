@@ -9,7 +9,7 @@
   "azores-laurel": { "model": "laurel", "latin": "Laurus azorica", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1000], "weight": 2 },
   "azores-holly": { "model": "laurel", "latin": "Ilex azorica", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
   "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
-  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
   "azores-juniper": { "model": "mountain-pine", "latin": "Juniperus brevifolia", "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1600], "weight": 3 },
   "azores-heather": { "model": "holm-oak", "latin": "Erica azorica", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 2000], "weight": 4 },
   "azores-blueberry": { "model": "hawthorn", "latin": "Vaccinium cylindraceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1200], "weight": 1 }
@@ -23,8 +23,8 @@
   "agapanthus": { "model": "alpine-flowers", "latin": "Agapanthus praecox", "on": ["grass"], "height": [0.5, 0.9], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "dairy-cattle": { "model": "highland-cow", "latin": "Bos taurus (Holstein-Friesian)", "groups": 4, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
+  "dairy-cattle": { "groups": 4, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": "village-house"
 }

@@ -4,19 +4,19 @@
  "about": "Corsican pine above all, maritime pine on the lower and southern slopes, beech and silver fir in the cool valleys, birch at the high passes; sweet chestnut round the villages, holm oak, downy oak and Italian alder lower down; tree heath, strawberry tree, prickly juniper and rockrose in the maquis; green alder, dwarf juniper and Salzmann's broom cushions above the trees; bracken and asphodel in the pastures; free-ranging Corsican cattle and pigs, goats, sheep, horses on the high plateaus and mouflon on the crags. Beech stands in for the chestnut groves in the orchards.",
  "trees": {
   "corsican-pine": { "model": "scots-pine", "latin": "Pinus nigra subsp. laricio", "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1900], "weight": 6 },
-  "maritime-pine": { "model": "scots-pine", "latin": "Pinus pinaster", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1200], "weight": 3 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1200], "weight": 3 },
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [900, 1800], "weight": 2 },
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1800], "weight": 3 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1900], "weight": 1 },
-  "sweet-chestnut": { "model": "european-beech", "latin": "Castanea sativa", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 3 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 3 },
   "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 3 },
-  "downy-oak": { "model": "european-beech", "latin": "Quercus pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
   "italian-alder": { "model": "silver-birch", "latin": "Alnus cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1 },
-  "tree-heath": { "model": "holm-oak", "latin": "Erica arborea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 3 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 3 },
   "strawberry-tree": { "model": "holm-oak", "latin": "Arbutus unedo", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
-  "prickly-juniper": { "model": "mountain-pine", "latin": "Juniperus oxycedrus", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
   "green-alder": { "model": "hawthorn", "latin": "Alnus viridis", "leaf": "broadleaved", "cover": "shrub", "elevation": [1400, 2200], "weight": 3 },
-  "juniper": { "model": "mountain-pine", "latin": "Juniperus communis subsp. nana", "leaf": "needleleaved", "cover": "shrub", "elevation": [1400, 2300], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1400, 2300], "weight": 2 },
   "salzmann-broom": { "model": "garrigue", "latin": "Genista salzmannii", "leaf": "broadleaved", "cover": "shrub", "elevation": [1200, 2300], "weight": 3 }
  },
  "ground": {
@@ -26,11 +26,11 @@
   "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "scrub", "sclerophyllous-scrub"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "scrub", "sclerophyllous-scrub"] },
   "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 2, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] },
   "goat": { "groups": 2, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
   "sheep": { "groups": 2, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
   "mouflon": { "model": "sheep", "latin": "Ovis gmelini musimon", "groups": 1, "size": [2, 8], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
  },
  "orchard": "european-beech",
