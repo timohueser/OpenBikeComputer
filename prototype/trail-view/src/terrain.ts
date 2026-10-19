@@ -389,7 +389,7 @@ export class Terrain {
       depthBuffer: false,
     });
     u.normals.value = this.normals.texture;
-    this.nearField.set(bake, regions, eye);
+    this.nearField.set(bake, regions);
     this.setColour(null, 0);
     this.shadowsStale = this.surfaceStale = true;
   }

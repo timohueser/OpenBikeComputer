@@ -6,6 +6,8 @@
 
 import * as THREE from 'three';
 import { groundAt, type Bake } from './bake';
+import { ROADS } from './palette';
+import type { Region } from './regions';
 
 /** The longest arch, the deck's depth, the parapet's height and thickness, and a pier's length. */
 const ARCH_M = 25;
@@ -20,10 +22,11 @@ const STEP_M = 2;
 type Vec = number[];
 
 /**
- * Every bridge as one flat-shaded mesh in vertex colours, metres from the eye, or null. Decks take
- * the region's road colours by surface code, as the painted road beside them does.
+ * Every bridge as one flat-shaded mesh in vertex colours, metres from the eye, or null. Each takes
+ * the region at its middle: the deck its road colour by surface code, as the painted road beside
+ * it does, and the stone its house style's plinth.
  */
-export function bridges(bake: Bake, stone: THREE.Color, roads: string[]): THREE.BufferGeometry | null {
+export function bridges(bake: Bake, regionAt: (x: number, y: number) => Region): THREE.BufferGeometry | null {
   const position: number[] = [];
   const color: number[] = [];
   // The object shader lights by the winding's normal, so each face is wound to face `out`.
@@ -35,8 +38,6 @@ export function bridges(bake: Bake, stone: THREE.Color, roads: string[]): THREE.
       color.push(colour.r, colour.g, colour.b);
     }
   };
-  const decks = roads.map((hex) => new THREE.Color(hex));
-  const dark = stone.clone().multiplyScalar(0.75);
   const [up, down] = [[0, 0, 1], [0, 0, -1]];
   for (const { code, half, line } of bake.bridges) {
     const points: [number, number][] = [];
@@ -56,6 +57,12 @@ export function bridges(bake: Bake, stone: THREE.Color, roads: string[]): THREE.
       return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, nx: -(by - ay) / l, ny: (bx - ax) / l };
     };
     type At = ReturnType<typeof at>;
+    const middle = at(length / 2);
+    const { look, pack } = regionAt(middle.x, middle.y);
+    const roads = look.roads ?? ROADS;
+    const surface = new THREE.Color(roads[code - 1] ?? roads[1]);
+    const stone = new THREE.Color(pack.style.palette.plinth);
+    const dark = stone.clone().multiplyScalar(0.75);
     const edge = (o: At, side: number, z: number, inset = 0) => [o.x + o.nx * side * (half - inset), o.y + o.ny * side * (half - inset), z];
     const ground = (o: At, side: number) => groundAt(bake, o.x + o.nx * side * half, o.y + o.ny * side * half);
     const outward = (o: At, side: number) => [o.nx * side, o.ny * side, 0];
@@ -82,7 +89,7 @@ export function bridges(bake: Bake, stone: THREE.Color, roads: string[]): THREE.
       const [s0, s1] = [marks[k], marks[k + 1]];
       if (s1 - s0 < 1e-3) continue;
       const [p, q] = [at(s0), at(s1)];
-      quad(edge(p, 1, deck(s0)), edge(p, -1, deck(s0)), edge(q, -1, deck(s1)), edge(q, 1, deck(s1)), decks[code - 1] ?? decks[1], up);
+      quad(edge(p, 1, deck(s0)), edge(p, -1, deck(s0)), edge(q, -1, deck(s1)), edge(q, 1, deck(s1)), surface, up);
       for (const side of [1, -1]) {
         const out = outward(p, side);
         // The spandrel wall from the deck down to the arch or the ground, never above the deck's

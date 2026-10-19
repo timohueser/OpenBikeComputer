@@ -14,7 +14,7 @@ import { packNamed, type Pack, type Region } from './regions';
 import { bridges } from './bridges';
 import { lifts } from './lifts';
 import { lighthouse, ruin } from './models/landmarks';
-import { HEDGE, ROADS, STONE } from './palette';
+import { HEDGE, STONE } from './palette';
 import { animal, ANIMALS, plant, PLANTS, tree, TREES } from './models/library';
 import { rock, ROCK_GREY, type RockName } from './models/rocks';
 import { random, smooth } from './models/shape';
@@ -277,12 +277,13 @@ export class NearField {
   readonly buildings = new THREE.Group();
   /** Triangles the trees, plants and buildings add to a frame. */
   triangles = 0;
-  /** Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour" or "animal|model|seed". */
+  /**
+   * Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour" or
+   * "animal|model|seed"; a plant's key ends in "|buried" where winter snow covers it.
+   */
   private groups = new Map<string, Instances>();
   /** The packs' ground plants by species. */
   private ground = new Map<string, Pack['ground'][number]>();
-  /** Whether winter brings snow at the spot, which buries the ground plants. */
-  private snowyWinter = true;
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
@@ -324,7 +325,7 @@ export class NearField {
    * Place the bake's trees, shrubs, plants and buildings, each with the pack and rules of the region
    * it stands in (`regions`, in meta.regions' order); setSeason draws them.
    */
-  set(bake: Bake, regions: Region[], eye: Region): void {
+  set(bake: Bake, regions: Region[]): void {
     const { size, half0_m, eye_m } = bake.meta;
     const px = (2 * half0_m) / size;
     const texel = (x: number, y: number) => Math.floor((half0_m - y) / px) * size + Math.floor((x + half0_m) / px);
@@ -543,20 +544,20 @@ export class NearField {
         const keep = d < THIN_M ? 1 : Math.max(0.3, THIN_M / d);
         if (rand() > keep) continue;
         const [low, high] = species.height;
-        add(`plant|${species.id}|${1 + Math.floor(rand() * PLANT_SEEDS)}`, gx, gy, (low + rand() * (high - low)) / Math.sqrt(Math.sqrt(keep)), rand() * 2 * Math.PI);
+        // Winter snow lies well below the snowline that holds out of season.
+        const buried = groundAt(bake, gx, gy) + eye_m > look.snowline - WINTER_SNOW_BELOW_M ? '|buried' : '';
+        add(`plant|${species.id}|${1 + Math.floor(rand() * PLANT_SEEDS)}${buried}`, gx, gy, (low + rand() * (high - low)) / Math.sqrt(Math.sqrt(keep)), rand() * 2 * Math.PI);
       }
     }
     this.groups = groups;
     this.ground = new Map(kits.flatMap(({ pack }) => pack.ground.map((p) => [p.id, p] as const)));
-    // Winter snow lies well below the snowline that holds out of season.
-    this.snowyWinter = eye_m > eye.look.snowline - WINTER_SNOW_BELOW_M;
     this.evergreen = new Set(kits.flatMap(({ pack }) => pack.trees.filter((s) => s.evergreen).map((s) => s.tree)));
     this.shadowsStale = true;
 
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
     const { solid, cables } = lifts(bake, LIFT_REACH_M);
-    const decks = bridges(bake, new THREE.Color(eye.pack.style.palette.plinth), eye.look.roads ?? ROADS);
+    const decks = bridges(bake, (x, y) => regions[regionAt(x, y)]);
     // A house takes the pack of the region it stands in, styled for its own place.
     const packs = new Map<string, Pack>();
     const packOf = ([, , , , ring, place]: Building) => {
@@ -591,14 +592,14 @@ export class NearField {
     return edge < 0.2 || bake.water[(Math.round(v) * size + Math.round(u)) * 2] > 64;
   }
 
-  /** Draw every group with the season's models; ground plants stay under the snow in winter. */
+  /** Draw every group with the season's models; buried ground plants stay under the snow in winter. */
   setSeason(season: Season): void {
     for (const mesh of this.trees.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.trees.clear();
     this.triangles = 0;
     for (const [key, instances] of this.groups) {
-      const [what, name, lod] = key.split('|');
-      if (what === 'plant' && season === 'winter' && this.snowyWinter) continue;
+      const [what, name, lod, buried] = key.split('|');
+      if (buried && season === 'winter') continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const ground = what === 'plant' ? this.ground.get(name) : undefined;
       const model = this.model(key, leaves, () =>
