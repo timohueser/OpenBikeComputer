@@ -14,14 +14,14 @@ import { SEASONS } from './models/trees';
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names
  * one; a colour per lithology, alpha 1 where it is banded; then one texel each for the cliff
  * colour (alpha 1 where the region names one), the heather (alpha its share), the speckle (alpha
- * its share), the terrain scalars (outcrops, cos turf_deg, snowline, speckle size) and the
- * bedding plane's normal (alpha the season's bare_luma, 0 for none).
+ * its share), the terrain scalars (outcrops, cos turf_deg, snowline, speckle size), the bedding
+ * plane's normal (alpha the season's bare_luma, 0 for none) and the palette snap.
  */
 export const SLOT = (() => {
   const materials = 3 * COVER_ORDER.length;
   const lithologies = materials + MATERIALS.length;
   const cliff = lithologies + LITHOLOGIES.length;
-  return { materials, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, count: cliff + 5 };
+  return { materials, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5, count: cliff + 6 };
 })();
 
 /** The rows for a season (0 winter to 3 autumn), linear RGB. */
@@ -51,6 +51,7 @@ export function packRules(regions: Region[], season: number): Float32Array {
     const [toward, tilt] = [((strike + 90) * Math.PI) / 180, (dip * Math.PI) / 180];
     const bare = Array.isArray(look.bare_luma) ? look.bare_luma[season] : look.bare_luma;
     set(SLOT.bedding, [Math.sin(toward) * Math.sin(tilt), Math.cos(toward) * Math.sin(tilt), Math.cos(tilt)], bare ?? 0);
+    set(SLOT.snap, [look.snap, 0, 0], 0);
   });
   return data;
 }

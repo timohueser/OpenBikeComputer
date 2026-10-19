@@ -169,15 +169,17 @@ vec3 cloudColour(vec3 dir, float thick, vec3 sunLight, vec3 skyLight) {
 
 /** The vocabulary of materials.json, compiled in: each material's cover, moor, rock and rough ground, each lithology's hardness. */
 const flags = (set: Set<number>) => MATERIALS.map((_, i) => (set.has(i) ? '1.0' : '0.0')).join(', ');
-/** WorldCover's legend colour per cover, in sRGB. */
-const LEGEND = [[0.0, 0.39, 0.0], [1.0, 0.73, 0.13], [1.0, 1.0, 0.3], [0.94, 0.59, 1.0], [0.98, 0.0, 0.0], [0.71, 0.71, 0.71],
-  [0.94, 0.94, 0.94], [0.0, 0.39, 0.78], [0.0, 0.59, 0.63], [0.0, 0.81, 0.46], [0.98, 0.9, 0.63]];
-/** Each material in its cover's legend colour, from dark to light among the materials of that cover. */
-const MATERIAL_KEY = COVER.map((cover, i) => {
-  const peers = COVER.flatMap((c, j) => (c === cover ? [j] : []));
-  const f = peers.length > 1 ? peers.indexOf(i) / (peers.length - 1) : 0.5;
-  return LEGEND[cover].map((v) => (f < 0.5 ? v * (0.45 + 1.1 * f) : v + (1 - v) * 0.7 * (f - 0.5)));
-});
+/** The material debug view's colour of each material, in sRGB: one apart from every other. */
+export const MATERIAL_KEY: Record<string, string> = {
+  none: '#ff00ff', sea: '#0b2a6b', 'inland-water': '#2f7fd8', glacier: '#f4f8ff', 'built-up': '#e0201b',
+  'needleleaf-forest': '#0d4a26', 'broadleaf-forest': '#33a83f', 'mixed-forest': '#1f6e33', forest: '#6a9a5a',
+  scrub: '#8a8f1f', 'sclerophyllous-scrub': '#4f5e08', heath: '#8e3d8e', bracken: '#c86a1e', grassland: '#c4e88a',
+  pasture: '#55d050', 'rough-grass': '#dcd040', 'wet-grassland': '#3fbfa0', bog: '#6b4423', marsh: '#30d8e0',
+  'salt-marsh': '#7a8ae8', arable: '#f0c8a0', rice: '#c0f0e0', vineyard: '#a0285a', orchard: '#f08ac0',
+  'olive-grove': '#9aa06a', hedge: '#24330c', sparse: '#cbc3b3', 'bare-soil': '#a87a50', 'bare-rock': '#6a6a6a',
+  scree: '#9ca8c0', sand: '#f8e080', beach: '#fff4c8', 'moss-lichen': '#b8f0b8',
+};
+const srgb = (hex: string) => [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(3)).join(', ');
 const VOCABULARY = /* glsl */ `
 ${COVER_ORDER.map((cover, i) => `const int COVER_${cover.toUpperCase()} = ${i};`).join('\n')}
 const int COVERS[${MATERIALS.length}] = int[](${COVER.join(', ')});
@@ -193,6 +195,7 @@ const int SLOT_HEATHER = ${SLOT.heather};
 const int SLOT_SPECKLE = ${SLOT.speckle};
 const int SLOT_TERRAIN = ${SLOT.terrain};
 const int SLOT_BEDDING = ${SLOT.bedding};
+const int SLOT_SNAP = ${SLOT.snap};
 `;
 
 /** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
@@ -207,7 +210,6 @@ uniform float s2Levels;
 // The most NDVI any quarter saw, in the s2 alpha code, for k < ndviMaxLevels.
 uniform sampler2DArray ndviMax;
 uniform float ndviMaxLevels;
-uniform float snap;
 uniform sampler2DArray roads;
 uniform float roadLevels;
 uniform vec3 roadColours[6];
@@ -392,7 +394,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
     // the mosaics carry their own shadows.
     vec3 shown = pow(min(s.rgb * 1.65, vec3(1.0)), vec3(2.2));
     vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-4));
-    albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, snap);
+    albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, rule(region, SLOT_SNAP).x);
     vec3 refl = pow(s.rgb, vec3(2.2));
     // Barren ground is as light as the satellite sees it against the region's bare_luma: pumice
     // light, lava dark.
@@ -665,8 +667,8 @@ vec3 groundNormal(vec2 p, float footprint, float coarser, out float open) {
   return normalize(vec3(-slope.rg, 1.0));
 }
 
-// One colour per material, in its cover's WorldCover legend colour, in sRGB.
-const vec3 MATERIAL_KEY[${MATERIALS.length}] = vec3[](${MATERIAL_KEY.map((c) => `vec3(${c.map((v) => v.toFixed(3)).join(', ')})`).join(', ')});
+// MATERIAL_KEY, magenta for a material it lacks.
+const vec3 MATERIAL_KEY[${MATERIALS.length}] = vec3[](${MATERIALS.map((id) => `vec3(${srgb(MATERIAL_KEY[id] ?? '#ff00ff')})`).join(', ')});
 const vec3 UNKNOWN = vec3(0.45, 0.45, 0.6);
 
 // A distinct colour for each code, by the golden angle round the hue circle.

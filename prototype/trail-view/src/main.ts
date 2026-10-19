@@ -81,7 +81,7 @@ const DEBUG_VIEWS = {
   water: 7,
   region: 8,
 };
-const look: Look = { snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
+const look: Look = { hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
 const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
@@ -120,8 +120,8 @@ async function select(id: string): Promise<void> {
     ? surface([...bake.glo30, ...bake.surface.slice(meta.dtm_levels)], meta.half0_m, meta.eye_above_ground_m)
     : dtm;
   loaded = { bake, region, ground: { dtm, glo30 } };
-  const { snap, hazeKm, hazeHeight, mistTop, softness, gradient } = region.look;
-  Object.assign(look, { snap, hazeKm, hazeHeight, mistTop, softness, gradient });
+  const { hazeKm, hazeHeight, mistTop, softness, gradient } = region.look;
+  Object.assign(look, { hazeKm, hazeHeight, mistTop, softness, gradient });
   terrain.setLook(look);
   readout.region = region.chain.join(' › ');
   const shot = meta.photo;
@@ -511,7 +511,6 @@ aligned.onChange(() => {
 });
 aligned.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(align)) }, 'copy').name('copy camera JSON');
 const style = gui.addFolder('Look').close();
-style.add(look, 'snap', 0, 1, 0.01).name('palette snap').listen();
 style.add(look, 'hazeKm', 5, 300, 1).name('haze at sea level (km)').listen();
 style.add(look, 'hazeHeight', 500, 8000, 100).name('haze scale height (m)').listen();
 style.add(look, 'mistTop', 0, 3000, 10).name('mist top (m)').listen();
@@ -522,7 +521,7 @@ style.onChange(() => {
   terrain.setLook(look);
   requestRender();
 });
-// The six keys paste into a region's look as they are.
+// The five keys paste into a region's look as they are.
 style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, 'copy').name('copy look JSON');
 const facts = gui.addFolder('Readout').close();
 facts.add(readout, 'region').listen().disable();

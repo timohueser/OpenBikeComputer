@@ -145,8 +145,6 @@ function wedgeGeometries(): { near: THREE.BufferGeometry; far: THREE.BufferGeome
 }
 
 export interface Look {
-  /** 0 takes the ground's chroma from Sentinel-2, 1 paints the palette alone. */
-  snap: number;
   /** Visibility at sea level, in km; the fog thins with altitude. */
   hazeKm: number;
   /** Scale height of the fog, in metres. */
@@ -237,7 +235,6 @@ export class Terrain {
       ndviMax: { value: null },
       ndviMaxLevels: { value: 0 },
       debugView: { value: 0 },
-      snap: { value: 0.4 },
       seaDeep: { value: new THREE.Color() },
       seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
@@ -473,7 +470,6 @@ export class Terrain {
   setLook(look: Look): void {
     const u = this.uniforms;
     this.look = look;
-    u.snap.value = look.snap;
     u.hazeKm.value = look.hazeKm * (this.weather?.haze ?? 1);
     u.hazeHeight.value = look.hazeHeight;
     u.mistTop.value = look.mistTop;

@@ -57,7 +57,7 @@ bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root
 | `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; `world.json` holds the defaults, `rock` the unknown |
 | `look.cliff` | Cliff walls, whatever their lithology |
 | `look.bare_luma` | The barren ground's luma, one or one per quarter, against which the satellite lightens or darkens bare ground |
-| Applies where the eye is | `snap`, `sea`, `swell`, `roads`, `roadLine`, haze, mist, light, `grade`, `weather` |
+| Applies where the eye is | `sea`, `swell`, `roads`, `roadLine`, haze, mist, light, `grade`, `weather` |
 
 A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its short. It keys its trees,
 ground plants and herds by species, so a child adds or changes one and `null` drops one. An entry
@@ -193,7 +193,7 @@ prints one JSON line with its files, the renderer, the triangles and the page er
   photograph's camera, and "copy camera JSON" copies it for `spots/`.
 - "models and missing species" opens `models.html` in a new tab.
 - "Readout" › "region" shows the chain of regions, root first.
-- "Look" tunes palette snap, haze, mist and the light bands; "copy look JSON" copies them.
+- "Look" tunes haze, mist and the light bands; "copy look JSON" copies them.
 - "Tools": "raise eye" lifts the eye. "save side by side" and "save view" write shots.
 
 ## What will bite you
