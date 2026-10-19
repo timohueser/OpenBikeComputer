@@ -614,15 +614,15 @@ float nearShadowAt(vec3 world, vec3 n) {
   return mix(1.0, texture(nearShadow, vec3(c.xy, c.z - 0.000025)), smoothstep(1.0, 0.9, reach));
 }
 
-// Three soft bands of sunlight, with some of the smooth term kept so a high sun still shows
-// relief. A face out of the sun keeps the cool sky light, never black; open is how much of
+// Three soft bands of sunlight, with the share relief of the smooth term kept so a high sun still
+// shows relief. A face out of the sun keeps the cool sky light, never black; open is how much of
 // the sky a hollow still sees.
-vec3 lightUp(vec3 albedo, vec3 n, float shadow, float open) {
+vec3 lightUp(vec3 albedo, vec3 n, float shadow, float open, float relief) {
   float lit = max(dot(n, sunDir), 0.0) * shadow;
   float band = 0.45 * smoothstep(0.03, 0.03 + softness, lit) + 0.55 * smoothstep(0.32, 0.32 + softness, lit);
   // Steep faces also catch light thrown up from the ground below, so shaded dark rock keeps its
   // colour rather than sinking into the tone curve's toe. Faces turned down see little ground.
-  return albedo * (ambient * ((0.85 + 0.15 * n.z) * open + 0.2 * (1.0 - abs(n.z))) + sunColour * mix(band, lit, gradient));
+  return albedo * (ambient * ((0.85 + 0.15 * n.z) * open + 0.2 * (1.0 - abs(n.z))) + sunColour * mix(band, lit, relief));
 }
 
 // The haze between the eye (three's cameraPosition, the origin at the spot) and a point.
@@ -694,6 +694,24 @@ vec3 cells(vec2 p, float size) {
     }
   }
   return vec3(hash(id + 5.0), d2 - d1, hash(id + 9.0));
+}
+
+/**
+ * Rock in beds at bed metres along the bedding normal: banks about 30 m thick, each of its own tone,
+ * and inside a bank beds of its own thickness, 3 to 9 m, each of its own tone too. Beds pinch and
+ * swell along the face, so they never read as contour lines. Detail smaller than the pixel's size
+ * on the face fades to its mean. Returns the tone, how far up its bed p lies (0 to 1), how far a
+ * ledge a fifth of the bed shows (0 to 1) and how strongly the bed stands out there (0 to 1): ledges
+ * come and go along a bed.
+ */
+vec4 beds(float bed, vec2 p, float size) {
+  float b = bed + 3.0 * noise(p / 41.0);
+  float bank = hash(vec2(floor(b / 29.0), 3.0));
+  float thick = 3.0 + 6.0 * bank;
+  float own = hash(vec2(floor(b / thick), 7.0 + bank));
+  float tone = 1.0 + 0.3 * (bank - 0.5) * (1.0 - smoothstep(6.0, 24.0, size)) + 0.24 * (own - 0.5) * (1.0 - smoothstep(0.3 * thick, thick, size));
+  float ledge = 1.0 - smoothstep(0.08 * thick, 0.25 * thick, size);
+  return vec4(tone, fract(b / thick), ledge, ledge > 0.0 ? smoothstep(0.35, 0.75, own) * smoothstep(0.3, 0.55, noise(p / 9.0 + own * 50.0)) : 0.0);
 }
 
 /**
@@ -795,18 +813,11 @@ void main() {
     vec3 beds = mix(mix(variegated[0], variegated[1], smoothstep(0.48, 0.53, layer)), variegated[2], smoothstep(0.58, 0.63, layer));
     stone = mix(stone, beds, banded);
   }
-  // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
-  // bare only where they are near cliffs.
-  float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
   // Where the satellite sees green, a steep slope is turf and scrub on the rock up to the region's
   // turf angle at least: Atlantic headlands stay green to the cliff edge.
   float green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
-  bareFrom = mix(bareFrom, min(bareFrom, terrain.y), green);
-  float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
-  if (debugView > 0) {
-    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
-    return;
-  }
+  // The ground's own slope, before slabs tilt the normal.
+  float slope = n.z;
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
   vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
     * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
@@ -878,21 +889,44 @@ void main() {
   // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°, so a
   // cinder cone is no cliff; walls past about 47° are rock, in the region's cliff colour where it
   // names one. Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
+  // Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes and show
+  // bare only where they are near cliffs.
+  float bareFrom = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
+  bareFrom = mix(bareFrom, min(bareFrom, terrain.y), green);
+  // Turf holds on the top of each bed, so where a slope turns to rock the edge steps along the beds
+  // instead of running down the fall line. Gentler ground never turns to rock and needs no beds.
+  bool rock = skirt > 0.0 || (broad > 0.0 && slope < mix(bareFrom + 0.12, 0.95, banded));
+  vec4 strata = rock ? beds(dot(vec3(vWorld.xy, altitude), bedding), vWorld.xy, surfaceSize) : vec4(1.0, 0.0, 0.0, 0.0);
+  float top = smoothstep(0.75, 0.95, strata.y) * strata.z;
+  float stepped = slope + 0.07 * (top - 0.15 * strata.z);
+  float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), stepped)) * broad, skirt);
+  if (debugView > 0) {
+    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
+    return;
+  }
   float walled = steep * (1.0 - g.tree) * (1.0 - g.road);
   if (walled > 0.0) {
-    // Strata follow the bedding planes: level where the kit gives none, tilted where it does.
-    float bed = dot(vec3(vWorld.xy, altitude), bedding);
-    vec2 strike = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) * 1.4142 : vec2(1.0);
-    float strata = 0.86 + 0.22 * noise(vec2(bed / 9.0, dot(vWorld.xy, strike) / 120.0));
     vec4 wall = rule(region, SLOT_CLIFF);
-    vec3 face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
-    // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
-    // cliff reads; they fade where a pixel spans a bed.
-    float along = dot(vWorld.xy, strike);
-    float ledge = fract(bed / 3.5 + 0.9 * noise(vec2(along / 14.0, bed / 11.0)));
-    // Cracks come and go along the bed, so the beds read as rock, not as contour lines.
-    float broken = smoothstep(0.35, 0.6, noise(vec2(along / 5.0, bed / 2.0 + 3.0)));
-    face *= 1.0 + (1.0 - smoothstep(0.3, 1.2, surfaceSize)) * (0.12 * (1.0 - smoothstep(0.0, 0.18, ledge)) - 0.28 * broken * smoothstep(0.82, 0.97, ledge));
+    vec3 face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z));
+    // Lit and weathered stretches of the wall, tens of metres across.
+    float stain = noise(vWorld.xy / 70.0 + altitude / 50.0);
+    // Joints and water streaks run down a wall: a pattern over the map alone stays the same up it,
+    // and would only blot a slope. Streaks run in the darker stretches; both fade to their share
+    // once a pixel spans them.
+    float sheer = 1.0 - smoothstep(0.3, 0.55, n.z);
+    float joint = 0.0;
+    float streak = 0.12 * sheer;
+    if (sheer > 0.0 && surfaceSize < 12.0) {
+      float near = 1.0 - smoothstep(0.4, 1.5, surfaceSize);
+      if (near > 0.0) joint = (1.0 - smoothstep(0.02, 0.07, abs(noise(vWorld.xy / 3.0) - 0.5))) * smoothstep(0.45, 0.65, noise(vWorld.xy / 23.0)) * near * sheer;
+      streak = mix(smoothstep(0.6, 0.72, noise(vWorld.xy / 7.0 + 13.0)) * (1.0 - smoothstep(0.4, 0.6, stain)), 0.12, smoothstep(3.0, 12.0, surfaceSize)) * sheer;
+    }
+    face *= strata.x * (1.0 - 0.35 * joint) * (1.0 - 0.38 * streak) * (0.8 + 0.3 * stain);
+    // Each bed's top is a ledge that holds turf where the satellite sees green; on a wall it faces
+    // up and the bed above overhangs it in shade.
+    float under = (1.0 - smoothstep(0.0, 0.12, strata.y)) * strata.z * strata.w * sheer;
+    face = mix(face * (1.0 - 0.35 * under), albedo, top * strata.w * smoothstep(0.35, 0.6, n.z) * smoothstep(0.3, 0.6, g.lush) * (1.0 - g.bare));
+    n = normalize(n + vec3(0.0, 0.0, (1.2 * top - 0.6 * under) * strata.w * sheer * walled));
     face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
     face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
       * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
@@ -905,7 +939,8 @@ void main() {
   float snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
   albedo = mix(albedo, rule(region, COVER_SNOW * 3).rgb, snow) * (1.0 - 0.3 * wet * (1.0 - snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
-  vec3 c = lightUp(albedo, n, shadow, open);
+  // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
+  vec3 c = lightUp(albedo, n, shadow, open, mix(gradient, 0.75, walled));
 
   // Water is the terrain itself, flat on the curved earth: the sky by Fresnel, a sun glint, and
   // a lighter band along the shore. The reflection is held to 60 %, because the far bank it
@@ -1028,7 +1063,7 @@ void main() {
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   // Snow settles on what faces up: conifer tiers, roofs and rocks; bare twigs take a dusting.
   vec3 albedo = mix(vAlbedo * (1.0 - 0.2 * wet), snowColour, vSnow * smoothstep(0.25, 0.85, n.z));
-  colour = vec4(finish(atmosphere(lightUp(albedo, n, shadow, 1.0), vWorld)), 1.0);
+  colour = vec4(finish(atmosphere(lightUp(albedo, n, shadow, 1.0, gradient), vWorld)), 1.0);
 }
 `;
 
