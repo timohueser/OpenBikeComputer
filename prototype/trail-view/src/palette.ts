@@ -63,8 +63,7 @@ export const ROAD_LINE = '#d6d4cc';
 
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
-/** Dry-stone walls and hedges. */
-export const STONE = ['#9a958a', '#8a857a', '#a8a294'];
+/** Hedges. */
 export const HEDGE = ['#3f5a30', '#4a6434', '#36502c'];
 
 /** The ramps of the covers for a season, three colours each. */

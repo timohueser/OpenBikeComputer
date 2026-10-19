@@ -54,7 +54,7 @@ texel's ground, water and roads by its region in `meta.regions`.
 | `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snow_share, sea, swell, haze, grade, weather |
 | `look.ramps.<cover>` | One ramp `[low, mid, high]` by NDVI, or one per season (`{"winter": […]}`); a season left out keeps `palette.ts`'s. A child's value replaces its parent's |
 | `look.materials.<id>` | `colour` paints a material of `materials.json` over its cover's ramp, for the year or per season (`{"autumn": …}`), keeping `satellite` (0–1) of the satellite's hue; `stones` replaces its share of stones |
-| `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; a lithology without one takes `rock` |
+| `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags, cliffs and dry-stone walls; else `rock` |
 | `look.cliff` | Cliff walls, whatever their lithology |
 | `look.bare_luma` | Barren ground's luma, one or per quarter: the satellite lightens or darkens bare ground against it |
 | Applies where the eye is | haze, mist, light, `grade`, `weather` |

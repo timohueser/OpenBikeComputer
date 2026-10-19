@@ -15,7 +15,7 @@ import { packNamed, type Pack, type Region } from './regions';
 import { bridges } from './bridges';
 import { lifts } from './lifts';
 import { lighthouse, ruin } from './models/landmarks';
-import { HEDGE, STONE } from './palette';
+import { HEDGE } from './palette';
 import { animal, ANIMALS, plant, PLANTS, tree, TREES } from './models/library';
 import { rock, ROCK_GREY, type RockName } from './models/rocks';
 import { random, smooth } from './models/shape';
@@ -88,10 +88,16 @@ const LARGEST_M2 = 2500;
 const FLAT_ROOF = '#7a766e';
 /** Beyond this, a house is too far for its windows to show. */
 const PLAIN_M = 400;
-/** Width and height of a dry-stone wall and of a hedge; both sink a little into the ground. */
-const WALL = { width: 0.6, height: 1.1, colours: STONE };
-const HEDGE_SIZE = { width: 1.2, height: 1.8, colours: HEDGE };
+/**
+ * A dry-stone wall and a hedge: the height, the width at the foot and at the top, and how far the
+ * top rises and falls. Both sink SUNK_M into the ground. Within ROUGH_M a wall's top is uneven
+ * every ROUGH_STEP_M; farther away the bumps are too small to see.
+ */
+const WALL = { height: 1.4, foot: 0.75, top: 0.35, rough: 0.08 };
+const HEDGE_SIZE = { height: 1.8, foot: 1.2, top: 1.2, rough: 0 };
 const SUNK_M = 0.3;
+const ROUGH_M = 100;
+const ROUGH_STEP_M = 0.5;
 
 /**
  * Trees and buildings within this many metres cast into the near shadow map, 0.2 m a texel. The
@@ -223,35 +229,53 @@ function flat(position: number[], color: number[]): THREE.BufferGeometry {
   return geometry;
 }
 
-/** OSM walls and hedges as low boxes along their pieces, each end on the ground. */
-function walls(bake: Bake): THREE.BufferGeometry | null {
-  const position: number[] = [];
-  const color: number[] = [];
+/**
+ * OSM walls as dry-stone walls in the colour of the rock under them, and hedges, along their pieces
+ * on the ground: one mesh of walls and one of hedges.
+ */
+function walls(bake: Bake, stoneAt: (x: number, y: number) => string): (THREE.BufferGeometry | null)[] {
+  const meshes = [{ position: [] as number[], color: [] as number[] }, { position: [] as number[], color: [] as number[] }];
   const rand = random(5);
+  // By position, so two pieces that meet agree on the height of their shared end.
+  const bump = (x: number, y: number) => 2 * (Math.abs(Math.sin(12.9898 * x + 78.233 * y) * 43758.5453) % 1) - 1;
   const { walls } = bake;
   for (let n = 0; n < walls.length; n += 5) {
     const [x0, y0, x1, y1, kind] = walls.subarray(n, n + 5);
     const length = Math.hypot(x1 - x0, y1 - y0);
+    const near = Math.min(Math.hypot(x0, y0), Math.hypot(x1, y1));
     // Crests stand as crags, which set() places.
-    if (kind === 2 || length < 0.1 || Math.min(Math.hypot(x0, y0), Math.hypot(x1, y1)) < CLEAR_M / 2) continue;
-    const { width, height, colours } = kind ? HEDGE_SIZE : WALL;
-    const [nx, ny] = [((y0 - y1) / length) * (width / 2), ((x1 - x0) / length) * (width / 2)];
-    const [g0, g1] = [groundAt(bake, x0, y0) - SUNK_M, groundAt(bake, x1, y1) - SUNK_M];
-    // Left and right, bottom and top, at each end.
-    const corner = (end: 0 | 1, side: number, top: boolean) =>
-      end ? [x1 + side * nx, y1 + side * ny, g1 + (top ? height : 0)] : [x0 + side * nx, y0 + side * ny, g0 + (top ? height : 0)];
-    const c = new THREE.Color(colours[Math.floor(rand() * colours.length)]);
+    if (kind === 2 || length < 0.1 || near < CLEAR_M / 2) continue;
+    const { height, foot, top, rough } = kind ? HEDGE_SIZE : WALL;
+    const c = new THREE.Color(kind ? HEDGE[Math.floor(rand() * HEDGE.length)] : stoneAt((x0 + x1) / 2, (y0 + y1) / 2));
+    const [ux, uy] = [(x1 - x0) / length, (y1 - y0) / length];
+    const steps = rough && near < ROUGH_M ? Math.ceil(length / ROUGH_STEP_M) : 1;
+    // A wall reaches half its foot past each end, which closes the gap outside a bend.
+    const reach = rough ? foot / 2 : 0;
+    const at = Array.from({ length: steps + 1 }, (_, i) => {
+      const [x, y] = [x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps];
+      const ground = groundAt(bake, x, y) - SUNK_M;
+      const past = i === 0 ? -reach : i === steps ? reach : 0;
+      return { x: x + past * ux, y: y + past * uy, ground, top: ground + height + rough * bump(x, y) };
+    });
+    // Left (side 1) or right, at the foot or the top, at step i.
+    const corner = (i: number, side: number, up: boolean) => {
+      const w = (side * (up ? top : foot)) / 2;
+      return [at[i].x - w * uy, at[i].y + w * ux, up ? at[i].top : at[i].ground];
+    };
+    const { position, color } = meshes[kind];
     const quad = (a: number[], b: number[], d: number[], e: number[]) => {
       for (const v of [a, b, d, b, e, d]) {
         position.push(...v);
         color.push(c.r, c.g, c.b);
       }
     };
-    quad(corner(0, -1, false), corner(1, -1, false), corner(0, -1, true), corner(1, -1, true));
-    quad(corner(1, 1, false), corner(0, 1, false), corner(1, 1, true), corner(0, 1, true));
-    quad(corner(0, -1, true), corner(1, -1, true), corner(0, 1, true), corner(1, 1, true));
+    for (let i = 0; i < steps; i++) {
+      quad(corner(i, -1, false), corner(i + 1, -1, false), corner(i, -1, true), corner(i + 1, -1, true));
+      quad(corner(i + 1, 1, false), corner(i, 1, false), corner(i + 1, 1, true), corner(i, 1, true));
+      quad(corner(i, -1, true), corner(i + 1, -1, true), corner(i, 1, true), corner(i + 1, 1, true));
+    }
   }
-  return position.length ? flat(position, color) : null;
+  return meshes.map(({ position, color }) => (position.length ? flat(position, color) : null));
 }
 
 /** One model drawn once per instance. */
@@ -291,7 +315,7 @@ export class NearField {
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
-  private readonly materials: Record<'tree' | 'plant' | 'ownPlant' | 'building', THREE.ShaderMaterial>;
+  private readonly materials: Record<'tree' | 'plant' | 'ownPlant' | 'building' | 'stone', THREE.ShaderMaterial>;
   /** Rocks by the colour of the rock they lie on. */
   private readonly rocks = new Map<string, THREE.ShaderMaterial>();
   /** Set when the sun, the spot, the season or the surface moved. */
@@ -310,12 +334,14 @@ export class NearField {
       plant: this.material(treeVertex, 0.85),
       ownPlant: this.material(treeVertex, 0.35),
       building: this.material(buildingVertex),
+      stone: this.material(buildingVertex, 0, { STONES: '' }),
     };
   }
 
-  private material(vertexShader: string, tie = 0): THREE.ShaderMaterial {
+  private material(vertexShader: string, tie = 0, defines = {}): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
+      defines,
       vertexShader,
       fragmentShader: objectFragment,
       // The shared uniform objects themselves, so light and look reach every object.
@@ -574,7 +600,7 @@ export class NearField {
     for (const mesh of this.buildings.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.buildings.clear();
     const { solid, cables } = lifts(bake, LIFT_REACH_M);
-    const decks = bridges(bake, (x, y) => regions[regionAt(x, y)]);
+    const [decks, masonry] = bridges(bake, (x, y) => regions[regionAt(x, y)]);
     // A house takes the pack of the region it stands in, styled for its own place.
     const packs = new Map<string, Pack>();
     const packOf = ([, , , , ring, place]: Building) => {
@@ -583,9 +609,12 @@ export class NearField {
       if (!packs.has(key)) packs.set(key, place ? packNamed(pack.id, [place, place.split('-')[0]]) : pack);
       return packs.get(key)!;
     };
-    for (const geometry of [town(bake.buildings, eye_m, packOf), walls(bake), solid, decks]) {
+    const { building, stone } = this.materials;
+    const [drystone, hedges] = walls(bake, stoneAt);
+    const parts = [[town(bake.buildings, eye_m, packOf), building], [drystone, stone], [hedges, building], [solid, building], [decks, building], [masonry, stone]] as const;
+    for (const [geometry, material] of parts) {
       if (!geometry) continue;
-      const mesh = new THREE.Mesh(geometry, this.materials.building);
+      const mesh = new THREE.Mesh(geometry, material);
       mesh.frustumCulled = false;
       this.buildings.add(mesh);
     }

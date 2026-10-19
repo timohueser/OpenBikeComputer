@@ -666,6 +666,34 @@ vec3 atmosphere(vec3 c, vec3 world) {
 }
 `;
 
+/** Reads cloudHash from CLOUDS, which SHADE brings. */
+const CELLS = /* glsl */ `
+// Voronoi cells about size metres across: the nearest cell's id hash, the gap to the next cell's
+// edge in cell units, and a second hash for its shade.
+vec3 cells(vec2 p, float size) {
+  vec2 q = p / size;
+  vec2 i = floor(q);
+  vec2 f = q - i;
+  float d1 = 8.0;
+  float d2 = 8.0;
+  vec2 id = i;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 o = vec2(x, y);
+      float d = length(o + vec2(cloudHash(i + o), cloudHash(i + o + 17.0)) - f);
+      if (d < d1) {
+        d2 = d1;
+        d1 = d;
+        id = i + o;
+      } else if (d < d2) {
+        d2 = d;
+      }
+    }
+  }
+  return vec3(cloudHash(id + 5.0), d2 - d1, cloudHash(id + 9.0));
+}
+`;
+
 export const terrainFragment = /* glsl */ `
 ${LEVELS}
 uniform float curvature;
@@ -682,30 +710,7 @@ in float vShadow;
 in float vLift;
 out vec4 colour;
 
-// Voronoi cells about size metres across: the nearest cell's id hash, the gap to the next cell's
-// edge in cell units, and a second hash for its shade.
-vec3 cells(vec2 p, float size) {
-  vec2 q = p / size;
-  vec2 i = floor(q);
-  vec2 f = q - i;
-  float d1 = 8.0;
-  float d2 = 8.0;
-  vec2 id = i;
-  for (int y = -1; y <= 1; y++) {
-    for (int x = -1; x <= 1; x++) {
-      vec2 o = vec2(x, y);
-      float d = length(o + vec2(hash(i + o), hash(i + o + 17.0)) - f);
-      if (d < d1) {
-        d2 = d1;
-        d1 = d;
-        id = i + o;
-      } else if (d < d2) {
-        d2 = d;
-      }
-    }
-  }
-  return vec3(hash(id + 5.0), d2 - d1, hash(id + 9.0));
-}
+${CELLS}
 
 /** Value noise and its slope along x and y, per unit of q. */
 vec3 noised(vec2 q) {
@@ -1123,11 +1128,29 @@ in float vSnow;
 uniform vec3 snowColour;
 out vec4 colour;
 
+#ifdef STONES
+${CELLS}
+// Rounded stones each lighter or darker, with dark joints: about 0.3 m long and 0.12 m high on a
+// face, laid flat on a top. A face maps onto the vertical plane it is nearest, so the bumps of a
+// wall's top do not shift the stones. Where a pixel spans a stone they fade to their mean, 0.77.
+float stones(vec3 p, vec3 n) {
+  vec2 q = abs(n.z) > 0.7 ? p.xy : vec2(0.4 * (abs(n.x) > abs(n.y) ? p.y : p.x), p.z);
+  vec3 c = cells(q, 0.12);
+  float pixel = max(length(dFdx(p)), length(dFdy(p)));
+  float stone = (0.65 + 0.6 * c.z) * mix(0.35, 1.0, smoothstep(0.0, 0.25 + pixel / 0.12, c.y));
+  return mix(stone, 0.77, smoothstep(0.02, 0.08, pixel));
+}
+#endif
+
 void main() {
   vec3 n = normalize(vNormal);
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
+  vec3 own = vAlbedo;
+#ifdef STONES
+  own *= stones(vWorld, n);
+#endif
   // Snow settles on what faces up: conifer tiers, roofs and rocks; bare twigs take a dusting.
-  vec3 albedo = mix(vAlbedo * (1.0 - 0.2 * wet), snowColour, vSnow * smoothstep(0.25, 0.85, n.z));
+  vec3 albedo = mix(own * (1.0 - 0.2 * wet), snowColour, vSnow * smoothstep(0.25, 0.85, n.z));
   colour = vec4(finish(atmosphere(lightUp(albedo, n, shadow, 1.0, gradient), vWorld)), 1.0);
 }
 `;

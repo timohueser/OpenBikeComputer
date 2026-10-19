@@ -22,20 +22,20 @@ const STEP_M = 2;
 type Vec = number[];
 
 /**
- * Every bridge as one flat-shaded mesh in vertex colours, metres from the eye, or null. Each takes
- * the region at its middle: the deck its road colour by surface code, as the painted road beside
- * it does, and the stone its house style's plinth.
+ * Every bridge in flat-shaded meshes in vertex colours, metres from the eye: the decks and the
+ * stonework, each null where there is none. Each bridge takes the region at its middle: the deck its
+ * road colour by surface code, as the painted road beside it does, and the stone its house style's
+ * plinth.
  */
-export function bridges(bake: Bake, regionAt: (x: number, y: number) => Region): THREE.BufferGeometry | null {
-  const position: number[] = [];
-  const color: number[] = [];
+export function bridges(bake: Bake, regionAt: (x: number, y: number) => Region): (THREE.BufferGeometry | null)[] {
+  const [decks, stonework] = [{ position: [] as number[], color: [] as number[] }, { position: [] as number[], color: [] as number[] }];
   // The object shader lights by the winding's normal, so each face is wound to face `out`.
-  const quad = (a: Vec, b: Vec, c: Vec, d: Vec, colour: THREE.Color, out: Vec) => {
+  const quad = (a: Vec, b: Vec, c: Vec, d: Vec, colour: THREE.Color, out: Vec, into = stonework) => {
     const [u, v] = [[c[0] - a[0], c[1] - a[1], c[2] - a[2]], [d[0] - b[0], d[1] - b[1], d[2] - b[2]]];
     const facing = (u[1] * v[2] - u[2] * v[1]) * out[0] + (u[2] * v[0] - u[0] * v[2]) * out[1] + (u[0] * v[1] - u[1] * v[0]) * out[2];
     for (const p of facing >= 0 ? [a, b, c, a, c, d] : [a, c, b, a, d, c]) {
-      position.push(...p);
-      color.push(colour.r, colour.g, colour.b);
+      into.position.push(...p);
+      into.color.push(colour.r, colour.g, colour.b);
     }
   };
   const [up, down] = [[0, 0, 1], [0, 0, -1]];
@@ -89,7 +89,7 @@ export function bridges(bake: Bake, regionAt: (x: number, y: number) => Region):
       const [s0, s1] = [marks[k], marks[k + 1]];
       if (s1 - s0 < 1e-3) continue;
       const [p, q] = [at(s0), at(s1)];
-      quad(edge(p, 1, deck(s0)), edge(p, -1, deck(s0)), edge(q, -1, deck(s1)), edge(q, 1, deck(s1)), surface, up);
+      quad(edge(p, 1, deck(s0)), edge(p, -1, deck(s0)), edge(q, -1, deck(s1)), edge(q, 1, deck(s1)), surface, up, decks);
       for (const side of [1, -1]) {
         const out = outward(p, side);
         // The spandrel wall from the deck down to the arch or the ground, never above the deck's
@@ -117,10 +117,12 @@ export function bridges(bake: Bake, regionAt: (x: number, y: number) => Region):
       quad(edge(q, 1, tq), edge(q, -1, tq), edge(q, -1, foot), edge(q, 1, foot), stone, [q.ny, -q.nx, 0]);
     }
   }
-  if (!position.length) return null;
-  const geometry = new THREE.BufferGeometry()
-    .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
-    .setAttribute('color', new THREE.Float32BufferAttribute(color, 3));
-  geometry.computeVertexNormals();
-  return geometry;
+  return [decks, stonework].map(({ position, color }) => {
+    if (!position.length) return null;
+    const geometry = new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.Float32BufferAttribute(position, 3))
+      .setAttribute('color', new THREE.Float32BufferAttribute(color, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  });
 }
