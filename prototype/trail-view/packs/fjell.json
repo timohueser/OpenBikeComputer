@@ -12,7 +12,7 @@
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 1, "evergreen": true }
  },
  "ground": {
-  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "bare", "grass"], "share": 0.35 },
+  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.35 },
   "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.3 },
   "bilberry": {},
   "heather": {},

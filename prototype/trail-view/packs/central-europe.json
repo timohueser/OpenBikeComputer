@@ -13,7 +13,7 @@
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
   "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
-  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1 }
  },
  "ground": {

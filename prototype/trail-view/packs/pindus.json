@@ -21,7 +21,7 @@
   "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
   "christs-thorn": { "model": "hawthorn", "latin": "Paliurus spina-christi", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
   "smoke-tree": { "model": "hawthorn", "latin": "Cotinus coggygria", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 1 },
-  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1600], "weight": 1 },
   "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 2 },
@@ -32,7 +32,7 @@
   "bracken": {},
   "fern": {},
   "alpine-flowers": {},
-  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
   "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 },
   "white-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus albus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },

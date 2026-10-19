@@ -34,7 +34,7 @@
   "fern": {},
   "bracken": {},
   "alpine-flowers": {},
-  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 }
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [20, 100], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },

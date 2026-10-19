@@ -13,7 +13,7 @@
   "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
   "italian-alder": { "model": "silver-birch", "latin": "Alnus cordata", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1 },
   "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 3 },
-  "strawberry-tree": { "model": "holm-oak", "latin": "Arbutus unedo", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
   "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
   "green-alder": { "model": "hawthorn", "latin": "Alnus viridis", "leaf": "broadleaved", "cover": "shrub", "elevation": [1400, 2200], "weight": 3 },
   "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1400, 2300], "weight": 2 },
@@ -23,7 +23,7 @@
   "garrigue": {},
   "rockrose": { "model": "garrigue", "latin": "Cistus salviifolius", "height": [0.3, 0.8] },
   "bracken": {},
-  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
   "cattle": { "model": "brown-cattle", "groups": 2, "size": [3, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "scrub", "sclerophyllous-scrub"] },

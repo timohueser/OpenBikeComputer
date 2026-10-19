@@ -17,23 +17,23 @@
   "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
   "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
   "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5 },
-  "narrow-leaved-ash": { "model": "sycamore-maple", "latin": "Fraxinus angustifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5 },
   "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 0.5 },
   "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 4 },
   "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
   "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
-  "strawberry-tree": { "model": "holm-oak", "latin": "Arbutus unedo", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
   "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
   "box": { "model": "garrigue", "latin": "Buxus sempervirens", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1600], "weight": 2 },
-  "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
-  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 }
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 }
  },
  "ground": {
   "garrigue": {},
   "rockrose": { "model": "garrigue", "latin": "Cistus salviifolius", "height": [0.3, 0.8] },
   "lavender": { "model": "heather-bloom", "latin": "Lavandula angustifolia", "on": ["shrub", "bare"], "height": [0.3, 0.6], "share": 0.04, "clumped": true },
-  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
   "diss-grass": { "model": "esparto", "latin": "Ampelodesmos mauritanicus", "on": ["shrub", "bare"], "height": [1.0, 2.0], "share": 0.06, "clumped": true },
   "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
  },

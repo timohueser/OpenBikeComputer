@@ -8,7 +8,7 @@
   "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
   "portuguese-oak": { "model": "european-beech", "latin": "Quercus faginea", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1 },
   "pyrenean-oak": { "model": "european-beech", "latin": "Quercus pyrenaica", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1600], "weight": 1 },
-  "narrow-leaved-ash": { "model": "sycamore-maple", "latin": "Fraxinus angustifolia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
   "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
   "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
   "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 2 },

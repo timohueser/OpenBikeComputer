@@ -21,7 +21,7 @@
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1800], "weight": 0.5 },
   "holly": { "model": "holm-oak", "latin": "Ilex aquifolium", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1700], "weight": 0.5 },
   "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 2 },
-  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 2 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 2 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [600, 1700], "weight": 1.5 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1600], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
@@ -33,8 +33,8 @@
   "bracken": {},
   "fern": {},
   "alpine-flowers": {},
-  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
-  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
   "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.15 }
  },
  "herds": {

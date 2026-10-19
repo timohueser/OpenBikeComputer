@@ -14,8 +14,8 @@
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
-  "blackthorn": { "model": "hawthorn", "latin": "Prunus spinosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
-  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 },
+  "blackthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 },
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
  },
  "ground": {

@@ -3,15 +3,15 @@
  "extends": "base",
  "about": "No native trees: planted Sitka spruce, lodgepole pine, sycamore and rowan only in the few plantations and village gardens; outfield grass of mat-grass, bent and fescue with heather, crowberry and bilberry heath; deergrass and bog cotton in the blanket bog; woolly fringe-moss and dwarf willow on the plateaus; marsh marigold in the wet hayfields and thrift on the cliff tops; Faroese sheep on every slope; black-tarred and painted wooden houses with turf or iron roofs.",
  "trees": {
-  "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 4 },
+  "sitka-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 4 },
   "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 250], "weight": 2 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 150], "weight": 3 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 }
  },
  "ground": {
-  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 },
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.3 },
   "heather": {},
-  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "bare", "grass"], "share": 0.3 },
+  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.3 },
   "bilberry": {},
   "moor-grass": {},
   "bog-cotton": {},

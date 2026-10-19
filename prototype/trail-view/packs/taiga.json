@@ -5,7 +5,7 @@
  "trees": {
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 6 },
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 950], "weight": 5 },
-  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 4 },
+  "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 4 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
   "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
@@ -17,7 +17,7 @@
  "ground": {
   "bilberry": {},
   "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub", "moss"], "height": [0.1, 0.25], "share": 0.2 },
-  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["tree", "moss", "wetland"], "share": 0.15 },
+  "crowberry": { "on": ["tree", "moss", "wetland"], "share": 0.15 },
   "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare"], "height": [0.05, 0.12], "share": 0.3 },
   "heather": {},
   "fern": {},

@@ -5,10 +5,10 @@
  "trees": {
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 650], "weight": 5, "evergreen": true },
   "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
-  "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "sitka-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
   "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
-  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 },
+  "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 4 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
@@ -18,7 +18,7 @@
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
   "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
-  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
  },
  "ground": {
@@ -26,7 +26,7 @@
   "heather-bloom": {},
   "bilberry": {},
   "lingonberry": { "model": "bilberry", "latin": "Vaccinium vitis-idaea", "on": ["tree", "shrub"], "height": [0.1, 0.25], "share": 0.15 },
-  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "bare"], "share": 0.2 },
+  "crowberry": { "on": ["shrub", "moss", "bare"], "share": 0.2 },
   "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.3 },
   "moor-grass": {},
   "bog-cotton": {},

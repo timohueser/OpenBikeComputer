@@ -13,7 +13,7 @@
   "river-red-gum": { "model": "laurel", "latin": "Eucalyptus camaldulensis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 0.5, "evergreen": true },
   "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 3 },
   "lotus-jujube": { "model": "holm-oak", "latin": "Ziziphus lotus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
-  "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
   "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 0.5 },
   "tamarisk": { "model": "hawthorn", "latin": "Tamarix canariensis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 0.5 }

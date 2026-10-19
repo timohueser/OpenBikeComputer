@@ -20,7 +20,7 @@
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2400], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
-  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1 },
   "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 }
  },
  "ground": {
@@ -29,7 +29,7 @@
   "fern": {},
   "bracken": {},
   "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 },
-  "mat-grass": { "model": "moor-grass", "latin": "Nardus stricta", "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 }
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },

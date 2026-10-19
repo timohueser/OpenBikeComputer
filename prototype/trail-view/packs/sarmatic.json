@@ -6,7 +6,7 @@
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
   "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
-  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
   "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
   "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
@@ -17,7 +17,7 @@
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
   "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
-  "grey-willow": { "model": "hawthorn", "latin": "Salix cinerea", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 }
  },
  "ground": {
   "bilberry": {},

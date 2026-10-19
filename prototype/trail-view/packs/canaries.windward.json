@@ -12,7 +12,7 @@
   "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1200], "weight": 1 },
   "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 600], "weight": 1 },
   "banana": { "model": "canary-palm", "latin": "Musa acuminata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
-  "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [100, 700], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [100, 700], "weight": 1 },
   "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 2 },
   "cardon": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 }
  },

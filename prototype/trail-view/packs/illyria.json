@@ -25,20 +25,20 @@
   "christs-thorn": { "model": "hawthorn", "latin": "Paliurus spina-christi", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 3 },
   "smoke-tree": { "model": "hawthorn", "latin": "Cotinus coggygria", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
   "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
-  "spanish-broom": { "model": "gorse", "latin": "Spartium junceum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2 },
   "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 300], "weight": 2 },
   "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 2 },
-  "strawberry-tree": { "model": "holm-oak", "latin": "Arbutus unedo", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
   "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
   "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
-  "phoenician-juniper": { "model": "mountain-pine", "latin": "Juniperus phoenicea", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 },
   "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1700], "weight": 1 }
  },
  "ground": {
   "garrigue": {},
   "sage": { "model": "garrigue", "latin": "Salvia officinalis", "height": [0.3, 0.6] },
   "rockrose": { "model": "garrigue", "latin": "Cistus salviifolius", "height": [0.3, 0.8] },
-  "branched-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus ramosus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
  },
  "herds": {
   "sheep": { "groups": 3, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },

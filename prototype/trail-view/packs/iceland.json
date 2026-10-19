@@ -3,9 +3,9 @@
  "extends": "base",
  "about": "Downy birch woods with rowan and tea-leaved willow in sheltered valleys; planted Sitka spruce, lodgepole pine and Siberian larch near farms and towns; dwarf birch, woolly willow and juniper on the heaths; woolly fringe-moss on the lava; crowberry, bog bilberry, heather, arctic thyme and mountain avens on heath and gravel; lyme grass on the black sand, Nootka lupin along the roads, bog cotton in the mires; Icelandic sheep everywhere in summer, Icelandic horses and cattle by the farms; white houses with coloured corrugated-iron roofs.",
  "trees": {
-  "downy-birch": { "model": "silver-birch", "latin": "Betula pubescens", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 550], "weight": 8 },
+  "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 550], "weight": 8 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
-  "sitka-spruce": { "model": "norway-spruce", "latin": "Picea sitchensis", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
+  "sitka-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
   "lodgepole-pine": { "model": "scots-pine", "latin": "Pinus contorta", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 450], "weight": 2 },
   "siberian-larch": { "model": "european-larch", "latin": "Larix sibirica", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
   "tea-leaved-willow": { "model": "hawthorn", "latin": "Salix phylicifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
@@ -15,7 +15,7 @@
  },
  "ground": {
   "woolly-fringe-moss": { "model": "heather", "latin": "Racomitrium lanuginosum", "on": ["moss", "bare"], "height": [0.05, 0.15], "share": 0.4 },
-  "crowberry": { "model": "heather", "latin": "Empetrum nigrum subsp. hermaphroditum", "on": ["shrub", "moss", "grass"], "share": 0.3 },
+  "crowberry": { "on": ["shrub", "moss", "grass"], "share": 0.3 },
   "bog-bilberry": { "model": "bilberry", "latin": "Vaccinium uliginosum", "on": ["shrub", "moss", "tree"], "height": [0.1, 0.35], "share": 0.2 },
   "heather": {},
   "arctic-thyme": { "model": "alpine-flowers", "latin": "Thymus praecox subsp. arcticus", "on": ["bare", "moss", "grass"], "height": [0.03, 0.08], "share": 0.08 },
