@@ -209,7 +209,7 @@ GRADE_SMOOTH_M = 12.0
 GRADE_BANK = 0.85
 # OSM's leaf_type, and a region's `leaf`, as the forest it makes.
 LEAF = {"needleleaved": "needleleaf-forest", "broadleaved": "broadleaf-forest", "mixed": "mixed-forest"}
-# Tree heights where no DTM gives a canopy: hedgerow and garden trees.
+# Tree heights where no DTM measures a canopy: hedgerow and garden trees.
 NO_CANOPY_M = (5.0, 9.0)
 # OSM water on k < WATER_LEVELS (±10 km), as coverage from a 4× finer grid: rivers and canals
 # narrower than a WorldCover pixel, and lakes. Full widths for a waterway without a width tag.
@@ -1655,15 +1655,19 @@ def scatter_trees(material0, roads0, water0, canopy0, regions0, leaves: np.ndarr
     """float32 x, y, height, type (0 conifer, 1 broadleaf) for every tree within TREE_RADIUS_M:
     jittered on woodland, outside the road buffers and water, as tall as the canopy says. A forest
     of unknown leaf type takes its region's `leaf` (`leaves`, a forest per region). GLO-30 alone
-    cannot measure a canopy, so without a DTM trees stand NO_CANOPY_M tall."""
+    cannot measure a canopy, so without a DTM, or where the DTM measures none over woodland (a
+    canopy GLO-30 misses, as over Tuscan oak), trees stand NO_CANOPY_M tall."""
     rng = np.random.default_rng(1)
     grid = np.arange(-TREE_RADIUS_M, TREE_RADIUS_M, TREE_SPACING_M) + TREE_SPACING_M / 2
     x, y = (axis.ravel() + rng.uniform(-0.4, 0.4, axis.size) * TREE_SPACING_M for axis in np.meshgrid(grid, grid))
     half = HALF0_M
     edge = sample(roads0, half, x, y)[:, 0] / 10 - 5
     canopy = sample(canopy0, half, x, y) if canopy0 is not None else rng.uniform(*NO_CANOPY_M, x.size)
+    if canopy0 is not None:
+        # Its own generator, so the draws below stay as they were.
+        canopy = np.where(canopy > 3, canopy, np.random.default_rng(2).uniform(*NO_CANOPY_M, x.size))
     keep = ((np.hypot(x, y) <= TREE_RADIUS_M) & WOODLAND[sample(material0, half, x, y)]
-            & (edge > 1.5) & (sample(water0, half, x, y) < 64) & (canopy > 3))
+            & (edge > 1.5) & (sample(water0, half, x, y) < 64))
     x, y, canopy = x[keep], y[keep], canopy[keep]
     forest = sample(material0, half, x, y)
     forest = np.where(forest == MATERIAL["forest"], leaves[sample(regions0, half, x, y)], forest)
