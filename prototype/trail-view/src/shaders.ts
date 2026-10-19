@@ -263,6 +263,8 @@ struct Ground {
   float bare;
   // Land no quarter sees green, 0–1: pumice, lava, scree and limestone, whatever WorldCover calls it.
   float barren;
+  // Ground that grows a sward, 0–1: every cover but bare, built-up, snow, water, moss and lichen.
+  float sward;
   // The rock: its colour, its banded share and how hard it stands, 0 soft to 1 hard.
   vec3 stone;
   float banded;
@@ -366,6 +368,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
   float tree = 0.0;
   float rough = 0.0;
   float moor = 0.0;
+  float sward = 0.0;
   float bare = 0.0;
   float banded = 0.0;
   float hardness = 0.0;
@@ -404,6 +407,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
     tree += cover == COVER_TREE ? w : 0.0;
     rough += w * ROUGH[cell.r];
     moor += w * MOOR[cell.r];
+    sward += cover == COVER_BARE || cover == COVER_BUILT || cover == COVER_SNOW || cover == COVER_WATER || cover == COVER_MOSS ? 0.0 : w;
     bare += w * ROCKY[cell.r];
     stone += w * rock.rgb;
     banded += w * rock.a;
@@ -478,7 +482,7 @@ Ground groundOn(float k, vec2 p, float footprint, bool known) {
     }
   }
   return Ground(albedo, water, tree, satellite, -1.0, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water),
-                stone, banded, hardness, float(region));
+                sward, stone, banded, hardness, float(region));
 }
 
 /** The level whose pixel matches the screen footprint at p, with the fraction toward the next. */
@@ -508,7 +512,7 @@ Ground groundAt(vec2 p, float footprint, bool withSnow) {
     Ground b = groundOn(k + 1.0, p, footprint, known);
     g = Ground(mix(g.albedo, b.albedo, w), mix(g.water, b.water, w), mix(g.tree, b.tree, w), mix(g.snow, b.snow, w), -1.0,
                mix(g.road, b.road, w), mix(g.shore, b.shore, w), mix(g.exposure, b.exposure, w), mix(g.rough, b.rough, w), mix(g.lush, b.lush, w),
-               mix(g.moor, b.moor, w), mix(g.bare, b.bare, w), mix(g.barren, b.barren, w), mix(g.stone, b.stone, w), mix(g.banded, b.banded, w),
+               mix(g.moor, b.moor, w), mix(g.bare, b.bare, w), mix(g.barren, b.barren, w), mix(g.sward, b.sward, w), mix(g.stone, b.stone, w), mix(g.banded, b.banded, w),
                mix(g.hardness, b.hardness, w), w < 0.5 ? g.region : b.region);
   }
   // The satellite decides snow only where the data has none. A snow edge is crisper than the
@@ -818,9 +822,27 @@ void main() {
   float green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
   // The ground's own slope, before slabs tilt the normal.
   float slope = n.z;
-  // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
-  vec3 albedo = g.albedo * (1.0 + (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17)
-    * (1.0 - g.road) * (1.0 - smoothstep(0.3, 2.0, footprint)));
+  // The ground is mottled at every scale a pixel can show, rather than one flat colour: patches
+  // tens of metres across, tussocks and bare patches, and near the eye the sward's blades. Each
+  // scale fades to its mean once a pixel spans it.
+  float mottle = 0.0;
+  if (footprint < 16.0) mottle = 0.14 * (noise(vWorld.xy / 15.0) - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint));
+  if (footprint < 2.0) mottle += (0.22 * noise(vWorld.xy / 2.5) + 0.12 * noise(vWorld.xy / 0.8) - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
+  vec3 albedo = g.albedo * (1.0 + mottle * (1.0 - g.road));
+  // Blades: strokes that point away from the spot, so they stand upright on the screen. Each is a
+  // fixed angle wide and a fixed share of its distance deep, so about as many pixels wide at any
+  // range, and tapers to a lighter tip with the sward's shade behind it. Only near the eye, on
+  // ground it looks along: a bank that faces it would stretch them tall.
+  float r = max(length(vWorld.xy), 0.5);
+  float blades = r < 45.0 ? (1.0 - smoothstep(0.25, 0.6, footprint / (0.08 * r))) * (1.0 - smoothstep(25.0, 45.0, r))
+    * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(cameraPosition - vWorld)))) * g.sward * (1.0 - g.barren) : 0.0;
+  if (blades > 0.0 && g.road < 1.0) {
+    float angle = (atan(vWorld.y, vWorld.x) / 6.2831853 + 0.5) * 1600.0;
+    float along = log(r) / 0.08 + hash(vec2(floor(angle), 3.0));
+    float shape = 1.0 - smoothstep(0.35 - 0.3 * fract(along), 0.5 - 0.3 * fract(along), abs(fract(angle) - 0.5));
+    float blade = mix(-0.25, hash(vec2(floor(angle), floor(along))) - 0.5 + 0.5 * (fract(along) - 0.5), shape);
+    albedo *= 1.0 + 0.3 * blade * blades * (1.0 - g.road);
+  }
   // Woodland seen from afar is crowns and the shade between them, darker than its leaves, not one
   // flat colour: soft clumps of two sizes, never a regular net, fading to their mean once a pixel
   // on the surface is larger than a crown.
