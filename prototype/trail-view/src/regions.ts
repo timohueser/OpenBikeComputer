@@ -139,7 +139,7 @@ export interface RegionLook {
   materials?: Partial<Record<string, { colour: string }>>;
   /** A colour per lithology for slabs, crags and cliffs, drawn in red, white and green beds where `banded`. */
   lithology?: Partial<Record<string, { colour: string; banded?: true }>>;
-  /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, 0–1. */
+  /** How much open ground breaks through as rock slabs on slopes, ridges and poor grass, and how far exposed rock shows as rock, 0–1. */
   outcrops: number;
   /** Where the satellite sees green, a slope stays turf up to this many degrees; rock that holds steeper keeps its own angle. */
   turf_deg: number;
