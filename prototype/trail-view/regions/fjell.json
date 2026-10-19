@@ -2,7 +2,32 @@
  "name": "Scandinavian Montane Birch forest and grasslands",
  "ecoregion": 780,
  "extends": "world",
- "about": "Bare, rounded fjell over a belt of low mountain birch: dwarf birch, willow and crowberry heath with pale reindeer lichen between grey boulders, many lakes, late snow patches and, in the south, glaciers; gravel roads and red or dark wooden cabins. No split: the treeline falls from about 1100 m in the south to near the sea in Finnmark, but WorldCover's tree pixels already place the birch, and Sentinel-2 colour with the NDVI ramps tells lichen heath from grass. Late snow patches lie lower in the north, so a snowline that falls with latitude is a height rule asked of the coordinator, not a split.",
+ "about": "Bare, rounded fjell over a belt of low mountain birch: dwarf birch, willow and crowberry heath with pale reindeer lichen between grey boulders, many lakes, late snow patches and, in the south, glaciers; gravel roads and red or dark wooden cabins. No split: the treeline falls from about 1100 m in the south to near the sea in Finnmark, but WorldCover's tree pixels already place the birch, and Sentinel-2 colour with the NDVI ramps tells lichen heath from grass. The snow data lays the late snow patches lower in the north.",
  "leaf": "broadleaved",
- "pack": "fjell"
+ "pack": "fjell",
+ "look": {
+  "bare_luma": [0.8, 0.19, 0.13, 0.28],
+  "ramps": {
+   "grass": {
+    "spring": ["#868a5e", "#727c42", "#566c30"],
+    "summer": ["#8a8a5c", "#7a7c42", "#62702f"],
+    "autumn": ["#9a8650", "#a07a40", "#94683a"]
+   },
+   "shrub": {
+    "spring": ["#74704a", "#686c3e", "#5a6636"],
+    "summer": ["#76704a", "#6c6a3c", "#5c6434"],
+    "autumn": ["#8e6440", "#985a34", "#8a4e30"]
+   },
+   "moss": ["#9aa088", "#8e9878", "#84906c"],
+   "bare": ["#7c7a74", "#807d76", "#7c7a6e"],
+   "broad": {"summer": ["#506634", "#4a6830", "#44662c"]}
+  },
+  "moor": {"heather": "#6a5232", "share": 0.3},
+  "speckle": {"colour": "#8a5a30", "share": 0.2, "size_m": 1.5},
+  "snap": 0.75,
+  "outcrops": 0.06,
+  "rock": "#72726e",
+  "roads": ["#6b6b68", "#7a7873", "#a8a59c", "#8e8678", "#8c9a62", "#9c9486"],
+  "grade": {"shadow": [-0.002, 0, 0.004], "light": [0.016, 0.008, -0.01], "saturation": 1.05}
+ }
 }
