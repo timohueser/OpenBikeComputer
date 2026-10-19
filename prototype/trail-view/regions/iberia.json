@@ -4,5 +4,27 @@
  "extends": "world",
  "leaf": "broadleaved",
  "pack": "iberia",
- "about": "The interior of Iberia: the Meseta's wheat plains, vines and flat-topped páramos, the Ebro's gypsum badlands and steppe, holm and cork oak dehesas and montados from Extremadura and the Alentejo to the Sierra Morena, Jaén's sea of olives and the Douro's terraced schist slopes, green in winter and straw-gold in summer under a clear, dry sky. No split beyond the Valencian coast: the region is a plateau and its basins with no island side or coast strip of its own, its high sierras lie mostly in the neighbouring ecoregions and the few inside, such as Mágina, take the snowline; its plains, dehesas, olive groves and badlands differ in colour, rock and trees, which Sentinel-2 colour, the seasonal ramps, the barren rule, rock colour by lithology, the tree elevation bands and the house style by country already carry."
+ "about": "The interior of Iberia: the Meseta's wheat plains, vines and flat-topped páramos, the Ebro's gypsum badlands and steppe, holm and cork oak dehesas and montados from Extremadura and the Alentejo to the Sierra Morena, Jaén's sea of olives and the Douro's terraced schist slopes, green in winter and straw-gold in summer under a clear, dry sky. No split beyond the Valencian coast: the region is a plateau and its basins with no island side or coast strip of its own, its high sierras lie mostly in the neighbouring ecoregions and the few inside, such as Mágina, take the snowline; its plains, dehesas, olive groves and badlands differ in colour, rock and trees, which Sentinel-2 colour, the seasonal ramps, the barren rule, rock colour by lithology, the tree elevation bands and the house style by country already carry.",
+ "look": {
+  "lithology": {
+   "limestone": { "colour": "#d3c6a6" },
+   "dolomite": { "colour": "#b2a894" },
+   "marl-clay": { "colour": "#cbbd98" },
+   "gypsum": { "colour": "#e2dccd" },
+   "sandstone": { "colour": "#c3a06c" },
+   "conglomerate": { "colour": "#a99878" },
+   "quartzite": { "colour": "#bfb9ae" },
+   "granite": { "colour": "#b5aba0" },
+   "schist-slate-shale": { "colour": "#6e6a66" },
+   "basalt-lava": { "colour": "#4a4541" },
+   "cinder-scoria": { "colour": "#7a5040" },
+   "pumice": { "colour": "#d6c7a2" },
+   "tuff": { "colour": "#b39a74" },
+   "alluvium-colluvium": { "colour": "#c2ad88" },
+   "variegated-marl": { "colour": "#a8604e", "banded": true },
+   "limestone-marl": { "colour": "#d3c6a6" },
+   "dolerite": { "colour": "#6f675d" },
+   "felsic-lava": { "colour": "#5e554b" }
+  }
+ }
 }

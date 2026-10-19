@@ -54,7 +54,7 @@ bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root
 | `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 | `look.ramps.<cover>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
 | `look.materials.<id>` | `{"colour"}` paints a material of `materials.json` over its cover's ramp |
-| `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; `world.json` holds the defaults, `rock` the unknown |
+| `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; a lithology without one takes `rock` |
 | `look.cliff` | Cliff walls, whatever their lithology |
 | `look.bare_luma` | The barren ground's luma, one or one per quarter, against which the satellite lightens or darkens bare ground |
 | Applies where the eye is | `sea`, `swell`, `roads`, `roadLine`, haze, mist, light, `grade`, `weather` |

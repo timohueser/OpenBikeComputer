@@ -34,14 +34,6 @@
   },
   "outcrops": 0.5,
   "rock": "#8f8c83",
-  "lithology": {
-   "sandstone": { "colour": "#8f8c83" },
-   "limestone": { "colour": "#8f8c83" },
-   "conglomerate": { "colour": "#8f8c83" },
-   "marl-clay": { "colour": "#8f8c83" },
-   "basalt-lava": { "colour": "#8f8c83" },
-   "schist-slate-shale": { "colour": "#8f8c83" }
-  },
   "cliff": "#78776f",
   "snowline": 1100,
   "bedding": { "strike": 55, "dip": 65 },
