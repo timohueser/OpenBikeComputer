@@ -741,10 +741,6 @@ void main() {
   // gentler slopes: red, white and green-grey, streaked by gullies. Above sea level, so strata,
   // spray and sea do not move with the eye.
   float altitude = eyeAltitude + vWorld.z + curvature * dot(vWorld.xy, vWorld.xy);
-  // Strata follow the bedding planes: level where the kit gives none, tilted where it does.
-  float bed = dot(vec3(vWorld.xy, altitude), bedding);
-  vec2 strike = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) * 1.4142 : vec2(1.0);
-  float strata = 0.86 + 0.22 * noise(vec2(bed / 9.0, dot(vWorld.xy, strike) / 120.0));
   float banded = g.banded;
   float hardness = g.hardness;
   vec3 stone = g.stone;
@@ -792,10 +788,13 @@ void main() {
     float dots = step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y);
     albedo = mix(albedo, speckle.rgb, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * terrain.w, 0.1 * terrain.w, surfaceSize)));
   }
-  // Heather in patches over the moor.
-  float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
-  vec4 heather = rule(region, SLOT_HEATHER);
-  albedo = mix(albedo, heather.rgb, g.moor * (1.0 - g.road) * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
+  // Heather, cliff faces and water are worked out only where they show: this shader is most of a
+  // frame. Heather in patches over the moor.
+  if (g.moor > 0.0) {
+    float patches = noise(vWorld.xy / 4.0) * 0.55 + noise(vWorld.xy / 23.0) * 0.45;
+    vec4 heather = rule(region, SLOT_HEATHER);
+    albedo = mix(albedo, heather.rgb, g.moor * (1.0 - g.road) * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
+  }
   // Rock slabs break through open ground on slopes, ridges and poor grass: cells about 9 m across,
   // each rock or turf, with turf between slabs and a dark rim round each. Too small to see past a
   // few metres a pixel, they become their share of rock colour.
@@ -834,19 +833,26 @@ void main() {
   // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°, so a
   // cinder cone is no cliff; walls past about 47° are rock, in the region's cliff colour where it
   // names one. Sea cliffs: wet and dark where the waves reach, orange lichen in the spray above.
-  vec4 wall = rule(region, SLOT_CLIFF);
-  vec3 face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
-  // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
-  // cliff reads; they fade where a pixel spans a bed.
-  float along = dot(vWorld.xy, strike);
-  float ledge = fract(bed / 3.5 + 0.9 * noise(vec2(along / 14.0, bed / 11.0)));
-  // Cracks come and go along the bed, so the beds read as rock, not as contour lines.
-  float broken = smoothstep(0.35, 0.6, noise(vec2(along / 5.0, bed / 2.0 + 3.0)));
-  face *= 1.0 + (1.0 - smoothstep(0.3, 1.2, surfaceSize)) * (0.12 * (1.0 - smoothstep(0.0, 0.18, ledge)) - 0.28 * broken * smoothstep(0.82, 0.97, ledge));
-  face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
-  face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
-    * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
-  albedo = mix(albedo, face, steep * (1.0 - g.tree) * (1.0 - g.road));
+  float walled = steep * (1.0 - g.tree) * (1.0 - g.road);
+  if (walled > 0.0) {
+    // Strata follow the bedding planes: level where the kit gives none, tilted where it does.
+    float bed = dot(vec3(vWorld.xy, altitude), bedding);
+    vec2 strike = length(bedding.xy) > 0.01 ? normalize(vec2(-bedding.y, bedding.x)) * 1.4142 : vec2(1.0);
+    float strata = 0.86 + 0.22 * noise(vec2(bed / 9.0, dot(vWorld.xy, strike) / 120.0));
+    vec4 wall = rule(region, SLOT_CLIFF);
+    vec3 face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z)) * strata;
+    // Ledges: beds a few metres thick, each lit along its top and cracked dark beneath, as a painted
+    // cliff reads; they fade where a pixel spans a bed.
+    float along = dot(vWorld.xy, strike);
+    float ledge = fract(bed / 3.5 + 0.9 * noise(vec2(along / 14.0, bed / 11.0)));
+    // Cracks come and go along the bed, so the beds read as rock, not as contour lines.
+    float broken = smoothstep(0.35, 0.6, noise(vec2(along / 5.0, bed / 2.0 + 3.0)));
+    face *= 1.0 + (1.0 - smoothstep(0.3, 1.2, surfaceSize)) * (0.12 * (1.0 - smoothstep(0.0, 0.18, ledge)) - 0.28 * broken * smoothstep(0.82, 0.97, ledge));
+    face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
+    face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
+      * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
+    albedo = mix(albedo, face, walled);
+  }
   float snow = g.snow * smoothstep(terrain.z - 200.0, terrain.z, altitude);
   albedo = mix(albedo, rule(region, COVER_SNOW * 3).rgb, snow) * (1.0 - 0.3 * wet * (1.0 - snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
@@ -860,6 +866,11 @@ void main() {
   vec3 mirrored = reflect(dir, up);
   float fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
   c += wet * g.road * fresnel * sky(mirrored);
+  float flooded = smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, level);
+  if (flooded == 0.0) {
+    colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
+    return;
+  }
   // The body turns from the shallow colour beside the shore, where the surf churns it, to the deep
   // one within a few tens of metres: rocky coasts drop off fast.
   float sea = 1.0 - smoothstep(1.0, 3.0, altitude);
@@ -880,7 +891,7 @@ void main() {
   float crest = smoothstep(0.84, 0.94, fract(g.shore / 17.0 + time * 0.05)) * (1.0 - smoothstep(8.0, 15.0 + 70.0 * swell, g.shore))
     * smoothstep(0.35, 0.6, noise(vWorld.xy / 6.0 + vec2(time * 0.2, 0.0))) * (1.0 - smoothstep(1.0, 4.0, footprint)) * (0.2 + 0.8 * swell);
   water = mix(water, vec3(0.85) * (ambient + sunColour * max(sunDir.z, 0.0) * shadow), sea * max(rim, crest));
-  c = mix(c, water, smoothstep(0.45, 0.55, g.water) * smoothstep(0.75, 0.9, level));
+  c = mix(c, water, flooded);
   colour = vec4(finish(atmosphere(c, vWorld)), 1.0);
 }
 `;
