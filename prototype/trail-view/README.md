@@ -51,7 +51,7 @@ texel's ground, water and roads by its region in `meta.regions`.
 | `ecoregion` | The RESOLVE id of the ecoregion, on `<short>.json` only |
 | `leaf`, `pack` | Default leaf type, the asset pack |
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
-| `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
+| `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snow_share, sea, swell, haze, grade, weather |
 | `look.ramps.<cover>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
 | `look.materials.<id>` | `{"colour"}` paints a material of `materials.json` over its cover's ramp, for the year or per season (`{"autumn": …}`) |
 | `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; a lithology without one takes `rock` |
@@ -76,7 +76,7 @@ Needs `uv` and the GDAL command-line tools on `PATH` (the bakes so far used 3.13
 them, and for the CDSE keys when it reads colour, before it starts. Run from the repository root:
 
 ```sh
-uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3] [--baseline]
+uv run prototype/trail-view/bake.py <spot> [--colour] [--snow] [--dtm-levels 3] [--baseline]
 # --baseline: without the spot's landcover and geology maps, as a place that has none
 ```
 
@@ -85,6 +85,8 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3] [--baseli
 | `material-k` | A material of `materials.json` |
 | `litho-k` | A lithology of `materials.json` on land, 0 unknown |
 | `region-k` | An index into `meta.regions`: the deepest subregion whose `where` holds the texel, under its ecoregion in `tune/ecoregions.json` |
+| `s2-q1…4-k` | k ≤ 6: a quarterly mosaic's colour and NDVI. Where it sees snow, the colour of the nearest quarter that does not (black where none) and alpha 1, so that only the snow data says where snow lies |
+| `snow-k` | k ≥ 3: per season of the planner's (`data/planner.toml`), the onset and melt-out day step of the longest snow period, as [the planner's snow tiles](../../specs/planner-snow-tiles.md) store them. HR-WSI where it has data, else MODIS, but not where the texel's Hansen tree canopy is over 75 %. Level 3's texels are HR-WSI's 20 m; the finer levels read it |
 
 | Step | Material and lithology from | Levels | Names |
 |---|---|---|---|
@@ -96,11 +98,11 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--dtm-levels 3] [--baseli
 | 6 | The spot's `landcover` map | ±5 km | every land texel |
 | 7 | Lithology: EGDI 1:1 000 000 (676 MB), IGME 5000 (48 MB) where EGDI names none, both in `_sources/lithology/`; then the spot's `geology` map on ±5 km | all | every land texel |
 
-- A rebake keeps the Sentinel-2 levels, most of a bake's time, while the spot stays at the
-  position in its `meta.json`. `--colour` reads them again. `--dtm-levels 3` stops the DTM at
-  ±5 km instead of ±10 km, about 1 GB of tiles.
+- A rebake keeps the Sentinel-2 and snow levels while the spot stays put;
+  `--colour` and `--snow` read them again. `--dtm-levels 3` stops the DTM at ±5 km instead of
+  ±10 km, about 1 GB of tiles.
 - Bakes can run side by side. Each shared source is a lock in `_sources/locks/`: `overpass`,
-  `cdse`, `dtm-<key>`, `glo30`, `landcover-<key>`, `clc`, `lithology` and `worldcover`. A bake that
+  `cdse`, `modis`, `dtm-<key>`, `glo30`, `landcover-<key>`, `clc`, `lithology` and `worldcover`. A bake that
   waits prints `waiting for <name>`. Cached answers are written whole or not at all.
 - GLO-30 comes from `~/.cache/obcm/dem/` where it exists, else from the public COGs. WorldCover
   comes from its public COGs. The Sentinel-2 quarterly mosaics come from CDSE S3 with the keys in
@@ -167,21 +169,21 @@ npm run shoot -- <spot>[,<spot>…] [options]   # headless shots
 | `npm run shoot` option | What it does |
 |---|---|
 | `--yaw a,b`, `--pitch`, `--vfov` | The views; the spot's heading by default |
-| `--hour`, `--season`, `--weather` | 15, `summer` and `sunny` by default |
+| `--hour`, `--date`, `--weather` | 15, `08-15` and `sunny` by default; `--date` takes a list of `MM-DD` |
 | `--no-photo` | No photograph side by side |
 | `--time` | Also the median frame time |
 | `--out <dir>` | Copies the shots there too |
 | `--swiftshader` | WebGL on the CPU, for a machine without a GPU |
 
 Shots land in `~/.cache/obc/trail-view/shots/` as
-`<spot>-<surface>-q<quarter>[-<weather>][-<yaw>]-<hhmm>.png`; a side by side has no yaw. Each spot
+`<spot>-<surface>-<mmdd>[-<weather>][-<yaw>]-<hhmm>.png`; a side by side has no yaw. Each spot
 prints one JSON line with its files, the renderer, the triangles and the page errors.
 
 ## The view
 
 - "region" picks a spots file and shows its tune status from `~/.cache/obc/trail-view/status.json`,
-  "spot" one of its spots, "season" one day of the year, "time of day" the local hour. The season
-  also picks the Sentinel-2 quarter and the palette.
+  "spot" one of its spots, "date" the day in weekly steps, "time of day" the local hour. The date
+  sets the sun, the snow, the ground's two mosaics and the trees' season.
 - "reference photo" shows the spot's photograph in a corner. A click enlarges it to the view; with
   "photo camera" on, the two then cover each other exactly.
 - "weather" is sunny, cloudy or rainy: one cloud layer, its shadows, wet ground and rain. "play

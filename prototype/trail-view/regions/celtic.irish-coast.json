@@ -35,7 +35,6 @@
   "outcrops": 0.5,
   "rock": "#8f8c83",
   "cliff": "#78776f",
-  "snowline": 1100,
   "bedding": { "strike": 55, "dip": 65 },
   "sea": { "deep": "#2f4b66", "shallow": "#4d6b80" },
   "swell": 250,

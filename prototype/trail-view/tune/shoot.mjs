@@ -2,14 +2,14 @@
 // headless Chromium, and saves the photo side by side and views through the page's own buttons.
 //
 //   npm run shoot -- <spot>[,<spot>…] [--yaw 0,90,180,270] [--pitch 0] [--vfov 60] [--hour 15]
-//        [--season summer] [--weather sunny] [--no-photo] [--time] [--out dir] [--swiftshader]
+//        [--date 08-15[,MM-DD…]] [--weather sunny] [--no-photo] [--time] [--out dir] [--swiftshader]
 //   npm run shoot -- --sheet <kit>[/<season>] [<model name>…] [--out dir] [--swiftshader]
 //
 // --sheet shoots models.html at #<kit>/<season> instead: the whole page, or the card of each named
 // model. A kit is all, missing or a pack.
 // Shots land in ~/.cache/obc/trail-view/shots/ and, with --out, are copied to <dir>/. Prints one
 // JSON line per spot: the files, the WebGL renderer, near and total triangles, page errors, and
-// with --time the median frame time. Without a GPU, pass --swiftshader: WebGL2 then runs on the
+// with --time the median frame time of the last date. Without a GPU, pass --swiftshader: WebGL2 then runs on the
 // CPU, the same picture at about 2 s a frame, so its frame times say nothing about the product.
 
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -26,7 +26,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     yaw: { type: 'string' }, pitch: { type: 'string', default: '0' }, vfov: { type: 'string', default: '60' },
-    hour: { type: 'string', default: '15' }, season: { type: 'string', default: 'summer' },
+    hour: { type: 'string', default: '15' }, date: { type: 'string', default: '08-15' },
     weather: { type: 'string', default: 'sunny' }, 'no-photo': { type: 'boolean' }, time: { type: 'boolean' },
     out: { type: 'string' }, swiftshader: { type: 'boolean' }, sheet: { type: 'string' },
   },
@@ -92,24 +92,30 @@ try {
       const result = await page.evaluate(async (o) => {
         const tv = window.trailView;
         const frames = (n) => new Promise((resolve) => { const step = () => (n-- ? requestAnimationFrame(step) : resolve()); step(); });
-        Object.assign(tv.state, { preset: o.spot, hour: o.hour, weather: o.weather, season: tv.seasons.find((s) => s.startsWith(o.season)) ?? tv.state.season });
+        const days = o.dates.map((date) => tv.dayOf(date));
+        if (days.includes(null)) throw new Error(`--date takes MM-DD: ${o.dates}`);
+        Object.assign(tv.state, { preset: o.spot, hour: o.hour, weather: o.weather, day: days[0] });
         await tv.select(o.spot);
         if (tv.loaded()?.bake.meta.id !== o.spot) throw new Error(`${o.spot} did not load`);
-        tv.lightChanged();
-        tv.gui.controllersRecursive().forEach((c) => c.updateDisplay());
-        await frames(3);
         const files = [];
-        if (o.photo && tv.loaded().bake.meta.photo) files.push(await tv.saveSideBySide());
-        tv.state.photoCamera = false;
-        for (const yaw of o.yaws ?? [tv.loaded().bake.meta.heading ?? 0]) {
-          Object.assign(tv.state, { yaw, pitch: o.pitch, vfov: o.vfov });
+        for (const day of days) {
+          Object.assign(tv.state, { day, photoCamera: true });
+          await tv.dateChanged();
           tv.layout();
-          await frames(2);
-          files.push(await tv.saveView());
+          tv.gui.controllersRecursive().forEach((c) => c.updateDisplay());
+          await frames(3);
+          if (o.photo && tv.loaded().bake.meta.photo) files.push(await tv.saveSideBySide());
+          tv.state.photoCamera = false;
+          for (const yaw of o.yaws ?? [tv.loaded().bake.meta.heading ?? 0]) {
+            Object.assign(tv.state, { yaw, pitch: o.pitch, vfov: o.vfov });
+            tv.layout();
+            await frames(2);
+            files.push(await tv.saveView());
+          }
         }
         return { files, triangles: tv.gui.controllersRecursive().find((c) => c.property === 'triangles').object.triangles };
       }, {
-        spot, hour: Number(values.hour), season: values.season, weather: values.weather, photo: !values['no-photo'],
+        spot, hour: Number(values.hour), dates: values.date.split(','), weather: values.weather, photo: !values['no-photo'],
         yaws: values.yaw?.split(',').map(Number), pitch: Number(values.pitch), vfov: Number(values.vfov),
       });
       // Synchronous renders, each finished by a one-pixel readback, so the time includes the GPU's.

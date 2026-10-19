@@ -51,7 +51,6 @@
   "turf_deg": 57,
   "rock": "#86847d",
   "cliff": "#605e59",
-  "snowline": 1150,
   "sea": { "deep": "#2b3d4c", "shallow": "#46606f" },
   "swell": 260
  }

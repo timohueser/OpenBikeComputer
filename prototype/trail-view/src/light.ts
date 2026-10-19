@@ -3,14 +3,6 @@
 import * as THREE from 'three';
 import { instantAt, solarPosition, solarTerms } from 'planner-sun';
 
-/** One day per season, in the year of the Sentinel-2 quarterly mosaics. */
-export const SEASONS: Record<string, string> = {
-  'winter (15 Feb)': '2025-02-15',
-  'spring (15 May)': '2025-05-15',
-  'summer (15 Aug)': '2025-08-15',
-  'autumn (15 Nov)': '2025-11-15',
-};
-
 export interface Light {
   /** Towards the sun, in the eye's east-north-up frame. */
   sun: THREE.Vector3;

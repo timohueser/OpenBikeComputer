@@ -7,7 +7,8 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { groundAt, heightAtTexel, type Bake, type Building } from './bake';
+import { groundAt, heightAtTexel, snowAt, type Bake, type Building } from './bake';
+import { seasonOf, snowStep } from './calendar';
 import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, ROUGH, WATERY } from './materials';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import { packNamed, type Pack, type Region } from './regions';
@@ -31,8 +32,6 @@ const patchAt = (x: number, y: number, seed: number) =>
   0.5 + 0.25 * (Math.sin(x / 13 + seed) * Math.sin(y / 17 - 1.7 * seed) + Math.sin((x + y) / 23 + 2.3 * seed) * Math.sin((x - y) / 19 + seed));
 /** The eye stands in a clearing this wide, so it is never inside a crown. */
 const CLEAR_M = 6;
-/** In winter, snow lies down to this far below a region's snowline. */
-const WINTER_SNOW_BELOW_M = 800;
 /** Ground plants on a jittered 1 m grid within this many metres, all of them within THIN_M. */
 const GROUND_RADIUS_M = 60;
 const THIN_M = 20;
@@ -283,13 +282,12 @@ export class NearField {
   readonly buildings = new THREE.Group();
   /** Triangles the trees, plants and buildings add to a frame. */
   triangles = 0;
-  /**
-   * Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour" or
-   * "animal|model|seed"; a plant's key ends in "|buried" where winter snow covers it.
-   */
+  /** Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour" or "animal|model|seed". */
   private groups = new Map<string, Instances>();
   /** The packs' ground plants by species. */
   private ground = new Map<string, Pack['ground'][number]>();
+  /** Whether snow covers a ground plant at x, y on a day step of the snow data. */
+  private buried: (x: number, y: number, step: number) => boolean = () => false;
   /** Species that keep their summer leaves all year. */
   private evergreen = new Set<string>();
   private readonly models = new Map<string, THREE.BufferGeometry>();
@@ -330,7 +328,7 @@ export class NearField {
 
   /**
    * Place the bake's trees, shrubs, plants and buildings, each with the pack and rules of the region
-   * it stands in (`regions`, in meta.regions' order); setSeason draws them.
+   * it stands in (`regions`, in meta.regions' order); setDate draws them.
    */
   set(bake: Bake, regions: Region[]): void {
     const { size, half0_m, eye_m } = bake.meta;
@@ -551,12 +549,12 @@ export class NearField {
         const keep = d < THIN_M ? 1 : Math.max(0.3, THIN_M / d);
         if (rand() > keep) continue;
         const [low, high] = species.height;
-        // Winter snow lies well below the snowline that holds out of season.
-        const buried = groundAt(bake, gx, gy) + eye_m > look.snowline - WINTER_SNOW_BELOW_M ? '|buried' : '';
-        add(`plant|${species.id}|${1 + Math.floor(rand() * PLANT_SEEDS)}${buried}`, gx, gy, (low + rand() * (high - low)) / Math.sqrt(Math.sqrt(keep)), rand() * 2 * Math.PI);
+        add(`plant|${species.id}|${1 + Math.floor(rand() * PLANT_SEEDS)}`, gx, gy, (low + rand() * (high - low)) / Math.sqrt(Math.sqrt(keep)), rand() * 2 * Math.PI);
       }
     }
     this.groups = groups;
+    // Snow on a day step covers a ground plant as it covers the ground, by its own region's share.
+    this.buried = (x, y, step) => snowAt(bake, x, y, step, regions[regionAt(x, y)].look.snow_share) > 0.5;
     this.ground = new Map(kits.flatMap(({ pack }) => pack.ground.map((p) => [p.id, p] as const)));
     this.evergreen = new Set(kits.flatMap(({ pack }) => pack.trees.filter((s) => s.evergreen).map((s) => s.tree)));
     this.shadowsStale = true;
@@ -599,14 +597,16 @@ export class NearField {
     return edge < 0.2 || bake.water[(Math.round(v) * size + Math.round(u)) * 2] > 64;
   }
 
-  /** Draw every group with the season's models; buried ground plants stay under the snow in winter. */
-  setSeason(season: Season): void {
+  /** Draw every group with the models of the day's season; ground plants under the day's snow stay hidden. */
+  setDate(day: number): void {
     for (const mesh of this.trees.children as THREE.Mesh[]) mesh.geometry.dispose();
     this.trees.clear();
     this.triangles = 0;
-    for (const [key, instances] of this.groups) {
-      const [what, name, lod, buried] = key.split('|');
-      if (buried && season === 'winter') continue;
+    const [season, step] = [seasonOf(day), snowStep(day)];
+    for (const [key, all] of this.groups) {
+      const [what, name, lod] = key.split('|');
+      const instances = what === 'plant' ? this.standing(all, step) : all;
+      if (!instances.length) continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const ground = what === 'plant' ? this.ground.get(name) : undefined;
       const model = this.model(key, leaves, () =>
@@ -626,6 +626,13 @@ export class NearField {
     }
     for (const mesh of this.buildings.children as THREE.Mesh[]) this.triangles += mesh.geometry.getAttribute('position').count / 3;
     this.shadowsStale = true;
+  }
+
+  /** The plants of a group that no snow covers on the day step. */
+  private standing(plants: Instances, step: number): Instances {
+    const kept: Instances = [];
+    for (let i = 0; i < plants.length; i += 5) if (!this.buried(plants[i], plants[i + 1], step)) kept.push(...plants.slice(i, i + 5));
+    return kept;
   }
 
   /** Draw the trees and buildings near the eye into the shadow map from the sun, if stale. */

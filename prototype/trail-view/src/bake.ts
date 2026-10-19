@@ -30,6 +30,13 @@ export interface Meta {
   dtm: string | null;
   /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces, k < water_levels OSM water. */
   s2_levels: number;
+  /**
+   * Levels snow_first_level ≤ k < levels carry the planner's snow data (specs/planner-snow-tiles.md)
+   * for snow_seasons seasons from 1 September of snow_first_season; finer levels read the first.
+   */
+  snow_first_level?: number;
+  snow_first_season?: number;
+  snow_seasons?: number;
   road_levels: number;
   water_levels: number;
   /** The water levels' shore distance runs to this many metres. */
@@ -68,6 +75,8 @@ export interface Bake {
   region: Uint8Array;
   /** R8 per texel, k < s2_levels: the most NDVI any quarter saw, in their alpha code. */
   ndvimax: Uint8Array;
+  /** Per snow level and season, an onset plane and a melt-out plane of day steps, the planner's bytes. */
+  snow: Uint8Array;
   /** RGB8 per texel, k < road_levels: distance to the nearest road edge in 0.1 m, its surface code and half-width in 0.05 m. */
   roads: Uint8Array;
   /** RG8 per texel, k < water_levels: the share of the texel under OSM water, 0–255, and sqrt(shore distance / shore_reach_m). */
@@ -101,9 +110,9 @@ async function unpack(url: string): Promise<{ data: ArrayBuffer; bytes: number }
   return { data, bytes: Number(response.headers.get('content-length')) || packed.byteLength };
 }
 
-/** The levels of `name-{k}.bin.gz` for k < count, end to end. */
-async function layers(base: string, name: string, count: number): Promise<{ data: Uint8Array; bytes: number }> {
-  const parts = await Promise.all([...Array(count).keys()].map((k) => unpack(`${base}${name}-${k}.bin.gz`)));
+/** The levels of `name-{k}.bin.gz` for first ≤ k < end, end to end. */
+async function layers(base: string, name: string, end: number, first = 0): Promise<{ data: Uint8Array; bytes: number }> {
+  const parts = await Promise.all([...Array(Math.max(end - first, 0)).keys()].map((k) => unpack(`${base}${name}-${first + k}.bin.gz`)));
   const data = new Uint8Array(parts.reduce((sum, part) => sum + part.data.byteLength, 0));
   let at = 0;
   for (const part of parts) {
@@ -113,7 +122,11 @@ async function layers(base: string, name: string, count: number): Promise<{ data
   return { data, bytes: parts.reduce((sum, part) => sum + part.bytes, 0) };
 }
 
-/** RGBA8 per texel for the colour levels of quarter 1–4: visible reflectance^(1/2.2), and NDVI. */
+/**
+ * RGBA8 per texel for the colour levels of quarter 1–4: visible reflectance^(1/2.2), and NDVI in
+ * 2–255. Where the quarter saw snow, alpha is 1 and the colour that of the nearest quarter without,
+ * or black where none had one.
+ */
 export function loadQuarter(bake: Bake, quarter: number) {
   return layers(bake.base, `s2-q${quarter}`, bake.meta.s2_levels);
 }
@@ -135,13 +148,14 @@ export async function loadBake(id: string): Promise<Bake> {
   if (!response.ok) throw new Error(`no bake for ${id}: run uv run prototype/trail-view/bake.py ${id}`);
   const meta: Meta = await response.json();
   const levels = [...Array(meta.levels).keys()];
-  const [surface, glo30, material, litho, region, ndvimax, roads, water, canopy, trees, buildings, walls, aerialways, bridges] = await Promise.all([
+  const [surface, glo30, material, litho, region, ndvimax, snow, roads, water, canopy, trees, buildings, walls, aerialways, bridges] = await Promise.all([
     Promise.all(levels.map((k) => heights(`${base}h-${k}.bin.gz`, meta.eye_m))),
     Promise.all(levels.slice(0, meta.dtm_levels).map((k) => heights(`${base}glo30-${k}.bin.gz`, meta.eye_m))),
     layers(base, 'material', meta.levels),
     layers(base, 'litho', meta.levels),
     layers(base, 'region', meta.levels),
     layers(base, 'ndvimax', meta.s2_levels),
+    layers(base, 'snow', meta.snow_first_level === undefined ? 0 : meta.levels, meta.snow_first_level),
     layers(base, 'road', meta.road_levels),
     layers(base, 'water', meta.water_levels),
     layers(base, 'canopy', meta.dtm_levels),
@@ -151,7 +165,7 @@ export async function loadBake(id: string): Promise<Bake> {
     optional(`${base}aerialways.json`),
     optional(`${base}bridges.json`),
   ]);
-  const bytes = [...surface, ...glo30, material, litho, region, ndvimax, roads, water, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
+  const bytes = [...surface, ...glo30, material, litho, region, ndvimax, snow, roads, water, canopy, trees, walls].reduce((sum, level) => sum + level.bytes, 0);
   return {
     meta,
     base,
@@ -161,6 +175,7 @@ export async function loadBake(id: string): Promise<Bake> {
     litho: litho.data,
     region: region.data,
     ndvimax: ndvimax.data,
+    snow: snow.data,
     roads: roads.data,
     water: water.data,
     canopy: canopy.data,
@@ -193,4 +208,32 @@ export function groundAt(bake: Bake, x: number, y: number): number {
   const [fu, fv] = [u - i, v - j];
   const h = (di: number, dj: number) => bake.surface[k][(j + dj) * size + i + di];
   return (h(0, 0) * (1 - fu) + h(1, 0) * fu) * (1 - fv) + (h(0, 1) * (1 - fu) + h(1, 1) * fu) * fv;
+}
+
+/**
+ * The share of x, y under snow on the snow data's day step, at the first snow level, as the
+ * terrain shader decides it: a texel has snow where at least `enough` of its seasons with data had
+ * snow that day, and the four texels around x, y blend bilinearly. A texel without data adds none.
+ */
+export function snowAt(bake: Bake, x: number, y: number, step: number, enough: number): number {
+  const { size, half0_m, snow_first_level: first, snow_seasons: seasons } = bake.meta;
+  if (first === undefined || !seasons) return 0;
+  const area = size * size;
+  const px = (2 * half0_m * 2 ** first) / size;
+  const [u, v] = [(x + half0_m * 2 ** first) / px - 0.5, (half0_m * 2 ** first - y) / px - 0.5];
+  const [i, j] = [Math.floor(u), Math.floor(v)];
+  const clamp = (n: number) => Math.min(Math.max(n, 0), size - 1);
+  let snow = 0;
+  for (const [di, dj] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+    const t = clamp(j + dj) * size + clamp(i + di);
+    let [snowy, known] = [0, 0];
+    for (let s = 0; s < seasons; s++) {
+      const [onset, melt] = [bake.snow[2 * s * area + t], bake.snow[(2 * s + 1) * area + t]];
+      if (onset === 255) continue;
+      known++;
+      if (onset === 254 || (onset <= step && step <= melt)) snowy++;
+    }
+    if (known && snowy / known >= enough) snow += (di ? u - i : 1 - u + i) * (dj ? v - j : 1 - v + j);
+  }
+  return snow;
 }

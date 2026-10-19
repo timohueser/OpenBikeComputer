@@ -8,12 +8,15 @@ import { COVER_ORDER } from './materials';
 import { SEASONS } from './models/trees';
 import type { Ramp, RegionLook } from './regions';
 
+/** Snow, on the ground and on what it settles on. */
+export const SNOW = '#eef2f6';
+
 const FIXED: Record<string, Ramp> = {
   shrub: ['#7a7344', '#6b7a40', '#5a7a3a'],
   // WorldCover's built-up ground in an Alpine village is mostly gardens between houses.
   built: ['#a39a8e', '#99987e', '#8a9568'],
   bare: ['#8f8a80', '#979084', '#8a8a72'],
-  snow: ['#eef2f6', '#eef2f6', '#eef2f6'],
+  snow: [SNOW, SNOW, SNOW],
   water: ['#2c5874', '#2c5874', '#2c5874'],
   wetland: ['#7d8a5a', '#6f8a52', '#5f8a4c'],
   mangrove: ['#3e5a34', '#365a32', '#2f5530'],

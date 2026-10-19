@@ -201,6 +201,21 @@ const int SLOT_ROADS = ${SLOT.roads};
 const int SLOT_ROAD_LINE = ${SLOT.roadLine};
 `;
 
+/** The snow on the date, from the snow pass. Reads LEVELS, which the shader brings in before it. */
+const SNOW = /* glsl */ `
+// The snow on the date of levels k ≥ snowFirst (snowFragment), snowLevels of them; finer levels
+// read the first.
+uniform sampler2DArray snowState;
+uniform float snowFirst;
+uniform float snowLevels;
+
+/** Snow on the date at p on level k, filtered: where texels have snow, where they have data, and their share there. */
+vec3 snowOn(float k, vec2 p) {
+  float level = max(k, snowFirst);
+  return snowLevels > 0.0 ? texture(snowState, vec3(uvOn(level, p), level - snowFirst)).xyz : vec3(0.0);
+}
+`;
+
 /** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
 const COLOUR = /* glsl */ `
 ${VOCABULARY}
@@ -208,8 +223,12 @@ ${VOCABULARY}
 uniform sampler2DArray ground;
 // Each region's rules, a row of slots (SLOT in rules.ts).
 uniform sampler2D rules;
+// The two Sentinel-2 mosaics around the date, and the weight of the second.
 uniform sampler2DArray s2;
+uniform sampler2DArray s2b;
+uniform float s2Mix;
 uniform float s2Levels;
+${SNOW}
 // The most NDVI any quarter saw, in the s2 alpha code, for k < ndviMaxLevels.
 uniform sampler2DArray ndviMax;
 uniform float ndviMaxLevels;
@@ -227,6 +246,8 @@ struct Ground {
   float water;
   float tree;
   float snow;
+  // The share of past seasons with snow on the date; -1 where the snow data has none.
+  float share;
   float road;
   // Metres from water to the nearest land; 0 on land.
   float shore;
@@ -305,11 +326,24 @@ vec3 ramp(int region, int cover, float t) {
   return mix(rule(region, slot).rgb, rule(region, slot + 1).rgb, t < 0.5 ? 2.0 * t : 2.0 * t - 1.0);
 }
 
-Ground groundOn(float k, vec2 p, float footprint) {
+/** The ground on level k at p; known where the snow data, not the satellite, says where snow lies. */
+Ground groundOn(float k, vec2 p, float footprint, bool known) {
   vec2 uv = uvOn(k, p);
-  vec4 s = k < s2Levels ? texture(s2, vec3(uv, k)) : vec4(0.0);
-  bool seen = s.a > 0.5 / 255.0;
-  float ndvi = seen ? (s.a * 255.0 - 1.0) / 127.0 - 1.0 : 0.45;
+  vec4 sa = k < s2Levels ? texture(s2, vec3(uv, k)) : vec4(0.0);
+  vec4 sb = k < s2Levels ? texture(s2b, vec3(uv, k)) : vec4(0.0);
+  // The ground's colour blends the two mosaics around the date; one that saw nothing hands its
+  // weight to the other. Where a quarter saw snow, the bake gave it the colour of the nearest
+  // quarter that did not, or black where none did, and the alpha code 1: the snow data says where
+  // snow lies, and that mark of the mosaic nearest the date only where the data has none.
+  vec2 code = vec2(sa.a, sb.a) * 255.0;
+  vec2 marked = step(0.5, code) * step(code, vec2(1.5));
+  vec2 looked = step(0.5, code) * step(0.5 / 255.0, vec2(max(sa.r, max(sa.g, sa.b)), max(sb.r, max(sb.g, sb.b))));
+  vec2 weight = looked * (vec2(1.0 - s2Mix, s2Mix) + vec2(s2Mix, 1.0 - s2Mix) * (1.0 - looked.yx));
+  bool seen = weight.x + weight.y > 0.0;
+  vec3 rgb = weight.x * sa.rgb + weight.y * sb.rgb;
+  // A quarter that saw snow measured no NDVI of the ground under it: near zero.
+  float ndvi = seen ? dot(weight, mix((code - 1.0) / 127.0 - 1.0, vec2(0.0), marked)) : 0.45;
+  float satellite = s2Mix < 0.5 ? marked.x : marked.y;
   float t = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);
   float barren = 0.0;
   if (k < ndviMaxLevels) {
@@ -348,8 +382,8 @@ Ground groundOn(float k, vec2 p, float footprint) {
     ivec3 cell = cells[j];
     int own = cell.b;
     int cover = COVERS[cell.r];
-    // Where the satellite looks, its snow test decides snow.
-    if (cover == COVER_SNOW && seen) cover = COVER_BARE;
+    // Where the snow data or a mosaic looks, it decides snow.
+    if (cover == COVER_SNOW && (known || looked.x + looked.y > 0.0)) cover = COVER_BARE;
     float w = alike ? 1.0 : (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
     bool open = cover == COVER_SHRUB || cover == COVER_GRASS || cover == COVER_WETLAND || cover == COVER_MOSS;
     vec3 c = ramp(own, cover, t);
@@ -389,22 +423,17 @@ Ground groundOn(float k, vec2 p, float footprint) {
     shore = osm.g * osm.g * shoreReach;
   }
   vec3 albedo = palette;
-  float snow = 0.0;
   if (seen) {
     // The satellite gives chroma only: brightness comes from the palette and the sun, because
     // the mosaics carry their own shadows.
-    vec3 shown = pow(min(s.rgb * 1.65, vec3(1.0)), vec3(2.2));
+    vec3 shown = pow(min(rgb * 1.65, vec3(1.0)), vec3(2.2));
     vec3 chroma = shown * (luma(palette) / max(luma(shown), 1e-4));
     albedo = mix(mix(vec3(luma(chroma)), chroma, 0.8), palette, rule(region, SLOT_SNAP).x);
-    vec3 refl = pow(s.rgb, vec3(2.2));
+    vec3 refl = pow(rgb, vec3(2.2));
     // Barren ground is as light as the satellite sees it against the region's bare_luma: pumice
     // light, lava dark.
     float bareLuma = rule(region, SLOT_BEDDING).a;
     if (bareLuma > 0.0) albedo *= mix(1.0, clamp(luma(refl) / bareLuma, 0.6, 1.6), barren);
-    // Snow is as blue as it is red; white marl and gypsum are warmer.
-    float bright = smoothstep(0.36, 0.5, min(refl.r, min(refl.g, refl.b))) * smoothstep(0.9, 0.97, refl.b / max(refl.r, 1e-3));
-    float shaded = step(1.15 * refl.r, refl.b) * step(ndvi, 0.1) * smoothstep(0.03, 0.06, refl.b);
-    snow = max(bright, shaded) * (1.0 - water);
   }
   albedo = mix(albedo, paint.rgb / max(paint.a, 1e-4), paint.a * (1.0 - water));
 
@@ -448,7 +477,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
       albedo = mix(albedo, surface / max(weight, 1e-4), road);
     }
   }
-  return Ground(albedo, water, tree, snow, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water),
+  return Ground(albedo, water, tree, satellite, -1.0, road, shore, exposure, rough, seen ? t : 0.0, moor, bare, barren * (1.0 - water),
                 stone, banded, hardness, float(region));
 }
 
@@ -459,19 +488,34 @@ float groundLevel(vec2 p, float footprint) {
 
 /**
  * The ground under p from the level whose pixel matches the screen footprint, so the octave levels
- * act as the mip chain, blended into the next one like the heights are.
+ * act as the mip chain, blended into the next one like the heights are. Without withSnow, only
+ * the satellite says where snow lies.
  */
-Ground groundAt(vec2 p, float footprint) {
+Ground groundAt(vec2 p, float footprint, bool withSnow) {
   float kf = groundLevel(p, footprint);
   float k = floor(kf);
   float w = max(kf - k, smoothstep(0.9, 1.0, max(abs(p.x), abs(p.y)) / (half0 * exp2(k))));
-  Ground a = groundOn(k, p, footprint);
-  if (w <= 0.0 || k >= levels - 1.0) return a;
-  Ground b = groundOn(k + 1.0, p, footprint);
-  return Ground(mix(a.albedo, b.albedo, w), mix(a.water, b.water, w), mix(a.tree, b.tree, w), mix(a.snow, b.snow, w),
-                mix(a.road, b.road, w), mix(a.shore, b.shore, w), mix(a.exposure, b.exposure, w), mix(a.rough, b.rough, w), mix(a.lush, b.lush, w),
-                mix(a.moor, b.moor, w), mix(a.bare, b.bare, w), mix(a.barren, b.barren, w), mix(a.stone, b.stone, w), mix(a.banded, b.banded, w),
-                mix(a.hardness, b.hardness, w), w < 0.5 ? a.region : b.region);
+  // Finer levels than the first snow level read it, so the snow blends only past it.
+  float ws = k >= snowFirst && k < levels - 1.0 ? w : 0.0;
+  vec3 data = vec3(0.0);
+  if (withSnow) {
+    data = snowOn(k, p);
+    if (ws > 0.0) data = mix(data, snowOn(k + 1.0, p), ws);
+  }
+  bool known = data.y > 0.5;
+  Ground g = groundOn(k, p, footprint, known);
+  if (w > 0.0 && k < levels - 1.0) {
+    Ground b = groundOn(k + 1.0, p, footprint, known);
+    g = Ground(mix(g.albedo, b.albedo, w), mix(g.water, b.water, w), mix(g.tree, b.tree, w), mix(g.snow, b.snow, w), -1.0,
+               mix(g.road, b.road, w), mix(g.shore, b.shore, w), mix(g.exposure, b.exposure, w), mix(g.rough, b.rough, w), mix(g.lush, b.lush, w),
+               mix(g.moor, b.moor, w), mix(g.bare, b.bare, w), mix(g.barren, b.barren, w), mix(g.stone, b.stone, w), mix(g.banded, b.banded, w),
+               mix(g.hardness, b.hardness, w), w < 0.5 ? g.region : b.region);
+  }
+  // The satellite decides snow only where the data has none. A snow edge is crisper than the
+  // texels' bilinear blend across it.
+  g.snow = smoothstep(0.25, 0.75, data.x + (1.0 - data.y) * g.snow) * (1.0 - g.water);
+  g.share = data.y > 0.0 ? data.z / data.y : -1.0;
+  return g;
 }
 `;
 
@@ -678,10 +722,11 @@ vec3 key(int code) {
 
 /**
  * The debug views, in sRGB: 1 material; 2 NDVI red, its annual max green; 3 barren orange; 4 steep
- * red, skirt blue; 5 lithology, unknown blue-grey; 6 snow white, red below the snowline; 7 water,
+ * red, skirt blue; 5 lithology, unknown blue-grey; 6 snow white, the share of past seasons with
+ * snow on the date red, no snow data blue-grey; 7 water,
  * pale at the shore; 8 region. Blue-grey where the bake has no such level.
  */
-vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, float altitude, float snowline) {
+vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt) {
   float k = floor(groundLevel(p, footprint));
   vec2 uv = uvOn(k, p);
   ivec3 texel = ivec3(clamp(ivec2(floor(uv * 1024.0)), ivec2(0), ivec2(1023)), int(k));
@@ -696,7 +741,7 @@ vec3 debugColour(vec2 p, float footprint, Ground g, float steep, float skirt, fl
   if (debugView == 3) return k < ndviMaxLevels ? mix(vec3(0.15, 0.4, 0.15), vec3(1.0, 0.55, 0.1), g.barren) : UNKNOWN;
   if (debugView == 4) return mix(mix(vec3(0.2, 0.35, 0.2), vec3(1.0, 0.25, 0.1), steep), vec3(0.2, 0.4, 1.0), skirt);
   if (debugView == 5) return cell.g == 0 ? UNKNOWN : key(cell.g);
-  if (debugView == 6) return vec3(0.15) + 0.85 * vec3(g.snow, vec2(g.snow * smoothstep(snowline - 200.0, snowline, altitude)));
+  if (debugView == 6) return mix(g.share < 0.0 ? UNKNOWN : vec3(0.15 + 0.85 * g.share, 0.15, 0.15), vec3(1.0), g.snow);
   if (debugView == 8) return key(cell.b);
   return mix(vec3(0.3, 0.27, 0.22), mix(vec3(0.6, 0.95, 1.0), vec3(0.05, 0.2, 0.65), smoothstep(0.0, 100.0, g.shore)), g.water);
 }
@@ -708,9 +753,9 @@ void main() {
   float surfaceSize = max(length(dFdx(vWorld)), length(dFdy(vWorld)));
   float open;
   vec3 n = groundNormal(vWorld.xy, footprint, 0.0, open);
-  Ground g = groundAt(vWorld.xy, footprint);
+  Ground g = groundAt(vWorld.xy, footprint, true);
   int region = int(g.region);
-  // outcrops, cos turf_deg, snowline, speckle size
+  // outcrops, cos turf_deg, snow_share, speckle size
   vec4 terrain = rule(region, SLOT_TERRAIN);
   vec3 bedding = rule(region, SLOT_BEDDING).xyz;
   // Where the mesh slopes far more steeply than the finest ground, or stands well above water, it
@@ -759,7 +804,7 @@ void main() {
   bareFrom = mix(bareFrom, min(bareFrom, terrain.y), green);
   float steep = max((1.0 - smoothstep(mix(bareFrom, 0.8, banded), mix(bareFrom + 0.043, 0.88, banded), n.z)) * broad, skirt);
   if (debugView > 0) {
-    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt, altitude, terrain.z) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
+    colour = vec4(debugColour(vWorld.xy, footprint, g, steep, skirt) * (0.45 + 0.55 * max(dot(n, vec3(-0.4, 0.4, 0.82)), 0.0)), 1.0);
     return;
   }
   // Near the eye open ground is mottled, tussocks and bare patches, rather than one flat colour.
@@ -853,7 +898,11 @@ void main() {
       * smoothstep(0.45, 0.7, noise(vWorld.xy / 3.0 + altitude / 2.0)));
     albedo = mix(albedo, face, walled);
   }
-  float snow = g.snow * smoothstep(terrain.z - 200.0, terrain.z, altitude);
+  // Past the tree models, which stand within 1 km of the spot (TREE_RADIUS_M in bake.py), the eye
+  // sees woodland's crowns, not the snow on the ground under them. Snow slides off walls, which the
+  // data's texels are too wide to see.
+  float crowns = g.tree * (1.0 - g.road) * smoothstep(800.0, 1000.0, length(vWorld.xy));
+  float snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
   albedo = mix(albedo, rule(region, COVER_SNOW * 3).rgb, snow) * (1.0 - 0.3 * wet * (1.0 - snow));
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
   vec3 c = lightUp(albedo, n, shadow, open);
@@ -917,9 +966,11 @@ out vec3 vWorld;
 out vec3 vNormal;
 out float vShadow;
 out vec3 vAlbedo;
+out float vSnow;
 
 void main() {
   vec2 p = tree.xy;
+  vSnow = snowOn(levelOf(p), p).x;
   mat2 turn = mat2(cos(tree.w), sin(tree.w), -sin(tree.w), cos(tree.w));
   vWorld = vec3(p, meshZ(p, true)) + vec3(turn * position.xy, position.z) * tree.z;
   vNormal = vec3(turn * normal.xy, normal.z);
@@ -928,7 +979,7 @@ void main() {
   // A plant takes its hue from the ground it stands on, so a meadow of tufts reads as the meadow;
   // its own colour keeps only the shading from root to tip.
   if (tie > 0.0) {
-    Ground g = groundAt(p, 0.5);
+    Ground g = groundAt(p, 0.5, false);
     // Shaded from root to tip around the ground's own brightness, never much brighter than it.
     vAlbedo = mix(vAlbedo, g.albedo * clamp(luma(color) / 0.3, 0.5, 1.2) * tint, tie);
   }
@@ -938,6 +989,8 @@ void main() {
 
 /** Buildings: positions in metres above the eye's height, curved like the terrain. */
 export const buildingVertex = /* glsl */ `
+${LEVELS}
+${SNOW}
 ${SHADOW_AT}
 uniform float lift;
 uniform float curvature;
@@ -946,8 +999,10 @@ out vec3 vWorld;
 out vec3 vNormal;
 out float vShadow;
 out vec3 vAlbedo;
+out float vSnow;
 
 void main() {
+  vSnow = snowOn(levelOf(position.xy), position.xy).x;
   vWorld = position - vec3(0.0, 0.0, lift + curvature * dot(position.xy, position.xy));
   vNormal = normal;
   vShadow = shadowAt(position.xy);
@@ -963,12 +1018,17 @@ in vec3 vWorld;
 in vec3 vNormal;
 in float vShadow;
 in vec3 vAlbedo;
+// The snow on the date on the ground under the object, and its colour.
+in float vSnow;
+uniform vec3 snowColour;
 out vec4 colour;
 
 void main() {
   vec3 n = normalize(vNormal);
   float shadow = vShadow * nearShadowAt(vWorld, n) * cloudShadow(vWorld);
-  colour = vec4(finish(atmosphere(lightUp(vAlbedo * (1.0 - 0.2 * wet), n, shadow, 1.0), vWorld)), 1.0);
+  // Snow settles on what faces up: conifer tiers, roofs and rocks; bare twigs take a dusting.
+  vec3 albedo = mix(vAlbedo * (1.0 - 0.2 * wet), snowColour, vSnow * smoothstep(0.25, 0.85, n.z));
+  colour = vec4(finish(atmosphere(lightUp(albedo, n, shadow, 1.0), vWorld)), 1.0);
 }
 `;
 
@@ -996,6 +1056,44 @@ void main() {
     + surfaceZ(k, p + vec2(0.0, wide)) + surfaceZ(k, p - vec2(0.0, wide));
   float open = clamp(1.0 - 1.5 * (0.25 * around - surfaceZ(k, p)) / wide, 0.6, 1.15);
   colour = vec4((east - west) / (2.0 * e), (north - south) / (2.0 * e), open, 1.0);
+}
+`;
+
+/**
+ * The snow on the date at each texel of snow level snowLevel, from the planner's snow data (onset
+ * and melt-out of two seasons in each of snowLayers RGBA layers a level, 255 no data): 1 where at
+ * least its region's snow_share of its seasons with data had snow on day step snowStep; 1 where it
+ * has data; the share times that. Filtered, the three blend as the terrain needs them.
+ */
+export const snowFragment = /* glsl */ `
+precision highp sampler2DArray;
+uniform sampler2DArray snow;
+uniform sampler2DArray ground;
+uniform sampler2D rules;
+uniform int snowLayers;
+uniform float snowFirst;
+uniform float snowLevel;
+uniform float snowStep;
+out vec4 colour;
+
+void main() {
+  ivec2 texel = ivec2(gl_FragCoord.xy);
+  int level = int(snowLevel);
+  vec2 snowy = vec2(0.0);
+  vec2 known = vec2(0.0);
+  for (int i = 0; i < snowLayers; i++) {
+    vec4 v = texelFetch(snow, ivec3(texel, level * snowLayers + i), 0) * 255.0;
+    vec2 has = step(v.xz, vec2(254.5));
+    // Onset ≤ the day ≤ melt-out, or 254: snow all season.
+    snowy += has * max(step(v.xz, vec2(snowStep + 0.5)) * step(vec2(snowStep - 0.5), v.yw), step(253.5, v.xz));
+    known += has;
+  }
+  float count = known.x + known.y;
+  float share = count > 0.0 ? (snowy.x + snowy.y) / count : 0.0;
+  int region = int(texelFetch(ground, ivec3(texel, int(snowFirst) + level), 0).b * 255.0 + 0.5);
+  float enough = texelFetch(rules, ivec2(${SLOT.terrain}, region), 0).z;
+  float data = step(0.5, count);
+  colour = vec4(data * step(enough, share), data, data * share, 1.0);
 }
 `;
 

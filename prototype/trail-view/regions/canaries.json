@@ -37,7 +37,6 @@
    "dolerite": { "colour": "#6f675d" },
    "felsic-lava": { "colour": "#5e554b" }
   },
-  "snowline": 3500,
   "sea": { "deep": "#1d4c78", "shallow": "#357f9c" },
   "swell": 340,
   "grade": { "shadow": [0.008, 0.009, 0.016], "light": [0.01, 0.005, -0.005], "saturation": 1.04 },

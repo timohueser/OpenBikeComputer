@@ -155,8 +155,8 @@ export interface RegionLook {
    * for the year or one per quarter; without it, bare ground keeps the palette's brightness.
    */
   bare_luma?: number | [number, number, number, number];
-  /** Out of winter, snow lies only above this altitude; below it a white pixel is rock or spray. */
-  snowline: number;
+  /** Snow lies on a date where at least this share of the past seasons in the snow data had it. */
+  snow_share: number;
   /** The rock's bedding planes in degrees, so cliffs and slabs show their strata as they lie. */
   bedding?: { strike: number; dip: number };
   /** Road surfaces in the order of ROAD_WIDTHS in bake.py, where they differ from palette.ts's. */
@@ -187,7 +187,7 @@ const LOOK = object({
   materials: each(MATERIALS, object({ colour: (v, p) => (typeof v === 'string' ? colour(v, p) : each(SEASONS, colour)(v, p)) })), lithology: each(LITHOLOGIES.slice(1), object({ colour, banded: oneOf(true) })),
   bare_luma: (v, p) => (Array.isArray(v) ? list(number(0, 1), 4)(v, p) : number(0, 1)(v, p)),
   outcrops: number(0, 1), turf_deg: number(0, 90), rock: colour, cliff: colour,
-  snowline: number(0, 9000), bedding: object({ strike: number(0, 360), dip: number(0, 90) }), roads: list(colour, 6),
+  snow_share: number(0, 1), bedding: object({ strike: number(0, 360), dip: number(0, 90) }), roads: list(colour, 6),
   roadLine: byPlace(colour), sea: object({ deep: colour, shallow: colour }), windswept_m: number(0, 5000), swell: number(0, 360),
   grade: object({ shadow: list(number(-0.1, 0.1), 3), light: list(number(-0.1, 0.1), 3), saturation: number(0, 3) }),
   weather: each(['sunny', 'cloudy', 'rainy'], WEATHER),

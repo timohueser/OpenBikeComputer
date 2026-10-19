@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -60,6 +61,7 @@ from ingest.sources.fr import FR, BilWmsSource  # noqa: E402
 from ingest.sources.protocols import ArcGisSource  # noqa: E402
 from ingest.sources.stac import stac_items  # noqa: E402
 from ingest.sources.us import US  # noqa: E402
+from tools import data_registry, planner_snow, planner_sources  # noqa: E402
 from tools.planner_snow import cdse_credentials  # noqa: E402
 
 CACHE = Path.home() / ".cache/obc/trail-view"
@@ -151,6 +153,22 @@ MIN_OBSERVATIONS = 3
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes
 # from summer.
 DARK = 0.025
+# The alpha code of a quarter's texel that saw snow (snow_free); a measured NDVI never takes it.
+SNOW_MARK = 1
+
+# The planner's snow layer (specs/planner-snow-tiles.md) on the levels: per texel and past season,
+# the onset and melt-out day step of the longest snow period, from HR-WSI where it has data and
+# MODIS elsewhere, as tools/planner_snow.py reads them, over the planner's seasons.
+FIRST_SEASON, LAST_SEASON = tomllib.loads((REPO / "data/planner.toml").read_text())["snow"]["seasons"]
+SNOW_SEASONS = range(FIRST_SEASON, LAST_SEASON + 1)
+# Level 3's 19.5 m texels hold HR-WSI's 20 m; the finer levels read level 3.
+SNOW_FIRST = 3
+# HR-WSI is warped nearest onto a grid this many times finer than the texels, from the overview
+# nearest it, and each block blends into its texel by the planner's blend rule.
+SNOW_OVERSAMPLE = 4
+SNOW_STRIP = 128
+# MODIS is read once for the box of the last level, snapped out to this, so nearby spots share it.
+MODIS_SNAP_DEG = 0.25
 
 # The near field: road surfaces on k < ROAD_LEVELS (±5 km), buildings within BUILDING_HALF_M,
 # instanced trees within TREE_RADIUS_M on a jittered grid of TREE_SPACING_M, about 1.5 trees per
@@ -862,9 +880,140 @@ def s2_level(k: int, frame: str, quarters: dict[int, list[Path]], work: Path) ->
     texels = {}
     for q, (visible, ndvi, valid) in seen.items():
         rgb = np.round(255.0 * visible ** (1 / 2.2))
-        a = np.where(valid, 1 + np.round((ndvi + 1) / 2 * 254), 0)
+        a = np.where(valid, 1 + np.round((np.maximum(ndvi, -0.99) + 1) / 2 * 254), 0)
         texels[q] = np.stack([*rgb, a], axis=-1).astype(np.uint8)
     return texels
+
+
+def modis_snow(bbox) -> Path:
+    """The MODIS season planes of the box, snapped out to MODIS_SNAP_DEG, on the MODIS grid: a GeoTIFF of
+    an onset and a melt-out band per season in _sources/snow/, read once as the planner reads them."""
+    snap = lambda value, rounding: rounding(value / MODIS_SNAP_DEG) * MODIS_SNAP_DEG
+    box = (snap(bbox[0], math.floor), snap(bbox[1], math.floor), snap(bbox[2], math.ceil), snap(bbox[3], math.ceil))
+    path = SOURCES / "snow" / f"modis-{'_'.join(f'{v:g}' for v in box)}-{FIRST_SEASON}-{LAST_SEASON}.tif"
+    with machine_lock("modis"):
+        if path.exists():
+            return path
+        groups = (items for _, items in planner_snow.modis_seasons(box, FIRST_SEASON, LAST_SEASON))
+        planes, grid = planner_snow.modis_planes(groups, box, FIRST_SEASON, LAST_SEASON, hansen_tiles(box))
+        part = path.with_name(path.name + ".part")
+        part.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(part, "w", driver="GTiff", width=grid.shape[1], height=grid.shape[0], count=2 * len(SNOW_SEASONS),
+                           dtype="uint8", crs=grid.crs, transform=grid.transform, nodata=planner_snow.NO_DATA,
+                           compress="deflate") as dst:
+            dst.write(planes.reshape(-1, *grid.shape))
+        os.replace(part, path)
+    return path
+
+
+def hansen_tiles(bbox) -> list[str]:
+    """The local Hansen GFC tree canopy rasters of the box, downloaded once into _sources/hansen/."""
+    version = planner_sources.VERSIONS["hansen-gfc"]
+    with machine_lock("hansen"):
+        return [str(http_download(planner_snow.CANOPY.format(version, tile), SOURCES / "hansen" / f"{version}-{tile}.tif"))
+                for tile in planner_snow.canopy_tiles(bbox)]
+
+
+def texel_centres(k: int, frame: str, crs) -> tuple[np.ndarray, np.ndarray]:
+    """The level's texel centres in `crs`, row 0 north."""
+    half = HALF0_M * 2**k
+    centres = (np.arange(SIZE) + 0.5) * 2 * half / SIZE - half
+    x, y = np.meshgrid(centres, -centres)
+    return Transformer.from_crs(CRS.from_proj4(frame), crs, always_xy=True).transform(x.ravel(), y.ravel())
+
+
+def modis_level(k: int, frame: str, modis: Path) -> np.ndarray:
+    """The MODIS planes (seasons, 2, SIZE, SIZE) of level k: the blend of the four pixels around each texel
+    centre with bilinear weights, as planner_snow.sample takes them at its max zoom."""
+    with rasterio.open(modis) as src:
+        planes = src.read().reshape(len(SNOW_SEASONS), 2, src.height, src.width)
+        transform, crs = src.transform, src.crs
+    col, row = ~transform @ texel_centres(k, frame, crs)
+    col, row = col - 0.5, row - 0.5
+    c0, r0 = np.floor(col).astype(np.int64), np.floor(row).astype(np.int64)
+    fc, fr = col - c0, row - r0
+    rows, cols = planes.shape[2:]
+    values, weights = [], []
+    for dr, dc, weight in ((0, 0, (1 - fr) * (1 - fc)), (0, 1, (1 - fr) * fc), (1, 0, fr * (1 - fc)), (1, 1, fr * fc)):
+        r, c = r0 + dr, c0 + dc
+        inside = (r >= 0) & (r < rows) & (c >= 0) & (c < cols)
+        values.append(np.where(inside, planes[:, :, np.clip(r, 0, rows - 1), np.clip(c, 0, cols - 1)], planner_snow.NO_DATA))
+        weights.append(weight)
+    return planner_snow.blend(np.stack(values), np.stack(weights).astype(np.float32)).reshape(len(SNOW_SEASONS), 2, SIZE, SIZE)
+
+
+def hr_wsi_level(k: int, frame: str, to_wgs84, work: Path) -> np.ndarray:
+    """The HR-WSI planes (seasons, 2, SIZE, SIZE) of level k from the Snow Phenology products over CDSE S3.
+    A season without a product is no data."""
+    half = HALF0_M * 2**k
+    f = SNOW_OVERSAMPLE
+    files = planner_snow.copernicus_files(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
+    planes = np.full((len(SNOW_SEASONS), 2, SIZE, SIZE), planner_snow.NO_DATA, np.uint8)
+
+    def season(s: int) -> None:
+        layers = files.get(SNOW_SEASONS[s], {})
+        vrts = []
+        for paths in zip(*(layers.get(name, []) for name in ("SCO", "SCM", "SCD"))):
+            vrt = work / f"{Path(paths[0]).stem}.vrt"
+            if not vrt.exists():
+                subprocess.run(["gdalbuildvrt", "-q", "-separate", str(vrt), *paths], check=True,
+                               env={**os.environ, **GDAL_OPTIONS})
+            vrts.append(vrt)
+        if not vrts:
+            return
+        bands = warp(vrts, frame, half, "near", overviews=True, work=work, threads=False, size=f * SIZE)
+        days = planner_snow.season_start(SNOW_SEASONS[s], SNOW_SEASONS[s] + 1)
+        weights = np.full((f * f, SNOW_STRIP * SIZE), 1 / f**2, np.float32)
+        # In strips of texel rows, so a season holds little more than its warp.
+        for top in range(0, SIZE, SNOW_STRIP):
+            # 65535 is no data and 420 inland water, as copernicus_planes reads them.
+            strip = bands[:, top * f:(top + SNOW_STRIP) * f]
+            onset, meltout, duration = (np.where(band == NODATA, 65535, band).astype(np.int32) for band in strip)
+            data = (duration <= 366) & ((duration == 0) | (onset <= 366) & (meltout <= 366))
+            length = np.where(duration == 0, 0, meltout - onset + 1)
+            fine = planner_snow.encode(onset, length, days, data)
+            blocks = fine.reshape(2, SNOW_STRIP, f, SIZE, f).transpose(2, 4, 0, 1, 3).reshape(f * f, 1, 2, SNOW_STRIP * SIZE)
+            planes[s, :, top:top + SNOW_STRIP] = planner_snow.blend(blocks, weights)[0].reshape(2, SNOW_STRIP, SIZE)
+
+    # Two seasons at a time: each warp holds about 200 MB, and the box is shared.
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(season, range(len(SNOW_SEASONS))))
+    return planes
+
+
+def smoothstep(low: float, high: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - low) / (high - low), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def snow_free(quarters: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
+    """The quarters (RGBA8, as s2_level writes them) with no snow in their colour: the snow data says
+    where snow lies, and the satellite only gives bare ground its colour. A texel that a quarter sees
+    snow on takes the colour of the nearest quarter that does not, the previous one first, or black
+    where none does, and the alpha SNOW_MARK, so that the page can still read the satellite's snow
+    where the snow data has none. Run again, it changes nothing."""
+    def snowy(texels: np.ndarray) -> np.ndarray:
+        # The page's snow test: as blue as it is red, and bright or in shade where nothing grows.
+        a = texels[..., 3].astype(np.float32)
+        refl = (texels[..., :3] / 255.0) ** 2.2
+        red, blue = refl[..., 0], refl[..., 2]
+        bright = smoothstep(0.36, 0.5, refl.min(axis=-1)) * smoothstep(0.9, 0.97, blue / np.maximum(red, 1e-3))
+        shaded = (blue >= 1.15 * red) * ((a - 1) / 127 - 1 <= 0.1) * smoothstep(0.03, 0.06, blue)
+        return (a == SNOW_MARK) | ((a > SNOW_MARK) & (np.maximum(bright, shaded) > 0.5))
+
+    snow = {q: snowy(texels) for q, texels in quarters.items()}
+    clean = {}
+    for q, texels in quarters.items():
+        texels = texels.copy()
+        need = snow[q].copy()
+        for other in ((q - 2) % 4 + 1, q % 4 + 1, (q + 1) % 4 + 1):
+            take = need & (quarters[other][..., 3] > SNOW_MARK) & ~snow[other]
+            texels[take, :3] = quarters[other][take, :3]
+            need &= ~take
+        texels[need, :3] = 0
+        texels[snow[q], 3] = SNOW_MARK
+        clean[q] = texels
+    return clean
 
 
 def unpacked(path: Path, bands: int) -> np.ndarray:
@@ -1758,7 +1907,7 @@ def places_at(places: list[dict], lons: np.ndarray, lats: np.ndarray) -> list[st
     return found
 
 
-def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
+def bake(spot: dict, colour: bool, snow: bool, dtm_levels: int, baseline: bool) -> None:
     tools = ("gdalwarp", "gdal_translate", "gdalbuildvrt", "ogr2ogr", PROXIMITY)
     if missing := [tool for tool in tools if not shutil.which(tool)]:
         sys.exit(f"bake.py needs the GDAL command-line tools on PATH (Ubuntu: gdal-bin, python3-gdal); not found: {', '.join(missing)}")
@@ -1775,11 +1924,15 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
         if spot.get(key) and spot[key] not in known:
             sys.exit(f"{spot['id']}: unknown {key} {spot[key]!r}; known: {', '.join(sorted(known))}")
     print(f"  region {chain[-1]}, country {country}, subdivision {subdivision}, {tz}", flush=True)
-    # Colour takes most of a bake's time, so a rebake keeps it while the spot stays where it was.
+    # Colour and snow take most of a bake's time, so a rebake keeps them while the spot stays where it was.
     s2 = {(k, q): out / f"s2-q{q}-{k}.bin.gz" for k in range(S2_LEVELS) for q in range(1, 5)}
+    snows = {k: out / f"snow-{k}.bin.gz" for k in range(SNOW_FIRST, LEVELS)}
     before = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
-    colour = colour or (before.get("lat"), before.get("lon")) != (lat, lon) or not all(path.exists() for path in s2.values())
-    if colour:
+    moved = (before.get("lat"), before.get("lon")) != (lat, lon)
+    colour = colour or moved or not all(path.exists() for path in s2.values())
+    seasons = (before.get("snow_first_season"), before.get("snow_seasons")) != (FIRST_SEASON, len(SNOW_SEASONS))
+    snow = snow or moved or seasons or not all(path.exists() for path in snows.values())
+    if colour or snow:
         cdse_credentials()
     out.mkdir(parents=True, exist_ok=True)
     frame = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +datum=WGS84 +units=m +no_defs"
@@ -1866,19 +2019,27 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        if not colour:
-            sizes += [(k, f"s2-q{q}", path.stat().st_size) for (k, q), path in s2.items()]
-        else:
+        if colour:
             with machine_lock("cdse"):
                 half = HALF0_M * 2 ** (S2_LEVELS - 1)
                 quarters = s2_items(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21), work)
                 print(f"  Sentinel-2 mosaic tiles per quarter: {', '.join(f'Q{q} {len(v)}' for q, v in quarters.items())}")
                 for k in range(S2_LEVELS):
                     for q, texels in s2_level(k, frame, quarters, work).items():
-                        blob = pack(texels)
-                        s2[k, q].write_bytes(blob)
-                        sizes.append((k, f"s2-q{q}", len(blob)))
+                        s2[k, q].write_bytes(pack(texels))
                     print(f"  colour level {k}", flush=True)
+        if not snow:
+            sizes += [(k, "snow", path.stat().st_size) for k, path in snows.items()]
+        else:
+            half = HALF0_M * 2 ** (LEVELS - 1)
+            modis = modis_snow(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
+            with machine_lock("cdse"):
+                for k, path in snows.items():
+                    hr = hr_wsi_level(k, frame, to_wgs84, work)
+                    blob = pack(np.where(hr[:, :1] == planner_snow.NO_DATA, modis_level(k, frame, modis), hr))
+                    path.write_bytes(blob)
+                    sizes.append((k, "snow", len(blob)))
+                    print(f"  snow level {k}: HR-WSI holds {(hr[:, 0] != planner_snow.NO_DATA).mean():.0%} of the season texels", flush=True)
         grid = work / "national.tif"
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)
@@ -1931,7 +2092,11 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
             sizes.append((k, "h", len(blob)))
             # The baseline, refined in turn by each source that names its materials more precisely.
             if k < S2_LEVELS:
-                quarters = {q: unpacked(s2[k, q], 4) for q in range(1, 5)}
+                quarters = snow_free({q: unpacked(s2[k, q], 4) for q in range(1, 5)})
+                for q, texels in quarters.items():
+                    blob = pack(texels)
+                    s2[k, q].write_bytes(blob)
+                    sizes.append((k, f"s2-q{q}", len(blob)))
                 most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
                 blob = pack(most)
                 (out / f"ndvimax-{k}.bin.gz").write_bytes(blob)
@@ -2025,7 +2190,9 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
           f"GLO-30 {origin['glo30']:.1f} m")
 
     credits = [CREDITS["glo30"]] + ([CREDITS.get(dtm) or DTM_SOURCES[dtm].credit(time.strftime("%Y-%m-%d"))] if dtm else [])
-    credits += [CREDITS["worldcover"], CREDITS["s2"], *sorted(used)]
+    snow_credit = (f"{data_registry.attribution('hr-wsi', year=time.strftime('%Y'))}; {data_registry.attribution('modis-snow')}; "
+                   f"tree canopy: {data_registry.attribution('hansen-gfc')}")
+    credits += [CREDITS["worldcover"], CREDITS["s2"], snow_credit, *sorted(used)]
     credits += [GEOLOGY[geology][2]] if geology else []
     credits += [landcover[1]] if national else []
     credits.append(CREDITS["osm"])
@@ -2034,7 +2201,8 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
     above = spot.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, height_size=HEIGHT_SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
+                dtm=dtm, s2_levels=S2_LEVELS, snow_first_level=SNOW_FIRST, snow_first_season=FIRST_SEASON,
+                snow_seasons=len(SNOW_SEASONS), road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 region=chain[-1], chain=chain, regions=names, country=country, subdivision=subdivision, tz=tz, credits=credits)
     if "photo_source" in spot:
         shutil.copyfile(spot["photo_source"], out / "photo.jpg")
@@ -2047,7 +2215,7 @@ def bake(spot: dict, colour: bool, dtm_levels: int, baseline: bool) -> None:
         print(f"{row[0]!s:>5} {row[1]:>8} {row[2]:>10,}")
     print(f"{'':>5} {'total':>8} {sum(row[2] for row in sizes):>10,}")
     season = sum(row[2] for row in sizes if row[1] in ("h", "material", "litho", "region", "road", "water", "canopy", "trees",
-                                                        "buildings", "s2-q3", "ndvimax", "walls"))
+                                                        "buildings", "s2-q3", "ndvimax", "snow", "walls"))
     print(f"one season without the GLO-30 comparison: {season:,} bytes")
     print(f"\nwrote {out}")
 
@@ -2057,12 +2225,14 @@ def main() -> None:
     parser.add_argument("spot")
     parser.add_argument("--colour", action="store_true",
                         help="read the Sentinel-2 levels again; a rebake keeps them while the spot stays where it was")
+    parser.add_argument("--snow", action="store_true",
+                        help="read the snow levels again; a rebake keeps them while the spot stays where it was")
     parser.add_argument("--dtm-levels", type=int, default=DTM_LEVELS,
                         help=f"levels that take the national DTM (default {DTM_LEVELS}: ±10 km)")
     parser.add_argument("--baseline", action="store_true",
                         help="leave out the spot's land cover and geology maps, as for a place without them")
     args = parser.parse_args()
-    bake(load_spot(args.spot), args.colour, args.dtm_levels, args.baseline)
+    bake(load_spot(args.spot), args.colour, args.snow, args.dtm_levels, args.baseline)
 
 
 if __name__ == "__main__":

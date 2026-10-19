@@ -8,13 +8,14 @@ import * as THREE from 'three';
 import { COVER_ORDER, LITHOLOGIES, MATERIALS } from './materials';
 import { DECIDUOUS, ramps, ROAD_LINE, ROADS } from './palette';
 import type { Region } from './regions';
+import { mosaicsAt } from './calendar';
 import { SEASONS } from './models/trees';
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names
  * one; a colour per lithology, alpha 1 where it is banded; then one texel each for the cliff
  * colour (alpha 1 where the region names one), the heather (alpha its share), the speckle (alpha
- * its share), the terrain scalars (outcrops, cos turf_deg, snowline, speckle size), the bedding
+ * its share), the terrain scalars (outcrops, cos turf_deg, snow_share, speckle size), the bedding
  * plane's normal (alpha the season's bare_luma, 0 for none) and the palette snap; then the sea's
  * deep and shallow colours, the road surfaces in ROADS' order and the edge line of main roads.
  */
@@ -30,7 +31,7 @@ export const SLOT = (() => {
 })();
 
 /** The rows for a season (0 winter to 3 autumn), linear RGB. */
-export function packRules(regions: Region[], season: number): Float32Array {
+function packRules(regions: Region[], season: number): Float32Array {
   const data = new Float32Array(regions.length * SLOT.count * 4);
   const colour = (hex: string) => new THREE.Color(hex);
   regions.forEach(({ leaf, look }, row) => {
@@ -49,9 +50,7 @@ export function packRules(regions: Region[], season: number): Float32Array {
     set(SLOT.cliff, colour(look.cliff ?? '#000'), look.cliff ? 1 : 0);
     set(SLOT.heather, colour(look.moor?.heather ?? '#000'), look.moor?.share ?? 0);
     set(SLOT.speckle, colour(look.speckle?.colour ?? '#000'), look.speckle?.share ?? 0);
-    // Out of winter, snow lies only above the snowline; in winter it lies wherever the satellite sees it.
-    const snowline = SEASONS[season] === 'winter' ? -1e4 : look.snowline;
-    set(SLOT.terrain, [look.outcrops, Math.cos((look.turf_deg * Math.PI) / 180), snowline], look.speckle?.size_m ?? 1);
+    set(SLOT.terrain, [look.outcrops, Math.cos((look.turf_deg * Math.PI) / 180), look.snow_share], look.speckle?.size_m ?? 1);
     // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
     const { strike, dip } = look.bedding ?? { strike: 0, dip: 0 };
     const [toward, tilt] = [((strike + 90) * Math.PI) / 180, (dip * Math.PI) / 180];
@@ -64,4 +63,20 @@ export function packRules(regions: Region[], season: number): Float32Array {
     set(SLOT.roadLine, colour(look.roadLine ?? ROAD_LINE), 1);
   });
   return data;
+}
+
+/**
+ * The rows for a day of the year: those of the two quarters around it, blended as their mosaics
+ * are. A colour blends by its alpha, so one that a season leaves out fades in, not from black.
+ */
+export function packRulesOn(regions: Region[], day: number): Float32Array {
+  const { quarters: [a, b], weight } = mosaicsAt(day);
+  const [from, to] = [packRules(regions, a), packRules(regions, b)];
+  const out = new Float32Array(from.length);
+  for (let i = 0; i < out.length; i += 4) {
+    const [wa, wb] = [from[i + 3] * (1 - weight), to[i + 3] * weight];
+    for (let c = i; c < i + 3; c++) out[c] = wa + wb > 0 ? (from[c] * wa + to[c] * wb) / (wa + wb) : from[c] + (to[c] - from[c]) * weight;
+    out[i + 3] = wa + wb;
+  }
+  return out;
 }

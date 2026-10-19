@@ -2,9 +2,9 @@ import GUI from 'lil-gui';
 import * as THREE from 'three';
 import { clock } from 'planner-sun';
 import { loadBake, loadQuarter, type Bake, type Photo } from './bake';
-import { lightAt, SEASONS } from './light';
+import { dateLabel, dayOf, isoDate, monthDay, mosaicsAt } from './calendar';
+import { lightAt } from './light';
 import { drawCompass } from './overlay';
-import { SEASONS as SEASON_NAMES } from './models/trees';
 import { regionNamed, validate, type Region } from './regions';
 import { CURVATURE, surface, type Surface } from './surface';
 import { WEATHERS, weatherLight } from './weather';
@@ -54,7 +54,8 @@ const state = {
   reference: true,
   trees: true,
   buildings: true,
-  season: 'summer (15 Aug)',
+  /** The day of the year, from 0 on 1 January: 15 August. */
+  day: 226,
   hour: 16,
   weather: 'sunny',
   /** Metres the eye rises above the ground, to see as a drone would. */
@@ -77,7 +78,7 @@ const DEBUG_VIEWS = {
   barren: 3,
   'steep (red), skirt (blue)': 4,
   lithology: 5,
-  'snow (red below the snowline)': 6,
+  'snow (white), share of seasons with snow (red)': 6,
   water: 7,
   region: 8,
 };
@@ -145,26 +146,31 @@ async function select(id: string): Promise<void> {
   status.textContent = idle;
   frame.style.visibility = '';
   quarters.clear();
+  shownDay = null;
   surfaceChanged();
-  await seasonChanged();
+  await dateChanged();
 }
 
-/** Sentinel-2 quarters of the current preset, by season index, loaded once each. */
+/** Sentinel-2 quarters of the current preset, 0 winter to 3 autumn, loaded once each. */
 const quarters = new Map<number, ReturnType<typeof loadQuarter>>();
+/** The day the view shows: a slider event that keeps it redraws nothing, as the sun's shadows cost a frame. */
+let shownDay: number | null = null;
 
-/** The season's palette and light at once, then its Sentinel-2 quarter when it arrives. */
-async function seasonChanged(): Promise<void> {
-  if (!loaded) return;
+/** The date's light, palette and snow at once, then its two Sentinel-2 mosaics when they arrive. */
+async function dateChanged(): Promise<void> {
+  if (!loaded || state.day === shownDay) return;
   const { bake } = loaded;
-  const season = Object.keys(SEASONS).indexOf(state.season);
-  terrain.setSeason(season);
-  terrain.nearField.setSeason(SEASON_NAMES[season]);
+  const day = (shownDay = state.day);
+  dateControl.name(`date · ${dateLabel(day)}`);
+  terrain.setDate(day);
+  terrain.nearField.setDate(day);
   lightChanged();
-  if (!quarters.has(season)) quarters.set(season, loadQuarter(bake, season + 1));
-  const colour = await quarters.get(season)!;
-  if (loaded?.bake !== bake || Object.keys(SEASONS).indexOf(state.season) !== season) return;
-  terrain.setColour(colour.data, bake.meta.s2_levels);
-  readout.colour = `${(colour.bytes / 1e6).toFixed(1)} MB for this season`;
+  const pair = mosaicsAt(day).quarters;
+  for (const quarter of pair) if (!quarters.has(quarter)) quarters.set(quarter, loadQuarter(bake, quarter + 1));
+  const colours = await Promise.all(pair.map((quarter) => quarters.get(quarter)!));
+  if (loaded?.bake !== bake) return;
+  pair.forEach((quarter, i) => terrain.setQuarter(quarter, colours[i].data, bake.meta.s2_levels));
+  readout.colour = `${((colours[0].bytes + colours[1].bytes) / 1e6).toFixed(1)} MB for the two mosaics`;
   requestRender();
 }
 
@@ -181,7 +187,7 @@ function lightChanged(refreshShadows = true): void {
   const { lat, lon, tz } = loaded.bake.meta;
   const regional = loaded.region.look;
   const weather = { ...WEATHERS[state.weather], ...regional.weather?.[state.weather as 'sunny'] };
-  const light = lightAt(lat, lon, SEASONS[state.season], state.hour, tz ?? 'UTC');
+  const light = lightAt(lat, lon, isoDate(state.day), state.hour, tz ?? 'UTC');
   terrain.setLight(weatherLight(light, weather), refreshShadows);
   terrain.setWeather(weather, state.hour, loaded.bake.meta.eye_m + state.rise);
   const bearing = ((Math.atan2(light.sun.x, light.sun.y) * 180) / Math.PI + 360) % 360;
@@ -272,11 +278,11 @@ function render(): void {
   writeHash();
 }
 
-/** The view in the address, so a reload or a link shows it again: spot, season, hour, weather, camera, debug view. */
+/** The view in the address, so a reload or a link shows it again: spot, date, hour, weather, camera, debug view. */
 function writeHash(): void {
   const camera: Record<string, string> = photoLocked() ? { photo: '1' } : { yaw: state.yaw.toFixed(1), pitch: state.pitch.toFixed(1), vfov: state.vfov.toFixed(1) };
   const debug: Record<string, string> = state.debug ? { debug: String(state.debug) } : {};
-  const hash = new URLSearchParams({ spot: state.preset, season: state.season.split(' ')[0], hour: state.hour.toFixed(2), weather: state.weather, ...camera, ...debug }).toString();
+  const hash = new URLSearchParams({ spot: state.preset, date: monthDay(state.day), hour: state.hour.toFixed(2), weather: state.weather, ...camera, ...debug }).toString();
   if (location.hash.slice(1) !== hash) history.replaceState(null, '', `#${hash}`);
 }
 
@@ -352,7 +358,7 @@ async function save(canvas: HTMLCanvasElement, suffix: string): Promise<string |
   const { id, dtm_levels, half0_m } = loaded!.bake.meta;
   const reach = glo30Only() ? 'glo30' : `dtm${(half0_m * 2 ** (dtm_levels - 1)) / 1000}km`;
   const weather = state.weather === 'sunny' ? '' : `-${state.weather}`;
-  const name = `${id}-${reach}-q${Object.keys(SEASONS).indexOf(state.season) + 1}${weather}${suffix}.png`;
+  const name = `${id}-${reach}-${monthDay(state.day).replace('-', '')}${weather}${suffix}.png`;
   const response = await fetch(`/__shot/${name}`, { method: 'POST', body: blob });
   readout.frame = response.ok ? `saved shots/${name}` : `saving failed: ${response.status}`;
   return response.ok ? name : null;
@@ -465,7 +471,8 @@ const regionPicker = gui.add(state, 'region', regions).onChange((short: string) 
 });
 const spotPicker = gui.add(state, 'preset', spotsOf(state.region)).name('spot').onChange((id: string) => select(id).catch(shown));
 gui.add(state, 'reference').name('reference photo').onChange(requestRender);
-gui.add(state, 'season', Object.keys(SEASONS)).onChange(seasonChanged);
+// Weekly steps; a link or a script may set any day.
+const dateControl = gui.add(state, 'day', 0, 364, 7).listen().onChange(dateChanged);
 gui.add(state, 'hour', 0, 24, 0.05).name('time of day').listen().onChange(() => lightChanged());
 gui.add(state, 'weather', Object.keys(WEATHERS)).onChange(() => {
   lightChanged();
@@ -541,12 +548,12 @@ tools.add({ saveSideBySide }, 'saveSideBySide').name('save side by side');
 tools.add({ saveView }, 'saveView').name('save view');
 // For scripted shots (tune/shoot.mjs) and checks from the console.
 Object.assign(window, {
-  trailView: { gui, state, look, align, render, layout, terrain, renderer, loaded: () => loaded, select, seasonChanged, lightChanged, saveView, saveSideBySide, seasons: Object.keys(SEASONS) },
+  trailView: { gui, state, look, align, render, layout, terrain, renderer, loaded: () => loaded, select, dateChanged, lightChanged, saveView, saveSideBySide, dayOf },
 });
 
 const linked = new URLSearchParams(location.hash.slice(1));
 if (SPOTS.some((spot) => spot.id === linked.get('spot'))) state.preset = linked.get('spot')!;
-state.season = Object.keys(SEASONS).find((s) => s.startsWith(`${linked.get('season')} `)) ?? state.season;
+state.day = dayOf(linked.get('date')) ?? state.day;
 state.hour = Number(linked.get('hour') ?? state.hour);
 if (linked.get('weather')! in WEATHERS) state.weather = linked.get('weather')!;
 state.debug = Number(linked.get('debug')) || 0;

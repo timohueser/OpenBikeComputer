@@ -6,13 +6,14 @@
 
 import * as THREE from 'three';
 import { heightAtTexel, heightSize, type Bake } from './bake';
+import { mosaicsAt, snowStep } from './calendar';
 import type { Light } from './light';
 import { WATERY } from './materials';
 import type { Region } from './regions';
 import { NEAR_MARK, NearField } from './nearfield';
-import { VARIEGATED } from './palette';
-import { packRules, SLOT } from './rules';
-import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
+import { SNOW, VARIEGATED } from './palette';
+import { packRulesOn, SLOT } from './rules';
+import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, snowFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './surface';
 import type { Weather } from './weather';
 
@@ -176,7 +177,15 @@ export class Terrain {
   /** The bake's regions, in the order its region layer indexes them. */
   private regions: Region[] = [];
   private ndvimax?: THREE.DataArrayTexture;
-  private colour?: THREE.DataArrayTexture;
+  /** The Sentinel-2 quarters loaded so far, 0 winter to 3 autumn, and the two the date blends. */
+  private readonly quarters = new Map<number, THREE.DataArrayTexture>();
+  private s2Levels = 0;
+  private mosaics: [number, number] = [2, 2];
+  private snow?: THREE.DataArrayTexture;
+  /** The snow on the date per snow level texel, from the snow pass. */
+  private snowState?: THREE.WebGLArrayRenderTarget;
+  private readonly snowPass = new THREE.Scene();
+  private snowStale = true;
   private canopy?: THREE.DataArrayTexture;
   private roads?: THREE.DataArrayTexture;
   private water?: THREE.DataArrayTexture;
@@ -234,7 +243,17 @@ export class Terrain {
       ground: { value: null },
       rules: { value: null },
       s2: { value: null },
+      s2b: { value: null },
+      s2Mix: { value: 0 },
       s2Levels: { value: 0 },
+      snow: { value: null },
+      snowState: { value: null },
+      snowFirst: { value: 0 },
+      snowLevels: { value: 0 },
+      snowLayers: { value: 0 },
+      snowLevel: { value: 0 },
+      snowStep: { value: 0 },
+      snowColour: { value: new THREE.Color(SNOW) },
       ndviMax: { value: null },
       ndviMaxLevels: { value: 0 },
       debugView: { value: 0 },
@@ -298,6 +317,7 @@ export class Terrain {
     this.far.add(sky);
     this.shadowPass.add(quad(material(fullscreenVertex, shadowFragment, true)));
     this.derivePass.add(quad(material(fullscreenVertex, deriveFragment, true)));
+    this.snowPass.add(quad(material(fullscreenVertex, snowFragment, true)));
     this.cloudPass.add(quad(material(fullscreenVertex, cloudMapFragment, true)));
     const rain = material(fullscreenVertex, rainFragment, true);
     rain.transparent = true;
@@ -394,17 +414,41 @@ export class Terrain {
       depthBuffer: false,
     });
     u.normals.value = this.normals.texture;
+    this.snow?.dispose();
+    this.snow = snowTexture(bake);
+    this.snowState?.dispose();
+    const snowLevels = this.snow ? levels - bake.meta.snow_first_level! : 0;
+    this.snowState = snowLevels ? new THREE.WebGLArrayRenderTarget(size, size, snowLevels, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+    }) : undefined;
+    u.snow.value = this.snow ?? this.ground;
+    u.snowState.value = this.snowState?.texture ?? this.ground;
+    u.snowFirst.value = bake.meta.snow_first_level ?? 0;
+    u.snowLevels.value = snowLevels;
+    u.snowLayers.value = this.snow ? Math.ceil(bake.meta.snow_seasons! / 2) : 0;
     this.nearField.set(bake, regions);
-    this.setColour(null, 0);
-    this.shadowsStale = this.surfaceStale = true;
+    for (const texture of this.quarters.values()) texture.dispose();
+    this.quarters.clear();
+    this.bindMosaics();
+    this.shadowsStale = this.surfaceStale = this.snowStale = true;
   }
 
-  /** One season's Sentinel-2 levels, or none: the palette alone. */
-  setColour(data: Uint8Array | null, levels: number): void {
-    this.colour?.dispose();
-    this.colour = data ? arrayTexture(data, 1024, levels, THREE.RGBAFormat, 'RGBA8') : undefined;
-    this.uniforms.s2.value = this.colour ?? this.ground;
-    this.uniforms.s2Levels.value = data ? levels : 0;
+  /** One quarter's Sentinel-2 levels, 0 winter to 3 autumn, uploaded once per bake. */
+  setQuarter(quarter: number, data: Uint8Array, levels: number): void {
+    if (this.quarters.has(quarter)) return;
+    this.quarters.set(quarter, arrayTexture(data, 1024, levels, THREE.RGBAFormat, 'RGBA8'));
+    this.s2Levels = levels;
+    this.bindMosaics();
+  }
+
+  /** The two mosaics of the date, or the palette alone until both are loaded. */
+  private bindMosaics(): void {
+    const [a, b] = this.mosaics.map((quarter) => this.quarters.get(quarter));
+    this.uniforms.s2.value = a ?? this.ground;
+    this.uniforms.s2b.value = b ?? this.ground;
+    this.uniforms.s2Levels.value = a && b ? this.s2Levels : 0;
   }
 
   /** A false-colour view of one input (DEBUG_VIEWS in main.ts), 0 for none. */
@@ -412,13 +456,22 @@ export class Terrain {
     this.uniforms.debugView.value = view;
   }
 
-  /** Every region's rules for a season, 0 winter to 3 autumn: its ramps, snowline and bare_luma. */
-  setSeason(season: number): void {
+  /**
+   * The day of the year, from 0 on 1 January: the two Sentinel-2 mosaics around it and every
+   * region's rules for their seasons, blended as the mosaics are, and the snow's day step.
+   */
+  setDate(day: number): void {
+    const { quarters: [a, b], weight } = mosaicsAt(day);
+    this.mosaics = [a, b];
+    this.bindMosaics();
+    this.uniforms.s2Mix.value = weight;
+    this.uniforms.snowStep.value = snowStep(day);
     this.rules?.dispose();
-    this.rules = new THREE.DataTexture(packRules(this.regions, season), SLOT.count, this.regions.length, THREE.RGBAFormat, THREE.FloatType);
+    this.rules = new THREE.DataTexture(packRulesOn(this.regions, day), SLOT.count, this.regions.length, THREE.RGBAFormat, THREE.FloatType);
     this.rules.minFilter = this.rules.magFilter = THREE.NearestFilter;
     this.rules.needsUpdate = true;
     this.uniforms.rules.value = this.rules;
+    this.snowStale = true;
   }
 
   /**
@@ -477,8 +530,8 @@ export class Terrain {
   }
 
   /**
-   * Derive the slopes again if the surface changed, and march every vertex toward the sun again
-   * if the sun or the surface moved.
+   * Derive the slopes again if the surface changed, the snow if the date did, and march every
+   * vertex toward the sun again if the sun or the surface moved.
    */
   shade(renderer: THREE.WebGLRenderer, camera: THREE.Camera): boolean {
     if (!this.texture || !this.normals) return false;
@@ -495,6 +548,14 @@ export class Terrain {
         this.uniforms.deriveLevel.value = k;
         renderer.setRenderTarget(this.normals, k);
         renderer.render(this.derivePass, camera);
+      }
+    }
+    if (this.snowStale && this.snowState) {
+      this.snowStale = false;
+      for (let level = 0; level < this.snowState.depth; level++) {
+        this.uniforms.snowLevel.value = level;
+        renderer.setRenderTarget(this.snowState, level);
+        renderer.render(this.snowPass, camera);
       }
     }
     if (!this.shadowsStale) {
@@ -538,6 +599,32 @@ export class Terrain {
     const objects = this.nearField.trees.visible || this.nearField.buildings.visible ? this.nearField.triangles : 0;
     return (drawn / 2) * this.perWedge + objects;
   }
+}
+
+/**
+ * The bake's snow levels as RGBA8 layers of two seasons each: onset, melt-out, onset, melt-out,
+ * 255 (no data) past the last season; `snowLayers` layers per level. Undefined for a bake without them.
+ */
+function snowTexture(bake: Bake): THREE.DataArrayTexture | undefined {
+  const { levels, size, snow_first_level: first, snow_seasons: seasons } = bake.meta;
+  if (first === undefined || !seasons) return undefined;
+  const area = size * size;
+  const layers = Math.ceil(seasons / 2);
+  const data = new Uint8Array((levels - first) * layers * area * 4).fill(255);
+  for (let level = 0; level < levels - first; level++) {
+    for (let s = 0; s < seasons; s++) {
+      const onset = bake.snow.subarray((level * seasons + s) * 2 * area, (level * seasons + s) * 2 * area + area);
+      const melt = bake.snow.subarray((level * seasons + s) * 2 * area + area, (level * seasons + s + 1) * 2 * area);
+      const base = (level * layers + (s >> 1)) * area * 4 + (s & 1) * 2;
+      for (let t = 0; t < area; t++) {
+        data[base + t * 4] = onset[t];
+        data[base + t * 4 + 1] = melt[t];
+      }
+    }
+  }
+  const texture = arrayTexture(data, size, (levels - first) * layers, THREE.RGBAFormat, 'RGBA8');
+  texture.minFilter = texture.magFilter = THREE.NearestFilter;
+  return texture;
 }
 
 function arrayTexture(data: Uint8Array, size: number, depth: number, format: THREE.PixelFormat, internal: THREE.PixelFormatGPU) {
