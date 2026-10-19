@@ -1,7 +1,7 @@
 {
  "name": "Celtic broadleaf forests",
  "extends": "base",
- "about": "Pedunculate oak, ash and sycamore in the hedgerows and lowland woods, sessile oak with holly, birch and rowan in the western valley woods, beech in the estates, alder and willow by the rivers; Sitka spruce above all, with lodgepole pine, Norway spruce, larch, Douglas fir and Scots pine, in the hill plantations; hawthorn, blackthorn and hazel in the hedges, gorse, western gorse and broom on the banks and hill edges, rhododendron in the western oakwoods; heather, bell heather, purple moor-grass, mat-grass, bilberry and bog cotton on the moors, bracken on the hill slopes, soft rush in wet pasture, bluebells and ferns under the woods, foxglove by the lanes, reed in the marshes and marram on the dunes; lowland sheep on the pasture and Scottish Blackface on the hill, brown beef cattle, black-and-white dairy cattle and horses; Irish cottages in Ireland, white-rendered slate-roofed cottages elsewhere.",
+ "about": "Pedunculate oak, ash and sycamore in the hedgerows and lowland woods, sessile oak with holly, birch and rowan in the western valley woods, beech in the estates, alder and willow by the rivers; Sitka spruce above all, with lodgepole pine, Norway spruce, larch, Douglas fir and Scots pine, in the hill plantations; hawthorn, blackthorn and hazel in the hedges, gorse, western gorse and broom on the banks and hill edges, rhododendron in the western oakwoods; heather, bell heather, purple moor-grass, mat-grass, bilberry and bog cotton on the moors, bracken on the hill slopes, soft rush in wet pasture, bluebells and ferns under the woods, foxglove by the lanes, reed in the marshes and marram on the dunes; lowland sheep on the pasture and Scottish Blackface on the hill, brown beef cattle, black-and-white dairy cattle and horses; Irish cottages in Ireland, grey stone and white-rendered cottages under slate elsewhere.",
  "trees": {
   "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 3 },
   "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
@@ -34,7 +34,7 @@
   "heather-bloom": {},
   "moor-grass": {},
   "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
-  "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.06, "habitat": "lush", "clumped": true },
+  "soft-rush": { "model": "moor-grass", "latin": "Juncus effusus", "on": ["grass", "wetland"], "height": [0.5, 1.0], "share": 0.012, "habitat": "lush", "clumped": true },
   "bracken": {},
   "bog-cotton": {},
   "bilberry": {},
@@ -51,5 +51,5 @@
   "dairy-cattle": { "groups": 1, "size": [10, 40], "on": ["pasture", "grassland", "arable"] },
   "horse": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "heath"] }
  },
- "style": { "ie": "irish-cottage", "*": "cottage" }
+ "style": { "ie": "irish-cottage", "*": "british-stone-cottage" }
 }

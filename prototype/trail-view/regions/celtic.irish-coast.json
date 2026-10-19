@@ -9,37 +9,26 @@
  "cliffs": { "reach_m": 35, "raise_m": 30 },
  "look": {
   "bare_luma": [0.063, 0.101, 0.103, 0.068],
-  "ramps": { "grass": ["#857c55", "#6d6e48", "#5a7444"], "shrub": ["#7d5e48", "#86703f", "#6f7c3e"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
+  "ramps": { "grass": ["#857c55", "#6d6e48", "#5a7444"], "moss": ["#8a7a58", "#8a8a5a", "#7a8c56"] },
   "moor": { "heather": "#6e4f63", "share": 0.3 },
   "materials": {
    "bare-rock": { "colour": "#7a7553" },
    "scree": { "colour": "#7a7553" },
-   "heath": { "colour": "#5d5538" },
-   "bog": { "colour": "#6f5f3e" },
-   "bracken": { "colour": "#6a6e3a" },
-   "rough-grass": { "colour": "#6c6a4a" },
+   "heath": { "colour": "#5d5538", "satellite": 0 },
+   "bog": { "colour": "#6f5f3e", "satellite": 0 },
+   "rough-grass": { "colour": "#6c6a4a", "satellite": 0 },
    "wet-grassland": { "colour": "#6c6a4a" },
-   "pasture": { "colour": "#5c7a43" },
-   "scrub": { "colour": "#55652f" },
-   "hedge": { "colour": "#3b5530" },
-   "sand": { "colour": "#d6cba8" },
-   "beach": { "colour": "#d6cba8" },
-   "salt-marsh": { "colour": "#7c8a60" }
+   "pasture": { "colour": "#5c7a43", "satellite": 0 }
   },
   "snap": 0.85,
   "hazeKm": 15,
-  "grade": { "shadow": [-0.002, 0.002, 0.005], "light": [0.006, 0.004, -0.004], "saturation": 1.0 },
   "weather": {
    "sunny": { "cover": 0.42, "base": 1000, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
   },
   "outcrops": 0.5,
-  "rock": "#8f8c83",
-  "cliff": "#78776f",
+  "lithology": { "sandstone": { "colour": "#8f8c83" }, "limestone": { "colour": "#8f8c83" } },
   "bedding": { "strike": 55, "dip": 65 },
-  "sea": { "deep": "#2f4b66", "shallow": "#4d6b80" },
-  "swell": 250,
   "windswept_m": 400,
-  "turf_deg": 57,
   "roadLine": "#cdae4a"
  }
 }
