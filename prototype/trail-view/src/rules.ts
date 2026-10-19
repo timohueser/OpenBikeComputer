@@ -38,7 +38,8 @@ export function packRules(regions: Region[], season: number): Float32Array {
       data.set([...(rgb instanceof THREE.Color ? rgb.toArray() : rgb), a], (row * SLOT.count + slot) * 4);
     ramps(season, DECIDUOUS[leaf], look).forEach((c, i) => set(i, c, 1));
     MATERIALS.forEach((id, i) => {
-      const paint = look.materials?.[id]?.colour;
+      const yearly = look.materials?.[id]?.colour;
+      const paint = typeof yearly === 'string' ? yearly : yearly?.[SEASONS[season]];
       set(SLOT.materials + i, colour(paint ?? '#000'), paint ? 1 : 0);
     });
     LITHOLOGIES.forEach((id, i) => {

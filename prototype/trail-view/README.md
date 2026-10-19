@@ -53,7 +53,7 @@ texel's ground, water and roads by its region in `meta.regions`.
 | `cliffs`, `summits`, `relief` | GLO-30 shaping: sheer sea cliffs, mapped summits as cones, ridges sharpened |
 | `look` | Ramps per cover, material and lithology colours, moor heather, speckle (scattered bushes), outcrops, rock, cliff, bare_luma, road surfaces and edge lines, snowline, sea, swell, haze, grade, weather |
 | `look.ramps.<cover>` | One ramp `[low, mid, high]` by NDVI for the year, or one per season: `{"winter": […], "summer": […]}`. A season it leaves out keeps `palette.ts`'s. A child's value replaces its parent's |
-| `look.materials.<id>` | `{"colour"}` paints a material of `materials.json` over its cover's ramp |
+| `look.materials.<id>` | `{"colour"}` paints a material of `materials.json` over its cover's ramp, for the year or per season (`{"autumn": …}`) |
 | `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; a lithology without one takes `rock` |
 | `look.cliff` | Cliff walls, whatever their lithology |
 | `look.bare_luma` | The barren ground's luma, one or one per quarter, against which the satellite lightens or darkens bare ground |
