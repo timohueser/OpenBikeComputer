@@ -6,7 +6,33 @@
  "pack": "alps",
  "about": "The arc of the Alps from the Maritime Alps over Savoy, the Valais, the Bernese Oberland and central Switzerland, Tyrol, Bavaria, Salzburg, the Dolomites and the Hohe Tauern to the Julian Alps: spruce and fir forest with beech on the outer ranges, larch up to the treeline and in the dry inner valleys, hay meadows and summer pastures with wooden barns, chalets and farmhouses, high passes above the trees, grey limestone and granite, pale dolomite walls and glaciers. One split: alps.insubric, the lake district from Lago Maggiore to Lake Garda, because its summer haze comes from the Po plain and its olive groves, holm oak and cypress grow at the same heights as the apple orchards of the Adige and Rhône valleys, so no tree elevation band can keep them apart. No split for the dry inner valleys such as the Valais, the Aosta valley, the Vinschgau, the Engadin and the Briançonnais: Sentinel-2 colour and the NDVI ramps carry their brown summer slopes, and their outlines would follow the valley floors like contour rings. Across the whole arc the belts from beech to spruce, larch, mountain pine and rock come from the tree elevation bands, the barren rule and the snowline, and the houses from culture by country.",
  "look": {
-  "bare_luma": [0.308, 0.216, 0.149, 0.278],
-  "weather": { "sunny": { "base": 2900 }, "cloudy": { "base": 2200 }, "rainy": { "base": 1400 } }
+  "snap": 0.6,
+  "bare_luma": [0.308, 0.25, 0.2, 0.278],
+  "hazeKm": 22,
+  "ramps": {
+   "grass": { "summer": ["#a29a58", "#8e9548", "#7c8f40"] },
+   "needle": {
+    "spring": ["#40523f", "#3e553f", "#3b553d"],
+    "summer": ["#40503f", "#3f523f", "#3c523d"],
+    "autumn": ["#3c4a3c", "#3a4c3b", "#384c3a"]
+   }
+  },
+  "lithology": {
+   "limestone": { "colour": "#9d9a91" },
+   "dolomite": { "colour": "#aca696" },
+   "marl-clay": { "colour": "#8f887a" },
+   "gypsum": { "colour": "#d8d2c4" },
+   "sandstone": { "colour": "#857c6e" },
+   "conglomerate": { "colour": "#8c8476" },
+   "quartzite": { "colour": "#b0aca2" },
+   "granite": { "colour": "#8e8b84" },
+   "schist-slate-shale": { "colour": "#716e68" },
+   "alluvium-colluvium": { "colour": "#9a968c" },
+   "limestone-marl": { "colour": "#958f82" },
+   "dolerite": { "colour": "#5d625a" }
+  },
+  "outcrops": 0.07,
+  "weather": { "sunny": {"base": 2900}, "cloudy": {"base": 2200}, "rainy": {"base": 1400} },
+  "materials": { "heath": {"colour": "#7f7a52"}, "moss-lichen": {"colour": "#8a8672"} }
  }
 }
