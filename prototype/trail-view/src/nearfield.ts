@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { groundAt, heightAtTexel, snowAt, type Bake, type Building } from './bake';
 import { seasonOf, snowStep } from './calendar';
-import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, ROUGH, WATERY } from './materials';
+import { COVER, COVER_ORDER, HARDNESS, LITHOLOGIES, MATERIALS, MOOR, ROCKY, ROUGH, STONES, WATERY } from './materials';
 import { building, type BuildingKind, type BuildingStyle } from './models/buildings';
 import { packNamed, type Pack, type Region } from './regions';
 import { bridges } from './bridges';
@@ -66,7 +66,7 @@ const CRAG_CLEAR_M = 40;
 /** Crags along a crest, about this far apart and this tall. */
 const CRAG_SPACING_M = 5;
 const CRAG_HEIGHT_M: [number, number] = [1.5, 3.5];
-/** Small stones on a jittered grid within this many metres, on exposed rock. */
+/** Stones on a jittered grid within this many metres, as many as the ground's stones and exposed rock say. */
 const STONE_RADIUS_M = 60;
 const STONE_SPACING_M = 1.2;
 
@@ -282,7 +282,7 @@ export class NearField {
   readonly buildings = new THREE.Group();
   /** Triangles the trees, plants and buildings add to a frame. */
   triangles = 0;
-  /** Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour" or "animal|model|seed". */
+  /** Instances by "tree|model|lod", "shrub|model", "plant|species|seed", "rock|model|colour", "stone|model|colour" or "animal|model|seed". */
   private groups = new Map<string, Instances>();
   /** The packs' ground plants by species. */
   private ground = new Map<string, Pack['ground'][number]>();
@@ -360,6 +360,13 @@ export class NearField {
     // How far exposed rock shows as rock at x, y, 0 to 1, as the terrain's `exposed`.
     const exposedAt = (x: number, y: number) =>
       ROCKY.has(materialAt(x, y)) ? smooth(0, 0.6, kitAt(x, y).look.outcrops) * smooth(0.2, 0.6, HARDNESS[at(bake.litho, x, y)]) : 0;
+    // The share of ground strewn with stones at x, y: its material's, or the region's for it; soft
+    // rock breaks into fewer.
+    const stonesAt = (x: number, y: number) => {
+      const material = materialAt(x, y);
+      const share = kitAt(x, y).look.materials?.[MATERIALS[material]]?.stones ?? STONES[material];
+      return share * (0.3 + 0.7 * smooth(0.2, 0.6, HARDNESS[at(bake.litho, x, y)]));
+    };
     const groups = new Map<string, Instances>();
     // One stream of random numbers per kind of object, so placing one kind never moves another.
     let rand = random(7);
@@ -514,13 +521,17 @@ export class NearField {
       }
     });
 
-    // Exposed rock near the eye is strewn with small stones.
+    // Stony ground and exposed rock near the eye are strewn with stones, mostly small, a few of them
+    // small boulders. Small ones are pebbles of few faces.
     rand = random(13);
     for (let y = -STONE_RADIUS_M; y < STONE_RADIUS_M; y += STONE_SPACING_M) {
       for (let x = -STONE_RADIUS_M; x < STONE_RADIUS_M; x += STONE_SPACING_M) {
         const [sx, sy] = [x + (rand() - 0.5) * STONE_SPACING_M, y + (rand() - 0.5) * STONE_SPACING_M];
-        if (Math.hypot(sx, sy) < 1.5 || Math.hypot(sx, sy) > STONE_RADIUS_M || rand() > 0.5 * exposedAt(sx, sy)) continue;
-        add(`rock|${rand() < 0.5 ? 'slab' : 'boulder'}|${stoneAt(sx, sy)}`, sx, sy, 0.08 + 0.25 * rand() ** 2, rand() * 2 * Math.PI);
+        if (Math.hypot(sx, sy) < 1.5 || Math.hypot(sx, sy) > STONE_RADIUS_M || rand() > 0.5 * Math.max(exposedAt(sx, sy), stonesAt(sx, sy))) continue;
+        if (this.offGround(bake, sx, sy, px)) continue;
+        const height = 0.06 + 0.5 * rand() ** 3;
+        const name: RockName = height < 0.2 ? 'pebble' : rand() < 0.5 ? 'slab' : 'boulder';
+        add(`stone|${name}|${stoneAt(sx, sy)}`, sx, sy, height, rand() * 2 * Math.PI);
       }
     }
 
@@ -609,18 +620,19 @@ export class NearField {
       if (!instances.length) continue;
       const leaves = this.evergreen.has(name) ? 'summer' : season;
       const ground = what === 'plant' ? this.ground.get(name) : undefined;
+      const stony = what === 'rock' || what === 'stone';
       const model = this.model(key, leaves, () =>
         what === 'tree' ? tree(name, leaves, Number(lod) as Lod)
-          : what === 'rock' ? rock(name as RockName)
+          : stony ? rock(name as RockName)
           : what === 'animal' ? animal(name, Number(lod))
           : plant(ground?.plant ?? name, leaves, Number(lod) || 1),
       );
-      const material = what === 'rock' ? this.rock(lod) : what === 'shrub' || ground?.own ? this.materials.ownPlant
+      const material = stony ? this.rock(lod) : what === 'shrub' || ground?.own ? this.materials.ownPlant
         : ground ? this.materials.plant : this.materials.tree;
       const mesh = new THREE.Mesh(forest(model, instances), material);
       mesh.frustumCulled = false;
-      // Ground plants are too small to cast a shadow worth their cost.
-      mesh.userData.casts = what !== 'plant';
+      // Ground plants and stones are too small to cast a shadow worth their cost.
+      mesh.userData.casts = what !== 'plant' && what !== 'stone';
       this.trees.add(mesh);
       this.triangles += (instances.length / 5) * ((model.index ?? model.getAttribute('position')).count / 3);
     }

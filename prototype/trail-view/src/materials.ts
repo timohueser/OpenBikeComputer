@@ -15,6 +15,8 @@ export const LITHOLOGIES = vocabulary.lithologies.map((l) => l.id);
 /** Each material code's cover, as an index into COVER_ORDER. */
 export const COVER = vocabulary.materials.map((m) => COVER_ORDER.indexOf(m.cover as CoverName));
 export const HARDNESS = vocabulary.lithologies.map((l) => l.hardness);
+/** Each material code's share of ground strewn with stones. */
+export const STONES = vocabulary.materials.map((m: { stones?: number }) => m.stones ?? 0);
 
 const code = (id: string) => MATERIALS.indexOf(id);
 /** Heath and bog: where the heather grows and the moor plants stand. */

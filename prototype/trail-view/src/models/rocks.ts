@@ -12,10 +12,13 @@ export const ROCK_GREY = '#8e908a';
 const BODY = ['#7d7f78', ROCK_GREY, '#a3a49c'].map(hex);
 const LICHEN = ['#b4b05a', '#c98a3a'].map(hex);
 
-/** A low slab, wider than tall; a rounder boulder; or a crag, a leaning blade taller than wide. About 80 faces. */
+/**
+ * A low slab, wider than tall; a rounder boulder; or a crag, a leaning blade taller than wide. About
+ * 80 faces. A pebble is a boulder of 20 faces, for stones too small to show more.
+ */
 function build(name: RockName, seed: number): THREE.BufferGeometry {
   const slab = name === 'slab';
-  const geo = lump(1, 1).toNonIndexed();
+  const geo = lump(1, name === 'pebble' ? 0 : 1).toNonIndexed();
   const pos = geo.getAttribute('position');
   const p = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
@@ -49,6 +52,6 @@ function build(name: RockName, seed: number): THREE.BufferGeometry {
   return unit(geo);
 }
 
-export type RockName = 'slab' | 'boulder' | 'crag';
+export type RockName = 'slab' | 'boulder' | 'crag' | 'pebble';
 
 export const rock = (name: RockName, seed = 1) => build(name, seed);
