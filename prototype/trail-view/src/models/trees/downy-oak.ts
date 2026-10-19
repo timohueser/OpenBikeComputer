@@ -13,11 +13,12 @@ export default {
   bark: ['#3a3632', '#58524a'],
   // Downy undersides grey the green.
   leaves: {
-    // It holds its dry leaves through the winter.
-    winter: ['#6c5638', '#927452', '#b49672'],
+    winter: 'bare',
     spring: ['#56663a', '#7e9050', '#b0bc84'],
     summer: ['#3a4a2e', '#5a6c44', '#8a9a6c'],
     autumn: ['#6a5430', '#94784a', '#b89a68'],
   },
   twigs: ['#45403a', '#5e5850', '#787068'],
+  // Some dry leaves hang on through the winter.
+  flecks: { winter: ['#927452', 0.3] },
 } satisfies Tree;
