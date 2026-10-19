@@ -2,7 +2,48 @@
  "name": "Italian sclerophyllous and semi-deciduous forests",
  "ecoregion": 795,
  "extends": "world",
- "about": "The hill country of the Riviera and peninsular Italy, from Nice and Liguria through the Langhe, Tuscany, Umbria, northern Lazio and the Marche to Basilicata: olive and vine terraces, wheat and sunflower fields that turn to straw in summer, downy and Turkey oak woods, holm oak maquis and stone, maritime and Aleppo pines on the coasts, cypress rows, chestnut and beech on the volcanic and higher hills, clay badlands, and stone, brick or rendered villages on the hilltops. No split: summer straw and winter-green grass in the south, green vineyards in the Langhe and maquis on the coasts differ in Sentinel-2 colour and NDVI, chestnut and beech come with the tree bands, and houses go by country, so one haze, weather and grade serve the whole region. The one candidate for a subregion is the Po side of the Apennine watershed (Langhe, Monferrato, the Emilian foothills), whose summer haze and winter valley fog may need their own look if the La Morra shots show it.",
+ "about": "The hill country of the Riviera and peninsular Italy, from Nice and Liguria through the Langhe, Tuscany, Umbria, northern Lazio and the Marche to Basilicata: olive and vine terraces, wheat and sunflower fields that turn to straw in summer, downy and Turkey oak woods, holm oak maquis and stone, maritime and Aleppo pines on the coasts, cypress rows, chestnut and beech on the volcanic and higher hills, clay badlands, and stone, brick or rendered villages on the hilltops. No split: summer straw and winter-green grass in the south, green vineyards in the Langhe and maquis on the coasts differ in Sentinel-2 colour and NDVI, chestnut and beech come with the tree bands, and houses go by country, so one haze, weather and grade serve the whole region. The Po side of the Apennine watershed (Langhe, Monferrato) shares the look: its summer haze is weather, not a separate climate.",
  "leaf": "broadleaved",
- "pack": "italy-med"
+ "pack": "italy-med",
+ "look": {
+  "sea": {"deep": "#4078b0", "shallow": "#4aa0b0"},
+  "hazeKm": 22,
+  "weather": {
+   "sunny": {"cover": 0.18, "base": 1800, "zenith": "#2a62c4", "horizon": "#9cbee6", "grey": 0.85, "towers": 0}
+  },
+  "ramps": {
+   "crop": {"summer": ["#8a6c56", "#c2a266", "#6c9240"], "winter": ["#94886a", "#868a5e", "#728852"], "autumn": ["#9e8866", "#908a5e", "#7c8a54"]},
+   "grass": {"summer": ["#c6ab6e", "#98984f", "#587a36"], "winter": ["#8c9062", "#7e8e58", "#6e884e"], "autumn": ["#a89a64", "#93965a", "#7c8e50"]},
+   "broad": {"winter": ["#5a5a44", "#53573e", "#4c5538"], "summer": ["#56703c", "#506e3a", "#4a6a36"], "autumn": ["#66663e", "#5e663a", "#566236"]},
+   "shrub": ["#6e6a44", "#5e6a3e", "#4e6438"]
+  },
+  "snap": 0.5,
+  "outcrops": 0.15,
+  "rock": "#b0a898",
+  "lithology": {
+   "limestone": {"colour": "#c8c4b8"},
+   "dolomite": {"colour": "#c0b8a6"},
+   "marl-clay": {"colour": "#c2b69a"},
+   "gypsum": {"colour": "#e0dacb"},
+   "sandstone": {"colour": "#a99a7e"},
+   "conglomerate": {"colour": "#a89a80"},
+   "quartzite": {"colour": "#bdb6aa"},
+   "granite": {"colour": "#b4aa9c"},
+   "schist-slate-shale": {"colour": "#76716a"},
+   "basalt-lava": {"colour": "#4c4844"},
+   "cinder-scoria": {"colour": "#6e4e40"},
+   "pumice": {"colour": "#cfc4a6"},
+   "tuff": {"colour": "#a8916e"},
+   "alluvium-colluvium": {"colour": "#bba887"},
+   "variegated-marl": {"colour": "#a8604e", "banded": true},
+   "limestone-marl": {"colour": "#c4bcaa"},
+   "dolerite": {"colour": "#6f675d"},
+   "felsic-lava": {"colour": "#7a7064"}
+  },
+  "speckle": {"colour": "#4a5232", "share": 0.15, "size_m": 2.5},
+  "materials": {
+   "olive-grove": {"colour": "#848658"}
+  },
+  "grade": {"shadow": [-0.004, 0, 0.01], "light": [0.012, 0.006, -0.01], "saturation": 1.1}
+ }
 }
