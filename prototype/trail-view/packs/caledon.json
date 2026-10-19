@@ -36,11 +36,11 @@
   "foxglove": { "model": "alpine-flowers", "latin": "Digitalis purpurea", "on": ["grass", "shrub"], "height": [0.8, 1.5], "share": 0.03, "clumped": true }
  },
  "herds": {
-  "red-deer": { "model": "goat", "latin": "Cervus elaphus", "groups": 3, "size": [4, 25], "on": ["heath", "rough", "bog"] },
-  "sheep": { "groups": 4, "size": [3, 20], "on": ["pasture", "rough", "heath"] },
-  "highland-cow": { "groups": 1, "size": [2, 8], "on": ["pasture", "rough"] },
-  "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [5, 20], "on": ["pasture"] },
-  "highland-pony": { "model": "highland-cow", "latin": "Equus caballus (Highland)", "groups": 1, "size": [1, 4], "on": ["pasture"] }
+  "red-deer": { "model": "goat", "latin": "Cervus elaphus", "groups": 3, "size": [4, 25], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "sheep": { "groups": 4, "size": [3, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "highland-cow": { "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable"] },
+  "highland-pony": { "model": "highland-cow", "latin": "Equus caballus (Highland)", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable"] }
  },
  "style": "highland-cottage"
 }

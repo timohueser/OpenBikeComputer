@@ -21,7 +21,7 @@
   "chain-fern": { "model": "fern", "latin": "Woodwardia radicans", "on": ["tree"], "height": [0.6, 1.5], "share": 0.2 }
  },
  "herds": {
-  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [2, 8], "on": ["pasture"] }
+  "sheep": { "groups": 1, "size": [5, 20], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 1, "size": [2, 8], "on": ["pasture", "grassland", "arable"] }
  }
 }

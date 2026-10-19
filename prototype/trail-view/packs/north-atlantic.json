@@ -40,11 +40,11 @@
   "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
  },
  "herds": {
-  "blackface-sheep": { "model": "sheep", "latin": "Ovis aries (Scottish Blackface)", "groups": 5, "size": [2, 10], "on": ["rough", "heath", "bog"] },
-  "sheep": { "groups": 2, "size": [5, 25], "on": ["pasture"] },
-  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "rough"] },
-  "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [3, 15], "on": ["pasture"] },
-  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "rough"] }
+  "blackface-sheep": { "model": "sheep", "latin": "Ovis aries (Scottish Blackface)", "groups": 5, "size": [2, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "bog"] },
+  "sheep": { "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (brown)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "aberdeen-angus": { "model": "highland-cow", "latin": "Bos taurus (Aberdeen Angus)", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "model": "highland-cow", "latin": "Equus caballus", "groups": 1, "size": [1, 4], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
  },
  "style": { "ie": "irish-cottage", "*": "highland-cottage" }
 }
