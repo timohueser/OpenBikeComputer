@@ -58,6 +58,7 @@ from ingest.sources import SOURCES as DTM_SOURCES  # noqa: E402
 from ingest.sources.base import http_download  # noqa: E402
 from ingest.sources.es import ES  # noqa: E402
 from ingest.sources.fr import FR, BilWmsSource  # noqa: E402
+from ingest.sources.grid import grid_squares  # noqa: E402
 from ingest.sources.protocols import ArcGisSource  # noqa: E402
 from ingest.sources.stac import stac_items  # noqa: E402
 from ingest.sources.us import US  # noqa: E402
@@ -102,6 +103,11 @@ VOID_BELOW_M = -100.0
 # Scotland's Phase 1 LiDAR DTM: 1 m GeoTIFFs in British National Grid, one per 10 km OS square,
 # on a public bucket. It was flown in patches (Glen Coe, not Torridon or Skye).
 SCOT_LIDAR = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/phase-1/dtm/27700/gridded/{}_1M_DTM_PHASE1.tif"
+# INGV's TINITALY 1.1: one zipped GeoTIFF per 50 km square of UTM 32N, which it stretches over all
+# Italy, named after the square's south-west corner in tens of kilometres. Past the 1000 km column,
+# whose name ends in `10`, a square is `e` and counts from 1000 km. Off Italy a square answers 404,
+# and inside one the land abroad and the sea are nodata.
+TINITALY = "https://tinitaly.pi.ingv.it/data_1.1/{0}_s10/{0}_s10.zip"
 BOX_M = 3000
 # Public Overpass instances, tried in turn while one is busy.
 OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
@@ -365,6 +371,7 @@ CREDITS = {
     "fr": "RGE ALTI © IGN, Licence Ouverte",
     "es": "MDT05 © Instituto Geográfico Nacional, CC BY 4.0",
     "scot": "LiDAR Phase 1 DTM, Crown copyright Scottish Government, SEPA and Scottish Water (2012), OGL v3",
+    "it": "TINITALY/1.1 © INGV, CC BY 4.0, doi:10.13127/tinitaly/1.1",
     "worldcover": "ESA WorldCover 10 m 2021 v200 © ESA WorldCover project, CC BY 4.0",
     "s2": f"Contains modified Copernicus Sentinel data {S2_YEAR} (Sentinel-2 quarterly mosaics)",
     "osm": "© OpenStreetMap contributors (ODbL)",
@@ -660,6 +667,8 @@ def dtm_rasters(key: str, bbox) -> list[Path]:
         return bw_rasters(bbox)
     if key == "scot":
         return scot_rasters(bbox)
+    if key == "it":
+        return it_rasters(bbox)
     if key in BOXED:
         west, south, east, north = bbox
         rows = math.ceil((north - south) * 111_320 / BOX_M)
@@ -706,6 +715,32 @@ def scot_rasters(bbox) -> list[Path]:
                for n in range(int(min(ys)) // 10_000 * 10_000, int(max(ys)) + 1, 10_000)}
     paths = [http_download(SCOT_LIDAR.format(name), SOURCES / "scot" / f"{name}.tif", optional=True) for name in sorted(squares)]
     return [path for path in paths if path]
+
+
+def it_rasters(bbox) -> list[Path]:
+    """TINITALY's squares over the box, one at a time; each zip becomes a compressed GeoTIFF once."""
+    out, paths = SOURCES / "it", []
+    for east, north in grid_squares(bbox, 32632, 50_000):
+        e, n = east // 10_000, north // 10_000
+        name = f"w{n}{e}" if e < 100 else f"w{n}10" if e == 100 else f"e{n}{e - 100:02d}"
+        tif = out / f"{name}.tif"
+        if not tif.exists():
+            out.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=out) as tmp:
+                if not (archive := http_download(TINITALY.format(name), Path(tmp) / f"{name}.zip", optional=True,
+                                                 headers={"User-Agent": USER_AGENT})):
+                    continue
+                with rasterio.open(f"/vsizip/{archive}/{name}_s10/{name}_s10.tif") as src:
+                    band, profile = src.read(1), src.profile
+                # Along a few stretches of the border the land abroad is 0, not nodata.
+                band[band == 0] = profile["nodata"]
+                part = Path(tmp) / tif.name
+                with rasterio.open(part, "w", **(profile | {"compress": "deflate", "predictor": 3, "tiled": True,
+                                                            "blockxsize": 256, "blockysize": 256})) as dst:
+                    dst.write(band, 1)
+                os.replace(part, tif)
+        paths.append(tif)
+    return paths
 
 
 def bw_rasters(bbox) -> list[Path]:
@@ -1947,7 +1982,7 @@ def bake(spot: dict, colour: bool, snow: bool, dtm_levels: int, baseline: bool) 
     tz = TimezoneFinder().timezone_at(lng=lon, lat=lat)
     dtm = spot.get("dtm")
     # A typo would otherwise fail only after minutes of Overpass and warping.
-    for key, known in (("dtm", {*DTM_SOURCES, *BOXED, "scot"}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
+    for key, known in (("dtm", {*DTM_SOURCES, *BOXED, "scot", "it"}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
         if spot.get(key) and spot[key] not in known:
             sys.exit(f"{spot['id']}: unknown {key} {spot[key]!r}; known: {', '.join(sorted(known))}")
     print(f"  region {chain[-1]}, country {country}, subdivision {subdivision}, {tz}", flush=True)

@@ -235,9 +235,8 @@ regression set and every approved spot before and after, and asks the owner.
 ## Data sources
 
 - Every spot has GLO-30, WorldCover, Sentinel-2, CORINE, EGDI and IGME 5000 geology, and OSM.
-- National DTMs that need no key, at 1 to 5 m: `ch`, `de-bw` and the other `de-*`, `at`, `uk`
-  (England), `no`, `fr`, `es`, `scot`, `it-bz`. Do not use sub-metre sources for the tune. They are
-  4 to 8 GB per spot.
+- National DTMs that need no key: the `dtm` keys of the [spot table](../README.md#spots-regions-and-packs).
+  Do not use sub-metre sources for the tune. They are 4 to 8 GB per spot.
 - Land cover maps: `nlcm` (Ireland), `habmos` (Scotland). Geology: `igme` (Spain).
 - No country- or source-specific logic in the product: a national dataset only makes the shared
   ground materials more precise at bake time, and the renderer, the shaders and the region rules

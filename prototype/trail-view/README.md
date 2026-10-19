@@ -30,7 +30,7 @@ The machine for the Europe tune is set up as [tune/README.md](tune/README.md#lin
 | `lat`, `lon`, `heading`, `pitch` | The eye and the first view |
 | `photo` | A `peak-view-photos` fixture name: it gives position, ground and camera. Or `{url, credit, heading_deg, pitch_deg, vfov_deg, roll_deg}` for a third-party photograph |
 | `eye_above_ground_m`, `ground_m` | The eye above the ground (1.6 m), and the ground height where the DTM is wrong |
-| `dtm` | A national DTM: `ch`, `de-bw` and the other `de-*`, `at`, `uk`, `no`, `fr`, `es`, `it-bz`, `us`, `scot`. Without one, the spot is GLO-30 only |
+| `dtm` | A national DTM: `ch`, `de-bw` and the other `de-*`, `at`, `uk` (England), `no`, `fr`, `es`, `it-bz`, `it` (TINITALY: all Italy, 10 m), `us`, `scot`. Without one, the spot is GLO-30 only |
 | `landcover` | `nlcm` (Ireland) or `habmos` (Scotland): materials over ±5 km |
 | `geology` | `igme` (Spain): the lithology over ±5 km from the 1:50 000 map |
 
@@ -108,8 +108,8 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--snow] [--dtm-levels 3] 
   comes from its public COGs. The Sentinel-2 quarterly mosaics come from CDSE S3 with the keys in
   `~/.config/openbikecomputer/cdse-s3.env`, as `tools/planner_snow.py` reads them.
 - The DTM comes through the `host/obc-dem/reference` adapters into `_sources/<dtm>/`. Every DTM
-  level reads one cubic 10 m grid of it. `us`, `fr` and `es` go in 3 km requests. A `de-bw` zip
-  becomes GeoTIFF and its XYZ text is deleted. `scot` is Scotland's LiDAR Phase 1 in 10 km
+  level reads one cubic 10 m grid of it. `us`, `fr` and `es` go in 3 km requests. `de-bw` and
+  `it` zips become compressed GeoTIFFs and are deleted. `scot` is Scotland's LiDAR Phase 1 in 10 km
   squares; where it was never flown the spot is GLO-30 only.
 - Overpass queries, each cached per position in `_sources/osm/`: highways and forests (±5 km)
   with buildings (±2.5 km); water and multipolygon water (±10 km); walls, hedges, orchards, aretes
