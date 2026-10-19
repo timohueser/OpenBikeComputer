@@ -22,6 +22,8 @@ export interface BuildingStyle {
   timber: 'none' | 'upper' | 'all';
   shutters: boolean;
   chimneys: 0 | 1 | 2;
+  /** Storeys of a cottage or a house that OSM gives no height; by default the kind's. */
+  storeys?: number;
   /** Each building takes one colour from each list. */
   palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string; chimney: string };
 }
@@ -144,7 +146,8 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
   // a church describe its tower, so the nave's walls follow its width instead.
   const tower = church ? Math.min(0.6 * W, length / 3) : 0;
   const L = length - tower;
-  const height = church ? THREE.MathUtils.clamp(0.6 * W, 3, 14) : wall ?? k.storey * k.storeys;
+  const dwelling = kind === 'cottage' || kind === 'house';
+  const height = church ? THREE.MathUtils.clamp(0.6 * W, 3, 14) : wall ?? k.storey * ((dwelling && style.storeys) || k.storeys);
   const storeys = Math.max(1, Math.round(height / k.storey));
   const storey = height / storeys;
   const [ww, spacing] = k.window;

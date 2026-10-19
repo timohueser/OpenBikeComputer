@@ -223,7 +223,7 @@ const PACK = object({
 });
 const STYLE = object({
   name: text, about: text, extends: text, pitch: span(number(0, 80)), eave: number(0, 5), verge: number(0, 5), hip: number(0, 1),
-  timber: oneOf('none', 'upper', 'all'), shutters: oneOf(true, false), chimneys: oneOf(0, 1, 2),
+  timber: oneOf('none', 'upper', 'all'), shutters: oneOf(true, false), chimneys: oneOf(0, 1, 2), storeys: number(1, 8),
   palette: object({ render: list(colour), wood: list(colour), roof: list(colour), door: list(colour), shutter: list(colour), plinth: colour, chimney: colour }),
 });
 
