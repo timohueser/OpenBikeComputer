@@ -10,7 +10,7 @@ import type { Light } from './light';
 import { WATERY } from './materials';
 import type { Region } from './regions';
 import { NearField } from './nearfield';
-import { ROAD_LINE, ROADS, VARIEGATED } from './palette';
+import { VARIEGATED } from './palette';
 import { packRules, SLOT } from './rules';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
 import { CURVATURE } from './surface';
@@ -20,21 +20,24 @@ import type { Weather } from './weather';
 const FETCH_M = 8000;
 
 /**
- * Per water texel at sea level and level, 0–255: how far open water reaches toward the swell, up
- * to FETCH_M, averaged over the swell's bearing and 45° to each side, since swell bends round
- * headlands. Coarse levels first, so a fine level's walk continues past its edge on the next.
- * Without a swell every shore counts as half exposed.
+ * Per water texel at sea level and level, 0–255: how far open water reaches toward its region's
+ * swell, up to FETCH_M, averaged over the swell's bearing and 45° to each side, since swell bends
+ * round headlands. Coarse levels first, so a fine level's walk continues past its edge on the next.
+ * In a region without a swell every shore counts as half exposed.
  */
-function exposure(bake: Bake, swell: number | undefined): Uint8Array {
+function exposure(bake: Bake, regions: Region[]): Uint8Array {
   const { size, water_levels } = bake.meta;
-  const out = new Uint8Array(water_levels * size * size);
-  if (swell === undefined) return out.fill(128);
-  const sum = new Float32Array(out.length);
-  for (const bearing of [swell - 45, swell, swell + 45]) {
-    const fetch = fetchToward(bake, bearing);
-    for (let t = 0; t < sum.length; t++) sum[t] += fetch[t] / 3;
+  const out = new Uint8Array(water_levels * size * size).fill(128);
+  const swells = regions.map(({ look }) => look.swell);
+  for (const swell of new Set(swells)) {
+    if (swell === undefined) continue;
+    const sum = new Float32Array(out.length);
+    for (const bearing of [swell - 45, swell, swell + 45]) {
+      const fetch = fetchToward(bake, bearing);
+      for (let t = 0; t < sum.length; t++) sum[t] += fetch[t] / 3;
+    }
+    for (let t = 0; t < sum.length; t++) if (swells[bake.region[t]] === swell) out[t] = Math.round((255 * sum[t]) / FETCH_M);
   }
-  for (let t = 0; t < sum.length; t++) out[t] = Math.round((255 * sum[t]) / FETCH_M);
   return out;
 }
 
@@ -235,15 +238,11 @@ export class Terrain {
       ndviMax: { value: null },
       ndviMaxLevels: { value: 0 },
       debugView: { value: 0 },
-      seaDeep: { value: new THREE.Color() },
-      seaShallow: { value: new THREE.Color() },
       shoreReach: { value: 600 },
       canopy: { value: null },
       canopyLevels: { value: 0 },
       roads: { value: null },
       roadLevels: { value: 0 },
-      roadColours: { value: ROADS.map((hex) => new THREE.Color(hex)) },
-      roadLine: { value: new THREE.Color(ROAD_LINE) },
       normals: { value: null },
       nearShadow: { value: null },
       nearShadowMatrix: { value: new THREE.Matrix4() },
@@ -320,7 +319,7 @@ export class Terrain {
   /**
    * Upload the levels as one R16F array: the surface, then GLO-30 for the levels the DTM replaced;
    * the ground layers; and each region's rules. `regions` are the bake's, in meta.regions' order;
-   * the eye's region gives the sea, the roads and the grade.
+   * the eye's region gives the grade.
    */
   setBake(bake: Bake, regions: Region[], eye: Region): void {
     const { size, levels, half0_m, dtm_levels, s2_levels } = bake.meta;
@@ -373,16 +372,11 @@ export class Terrain {
     this.water = arrayTexture(bake.water, size, bake.meta.water_levels, THREE.RGFormat, 'RG8');
     u.waterMap.value = this.water;
     this.exposed?.dispose();
-    this.exposed = arrayTexture(exposure(bake, eye.look.swell), size, bake.meta.water_levels, THREE.RedFormat, 'R8');
+    this.exposed = arrayTexture(exposure(bake, regions), size, bake.meta.water_levels, THREE.RedFormat, 'R8');
     u.exposureMap.value = this.exposed;
     u.waterLevels.value = bake.meta.water_levels;
     u.shoreReach.value = bake.meta.shore_reach_m;
-    const land = eye.look;
-    (land.roads ?? ROADS).forEach((hex, i) => u.roadColours.value[i].set(hex));
-    u.roadLine.value.set(land.roadLine ?? ROAD_LINE);
-    u.seaDeep.value.set(land.sea.deep);
-    u.seaShallow.value.set(land.sea.shallow);
-    const { grade } = land;
+    const { grade } = eye.look;
     u.gradeShadow.value.set(...grade.shadow);
     u.gradeLight.value.set(...grade.light);
     u.saturation.value = grade.saturation;

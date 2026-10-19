@@ -196,6 +196,9 @@ const int SLOT_SPECKLE = ${SLOT.speckle};
 const int SLOT_TERRAIN = ${SLOT.terrain};
 const int SLOT_BEDDING = ${SLOT.bedding};
 const int SLOT_SNAP = ${SLOT.snap};
+const int SLOT_SEA = ${SLOT.sea};
+const int SLOT_ROADS = ${SLOT.roads};
+const int SLOT_ROAD_LINE = ${SLOT.roadLine};
 `;
 
 /** Ground colour by level. Reads LEVELS, which the shader brings in before it. */
@@ -212,8 +215,6 @@ uniform sampler2DArray ndviMax;
 uniform float ndviMaxLevels;
 uniform sampler2DArray roads;
 uniform float roadLevels;
-uniform vec3 roadColours[6];
-uniform vec3 roadLine;
 uniform sampler2DArray waterMap;
 uniform sampler2DArray exposureMap;
 uniform float waterLevels;
@@ -272,30 +273,30 @@ float band(float x, float a, float b, float w) {
   return clamp((min(x + 0.5 * w, b) - max(x - 0.5 * w, a)) / w, 0.0, 1.0);
 }
 
+vec4 rule(int region, int slot) {
+  return texelFetch(rules, ivec2(slot, region), 0);
+}
+
 /**
  * A road's surface at inside metres in from its edge and across metres from its centreline,
  * seen by a pixel w metres wide, over the ground colour beside it. Paved main roads keep a line
  * along each edge; lanes and tracks wear two wheel ruts, grass and dirt ones with grass between;
  * gravel lies in grains.
  */
-vec3 roadSurface(int code, float inside, float across, vec2 p, float w, vec3 ground) {
-  vec3 c = roadColours[code - 1];
+vec3 roadSurface(int region, int code, float inside, float across, vec2 p, float w, vec3 ground) {
+  vec3 c = rule(region, SLOT_ROADS + code - 1).rgb;
   // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
   c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
   // Only roads of two full lanes carry edge lines.
-  if (code == 1 && inside + across >= 3.5) c = mix(c, roadLine, band(inside, 0.25, 0.37, w));
+  if (code == 1 && inside + across >= 3.5) c = mix(c, rule(region, SLOT_ROAD_LINE).rgb, band(inside, 0.25, 0.37, w));
   if (code == 3) c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
   float ruts = band(across, 0.55, 1.05, w);
   // One car wide: inside and across add up to the half-width.
   bool lane = inside + across < 2.6;
   if ((code == 2 && lane) || code == 3) c *= 1.0 - 0.08 * ruts;
   if (code == 4) c = mix(c * (1.0 - 0.18 * ruts), ground, band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), w) * 0.85);
-  if (code == 5) c = mix(mix(ground, c, 0.35), roadColours[3], ruts * 0.8);
+  if (code == 5) c = mix(mix(ground, c, 0.35), rule(region, SLOT_ROADS + 3).rgb, ruts * 0.8);
   return c;
-}
-
-vec4 rule(int region, int slot) {
-  return texelFetch(rules, ivec2(slot, region), 0);
 }
 
 /** The cover's ramp in the region, low NDVI to high. */
@@ -440,7 +441,7 @@ Ground groundOn(float k, vec2 p, float footprint) {
           w += weights[i];
           weights[i] = 0.0;
         }
-        surface += w * roadSurface(codes[j], -edge, across, p, footprint, albedo);
+        surface += w * roadSurface(region, codes[j], -edge, across, p, footprint, albedo);
       }
       edge += fray / max(weight, 1e-4) * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5) * 2.0;
       road = (1.0 - smoothstep(-footprint, footprint, edge)) * min(weight * 4.0, 1.0);
@@ -616,8 +617,6 @@ uniform float curvature;
 ${SHADE}
 ${COLOUR}
 uniform sampler2DArray normals;
-uniform vec3 seaDeep;
-uniform vec3 seaShallow;
 uniform float time;
 uniform vec3 variegated[3];
 // A false-colour view of one input, 0 for the painted ground (DEBUG_VIEWS in main.ts).
@@ -864,7 +863,8 @@ void main() {
   // The body turns from the shallow colour beside the shore, where the surf churns it, to the deep
   // one within a few tens of metres: rocky coasts drop off fast.
   float sea = 1.0 - smoothstep(1.0, 3.0, altitude);
-  vec3 body = mix(seaDeep, mix(seaShallow, seaDeep, smoothstep(2.0, 22.0, g.shore)), sea) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
+  vec3 deep = rule(region, SLOT_SEA).rgb;
+  vec3 body = mix(deep, mix(rule(region, SLOT_SEA + 1).rgb, deep, smoothstep(2.0, 22.0, g.shore)), sea) * (ambient + 0.8 * sunColour * max(sunDir.z, 0.0));
   // Swell rolls in as faint lighter bands, and the sun's path glints in sparks rather than a sheen.
   body *= 1.0 + 0.06 * sin(dot(vWorld.xy, vec2(0.8, 0.6)) / 9.0 + time * 0.9) * (1.0 - smoothstep(2.0, 8.0, footprint));
   float sparks = smoothstep(0.8, 0.86, noise(vWorld.xy / 1.7 + vec2(time * 0.7, time * 0.3)));

@@ -1,12 +1,12 @@
 /**
- * The ground rules of every region in a bake, packed for the terrain shader: one row of texels
- * per region (the bake's region layer indexes it), one column per slot. The shader reads each
- * texel's own region, so a rule paints where it applies.
+ * The rules of every region in a bake that paint the ground, the water and the roads, packed for
+ * the terrain shader: one row of texels per region (the bake's region layer indexes it), one column
+ * per slot. The shader reads each texel's own region, so a rule paints where it applies.
  */
 
 import * as THREE from 'three';
 import { COVER_ORDER, LITHOLOGIES, MATERIALS } from './materials';
-import { DECIDUOUS, ramps } from './palette';
+import { DECIDUOUS, ramps, ROAD_LINE, ROADS } from './palette';
 import type { Region } from './regions';
 import { SEASONS } from './models/trees';
 
@@ -15,13 +15,18 @@ import { SEASONS } from './models/trees';
  * one; a colour per lithology, alpha 1 where it is banded; then one texel each for the cliff
  * colour (alpha 1 where the region names one), the heather (alpha its share), the speckle (alpha
  * its share), the terrain scalars (outcrops, cos turf_deg, snowline, speckle size), the bedding
- * plane's normal (alpha the season's bare_luma, 0 for none) and the palette snap.
+ * plane's normal (alpha the season's bare_luma, 0 for none) and the palette snap; then the sea's
+ * deep and shallow colours, the road surfaces in ROADS' order and the edge line of main roads.
  */
 export const SLOT = (() => {
   const materials = 3 * COVER_ORDER.length;
   const lithologies = materials + MATERIALS.length;
   const cliff = lithologies + LITHOLOGIES.length;
-  return { materials, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5, count: cliff + 6 };
+  const roads = cliff + 8;
+  return {
+    materials, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
+    sea: cliff + 6, roads, roadLine: roads + ROADS.length, count: roads + ROADS.length + 1,
+  };
 })();
 
 /** The rows for a season (0 winter to 3 autumn), linear RGB. */
@@ -52,6 +57,10 @@ export function packRules(regions: Region[], season: number): Float32Array {
     const bare = Array.isArray(look.bare_luma) ? look.bare_luma[season] : look.bare_luma;
     set(SLOT.bedding, [Math.sin(toward) * Math.sin(tilt), Math.cos(toward) * Math.sin(tilt), Math.cos(tilt)], bare ?? 0);
     set(SLOT.snap, [look.snap, 0, 0], 0);
+    set(SLOT.sea, colour(look.sea.deep), 1);
+    set(SLOT.sea + 1, colour(look.sea.shallow), 1);
+    (look.roads ?? ROADS).forEach((hex, i) => set(SLOT.roads + i, colour(hex), 1));
+    set(SLOT.roadLine, colour(look.roadLine ?? ROAD_LINE), 1);
   });
   return data;
 }

@@ -43,8 +43,8 @@ on a tie, until none does: `world` › `celtic` › `celtic.irish-coast`.
 bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root first), `country`
 (lower-case ISO 3166-1 code from `tune/countries.json`, else the nearest country within 25 km),
 `subdivision` (the country's first level from the same file, such as `es-ga` or `gr-l`) and `tz`
-(from timezonefinder). The page draws `meta.region`'s sky, sea and roads at the clock of
-`meta.tz`, and each texel's ground by its region in `meta.regions`.
+(from timezonefinder). The page draws `meta.region`'s sky at the clock of `meta.tz`, and each
+texel's ground, water and roads by its region in `meta.regions`.
 
 | Region key | What it sets |
 |---|---|
@@ -57,7 +57,7 @@ bake.py writes the walk to `meta.json`: `region` (the last id) and `chain` (root
 | `look.lithology.<id>` | `{"colour", "banded"}` for a lithology's slabs, crags and cliffs; a lithology without one takes `rock` |
 | `look.cliff` | Cliff walls, whatever their lithology |
 | `look.bare_luma` | The barren ground's luma, one or one per quarter, against which the satellite lightens or darkens bare ground |
-| Applies where the eye is | `sea`, `swell`, `roads`, `roadLine`, haze, mist, light, `grade`, `weather` |
+| Applies where the eye is | haze, mist, light, `grade`, `weather` |
 
 A pack in `packs/<short>[.<sub>].json` extends `base` or a pack of its short. It keys its trees,
 ground plants and herds by species, so a child adds or changes one and `null` drops one. An entry
