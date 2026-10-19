@@ -9,7 +9,7 @@ import { heightAtTexel, heightSize, type Bake } from './bake';
 import type { Light } from './light';
 import { WATERY } from './materials';
 import type { Region } from './regions';
-import { NearField } from './nearfield';
+import { NEAR_MARK, NearField } from './nearfield';
 import { VARIEGATED } from './palette';
 import { packRules, SLOT } from './rules';
 import { cloudMapFragment, deriveFragment, fullscreenVertex, rainFragment, shadowFragment, skyFragment, terrainFragment, terrainVertex } from './shaders';
@@ -99,8 +99,8 @@ const RINGS = 1900;
 const Q = (R1 / R0) ** (1 / (RINGS - 1));
 
 /**
- * The near pass draws rings out to 3 km over the far pass, so the far pass starts just inside
- * that: every far fragment nearer than this would be shaded only to be drawn over. Its near plane
+ * The near pass draws rings out to 3 km and the far pass from just inside that, so they meet
+ * without a gap; the far pass draws only where the near pass drew nothing. The far near plane
  * sits inside the nearest far ring's view depth at the corner of a wide view.
  */
 const NEAR_RING = Math.ceil(Math.log(3_000 / R0) / Math.log(Q));
@@ -274,7 +274,7 @@ export class Terrain {
       inverseProjection: { value: new THREE.Matrix4() },
       cameraWorld: { value: new THREE.Matrix4() },
     });
-    const material = (vertexShader: string, fragmentShader: string, flat = false) =>
+    const material = (vertexShader: string, fragmentShader: string, flat = false, stencil = {}) =>
       new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
         vertexShader,
@@ -282,9 +282,12 @@ export class Terrain {
         uniforms: u,
         depthTest: !flat,
         depthWrite: !flat,
+        ...stencil,
       });
-    const terrain = material(terrainVertex, terrainFragment);
-    this.sky = material(fullscreenVertex, skyFragment, true);
+    const unmarked = { stencilWrite: true, stencilFunc: THREE.EqualStencilFunc, stencilRef: 0 };
+    const nearTerrain = material(terrainVertex, terrainFragment, false, NEAR_MARK);
+    const farTerrain = material(terrainVertex, terrainFragment, false, unmarked);
+    this.sky = material(fullscreenVertex, skyFragment, true, unmarked);
     const quad = (shader: THREE.ShaderMaterial) => {
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shader);
       mesh.frustumCulled = false;
@@ -301,9 +304,9 @@ export class Terrain {
     this.overlay.add(quad(rain));
     this.nearField = new NearField(u);
     this.near.add(this.nearField.trees, this.nearField.buildings);
-    for (const [scene, wedge] of [
-      [this.far, geometry.far],
-      [this.near, geometry.near],
+    for (const [scene, wedge, terrain] of [
+      [this.far, geometry.far, farTerrain],
+      [this.near, geometry.near, nearTerrain],
     ] as const) {
       for (let w = 0; w < WEDGES; w++) {
         const mesh = new THREE.Mesh(wedge, terrain);

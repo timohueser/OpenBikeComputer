@@ -102,6 +102,12 @@ const SHADOW_HALF_M = 200;
 const SHADOW_SIZE = 2048;
 const SUN_M = 2000;
 
+/**
+ * Whatever the near pass draws marks its pixels in the stencil buffer, and the far pass shades only
+ * the pixels left unmarked.
+ */
+export const NEAR_MARK = { stencilWrite: true, stencilRef: 1, stencilZPass: THREE.ReplaceStencilOp };
+
 /** Per instance: x, y, height, heading, tint. */
 type Instances = number[];
 
@@ -318,6 +324,7 @@ export class NearField {
       uniforms: { ...this.uniforms, tie: { value: tie }, recolour: { value: new THREE.Vector3(1, 1, 1) } },
       // Thin leaves and blades show both faces; their normals stay as the model lifts them.
       side: THREE.DoubleSide,
+      ...NEAR_MARK,
     });
   }
 

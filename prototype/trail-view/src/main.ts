@@ -19,7 +19,7 @@ const status = element('#status');
 
 /** Pixels per CSS pixel at most: a 2× screen draws at full sharpness. */
 const MAX_PIXEL_RATIO = 2;
-const renderer = new THREE.WebGLRenderer({ canvas: element<HTMLCanvasElement>('#gl'), antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas: element<HTMLCanvasElement>('#gl'), antialias: true, stencil: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.autoClear = false;
 const camera = new THREE.PerspectiveCamera(60, 1, FAR_PASS.near, FAR_PASS.far);
@@ -254,14 +254,15 @@ function render(): void {
   aim();
   terrain.shade(renderer, camera);
   renderer.clear();
+  // The near pass first, so the far pass shades only what it left empty.
   for (const [scene, pass] of [
-    [terrain.far, FAR_PASS],
     [terrain.near, NEAR_PASS],
+    [terrain.far, FAR_PASS],
   ] as const) {
     camera.near = pass.near;
     camera.far = pass.far;
     camera.updateProjectionMatrix();
-    if (scene === terrain.far) readout.triangles = `${(terrain.prepare(camera) / 1e6).toFixed(2)} M per frame, ${(terrain.nearField.triangles / 1e6).toFixed(2)} M near`;
+    if (scene === terrain.near) readout.triangles = `${(terrain.prepare(camera) / 1e6).toFixed(2)} M per frame, ${(terrain.nearField.triangles / 1e6).toFixed(2)} M near`;
     else renderer.clearDepth();
     renderer.render(scene, camera);
   }
