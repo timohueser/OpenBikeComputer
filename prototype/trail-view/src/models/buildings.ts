@@ -21,6 +21,8 @@ export interface BuildingStyle {
   /** Which walls are timber rather than render. */
   timber: 'none' | 'upper' | 'all';
   shutters: boolean;
+  /** A wooden balcony in the shutters' colour along the front of each upper floor. */
+  balconies?: boolean;
   chimneys: 0 | 1 | 2;
   /** Storeys of a cottage or a house that OSM gives no height; by default the kind's. */
   storeys?: number;
@@ -69,6 +71,8 @@ const GLASS = '#36424c';
 const FLAT_ROOF = '#7a766e';
 const ROOF_THICKNESS = 0.3;
 const PLINTH = 0.35;
+/** How far a balcony stands out from its wall. */
+const BALCONY_M = 0.9;
 
 /** Flat-shaded triangles with one colour each. */
 class Faces {
@@ -97,9 +101,10 @@ class Faces {
     });
   }
 
-  /** A box standing on z0, without a floor. */
-  box(cx: number, cy: number, sx: number, sy: number, z0: number, z1: number, side: THREE.Color, top: THREE.Color): void {
+  /** A box from z0 to z1, with a floor only in a `floor` colour. */
+  box(cx: number, cy: number, sx: number, sy: number, z0: number, z1: number, side: THREE.Color, top: THREE.Color, floor?: THREE.Color): void {
     const ring = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => [cx + (x * sx) / 2, cy + (y * sy) / 2]);
+    if (floor) this.poly(ring.map(([x, y]) => new THREE.Vector3(x, y, z0)).reverse(), floor);
     ring.forEach(([x, y], i) => {
       const [nx, ny] = ring[(i + 1) % 4];
       this.poly([new THREE.Vector3(x, y, z0), new THREE.Vector3(nx, ny, z0), new THREE.Vector3(nx, ny, z1), new THREE.Vector3(x, y, z1)], side);
@@ -187,6 +192,9 @@ export function building(kind: BuildingKind, style: BuildingStyle, { width, dept
 
   const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
   const soffit = wood.clone().multiplyScalar(0.75);
+  if (style.balconies && kind !== 'barn' && !church) {
+    for (let s = 1; s < storeys; s++) out.box(0, -W / 2 - BALCONY_M / 2, 0.6 * L, BALCONY_M, s * storey - 0.15, s * storey + 1, shutter, shutter, soffit);
+  }
   const edge = roof.clone().multiplyScalar(0.8);
   if (k.flat) {
     const [x, y] = [L / 2 + 0.2, W / 2 + 0.2];
