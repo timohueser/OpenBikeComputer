@@ -158,11 +158,16 @@ SNOW_MARK = 1
 
 # The planner's snow layer (specs/planner-snow-tiles.md) on the levels: per texel and past season,
 # the onset and melt-out day step of the longest snow period, from HR-WSI where it has data and
-# MODIS elsewhere, as tools/planner_snow.py reads them, over the planner's seasons.
-FIRST_SEASON, LAST_SEASON = tomllib.loads((REPO / "data/planner.toml").read_text())["snow"]["seasons"]
+# MODIS elsewhere, as tools/planner_snow.py reads them, over the planner's last three seasons: the
+# owner chose three to bake faster, as each season adds minutes of downloads.
+LAST_SEASON = tomllib.loads((REPO / "data/planner.toml").read_text())["snow"]["seasons"][1]
+FIRST_SEASON = LAST_SEASON - 2
 SNOW_SEASONS = range(FIRST_SEASON, LAST_SEASON + 1)
 # Level 3's 19.5 m texels hold HR-WSI's 20 m; the finer levels read level 3.
 SNOW_FIRST = 3
+# Levels from this one on take MODIS alone (owner's choice): their 312 m texels and coarser need no
+# 20 m HR-WSI, whose downloads there took most of a bake.
+SNOW_MODIS_ONLY = 7
 # HR-WSI is warped nearest onto a grid this many times finer than the texels, from the overview
 # nearest it, and each block blends into its texel by the planner's blend rule.
 SNOW_OVERSAMPLE = 4
@@ -2035,11 +2040,14 @@ def bake(spot: dict, colour: bool, snow: bool, dtm_levels: int, baseline: bool) 
             modis = modis_snow(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
             with machine_lock("cdse"):
                 for k, path in snows.items():
-                    hr = hr_wsi_level(k, frame, to_wgs84, work)
-                    blob = pack(np.where(hr[:, :1] == planner_snow.NO_DATA, modis_level(k, frame, modis), hr))
+                    planes = modis_level(k, frame, modis)
+                    if k < SNOW_MODIS_ONLY:
+                        hr = hr_wsi_level(k, frame, to_wgs84, work)
+                        planes = np.where(hr[:, :1] == planner_snow.NO_DATA, planes, hr)
+                        print(f"  snow level {k}: HR-WSI holds {(hr[:, 0] != planner_snow.NO_DATA).mean():.0%} of the season texels", flush=True)
+                    blob = pack(planes)
                     path.write_bytes(blob)
                     sizes.append((k, "snow", len(blob)))
-                    print(f"  snow level {k}: HR-WSI holds {(hr[:, 0] != planner_snow.NO_DATA).mean():.0%} of the season texels", flush=True)
         grid = work / "national.tif"
         if dtm:
             half = HALF0_M * 2 ** (dtm_levels - 1)

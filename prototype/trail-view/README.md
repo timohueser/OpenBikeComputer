@@ -86,7 +86,7 @@ uv run prototype/trail-view/bake.py <spot> [--colour] [--snow] [--dtm-levels 3] 
 | `litho-k` | A lithology of `materials.json` on land, 0 unknown |
 | `region-k` | An index into `meta.regions`: the deepest subregion whose `where` holds the texel, under its ecoregion in `tune/ecoregions.json` |
 | `s2-q1…4-k` | k ≤ 6: a quarterly mosaic's colour and NDVI. Where it sees snow, the colour of the nearest quarter that does not (black where none) and alpha 1, so that only the snow data says where snow lies |
-| `snow-k` | k ≥ 3: per season of the planner's (`data/planner.toml`), the onset and melt-out day step of the longest snow period, as [the planner's snow tiles](../../specs/planner-snow-tiles.md) store them. HR-WSI where it has data, else MODIS, but not where the texel's Hansen tree canopy is over 75 %. Level 3's texels are HR-WSI's 20 m; the finer levels read it |
+| `snow-k` | k ≥ 3: per season of the planner's last three (`data/planner.toml`), the onset and melt-out day step of the longest snow period, as [the planner's snow tiles](../../specs/planner-snow-tiles.md) store them. HR-WSI on levels 3 to 6 where it has data, else MODIS (none under dense canopy). Level 3's texels are HR-WSI's 20 m; the finer levels read it |
 
 | Step | Material and lithology from | Levels | Names |
 |---|---|---|---|
