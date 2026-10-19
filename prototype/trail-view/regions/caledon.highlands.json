@@ -47,7 +47,7 @@
   "weather": {
    "sunny": { "cover": 0.5, "base": 1300, "dark": 0.4, "zenith": "#5574a6", "horizon": "#d6dee8", "grey": 0.35, "towers": 0 }
   },
-  "outcrops": 0.6,
+  "outcrops": 0.2,
   "turf_deg": 57,
   "rock": "#86847d",
   "lithology": {

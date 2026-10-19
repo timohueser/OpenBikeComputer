@@ -32,7 +32,7 @@
   "weather": {
    "sunny": { "cover": 0.42, "base": 1000, "dark": 0.35, "zenith": "#4f72aa", "horizon": "#d8e3ee", "grey": 0.3, "towers": 0 }
   },
-  "outcrops": 0.7,
+  "outcrops": 0.5,
   "rock": "#8f8c83",
   "lithology": {
    "sandstone": { "colour": "#8f8c83" },
