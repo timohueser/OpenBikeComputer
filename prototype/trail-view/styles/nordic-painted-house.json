@@ -1,0 +1,9 @@
+{
+ "name": "Nordic painted house",
+ "extends": "falu-red-house",
+ "about": "Plank walls painted ochre, yellow, white, green or falu red, with trims in white or a contrasting colour: to mix with the falu red house in the fjell.",
+ "palette": {
+  "wood": ["#c8952f", "#dfbd5c", "#eeece5", "#5d7a50", "#8c2c22"],
+  "shutter": ["#f2efe7", "#f2efe7", "#f2efe7", "#3f5a3a", "#8c2c22"]
+ }
+}
