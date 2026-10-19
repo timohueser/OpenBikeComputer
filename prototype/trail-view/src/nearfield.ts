@@ -535,12 +535,13 @@ export class NearField {
       }
     }
 
-    // In a region with moor, moor plants grow on its heath and bog, on grass there too, and lush ones off it.
+    // In a region with moor, moor plants grow on its heath and bog, whose cover is grass, whatever
+    // covers they list; lush plants grow off it, on their own covers only.
     const grows = ({ on, habitat }: Pack['ground'][number], material: number, look: Region['look']) => {
       const cover = COVER_OF[material];
       const onCover = (on as string[]).includes(cover);
-      if (look.moor && habitat) return (habitat === 'moor') === MOOR.has(material) && (onCover || cover === 'grass');
-      return onCover;
+      if (!look.moor || !habitat) return onCover;
+      return habitat === 'moor' ? MOOR.has(material) && (onCover || cover === 'grass') : !MOOR.has(material) && onCover;
     };
     rand = random(14);
     for (let y = -GROUND_RADIUS_M; y < GROUND_RADIUS_M; y += 1) {
