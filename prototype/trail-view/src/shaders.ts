@@ -1000,22 +1000,27 @@ void main() {
     // A facet's light rises and falls in proportion to how far it turns toward the sun, and in shade
     // toward the sun's side of the sky and up; a gully sees less of the sky. Each term is even about
     // the wall's own light, so the wall keeps its mean.
+    // Close by, where a pixel spans less than a few metres, the crags and blocks differ less, so a
+    // near wall reads as one rough surface and not as tiles; far walls keep their full contrast.
+    float calm = 1.0 - smoothstep(1.0, 3.0, surfaceSize);
+    tilt *= 1.0 - 0.35 * calm;
     vec3 facet = across * tilt.x + up * tilt.y;
     float reach = vShadow * smoothstep(-0.2, 0.1, dot(plain, sunDir));
     face *= 1.0 + 0.9 * dot(facet, sunDir) * reach * walled;
     open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(sunDir.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
-    // Cracks run along some sides of some crags and blocks only, so they never close into a net. A
-    // crag darkens toward its edges, so it bulges.
-    float crack = max((1.0 - smoothstep(0.02, 0.05, crags.z)) * (1.0 - smoothstep(1.0, 3.0, surfaceSize)) * step(0.55, fract((crags.x + crags.y) * 7.1)),
-                      (1.0 - smoothstep(0.04, 0.1, blocks.z)) * (1.0 - smoothstep(0.3, 1.0, surfaceSize)) * step(0.6, fract((blocks.x + blocks.y) * 7.1)));
+    // Cracks run along some sides of some crags and blocks only, so they never close into a net;
+    // close by, fewer and fainter. A crag darkens toward its edges, so it bulges.
+    float crack = max((1.0 - smoothstep(0.02, 0.05, crags.z)) * (1.0 - smoothstep(1.0, 3.0, surfaceSize)) * step(0.55 + 0.25 * calm, fract((crags.x + crags.y) * 7.1)),
+                      (1.0 - smoothstep(0.04, 0.1, blocks.z)) * (1.0 - smoothstep(0.3, 1.0, surfaceSize)) * step(0.6 + 0.25 * calm, fract((blocks.x + blocks.y) * 7.1)));
     // Both average 1 over a crag's area.
-    float bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big) * mix(1.0, mix(0.87, 1.03, smoothstep(0.0, 0.3, blocks.z)), small);
-    float tone = 1.0 + 0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big + 0.2 * (fract((blocks.x + blocks.y) * 13.7) - 0.5) * small;
+    float contrast = 1.0 - 0.5 * calm;
+    float bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big * contrast) * mix(1.0, mix(0.87, 1.03, smoothstep(0.0, 0.3, blocks.z)), small * contrast);
+    float tone = 1.0 + (0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big + 0.2 * (fract((blocks.x + blocks.y) * 13.7) - 0.5) * small) * contrast;
     // The bedding shows only as a faint tone that comes and goes.
     float bed = hash(vec2(floor(dot(vec3(vWorld.xy, altitude), bedding) / 11.0), 3.0));
     tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surfaceSize));
     // The cracks and streaks darken a wall by about 4 %; it keeps its rock's mean.
-    face *= tone * bulge * (1.0 - 0.4 * crack) * (1.0 - 0.5 * streak) * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
+    face *= tone * bulge * (1.0 - (0.4 - 0.2 * calm) * crack) * (1.0 - 0.5 * streak) * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
     face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * smoothstep(0.3, 0.6, g.lush) * (1.0 - g.bare));
     face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
     face = mix(face, vec3(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
