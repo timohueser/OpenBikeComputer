@@ -334,14 +334,20 @@ Ground groundOn(float k, vec2 p, float footprint) {
   float hardness = 0.0;
   int region = 0;
   float nearest = 0.0;
+  ivec3 cells[4];
   for (int j = 0; j < 4; j++) {
+    cells[j] = ivec3(texelFetch(ground, ivec3(clamp(corner + ivec2(j & 1, j >> 1), ivec2(0), ivec2(1023)), int(k)), 0).rgb * 255.0 + 0.5);
+  }
+  // Most texels lie among their like: then one corner holds them all.
+  bool alike = cells[1] == cells[0] && cells[2] == cells[0] && cells[3] == cells[0];
+  for (int j = 0; j < (alike ? 1 : 4); j++) {
     ivec2 o = ivec2(j & 1, j >> 1);
-    ivec3 cell = ivec3(texelFetch(ground, ivec3(clamp(corner + o, ivec2(0), ivec2(1023)), int(k)), 0).rgb * 255.0 + 0.5);
+    ivec3 cell = cells[j];
     int own = cell.b;
     int cover = COVERS[cell.r];
     // Where the satellite looks, its snow test decides snow.
     if (cover == COVER_SNOW && seen) cover = COVER_BARE;
-    float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+    float w = alike ? 1.0 : (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
     bool open = cover == COVER_SHRUB || cover == COVER_GRASS || cover == COVER_WETLAND || cover == COVER_MOSS;
     vec3 c = ramp(own, cover, t);
     // Open land no quarter sees green is bare, whatever WorldCover calls it.
