@@ -2,7 +2,7 @@
  "name": "Ligurian house",
  "extends": "village-house",
  "about": "Tall and narrow, washed in ochre, yellow, pink and red, with green shutters, under a low roof of grey slate or red tile.",
- "storeys": 4,
+ "storeys": 3,
  "palette": {
   "render": ["#e2aa64", "#eccb80", "#ecb4a4", "#e3977c", "#cc6650", "#f2d6bc", "#e6b56a"],
   "roof": ["#6f6b66", "#7c766f", "#655f5a", "#9a5a46"],
