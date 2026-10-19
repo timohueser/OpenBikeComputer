@@ -168,8 +168,9 @@ SNOW_FIRST = 3
 # Levels from this one on take MODIS alone (owner's choice): their 312 m texels and coarser need no
 # 20 m HR-WSI, whose downloads there took most of a bake.
 SNOW_MODIS_ONLY = 7
-# HR-WSI is warped nearest onto a grid this many times finer than the texels, from the overview
-# nearest it, and each block blends into its texel by the planner's blend rule.
+# Level 3's HR-WSI is warped nearest onto a grid this many times finer than its texels, and each
+# block blends into its texel by the planner's blend rule. Coarser levels take one sample per texel
+# from the overview nearest it: the owner chose this to bake faster.
 SNOW_OVERSAMPLE = 4
 SNOW_STRIP = 128
 # MODIS is read once for the box of the last level, snapped out to this, so nearby spots share it.
@@ -951,7 +952,7 @@ def hr_wsi_level(k: int, frame: str, to_wgs84, work: Path) -> np.ndarray:
     """The HR-WSI planes (seasons, 2, SIZE, SIZE) of level k from the Snow Phenology products over CDSE S3.
     A season without a product is no data."""
     half = HALF0_M * 2**k
-    f = SNOW_OVERSAMPLE
+    f = SNOW_OVERSAMPLE if k == SNOW_FIRST else 1
     files = planner_snow.copernicus_files(to_wgs84.transform_bounds(-half, -half, half, half, densify_pts=21))
     planes = np.full((len(SNOW_SEASONS), 2, SIZE, SIZE), planner_snow.NO_DATA, np.uint8)
 
