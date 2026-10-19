@@ -310,6 +310,8 @@ export class Terrain {
         mesh.rotation.z = (-w * 2 * Math.PI) / WEDGES;
         mesh.frustumCulled = false;
         mesh.userData.wedge = w;
+        // The near pass draws its objects first, so the ground they hide is never shaded.
+        mesh.renderOrder = scene === this.near ? 1 : 0;
         scene.add(mesh);
         this.wedges.push(mesh);
       }
