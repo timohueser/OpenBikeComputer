@@ -43,12 +43,12 @@ const STATUS: Record<string, string> = await fetch('/status.json', { cache: 'no-
   .then((response) => response.json())
   .catch(() => ({}));
 
-const DTM = 'national DTM';
-const GLO30 = 'GLO-30 only';
+/** The surface picker's GLO-30 entry; a spot's bake names its national DTM. */
+const GLO30 = 'GLO-30 30 m';
 const state = {
   region: SPOTS[0].region,
   preset: SPOTS[0].id,
-  surface: DTM,
+  surface: GLO30,
   photoCamera: true,
   /** The reference photograph in a corner of the view. */
   reference: true,
@@ -83,7 +83,7 @@ const DEBUG_VIEWS = {
   region: 8,
 };
 const look: Look = { hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35 };
-const readout = { region: '–', sun: '–', colour: '–', near: '–', dtm: '–', eye: '–', bytes: '–', triangles: '–', frame: '–' };
+const readout = { region: '–', sun: '–', colour: '–', near: '–', eye: '–', bytes: '–', triangles: '–', frame: '–' };
 
 interface Loaded {
   bake: Bake;
@@ -92,7 +92,7 @@ interface Loaded {
 }
 let loaded: Loaded | null = null;
 
-const glo30Only = () => !loaded?.bake.meta.dtm_levels || state.surface === GLO30;
+const glo30Only = () => state.surface === GLO30;
 const active = <T>(pair: { dtm: T; glo30: T }) => (glo30Only() ? pair.glo30 : pair.dtm);
 const photoLocked = () => Boolean(state.photoCamera && loaded?.bake.meta.photo && photo.naturalWidth);
 
@@ -139,7 +139,10 @@ async function select(id: string): Promise<void> {
   }
   readout.bytes = `${(bake.bytes / 1e6).toFixed(1)} MB heights, ground, roads, canopy, trees`;
   readout.near = `${bake.trees.length / 4} trees, ${bake.buildings.length} buildings`;
-  readout.dtm = meta.dtm_levels ? `${meta.dtm}, ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km` : 'none';
+  // Each spot opens on its best heights.
+  const surfaces = meta.dtm_levels ? [`${meta.dtm} to ±${(meta.half0_m * 2 ** (meta.dtm_levels - 1)) / 1000} km`, GLO30] : [GLO30];
+  state.surface = surfaces[0];
+  surfacePicker.options(surfaces);
   state.yaw = meta.photo?.heading_deg ?? meta.heading ?? 0;
   state.pitch = meta.photo?.pitch_deg ?? meta.pitch ?? 0;
   element('#credits').textContent = meta.credits.join(' · ');
@@ -502,7 +505,7 @@ gui.add(state, 'buildings').onChange((on: boolean) => {
 });
 gui.add({ models: () => open('/models.html', '_blank') }, 'models').name('models and missing species');
 const shot = gui.addFolder('Photo').close();
-shot.add(state, 'surface', [DTM, GLO30]).onChange(surfaceChanged);
+const surfacePicker = shot.add(state, 'surface', [GLO30]).onChange(surfaceChanged);
 shot.add(state, 'photoCamera').name('photo camera').listen().onChange(layout);
 // Align a photograph's camera here, then save it back to its spot in spots/.
 const align = { heading_deg: 0, pitch_deg: 0, vfov_deg: 40, roll_deg: 0 };
@@ -534,7 +537,6 @@ style.add({ copy: () => navigator.clipboard.writeText(JSON.stringify(look)) }, '
 const facts = gui.addFolder('Readout').close();
 facts.add(readout, 'region').listen().disable();
 facts.add(readout, 'sun').listen().disable();
-facts.add(readout, 'dtm').name('DTM').listen().disable();
 facts.add(readout, 'eye').listen().disable();
 facts.add(readout, 'bytes').name('download').listen().disable();
 facts.add(readout, 'colour').name('colour').listen().disable();

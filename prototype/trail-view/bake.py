@@ -108,6 +108,8 @@ SCOT_LIDAR = "https://srsp-open-data.s3.eu-west-2.amazonaws.com/lidar/phase-1/dt
 # whose name ends in `10`, a square is `e` and counts from 1000 km. Off Italy a square answers 404,
 # and inside one the land abroad and the sea are nodata.
 TINITALY = "https://tinitaly.pi.ingv.it/data_1.1/{0}_s10/{0}_s10.zip"
+# The names of the DTMs without an adapter row.
+LOCAL_DTMS = {"scot": "LiDAR Phase 1 DTM 1 m (Scotland)", "it": "TINITALY 10 m"}
 BOX_M = 3000
 # Public Overpass instances, tried in turn while one is busy.
 OVERPASS = ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")
@@ -1982,7 +1984,7 @@ def bake(spot: dict, colour: bool, snow: bool, dtm_levels: int, baseline: bool) 
     tz = TimezoneFinder().timezone_at(lng=lon, lat=lat)
     dtm = spot.get("dtm")
     # A typo would otherwise fail only after minutes of Overpass and warping.
-    for key, known in (("dtm", {*DTM_SOURCES, *BOXED, "scot", "it"}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
+    for key, known in (("dtm", {*DTM_SOURCES, *BOXED, *LOCAL_DTMS}), ("landcover", LANDCOVER), ("geology", GEOLOGY)):
         if spot.get(key) and spot[key] not in known:
             sys.exit(f"{spot['id']}: unknown {key} {spot[key]!r}; known: {', '.join(sorted(known))}")
     print(f"  region {chain[-1]}, country {country}, subdivision {subdivision}, {tz}", flush=True)
@@ -2266,7 +2268,8 @@ def bake(spot: dict, colour: bool, snow: bool, dtm_levels: int, baseline: bool) 
     above = spot.get("eye_above_ground_m", PHONE_M)
     meta.update(ground_m=round(float(ground), 2), eye_m=round(float(ground) + above, 2), eye_above_ground_m=above,
                 levels=LEVELS, size=SIZE, height_size=HEIGHT_SIZE, half0_m=HALF0_M, dtm_levels=dtm_levels if dtm else 0,
-                dtm=dtm, s2_levels=S2_LEVELS, snow_first_level=SNOW_FIRST, snow_first_season=FIRST_SEASON,
+                dtm=dtm and (LOCAL_DTMS.get(dtm) or {**DTM_SOURCES, **BOXED}[dtm].product),
+                s2_levels=S2_LEVELS, snow_first_level=SNOW_FIRST, snow_first_season=FIRST_SEASON,
                 snow_seasons=len(SNOW_SEASONS), road_levels=ROAD_LEVELS, water_levels=WATER_LEVELS, shore_reach_m=SHORE_REACH_M,
                 region=chain[-1], chain=chain, regions=names, country=country, subdivision=subdivision, tz=tz, credits=credits)
     if "photo_source" in spot:

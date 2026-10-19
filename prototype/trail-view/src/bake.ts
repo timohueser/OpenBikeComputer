@@ -27,6 +27,7 @@ export interface Meta {
   half0_m: number;
   /** Levels k < dtm_levels carry a national DTM; `glo30` holds GLO-30 for the same levels. */
   dtm_levels: number;
+  /** The national DTM's name, null without one. */
   dtm: string | null;
   /** Levels k < s2_levels carry Sentinel-2 colour, k < road_levels road surfaces, k < water_levels OSM water. */
   s2_levels: number;
