@@ -1,17 +1,22 @@
 {
  "name": "Alps",
  "extends": "base",
- "about": "Norway spruce with silver fir in the montane forests, beech and sycamore on the outer ranges, larch up to the treeline, mountain pine and alpenrose above it; ash, grey alder, birch, aspen, rowan and whitebeam in the valleys and on the avalanche slopes; sessile, downy and pedunculate oak, lime, hornbeam, sweet chestnut and hop hornbeam on the warm low slopes; alpine flowers and bilberry, cottongrass in the fens; chalets, and farmhouses with steep half-hipped roofs in Slovenia. Hawthorn stands in for the apple orchards.",
+ "about": "Norway spruce with silver fir in the montane forests, beech and sycamore on the outer ranges, Scots pine on the dry slopes of the inner valleys, larch and Swiss stone pine up to the treeline, mountain pine, green alder, alpenrose and dwarf juniper above it; willow thickets on the river gravel; ash, grey alder, birch, aspen, rowan and whitebeam in the valleys and on the avalanche slopes; sessile, downy and pedunculate oak, lime, hornbeam, sweet chestnut and hop hornbeam on the warm low slopes, alpine flowers and bilberry, cottongrass in the fens; Brown Swiss and Simmental cattle on the meadows and summer pastures, sheep and goats higher up, chamois and ibex on the rock; chalets, stone houses under stone or slate roofs in the southern valleys, and farmhouses with steep half-hipped roofs in Slovenia. Hawthorn stands in for the apple orchards, and mountain pine for the green alder and bank willow thickets.",
  "trees": {
   "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 2000], "weight": 5 },
   "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1500], "weight": 2 },
   "european-larch": { "leaf": "needleleaved", "cover": "tree", "elevation": [1400, 2300], "weight": 3 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1600], "weight": 0.5 },
+  "swiss-stone-pine": { "model": "scots-pine", "latin": "Pinus cembra", "leaf": "needleleaved", "cover": "tree", "elevation": [1600, 2300], "weight": 1 },
   "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 1 },
   "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
   "alpenrose": { "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 3, "evergreen": true },
+  "green-alder": { "model": "mountain-pine", "latin": "Alnus viridis", "leaf": "broadleaved", "cover": "shrub", "elevation": [1300, 2200], "weight": 3 },
+  "bank-willow": { "model": "mountain-pine", "latin": "Salix eleagnos", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1500], "weight": 3 },
+  "dwarf-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2600], "weight": 1, "evergreen": true },
   "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1650], "weight": 4 },
   "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 2 },
-  "grey-alder": { "model": "silver-birch", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
+  "grey-alder": { "model": "black-alder", "latin": "Alnus incana", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 2000], "weight": 1 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1900], "weight": 0.5 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 2100], "weight": 1 },
@@ -25,6 +30,14 @@
   "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 }
  },
  "ground": {"alpine-flowers": {}, "bilberry": {}, "bog-cotton": { "on": ["wetland"] }},
+ "herds": {
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "rough-grass", "wet-grassland"] },
+  "simmental-cattle": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland"] },
+  "alpine-sheep": { "model": "sheep", "latin": "Ovis aries (White Alpine)", "groups": 1, "size": [10, 40], "on": ["rough-grass", "heath"] },
+  "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "scrub", "heath"] },
+  "chamois": { "model": "goat", "latin": "Rupicapra rupicapra", "groups": 1, "size": [1, 5], "on": ["scree", "bare-rock"] },
+  "alpine-ibex": { "model": "goat", "latin": "Capra ibex", "groups": 1, "size": [2, 6], "on": ["bare-rock", "scree"] }
+ },
  "orchard": "hawthorn",
- "style": { "si": "black-forest-farmhouse", "*": "chalet" }
+ "style": { "si": "black-forest-farmhouse", "it-21": "slate-stone-house", "it-23": "slate-stone-house", "it-25": "slate-stone-house", "ch-ti": "slate-stone-house", "fr-pac": "slate-stone-house", "*": "chalet" }
 }
