@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
-use obc_data::product::{version, Inputs, Note, Pointer, Product, Steps, Unplanned, Wanted};
+use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
@@ -24,7 +24,7 @@ use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::device::{invalid, text, Models, Shape as Polygon, TILE_LIST};
+use crate::device::{invalid, text, Models, TILE_LIST};
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 use crate::{functions, python};
@@ -236,8 +236,7 @@ impl Planner {
             ("tools.planner_basemap", None),
             &["basemap.pmtiles"],
         );
-        let (mut notes, mut shapes) = (Vec::new(), BTreeMap::new());
-        let reference = reference(inputs, store, coverage, &mut shapes, &mut wanted, &mut notes)?;
+        let reference = reference(inputs, store, coverage, &mut wanted)?;
         let terrain = Step {
             layer: &PLANNER_TERRAIN,
             name: "planner/terrain".into(),
@@ -485,7 +484,6 @@ impl Planner {
             true => {
                 let mut listed: Steps = steps.into();
                 listed.blocked.extend(content.blocked);
-                listed.notes = notes;
                 listed.block_dependents();
                 Ok(listed)
             }
@@ -536,16 +534,17 @@ fn reference(
     inputs: &Inputs,
     store: &Store,
     [west, south, east, north]: [f64; 4],
-    shapes: &mut BTreeMap<String, Polygon>,
     wanted: &mut Vec<Wanted>,
-    notes: &mut Vec<Note>,
 ) -> Result<Option<Step>, Unplanned> {
     let udeg = |degrees: f64| (degrees * 1e6) as i64;
     let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
+    // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
-    let Some((reads, models)) = models.read(inputs, store, shapes, wanted, notes)? else { return Ok(None) };
+    let Some((reads, models)) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
+        return Ok(None);
+    };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,

@@ -552,6 +552,25 @@ class Fetch(ArchiveCase):
         self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
 
 
+class SwissSurveys(unittest.TestCase):
+    def test_a_square_reads_its_newest_survey_only(self):
+        """swissALTI3D publishes a square again after each survey: an older one would raise the
+        maximum and move the mean."""
+
+        def item(square, year, east):
+            name = f"swissalti3d_{year}_{east}-1182_2_2056_5728.tif"
+            return {"bbox": list(square), "properties": {"datetime": f"{year}-06-01T00:00:00Z"},
+                    "assets": {name: {"href": f"https://example.invalid/{name}"},
+                               name.replace("_2_", "_0.5_"): {"href": "https://example.invalid/fine.tif"}}}
+
+        one, two = (8.38, 46.79, 8.39, 46.80), (8.39, 46.79, 8.40, 46.80)
+        items = [item(one, 2019, 2672), item(two, 2019, 2673), item(one, 2022, 2672)]
+        with unittest.mock.patch("ingest.sources.ch.stac_items", return_value=iter(items)):
+            assets = ingest.SOURCES["ch"].assets((8.38, 46.79, 8.40, 46.80))
+        self.assertEqual([name for name, _ in assets],
+                         ["swissalti3d_2019_2673-1182_2_2056_5728.tif", "swissalti3d_2022_2672-1182_2_2056_5728.tif"])
+
+
 class MergeStep(ArchiveCase):
     """The step of a map leaf: its models, best first, into an empty archive."""
 

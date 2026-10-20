@@ -7,7 +7,7 @@
 // 95th percentile and the maximum of N decodes in milliseconds. The first decode is not counted.
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { chromium } from 'playwright';
+import { chromium } from '@playwright/test';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => (args.includes(name) ? args[args.indexOf(name) + 1] : fallback);
