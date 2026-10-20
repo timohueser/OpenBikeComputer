@@ -14,11 +14,11 @@ export interface TerrainSource {
 }
 
 /**
- * The terrain of a release. The tile service serves zooms 0 to 12. Zoom 13 is in a PMTiles pack per
- * zoom 11 tile (specs/planner-release.md), read with range requests through its public pointer
+ * The stored tiles of a release. The tile service serves zooms 0 to 12. Zoom 13 is in a PMTiles pack
+ * per zoom 11 tile (specs/planner-release.md), read with range requests through its public pointer
  * beside the manifest. A config without a manifest reads zoom 13 from the tile template too.
  */
-export function releaseTerrain(config: PlannerConfig, format: PageFormat): TerrainSource {
+export function releaseTiles(config: PlannerConfig): TerrainSource['fetch'] {
     const packs = new Map<string, Promise<PMTiles | undefined>>();
     const pack = (manifest: string, x: number, y: number) => {
         const name = `11-${x >> 2}-${y >> 2}`;
@@ -37,6 +37,14 @@ export function releaseTerrain(config: PlannerConfig, format: PageFormat): Terra
         }
         return entry;
     };
+    return async (z, x, y) => {
+        if (z === TILE_ZOOM && config.manifest) return (await (await pack(config.manifest, x, y))?.getZxy(z, x, y, requestSignal()))?.data;
+        return fetchTile(config.terrain, z, x, y, requestSignal());
+    };
+}
+
+/** The pages of tile bodies, decoded in workers. */
+export function pageDecoder(format: PageFormat): TerrainSource['decode'] {
     const workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./decode-worker.ts', import.meta.url), { type: 'module' }));
     const waiting = new Map<number, { resolve: (pages: (PageData | null)[]) => void; reject: (error: Error) => void }>();
     for (const worker of workers) {
@@ -48,17 +56,11 @@ export function releaseTerrain(config: PlannerConfig, format: PageFormat): Terra
         };
     }
     let next = 0;
-    return {
-        async fetch(z, x, y) {
-            if (z === TILE_ZOOM && config.manifest) return (await (await pack(config.manifest, x, y))?.getZxy(z, x, y, requestSignal()))?.data;
-            return fetchTile(config.terrain, z, x, y, requestSignal());
-        },
-        decode(body) {
-            const id = next++;
-            return new Promise((resolve, reject) => {
-                waiting.set(id, { resolve, reject });
-                workers[id % WORKERS].postMessage({ id, body, format });
-            });
-        },
+    return body => {
+        const id = next++;
+        return new Promise((resolve, reject) => {
+            waiting.set(id, { resolve, reject });
+            workers[id % WORKERS].postMessage({ id, body, format });
+        });
     };
 }

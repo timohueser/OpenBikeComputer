@@ -9,8 +9,8 @@
 // lat, lon, heading, pitch and height where the flight ends, the frames between (default:
 // flights.json), and the CSS pixels of the page (default 1280 × 800). --tiles serves a
 // `planner-dem` MBTiles instead of the fixture. --lab adds `lab=LAB` to each view. --cracks N
-// draws every Nth frame with the red clear colour and counts its red pixels: the flight must look
-// down on known terrain. --gpu draws 2560 × 1600 pixels on the machine's GPU in a browser window,
+// draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
+// flight too: the flight must look down on known terrain. --gpu draws 2560 × 1600 pixels on the machine's GPU in a browser window,
 // with exact timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
 
 import { readFileSync } from 'node:fs';
@@ -60,13 +60,10 @@ try {
                 return { gpu, cpu, drawn, requests, bytes, terrain };
             }, { ...flight, start, i });
             frames.push(frame);
-            if (values.cracks && i % Number(values.cracks) === 0) {
-                await page.evaluate(() => window.trailView.waitForIdle());
-                red.push(await redPixels(page));
-            }
+            if (values.cracks && i % Number(values.cracks) === 0) red.push(await redPixels(page));
         }
         const passes = [...new Set(frames.flatMap(frame => Object.keys(frame.gpu)))];
-        const last = frames.at(-1), stats = await page.evaluate(() => window.trailView.stats());
+        const last = frames.at(-1), stats = await page.evaluate(() => ({ ...window.trailView.stats(), pools: [...window.trailView.stats().pools] }));
         const of = key => frames.map(frame => frame.terrain[key]);
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
@@ -74,7 +71,7 @@ try {
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },
-            poolMegabytes: Object.fromEntries([...stats.pools].map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
+            poolMegabytes: Object.fromEntries(stats.pools.map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
             requests: last.requests, megabytes: +(last.bytes / 2 ** 20).toFixed(2),
             ...(values.cracks ? { redPixels: red } : {}),
         }));

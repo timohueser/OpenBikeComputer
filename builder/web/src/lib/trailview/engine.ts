@@ -6,7 +6,7 @@ import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import type { Labs } from './labs';
-import { releaseTerrain } from './stream/terrain';
+import { pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View, type Weather } from './view';
 
@@ -79,7 +79,7 @@ export class TrailView {
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, releaseTerrain(config, labs.pages), config.bounds, labs, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, config.bounds, labs, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },

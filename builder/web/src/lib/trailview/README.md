@@ -64,14 +64,18 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--hud] [--gpu]
-node trailview/flight.mjs --gpu [--flights FILE]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--lab LAB] [--hud] [--gpu]
+node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--lab LAB] [--cracks N]
 npm run test:trailview                     # the smoke
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
-bytes. `flight.mjs` prints the GPU time per pass over the flights of `flights.json`. Run it on
-the M1 Pro with `--gpu`: Chrome then draws 2560 × 1600 pixels and reports exact timestamps.
+bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
+pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
+2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
+of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:clipmap`
+adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+`debug=cracks`; such a flight looks down on known terrain only.
 
 ## Checks
 
@@ -80,6 +84,8 @@ npx vitest run src/lib/trailview
 npm run check
 npm run check:wgsl          # cargo install naga-cli --version 30.0.1 --locked
 ```
+
+`check:wgsl` composes each file with its `// #include NAME` lines, as `gpu/wgsl.ts` does.
 
 ## The fixture
 
@@ -101,3 +107,7 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - Chrome rounds timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
 - Vitest needs the generated WASM: `npm run build:wasm`.
+- No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
+- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the clipmap
+  band of `lod.ts`; `lod.test.ts` holds both.
+- The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
