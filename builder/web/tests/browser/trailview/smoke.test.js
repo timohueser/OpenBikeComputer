@@ -39,6 +39,22 @@ test('the terrain has no crack: no pixel shows the red clear colour', async ({ p
     expect(errors).toEqual([]);
 });
 
+test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, DOWN);
+    await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
+    const { terrain } = await page.evaluate(() => window.trailView.stats());
+    expect(terrain.resident.synth).toBeGreaterThan(0);
+    // The surface view evaluates drawnHeight per pixel: one frame of it, once the pages are idle.
+    await page.evaluate(async () => {
+        const tv = window.trailView;
+        tv.view = { ...tv.view, debug: 'surface' };
+        await tv.nextFrame();
+    });
+    expect(await redPixels(page)).toBe(0);
+    expect(errors).toEqual([]);
+});
+
 test('the probe gives the height that an instance shader evaluates, to 1 mm', async ({ page }) => {
     await open(page, DOWN);
     const points = Array.from({ length: 16 }, (_, i) => [8.415 + 0.002 * Math.cos(i), 46.7975 + 0.0015 * Math.sin(2 * i)]);

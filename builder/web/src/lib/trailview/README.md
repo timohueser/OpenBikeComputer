@@ -40,7 +40,7 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, or `cracks` (red clear colour) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), or `surface` (red where drawnHeight leaves the mesh by 5 cm) |
 | `lab` | `name:variant`, a list with commas |
 
 Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows

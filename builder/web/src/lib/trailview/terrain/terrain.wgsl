@@ -1,5 +1,5 @@
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
-// coarser grid by its node's level − LOD, stands on the drawn height, and drops with the curvature.
+// coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
 // #include drawn-height.wgsl
 
 struct Frame {
@@ -13,7 +13,7 @@ struct Frame {
     eye: f32,
     // Metres of drop per square metre of distance: Earth curvature with refraction.
     curvature: f32,
-    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks.
+    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface.
     debug: u32,
 }
 
@@ -32,6 +32,7 @@ struct Varyings {
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
     @location(2) known: f32,
+    @location(3) h: f32,
 }
 
 // The height of the haze layer: its density falls by e every 2.5 km.
@@ -42,20 +43,16 @@ const CELLS = 64u;
 fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
-    let cell = 1 << (24u - node.level);
-    let at = lod_space(vec2f(node.origin + grid * cell));
-    // An odd vertex slides onto the even one before it, so a fully morphed edge is the coarser node's edge.
-    let even = lod_space(vec2f(node.origin + (grid & vec2i(-2)) * cell));
-    let morph = clamp(f32(node.level) - lod(at), 0.0, 1.0);
-    let s = select(mix(at, even, morph), even, morph >= 1.0);
-    let h = drawn_height(s);
-    var p = vec3f(to_render(s), select(0.0, h, known(h)) - frame.eye);
+    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level);
+    // A vertex of unknown height stands on the ground under the eye; `known` drops each triangle that has one.
+    var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: Varyings;
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    out.s = s;
+    out.s = v.s;
     out.relative = p;
-    out.known = select(0.0, 1.0, known(h));
+    out.known = select(-1e6, 1.0, known(v.h));
+    out.h = v.h;
     return out;
 }
 
@@ -94,6 +91,12 @@ fn fragment_main(in: Varyings) -> @location(0) vec4f {
     if (frame.debug == 3u) {
         // Grey only: the red clear colour shows through a crack and nowhere else.
         return vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0);
+    }
+    if (frame.debug == 4u) {
+        // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere: the float32 varyings of a
+        // pixel some km away lose about 1 cm on a steep slope.
+        let error = abs(drawn_height(in.s) - in.h);
+        return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
     }
     let rock = smoothstep(0.75, 0.55, n.z);
     let albedo = mix(vec3f(0.36, 0.42, 0.27), vec3f(0.52, 0.5, 0.47), rock);
