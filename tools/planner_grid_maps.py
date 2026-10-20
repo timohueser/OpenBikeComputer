@@ -1,7 +1,6 @@
 """Partition a planner map into immutable PMTiles grid archives."""
 
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 import argparse
 import json
@@ -23,11 +22,16 @@ def map_kinds(maps):
 
 
 def recoded(tiles):
-    """Terrain tiles encoded again by libwebp: the same pixels in fewer bytes than `planner-dem` writes."""
-    workers = step_pool.cores()
-    with ThreadPoolExecutor(workers) as pool:
-        while batch := list(islice(tiles, 2 * workers)):
-            yield from zip((zxy for zxy, _ in batch), pool.map(lambda tile: lossless(tile[1])[0], batch))
+    """Terrain tiles encoded again by libwebp: the same pixels in fewer bytes than `planner-dem` writes. Pillow holds
+    the GIL while it encodes, so the tiles go to processes."""
+    workers = step_pool.worker_count()
+    with step_pool.pool(workers) as pool:
+        while batch := list(islice(tiles, 4 * workers)):
+            yield from zip((zxy for zxy, _ in batch), pool.map(smaller, (data for _, data in batch)))
+
+
+def smaller(data):
+    return lossless(data)[0]
 
 
 def map_tiles(source, output, kinds=None):
