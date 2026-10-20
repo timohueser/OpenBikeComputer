@@ -1,8 +1,8 @@
 # TrailView
 
 TrailView is the 3D view of the planner. The engine is TypeScript with raw WebGPU and WGSL, and
-it uses no framework. The page is `builder/web/trailview.html`. The terrain is naive: one mesh per
-Terrarium tile of the planner terrain, only to give pixels.
+it uses no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
+the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs.
 
 ## Build and run
 
@@ -23,8 +23,9 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | --- | --- |
 | `engine.ts` | The frame loop, the view, `waitForIdle()`, the recovery from a lost device |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
-| `gpu/` | The device and its pools, the GPU time per pass |
-| `terrain/` | The naive terrain and its shader |
+| `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
+| `stream/` | The stored terrain and its decode worker, the feature codec |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
 | `hud.ts` | The lab HUD |
@@ -39,7 +40,7 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals` or `lod` |
+| `debug` | `normals`, `lod`, or `cracks` (red clear colour) |
 | `lab` | `name:variant`, a list with commas |
 
 Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows
@@ -50,6 +51,12 @@ zooms. H hides the HUD.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects.
+
+| Lab | Variants |
+| --- | --- |
+| `terrain` | `cdlod`, `clipmap` |
+| `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
+| `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 
 ## Shots and flights
 

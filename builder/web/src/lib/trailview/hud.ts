@@ -5,7 +5,7 @@ import { DEBUG_VIEWS, type DebugView } from './view';
 const MB = 2 ** 20;
 const REFRESH_MS = 250;
 
-/** The lab HUD: the GPU time per pass, the CPU time, the MB per pool, the requests, the view and the debug view. H hides it. */
+/** The lab HUD: the GPU time per pass, the CPU time, the MB per pool, the requests, the terrain, the view and the debug view. H hides it. */
 export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
     const text = document.createElement('pre');
     const debug = document.createElement('select');
@@ -29,7 +29,8 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
             `cpu   ${stats.cpu.toFixed(2)} ms`,
             `MB    ${pools}`,
             `net   ${stats.requests} requests · ${(stats.bytes / MB).toFixed(2)} MB${stats.failed ? ` · ${stats.failed} failed` : ''}`,
-            `tiles ${stats.drawn} drawn · ${stats.resident} resident`,
+            `nodes ${stats.drawn} · ${(stats.terrain.triangles / 1e6).toFixed(2)} M triangles · selection ${stats.terrain.selection.toFixed(2)} ms · quality ${stats.terrain.quality}`,
+            `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}`,
             `lab   ${lab}`,
             `view  ${view.mode} · ${view.lat.toFixed(5)}, ${view.lon.toFixed(5)} · heading ${view.heading.toFixed(0)}° · pitch ${view.pitch.toFixed(0)}° · ${height}`,
             `light ${view.date} ${view.time} · ${view.weather}`,

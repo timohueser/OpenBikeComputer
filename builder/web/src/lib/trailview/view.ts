@@ -1,8 +1,8 @@
 import { MAX_ALTITUDE, WALK_EYE, type Mode } from './frame/camera';
 
 export const WEATHERS = ['sunny', 'cloudy', 'rainy'] as const;
-/** The false-colour views of the terrain shader, in the order of its `debug` switch. */
-export const DEBUG_VIEWS = ['off', 'normals', 'lod'] as const;
+/** The false-colour views of the terrain shader, in the order of its `debug` switch. `cracks` clears to red. */
+export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks'] as const;
 /** The clock of a view is the wall clock of the Alps, the only region that TrailView covers. */
 export const TIME_ZONE = 'Europe/Zurich';
 
@@ -70,6 +70,6 @@ export function formatView(view: View, search = ''): string {
     q.set('time', view.time);
     q.set('weather', view.weather);
     if (view.debug !== 'off') q.set('debug', view.debug);
-    // A copied address stays readable: `lab=terrain:naive`, not `lab=terrain%3Anaive`.
+    // A copied address stays readable: `lab=terrain:clipmap`, not `lab=terrain%3Aclipmap`.
     return `?${q}`.replace(/%3A/g, ':').replace(/%2C/g, ',');
 }

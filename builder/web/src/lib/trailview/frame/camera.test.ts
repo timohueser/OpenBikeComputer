@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eyeAltitude, MAX_ALTITUDE, move, NEAR, toggle, viewProjection, WALK_EYE, zoom, type Pose } from './camera';
+import { eyeAltitude, follow, MAX_ALTITUDE, move, NEAR, toggle, viewProjection, WALK_EYE, zoom, type Pose } from './camera';
 
 const walk: Pose = { east: 0, north: 0, heading: 90, pitch: 0, mode: 'walk', height: WALK_EYE };
 
@@ -30,5 +30,16 @@ describe('the camera', () => {
         expect(pose.height).toBe(MAX_ALTITUDE);
         expect(MAX_ALTITUDE).toBeGreaterThanOrEqual(60_000);
         expect(toggle(pose, 1000)).toEqual({ ...walk, height: WALK_EYE });
+    });
+
+    it('follows the probed ground smoothly, and takes a new place at once', () => {
+        expect(follow(undefined, 1200, 0.016)).toBe(1200);
+        let ground = 1200;
+        for (let frame = 0; frame < 3; frame++) ground = follow(ground, 1201, 0.016);
+        expect(ground).toBeGreaterThan(1200.2);
+        expect(ground).toBeLessThan(1201);
+        for (let frame = 0; frame < 60; frame++) ground = follow(ground, 1201, 0.016);
+        expect(ground).toBe(1201);
+        expect(follow(1201, 2400, 0.016)).toBe(2400);
     });
 });

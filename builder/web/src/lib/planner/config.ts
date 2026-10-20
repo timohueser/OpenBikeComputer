@@ -6,6 +6,8 @@ export type Bounds = [number, number, number, number];
 export interface PlannerConfig {
     /** The release ID; a `VITE_PLANNER_CONFIG` has none. */
     id?: string;
+    /** The URL of the release's `release.json`, beside its public pointers; a `VITE_PLANNER_CONFIG` has none. */
+    manifest?: string;
     name: string;
     bounds: Bounds;
     /** TileJSON URLs. */

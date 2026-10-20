@@ -1,9 +1,14 @@
 /**
- * The variant registry. Each lab lists its variants, the default first. `?lab=terrain:naive` selects
- * a variant; `?lab=terrain:naive,water:mesh` or a repeated `lab` selects several.
+ * The variant registry. Each lab lists its variants, the default first. `?lab=terrain:clipmap` selects
+ * a variant; `?lab=terrain:clipmap,pages:r16` or a repeated `lab` selects several.
  */
 export const LABS = {
-    terrain: ['naive'],
+    /** The LOD: CDLOD by distance, or geometry clipmaps in rings about the eye. */
+    terrain: ['cdlod', 'clipmap'],
+    /** The micro-relief of the synthesized levels: none beyond the bicubic, or erosion gullies. */
+    relief: ['bicubic', 'erosion'],
+    /** The page heights: float32, or 16 bits with an offset and a scale per page. */
+    pages: ['r32float', 'r16'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Labs = { -readonly [K in keyof typeof LABS]: (typeof LABS)[K][number] };

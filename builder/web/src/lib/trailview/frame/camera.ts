@@ -13,6 +13,8 @@ export const VFOV = 60;
 export const NEAR = 0.1;
 const WALK_M_S = 6, RUN = 12;
 const RAD = Math.PI / 180;
+/** The time constant in seconds with which the eye follows the probed ground; a larger step than JUMP is a new place. */
+const FOLLOW_S = 0.12, JUMP = 30;
 
 /** The keys held: each axis is -1, 0 or 1. */
 export interface Steer { ahead: number; right: number; up: number; run: boolean }
@@ -21,6 +23,16 @@ export interface Steer { ahead: number; right: number; up: number; run: boolean 
 export function eyeAltitude(pose: Pose, ground: number | undefined): number | undefined {
     if (pose.mode === 'fly') return altitude(pose.height, ground);
     return ground === undefined ? undefined : ground + pose.height;
+}
+
+/**
+ * The ground that the eye stands on. It follows the GPU probe, which comes one to three frames late,
+ * smoothly, and takes a jump at once.
+ */
+export function follow(held: number | undefined, probe: number, dt: number): number {
+    if (held === undefined || Math.abs(probe - held) > JUMP) return probe;
+    const next = probe + (held - probe) * Math.exp(-dt / FOLLOW_S);
+    return Math.abs(next - probe) < 1e-3 ? probe : next;
 }
 
 /** One step of free movement. A flying eye moves faster the higher it is above the ground. */
