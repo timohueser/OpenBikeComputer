@@ -1,0 +1,175 @@
+[
+  {
+    "kind": "tunnel",
+    "geometry": "line",
+    "match": [{"highway": "*", "tunnel": ["yes", "building_passage"]}],
+    "keep": ["highway", "tunnel", "width", "lanes", "layer"],
+    "height": "profile"
+  },
+  {
+    "kind": "gallery",
+    "geometry": "line",
+    "match": [{"highway": "*", "tunnel": ["avalanche_protector"]}],
+    "keep": ["highway", "width", "lanes", "layer"],
+    "height": "profile"
+  },
+  {
+    "kind": "main-road",
+    "geometry": "line",
+    "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
+                           "secondary", "secondary_link"]}],
+    "keep": ["highway", "surface", "width", "lanes", "bridge", "layer", "ford"],
+    "height": "profile",
+    "min_zoom": 8
+  },
+  {
+    "kind": "road",
+    "geometry": "line",
+    "match": [{"highway": ["tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service",
+                           "road", "track"]}],
+    "keep": ["highway", "surface", "tracktype", "width", "lanes", "bridge", "layer", "ford"],
+    "height": "profile"
+  },
+  {
+    "kind": "path",
+    "geometry": "line",
+    "match": [{"highway": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"]}],
+    "keep": ["highway", "surface", "width", "bridge", "layer", "ford"],
+    "height": "profile"
+  },
+  {
+    "kind": "railway",
+    "geometry": "line",
+    "match": [{"railway": ["rail", "narrow_gauge", "light_rail", "tram", "funicular", "monorail"]}],
+    "keep": ["railway", "usage", "service", "gauge", "electrified", "rack", "bridge", "tunnel", "layer"],
+    "height": "profile",
+    "active": false
+  },
+  {
+    "kind": "river",
+    "geometry": "line",
+    "match": [{"waterway": ["river", "canal"]}],
+    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "height": "profile",
+    "min_zoom": 8
+  },
+  {
+    "kind": "stream",
+    "geometry": "line",
+    "match": [{"waterway": ["stream"]}],
+    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "height": "profile"
+  },
+  {
+    "kind": "river-area",
+    "geometry": "area",
+    "match": [{"waterway": ["riverbank"]}, {"natural": ["water"], "water": ["river", "canal", "stream"]}],
+    "keep": ["water", "intermittent", "seasonal"],
+    "height": "profile",
+    "min_zoom": 8
+  },
+  {
+    "kind": "lake",
+    "geometry": "area",
+    "match": [{"natural": ["water"]}, {"landuse": ["reservoir"]}],
+    "keep": ["water", "landuse", "intermittent", "seasonal"],
+    "height": "pad",
+    "min_zoom": 8
+  },
+  {
+    "kind": "coastline",
+    "geometry": "line",
+    "match": [{"natural": ["coastline"]}],
+    "keep": [],
+    "height": "none",
+    "min_zoom": 8
+  },
+  {
+    "kind": "dam",
+    "geometry": "line",
+    "match": [{"waterway": ["dam", "weir"]}],
+    "keep": ["waterway", "height"],
+    "height": "profile"
+  },
+  {
+    "kind": "waterfall",
+    "geometry": "point",
+    "match": [{"waterway": ["waterfall"]}],
+    "keep": ["height"],
+    "height": "surface"
+  },
+  {
+    "kind": "bridge",
+    "geometry": "area",
+    "match": [{"man_made": ["bridge"]}],
+    "keep": ["bridge:structure", "layer"],
+    "height": "none"
+  },
+  {
+    "kind": "ruin",
+    "geometry": "area",
+    "match": [{"building": "*", "ruins": ["yes"]}, {"building": "*", "historic": ["castle", "tower", "ruins"]},
+              {"building": ["ruins"]}],
+    "keep": ["building", "historic", "building:levels", "height"],
+    "height": "pad"
+  },
+  {
+    "kind": "lighthouse",
+    "geometry": "area",
+    "match": [{"building": "*", "man_made": ["lighthouse"]}],
+    "keep": ["building:levels", "height"],
+    "height": "pad"
+  },
+  {
+    "kind": "building",
+    "geometry": "area",
+    "match": [{"building": "*"}],
+    "keep": ["building", "building:levels", "building:min_level", "height", "min_height", "roof:shape", "roof:levels",
+             "roof:height"],
+    "height": "pad"
+  },
+  {
+    "kind": "building-part",
+    "geometry": "area",
+    "match": [{"building:part": "*"}],
+    "keep": ["building:part", "building:levels", "building:min_level", "height", "min_height", "roof:shape",
+             "roof:levels", "roof:height"],
+    "height": "pad"
+  },
+  {
+    "kind": "wall",
+    "geometry": "line",
+    "match": [{"barrier": ["wall", "retaining_wall"]}],
+    "keep": ["barrier", "height"],
+    "height": "surface"
+  },
+  {
+    "kind": "hedge",
+    "geometry": "line",
+    "match": [{"barrier": ["hedge"]}],
+    "keep": ["height"],
+    "height": "surface"
+  },
+  {
+    "kind": "aerialway",
+    "geometry": "line",
+    "match": [{"aerialway": ["cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "t-bar", "j-bar",
+                             "platter"]}],
+    "keep": ["aerialway"],
+    "height": "surface"
+  },
+  {
+    "kind": "orchard",
+    "geometry": "area",
+    "match": [{"landuse": ["orchard"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "ridge",
+    "geometry": "line",
+    "match": [{"natural": ["arete", "ridge"]}],
+    "keep": ["natural"],
+    "height": "surface"
+  }
+]
