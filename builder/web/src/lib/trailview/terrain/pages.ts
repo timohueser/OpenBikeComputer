@@ -1,5 +1,6 @@
+import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
-import type { PageData } from '../stream/heights';
+import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource } from '../stream/terrain';
 import { COARSEST, FINEST, key, MAP, size, type Node } from './lod';
 
@@ -13,6 +14,11 @@ const REFRESHES = 8;
 const BODIES = 64 * 2 ** 20;
 /** A LOD map entry: the page layer + 1, and this bit for a stored page. */
 export const STORED_BIT = 0x80000000;
+/**
+ * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
+ * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
+ */
+const summit = (level: number) => Math.PI * EARTH_RADIUS / 2 ** level / PAGE;
 
 export type Kind = 'stored' | 'synth';
 
@@ -23,7 +29,7 @@ export interface Page {
     slot: number;
     /** The last frame that wanted the page. */
     used: number;
-    /** The range of its known heights; a synthesized page has the range of its stored ancestor. */
+    /** Its known heights and those of the finer pages below it; a synthesized page has the range of its stored ancestor. */
     range: [number, number];
     /** Whether the page knows every height; where it does not, the next coarser page draws. */
     complete: boolean;
@@ -118,11 +124,11 @@ export class Pages {
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
-            const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`;
+            const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`, heights: [number, number] = [data.min - summit(node.level), data.max + summit(node.level)];
             this.queued.set(tile, this.queued.get(tile)! - 1);
-            const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', [data.min, data.max], keys.has(key(node)));
+            const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, keys.has(key(node)));
             if (!page || page.ready) continue;
-            page.range = [data.min, data.max];
+            page.range = heights;
             page.complete = data.complete;
             work.uploads.push({ page, data });
         }
