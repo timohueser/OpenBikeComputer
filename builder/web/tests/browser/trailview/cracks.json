@@ -1,0 +1,4 @@
+[
+    { "name": "climb-ground-to-60km", "from": "?lat=46.800000&lon=8.400000&heading=0.0&pitch=-89.0&alt=1100.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "height": 60000 }, "frames": 120, "viewport": [600, 600] },
+    { "name": "oblique-pass", "from": "?lat=46.760000&lon=8.300000&heading=60.0&pitch=-50.0&alt=3500.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.84, "lon": 8.52, "heading": 80, "pitch": -45 }, "frames": 120, "viewport": [600, 600] }
+]

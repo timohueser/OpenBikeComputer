@@ -75,7 +75,7 @@ pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chr
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:clipmap`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
-`debug=cracks`; such a flight looks down on known terrain only.
+`debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 ## Checks
 
