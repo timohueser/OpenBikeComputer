@@ -20,8 +20,8 @@ One `[[source]]` table per source.
 | `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
 | `group` | string | no | The heading under which the operator page lists the source |
-| `products` | array of strings | yes | The products that read the source, one or more of `device` (the device maps), `planner`, `search` (the planner search) and `trailview`. `tools/check_data_sources.py` refuses a source without one, or with another name |
-| `use` | string | yes | What the products read the source for, in one line. `tools/check_data_sources.py` refuses a source without it |
+| `used_by` | array of strings | yes | What reads the source, one or more of the [products](#products) `device` and `planner`, and of `search` and `trailview`, the search and TrailView layers of `planner`. `tools/check_data_sources.py` refuses a source without one, or with another name |
+| `use` | string | yes | What `used_by` reads the source for, in one line. `tools/check_data_sources.py` refuses a source without it |
 | `licence` | string | no | SPDX licence expression: ids or `LicenseRef-…`, joined by `AND`, `OR`, `WITH` and parentheses |
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
@@ -4858,13 +4858,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "For a prepared source, by target: its complete versions there, and the run that holds the\nlock of the source there. Empty for another source.",
           "type": "object"
         },
-        "products": {
-          "description": "The products that read the source. `tools/check_data_sources.py` checks the names.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "publish_text": {
           "description": "A prepared source of article text publishes the text in its versions, unless this is\n`false`: then the text stays on the machine that prepares.",
           "type": [
@@ -4905,11 +4898,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         "use": {
-          "description": "What the products read the source for, in one line.",
+          "description": "What `used_by` reads the source for, in one line.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "used_by": {
+          "description": "What reads the source: the products `device` and `planner`, or the `search` and `trailview`\nlayers of `planner`. `tools/check_data_sources.py` checks the names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "version": {
           "$ref": "#/$defs/VersionScheme"

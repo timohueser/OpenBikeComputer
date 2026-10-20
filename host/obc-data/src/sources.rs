@@ -212,10 +212,11 @@ pub struct Source {
     /// The heading under which the operator page lists the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// The products that read the source. `tools/check_data_sources.py` checks the names.
+    /// What reads the source: the products `device` and `planner`, or the `search` and `trailview`
+    /// layers of `planner`. `tools/check_data_sources.py` checks the names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub products: Vec<String>,
-    /// What the products read the source for, in one line.
+    pub used_by: Vec<String>,
+    /// What `used_by` reads the source for, in one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#use: Option<String>,
     /// An SPDX id or `LicenseRef-…`. Unset blocks a data source or an asset.

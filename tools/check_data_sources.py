@@ -9,14 +9,13 @@ new download from a host that a source already declares (api.github.com, for one
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
 cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`.
 
-Each source names its `products`, from `PRODUCTS`, and its `use`. The guide page of the data
-sources shows them.
+Each source names what reads it in `used_by`, from `USED_BY`, and what for in `use`.
 """
 
 from __future__ import annotations
 
 GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'builder/usb/**', 'data/sources.toml']
-RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/ fetches from is a source in data/sources.toml or a listed non-bake host, and each source names its products and its use.'
+RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/ fetches from is a source in data/sources.toml or a listed non-bake host, and each source names what reads it and what for.'
 
 import re
 import subprocess
@@ -32,7 +31,7 @@ URL = re.compile(r"https?://((?:\{[^{}\s]*\}|[A-Za-z0-9.-])+)")
 # RFC 2606 and RFC 6761 names, which never reach a real server.
 RESERVED = re.compile(r"(^|\.)(example|test|invalid|localhost)$|(^|\.)example\.(com|net|org)$|^127\.0\.0\.1$")
 
-PRODUCTS = ("device", "planner", "search", "trailview")
+USED_BY = ("device", "planner", "search", "trailview")
 
 NOT_SOURCES = {
     # Our own services and storage.
@@ -101,13 +100,13 @@ def undeclared(files: dict[str, str], allowed: set[str]) -> dict[str, list[str]]
 
 
 def undocumented(registry: dict) -> list[str]:
-    """Each source without `products` or `use`, and each product name that does not exist."""
+    """Each source without `used_by` or `use`, and each name in `used_by` that `USED_BY` does not list."""
     problems = []
     for source in registry["source"]:
-        products = source.get("products", [])
-        if not products or not source.get("use"):
-            problems.append(f"{source['id']}: give `products` and `use`")
-        problems += [f"{source['id']}: no product `{name}`" for name in products if name not in PRODUCTS]
+        used_by = source.get("used_by", [])
+        if not used_by or not source.get("use"):
+            problems.append(f"{source['id']}: give `used_by` and `use`")
+        problems += [f"{source['id']}: `used_by` names `{name}`" for name in used_by if name not in USED_BY]
     return problems
 
 
@@ -127,12 +126,12 @@ def main() -> int:
             print(f"  {host}: {', '.join(sorted(paths))}", file=sys.stderr)
     problems = undocumented(registry)
     if problems:
-        print(f"data sources: each source names its products ({', '.join(PRODUCTS)}) and its use:", file=sys.stderr)
+        print(f"data sources: each source names its `used_by` ({', '.join(USED_BY)}) and its `use`:", file=sys.stderr)
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
     if missing or problems:
         return 1
-    print("data sources: every fetched host is declared, and every source names its products and its use")
+    print("data sources: every fetched host is declared, and every source names its `used_by` and its `use`")
     return 0
 
 

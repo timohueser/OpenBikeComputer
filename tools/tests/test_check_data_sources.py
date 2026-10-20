@@ -38,18 +38,18 @@ class HostGuardTests(unittest.TestCase):
         self.assertEqual(guard.hosts_in(text), set())
 
 
-class ProductGuardTests(unittest.TestCase):
-    def test_a_source_names_known_products_and_its_use(self):
+class UseGuardTests(unittest.TestCase):
+    def test_a_source_names_what_reads_it_and_what_for(self):
         registry = {"source": [
-            {"id": "good", "products": ["planner", "trailview"], "use": "Land cover of the basemap"},
-            {"id": "no-products", "use": "Land cover of the basemap"},
-            {"id": "no-use", "products": ["device"]},
-            {"id": "unknown", "products": ["planner", "atlas"], "use": "Land cover of the basemap"},
+            {"id": "good", "used_by": ["planner", "trailview"], "use": "Land cover of the basemap"},
+            {"id": "no-readers", "use": "Land cover of the basemap"},
+            {"id": "no-use", "used_by": ["device"]},
+            {"id": "unknown", "used_by": ["planner", "atlas"], "use": "Land cover of the basemap"},
         ]}
         self.assertEqual(guard.undocumented(registry), [
-            "no-products: give `products` and `use`",
-            "no-use: give `products` and `use`",
-            "unknown: no product `atlas`",
+            "no-readers: give `used_by` and `use`",
+            "no-use: give `used_by` and `use`",
+            "unknown: `used_by` names `atlas`",
         ])
 
 
