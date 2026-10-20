@@ -1017,6 +1017,21 @@ jobs:
           npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
+      # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the TrailView smoke.
+      - name: Cache the WGSL validator
+        id: naga
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl')
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/naga
+          key: naga-cli-30.0.1-${{ runner.os }}
+      - name: Install the WGSL validator
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl') && steps.naga.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: cargo install naga-cli --version 30.0.1 --locked
+      - name: TrailView WGSL validation
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl')
+        run: npm run check:wgsl
       - name: Upload builder test results
         if: ${{ !cancelled() && (steps.builder-vitest.outcome == 'success' || steps.builder-vitest.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1074,6 +1089,9 @@ jobs:
         run: npm run test:planner --prefix builder/web/tests/browser
       - name: Operator page at phone width
         run: npm run test:data --prefix builder/web/tests/browser
+      - name: TrailView smoke on SwiftShader
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-smoke')
+        run: npm run test:trailview --prefix builder/web/tests/browser
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
