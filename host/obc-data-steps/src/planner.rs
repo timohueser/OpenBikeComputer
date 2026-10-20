@@ -800,6 +800,28 @@ mod tests {
     }
 
     #[test]
+    fn the_terrain_reads_the_mean_tiles_of_a_national_model_in_its_bounds() {
+        let temp = temp("planner-reference");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
+        let (pinned, manifest) = crate::device::tests::swiss_version(&mut inputs, &paths);
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
+        crate::device::tests::stored(&store, "terrain-reference/ch", &pinned, &[], &manifest);
+        let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+        let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
+        let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
+        assert_eq!(
+            (&files[..], &reference.options["pool"]),
+            (&["mean/16/4825/4218.tif".to_string()][..], &json!("mean"))
+        );
+        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
+        assert!(terrain
+            .inputs
+            .iter()
+            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+    }
+
+    #[test]
     fn a_geofabrik_region_reads_its_newest_extract_and_the_tiles_of_its_bounds() {
         let temp = temp("planner-steps");
         let Err(Unplanned::NeedsFetch(wanted)) =

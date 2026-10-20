@@ -160,6 +160,7 @@ impl Terrain {
         if !differences.is_empty() {
             let middle = differences.len() / 2;
             self.bias = *differences.select_nth_unstable_by(middle, f64::total_cmp).1;
+            eprintln!("GLO-30 bias {:.2} m from {} reference samples", self.bias, differences.len());
         }
         let near: BTreeSet<(u32, u32)> = held
             .iter()

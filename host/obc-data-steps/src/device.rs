@@ -533,10 +533,12 @@ pub(crate) struct Models<'a> {
     pub layer: Option<&'a str>,
 }
 
+/// The input of each model, and its `source`, `version` and `credit` for the options.
+type ModelInputs = (Vec<Input>, Vec<serde_json::Value>);
+
 impl Models<'_> {
-    /// The input of each model with a tile, and its `source`, `version` and `credit` for the
-    /// options. `None` when no model has a tile, or while the store lacks a manifest or a polygon;
-    /// then `wanted` has its fetch.
+    /// The models with a tile. `None` when no model has one, or while the store lacks a manifest or
+    /// a polygon; then `wanted` has its fetch.
     pub(crate) fn read(
         &self,
         inputs: &Inputs,
@@ -544,7 +546,7 @@ impl Models<'_> {
         shapes: &mut BTreeMap<String, Shape>,
         wanted: &mut Vec<Wanted>,
         notes: &mut Vec<Note>,
-    ) -> Result<Option<(Vec<Input>, Vec<serde_json::Value>)>, Unplanned> {
+    ) -> Result<Option<ModelInputs>, Unplanned> {
         let paths: BTreeSet<String> =
             self.tiles.iter().map(|tile| format!("{}16/{:04}/{:04}.tif", self.pool, tile.i, tile.j)).collect();
         let square = |tile: &&CellId| {
@@ -774,7 +776,13 @@ pub(crate) mod tests {
     }
 
     /// [`fetched`] with the bytes of each file.
-    fn stored(store: &Store, source: &str, version: &str, params: &[(String, String)], files: &[(String, Vec<u8>)]) {
+    pub(crate) fn stored(
+        store: &Store,
+        source: &str,
+        version: &str,
+        params: &[(String, String)],
+        files: &[(String, Vec<u8>)],
+    ) {
         let mut snapshot = store.snapshot(source, version).unwrap().unwrap_or_else(|| Snapshot {
             source: source.into(),
             version: version.into(),
@@ -1169,7 +1177,7 @@ pub(crate) mod tests {
 
     /// A version of `terrain-reference/ch` whose manifest names `paths`, for the inputs of the
     /// Grimsel: its pin and the bytes of its manifest.
-    fn swiss_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
+    pub(crate) fn swiss_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
         let manifest = Manifest {
             source: "terrain-reference/ch".into(),
