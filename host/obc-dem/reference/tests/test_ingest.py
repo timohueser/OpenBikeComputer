@@ -468,10 +468,12 @@ class Fetch(ArchiveCase):
         for tile, digest in tiles.items():
             ti, tj = (int(part) for part in tile.split("/"))
             name, path = f"{ti:04}-{tj:04}", f"16/{tile}.tif"
-            self.assertEqual(self.fetch("ch", name), (0, [path, f"{name}.sha256"]))
+            files = [path, f"{name}.mean.sha256", f"{name}.sha256", f"mean/{path}"]
+            self.assertEqual(self.fetch("ch", name), (0, files))
             self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
             self.assertEqual((self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8"), digest)
             self.assertEqual(ingest.tile_problems(self.root / "out" / path, ti, tj), [])
+            self.assertEqual(ingest.tile_problems(self.root / "out" / "mean" / path, ti, tj, "mean"), [])
             self.assertFalse((self.root / "work").exists())
             digests[tile] = (self.root / "out" / f"{name}.sha256").read_text(encoding="utf-8")
 
@@ -482,6 +484,32 @@ class Fetch(ArchiveCase):
         index = json.loads(index.read_text(encoding="utf-8"))
         self.assertEqual((index["sha256"], index["sources"]["ch"]["fetched"]), (tiles, "2026-10-01"))
         self.assertEqual(index["contributors"], {tile: ["ch"] for tile in tiles})
+
+    def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
+        """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the
+        centres of one lattice pixel, its two rasters still give that pixel the mean of all
+        four, in decimetres, beside their maximum in metres."""
+
+        transform, _, _ = wgs84_grid(32)
+        rows, cols = np.mgrid[0:40, 0:40]
+        values = (1000.0 + 0.37 * cols + 0.11 * rows).astype("float32")
+        values[20, 21] = TOWER
+        rasters = []
+        for name, first, last in (("west", 0, 21), ("east", 21, 40)):
+            path = source_raster(self.inputs / f"{name}.tif", values[:, first:last],
+                                 transform=transform * Affine.translation(first, 0))
+            with rasterio.open(path, "r+") as dst:
+                dst.crs = ingest.WGS84
+            rasters.append(path)
+        maximum, mean = ingest.pool_tile(rasters, ingest.SOURCES["ch"], 4812, 4223)
+
+        quads = values.astype("float64").reshape(20, 2, 20, 2)
+        held = np.s_[100:120, 100:120]
+        self.assertTrue((mean[held] == np.floor(quads.mean(axis=(1, 3)) * 10 + 0.5)).all())
+        self.assertTrue((maximum[held] == np.floor(quads.max(axis=(1, 3)) + 0.5)).all())
+        self.assertEqual(int(maximum[110, 110]), round(TOWER))
+        self.assertEqual((int((mean != ingest.MEAN_NODATA).sum()), int((maximum != ingest.NODATA).sum())),
+                         (400, 400))
 
     def test_a_tile_without_a_height_is_a_none_file_and_a_failure_keeps_no_raw_raster(self):
         class Service(ingest.Source):
@@ -517,7 +545,8 @@ class Fetch(ArchiveCase):
         with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
             self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
-            self.assertEqual(self.fetch("au", name), (0, [f"16/{ti:04}/{tj:04}.tif", f"{name}.sha256"]))
+            path = f"16/{ti:04}/{tj:04}.tif"
+            self.assertEqual(self.fetch("au", name), (0, [path, f"{name}.mean.sha256", f"{name}.sha256", f"mean/{path}"]))
             os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
             self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")
         self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
@@ -577,6 +606,27 @@ class MergeStep(ArchiveCase):
         # A tile that no terrain cell of the leaf reads stays out.
         output = self.root / "other" / "output"
         self.assertEqual(merge.merge(self.request(output, models, ["0000/0000"]))["tiles"], 0)
+
+    def test_the_mean_of_the_better_model_fills_first_and_the_other_fills_its_gaps(self):
+        ti, tj = 4812, 4223
+        corner, whole = np.full((ingest.TILE_PX,) * 2, ingest.MEAN_NODATA, "int32"), np.full((ingest.TILE_PX,) * 2, 9000, "int32")
+        corner[:10, :10] = 8000
+        models = []
+        for source, pixels in (("terrain-reference/es", whole), ("terrain-reference/nl", corner)):
+            path = self.root / source.replace("/", "-") / f"{ti:04}-{tj:04}.tif"
+            ingest.write_tile(path, ti, tj, pixels)
+            models.append((source, "2026-01-02", [path]))
+        output = self.root / "step" / "output"
+        request = self.request(output, models, [ingest.tile_id(ti, tj)])
+        request["options"]["pool"] = "mean"
+        request["snapshots"] = {source: {f"mean/{name}": path for name, path in files.items()}
+                                for source, files in request["snapshots"].items()}
+        merge.merge(request)
+        index = ingest.read_index(output / "reference")
+        self.assertEqual((index["pool"], index["contributors"]), ("mean", {ingest.tile_id(ti, tj): ["nl", "es"]}))
+        with rasterio.open(ingest.tile_path(output / "reference", ti, tj)) as src:
+            merged = src.read(1)
+        self.assertEqual((int((merged == 8000).sum()), int((merged == 9000).sum())), (100, ingest.TILE_PX ** 2 - 100))
 
 
 class PerTile(ArchiveCase):

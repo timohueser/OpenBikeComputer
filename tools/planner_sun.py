@@ -54,7 +54,7 @@ def encode(values):
 
 
 def terrain_coverage(header, bounds, distance_m):
-    if header["tile_type"] != TileType.WEBP or header["max_zoom"] != DEM_ZOOM:
+    if header["tile_type"] != TileType.WEBP or header["max_zoom"] < DEM_ZOOM:
         raise ValueError("Use the planner's zoom-12 WebP terrain archive")
     coverage = [header[key] / 1e7 for key in ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")]
     latitude = distance_m / 110000

@@ -456,7 +456,7 @@ fn map_cells(config: &Config, leaf: LeafId, map: &LeafCells, land_polygons: &str
 
 /// The polygon of a Geofabrik area that holds a national model, with the archive tiles that its
 /// boundary crosses. A step list reads each area once.
-type Shape = (Coverage, BTreeSet<CellId>);
+pub(crate) type Shape = (Coverage, BTreeSet<CellId>);
 
 /// Whether one of `tiles` is in the polygon of one of the `areas` of `source`: the boundary of the
 /// polygon crosses the tile, or the polygon holds the centre of the tile. `None` while the store
@@ -489,11 +489,8 @@ fn in_areas(
 }
 
 /// The national terrain models of the archive tiles that the terrain cells of `leaf` read with the
-/// halo of the crest rule, merged into the reference archive of the leaf. A model is the prepared
-/// source `terrain-reference/<key>` at the version that the target reads, and the leaf reads the
-/// tiles of its manifest among those. `None` when no model has one, or while the store lacks a
-/// manifest or a polygon; then `wanted` has its fetch. A model without a version adds nothing, and
-/// `notes` say so where it can have a height: a new version is a new input of the leaf.
+/// halo of the crest rule, merged into the reference archive of the leaf. `None` when no model has
+/// one of those tiles, or while the store lacks a manifest or a polygon; then `wanted` has its fetch.
 fn reference(
     inputs: &Inputs,
     store: &Store,
@@ -509,52 +506,8 @@ fn reference(
     let windows = cells.iter().map(|cell| window_of(cell).expect("a terrain cell has a window"));
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
-    let paths: BTreeSet<String> = tiles.iter().map(|tile| format!("16/{:04}/{:04}.tif", tile.i, tile.j)).collect();
-    let square = |tile: &&CellId| {
-        let (west, south, east, north) = tile.square();
-        [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
-    };
-    let (mut reads, mut models) = (Vec::new(), Vec::new());
-    for source in sources::all().iter().filter(|source| source.id.starts_with("terrain-reference/")) {
-        let near: Vec<CellId> = tiles.iter().filter(|tile| source.meets(square(tile))).copied().collect();
-        if near.is_empty() {
-            continue;
-        }
-        let id = &source.id;
-        let Ok(pinned) = version(inputs, store, id, &[]).map_err(Unplanned::Failed)? else {
-            if in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
-                let text =
-                    format!("{id} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare {id}");
-                let note = Note { layer: DEVICE_TERRAIN.name.into(), text };
-                if !notes.contains(&note) {
-                    notes.push(note);
-                }
-            }
-            continue;
-        };
-        let manifest = snapshot_files(store, id, &pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)?;
-        let Some(manifest) = manifest else {
-            let fetch = Wanted { source: id.clone(), version: Some(pinned), params: Vec::new() };
-            if !wanted.contains(&fetch) {
-                wanted.push(fetch);
-            }
-            continue;
-        };
-        let path = &manifest[MANIFEST];
-        let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
-        let manifest: Manifest =
-            serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))?;
-        let files: Vec<String> =
-            manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
-        if !files.is_empty() {
-            // The credit names the day of the data.
-            models.push(serde_json::json!({"source": id, "version": manifest.version, "credit": attribution(id)}));
-            reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
-        }
-    }
-    if models.is_empty() {
-        return Ok(None);
-    }
+    let models = Models { tiles: &tiles, pool: "", layer: Some(DEVICE_TERRAIN.name) };
+    let Some((reads, models)) = models.read(inputs, store, shapes, wanted, notes)? else { return Ok(None) };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,
@@ -567,6 +520,78 @@ fn reference(
             &["reference"],
         )
     }))
+}
+
+/// The national terrain models of some archive tiles: the files `<pool>16/<ti:04>/<tj:04>.tif` of
+/// those tiles in the version of `terrain-reference/<key>` that the target reads. A model without a
+/// version adds nothing. With a `layer`, `notes` on it say so where the model can have a height: a
+/// new version is a new input.
+pub(crate) struct Models<'a> {
+    pub tiles: &'a BTreeSet<CellId>,
+    /// `""` for the maximum, `"mean/"` for the mean.
+    pub pool: &'a str,
+    pub layer: Option<&'a str>,
+}
+
+impl Models<'_> {
+    /// The input of each model with a tile, and its `source`, `version` and `credit` for the
+    /// options. `None` when no model has a tile, or while the store lacks a manifest or a polygon;
+    /// then `wanted` has its fetch.
+    pub(crate) fn read(
+        &self,
+        inputs: &Inputs,
+        store: &Store,
+        shapes: &mut BTreeMap<String, Shape>,
+        wanted: &mut Vec<Wanted>,
+        notes: &mut Vec<Note>,
+    ) -> Result<Option<(Vec<Input>, Vec<serde_json::Value>)>, Unplanned> {
+        let paths: BTreeSet<String> =
+            self.tiles.iter().map(|tile| format!("{}16/{:04}/{:04}.tif", self.pool, tile.i, tile.j)).collect();
+        let square = |tile: &&CellId| {
+            let (west, south, east, north) = tile.square();
+            [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
+        };
+        let (mut reads, mut models) = (Vec::new(), Vec::new());
+        for source in sources::all().iter().filter(|source| source.id.starts_with("terrain-reference/")) {
+            let near: Vec<CellId> = self.tiles.iter().filter(|tile| source.meets(square(tile))).copied().collect();
+            if near.is_empty() {
+                continue;
+            }
+            let id = &source.id;
+            let Ok(pinned) = version(inputs, store, id, &[]).map_err(Unplanned::Failed)? else {
+                let Some(layer) = self.layer else { continue };
+                if in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
+                    let text =
+                        format!("{id} has no version: {layer} uses GLO-30 there. Fix: obc data source prepare {id}");
+                    let note = Note { layer: layer.into(), text };
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+                continue;
+            };
+            let manifest = snapshot_files(store, id, &pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)?;
+            let Some(manifest) = manifest else {
+                let fetch = Wanted { source: id.clone(), version: Some(pinned), params: Vec::new() };
+                if !wanted.contains(&fetch) {
+                    wanted.push(fetch);
+                }
+                continue;
+            };
+            let path = &manifest[MANIFEST];
+            let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+            let manifest: Manifest =
+                serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))?;
+            let files: Vec<String> =
+                manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
+            if !files.is_empty() {
+                // The credit names the day of the data.
+                models.push(serde_json::json!({"source": id, "version": manifest.version, "credit": attribution(id)}));
+                reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
+            }
+        }
+        Ok((!models.is_empty()).then_some((reads, models)))
+    }
 }
 
 /// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches and

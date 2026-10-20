@@ -137,6 +137,24 @@ Routing, search and downloads APIs have the prefix `/planner-api/releases/ID/`. 
 path component selects `routing`, `search` or `downloads`. `obc data serve` runs the
 services of each release that `release.json` of its target names.
 
+## Terrain tiles
+
+One terrain pyramid serves the planner and TrailView. A tile is a 512 × 512 lossless WebP in the
+Terrarium encoding. A pixel is the height at its centre in metres, R × 256 + G + B / 256 − 32768,
+rounded to the nearest decimetre: B is the tenths × 25.6, rounded, so B is one of 0, 26, 51, 77,
+102, 128, 154, 179, 205 and 230. A pixel with alpha 0 has no known height.
+
+| Zoom | Tiles |
+| --- | --- |
+| 0–12 | Each tile of `terrain_bounds` that has a known height |
+| 13 | Only where a national terrain model holds the ground, in tiles whose centre is between 58.4° S and 58.4° N. TileJSON `maxzoom` is then 13 |
+
+The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
+national terrain models (`terrain-reference/<key>`) where they hold the ground, and Copernicus
+GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines: the national
+weight rises from 0 at the edge of its coverage to 1 at 1 km inside, and GLO-30 takes the median
+offset of national − GLO-30, faded out at 1 km outside.
+
 ## Canonical grid storage
 
 The online services serve grid releases only. A regional release
