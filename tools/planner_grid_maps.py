@@ -127,6 +127,9 @@ def step(request):
                  for path in sorted(tiles.rglob("*.pmtiles"))}
         metadata = {**metadata, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
                     "maxzoom": header["max_zoom"], "bounds": request["options"]["bounds"]}
+        if any(name.startswith(f"maps/tiles/terrain/{FINE_ZOOM}/") for name in files):
+            # The tile service and an offline area stop at zoom 12; TrailView reads the zoom 13 packs.
+            metadata.update(maxzoom=FINE_ZOOM - 1, trailview_maxzoom=FINE_ZOOM)
         if kind == "overlays":
             routing = json.loads(Path(request["layers"]["planner/routing/grid"]["index.json"]).read_bytes())
             if metadata.get("routing_package") != routing["graph"]["source"]:

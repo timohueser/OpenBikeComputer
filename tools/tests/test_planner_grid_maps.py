@@ -73,6 +73,7 @@ class MapGrid(unittest.TestCase):
     def test_terrain_keeps_its_pixels_in_fewer_bytes_and_zoom_13_in_its_own_archives(self):
         heights = (np.arange(64 * 64).reshape(64, 64) * 37 % 9973).astype(np.int64) + 32768 * 256
         rgba = np.stack([heights >> 16, heights >> 8 & 255, heights & 255, np.full_like(heights, 255)], -1)
+        rgba[0, 0] = (128, 0, 0, 0)
         image = io.BytesIO()
         Image.fromarray(rgba.astype(np.uint8), "RGBA").save(image, format="WEBP", lossless=True, method=0, exact=True)
         data = image.getvalue()
@@ -90,6 +91,7 @@ class MapGrid(unittest.TestCase):
             grid.step(request)
             output, index = self.files(request)
             self.assertEqual(set(index["files"]), {"maps/terrain.json", *(f"maps/tiles/terrain/{name}.pmtiles" for name in tiles.values())})
+            self.assertEqual((index["metadata"]["maxzoom"], index["metadata"]["trailview_maxzoom"]), (12, 13))
             for tile, name in tiles.items():
                 path = output / "objects" / index["files"][f"maps/tiles/terrain/{name}.pmtiles"]["transport"]["sha256"]
                 planner_verify.archive(path, "terrain")

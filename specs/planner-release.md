@@ -148,7 +148,7 @@ has no known height.
 | Zoom | Tiles |
 | --- | --- |
 | 0–12 | Each tile of `terrain_bounds` that has a known height |
-| 13 | Only where a national terrain model holds the ground, in tiles whose centre is between 58.4° S and 58.4° N. TileJSON `maxzoom` is then 13 |
+| 13 | Only where a national terrain model holds the ground, in tiles whose centre is between 58.4° S and 58.4° N |
 
 The `planner/terrain/grid` step packs the tiles in two sets of archives, so the planner, the tile
 service and an offline area never load zoom 13:
@@ -158,15 +158,18 @@ service and an offline area never load zoom 13:
 | `maps/tiles/terrain/<z>-<x>-<y>.pmtiles`, `z` ≤ 11 | Tile `z/x/y`; at zoom 11 also its zoom 12 tiles |
 | `maps/tiles/terrain/13/11-<x>-<y>.pmtiles` | The zoom 13 tiles inside zoom 11 tile `x/y`. Only TrailView reads them |
 
-The step encodes each tile again with libwebp (`lossless` in `tools/planner_map_archive.py`). The
-pixels stay the same; the bytes differ from those of `terrain.mbtiles`. An opaque tile can lose
-its alpha chunk: a decoder then gives alpha 255.
+`maps/terrain.json` has the `maxzoom` of the first set, 12. Where zoom 13 packs exist, it also has
+`trailview_maxzoom: 13`. The step encodes each tile again with libwebp (`lossless` in
+`tools/planner_map_archive.py`). The pixels stay the same; the bytes differ from those of
+`terrain.mbtiles`. An opaque tile can lose its alpha chunk: a decoder then gives alpha 255.
 
 The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
 national terrain models (`terrain-reference/<key>`) where they hold the ground, and Copernicus
-GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines: the national
-weight rises from 0 at the edge of its coverage to 1 at 1 km inside, and GLO-30 takes the median
-offset of national − GLO-30, faded out at 1 km outside.
+GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national
+weight is 0 within one coverage cell (about 114 m × 78 m at 47° N) of a cell where the national
+model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the median offset of
+national − GLO-30 there, faded out over 1 km outside the coverage. The height is continuous, also
+at a concave edge such as a national border.
 
 ## Canonical grid storage
 
