@@ -496,6 +496,11 @@ impl<'a> Job<'a> {
     /// Run `command`, a program of the producer, in the repository root, and wait for it. Its
     /// error names the program, the arguments before the first option, and its last error line.
     pub fn program(&self, command: &mut Command) -> Result<(), String> {
+        self.start(command)?.wait()
+    }
+
+    /// Start `command` as [`Job::program`] does, and give it without a wait.
+    pub fn start(&self, command: &mut Command) -> Result<Program, String> {
         self.run.check_stop(self.store)?;
         // The program stops when this process does, so no orphan writes into a later run.
         command.current_dir(self.root).env("OBC_PARENT_PID", std::process::id().to_string());
@@ -504,9 +509,8 @@ impl<'a> Job<'a> {
         let name = std::iter::once(program).chain(args).collect::<Vec<_>>().join(" ");
         let mut child =
             command.stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
-        let errors = crate::engine::copy_errors(&mut child);
-        let status = child.wait().map_err(|e| format!("wait for `{name}`: {e}"))?;
-        crate::engine::ended(&name, status, errors)
+        let errors = Some(crate::engine::copy_errors(&mut child));
+        Ok(Program { child, name, errors })
     }
 
     /// Upload the files `paths` of `work` to the target in one call, record each, and delete them
@@ -549,6 +553,41 @@ impl<'a> Job<'a> {
             digest: crate::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))),
         });
         reads.collect()
+    }
+}
+
+/// A program of a producer that [`Job::start`] started. A drop before [`Program::wait`] sends it
+/// SIGTERM and waits for its end, so it writes nothing after the producer returns.
+pub struct Program {
+    child: std::process::Child,
+    name: String,
+    /// `None` once the wait gave the status.
+    errors: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+impl Program {
+    /// Wait for the program; its error is that of [`Job::program`].
+    pub fn wait(mut self) -> Result<(), String> {
+        let status = self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?;
+        let errors = self.errors.take().expect("a program is waited for once");
+        crate::engine::ended(&self.name, status, errors)
+    }
+}
+
+impl Drop for Program {
+    fn drop(&mut self) {
+        if self.errors.is_none() {
+            return;
+        }
+        // SIGTERM, not SIGKILL, so that the program can remove what it wrote.
+        #[cfg(unix)]
+        // SAFETY: kill sends a signal. The child is not reaped, so its pid is still its own.
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

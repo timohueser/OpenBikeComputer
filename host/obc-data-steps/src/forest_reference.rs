@@ -78,10 +78,10 @@ impl Prepared for ForestReference {
                 files: vec![(format!("12/{x}/{y}.tif"), format!("12-{x}-{y}.sha256"))],
             })
             .collect();
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, |job, name, progress| {
             let mut command = (self.tool)(job.root)?;
-            command.args(["fetch", &key, "--tile", name, "--out"]).arg(&job.work);
-            job.program(&mut command)
+            command.args(["fetch", &key, "--tile", name, "--out"]).arg(&job.work).args(["--progress", progress]);
+            Ok(command)
         })?;
         // The services have no versions of their own: the day of the prepare names what it read.
         let version = job.version.clone();
