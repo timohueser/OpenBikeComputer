@@ -8,6 +8,8 @@ posts are described in [BLOG.md](BLOG.md).
   `specs/`; build and run instructions stay in the README next to the code.
 - Link to code with `[text](src:path)`, never a line number.
 - Check every technical claim against the current source.
+- The tables of `content/software/data-sources.md` come from `data/sources.toml` through
+  ```` ```sources ```` fences. Change the registry, not the page.
 
 ## Diagrams
 
