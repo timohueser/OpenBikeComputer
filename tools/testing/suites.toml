@@ -293,7 +293,6 @@ id = "web.trailview-smoke"
 route = "ordinary"
 command = "npm run test:trailview --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
-fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
 triggers = [
   "builder/web/src/lib/trailview/**",

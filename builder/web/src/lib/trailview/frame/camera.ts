@@ -17,31 +17,36 @@ const RAD = Math.PI / 180;
 /** The keys held: each axis is -1, 0 or 1. */
 export interface Steer { ahead: number; right: number; up: number; run: boolean }
 
-/** The eye's height above sea level over ground `ground`. */
-export function eyeAltitude(pose: Pose, ground: number): number {
-    return pose.mode === 'walk' ? ground + pose.height : Math.max(pose.height, ground + MIN_CLEARANCE);
+/** The eye's height above sea level. A walking eye over an unknown ground has none: an unknown height is never 0 m. */
+export function eyeAltitude(pose: Pose, ground: number | undefined): number | undefined {
+    if (pose.mode === 'fly') return altitude(pose.height, ground);
+    return ground === undefined ? undefined : ground + pose.height;
 }
 
 /** One step of free movement. A flying eye moves faster the higher it is above the ground. */
-export function move(pose: Pose, steer: Steer, dt: number, ground: number): Pose {
-    const above = eyeAltitude(pose, ground) - ground;
+export function move(pose: Pose, steer: Steer, dt: number, ground: number | undefined): Pose {
+    const z = eyeAltitude(pose, ground);
+    const above = z === undefined || ground === undefined ? pose.height : z - ground;
     const speed = (pose.mode === 'walk' ? WALK_M_S : Math.max(20, above)) * (steer.run ? RUN : 1) * dt;
     const h = pose.heading * RAD;
     const east = pose.east + (Math.sin(h) * steer.ahead + Math.cos(h) * steer.right) * speed;
     const north = pose.north + (Math.cos(h) * steer.ahead - Math.sin(h) * steer.right) * speed;
-    const height = pose.mode === 'fly' ? altitude(eyeAltitude(pose, ground) + steer.up * speed, ground) : pose.height;
+    const height = pose.mode === 'fly' ? altitude(pose.height + steer.up * speed, ground) : pose.height;
     return { ...pose, east, north, height };
 }
 
 /** The wheel: a walking eye takes off, a flying one rises or sinks by a share of its height above the ground. */
-export function zoom(pose: Pose, deltaY: number, ground: number): Pose {
-    const above = eyeAltitude(pose, ground) - ground;
-    return { ...pose, mode: 'fly', height: altitude(ground + above * Math.exp(deltaY * 0.002), ground) };
+export function zoom(pose: Pose, deltaY: number, ground: number | undefined): Pose {
+    const z = eyeAltitude(pose, ground), share = Math.exp(deltaY * 0.002);
+    if (z === undefined) return pose;
+    return { ...pose, mode: 'fly', height: altitude(ground === undefined ? z * share : ground + (z - ground) * share, ground) };
 }
 
 /** Walk on the ground under the eye, or fly from where the eye is. */
-export function toggle(pose: Pose, ground: number): Pose {
-    return pose.mode === 'walk' ? { ...pose, mode: 'fly', height: eyeAltitude(pose, ground) } : { ...pose, mode: 'walk', height: WALK_EYE };
+export function toggle(pose: Pose, ground: number | undefined): Pose {
+    if (pose.mode === 'fly') return { ...pose, mode: 'walk', height: WALK_EYE };
+    const z = eyeAltitude(pose, ground);
+    return z === undefined ? pose : { ...pose, mode: 'fly', height: z };
 }
 
 export function look(pose: Pose, dx: number, dy: number, degreesPerPixel: number): Pose {
@@ -49,7 +54,8 @@ export function look(pose: Pose, dx: number, dy: number, degreesPerPixel: number
     return { ...pose, heading, pitch: Math.min(89, Math.max(-89, pose.pitch + dy * degreesPerPixel)) };
 }
 
-const altitude = (value: number, ground: number) => Math.min(MAX_ALTITUDE, Math.max(ground + MIN_CLEARANCE, value));
+/** An altitude in range: at most MAX_ALTITUDE, and MIN_CLEARANCE above a known ground. */
+const altitude = (value: number, ground: number | undefined) => Math.min(MAX_ALTITUDE, ground === undefined ? value : Math.max(ground + MIN_CLEARANCE, value));
 
 /**
  * Camera-relative world (x east, y north, z up) to clip space, column-major. Reversed Z with an

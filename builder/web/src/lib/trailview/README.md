@@ -29,10 +29,6 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `view.ts` | The view in the address |
 | `hud.ts` | The lab HUD |
 
-Positions are metres in an azimuthal equidistant frame about the first view: float64 on the CPU.
-The GPU gets each tile's centre relative to the eye and float32 offsets from that centre. The
-vertex shader lowers each point by the Earth curvature with refraction (k = 0.13).
-
 ## The address
 
 | Parameter | Value |
@@ -53,8 +49,7 @@ zooms. H hides the HUD.
 ## Labs
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
-builds the variant that `?lab=` selects. The PR of a lab keeps the best variant and deletes the
-others.
+builds the variant that `?lab=` selects.
 
 ## Shots and flights
 
@@ -85,8 +80,8 @@ npm run check:wgsl          # cargo install naga-cli --version 30.0.1 --locked
 Copernicus GLO-30 square N46 E008, and its config. To make it again:
 
 ```sh
-cargo build --release --locked -p obc-dem --features terrarium --bin planner-dem
-planner-dem --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
+cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
+  --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
 uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles
 ```
 

@@ -11,7 +11,7 @@ const GRID = 128, HALF = GRID / 2;
 /** A tile splits while the eye is nearer than this many tile edges. */
 const SPLIT = 2;
 const LOADS = 6;
-/** The tile meshes are a fixed pool; the tiles drawn longest ago leave first. */
+/** The tile meshes are a fixed pool; the tiles that the selection used longest ago leave first. */
 const MESH_BUDGET = 96 * 2 ** 20;
 /** Draws per frame, as `tiles` in terrain.wgsl. */
 const MAX_DRAWS = 1024;
@@ -20,6 +20,19 @@ const VERTEX_BYTES = 16;
 const SKIRTS = [0, HALF, GRID];
 const VERTICES = (GRID + 1) ** 2 + 2 * SKIRTS.length * (GRID + 1);
 const QUADRANT_INDICES = 6 * HALF * HALF + 24 * HALF;
+
+/** The heights of tile z/x/y, row by row from the north-west, and the bytes of its body; undefined for an absent tile. */
+export type HeightTile = (z: number, x: number, y: number) => Promise<{ raster: Int16Array; size: number; bytes: number } | undefined>;
+
+/** The Terrarium tiles of a `{z}/{x}/{y}` template. */
+export function terrariumTiles(template: string): HeightTile {
+    return async (z, x, y) => {
+        const body = await fetchTile(template, z, x, y, requestSignal());
+        if (!body) return undefined;
+        const rgba = await imagePixels(new Uint8Array(body));
+        return { raster: heights(rgba.data, rgba.width * rgba.height), size: rgba.width, bytes: body.byteLength };
+    };
+}
 
 interface Tile {
     z: number;
@@ -32,14 +45,17 @@ interface Tile {
     /** Kept, so a new device gets the tile again without a request. */
     vertices: ArrayBuffer;
     buffer?: GPUBuffer;
-    drawn: number;
+    /** The last selection that wanted the tile. */
+    used: number;
 }
 
 /** A tile, and the bits of the quadrants that it draws: 1 north-west, 2 north-east, 4 south-west, 8 south-east. */
 export interface Draw { tile: Tile; quadrants: number }
 
-/** The eye in the frame: `above` is its height above the ground. */
-export interface Eye { east: number; north: number; z: number; above: number }
+/** Where the selection looks from: `above` is the eye's height above the ground, or the pose's height over an unknown ground. */
+export interface Place { east: number; north: number; above: number }
+/** The eye in the frame, at height z above sea level. */
+export interface Eye extends Place { z: number }
 
 /**
  * One mesh per Terrarium tile of the planner terrain. The tiles split by distance; a missing or
@@ -55,14 +71,14 @@ export class NaiveTerrain {
     private readonly boxes = new Map<string, [number, number, number, number]>();
     private wanted: { key: string; z: number; x: number; y: number; distance: number }[] = [];
     private missing = 0;
-    private frameNumber = 0;
+    private selection = 0;
     private gpu?: Gpu;
     private pipeline?: GPURenderPipeline;
     private bindGroup?: GPUBindGroup;
     private indices?: GPUBuffer;
     private uniforms?: GPUBuffer;
 
-    constructor(private readonly frame: Frame, private readonly template: string, private readonly bounds: Bounds, private readonly changed: () => void) {}
+    constructor(private readonly frame: Frame, private readonly heightTile: HeightTile, private readonly bounds: Bounds, private readonly changed: () => void) {}
 
     /** Compiles the pipeline for a device; a new device needs it again, and gets the tiles again from memory. */
     async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat): Promise<void> {
@@ -101,19 +117,20 @@ export class NaiveTerrain {
         return this.tiles.size;
     }
 
-    /** The drawn height under a point, from the finest tile that holds it; undefined before it arrives. */
+    /** The drawn height under a point, from the finest tile that knows it; undefined while no tile knows it. */
     heightAt(lon: number, lat: number): number | undefined {
         for (let z = MAX_ZOOM; z >= 0; z--) {
             const { x, y, u, v } = tileAt(lon, lat, z);
             const tile = this.tiles.get(`${z}/${x}/${y}`);
-            if (tile) return surfaceAt(tile.grid, u * GRID, v * GRID);
+            const height = tile && surfaceAt(tile.grid, u * GRID, v * GRID);
+            if (height !== undefined) return height;
         }
         return undefined;
     }
 
     /** The tiles to draw for an eye, and the requests for the tiles that it wants. */
-    select(eye: Eye): Draw[] {
-        this.frameNumber++;
+    select(eye: Place): Draw[] {
+        this.selection++;
         this.evict();
         this.wanted = [];
         this.missing = 0;
@@ -137,7 +154,6 @@ export class NaiveTerrain {
         pass.setBindGroup(0, bindGroup);
         pass.setIndexBuffer(indices, 'uint16');
         draws.forEach(({ tile, quadrants }, i) => {
-            tile.drawn = this.frameNumber;
             if (!tile.buffer) {
                 tile.buffer = gpu.buffer('terrain', tile.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
                 gpu.device.queue.writeBuffer(tile.buffer, 0, tile.vertices);
@@ -149,24 +165,30 @@ export class NaiveTerrain {
     }
 
     /** Appends the draws that cover a tile, and returns whether they cover all of it. */
-    private cover(z: number, x: number, y: number, eye: Eye, draws: Draw[]): boolean {
+    private cover(z: number, x: number, y: number, eye: Place, draws: Draw[]): boolean {
         const box = this.box(z, x, y);
         if (!box) return true;
         const key = `${z}/${x}/${y}`, tile = this.tiles.get(key);
         const distance = Math.hypot(Math.max(box[0] - eye.east, 0, eye.east - box[2]), Math.max(box[1] - eye.north, 0, eye.north - box[3]), eye.above);
-        if (!tile && !this.absent.has(key)) {
+        if (tile) tile.used = this.selection;
+        else if (!this.absent.has(key)) {
             this.missing++;
             if (!this.loading.has(key)) this.wanted.push({ key, z, x, y, distance });
         }
         let quadrants = 15;
+        const start = draws.length;
         if (z < MAX_ZOOM && distance < SPLIT * Math.max(box[2] - box[0], box[3] - box[1])) {
             quadrants = 0;
             for (let q = 0; q < 4; q++) if (!this.cover(z + 1, 2 * x + (q & 1), 2 * y + (q >> 1), eye, draws)) quadrants |= 1 << q;
             if (!quadrants) return true;
         }
-        if (!tile) return false;
-        draws.push({ tile, quadrants });
-        return true;
+        if (tile) {
+            draws.push({ tile, quadrants });
+            return true;
+        }
+        // The parent draws this whole quadrant, so the children may not draw there too.
+        draws.length = start;
+        return false;
     }
 
     /** The tile's extent in the frame, or undefined when it lies outside the bounds. */
@@ -191,14 +213,13 @@ export class NaiveTerrain {
         this.loading.add(key);
         this.requests++;
         try {
-            const body = await fetchTile(this.template, z, x, y, requestSignal());
-            if (!body) {
+            const tile = await this.heightTile(z, x, y);
+            if (!tile) {
                 this.absent.add(key);
                 return;
             }
-            this.bytes += body.byteLength;
-            const rgba = await imagePixels(new Uint8Array(body));
-            this.tiles.set(key, tileMesh(this.frame, z, x, y, heights(rgba.data, rgba.width * rgba.height), rgba.width));
+            this.bytes += tile.bytes;
+            this.tiles.set(key, { ...tileMesh(this.frame, z, x, y, tile.raster, tile.size), used: this.selection });
         } catch (error) {
             // A tile that fails stays out for this page, as an absent one.
             console.warn(`Terrain tile ${key}: ${error instanceof Error ? error.message : error}`);
@@ -210,12 +231,15 @@ export class NaiveTerrain {
         }
     }
 
-    /** Keeps the tiles of the last frame: a tile that leaves is gone before the selection. */
+    /**
+     * Keeps every tile that the last selection used, so a tile leaves before the selection and never
+     * loads again at once. A view that wants more than the pool holds keeps them all.
+     */
     private evict(): void {
         let held = this.tiles.size * VERTICES * VERTEX_BYTES;
         if (held <= MESH_BUDGET) return;
-        for (const [key, tile] of [...this.tiles].sort((a, b) => a[1].drawn - b[1].drawn)) {
-            if (held <= MESH_BUDGET || tile.drawn >= this.frameNumber - 1) break;
+        for (const [key, tile] of [...this.tiles].sort((a, b) => a[1].used - b[1].used)) {
+            if (held <= MESH_BUDGET || tile.used >= this.selection - 1) break;
             if (tile.buffer) this.gpu?.destroy('terrain', tile.buffer);
             this.tiles.delete(key);
             held -= VERTICES * VERTEX_BYTES;
@@ -257,40 +281,47 @@ export function surfaceAt(grid: Float32Array, gx: number, gy: number): number | 
 
 /** A tile's mesh: grid vertices relative to its centre, with normals, then the skirts that hang two cells below the edges. */
 export function tileMesh(frame: Frame, z: number, x: number, y: number, raster: Int16Array, size: number): Tile {
-    const centre = frame.local(...tileLonLat(x + 0.5, y + 0.5, z));
-    const grid = new Float32Array((GRID + 1) ** 2);
-    const positions = new Float64Array(3 * (GRID + 1) ** 2);
+    const n = GRID + 1, centre = frame.local(...tileLonLat(x + 0.5, y + 0.5, z));
+    const grid = new Float32Array(n * n), positions = new Float64Array(3 * n * n);
     const sample = (px: number, py: number) => raster[Math.min(size - 1, Math.max(0, py)) * size + Math.min(size - 1, Math.max(0, px))];
     for (let j = 0; j <= GRID; j++) for (let i = 0; i <= GRID; i++) {
         const k = vertex(i, j), [east, north] = frame.local(...tileLonLat(x + i / GRID, y + j / GRID, z));
         // Pixel centres: the edge of the tile lies half a pixel beyond its outer samples.
         const px = i / GRID * size - 0.5, py = j / GRID * size - 0.5;
         const x0 = Math.floor(px), y0 = Math.floor(py), fx = px - x0, fy = py - y0;
-        const taps = [sample(x0, y0), sample(x0 + 1, y0), sample(x0, y0 + 1), sample(x0 + 1, y0 + 1)];
-        grid[k] = taps.includes(UNKNOWN_HEIGHT) ? NaN
-            : (taps[0] * (1 - fx) + taps[1] * fx) * (1 - fy) + (taps[2] * (1 - fx) + taps[3] * fx) * fy;
-        positions.set([east - centre[0], north - centre[1], Number.isNaN(grid[k]) ? 0 : grid[k]], 3 * k);
+        const a = sample(x0, y0), b = sample(x0 + 1, y0), c = sample(x0, y0 + 1), d = sample(x0 + 1, y0 + 1);
+        const known = a !== UNKNOWN_HEIGHT && b !== UNKNOWN_HEIGHT && c !== UNKNOWN_HEIGHT && d !== UNKNOWN_HEIGHT;
+        grid[k] = known ? (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy : NaN;
+        positions[3 * k] = east - centre[0];
+        positions[3 * k + 1] = north - centre[1];
+        positions[3 * k + 2] = known ? grid[k] : 0;
     }
     const vertices = new ArrayBuffer(VERTICES * VERTEX_BYTES);
-    const floats = new Float32Array(vertices), normals = new Int8Array(vertices);
-    const write = (index: number, k: number, drop: number) => {
-        floats.set([positions[3 * k], positions[3 * k + 1], positions[3 * k + 2] - drop], 4 * index);
-        const at = (i: number, j: number) => 3 * vertex(Math.min(GRID, Math.max(0, i)), Math.min(GRID, Math.max(0, j)));
-        const i = k % (GRID + 1), j = Math.floor(k / (GRID + 1));
-        const [e0, e1, s0, s1] = [at(i - 1, j), at(i + 1, j), at(i, j - 1), at(i, j + 1)];
-        const tu = [0, 1, 2].map(c => positions[e1 + c] - positions[e0 + c]), tv = [0, 1, 2].map(c => positions[s1 + c] - positions[s0 + c]);
-        const n = [tv[1] * tu[2] - tv[2] * tu[1], tv[2] * tu[0] - tv[0] * tu[2], tv[0] * tu[1] - tv[1] * tu[0]];
-        const length = Math.hypot(...n) || 1;
-        normals.set([...n.map(c => Math.round(127 * c / length)), Number.isNaN(grid[k]) ? 0 : 127], 16 * index + 12);
-    };
-    for (let k = 0; k < (GRID + 1) ** 2; k++) write(k, k, 0);
+    const floats = new Float32Array(vertices), bytes = new Int8Array(vertices);
+    const at = (i: number, j: number, c: number) => positions[3 * vertex(Math.min(GRID, Math.max(0, i)), Math.min(GRID, Math.max(0, j))) + c];
+    for (let j = 0; j <= GRID; j++) for (let i = 0; i <= GRID; i++) {
+        const k = vertex(i, j), o = 16 * k;
+        floats.set(positions.subarray(3 * k, 3 * k + 3), 4 * k);
+        // The cross product of the tangents to the south and to the east.
+        const ux = at(i + 1, j, 0) - at(i - 1, j, 0), uy = at(i + 1, j, 1) - at(i - 1, j, 1), uz = at(i + 1, j, 2) - at(i - 1, j, 2);
+        const vx = at(i, j + 1, 0) - at(i, j - 1, 0), vy = at(i, j + 1, 1) - at(i, j - 1, 1), vz = at(i, j + 1, 2) - at(i, j - 1, 2);
+        const nx = vy * uz - vz * uy, ny = vz * ux - vx * uz, nz = vx * uy - vy * ux, scale = 127 / (Math.hypot(nx, ny, nz) || 1);
+        bytes[o + 12] = Math.round(nx * scale);
+        bytes[o + 13] = Math.round(ny * scale);
+        bytes[o + 14] = Math.round(nz * scale);
+        bytes[o + 15] = Number.isNaN(grid[k]) ? 0 : 127;
+    }
     const [west] = frame.local(...tileLonLat(x, y, z)), [east] = frame.local(...tileLonLat(x + 1, y, z));
     const drop = 2 * (east - west) / GRID;
+    const hang = (index: number, k: number) => {
+        bytes.copyWithin(16 * index, 16 * k, 16 * k + 16);
+        floats[4 * index + 2] -= drop;
+    };
     SKIRTS.forEach((line, s) => {
         for (let k = 0; k <= GRID; k++) {
-            write(skirt(s, k), vertex(k, line), drop);
-            write(skirt(SKIRTS.length + s, k), vertex(line, k), drop);
+            hang(skirt(s, k), vertex(k, line));
+            hang(skirt(SKIRTS.length + s, k), vertex(line, k));
         }
     });
-    return { z, x, y, centre, grid, vertices, drawn: 0 };
+    return { z, x, y, centre, grid, vertices, used: 0 };
 }

@@ -36,6 +36,8 @@ const number = (text: string | null, min: number, max: number) => {
     return Number.isFinite(value) && value >= min && value <= max ? value : undefined;
 };
 const choice = <T extends string>(text: string | null, values: readonly T[]) => values.find(value => value === text);
+/** A day that exists: `Date.parse` takes 2026-02-30 as 2 March. */
+const isDay = (text: string) => /^\d{4}-\d{2}-\d{2}$/.test(text) && new Date(Date.parse(text) || 0).toISOString().startsWith(text);
 
 /** The view of a query string; a missing or invalid value keeps the fallback's. */
 export function parseView(search: string, fallback: View): View {
@@ -48,7 +50,7 @@ export function parseView(search: string, fallback: View): View {
         heading: number(q.get('heading'), -360, 360) ?? fallback.heading,
         pitch: number(q.get('pitch'), -89, 89) ?? fallback.pitch,
         ...(alt !== undefined ? { mode: 'fly', height: alt } : eye !== undefined ? { mode: 'walk', height: eye } : { mode: fallback.mode, height: fallback.height }),
-        date: /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(date)) ? date : fallback.date,
+        date: isDay(date) ? date : fallback.date,
         time: /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : fallback.time,
         weather: choice(q.get('weather'), WEATHERS) ?? fallback.weather,
         debug: choice(q.get('debug'), DEBUG_VIEWS) ?? fallback.debug,

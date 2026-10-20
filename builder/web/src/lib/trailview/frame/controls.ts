@@ -5,8 +5,8 @@ export interface Camera {
     pose(): Pose;
     /** Sets the pose after an input. */
     moved(pose: Pose): void;
-    /** The ground under the eye, 0 m before its tile arrives. */
-    ground(): number;
+    /** The ground under the eye; undefined while no tile knows it. */
+    ground(): number | undefined;
 }
 
 const KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift']);

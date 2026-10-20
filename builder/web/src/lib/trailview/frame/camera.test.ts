@@ -20,6 +20,7 @@ describe('the camera', () => {
         expect(step.east).toBeCloseTo(6, 9);
         expect(step.north).toBeCloseTo(0, 9);
         expect(eyeAltitude(step, 1200)).toBeCloseTo(1201.6, 9);
+        expect(eyeAltitude(step, undefined)).toBeUndefined();
     });
 
     it('zooms out from a walk to at least 60 km altitude, and walks again on the ground', () => {
