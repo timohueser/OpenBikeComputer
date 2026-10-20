@@ -17,6 +17,7 @@ STEP = 1 << 6  # µdeg per pixel: about 7.1 m of latitude
 TILE = 1 << 16  # µdeg per tile side
 TILE_PX = TILE // STEP  # 1024 pixels per tile side
 NODATA = -32768
+MEAN_NODATA = -(1 << 31)  # the nodata of a mean tile, `int32` decimetres
 DEGREE = 1_000_000  # µdeg per degree
 
 # The world box, in µdeg. A tile outside it is a bug in the caller, not a coverage edge.

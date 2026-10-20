@@ -26,8 +26,8 @@ class SunIndexTest(unittest.TestCase):
                 ("maxzoom", "12"), ("bounds", "7,47,9,49"), ("attribution", "Terrain credit"),
                 ("source_sha256", '["dem"]')])
             if tiles:
-                db.executemany("INSERT INTO tiles VALUES (12,?,0,?)",
-                               [(x, sun.encode(np.full((2, 2), x, np.int16))) for x in (0, 4)])
+                db.executemany("INSERT INTO tiles VALUES (?,?,0,?)",
+                               [(z, x, sun.encode(np.full((2, 2), x, np.int16))) for z, x in ((12, 0), (12, 4), (13, 0))])
         output = root / "output"
         output.mkdir()
         return source, {"output": str(output), "layers": {"planner/terrain": {source.name: str(source)}},
@@ -78,9 +78,11 @@ class SunIndexTest(unittest.TestCase):
             mbtiles_to_pmtiles(source, expected, None)
             with expected.open("rb") as stream:
                 read = MmapSource(stream)
-                original_header, tiles = Reader(read).header(), dict(all_tiles(read))
+                original_header = Reader(read).header()
+                tiles = {tile: data for tile, data in all_tiles(read) if tile[0] < grid.FINE_ZOOM}
             packed, index = self.grid_request(root, source, request)
-            self.assertEqual(sum(name.endswith(".pmtiles") for name in index["files"]), 2)
+            self.assertIn(f"maps/tiles/terrain/{grid.FINE_ZOOM}/11-0-2047.pmtiles", index["files"])
+            self.assertEqual(sum(name.endswith(".pmtiles") for name in index["files"]), 3)
             def bake(terrain, output, *options, terrain_grid_sha256):
                 found = {}
                 for path in terrain.archives.values():
@@ -88,8 +90,9 @@ class SunIndexTest(unittest.TestCase):
                         found.update(all_tiles(MmapSource(stream)))
                 self.assertEqual(found, tiles)
                 self.assertEqual({tile: terrain.get(*tile) for tile in tiles}, tiles)
-                for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "max_zoom"):
+                for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7"):
                     self.assertEqual(terrain.header[key], original_header[key])
+                self.assertEqual(terrain.header["max_zoom"], grid.FINE_ZOOM - 1)
                 self.assertEqual(terrain_grid_sha256, hashlib.sha256(runtime.encoded(index)).hexdigest())
                 self.assertEqual(output.relative_to(Path(request["output"])).as_posix(), "sun/sun.pmtiles")
                 output.write_bytes(b"baked archive")
@@ -98,7 +101,7 @@ class SunIndexTest(unittest.TestCase):
             self.assertEqual((Path(request["output"]) / "sun/sun.pmtiles").read_bytes(), b"baked archive")
             self.assertEqual(list(Path(request["output"]).iterdir()), [Path(request["output"]) / "sun"])
             files = dict(index["files"])
-            first, second = (name for name in files if name.endswith(".pmtiles"))
+            first, second = (name for name in files if name.endswith(".pmtiles") and f"/{grid.FINE_ZOOM}/" not in name)
             index["files"][first], index["files"][second] = files[second], files[first]
             (packed / "index.json").write_bytes(runtime.encoded(index))
             request["output"] = str(root / "misplaced")
@@ -148,7 +151,7 @@ class SunIndexTest(unittest.TestCase):
                 archives.append((Path(request["output"]) / "sun/sun.pmtiles").read_bytes())
             self.assertEqual(archives[0], archives[1])
 
-    def test_grid_composition_requires_the_exact_consumed_terrain_manifest(self):
+    def test_grid_composition_binds_the_terrain_grid_and_keeps_zoom_13_out_of_the_offline_blocks(self):
         from tools import planner_grid
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -179,6 +182,12 @@ class SunIndexTest(unittest.TestCase):
             terrain["source"]["sha256"] = "b" * 64
             with self.assertRaisesRegex(ValueError, "Sun uses another terrain grid"):
                 planner_grid_index.compose(indexes, options)
+            del indexes["sun"]
+            terrain["files"] = {f"maps/tiles/terrain/{name}.pmtiles": item for name in ("11-1-2", f"{grid.FINE_ZOOM}/11-1-2")}
+            catalog = planner_grid_index.compose(indexes, options)[2]
+            self.assertEqual([block["files"] for block in catalog["map_blocks"] if block["kind"] == "terrain"],
+                             [["maps/tiles/terrain/11-1-2.pmtiles"]])
+            self.assertIn(f"maps/tiles/terrain/{grid.FINE_ZOOM}/11-1-2.pmtiles", catalog["files"])
 
     def test_missing_or_invalid_empty_terrain_is_an_error(self):
         for invalid in ("missing", "metadata", "format", "coverage", "bounds", "kind"):

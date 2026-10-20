@@ -1,0 +1,7 @@
+{
+ "name": "Etna",
+ "extends": "south-apennines",
+ "where": [[14.82, 37.6, 15.2, 37.885]],
+ "pack": "south-apennines.etna",
+ "about": "The upper flanks of Etna between the Simeto and the Alcantara valleys: black and rust lava flows of every age and cinder cones, Calabrian pine and Etna birch forest, beech on the north-east flank, Etna broom on young lava and milk-vetch cushions on the high ash slopes below the smoking summit. It needs its own bare ramp and rock for the dark lava; everything else comes from south-apennines."
+}

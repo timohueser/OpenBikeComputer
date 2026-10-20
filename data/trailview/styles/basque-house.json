@@ -1,0 +1,17 @@
+{
+ "name": "Basque house",
+ "extends": "village-house",
+ "about": "White render with the timber frame of the upper floors and the shutters painted ox red or green, under a low, wide roof of red tile: the Basque Country and Béarn.",
+ "pitch": [20, 26],
+ "eave": 0.7,
+ "verge": 0.9,
+ "timber": "frame",
+ "palette": {
+  "render": ["#f6f4ee", "#f2f0e8", "#f4f1e7"],
+  "wood": ["#8e2a20", "#9a3022", "#86291f", "#3f6b3c"],
+  "roof": ["#b0583a", "#a24f36", "#b8653f"],
+  "door": ["#8e2a20", "#3f6b3c", "#5e4030"],
+  "plinth": "#a39e94",
+  "chimney": "#f2f0e8"
+ }
+}

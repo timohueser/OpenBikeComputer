@@ -1,0 +1,8 @@
+{
+ "name": "Madeira evergreen forests",
+ "ecoregion": 668,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "madeira",
+ "about": "A steep volcanic island under the trade-wind cloud: laurel forest fills the deep valleys of the north from the sea to about 1300 m, heath, broom and red tuff cover the jagged central ridge of Pico do Arieiro and Pico Ruivo above a sea of cloud, open moor and wind turbines lie on the Paul da Serra plateau, maritime pine and eucalyptus stand on the mid slopes, and terraces of bananas and vines with white and pastel houses under orange tile roofs fall to sheer sea cliffs on the south coast and in the northern valleys. No split: the island is 57 by 22 km and every panorama sees both sides and one sky, so haze, weather and grade stay one; the wet north and the drier south differ in Sentinel-2 colour and the seasonal NDVI, laurel forest, heath belt and bare summits follow the tree elevation bands, the plateau moor and the sea cliffs follow WorldCover and the cliffs rule, and the whole region is one subdivision (pt-30) for its houses. The trade-wind cloud belt at about 800 to 1600 m is a height question for the weather, not an area: try mistTop and the cloud base first, then a height rule. Porto Santo lies outside the ecoregion outline."
+}

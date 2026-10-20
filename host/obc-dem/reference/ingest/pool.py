@@ -1,7 +1,8 @@
 """Read a source raster, and pool its pixel centres onto the lattice.
 
 This is where every adapter's rasters become the same thing: float32 heights with one void
-convention, placed by the contract's rule, then `int16` metres.
+convention, placed by the contract's rule, then `int16` metres for the maximum and `int32`
+decimetres for the mean.
 """
 
 from pathlib import Path
@@ -13,7 +14,7 @@ from rasterio.errors import RasterioIOError
 from rasterio.transform import Affine
 from rasterio.warp import transform_bounds
 
-from .lattice import DEGREE, NODATA, Refuse, SNAP, WGS84, Window, pixel_index
+from .lattice import DEGREE, MEAN_NODATA, NODATA, Refuse, SNAP, WGS84, Window, pixel_index
 
 
 # Absence while pooling. Every real height is far above it, so a lattice pixel that no
@@ -112,19 +113,23 @@ def lattice_indices(transform: Affine, src_crs, rows, cols, to_wgs84):
 def pool_onto_lattice(values, src_transform, src_crs, window: Window):
     """The contract's pooling rule, done directly.
 
-    Every source pixel goes to the one lattice pixel that contains its centre, and a
-    lattice pixel keeps the maximum of the pixels that reached it. `Resampling.max` cannot
-    do this: it pools by area overlap, so a source pixel that merely touches a lattice
-    pixel raises it. Over the Engelberg box that read 51.7 % of the pixels too high and
-    none too low, by up to 286 m, it filled 2 659 pixels no source centre reached, and it
-    spread a one-pixel tower over two to four archive pixels.
+    Every source pixel goes to the one lattice pixel that contains its centre. A lattice pixel
+    keeps the maximum of the pixels that reached it, and their sum and count for the mean.
+    `Resampling.max` cannot do this: it pools by area overlap, so a source pixel that merely
+    touches a lattice pixel raises it. Over the Engelberg box that read 51.7 % of the pixels
+    too high and none too low, by up to 286 m, it filled 2 659 pixels no source centre
+    reached, and it spread a one-pixel tower over two to four archive pixels.
 
     A centre is a point, so a rotated or sheared source needs no special case, and a source
     coarser than the lattice simply reaches fewer lattice pixels: the pooling never invents
-    ground where no centre landed.
+    ground where no centre landed. Returns the maximum (`VOID` where no centre landed), the
+    sum and the count, each in the shape of `window`, and the centres outside the window.
     """
 
-    dest = np.full(window.rows * window.cols, VOID, dtype="float32")
+    size = window.rows * window.cols
+    dest = np.full(size, VOID, dtype="float32")
+    total = np.zeros(size, dtype="float64")
+    count = np.zeros(size, dtype="int64")
     to_wgs84 = Transformer.from_crs(src_crs, WGS84, always_xy=True)
     top = window.row0 + window.rows
     dropped = 0
@@ -138,8 +143,12 @@ def pool_onto_lattice(values, src_transform, src_crs, window: Window):
                   & (col >= window.col0) & (col < window.col0 + window.cols))
         dropped += int(rows.size - inside.sum())
         flat = (top - 1 - row[inside]) * window.cols + (col[inside] - window.col0)
-        np.maximum.at(dest, flat, band[rows[inside], cols[inside]])
-    return dest.reshape(window.rows, window.cols), dropped
+        heights = band[rows[inside], cols[inside]]
+        np.maximum.at(dest, flat, heights)
+        total += np.bincount(flat, weights=heights, minlength=size)
+        count += np.bincount(flat, minlength=size)
+    shape = (window.rows, window.cols)
+    return dest.reshape(shape), total.reshape(shape), count.reshape(shape), dropped
 
 
 def to_int16(values):
@@ -150,4 +159,15 @@ def to_int16(values):
     rounded = np.clip(np.sign(finite) * np.floor(np.abs(finite) + 0.5), NODATA + 1, 32767)
     out = np.full(values.shape, NODATA, dtype="int16")
     out[valid] = rounded[valid].astype("int16")
+    return out
+
+
+def to_decimetres(total, count):
+    """The mean as `int32` decimetres, rounded half away from zero, with `MEAN_NODATA` where
+    no centre landed. A decimetre is the step of the terrain that reads it."""
+
+    valid = count > 0
+    mean = np.where(valid, total, 0.0) / np.maximum(count, 1) * 10.0
+    out = np.full(total.shape, MEAN_NODATA, dtype="int32")
+    out[valid] = (np.sign(mean) * np.floor(np.abs(mean) + 0.5))[valid].astype("int32")
     return out

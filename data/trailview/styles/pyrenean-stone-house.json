@@ -1,0 +1,14 @@
+{
+ "name": "Pyrenean stone house",
+ "extends": "slate-stone-house",
+ "about": "Warm brown and ochre rubble stone under dark slate, with wooden shutters and balconies painted green, ox red or blue: Torla and the valleys of Aragon and Catalonia.",
+ "balconies": true,
+ "palette": {
+  "render": ["#937b62", "#a08668", "#86715c", "#a68d6f", "#8c7663"],
+  "roof": ["#3f4247", "#4a4d52", "#37393d"],
+  "shutter": ["#4f7d4a", "#8a3b2b", "#3f6a9c", "#4f7d4a"],
+  "door": ["#5a4030", "#6e3a2c", "#4f7d4a"],
+  "plinth": "#6e6156",
+  "chimney": "#937b62"
+ }
+}

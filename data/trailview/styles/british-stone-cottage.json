@@ -1,0 +1,11 @@
+{
+ "name": "British stone cottage",
+ "extends": "cottage",
+ "about": "Grey rubble stone or white render under a slate roof, with small windows, no shutters and a stack at each gable: the hill farms and villages of Wales, the Lakes, the Dales, the Southern Uplands and Dartmoor.",
+ "palette": {
+  "render": ["#8b8880", "#7b7b76", "#9c968a", "#a29d92", "#868278", "#f2f0ea", "#ebe8de"],
+  "door": ["#2f4a3a", "#7a2c2a", "#2f3f5a", "#34322f", "#6b4e36"],
+  "plinth": "#615f59",
+  "chimney": "#8b8880"
+ }
+}

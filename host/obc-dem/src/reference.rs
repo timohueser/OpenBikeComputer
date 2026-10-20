@@ -1,5 +1,6 @@
-//! The reference archive: max-pooled bare-earth height on the OBCT lattice, as `int16` GeoTIFF
-//! tiles that a bake streams one at a time.
+//! The reference archive: pooled bare-earth height on the OBCT lattice, as GeoTIFF tiles that a
+//! bake streams one at a time. A max archive holds `int16` metres; a mean archive, the `mean/`
+//! part of a prepared version, holds `int32` decimetres.
 //!
 //! A country-sized reference does not fit in memory, so the archive is addressed rather than
 //! loaded. Its lattice is the OBCT lattice at `2^6` µdeg (≈ 7.1 × 4.9 m at 47 °N) and its tiles are
@@ -48,12 +49,14 @@ pub const STEP_LOG2: u8 = 6;
 pub const TILE_LOG2: u8 = 16;
 /// Pixels along one tile edge.
 pub const TILE_PIXELS: usize = 1 << (TILE_LOG2 - STEP_LOG2);
-/// "No source pixel reached this square" — the archive's one nodata value.
+/// "No source pixel reached this square" — the one nodata value of a max archive.
 pub const NO_PIXEL: i16 = i16::MIN;
+/// The one nodata value of a mean archive.
+const NO_MEAN: i32 = i32::MIN;
 
-const STEP: i64 = 1 << STEP_LOG2;
-const TILE_UDEG: i64 = 1 << TILE_LOG2;
-const ORIGIN: i64 = GRID_ORIGIN as i64;
+pub(crate) const STEP: i64 = 1 << STEP_LOG2;
+pub(crate) const TILE_UDEG: i64 = 1 << TILE_LOG2;
+pub(crate) const ORIGIN: i64 = GRID_ORIGIN as i64;
 /// Tiles along one axis of the world box, so a tile id is bounded before it becomes a path.
 const TILES_PER_AXIS: i64 = WORLD_SIDE as i64 >> TILE_LOG2;
 /// Transform tolerance in degrees, as the tile contract states it. A microdegree is `1e-6`, so this
@@ -94,14 +97,24 @@ fn tile_span(lo: i64, hi: i64) -> std::ops::Range<u32> {
     first as u32..(last + 1).max(first) as u32
 }
 
-/// One archive tile, decoded: 1024 × 1024 whole metres with `r` counting north.
+/// What a pixel of an archive is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pool {
+    /// The maximum of the source pixel centres in the square, as `int16` metres.
+    Max,
+    /// Their mean, as `int32` decimetres.
+    Mean,
+}
+
+/// One archive tile, decoded: 1024 × 1024 metres with `r` counting north, NaN where no source
+/// pixel reached the square.
 ///
 /// The GeoTIFF stores rows north-up; the flip happens here, once, exactly as `DemTile` does it, so
 /// no index downstream of this module has to decide which way is north.
 pub struct ReferenceTile {
     ti: u32,
     tj: u32,
-    pixels: Vec<i16>,
+    pixels: Vec<f32>,
 }
 
 impl std::fmt::Debug for ReferenceTile {
@@ -119,7 +132,7 @@ impl ReferenceTile {
 
     /// Every pixel of this tile that has a height and whose centre lies in `window`, as
     /// `(lat, lon, metres)` in µdeg, row-major with `r` counting north.
-    pub fn centres_in(&self, window: Window, mut visit: impl FnMut(i64, i64, i16)) {
+    pub fn centres_in(&self, window: Window, mut visit: impl FnMut(i64, i64, f32)) {
         let (lat0, lon0) = self.origin_udeg();
         let rows = centre_span(window.lat_lo, window.lat_hi, lat0);
         let cols = centre_span(window.lon_lo, window.lon_hi, lon0);
@@ -128,15 +141,20 @@ impl ReferenceTile {
             let row = &self.pixels[r * TILE_PIXELS..(r + 1) * TILE_PIXELS];
             for c in cols.clone() {
                 let height = row[c];
-                if height != NO_PIXEL {
+                if !height.is_nan() {
                     visit(lat, lon0 + c as i64 * STEP + STEP / 2, height);
                 }
             }
         }
     }
 
+    /// The metres of pixel `(r, c)`, `r` counting north, or `None` where no source pixel reached it.
+    pub fn height(&self, r: usize, c: usize) -> Option<f32> {
+        Some(self.pixels[r * TILE_PIXELS + c]).filter(|height| !height.is_nan())
+    }
+
     /// Decode and validate the tile at `path`, which must be the tile the id names.
-    fn open(path: &Path, ti: u32, tj: u32) -> Result<ReferenceTile, String> {
+    fn open(path: &Path, ti: u32, tj: u32, pool: Pool) -> Result<ReferenceTile, String> {
         let name = || path.display().to_string();
         let file = File::open(path).map_err(|e| format!("{}: {e}", name()))?;
         // The `tiff` crate's default limits allow a 256 MiB decoding buffer; a tile is 2 MiB, so the
@@ -154,21 +172,32 @@ impl ReferenceTile {
             }
         }
         expect_lattice(&mut dec, ti, tj, &name)?;
+        let nodata = match pool {
+            Pool::Max => f64::from(NO_PIXEL),
+            Pool::Mean => f64::from(NO_MEAN),
+        };
         if let Ok(text) = dec.get_tag_ascii_string(Tag::GdalNodata) {
             let declared = text.trim().trim_end_matches('\0').parse::<f64>().ok();
-            if declared != Some(f64::from(NO_PIXEL)) {
-                return Err(format!("{}: nodata {text:?} — the archive's nodata is {NO_PIXEL}", name()));
+            if declared != Some(nodata) {
+                return Err(format!("{}: nodata {text:?} — the archive's nodata is {nodata}", name()));
             }
         }
 
-        let north_up = match dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))? {
-            DecodingResult::I16(values) => values,
-            _ => return Err(format!("{}: not int16 — the archive stores whole metres as int16", name())),
+        let north_up: Vec<f32> = match (pool, dec.read_image().map_err(|e| format!("{}: decode failed ({e})", name()))?)
+        {
+            (Pool::Max, DecodingResult::I16(values)) => {
+                values.into_iter().map(|v| if v == NO_PIXEL { f32::NAN } else { f32::from(v) }).collect()
+            }
+            (Pool::Mean, DecodingResult::I32(values)) => {
+                values.into_iter().map(|v| if v == NO_MEAN { f32::NAN } else { v as f32 / 10.0 }).collect()
+            }
+            (Pool::Max, _) => return Err(format!("{}: not int16 — a max archive stores whole metres", name())),
+            (Pool::Mean, _) => return Err(format!("{}: not int32 — a mean archive stores decimetres", name())),
         };
         if north_up.len() != TILE_PIXELS * TILE_PIXELS {
             return Err(format!("{}: decoded {} samples for a {TILE_PIXELS}² raster", name(), north_up.len()));
         }
-        let mut pixels = vec![0i16; north_up.len()];
+        let mut pixels = vec![0f32; north_up.len()];
         for r in 0..TILE_PIXELS {
             let src = &north_up[(TILE_PIXELS - 1 - r) * TILE_PIXELS..(TILE_PIXELS - r) * TILE_PIXELS];
             pixels[r * TILE_PIXELS..(r + 1) * TILE_PIXELS].copy_from_slice(src);
@@ -249,6 +278,7 @@ struct IndexedTile {
 /// An archive root, or a mirror of one: its `index.json` read, its tiles left on disk.
 pub struct ReferenceArchive {
     root: PathBuf,
+    pool: Pool,
     /// Every tile the index names.
     tiles: BTreeMap<(u32, u32), IndexedTile>,
     /// Every source the index declares, sorted by key.
@@ -289,6 +319,12 @@ impl ReferenceArchive {
                 None => return Err(format!("{}: no {field} — not a reference archive index", name())),
             }
         }
+        // An index written before the mean pool names no pool.
+        let pool = match index.get("pool").map(|pool| pool.as_str()) {
+            None | Some(Some("max")) => Pool::Max,
+            Some(Some("mean")) => Pool::Mean,
+            Some(other) => return Err(format!("{}: pool {other:?} — this reader reads max and mean", name())),
+        };
         let tiles = index
             .get("tiles")
             .and_then(serde_json::Value::as_object)
@@ -326,7 +362,11 @@ impl ReferenceArchive {
             }
             held.insert(key, IndexedTile { sources, sha256: sha256.to_string() });
         }
-        Ok(ReferenceArchive { root: root.to_path_buf(), tiles: held, credits })
+        Ok(ReferenceArchive { root: root.to_path_buf(), pool, tiles: held, credits })
+    }
+
+    pub fn pool(&self) -> Pool {
+        self.pool
     }
 
     /// Tiles the index names.
@@ -378,7 +418,7 @@ impl ReferenceArchive {
         if !path.is_file() {
             return Ok(TileLookup::Absent);
         }
-        Ok(TileLookup::Held { tile: ReferenceTile::open(&path, ti, tj)?, sources: &tile.sources })
+        Ok(TileLookup::Held { tile: ReferenceTile::open(&path, ti, tj, self.pool)?, sources: &tile.sources })
     }
 }
 

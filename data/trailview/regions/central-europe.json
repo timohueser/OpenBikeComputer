@@ -1,0 +1,8 @@
+{
+ "name": "Central European mixed forests",
+ "ecoregion": 654,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "central-europe",
+ "about": "A low, rolling plain from the Elbe to the Dnieper: Scots pine on the sands, oak, hornbeam and birch woods, lakes and wide fields, fens and flood meadows in Polesia, and pale limestone valleys in the south, from the Saale and the Polish Jura to the Dniester and the Codri. No split: the region stays below 700 m and has no massif, island side or coast strip; its sand plains, lake districts, fens and dry limestone slopes differ in colour, trees and houses, which Sentinel-2 colour, the tree elevation bands and the house style by country already carry."
+}

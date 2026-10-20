@@ -1,0 +1,32 @@
+{
+ "name": "Iberian sclerophyllous and semi-deciduous forests",
+ "extends": "base",
+ "about": "Holm oak above all, in dehesas, montados and scrub; cork oak in the west, Portuguese and Pyrenean oak on the cooler slopes, olives in the south, ash in the wet hollows; Aleppo, stone and maritime pines; gum rockrose, retama, prickly juniper and garrigue in the scrub, albardín tussocks on the bare steppe; Merino sheep on the stubble, Iberian pigs and cattle in the dehesa, goats in the sierras; whitewashed village houses under low tiled roofs.",
+ "trees": {
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1800], "weight": 6 },
+  "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
+  "portuguese-oak": { "model": "european-beech", "latin": "Quercus faginea", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 1 },
+  "pyrenean-oak": { "model": "european-beech", "latin": "Quercus pyrenaica", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1600], "weight": 1 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 2 },
+  "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1800], "weight": 3 },
+  "gum-rockrose": { "model": "garrigue", "latin": "Cistus ladanifer", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
+  "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1500], "weight": 1 }
+ },
+ "ground": {
+  "garrigue": { "share": 0.1 },
+  "albardin": { "model": "esparto", "latin": "Lygeum spartum", "on": ["bare"], "height": [0.3, 0.6], "share": 0.3 }
+ },
+ "herds": {
+  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
+ },
+ "orchard": "holm-oak",
+ "style": "village-house"
+}

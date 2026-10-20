@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 
 from . import planner_grid_index as index, planner_offline as offline, planner_runtime as runtime
+from . import planner_trailview_features as trailview_features
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
 
@@ -44,7 +45,10 @@ def archive(path, kind, vector=None):
         read = MmapSource(stream)
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
-        expected = TileType.WEBP if kind in {'terrain', 'sun', 'trailview-canopy'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
+        expected = TileType.UNKNOWN if kind in {'snow', 'climate', 'trailview-features'} else TileType.WEBP if kind in {'terrain', 'sun'} or kind.startswith('trailview-') else TileType.MVT
+        # A colour quarter of TrailView is WebP or AVIF, as its variant says: specs/trailview-tiles.md.
+        if kind.startswith('trailview-colour-q') and header['tile_type'] == TileType.AVIF:
+            expected = TileType.AVIF
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
         if expected == TileType.MVT and vector is None:
@@ -58,10 +62,12 @@ def archive(path, kind, vector=None):
                 data = gzip.decompress(data)
             elif header['tile_compression'] != Compression.NONE:
                 raise ValueError('Unsupported tile compression')
-            if expected == TileType.WEBP:
+            if expected in (TileType.WEBP, TileType.AVIF):
                 pixels(data)
             elif expected == TileType.MVT:
                 vector(data)
+            elif kind == 'trailview-features':
+                trailview_features.decode(data)
             elif kind == 'snow':
                 seasons = metadata.get('seasons')
                 if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:

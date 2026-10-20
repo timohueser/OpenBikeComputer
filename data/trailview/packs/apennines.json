@@ -1,0 +1,42 @@
+{
+ "name": "Apennine deciduous montane forests",
+ "extends": "base",
+ "about": "Beech forest with silver fir, sycamore, Italian maple and whitebeam from about 900 to 1800 m; Turkey and downy oak, hop hornbeam, manna ash and sweet chestnut below it; black pine plantings on the slopes and Norway spruce plantings in the north; mountain pine on the Maiella, dwarf juniper above the trees, and common juniper, hawthorn, hazel and broom on the pastures; rush-leaved moor-grass on the limestone slopes, mat-grass and bilberry on the sandstone ridge, alpine flowers, ferns and bracken; large sheep flocks, white Marchigiana cattle, free-ranging horses, goats, and Apennine chamois on the high rock; stone villages with low terracotta roofs.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 8 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [900, 1700], "weight": 1.5 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [1000, 1700], "weight": 0.5 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1600], "weight": 2 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1700], "weight": 1 },
+  "italian-maple": { "model": "sycamore-maple", "latin": "Acer opalus", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1600], "weight": 1 },
+  "whitebeam": { "model": "hawthorn", "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 0.5 },
+  "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1300], "weight": 2 },
+  "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 1 },
+  "turkey-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1200], "weight": 2 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1100], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 1.5 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [600, 1900], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2500], "weight": 3 },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2400], "weight": 1 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1400], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1000], "weight": 1 },
+  "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 }
+ },
+ "ground": {
+  "alpine-flowers": {},
+  "bilberry": {},
+  "fern": {},
+  "bracken": {},
+  "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 },
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Marchigiana)", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "pyrenean-chamois": { "model": "goat", "latin": "Rupicapra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse", "rough-grass", "wet-grassland", "grassland"] }
+ },
+ "style": { "it-45": "slate-stone-house", "it-52": "slate-stone-house", "*": "stone-house" }
+}

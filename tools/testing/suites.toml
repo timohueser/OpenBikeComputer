@@ -277,6 +277,40 @@ triggers = [
   "builder/web/vite.config.ts",
 ]
 
+# Every WGSL file of the TrailView engine through naga, without a GPU.
+[[suite]]
+id = "web.trailview-wgsl"
+route = "ordinary"
+command = "npm run check:wgsl --prefix builder/web"
+jobs = ["web"]
+platforms = ["linux", "macos"]
+triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/package.json"]
+
+# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one frame with no
+# WebGPU error, a lost device that recovers, and the notice without WebGPU.
+[[suite]]
+id = "web.trailview-smoke"
+route = "ordinary"
+command = "npm run test:trailview --prefix builder/web/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/web/src/lib/trailview/**",
+  "builder/web/src/lib/planner/config.ts",
+  "builder/web/src/lib/planner/release.ts",
+  "builder/web/src/lib/planner/layers/archive.ts",
+  "builder/web/src/lib/planner/layers/mercator.ts",
+  "builder/web/src/lib/planner/layers/sun.ts",
+  "builder/web/src/lib/planner/layers/terrain.ts",
+  "builder/web/src/trailview.ts",
+  "builder/web/trailview.html",
+  "builder/web/tests/browser/trailview/**",
+  "builder/web/tests/browser/playwright.trailview.config.js",
+  "builder/web/tests/browser/package.json",
+  "builder/web/package.json",
+  "builder/web/vite.config.ts",
+]
+
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.
 # The `guards` job is unconditional, so they also run on every pull request regardless.
@@ -296,6 +330,9 @@ triggers = [
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
+  # test_planner_trailview_features.py validates the kind table and reads the shared vectors.
+  "data/trailview/kinds.json",
+  "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
   "builder/web/src/App.svelte",
@@ -334,6 +371,17 @@ command = "rm -rf .artifacts/python/dem-reference && uv run --locked --group ter
 jobs = ["test"]
 triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "uv.lock",
   "data/sources.toml", "tools/data_registry.py", "tools/step_request.py"]
+
+# The TrailView tools need rasterio, pyogrio and osmium, which no other suite wants, so the suite runs
+# under the locked uv group `trailview`. The tests write their own rasters and read the ruleset of
+# data/trailview/: no service and no captured fixture.
+[[suite]]
+id = "python.trailview"
+route = "ordinary"
+command = "rm -rf .artifacts/python/trailview && uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview"
+jobs = ["test"]
+triggers = ["tools/trailview/**", "data/trailview/**", "tools/planner_geo.py", "tools/step_pool.py", "tools/step_request.py",
+  "pyproject.toml", "uv.lock"]
 
 [[suite]]
 id = "python.builder"

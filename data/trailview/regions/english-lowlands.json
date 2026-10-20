@@ -1,0 +1,8 @@
+{
+ "name": "English Lowlands beech forests",
+ "ecoregion": 663,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "english-lowlands",
+ "about": "Southern England from the Wye and the Cotswolds over the Chilterns, the Downs and the Weald to Kent, Essex and Suffolk: chalk and limestone downs with beech hangers and sheep, wide arable fields with hedgerow oaks, wooded clay vales, sandy heaths of gorse, heather, birch and pine, river meadows with willows, white chalk cliffs on the Channel, and villages of brick and tile, flint, Cotswold stone and timber frame. No split: the land stays below 430 m, and one haze, weather and grade fit it from the Wye to the Channel coast; chalk, clay, heath and marsh differ in colour and trees, which Sentinel-2 colour, the NDVI ramps, the tree bands and the coast rules carry, and the building materials change by county, which the house style by subdivision can carry."
+}

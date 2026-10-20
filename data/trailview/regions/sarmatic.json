@@ -1,0 +1,8 @@
+{
+ "name": "Sarmatic mixed forests",
+ "ecoregion": 679,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "sarmatic",
+ "about": "Low hemiboreal moraine country from the Oslo fjord and the Agder coast over southern Sweden, Åland and the Turku archipelago to Estonia, Latvia, Aukštaitija, northern Belarus and western Russia as far as the Kama: spruce and pine forest mixed with birch, aspen, alder, oak and lime, many lakes and raised bogs, small fields and pastures, red wooden farms in Scandinavia and log villages in the Baltic states and Russia, granite skerries on the coasts, and long gravel roads. No split: the land stays below 500 m and has no massif, island side or coast strip that needs its own haze, weather or grade, and the climate grows more continental from west to east only gradually; Sentinel-2 colour with the NDVI ramps tells forest, bog, field and lake apart, the tree bands and the mixed leaf place spruce, pine and the broadleaves, windswept_m keeps the outer skerries bare, and the change from Scandinavian to Baltic and Russian houses is culture by country."
+}

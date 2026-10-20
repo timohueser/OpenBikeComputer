@@ -2,14 +2,14 @@
 //! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
-//! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-canopy`
-//! are Python steps.
+//! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-*` are
+//! Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
 //! The release document, the public files and the grid indexes are the files that a client finds
 //! by name; `planner/catalog` points at them. `data/planner.toml` holds the options that are the
 //! same for each region.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
@@ -19,20 +19,23 @@ use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
+use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
+use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::device::{invalid, text, TILE_LIST};
+use crate::device::{invalid, text, Models, TILE_LIST};
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 use crate::{functions, python};
 
 /// The offline Protomaps map, with its fonts and sprites.
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
-/// The terrain of the maps.
-pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 1, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
+/// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
+/// `specs/planner-release.md`.
+pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -45,6 +48,16 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
+/// Its format is `features_format` of `specs/trailview-features.md`.
+pub static PLANNER_TRAILVIEW_FEATURES: Layer = whole("planner/trailview-features", 1, &[&WEB_PLANNER]);
+/// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
+pub static PLANNER_TRAILVIEW_RULES: Layer =
+    whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
+/// The TrailView material, lithology and region tiles. Its format is `trailview_format` of
+/// `specs/trailview-tiles.md`.
+pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 1, &[&WEB_PLANNER]);
+/// The TrailView colour tiles. Its format is `trailview_format` of `specs/trailview-tiles.md`.
+pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1, &[&WEB_PLANNER]);
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1, &[&WEB_PLANNER]);
 /// The offline catalog, the release document, the joined fonts of every planner layer and the
@@ -52,6 +65,8 @@ pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1
 /// downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer = whole("planner/index", 3, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]);
+
+const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static Reader]) -> Layer {
     Layer { name, shape: Shape::Whole, format, revision: 1, readers }
@@ -74,6 +89,14 @@ struct Config {
     climate: Climate,
     snow: Snow,
     sun: Sun,
+    trailview: TrailView,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrailView {
+    colour_year: u16,
+    colour: String,
 }
 
 #[derive(Deserialize)]
@@ -133,7 +156,16 @@ impl Product for Planner {
     }
 
     fn optional(&self) -> &'static [&'static str] {
-        &["climate", "snow", "sun", "trailview-canopy"]
+        &[
+            "climate",
+            "snow",
+            "sun",
+            "trailview-features",
+            "trailview-rules",
+            "trailview-ground",
+            "trailview-colour",
+            "trailview-canopy",
+        ]
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -215,7 +247,7 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            osmium.map_err(Unplanned::Invalid)?;
+            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
         let mut reads = vec![Input::step(osm.name.clone())];
@@ -237,10 +269,14 @@ impl Planner {
             ("tools.planner_basemap", None),
             &["basemap.pmtiles"],
         );
+        let reference = reference(inputs, store, coverage, &mut wanted)?;
         let terrain = Step {
             layer: &PLANNER_TERRAIN,
             name: "planner/terrain".into(),
-            inputs: tiles(coverage, &land, &glo30),
+            inputs: tiles(coverage, &land, &glo30)
+                .into_iter()
+                .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .collect(),
             options: json!({"bounds": coverage, "attribution": attribution(GLO30)}),
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(&functions::PLANNER_TERRAIN),
@@ -361,6 +397,7 @@ impl Planner {
         );
         let mut steps = source_steps;
         steps.extend(content.steps);
+        steps.extend(reference);
         steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
         ]);
@@ -396,10 +433,37 @@ impl Planner {
                 &["sun"],
             ));
         }
+        if on("trailview-features") {
+            osmium.map_err(Unplanned::Invalid)?;
+            let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
+            steps.push(python(
+                &PLANNER_TRAILVIEW_FEATURES,
+                "planner/trailview-features",
+                vec![Input::step("planner/osm")],
+                json!({"bounds": bounds, "kinds": kinds, "attribution": attribution("osm-planet")}),
+                ("tools.planner_trailview_features", Some("planner-maps")),
+                &["trailview-features.pmtiles"],
+            ));
+        }
+        steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
             steps.extend(trailview_canopy(inputs, store, bounds, &mut wanted)?);
         }
-        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun", "trailview-canopy"];
+        let maps = [
+            "basemap",
+            "places",
+            "terrain",
+            "overlays",
+            "climate",
+            "snow",
+            "sun",
+            "trailview-features",
+            "trailview-material",
+            "trailview-lithology",
+            "trailview-region",
+            "trailview-canopy",
+        ];
         let grids = steps
             .iter_mut()
             .filter_map(|step| {
@@ -527,6 +591,37 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
+/// The mean archive of the national models whose tiles meet `bounds`, merged best first into one
+/// archive: the step `planner/reference`. `None` when no model has a tile there.
+fn reference(
+    inputs: &Inputs,
+    store: &Store,
+    [west, south, east, north]: [f64; 4],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    let udeg = |degrees: f64| (degrees * 1e6) as i64;
+    let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
+    let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
+    let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
+    // Without a layer, the read writes no note and reads no polygon.
+    let models = Models { tiles: &tiles, pool: "mean/", layer: None };
+    let Some((reads, models)) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
+        return Ok(None);
+    };
+    let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
+    Ok(Some(Step {
+        client: Client::None,
+        ..python(
+            &PLANNER_TERRAIN,
+            "planner/reference",
+            reads,
+            json!({"models": models, "tiles": tiles, "pool": "mean"}),
+            ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
+            &["reference"],
+        )
+    }))
+}
+
 /// The GLO-30 tiles of `bounds` that the tile list names, as an input. A square that it does not
 /// name is sea, and `bounds` at sea reads no snapshot.
 fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
@@ -639,6 +734,165 @@ fn trailview_canopy(
     )))
 }
 
+/// The TrailView layers of `bounds`, as `specs/trailview-tiles.md` defines them. The ruleset step is the
+/// one reader of `data/trailview/`: its option `ruleset` is the digest of the files, and the ground
+/// steps read its outputs, so the region ids of the tiles are those of `rules.json`.
+fn trailview(
+    root: &Path,
+    inputs: &Inputs,
+    store: &Store,
+    on: &dyn Fn(&str) -> bool,
+    bounds: [f64; 4],
+    config: &TrailView,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Vec<Step>, Unplanned> {
+    let mut steps = Vec::new();
+    let tool = |module| (module, Some("trailview"));
+    if on("trailview-ground") && !on("trailview-rules") {
+        return Err(invalid("the layer trailview-ground reads trailview-rules: name both".into()));
+    }
+    if on("trailview-rules") {
+        let ruleset = json!({"ruleset": ruleset(root).map_err(Unplanned::Failed)?});
+        let outputs = ["rules.json", "regions.json", "materials.json"];
+        let rules = python(
+            &PLANNER_TRAILVIEW_RULES,
+            "planner/trailview-rules",
+            Vec::new(),
+            ruleset,
+            tool("tools.trailview.rules"),
+            &outputs,
+        );
+        steps.push(Step { client: Client::None, ..rules });
+        steps.push(Step {
+            client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+            ..python(
+                &PLANNER_TRAILVIEW_RULES,
+                "planner/trailview-rules/grid",
+                vec![layer_files("planner/trailview-rules", &["rules.json"])],
+                json!({"kind": "trailview-rules"}),
+                ("tools.planner_grid_pack", None),
+                &["objects", "index.json"],
+            )
+        });
+    }
+    let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
+    let year = config.colour_year.to_string();
+    let mosaics = vec![bbox.clone(), ("year".to_string(), year.clone())];
+    let credit = |sources: &[&str]| {
+        sources.iter().map(|id| attribution(id).replace("{year}", &year)).collect::<Vec<_>>().join("; ")
+    };
+    let grid = match on("trailview-ground") {
+        true => crate::device::text(inputs, store, WORLDCOVER_GRID, &[], wanted)?,
+        false => None,
+    };
+    if let Some(grid) = grid {
+        let rules = |file: &str| layer_files("planner/trailview-rules", &[file]);
+        let tiles = worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
+        let ground = |layer: &str, reads: Vec<Input>, text: String| {
+            let options = json!({"layer": layer, "bounds": bounds, "attribution": text});
+            let output = format!("{layer}.pmtiles");
+            python(
+                &PLANNER_TRAILVIEW_GROUND,
+                &format!("planner/trailview-{layer}"),
+                reads,
+                options,
+                tool("tools.trailview.ground"),
+                &[&output],
+            )
+        };
+        let material = vec![
+            rules("materials.json"),
+            layer_files("planner/osm", &["osm.pbf"]),
+            snapshot(inputs, store, "esa-worldcover", tiles, wanted)?,
+            snapshot(inputs, store, "corine-land-cover", vec![bbox.clone()], wanted)?,
+            snapshot(inputs, store, "sentinel-2-mosaics", mosaics.clone(), wanted)?,
+        ];
+        let sources = ["esa-worldcover", "sentinel-2-mosaics", "corine-land-cover", "osm-planet"];
+        steps.push(ground("material", material, credit(&sources)));
+        let maps = ["egdi-geology", "igme5000"];
+        let lithology = std::iter::once(Ok(rules("materials.json")))
+            .chain(maps.map(|source| snapshot(inputs, store, source, Vec::new(), wanted)))
+            .collect::<Result<_, _>>()?;
+        steps.push(ground("lithology", lithology, credit(&maps)));
+        steps.push(ground("region", vec![rules("regions.json")], credit(&["resolve-ecoregions", "natural-earth"])));
+    }
+    if on("trailview-colour") {
+        let archives = ["q1", "q2", "q3", "q4", "ndvimax"];
+        let outputs = archives.map(|archive| format!("{archive}.pmtiles"));
+        let colour = python(
+            &PLANNER_TRAILVIEW_COLOUR,
+            "planner/trailview-colour",
+            vec![snapshot(inputs, store, "sentinel-2-mosaics", mosaics, wanted)?],
+            json!({"bounds": bounds, "year": config.colour_year, "variant": config.colour,
+                   "attribution": credit(&["sentinel-2-mosaics"])}),
+            tool("tools.trailview.colour"),
+            &outputs.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        steps.push(Step { client: Client::None, ..colour });
+        for (archive, output) in archives.iter().zip(&outputs) {
+            steps.push(Step {
+                client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+                ..python(
+                    &PLANNER_TRAILVIEW_COLOUR,
+                    &format!("planner/trailview-colour/{archive}/grid"),
+                    vec![layer_files("planner/trailview-colour", &[output])],
+                    json!({"kind": format!("trailview-colour-{archive}"), "bounds": bounds, "step": "planner/trailview-colour"}),
+                    ("tools.planner_grid_maps", Some("planner-maps")),
+                    &["objects", "index.json"],
+                )
+            });
+        }
+    }
+    Ok(steps)
+}
+
+/// The digest of the JSON files of `data/trailview/`, by their paths in it, as `digest` of
+/// `tools/trailview/rules.py` gives it.
+fn ruleset(root: &Path) -> Result<String, String> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+        for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                walk(&path, base, out)?;
+            } else if path.extension().is_some_and(|extension| extension == "json") {
+                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+                out.push((name, obc_data::store::sha256_hex(&bytes)));
+            }
+        }
+        Ok(())
+    }
+    let base = root.join("data/trailview");
+    let mut files = Vec::new();
+    walk(&base, &base, &mut files)?;
+    Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The 3° WorldCover tiles that `bounds` overlaps and that its grid lists, named by their south-west
+/// corner. WorldCover has no tile over open sea.
+fn worldcover_tiles(bounds: [f64; 4], grid: &str) -> Result<Vec<String>, Unplanned> {
+    let grid: serde_json::Value =
+        serde_json::from_str(grid).map_err(|e| Unplanned::Failed(format!("{WORLDCOVER_GRID}: {e}")))?;
+    let land: HashSet<&str> = grid["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|feature| feature["properties"]["ll_tile"].as_str())
+        .collect();
+    Ok(worldcover_squares(bounds).into_iter().filter(|tile| land.contains(tile.as_str())).collect())
+}
+
+fn worldcover_squares([west, south, east, north]: [f64; 4]) -> Vec<String> {
+    let corner = |degrees: f64| (degrees / 3.0).floor() as i32 * 3;
+    let name = |lat: i32, lon: i32| {
+        let (ns, ew) = (if lat >= 0 { 'N' } else { 'S' }, if lon >= 0 { 'E' } else { 'W' });
+        format!("{ns}{:02}{ew}{:03}", lat.abs(), lon.abs())
+    };
+    let lats: Vec<i32> = (corner(south)..=corner(north - 1e-9)).step_by(3).collect();
+    let lons: Vec<i32> = (corner(west)..=corner(east - 1e-9)).step_by(3).collect();
+    lats.iter().flat_map(|&lat| lons.iter().map(move |&lon| name(lat, lon))).collect()
+}
+
 /// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
 /// margin: the snow layer samples the MODIS pixels around its edge. Named by their north-west corner.
 fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
@@ -692,6 +946,18 @@ mod tests {
     use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
+    const OPTIONAL_SOURCES: [&str; 8] = [
+        "era5-land",
+        "hr-wsi",
+        "modis-snow",
+        "esa-worldcover",
+        "corine-land-cover",
+        "sentinel-2-mosaics",
+        "egdi-geology",
+        "igme5000",
+    ];
+    const OPTIONAL: [&str; 7] =
+        ["climate", "snow", "sun", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
 
     /// The inputs of `region` with `layers` on, whose serving release reads each source without
     /// params of the planner at `1`, and the canopy at `v1.11`.
@@ -716,7 +982,7 @@ mod tests {
                 return inputs;
             };
             for wanted in &wanted {
-                assert!(["era5-land", "hr-wsi", "modis-snow"].contains(&wanted.source.as_str()), "{wanted:?}");
+                assert!(OPTIONAL_SOURCES.contains(&wanted.source.as_str()), "{wanted:?}");
                 inputs.resolve(wanted, "2026-10-01".into());
             }
         }
@@ -747,6 +1013,9 @@ mod tests {
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
         fetched(&store, obc_bake::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
+        // The box of the region touches the WorldCover squares N45E006 and N48E006; the second is sea here.
+        let grid = r#"{"features": [{"properties": {"ll_tile": "N45E006"}}, {"properties": {"ll_tile": "N45E003"}}]}"#;
+        fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
         }
@@ -825,6 +1094,28 @@ mod tests {
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
         assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
+    }
+
+    #[test]
+    fn the_terrain_reads_the_mean_tiles_of_a_national_model_in_its_bounds() {
+        let temp = temp("planner-reference");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
+        let (pinned, manifest) = crate::device::tests::swiss_version(&mut inputs, &paths);
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
+        crate::device::tests::stored(&store, "terrain-reference/ch", &pinned, &[], &manifest);
+        let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+        let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
+        let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
+        assert_eq!(
+            (&files[..], &reference.options["pool"]),
+            (&["mean/16/4825/4218.tif".to_string()][..], &json!("mean"))
+        );
+        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
+        assert!(terrain
+            .inputs
+            .iter()
+            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
     }
 
     #[test]
@@ -1011,7 +1302,7 @@ mod tests {
     fn each_step_belongs_to_the_layer_of_its_producer() {
         let temp = temp("planner-layers");
         let store = store(&temp, &["2026-10-01"]);
-        let inputs = resolved(inputs(AREA, &["climate", "snow", "sun"]), &regions(), &store);
+        let inputs = resolved(inputs(AREA, &OPTIONAL), &regions(), &store);
         crate::device::tests::with_model_areas(&store);
         let mut steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         steps.extend(Device.steps_with_tool(&root(), &inputs, &regions(), &store, Ok(())).unwrap().steps);
@@ -1033,6 +1324,12 @@ mod tests {
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
                 ["planner", "sun", ..] => "planner/sun",
+                ["planner", "trailview-features", ..] => "planner/trailview-features",
+                ["planner", "trailview-rules", ..] => "planner/trailview-rules",
+                ["planner", "trailview-material" | "trailview-lithology" | "trailview-region", ..] => {
+                    "planner/trailview-ground"
+                }
+                ["planner", "trailview-colour", ..] => "planner/trailview-colour",
                 ["planner", "fonts" | "index" | "catalog", ..] => "planner/index",
                 _ => panic!("{name} has no layer"),
             }
@@ -1041,7 +1338,7 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 14, "thirteen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(named.len(), 18, "seventeen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A
@@ -1049,7 +1346,8 @@ mod tests {
         // the map leaves split `device/osm` again. A read of the own layer is exempt: a new version
         // of the layer bakes both steps. The reads below bake their step again on such a machine:
         // the POI database is large, and its grid holds it in another form; the landmark and
-        // peak content stays private until the wiki is a prepared source.
+        // peak content stays private until the wiki is a prepared source; the TrailView ruleset
+        // step reads only the repository.
         let mut unheld = Vec::new();
         for step in &steps {
             for input in &step.inputs {
@@ -1068,8 +1366,22 @@ mod tests {
             ("planner/search/pois", "device/landmark-content"),
             ("planner/search/pois", "device/peak-content"),
             ("planner/places", "planner/search/pois"),
+            ("planner/trailview-material", "planner/trailview-rules"),
+            ("planner/trailview-lithology", "planner/trailview-rules"),
+            ("planner/trailview-region", "planner/trailview-rules"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
+    }
+
+    #[test]
+    fn trailview_features_need_osmium_in_the_plan() {
+        let temp = temp("planner-trailview-features");
+        let store = store(&temp, &["2026-10-01"]);
+        let plan = |layers: &[&str]| {
+            Planner.steps_with_tool(&root(), &inputs(AREA, layers), &regions(), &store, Err("no osmium".into()))
+        };
+        assert!(plan(&[]).is_ok(), "one source area needs no Osmium");
+        assert!(matches!(plan(&["trailview-features"]), Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
     }
 
     #[test]
@@ -1110,6 +1422,56 @@ mod tests {
         assert_eq!(names, ["modis-snow", "hansen-gfc"]);
         assert_eq!(inputs[1].1, [("tile".to_string(), "40N_020W".to_string()), ("tile".into(), "40N_010W".into())]);
         assert_eq!(options["year"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn trailview_ground_reads_the_ruleset_step_and_each_archive_has_a_grid() {
+        let temp = temp("planner-trailview");
+        let store = store(&temp, &["2026-10-01"]);
+        let steps = |layers: &[&str]| {
+            let inputs = resolved(inputs(AREA, layers), &regions(), &store);
+            Planner.steps(&root(), &inputs, &regions(), &store).map(|listed| listed.steps)
+        };
+        let result = steps(&["trailview-ground"]);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("reads trailview-rules")));
+        let steps = steps(&["trailview-rules", "trailview-ground", "trailview-colour"]).unwrap();
+        let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
+        let rules = get("planner/trailview-rules");
+        assert_eq!(rules.options["ruleset"], json!(ruleset(&root()).unwrap()));
+        let read = |step: &Step| {
+            step.inputs
+                .iter()
+                .map(|input| match input {
+                    Input::Snapshot { source, params, .. } => format!("{source}{params:?}"),
+                    Input::Step { name, files } => format!("{name}{files:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            read(get("planner/trailview-material")),
+            [
+                r#"planner/trailview-rules["materials.json"]"#,
+                r#"planner/osm["osm.pbf"]"#,
+                r#"esa-worldcover[("tile", "N45E006")]"#,
+                r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02")]"#,
+                r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
+            ]
+        );
+        assert_eq!(read(get("planner/trailview-region")), [r#"planner/trailview-rules["regions.json"]"#]);
+        assert_eq!(worldcover_squares([7.79, 47.99, 7.82, 48.02]), ["N45E006", "N48E006"]);
+        let grids: Vec<(&str, &serde_json::Value)> = steps
+            .iter()
+            .filter(|step| step.name.starts_with("planner/trailview") && step.name.ends_with("/grid"))
+            .map(|step| (step.name.as_str(), &step.options["kind"]))
+            .collect();
+        assert_eq!(grids.len(), 9, "the ruleset, three ground archives and five colour archives: {grids:?}");
+        let q1 = get("planner/trailview-colour/q1/grid");
+        assert_eq!(read(q1), [r#"planner/trailview-colour["q1.pmtiles"]"#]);
+        let index = get("planner/index");
+        assert!(index
+            .inputs
+            .iter()
+            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/trailview-colour/ndvimax/grid")));
     }
 
     #[test]
