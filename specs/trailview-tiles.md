@@ -90,7 +90,8 @@ q holds the months 3q − 2 to 3q.
 | `ndvimax` | One byte, lossless as in [Ground](#ground): the highest NDVI code of the four quarters |
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
-round(255 × refl^(1/2.2)). The alpha is lossless.
+round(255 × refl^(1/2.2)). A WebP variant keeps the alpha lossless. An AVIF variant codes the alpha
+at the quality of the colour, so its codes 0 and 1 are not exact.
 
 | Alpha | Meaning |
 | --- | --- |
