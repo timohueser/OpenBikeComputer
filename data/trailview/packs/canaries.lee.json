@@ -1,0 +1,22 @@
+{
+ "name": "Canary Islands, lee",
+ "extends": "canaries.south",
+ "about": "The south pack, and what the lee sides and summits of the other islands add: bitter tabaiba, verode and balo in the coastal scrub, juniper, wild olive and almonds in the thermophilous belt, bananas on the low terraces, Canary rockrose and codeso under the pines up to the summit of La Palma; prickly pears by the farms; goats and sheep. The canary palm stands in for the banana.",
+ "trees": {
+  "lamarck-spurge": { "model": "tabaiba", "latin": "Euphorbia lamarckii", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 4 },
+  "verode": { "model": "tabaiba", "latin": "Kleinia neriifolia", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1 },
+  "balo": { "model": "retama", "latin": "Plocama pendula", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [200, 900], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 800], "weight": 1 },
+  "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1500], "weight": 1 },
+  "banana": { "model": "canary-palm", "latin": "Musa acuminata", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "canary-rockrose": { "model": "garrigue", "latin": "Cistus symphytifolius", "leaf": "broadleaved", "cover": "shrub", "elevation": [700, 2000], "weight": 2 },
+  "codeso": { "model": "gorse", "latin": "Adenocarpus foliolosus", "leaf": "broadleaved", "cover": "shrub", "elevation": [700, 2400], "weight": 2 }
+ },
+ "ground": {
+  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 1, "size": [5, 25], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
+ }
+}

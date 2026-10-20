@@ -1,0 +1,8 @@
+{
+ "name": "Corsican montane broadleaf and mixed forests",
+ "ecoregion": 788,
+ "extends": "world",
+ "about": "The granite and rhyolite spine of Corsica from Monte Cinto to Bavella: roads climb from holm oak and tree heath maquis and chestnut groves round tall stone villages into tall Corsican pine and maritime pine, with beech and silver fir in the cool valleys, to passes with old pines on bare slabs and open pastures; above the trees grow green alder, dwarf juniper and spiny broom cushions below grey crags, pink granite needles and late snow on the highest peaks. No split: the belts from maquis and chestnut to pine, beech and fir, then alder scrub and bare rock, follow height and come with the tree elevation bands, the barren rule and the snowline; the dry Niolo basin and the wetter western valleys differ in Sentinel-2 colour and NDVI; and the region is one small massif with the sea in view on both sides, so one haze, weather and grade serve all of it.",
+ "leaf": "mixed",
+ "pack": "corsica"
+}

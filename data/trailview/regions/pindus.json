@@ -1,0 +1,8 @@
+{
+ "name": "Pindus Mountains mixed forests",
+ "ecoregion": 801,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "pindus",
+ "about": "Grey limestone walls and green flysch ridges from the mountains of eastern Albania and Lake Ohrid over Epirus, the Agrafa and the Tzoumerka to the high massifs of the Peloponnese: oak and oriental hornbeam scrub in the valleys, dark forests of beech, Greek fir and black pine above, Bosnian pine and juniper at the tree line, and wide summer pastures that turn straw-coloured, scree and bare karst summits above them; gravel roads cut into the slopes, stone villages with tile or stone-slab roofs, and large flocks of sheep and goats. No split: one mountain haze, weather and grade fit the whole region; the summer-dry southern ranges and the Peloponnese differ from the green north in Sentinel-2 colour and the NDVI ramps, the forest belts, the high pastures and the bare summits in the tree elevation bands, the barren rule and the snowline, and the houses in culture by country."
+}

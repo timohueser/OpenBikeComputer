@@ -1,0 +1,8 @@
+{
+ "name": "Po Basin mixed forests",
+ "ecoregion": 675,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "po",
+ "about": "The flat plain of the Po and its rivers, from the Turin and Cuneo plains and the rice paddies of Vercelli, Novara and Lomellina over the poplar plantations, maize fields and orchards of Lombardy, Emilia and the Veneto to the reed marshes, salt marshes and pinewoods of the Po delta and the Venetian lagoon: grassy embankments along the Po, wide gravel beds such as the Tagliamento, the southern shores of Lake Maggiore, the wooded volcanic cones of the Euganean Hills, and brick and rendered farms and towns under low tile roofs. No split: the region lies between a few metres below sea level in the delta and about 700 m on the Turin hill, in one climate of hazy summers and foggy winters, so one haze, weather and grade fit it; flooded rice in spring, green maize in summer and stubble in autumn differ in Sentinel-2 colour and the NDVI ramps, chestnut, downy oak and beech on the hills and at the Alpine edge come from the tree elevation bands, stone pine on the coast from the bands and OSM's leaf type, and the houses from one style. The winter fog needs no area either: the look's valley mist (mistTop) holds it below a height."
+}

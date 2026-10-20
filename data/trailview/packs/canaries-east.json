@@ -1,0 +1,25 @@
+{
+ "name": "Mediterranean Acacia-Argania dry woodlands and succulent thickets",
+ "extends": "base",
+ "about": "Aulaga and sweet and bitter tabaiba scattered over the plains, the old lava and the cinder, a few cardones on the old massifs; canary palms by the farms and in the barrancos, tamarisk in the barrancos and on the coastal flats; prickly pears in the old cochineal fields and by the farms, agaves on the terraces, vines in the walled ash pits of La Geria; Majorera goats everywhere, dromedaries at Timanfaya and on the farms of Fuerteventura. The highland cow stands in for the dromedary, and the Canarian house for the white cubic flat-roofed houses with green or brown woodwork.",
+ "trees": {
+  "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2, "evergreen": true },
+  "tamarisk": { "model": "hawthorn", "latin": "Tamarix canariensis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "tabaiba": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 3 },
+  "bitter-tabaiba": { "model": "tabaiba", "latin": "Euphorbia regis-jubae", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 3 },
+  "aulaga": { "model": "retama", "latin": "Launaea arborescens", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 4 },
+  "cardon": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 0.5 }
+ },
+ "ground": {
+  "aulaga": { "model": "retama", "latin": "Launaea arborescens", "on": ["bare", "grass", "shrub"], "height": [0.4, 1.0], "share": 0.06 },
+  "tabaiba": { "on": ["shrub", "bare"], "share": 0.04 },
+  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
+  "century-plant": { "model": "tajinaste", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 },
+  "grapevine": { "model": "garrigue", "latin": "Vitis vinifera", "on": ["crop"], "height": [0.4, 1.0], "share": 0.1 }
+ },
+ "herds": {
+  "goat": { "groups": 2, "size": [5, 25], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "dromedary": { "model": "highland-cow", "latin": "Camelus dromedarius", "groups": 1, "size": [2, 8], "on": ["scrub", "sclerophyllous-scrub", "rough-grass", "wet-grassland", "grassland"] }
+ },
+ "style": "canarian-house"
+}

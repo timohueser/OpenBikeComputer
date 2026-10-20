@@ -1,0 +1,14 @@
+{
+ "name": "Insubric lake district",
+ "extends": "alps",
+ "about": "The lake district below the southern Alps, from Lago Maggiore, Lugano and Locarno over Lake Como and Lake Iseo to the north end of Lake Garda: deep lakes between steep limestone and gneiss slopes, woods of sweet chestnut, hop hornbeam, manna ash and downy oak with holm oak, cypress and bay laurel on the warm shores, olive groves and vineyards on terraces, beech higher up, a milky summer haze from the Po plain, and rendered villages under low tile roofs. The area is the lake troughs and the hills between them; the high valleys north of it, such as the Valtellina, the Leventina and the Giudicarie, stay in alps.",
+ "where": [[[8.35, 45.70], [8.40, 46.00], [8.65, 46.25], [9.05, 46.28], [9.30, 46.20], [9.50, 46.17], [9.55, 45.90], [9.90, 45.95], [10.20, 45.90], [10.50, 45.85], [10.75, 46.02], [10.95, 46.00], [10.95, 45.65], [10.70, 45.50], [9.80, 45.55], [9.00, 45.65]]],
+ "leaf": "broadleaved",
+ "pack": "alps.insubric",
+ "look": {
+  "hazeKm": 11,
+  "hazeHeight": 1800,
+  "sea": { "deep": "#a3b3a4", "shallow": "#acbcaa" },
+  "weather": { "sunny": { "cover": 0.3, "zenith": "#86a6c6", "horizon": "#d2d9db", "grey": 0.45 } }
+ }
+}

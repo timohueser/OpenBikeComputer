@@ -1,0 +1,8 @@
+{
+ "name": "European Atlantic mixed forests",
+ "ecoregion": 664,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "atlantic",
+ "about": "The Atlantic lowlands from the Dordogne and the Charente over the Loire, Brittany, Normandy and the Paris basin to Flanders, Holland, the North German plain and western Jutland: hedged bocage with oaks and wide arable plains, valleys with poplar rows and willows, heaths of heather, gorse and juniper with pine plantations on the sands, flat polders and marshes behind dikes, dunes on the North Sea, and cliffs of granite, sandstone and chalk on the Channel. No split: the land stays below about 500 m and has no massif or island side, and one Atlantic haze, weather and grade fit it from the Dordogne to Thy; bocage, heath, polder, dune and limestone valley differ in colour and trees, which Sentinel-2 colour, the NDVI ramps, the barren rule, windswept_m and the tree bands carry, and the houses change by country and French region, which the house style by place carries."
+}

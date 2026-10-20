@@ -1,0 +1,8 @@
+{
+ "name": "Western European broadleaf forests",
+ "ecoregion": 686,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "western-europe",
+ "about": "The uplands between the Atlantic plains and the Alps, from the Massif Central over Burgundy, Lorraine, the Jura and the Swiss Plateau, the Ardennes, the Eifel and the Rhine and Moselle gorges, the Hessian and Thuringian hills, the Swabian and Franconian Jura and the Bavarian Forest to Bohemia, the Sudetes and Moravia: beech woods with oak and hornbeam low down, spruce and fir on the high ridges, open volcanic pastures in Auvergne and the Rhön, limestone plateaus and valleys with cliffs, steep vineyards on the river slopes, mixed farmland with hedges and orchards around the villages, and mountain pine and grass above the trees on the Krkonoše. No split beyond the Black Forest and the Vosges, which keep their own farmhouse pack: the land is temperate from end to end, and one haze, weather and grade fit it from the Cantal to Moravia; the volcanic pastures, limestone plateaus, spruce uplands, vineyards and farmland differ in colour and trees, which Sentinel-2 colour, the NDVI ramps and the tree elevation bands carry, the bare summits and cliffs the barren rule, and the houses change by country and region, which the house style by place carries."
+}

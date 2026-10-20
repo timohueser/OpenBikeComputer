@@ -1,0 +1,41 @@
+{
+ "name": "Dinaric Mountains",
+ "extends": "base",
+ "about": "Beech with silver fir and sycamore on the slopes, Norway spruce higher up and in the cold hollows; hop hornbeam, manna ash and downy oak on warm limestone, sessile and Turkey oak with hornbeam and ash in the low valleys; black and Scots pine on dolomite and canyon walls, Bosnian pine and mountain pine at the treeline; hazel, hawthorn and juniper on the pastures, dwarf juniper above the trees; rush-leaved moor-grass on the high karst pastures, alpine flowers, bilberry, ferns and bracken; flocks of sheep, Simmental cattle, horses and goats; plastered and stone houses. Hawthorn stands in for the plum orchards.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1750], "weight": 7 },
+  "silver-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [600, 1600], "weight": 4 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1800], "weight": 3 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1600], "weight": 1 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 1 },
+  "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 2 },
+  "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 2 },
+  "turkey-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 900], "weight": 1 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 800], "weight": 1 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [300, 1500], "weight": 2 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1500], "weight": 1 },
+  "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1200, 2100], "weight": 1 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1300], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 1200], "weight": 1 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [300, 1600], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 2, "evergreen": true },
+  "mountain-pine": { "leaf": "needleleaved", "cover": "shrub", "elevation": [1500, 2300], "weight": 4, "evergreen": true }
+ },
+ "ground": {
+  "alpine-flowers": {},
+  "bilberry": {},
+  "fern": {},
+  "bracken": {},
+  "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "cattle": { "model": "simmental-cattle", "groups": 2, "size": [3, 12], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [3, 12], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] }
+ },
+ "orchard": "hawthorn",
+ "style": "house"
+}

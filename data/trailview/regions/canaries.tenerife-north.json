@@ -1,0 +1,23 @@
+{
+ "name": "Tenerife, north",
+ "extends": "canaries",
+ "where": [
+  [[-16.08, 28.62], [-16.08, 28.565], [-16.17, 28.545], [-16.28, 28.525], [-16.33, 28.49], [-16.37, 28.45], [-16.45, 28.37], [-16.5, 28.31], [-16.58, 28.29], [-16.64, 28.28], [-16.72, 28.31], [-16.8, 28.32], [-16.86, 28.33], [-16.96, 28.34], [-16.96, 28.62]]
+ ],
+ "about": "The windward side: the trade-wind cloud sits on the slopes, laurel forest and tree heath above terraces, banana and vine below, green the year round.",
+ "pack": "canaries.north",
+ "look": {
+  "bare_luma": [0.092, 0.134, 0.13, 0.092],
+  "ramps": {
+   "grass": ["#a59c64", "#8a8b52", "#6a7f44"],
+   "shrub": ["#6b6a3e", "#58623a", "#475a30"],
+   "crop": ["#9a9460", "#78884c", "#5c7e40"],
+   "broad": ["#7a7d48", "#6b7a42", "#5a723b"]
+  },
+  "weather": {
+   "sunny": { "cover": 0.3, "base": 1300, "dark": 0.3 }
+  },
+  "hazeKm": 50,
+  "speckle": { "colour": "#48532e", "share": 0.3, "size_m": 3 }
+ }
+}

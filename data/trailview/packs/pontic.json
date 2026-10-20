@@ -1,0 +1,49 @@
+{
+ "name": "Pontic steppe",
+ "extends": "base",
+ "about": "Black locust, green ash, Siberian and field elm and pedunculate oak in the shelterbelts and at the village edges; pedunculate, grey, downy and Turkey oak with field maple, silver lime and ash in the forest-steppe woods of Dobruja, Moldova and the river slopes; sessile oak, hornbeam and oriental beech on the Stavropol upland; white willow, black and white poplar and narrow-leaved ash in the floodplains and the Danube delta, Lombardy poplars along the roads, lone wild pears on the pastures, black and Scots pine planted on the sands; blackthorn, Tatar maple, hawthorn, dog rose, Christ's thorn and dwarf almond scrub on the steppe slopes, grey willow in the marshes; feather grass, fescue and Austrian wormwood on the steppe, reed in the limans and the delta; wheat, sunflower and maize fields, vineyards in Dobruja, Moldova and the Budjak; flocks of Tsigai, Karakul and merino sheep, village herds of spotted cattle, horses and goats; low whitewashed village houses, log houses in Bashkortostan, Orenburg and Samara. Hawthorn stands in for the fruit orchards.",
+ "trees": {
+  "black-locust": { "model": "sycamore-maple", "latin": "Robinia pseudoacacia", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 4 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "grey-oak": { "model": "sycamore-maple", "latin": "Quercus pedunculiflora", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "turkey-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [150, 1000], "weight": 1 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 1 },
+  "oriental-beech": { "model": "european-beech", "latin": "Fagus orientalis", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1400], "weight": 2 },
+  "field-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 1 },
+  "silver-lime": { "model": "sycamore-maple", "latin": "Tilia tomentosa", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 900], "weight": 1 },
+  "green-ash": { "model": "sycamore-maple", "latin": "Fraxinus pennsylvanica", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "field-elm": { "model": "sycamore-maple", "latin": "Ulmus minor", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "siberian-elm": { "model": "sycamore-maple", "latin": "Ulmus pumila", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "white-willow": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
+  "black-poplar": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "lombardy-poplar": { "model": "silver-birch", "latin": "Populus nigra (Italica)", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "wild-pear": { "model": "hawthorn", "latin": "Pyrus pyraster", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "blackthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 3 },
+  "tatar-maple": { "model": "hawthorn", "latin": "Acer tataricum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 700], "weight": 2 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "dog-rose": { "model": "hawthorn", "latin": "Rosa canina", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "christs-thorn": { "model": "hawthorn", "latin": "Paliurus spina-christi", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 }
+ },
+ "ground": {
+  "feather-grass": { "model": "esparto", "latin": "Stipa capillata", "on": ["grass", "bare"], "height": [0.4, 0.8], "share": 0.2 },
+  "austrian-wormwood": { "model": "heather", "latin": "Artemisia austriaca", "on": ["grass", "bare"], "height": [0.2, 0.45], "share": 0.15 },
+  "dwarf-almond": { "model": "garrigue", "latin": "Prunus tenella", "on": ["grass", "shrub"], "height": [0.5, 1.2], "share": 0.04, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [2, 3.5], "share": 0.5, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [30, 200], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "cattle": { "model": "simmental-cattle", "groups": 2, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "groups": 1, "size": [1, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [3, 15], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "ru-ba": "log-house", "ru-ore": "log-house", "ru-sam": "log-house", "*": "whitewashed-house" }
+}

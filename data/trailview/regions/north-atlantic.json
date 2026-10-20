@@ -1,0 +1,8 @@
+{
+ "name": "North Atlantic moist mixed forests",
+ "ecoregion": 672,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "north-atlantic",
+ "about": "The wet, windy Atlantic fringe of Ireland and Scotland: blanket bog, heath and bare quartzite or granite tops over loughs and sea inlets, rushy fields with stone walls and hedges of hawthorn and fuchsia, dark Sitka spruce plantations on the bog, limestone tables over green pasture in Sligo, and the treeless green farmland and peat moor of Orkney and Shetland. The Scottish Highlands subregion holds Skye, the Small Isles, the Outer Hebrides, the west Highland coast and the flow country. No new split: the rest of the region, Atlantic Ireland from the north Kerry hills over Mayo, Sligo and Leitrim to Donegal and the Sperrins, Orkney, Shetland and the east of Caithness, has one wet, grey, oceanic climate and stays below about 850 m, so haze, weather and grade do not change across stable geography; Sentinel-2 colour with the NDVI ramps tells bog, heath, rushy pasture, limestone grass and machair apart, the barren rule and the tree bands keep the hilltops bare, windswept_m keeps the Northern Isles and the headlands free of trees, and the house style goes by country."
+}

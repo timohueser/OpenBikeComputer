@@ -1,0 +1,30 @@
+{
+ "name": "Kola Peninsula tundra",
+ "extends": "base",
+ "about": "Mountain birch with rowan and a few Scots pines in the sheltered valleys; dwarf birch, downy willow and juniper over crowberry, bog bilberry and pale reindeer lichen on the tundra, bilberry under the birch; cloudberry, bog cotton and sedge on the mires, mountain avens on the Lovozero and Varanger rock, fireweed by the tracks and lyme grass on the beaches; reindeer, and a few sheep in Varanger; wooden houses.",
+ "trees": {
+  "mountain-birch": { "model": "silver-birch", "latin": "Betula pubescens subsp. czerepanovii", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 8 },
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 350], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "dwarf-birch": { "model": "huckleberry", "latin": "Betula nana", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 4 },
+  "downy-willow": { "model": "garrigue", "latin": "Salix lapponum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 3 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 700], "weight": 1, "evergreen": true }
+ },
+ "ground": {
+  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.4 },
+  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.3 },
+  "bog-bilberry": { "model": "bilberry", "latin": "Vaccinium uliginosum", "on": ["shrub", "moss", "tree"], "height": [0.1, 0.35], "share": 0.15 },
+  "bilberry": { "on": ["tree"] },
+  "cloudberry": { "model": "bilberry", "latin": "Rubus chamaemorus", "on": ["wetland", "moss"], "height": [0.1, 0.25], "share": 0.2 },
+  "bog-cotton": {},
+  "bottle-sedge": { "model": "moor-grass", "latin": "Carex rostrata", "on": ["wetland"], "height": [0.4, 0.8], "share": 0.3 },
+  "mountain-avens": { "model": "alpine-flowers", "latin": "Dryas octopetala", "on": ["grass", "moss", "bare"], "share": 0.05 },
+  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.04, "clumped": true },
+  "lyme-grass": { "model": "esparto", "latin": "Leymus arenarius", "on": ["bare"], "height": [0.5, 1.0], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "sheep": { "groups": 1, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
+ },
+ "style": "wood-cabin"
+}

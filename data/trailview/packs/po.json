@@ -1,0 +1,42 @@
+{
+ "name": "Po Basin mixed forests",
+ "extends": "base",
+ "about": "Hybrid poplar plantations in rows, white willow, black and white poplar and black alder along the rivers, pedunculate oak, hornbeam and field maple in the last plain woods, black locust in every hedge and spinney; Scots pine and birch on the heaths of the upper plain, stone pine in the coastal pinewoods, cypress by villas and cemeteries; sweet chestnut, downy oak, hop hornbeam and manna ash on the hills, beech at the Alpine edge; hawthorn, blackthorn and hazel in the hedges, false indigo on the Po banks, purple willow on the gravel bars; reed in the marshes and valli, glasswort on the lagoon's salt marshes, ferns in the woods; a few dairy cattle and horses at grass, winter flocks of sheep on the plain; brick and rendered farms and villages under low tile roofs. Hawthorn stands in for the pear, apple and peach orchards.",
+ "trees": {
+  "hybrid-poplar": { "model": "silver-birch", "latin": "Populus × canadensis", "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 300], "weight": 4 },
+  "white-willow": { "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 400], "weight": 2 },
+  "black-poplar": { "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 500], "weight": 1 },
+  "white-poplar": { "model": "silver-birch", "latin": "Populus alba", "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 200], "weight": 1 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 600], "weight": 1 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 500], "weight": 2 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 2 },
+  "field-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 700], "weight": 1 },
+  "black-locust": { "model": "sycamore-maple", "latin": "Robinia pseudoacacia", "leaf": "broadleaved", "cover": "tree", "elevation": [-5, 900], "weight": 3 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 900], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [150, 1000], "weight": 3 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [30, 700], "weight": 2 },
+  "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1100], "weight": 2 },
+  "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [30, 1000], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 1600], "weight": 3 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [-5, 100], "weight": 2 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [100, 1200], "weight": 1 },
+  "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 500], "weight": 0.5 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [-5, 1000], "weight": 2 },
+  "blackthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [-5, 900], "weight": 1 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [50, 1200], "weight": 1 },
+  "false-indigo": { "model": "hawthorn", "latin": "Amorpha fruticosa", "leaf": "broadleaved", "cover": "shrub", "elevation": [-5, 300], "weight": 2 },
+  "purple-willow": { "model": "hawthorn", "latin": "Salix purpurea", "leaf": "broadleaved", "cover": "shrub", "elevation": [-5, 700], "weight": 2 }
+ },
+ "ground": {
+  "fern": {},
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.4, "clumped": true },
+  "perennial-glasswort": { "model": "garrigue", "latin": "Sarcocornia fruticosa", "on": ["wetland"], "height": [0.2, 0.5], "share": 0.4 }
+ },
+ "herds": {
+  "dairy-cattle": { "groups": 1, "size": [4, 15], "on": ["pasture", "grassland", "arable"] },
+  "sheep": { "groups": 1, "size": [40, 200], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "groups": 1, "size": [2, 6], "on": ["pasture", "grassland", "arable"] }
+ },
+ "orchard": "hawthorn",
+ "style": "village-house"
+}

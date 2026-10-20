@@ -1,0 +1,9 @@
+{
+ "name": "Irish cottage",
+ "extends": "cottage",
+ "about": "In white and in the coast's yellows, blues and pinks, with bright doors.",
+ "palette": {
+  "render": ["#f4f1e8", "#f4f1e8", "#efe8d2", "#e8d690", "#b9cdd6", "#e6bcb2"],
+  "door": ["#a8322c", "#2f5a8a", "#3b6b4a", "#e2b33a"]
+ }
+}

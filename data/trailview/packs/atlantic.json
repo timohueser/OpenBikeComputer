@@ -1,0 +1,52 @@
+{
+ "name": "European Atlantic mixed forests",
+ "extends": "base",
+ "about": "Pedunculate and sessile oak, beech, hornbeam and ash in the woods and on the hedgebanks, sweet chestnut on the acid soils of the west, holly under the trees, poplar rows and white willows in the valleys and polders, alder by the water, birch on the heaths and bogs, Scots, maritime and black pine and spruce plantations on the sands and dunes; hawthorn, blackthorn and hazel in the hedges, gorse and broom on the landes, heather, purple moor-grass and juniper on the heaths, marram on the dunes, reed in the ditches and marshes; black-and-white dairy cattle, brown beef cattle, horses, sheep on the dikes, salt marshes and heaths; white-rendered houses with slate roofs in Brittany, the Loire and Denmark, low tiled houses in Aquitaine, brick and timber frame elsewhere; hawthorn stands in for the apple orchards.",
+ "trees": {
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 5 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 2 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "field-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "holly": { "model": "holm-oak", "latin": "Ilex aquifolium", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "downy-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
+  "white-willow": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 },
+  "hybrid-poplar": { "model": "silver-birch", "latin": "Populus × canadensis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 2 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 3 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "sitka-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 1 },
+  "douglas-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 600], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 3 },
+  "blackthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 2 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 }
+ },
+ "ground": {
+  "heather": {},
+  "heather-bloom": {},
+  "moor-grass": {},
+  "bracken": {},
+  "fern": {},
+  "bilberry": {},
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true },
+  "marram-grass": { "model": "esparto", "latin": "Ammophila arenaria", "on": ["bare"], "height": [0.5, 1.0], "share": 0.3 }
+ },
+ "herds": {
+  "dairy-cattle": { "groups": 3, "size": [5, 30], "on": ["pasture", "grassland", "arable"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [3, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "sheep": { "groups": 2, "size": [10, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "salt-marsh"] },
+  "horse": { "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable"] }
+ },
+ "orchard": "hawthorn",
+ "style": { "fr-bre": "cottage", "fr-pdl": "cottage", "fr-cvl": "cottage", "fr-naq": "village-house", "fr-occ": "village-house", "dk": "cottage", "gg": "cottage", "je": "cottage", "*": "house" }
+}

@@ -1,0 +1,20 @@
+{
+ "name": "Cottage",
+ "about": "One storey by the Atlantic, rendered white, with a slate roof and a chimney at each gable.",
+ "pitch": [36, 44],
+ "eave": 0.2,
+ "verge": 0.15,
+ "hip": 0,
+ "timber": "none",
+ "shutters": false,
+ "chimneys": 2,
+ "palette": {
+  "render": ["#f4f1e8", "#f1eee6", "#e9e5da"],
+  "wood": ["#5a4a3e"],
+  "roof": ["#4e555c", "#5b6168", "#454b52"],
+  "door": ["#2f4a6a", "#7a2c2a", "#3b5a3a"],
+  "shutter": ["#2e3a44"],
+  "plinth": "#9a958c",
+  "chimney": "#f0ece2"
+ }
+}

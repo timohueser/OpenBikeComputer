@@ -1,0 +1,18 @@
+{
+ "name": "World",
+ "about": "The root: defaults every region inherits. An ecoregion extends it; a subregion extends one and names the areas it covers in 'where', each a box [west, south, east, north] or a ring of [lon, lat]. A spot starts at the region of its spots file and steps into the subregion whose area holds it, the smallest on a tie.",
+ "leaf": "mixed",
+ "pack": "base",
+ "cliffs": { "reach_m": 15, "raise_m": 6, "min_m": 12 },
+ "summits": { "reach_m": 150, "max_cut_m": 20 },
+ "relief": { "radius_m": 60, "amount": 0.5 },
+ "look": {
+  "snap": 0.4,
+  "hazeKm": 35, "hazeHeight": 2500, "mistTop": 0,
+  "softness": 0.08, "gradient": 0.35,
+  "outcrops": 0, "snow_share": 0.5, "turf_deg": 42,
+  "rock": "#8c877d",
+  "sea": { "deep": "#2c5874", "shallow": "#4f8088" },
+  "grade": { "shadow": [-0.004, 0, 0.012], "light": [0.01, 0.004, -0.008], "saturation": 1.08 }
+ }
+}

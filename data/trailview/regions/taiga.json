@@ -1,0 +1,8 @@
+{
+ "name": "Scandinavian and Russian taiga",
+ "ecoregion": 717,
+ "extends": "world",
+ "leaf": "needleleaved",
+ "pack": "taiga",
+ "about": "Pine and spruce forest with birch from Østerdalen and Dalarna across Norrland, Finland and Karelia to Arkhangelsk and Komi: many lakes, open bogs, wide river valleys, granite outcrops and gravel forest roads, the steep High Coast on the Gulf of Bothnia, red and yellow wooden farms in the west and grey log villages in Russia. No split: the land rises above 700 m only near the fjell, and from coast to Urals the haze, weather and light change gradually, with no massif, island side or coast strip; Sentinel-2 colour with the NDVI ramps tells forest, bog and field apart, the tree bands and culture by country carry the rest, and all of its ground lies below the snowline, so it needs no snowline that falls with latitude."
+}

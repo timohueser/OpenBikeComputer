@@ -1,0 +1,8 @@
+{
+ "name": "Highland cottage",
+ "extends": "cottage",
+ "about": "White harled and grey stone.",
+ "palette": {
+  "render": ["#f2f0ea", "#efede6", "#e6e2d8", "#a8a49b"]
+ }
+}

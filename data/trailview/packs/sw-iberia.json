@@ -1,0 +1,40 @@
+{
+ "name": "Southwest Iberian Mediterranean sclerophyllous and mixed forests",
+ "extends": "base",
+ "about": "Cork oak above all, in the montados, Monchique, the Caldeirão and the Cádiz sierras, with Algerian oak in the cool valleys; holm oak inland, olives, carobs and almonds in the Algarve barrocal and the Guadalquivir; eucalyptus plantations and maritime pine on the hills, stone pine on the coastal sands from Setúbal to Doñana, sweet chestnut high in the Lousã, narrow-leaved ash by the rivers; gum rockrose, lentisk, kermes oak, strawberry tree, tree heath, retama and Phoenician juniper in the scrub, dwarf fan palms, asphodel in the pastures, reed in the marshes; brown cattle, Iberian pigs and sheep in the montado, goats in the hills, horses in the marisma and the meadows. Holm oak stands in for olives, carobs and oranges in the orchards.",
+ "trees": {
+  "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 5 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 3 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 3 },
+  "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
+  "algerian-oak": { "model": "european-beech", "latin": "Quercus canariensis", "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1000], "weight": 0.5 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1200], "weight": 1 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
+  "eucalyptus": { "model": "laurel", "latin": "Eucalyptus globulus", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 4 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 3 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1300], "weight": 3 },
+  "gum-rockrose": { "model": "garrigue", "latin": "Cistus ladanifer", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 4 },
+  "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 3 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 2 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1100], "weight": 2 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
+  "retama-broom": { "model": "retama", "latin": "Retama sphaerocarpa", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 }
+ },
+ "ground": {
+  "garrigue": {},
+  "fan-palm": {},
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.2, "clumped": true }
+ },
+ "herds": {
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [5, 25], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [4, 15], "on": ["rough-grass", "wet-grassland", "grassland"] },
+  "sheep": { "groups": 2, "size": [15, 60], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "horse": { "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable"] }
+ },
+ "orchard": "holm-oak",
+ "style": "village-house"
+}

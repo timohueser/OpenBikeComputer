@@ -1,0 +1,8 @@
+{
+ "name": "Iceland boreal birch forests and alpine tundra",
+ "ecoregion": 711,
+ "extends": "world",
+ "about": "Green hayfields and white farms under a wide, often grey sky; grey-green moss on black lava, black sand plains below the ice caps, steep basalt fjords in the north-west and east, low birch woods only in sheltered valleys, and grey gravel desert along the highland F-roads. No split: Sentinel-2 colour with the barren rule tells black sand, grey gravel, moss and hayfield apart, the tree bands keep birch below about 550 m, and haze, weather and light change gradually around the island, with no island side, massif or coast strip that needs its own look. Outlet glaciers reach down to about 100 m and Breiðamerkurjökull to the sea, so the snowline must lie near sea level, or a rule must keep glacier ice white below it: a question for the coordinator, not a split.",
+ "leaf": "broadleaved",
+ "pack": "iceland"
+}

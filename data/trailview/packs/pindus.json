@@ -1,0 +1,47 @@
+{
+ "name": "Pindus Mountains",
+ "extends": "base",
+ "about": "Hungarian, Turkey, downy, sessile and Macedonian oak with hop hornbeam and manna ash on the lower slopes, oriental hornbeam scrub on the dry ones, sweet chestnut by the villages and oriental plane by the rivers; kermes oak, prickly juniper, Christ's thorn, smoke tree and Spanish broom on warm limestone; beech, Greek fir and black pine forests above, Bosnian pine and stinking juniper on the high limestone, common juniper, hawthorn and hazel on the pastures, dwarf juniper above the trees; bracken in the clearings, ferns in the forests, mat-grass, rush-leaved moor-grass, asphodel and alpine flowers on the high pastures; large flocks of sheep and goats, small Busha cattle and horses; plastered and stone houses with tile roofs. Greek fir stands for the King Boris fir of the northern Pindus too, and hawthorn for the orchards.",
+ "trees": {
+  "hungarian-oak": { "model": "european-beech", "latin": "Quercus frainetto", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 3 },
+  "turkey-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 3 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1400], "weight": 2 },
+  "macedonian-oak": { "model": "european-beech", "latin": "Quercus trojana", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1100], "weight": 1 },
+  "hop-hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1300], "weight": 2 },
+  "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 1 },
+  "oriental-plane": { "model": "sycamore-maple", "latin": "Platanus orientalis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [800, 1900], "weight": 5 },
+  "greek-fir": { "model": "silver-fir", "latin": "Abies cephalonica", "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1800], "weight": 4 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [500, 1700], "weight": 4 },
+  "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1400, 2300], "weight": 2 },
+  "stinking-juniper": { "model": "western-red-cedar", "latin": "Juniperus foetidissima", "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1900], "weight": 0.5 },
+  "oriental-hornbeam": { "model": "hawthorn", "latin": "Carpinus orientalis", "leaf": "broadleaved", "cover": "shrub", "elevation": [100, 1100], "weight": 3 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
+  "christs-thorn": { "model": "hawthorn", "latin": "Paliurus spina-christi", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "smoke-tree": { "model": "hawthorn", "latin": "Cotinus coggygria", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 1 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [500, 1600], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 2 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [700, 1900], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1700, 2500], "weight": 4, "evergreen": true }
+ },
+ "ground": {
+  "bracken": {},
+  "fern": {},
+  "alpine-flowers": {},
+  "mat-grass": { "on": ["grass"], "height": [0.15, 0.35], "share": 0.15 },
+  "rush-leaved-moor-grass": { "model": "moor-grass", "latin": "Sesleria juncifolia", "on": ["grass", "bare"], "height": [0.15, 0.35], "share": 0.25 },
+  "white-asphodel": { "model": "alpine-flowers", "latin": "Asphodelus albus", "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [30, 150], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "goat": { "groups": 2, "size": [5, 30], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "cattle": { "model": "highland-cow", "latin": "Bos taurus (Busha)", "groups": 1, "size": [2, 10], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "groups": 1, "size": [1, 5], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
+ },
+ "orchard": "hawthorn",
+ "style": "village-house"
+}

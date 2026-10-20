@@ -1,0 +1,8 @@
+{
+ "name": "Scandinavian coastal conifer forests",
+ "ecoregion": 708,
+ "extends": "world",
+ "about": "Steep green fjord sides under downy birch, Scots pine and dark planted spruce, from the bare anorthosite of Dalane past Hardanger, the skerries of Møre and Hitra to Lofoten and Vesterålen: heather heath, bog and bare rock on the outer islands, small hayfields with white wooden houses and red barns and boathouses by the shore, and narrow roads that follow the water from bridge to ferry. No split: haze, weather and light stay wet, grey and maritime along the whole strip, with no island side, massif or coast strip that needs its own look; WorldCover's tree pixels with the mixed leaf place birch, pine and spruce, Sentinel-2 colour with the NDVI ramps tells heath, bog, hayfield and rock apart, windswept_m keeps the outer skerries bare, and the mountains above the fjords are fjell. Snow lies on the Lofoten and Vesterålen peaks into June but leaves the Rogaland hills in April: that is the snowline that falls with latitude, which fjell already asked for, not a split.",
+ "leaf": "mixed",
+ "pack": "norway-coast"
+}

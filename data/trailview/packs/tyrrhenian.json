@@ -1,0 +1,51 @@
+{
+ "name": "Tyrrhenian-Adriatic sclerophyllous and mixed forests",
+ "extends": "base",
+ "about": "Holm oak and cork oak woods, downy oak inland, Macedonian oak on the Murge, sweet chestnut and dwarf juniper high in the Sardinian mountains; lentisk, myrtle, strawberry tree, tree heath, kermes oak, Phoenician and prickly juniper and tree spurge in the maquis, Spanish broom by the roads and oleander in the stream beds; Aleppo, stone and maritime pine on the coasts, eucalyptus windbreaks in Sardinia and Sicily, cypresses by the farms; olives, carobs and almonds in the fields; rockrose and garrigue cushions, diss grass tussocks, dwarf fan palms, asphodel, prickly pears and agaves on the dry ground; large flocks of sheep, goats, brown cattle, a few horses, donkeys and free-ranging pigs. The orchards are olive groves.",
+ "trees": {
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1300], "weight": 5 },
+  "cork-oak": { "model": "holm-oak", "latin": "Quercus suber", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 3 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 2 },
+  "macedonian-oak": { "model": "european-beech", "latin": "Quercus trojana", "leaf": "broadleaved", "cover": "tree", "elevation": [200, 600], "weight": 0.5 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1200], "weight": 0.5 },
+  "manna-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1100], "weight": 0.5 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "carob": { "model": "holm-oak", "latin": "Ceratonia siliqua", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 500], "weight": 1 },
+  "almond": { "model": "hawthorn", "latin": "Prunus dulcis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 0.5 },
+  "river-red-gum": { "model": "laurel", "latin": "Eucalyptus camaldulensis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1, "evergreen": true },
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 3 },
+  "stone-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 400], "weight": 2 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 700], "weight": 0.5 },
+  "lentisk": { "model": "holm-oak", "latin": "Pistacia lentiscus", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 4 },
+  "myrtle": { "model": "holm-oak", "latin": "Myrtus communis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 500], "weight": 2 },
+  "strawberry-tree": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1000], "weight": 2 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 2 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 800], "weight": 1 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 300], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1300], "weight": 1 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1300, 1900], "weight": 2 },
+  "tree-spurge": { "model": "tabaiba", "latin": "Euphorbia dendroides", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 400], "weight": 1 },
+  "spanish-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 900], "weight": 1 },
+  "oleander": { "model": "laurel", "latin": "Nerium oleander", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 600], "weight": 0.5 }
+ },
+ "ground": {
+  "garrigue": {},
+  "rockrose": { "model": "garrigue", "latin": "Cistus salviifolius", "height": [0.3, 0.8] },
+  "diss-grass": { "model": "esparto", "latin": "Ampelodesmos mauritanicus", "on": ["grass", "shrub", "bare"], "height": [1.0, 2.0], "share": 0.1, "clumped": true },
+  "fan-palm": {},
+  "branched-asphodel": { "on": ["grass"], "height": [0.5, 1.0], "share": 0.04, "clumped": true },
+  "prickly-pear": { "model": "cardon", "latin": "Opuntia ficus-indica", "on": ["shrub", "bare"], "height": [1, 2.5], "share": 0.02, "clumped": true },
+  "century-plant": { "model": "tajinaste", "latin": "Agave americana", "on": ["shrub", "bare"], "height": [1.5, 5], "share": 0.01 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "goat": { "groups": 2, "size": [5, 25], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "cattle": { "model": "brown-cattle", "groups": 1, "size": [3, 12], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "groups": 1, "size": [2, 6], "on": ["pasture", "grassland", "arable"] },
+  "donkey": { "model": "highland-cow", "latin": "Equus asinus", "groups": 1, "size": [1, 4], "on": ["rough-grass", "wet-grassland", "grassland", "pasture", "arable"] },
+  "iberian-pig": { "model": "goat", "latin": "Sus scrofa domesticus", "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub"] }
+ },
+ "orchard": "olive",
+ "style": { "mt": "canarian-house", "it-75": "canarian-house", "*": "village-house" }
+}
