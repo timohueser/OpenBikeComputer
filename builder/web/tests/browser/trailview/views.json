@@ -1,0 +1,5 @@
+[
+    { "name": "walk-engelberg-to-titlis", "view": "?lat=46.820500&lon=8.403000&heading=160.0&pitch=5.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny" },
+    { "name": "fly-12km-over-engelberg", "view": "?lat=46.700000&lon=8.415000&heading=0.0&pitch=-35.0&alt=12000.0&date=2026-08-15&time=15:00&weather=sunny" },
+    { "name": "fly-60km-above-the-fixture", "view": "?lat=46.560000&lon=8.415000&heading=0.0&pitch=-66.0&alt=60000.0&date=2026-08-15&time=15:00&weather=sunny" }
+]
