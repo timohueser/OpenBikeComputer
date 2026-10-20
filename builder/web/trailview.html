@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="icon" type="image/svg+xml" href="%BASE_URL%../brand/signpost.svg" />
+        <title>OpenBikeComputer · TrailView</title>
+        <style>
+            html, body { margin: 0; height: 100%; overflow: hidden; background: #b4bcc4; font-family: system-ui, sans-serif; }
+            canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+            #hud { position: fixed; top: 8px; left: 8px; max-width: calc(100% - 16px); padding: 8px; border-radius: 6px; background: rgb(0 0 0 / 0.6); color: #fff; pointer-events: none; }
+            #hud select { pointer-events: auto; }
+            #hud pre { margin: 0 0 6px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+            #credits { position: fixed; right: 0; bottom: 0; max-width: 70%; padding: 2px 6px; background: rgb(255 255 255 / 0.7); color: #222; font-size: 11px; }
+            .notice { max-width: 36em; margin: 32px 16px; font-size: 16px; }
+        </style>
+    </head>
+    <body>
+        <canvas></canvas>
+        <div id="hud"></div>
+        <div id="credits"></div>
+        <script type="module" src="/src/trailview.ts"></script>
+    </body>
+</html>

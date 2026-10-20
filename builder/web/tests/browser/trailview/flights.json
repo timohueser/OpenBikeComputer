@@ -1,0 +1,5 @@
+[
+    { "name": "walk", "from": "?lat=46.820500&lon=8.403000&heading=160.0&pitch=0.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.8170, "lon": 8.4050, "heading": 200, "pitch": 5, "height": 1.6 }, "frames": 600 },
+    { "name": "valley-drive", "from": "?lat=46.818000&lon=8.380000&heading=80.0&pitch=0.0&eye=3.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.8210, "lon": 8.4450, "heading": 100, "pitch": 0, "height": 3 }, "frames": 1200 },
+    { "name": "zoom-out", "from": "?lat=46.790000&lon=8.415000&heading=0.0&pitch=-20.0&alt=1500.0&date=2026-08-15&time=15:00&weather=sunny", "to": { "lat": 46.5600, "lon": 8.4150, "heading": 0, "pitch": -66, "height": 60000 }, "frames": 600 }
+]
