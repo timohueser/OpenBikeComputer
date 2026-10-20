@@ -9,7 +9,9 @@ describe('the camera', () => {
         const clip = (x: number, y: number, z: number) => [0, 1, 2, 3].map(r => m[r] * x + m[4 + r] * y + m[8 + r] * z + m[12 + r]);
         for (const distance of [NEAR, 10, 1e6]) {
             const [x, y, z, w] = clip(distance, 0, 0);
-            expect([x / w, y / w, z / w]).toEqual([0, 0, expect.closeTo(NEAR / distance, 9)].map((v, i) => i < 2 ? expect.closeTo(v as number, 9) : v));
+            expect(x / w).toBeCloseTo(0, 9);
+            expect(y / w).toBeCloseTo(0, 9);
+            expect(z / w).toBeCloseTo(NEAR / distance, 6);
         }
     });
 

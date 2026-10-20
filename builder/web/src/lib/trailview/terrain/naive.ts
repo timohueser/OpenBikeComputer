@@ -114,6 +114,7 @@ export class NaiveTerrain {
     /** The tiles to draw for an eye, and the requests for the tiles that it wants. */
     select(eye: Eye): Draw[] {
         this.frameNumber++;
+        this.evict();
         this.wanted = [];
         this.missing = 0;
         const draws: Draw[] = [];
@@ -123,7 +124,6 @@ export class NaiveTerrain {
             if (this.loading.size >= LOADS) break;
             this.load(want.key, want.z, want.x, want.y);
         }
-        this.evict();
         return draws.slice(0, MAX_DRAWS);
     }
 
@@ -210,6 +210,7 @@ export class NaiveTerrain {
         }
     }
 
+    /** Keeps the tiles of the last frame: a tile that leaves is gone before the selection. */
     private evict(): void {
         let held = this.tiles.size * VERTICES * VERTEX_BYTES;
         if (held <= MESH_BUDGET) return;

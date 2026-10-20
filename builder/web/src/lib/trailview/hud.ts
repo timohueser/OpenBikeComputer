@@ -24,7 +24,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         const pools = [...stats.pools].map(([pool, bytes]) => `${pool} ${(bytes / MB).toFixed(1)}`).join(' · ');
         const height = view.mode === 'walk' ? `eye ${view.height.toFixed(1)} m` : `altitude ${Math.round(view.height)} m`;
         text.textContent = [
-            `adapter ${stats.adapter}${stats.recoveries ? ` · ${stats.recoveries} lost devices recovered` : ''}`,
+            `adapter ${stats.adapter} · lost devices recovered: ${stats.recoveries}`,
             `gpu   ${passes}`,
             `cpu   ${stats.cpu.toFixed(2)} ms`,
             `MB    ${pools}`,

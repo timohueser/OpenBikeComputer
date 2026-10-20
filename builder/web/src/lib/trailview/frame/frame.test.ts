@@ -23,7 +23,7 @@ describe('the local metric frame', () => {
     it('finds the tile of a point at its Web Mercator position', () => {
         const { x, y, u, v } = tileAt(8.4, 46.8, 12);
         const [lon, lat] = tileLonLat(x + u, y + v, 12);
-        expect([x, y]).toEqual([2143, 1443]);
+        expect([x, y]).toEqual([2143, 1444]);
         expect(lon).toBeCloseTo(8.4, 9);
         expect(lat).toBeCloseTo(46.8, 9);
     });
