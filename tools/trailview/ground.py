@@ -283,15 +283,15 @@ def clc_images(files, vocabulary):
     return images
 
 
-def onto(transform, sources, crs, resampling, size=tiles.TILE, dtype=np.uint8, nodata=0):
-    """The arrays [(array, transform)] in `crs` on the EPSG:3857 grid `transform`; a later array fills
-    only what an earlier one left as `nodata`."""
+def onto(transform, sources, crs, resampling):
+    """The byte arrays [(array, transform)] in `crs` on the EPSG:3857 grid `transform`; a later array
+    fills only what an earlier one left 0."""
     from rasterio.warp import reproject
 
-    out = np.full((size, size), nodata, dtype)
+    out = np.zeros((tiles.TILE, tiles.TILE), np.uint8)
     for array, source in sources:
         reproject(array, out, src_transform=source, src_crs=crs, dst_transform=transform, dst_crs="EPSG:3857",
-                  resampling=resampling, src_nodata=nodata, dst_nodata=nodata, init_dest_nodata=False)
+                  resampling=resampling, src_nodata=0, dst_nodata=0, init_dest_nodata=False)
     return out
 
 
