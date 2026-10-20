@@ -13,7 +13,7 @@ import tempfile
 
 import numpy as np
 
-from . import step_request
+from . import planner_geo as geo, step_request
 
 FORMAT = 1
 ZOOM, SIZE = 12, 256
@@ -114,7 +114,9 @@ def step():
         references.append(tiles)
     output = Path(request["output"]) / "trailview-canopy.pmtiles"
     count = bake(references, options["bounds"], options["attribution"], output)
-    step_request.metrics(request, {"tiles": count, "bytes": output.stat().st_size})
+    size = output.stat().st_size
+    per_km2 = round(size / geo.km2(options["bounds"]), 1)
+    step_request.metrics(request, {"tiles": count, "bytes": size, "bytes_per_km2": per_km2})
 
 
 def main():
