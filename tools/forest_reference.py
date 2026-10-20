@@ -28,8 +28,6 @@ from numba import njit
 ZOOM, SIZE = 12, 256
 WORLD = 2 * math.pi * 6378137
 CELL = WORLD / (SIZE << ZOOM)
-# The cell rows of one window: a band of 0.84 km, so the rasters of a window stay below 1 GB.
-BAND = 32
 # A pixel this high is canopy: the minimum top height of the Swiss forest definition.
 CANOPY_M = 3.0
 # The lowest tree top that counts as a stem.
@@ -118,9 +116,11 @@ def crown_tops(level, pixel_m, top_m, offsets):
                 if di * di + dj * dj > radius * radius:
                     break
                 r, c = i + di, j + dj
-                earlier = di < 0 or di == 0 and dj < 0
-                if earlier and 0 <= r < rows and 0 <= c < cols and parent[r * cols + c] >= 0 and level[r, c] == level[i, j]:
-                    a, b = root(parent, p), root(parent, r * cols + c)
+                if not (di < 0 or di == 0 and dj < 0) or not (0 <= r < rows and 0 <= c < cols):
+                    continue
+                q = r * cols + c
+                if parent[q] >= 0 and level[r, c] == level[i, j]:
+                    a, b = root(parent, p), root(parent, q)
                     parent[max(a, b)] = min(a, b)
     tops = np.zeros((rows, cols), np.bool_)
     for p in range(rows * cols):
@@ -146,10 +146,10 @@ def halo(pixel_m):
 
 
 @njit(nogil=True, cache=True)
-def lattice_cells(lattice_j, lattice_i, at_rows, at_cols, shape, band_rows, columns):
+def lattice_cells(lattice_j, lattice_i, at_rows, at_cols, shape):
     """The cell of each pixel from the cell coordinates of the lattice points at every 64th row
-    `at_rows` and column `at_cols` and the last, bilinear in between: -1 outside `band_rows` ×
-    `columns` cells."""
+    `at_rows` and column `at_cols` and one past the last, bilinear in between: -1 outside the
+    `SIZE` × `SIZE` cells of the tile."""
     cells = np.full(shape, -1, np.int32)
     for r in range(shape[0]):
         k = min(r // 64, len(at_rows) - 2)
@@ -161,33 +161,37 @@ def lattice_cells(lattice_j, lattice_i, at_rows, at_cols, shape, band_rows, colu
                  + t * ((1 - u) * lattice_j[k + 1, m] + u * lattice_j[k + 1, m + 1]))
             i = ((1 - t) * ((1 - u) * lattice_i[k, m] + u * lattice_i[k, m + 1])
                  + t * ((1 - u) * lattice_i[k + 1, m] + u * lattice_i[k + 1, m + 1]))
-            if 0 <= i < band_rows and 0 <= j < columns:
-                cells[r, c] = int(i) * columns + int(j)
+            if 0 <= i < SIZE and 0 <= j < SIZE:
+                cells[r, c] = int(i) * SIZE + int(j)
     return cells
 
 
-def band_cells(x, y, ci, rows, cols, transform):
-    """The cell of each pixel of the raster rows `rows` and columns `cols` (LV95 grid `transform`) in
-    the band of tile x/y whose first cell row is `ci`, or -1. The exact projection runs on a lattice
-    of 64 pixels; in between, the projection is affine to within millimetres."""
+def pixel_cells(x, y, rows, cols, transform):
+    """The cell of tile x/y of each pixel of the raster rows `rows` and columns `cols` (LV95 grid
+    `transform`), or -1. The exact projection runs on a lattice of 64 pixels; in between, the
+    projection is affine to within millimetres."""
     from rasterio.warp import transform as project
 
     height, width = rows[1] - rows[0], cols[1] - cols[0]
-    at_rows = np.unique(np.r_[np.arange(0, height, 64), height - 1])
-    at_cols = np.unique(np.r_[np.arange(0, width, 64), width - 1])
+    at_rows, at_cols = np.r_[np.arange(0, height, 64), height], np.r_[np.arange(0, width, 64), width]
     grid_rows, grid_cols = np.meshgrid(at_rows + rows[0] + 0.5, at_cols + cols[0] + 0.5, indexing="ij")
     east, north = transform * (grid_cols, grid_rows)
     mx, my = (np.reshape(values, east.shape) for values in project("EPSG:2056", "EPSG:3857", east.ravel(), north.ravel()))
     west, top = tile_origin(x, y)
-    return lattice_cells((mx - west) / CELL, (top - my) / CELL - ci, at_rows, at_cols, (height, width), BAND, SIZE)
+    return lattice_cells((mx - west) / CELL, (top - my) / CELL, at_rows, at_cols, (height, width))
+
+
+def totals(count):
+    """Empty sums of `count` cells for `accumulate`: the known pixels, the canopy pixels, the tree
+    tops and the histogram of the canopy heights in decimetres."""
+    return (np.zeros(count, np.int64), np.zeros(count, np.int64), np.zeros(count, np.int64),
+            np.zeros((count, TALLEST_DM + 1), np.int32))
 
 
 @njit(nogil=True, cache=True)
-def accumulate(cells, heights, tops, count, canopy_m, tallest_dm):
-    """The known pixels, the canopy pixels, the tree tops and the histogram of the canopy heights in
-    decimetres of each of `count` cells."""
-    pixels, crowns, stems = np.zeros(count, np.int64), np.zeros(count, np.int64), np.zeros(count, np.int64)
-    histogram = np.zeros((count, tallest_dm + 1), np.int32)
+def accumulate(cells, heights, tops, pixels, crowns, stems, histogram):
+    """Add each pixel to the sums of its cell in `cells`; -1 is no cell."""
+    tallest = histogram.shape[1] - 1
     for r in range(cells.shape[0]):
         for c in range(cells.shape[1]):
             cell, height = cells[r, c], heights[r, c]
@@ -195,19 +199,31 @@ def accumulate(cells, heights, tops, count, canopy_m, tallest_dm):
                 continue
             pixels[cell] += 1
             stems[cell] += tops[r, c]
-            if height >= canopy_m:
+            if height >= CANOPY_M:
                 crowns[cell] += 1
-                histogram[cell, min(int(height * 10), tallest_dm)] += 1
-    return pixels, crowns, stems, histogram
+                histogram[cell, min(int(height * 10), tallest)] += 1
 
 
-def cell_stats(cells, heights, tops, count, pixel_m=0.5):
-    """The height, cover and stems bands of `count` cells from the pixels of their windows: `cells`
-    gives the cell of each pixel, or -1. A cell without a known pixel stays `NODATA`."""
-    pixels, crowns, stems, histogram = accumulate(cells, heights, tops, count, CANOPY_M, TALLEST_DM)
-    # The 95th percentile of the canopy pixels of each cell, in decimetres.
-    p95 = np.argmax(histogram.cumsum(axis=1) > np.floor(0.95 * (crowns - 1))[:, None], axis=1)
-    out = np.full((3, count), NODATA, np.uint16)
+@njit(nogil=True, cache=True)
+def percentile_95(crowns, histogram):
+    """The lower nearest-rank 95th percentile of the histogram of each cell."""
+    out = np.zeros(len(crowns), np.int64)
+    for k in range(len(crowns)):
+        rank, seen = math.floor(0.95 * (crowns[k] - 1)), 0
+        for value in range(histogram.shape[1]):
+            seen += histogram[k, value]
+            if seen > rank:
+                out[k] = value
+                break
+    return out
+
+
+def cell_stats(sums, pixel_m=0.5):
+    """The height, cover and stems bands of the cells of `sums`. A cell without a known pixel stays
+    `NODATA`."""
+    pixels, crowns, stems, histogram = sums
+    p95 = percentile_95(crowns, histogram)
+    out = np.full((3, len(pixels)), NODATA, np.uint16)
     seen = pixels > 0
     hectares = pixels[seen] * pixel_m * pixel_m / 1e4
     out[0, seen] = np.where(crowns[seen] > 0, p95[seen], 0)
@@ -266,31 +282,30 @@ GDAL = {"GDAL_CACHEMAX": 512, "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "GDAL
 
 def tile_ch(x, y):
     """The bands of tile x/y from the newest acquisition of the vegetation height model LiDAR NFI
-    at each pixel, or None where it has no pixel. One thread reads the bands of the tile while the
-    other reduces them."""
+    at each pixel, or None where it has no pixel. The tile reads its window in strips of whole
+    block rows, so it downloads each block once; one thread reads the next strip while the other
+    reduces this one."""
     import rasterio
     from rasterio.warp import transform_bounds
 
     def opened(href):
-        """The raster, and where it has data: the valid pixels of its overview of 256 m."""
+        """The raster, and where it has data: the valid pixels of its overview of 256 m, grown by
+        one, and the size of an overview pixel in raster rows and columns."""
         with rasterio.Env(**GDAL):
             raster = rasterio.open(f"/vsicurl/{href}")
-            factor = raster.overviews(1)[COARSE]
             with rasterio.open(f"/vsicurl/{href}", overview_level=COARSE) as overview:
-                return raster, (overview.read(1) != overview.nodata, factor)
+                valid = overview.read(1) != overview.nodata
+        padded, grown = np.pad(valid, 1), np.zeros_like(valid)
+        for di in range(3):
+            for dj in range(3):
+                grown |= padded[di:di + valid.shape[0], dj:dj + valid.shape[1]]
+        return raster, (grown, raster.height / valid.shape[0], raster.width / valid.shape[1])
 
-    def window(ci):
-        bounds = (west, top - (ci + BAND) * CELL, west + SIZE * CELL, top - ci * CELL)
-        left, bottom, right, upper = transform_bounds("EPSG:3857", "EPSG:2056", *bounds, densify_pts=32)
-        (r0, r1), (c0, c1) = (sorted(values) for values in rasterio.transform.rowcol(
-            grid.transform, [left, right], [upper, bottom], op=math.floor))
-        return (max(r0 - margin, 0), min(r1 + 1 + margin, grid.height)), (max(c0 - margin, 0), min(c1 + 1 + margin, grid.width))
-
-    def read(rows, cols):
+    def read(rows):
         with rasterio.Env(**GDAL):
-            return read_newest(rasters, coverage, rows, cols)
+            heights = read_newest(rasters, coverage, rows, cols)
+        return np.full((rows[1] - rows[0], cols[1] - cols[0]), np.nan, np.float32) if heights is None else heights
 
-    out = np.full((4, SIZE, SIZE), NODATA, np.uint16)
     # Each open waits for the header of a remote file, so they wait together.
     with ThreadPoolExecutor(8) as pool:
         rasters, coverage = zip(*pool.map(opened, vhm_years()))
@@ -298,24 +313,42 @@ def tile_ch(x, y):
         grid = rasters[0]
         if any(raster.transform != grid.transform or raster.shape != grid.shape for raster in rasters):
             raise ValueError("the acquisitions of the vegetation height model have different grids")
-        pixel_m, (west, top) = grid.res[0], tile_origin(x, y)
-        margin = halo(pixel_m)
-        windows = {ci: window(ci) for ci in range(0, SIZE, BAND)}
+        pixel_m, margin, (west, top) = grid.res[0], halo(grid.res[0]), tile_origin(x, y)
+        left, bottom, right, upper = transform_bounds(
+            "EPSG:3857", "EPSG:2056", west, top - SIZE * CELL, west + SIZE * CELL, top, densify_pts=64)
+        (r0, r1), (c0, c1) = (sorted(values) for values in rasterio.transform.rowcol(
+            grid.transform, [left, right], [upper, bottom], op=math.floor))
+        rows = (max(r0 - margin, 0), min(r1 + 1 + margin, grid.height))
+        cols = (max(c0 - margin, 0), min(c1 + 1 + margin, grid.width))
+        if rows[0] >= rows[1] or cols[0] >= cols[1]:
+            return None
+        block = grid.block_shapes[0][0]
+        edges = [rows[0], *range((rows[0] // block + 1) * block, rows[1], block), rows[1]]
+        strips = list(zip(edges, edges[1:]))
+        sums, seen, done = totals(SIZE * SIZE), False, rows[0]
+        context = np.empty((0, cols[1] - cols[0]), np.float32)
         with ThreadPoolExecutor(1) as reader:
-            reads = {ci: reader.submit(read, rows, cols) for ci, (rows, cols) in windows.items()
-                     if rows[0] < rows[1] and cols[0] < cols[1]}
-            for ci, pending in reads.items():
-                heights = pending.result()
-                if heights is None:
-                    continue
-                rows, cols = windows[ci]
-                cells = band_cells(x, y, ci, rows, cols, grid.transform)
-                tops = tree_tops(heights, pixel_m)
-                out[:3, ci:ci + BAND] = cell_stats(cells, heights, tops, BAND * SIZE, pixel_m).reshape(3, BAND, SIZE)
-                del heights, cells, tops
+            pending = reader.submit(read, strips[0])
+            for k, (_, end) in enumerate(strips):
+                heights = np.vstack([context, pending.result()])
+                if k + 1 < len(strips):
+                    pending = reader.submit(read, strips[k + 1])
+                first = end - len(heights)
+                # The tree tops of a row are final once the `margin` rows after it are read.
+                last = end if end == rows[1] else end - margin
+                if last > done and not np.isnan(heights).all():
+                    seen = True
+                    tops = tree_tops(heights, pixel_m)[done - first:last - first]
+                    cells = pixel_cells(x, y, (done, last), cols, grid.transform)
+                    accumulate(cells, heights[done - first:last - first], tops, *sums)
+                done, context = max(done, last), heights[-2 * margin:]
     finally:
         for raster in rasters:
             raster.close()
+    if not seen:
+        return None
+    out = np.full((4, SIZE, SIZE), NODATA, np.uint16)
+    out[:3] = cell_stats(sums, pixel_m).reshape(3, SIZE, SIZE)
     if (out[0] == NODATA).all():
         return None
     out[3] = np.where(out[0] != NODATA, leaf_type(x, y), NODATA)
@@ -325,24 +358,24 @@ def tile_ch(x, y):
 def read_newest(rasters, coverage, rows, cols):
     """The heights of the raster rows `rows` and columns `cols` from the first of `rasters` that
     has each pixel, NaN where none has it, or None when none has a pixel. A raster is read only
-    over the rows and columns that are still unknown and where `coverage`, its valid coarse pixels
-    and their size in pixels, shows data."""
+    over the rows and columns that are still unknown and where `coverage`, its valid overview
+    pixels and their size in raster rows and columns, shows data."""
     from rasterio.windows import Window
 
     heights = np.full((rows[1] - rows[0], cols[1] - cols[0]), np.nan, np.float32)
-    for raster, (valid, factor) in zip(rasters, coverage):
+    for raster, (valid, along_rows, along_cols) in zip(rasters, coverage):
         unknown = np.isnan(heights)
         if not unknown.any():
             break
         at_rows, at_cols = np.flatnonzero(unknown.any(axis=1)), np.flatnonzero(unknown.any(axis=0))
         r0, r1, c0, c1 = rows[0] + at_rows[0], rows[0] + at_rows[-1] + 1, cols[0] + at_cols[0], cols[0] + at_cols[-1] + 1
-        near = valid[r0 // factor:(r1 - 1) // factor + 1, c0 // factor:(c1 - 1) // factor + 1]
+        k0, m0 = int(r0 // along_rows), int(c0 // along_cols)
+        near = valid[k0:int((r1 - 1) // along_rows) + 1, m0:int((c1 - 1) // along_cols) + 1]
         if not near.any():
             continue
-        has_rows, has_cols = np.flatnonzero(near.any(axis=1)), np.flatnonzero(near.any(axis=0))
-        base_r, base_c = r0 // factor * factor, c0 // factor * factor
-        r0, r1 = max(r0, base_r + has_rows[0] * factor), min(r1, base_r + (has_rows[-1] + 1) * factor)
-        c0, c1 = max(c0, base_c + has_cols[0] * factor), min(c1, base_c + (has_cols[-1] + 1) * factor)
+        has_rows, has_cols = np.flatnonzero(near.any(axis=1)) + k0, np.flatnonzero(near.any(axis=0)) + m0
+        r0, r1 = max(r0, math.floor(has_rows[0] * along_rows)), min(r1, math.ceil((has_rows[-1] + 1) * along_rows))
+        c0, c1 = max(c0, math.floor(has_cols[0] * along_cols)), min(c1, math.ceil((has_cols[-1] + 1) * along_cols))
         values = read_window(raster, Window(c0, r0, c1 - c0, r1 - r0))
         values[values == raster.nodata] = np.nan
         part = heights[r0 - rows[0]:r1 - rows[0], c0 - cols[0]:c1 - cols[0]]

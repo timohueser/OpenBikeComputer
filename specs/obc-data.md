@@ -1563,8 +1563,8 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
   refuses.
 - For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
-  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It reads the sources through
-  HTTP range requests and keeps no raw raster. The run keeps the SHA-256 or the `.none` of each
+  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The
+  run keeps the SHA-256 or the `.none` of each
   tile until the version is complete, so a resume makes no tile again that it has.
 - A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
   65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
@@ -1582,8 +1582,9 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
   its height, from 1 m to 4 m. Tops of one height within the crown radius of each other, directly
   or through other such tops, are one tree, such as a flat crown; its top is the first in raster
   order.
-- `ch` reads `vhm-lidar-ch`: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
-  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell.
+- `ch` reads `vhm-lidar-ch` through HTTP range requests, in strips of whole block rows, so each
+  block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
+  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
 - The run uploads the tiles in batches of 64. Last, `index-tiles` writes `index.json`: each tile
   `<x>/<y>` of the version with the SHA-256 of its pixels in `sha256`, the `bands`, the `source`
   key and `fetched`, the date of the version. The manifest names each source that the key reads

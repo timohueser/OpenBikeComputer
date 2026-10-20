@@ -30,7 +30,9 @@ class TreeTopTest(unittest.TestCase):
         self.assertEqual(int(tops.sum()), len(stems))
         # Four cells of 50 m: the stems per hectare of each are its trees over a quarter hectare.
         cells = (np.arange(side)[:, None] // 100) * 2 + np.arange(side)[None, :] // 100
-        per_cell = forest.cell_stats(cells, heights, tops, 4)[2]
+        sums = forest.totals(4)
+        forest.accumulate(cells, heights, tops, *sums)
+        per_cell = forest.cell_stats(sums, pixel)[2]
         expected = [sum(1 for n, e in stems if (n >= 50) * 2 + (e >= 50) == cell) / 0.25 for cell in range(4)]
         self.assertEqual(per_cell.tolist(), expected)
 
