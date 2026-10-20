@@ -21,8 +21,12 @@ Texel (column, row) of tile z/x/y covers that cell of the 512 × 512 grid of the
 the north edge and column 0 is the west edge. The value of a texel is the value at its centre.
 
 A tile that the archive does not hold has no data: the engine draws its parent. The release packs
-each archive in PMTiles per zoom 11 parent: `maps/tiles/trailview-<archive>/<z>-<x>-<y>.pmtiles`,
-with the TileJSON `maps/trailview-<archive>.json`.
+each archive in PMTiles per zoom 11 parent: `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, with the
+TileJSON `maps/<kind>.json`. The kind is `trailview-material`, `trailview-lithology` and
+`trailview-region` for the ground, and `trailview-colour-<archive>` for the colour.
+
+Decode a tile without colour conversion and without premultiplied alpha (`createImageBitmap`
+with `colorSpaceConversion: 'none'` and `premultiplyAlpha: 'none'`): the bytes are data.
 
 The archive metadata is a JSON object:
 
@@ -36,15 +40,14 @@ The archive metadata is a JSON object:
 
 ## Ground
 
-`trailview-ground` has three archives. Each texel is one byte, as lossless WebP. Decode it
-without colour conversion (`createImageBitmap` with `colorSpaceConversion: 'none'`): the red
-channel holds the byte, and green and blue are equal to it.
+`trailview-ground` has three archives. Each texel is one byte, as lossless WebP: the red channel
+holds the byte, and green and blue are equal to it.
 
 | Archive | Zooms | Byte |
 | --- | --- | --- |
 | `material` | 0 to 13 | The material code and two flags, see below |
 | `lithology` | 0 to 10 | The index of the lithology in `lithologies` of `materials.json`; 0 is unknown |
-| `region` | 0 to 10 | The region id: the index of the region in `regions` of `rules.json` |
+| `region` | 0 to 10 | The region id: the index of the region in `regions` of `rules.json`; 255 is no data |
 
 The material byte:
 
@@ -54,12 +57,12 @@ The material byte:
 | 6 | Barren: the highest NDVI that a quarter of the year measured is below 0.25 |
 | 7 | No data: the texel is outside the region bounds. The other bits are 0 |
 
-A material code above 63 needs a new format. A region id above 255 needs a new format, with
-two bytes.
+A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
+a region id is 0 to 254; more regions need a new format, with two bytes.
 
 A tile of the last zoom of an archive comes from the sources. A coarser texel takes the most
-common byte of its four children, the first in reading order on a tie. A material texel with no
-data counts only where all four have no data.
+common byte of its four children, the first in reading order on a tie. A material or region texel
+with no data counts only where all four have no data, and a missing child has no data.
 
 The material chain refines a baseline. Each step changes a texel only where the step names the
 material more precisely: the table `REFINES` of `ground.py`.
@@ -104,8 +107,8 @@ shadow, unless it is snow in shade. Where the third quarter looked, it takes the
 quarter at its own brightness.
 
 The archives hold zoom 9 to the last zoom of the variant. A coarser texel is the mean colour, in
-linear light, of its children that looked, and the mean NDVI code of those that measured one. It
-is 1 where more children saw snow than measured an NDVI.
+linear light, of its children that looked, without the black of a child with alpha 1; and the mean
+NDVI code of those that measured one. It is 1 where more children saw snow than measured an NDVI.
 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
 | --- | --- | --- | --- | --- |
@@ -138,7 +141,7 @@ the prototype's `regions.ts` does:
   other value replaces.
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the subdivision, else of
-  the country, else `"*"`.
+  the country, else `"*"`. The release has no layer of the place yet, so the engine takes `"*"`.
 - In a pack, `trees`, `ground` and `herds` are keyed by species. A child adds or changes one, and
   `null` drops one.
 

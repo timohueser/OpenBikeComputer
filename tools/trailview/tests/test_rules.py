@@ -2,7 +2,10 @@
 bundle gives each region its id."""
 
 import copy
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools.trailview import rules
 
@@ -63,6 +66,23 @@ class RulesetTest(unittest.TestCase):
             with self.subTest(file=file, path=path):
                 self.assertIn(problem, rules.validate(edited(file, path, value)))
 
+    def test_more_regions_than_one_byte_of_the_region_tiles_holds_is_a_problem(self):
+        ruleset = copy.deepcopy(RULESET)
+        world = ruleset["regions"]["world"]
+        ruleset["regions"].update({f"world.extra-{i}": {**world, "extends": "world", "where": [[0, 0, 1, 1]]} for i in range(255 - len(ruleset["regions"]))})
+        self.assertEqual([problem for problem in rules.validate(ruleset) if problem.startswith("regions/: ")], [])
+        ruleset["regions"]["world.extra-last"] = ruleset["regions"]["world.extra-0"]
+        self.assertIn("regions/: 256 regions, more than the 255 that one byte of the region tiles holds", rules.validate(ruleset))
+
+    def test_a_number_that_json_does_not_have_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "trailview"
+            shutil.copytree(rules.RULESET, root)
+            path = root / "packs/aegean.json"
+            path.write_text(path.read_text().replace('"weight": 1', '"weight": Infinity', 1))
+            with self.assertRaisesRegex(ValueError, "packs/aegean.json: Infinity is not JSON"):
+                rules.load(root)
+
     def test_an_overlay_names_a_region_and_only_the_keys_of_the_engine(self):
         ruleset = copy.deepcopy(RULESET)
         ruleset["overlays"] = {"atlantis": {"look": {}}, "alps": {"look": {"banks": "#000000"}}}
@@ -78,8 +98,6 @@ class RulesetTest(unittest.TestCase):
         self.assertEqual(alps["extends"], "alps")
         self.assertNotIn("where", alps)
         self.assertIn("where", regions["regions"][names.index("alps.insubric")])
-        self.assertEqual(rules.resolve(RULESET["regions"], "alps.insubric")["pack"],
-                         RULESET["regions"]["alps.insubric"].get("pack", RULESET["regions"]["alps"]["pack"]))
         self.assertEqual({e["short"] for e in regions["ecoregions"]} - set(names), set())
 
 

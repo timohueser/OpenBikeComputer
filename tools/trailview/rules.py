@@ -29,6 +29,8 @@ EUROPE = (-32, 27, 60, 72)
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 # The look keys of the engine that overlays/ may set, as a key table like LOOK's below.
 OVERLAY_LOOK = {}
+# A region id is one byte of the region tiles, and 255 is no data there.
+MAX_REGIONS = 255
 
 
 # A check takes a value and its key path, and returns its problems, each "key.path: what is wrong".
@@ -201,42 +203,21 @@ def digest(root=RULESET):
     return hashlib.sha256(lines.encode()).hexdigest()
 
 
+def read(root, name):
+    """A JSON file of the ruleset. Python reads Infinity and NaN, which JSON does not have."""
+    def constant(text):
+        raise ValueError(f"{name}: {text} is not JSON")
+    return json.loads((root / name).read_text(), parse_constant=constant)
+
+
 def load(root=RULESET):
     """The ruleset: the vocabulary, the ecoregions and each file of the folders by name."""
-    folder = lambda name: {path.stem: json.loads(path.read_text()) for path in sorted((root / name).glob("*.json"))}
-    vocabulary = json.loads((root / "materials.json").read_text())
+    folder = lambda name: {path.stem: read(root, path.relative_to(root).as_posix()) for path in sorted((root / name).glob("*.json"))}
+    vocabulary = read(root, "materials.json")
     return {
-        "materials": vocabulary, "ecoregions": json.loads((root / "ecoregions.json").read_text())["regions"],
+        "materials": vocabulary, "ecoregions": read(root, "ecoregions.json")["regions"],
         "regions": folder("regions"), "packs": folder("packs"), "styles": folder("styles"), "overlays": folder("overlays"),
     }
-
-
-def merge(a, b):
-    """b over a: objects merge, anything else replaces."""
-    out = dict(a)
-    for key, value in b.items():
-        out[key] = merge(a[key], value) if isinstance(value, dict) and isinstance(a.get(key), dict) else value
-    return out
-
-
-def lineage(table, name):
-    """The names from the root down to `name`, or None where a file is missing or the chain loops."""
-    names = [name]
-    up = table.get(name, {}).get("extends")
-    while up is not None:
-        if up not in table or up in names:
-            return None
-        names.insert(0, up)
-        up = table[up].get("extends")
-    return names if name in table else None
-
-
-def resolve(table, name):
-    """The file merged over its parents, without `extends`, `where` and `about`."""
-    out = {}
-    for link in lineage(table, name):
-        out = merge(out, {key: value for key, value in table[link].items() if key not in ("extends", "where", "about")})
-    return out
 
 
 def vocabulary_problems(vocabulary):
@@ -254,6 +235,8 @@ def validate(ruleset):
     """Every problem of the ruleset, one line each: the file, the key path and what is wrong."""
     vocabulary = ruleset["materials"]
     out = vocabulary_problems(vocabulary)
+    if len(ruleset["regions"]) > MAX_REGIONS:
+        out.append(f"regions/: {len(ruleset['regions'])} regions, more than the {MAX_REGIONS} that one byte of the region tiles holds")
     ids = {key: [entry["id"] for entry in vocabulary[key]] for key in ("materials", "lithologies")}
     region_check, pack_check, style_check, overlay_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
@@ -330,7 +313,7 @@ def bundle(ruleset):
 
 
 def encoded(value):
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n").encode()
 
 
 def step():

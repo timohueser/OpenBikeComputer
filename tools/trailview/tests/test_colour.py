@@ -49,6 +49,13 @@ class ColourTest(unittest.TestCase):
         self.assertEqual(parent[0, tiles.TILE // 2, 0, 3], 0)
         self.assertEqual(parent[0, 0, 0, :3].tolist(), [128, 128, 128])
 
+    def test_a_coarser_texel_leaves_the_black_snow_filler_out_of_its_colour(self):
+        # Each coarser texel has two glacier children, black as snow_free leaves them, and two of rock.
+        texels = quarter((120, 115, 110), 141, (tiles.TILE, tiles.TILE))
+        texels[:, 0::2] = [0, 0, 0, colour.SNOW_MARK]
+        parent = colour.average({(0, 0): np.stack([texels] * 4)})
+        self.assertEqual(parent[2, 0, 0].tolist(), [120, 115, 110, 141])
+
     def test_the_webp_variant_keeps_the_alpha_codes_exactly(self):
         rng = np.random.default_rng(1)
         stack = np.zeros((4, tiles.TILE, tiles.TILE, 4), np.uint8)

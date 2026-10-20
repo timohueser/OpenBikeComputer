@@ -25,6 +25,8 @@ MATERIAL_ZOOM = 13
 LITHOLOGY_ZOOM = REGION_ZOOM = 10
 # The material byte: the code in the low 6 bits, then the barren bit; NO_DATA alone is outside the bake.
 BARREN, NO_DATA = 0x40, 0x80
+# A region byte with no region: no ecoregion while the walk runs, and no data in a tile.
+REGION_NO_DATA = 255
 WORLDCOVER_PX_M = 10.0
 WORLDCOVER_MATERIALS = {10: "forest", 20: "scrub", 30: "grassland", 40: "arable", 50: "built-up", 60: "sparse",
                         70: "glacier", 80: "inland-water", 90: "marsh", 95: "marsh", 100: "moss-lichen"}
@@ -312,7 +314,7 @@ class Material:
     """The material chain on one tile: WorldCover, then the satellite's heath, OSM's forests with a leaf
     type, CORINE, and OSM's natural and landuse areas, each refining the one before."""
 
-    def __init__(self, vocabulary, bounds, worldcover, corine, forests, areas, mosaics=None):
+    def __init__(self, vocabulary, bounds, worldcover, corine, forests, areas, mosaics):
         self.vocabulary, self.bounds, self.worldcover = vocabulary, bounds, worldcover
         self.corine, self.forests, self.areas, self.mosaics = corine, Polygons(forests), Polygons(areas), mosaics
 
@@ -320,16 +322,14 @@ class Material:
         from rasterio.warp import Resampling
 
         v, transform = self.vocabulary, tiles.transform(z, x, y)
-        material = v.round_shores(v.worldcover[worldcover(self.worldcover, transform)], tiles.texel_m(z, y))
-        barren = np.zeros(material.shape, bool)
-        if self.mosaics is not None:
-            from . import colour
+        from . import colour
 
-            quarters = colour.quarters(self.mosaics, transform, tiles.texel_m(z, y))
-            most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
-            heath = colour.satellite_heath(quarters, most) & np.isin(material, [v.material[m] for m in MOOR_ON])
-            material[heath] = v.material["heath"]
-            barren = (most > colour.SNOW_MARK) & (colour.ndvi(most) < BARREN_NDVI)
+        material = v.round_shores(v.worldcover[worldcover(self.worldcover, transform)], tiles.texel_m(z, y))
+        quarters = colour.quarters(self.mosaics, transform, tiles.texel_m(z, y))
+        most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
+        heath = colour.satellite_heath(quarters, most) & np.isin(material, [v.material[m] for m in MOOR_ON])
+        material[heath] = v.material["heath"]
+        barren = (most > colour.SNOW_MARK) & (colour.ndvi(most) < BARREN_NDVI)
         material = v.refine(material, self.forests.burn(transform))
         material = v.refine(material, onto(transform, self.corine, "EPSG:3035", Resampling.nearest))
         material = v.refine(material, self.areas.burn(transform))
@@ -354,7 +354,9 @@ def lithology_units(paths, layers, bounds, vocabulary):
         meta, _, wkb, (values,) = pyogrio.raw.read(path, layer=layer, columns=[field], bbox=to_map.transform_bounds(*bounds, densify_pts=21))
         units = []
         for geometry, value in zip(shapely.from_wkb(wkb), values):
-            code = codes.get((value or "").rsplit("/", 1)[-1])
+            # EGDI names a rock by a URI, IGME 5000 by terms such as "dolomite/dolostone".
+            value = value or ""
+            code = codes.get(value) or codes.get(value.rsplit("/", 1)[-1])
             if code and geometry is not None:
                 units.append((shapely.transform(geometry, lambda xy: np.stack(to_tiles.transform(xy[:, 0], xy[:, 1]), axis=-1)), code))
         out.append(units)
@@ -419,19 +421,20 @@ class Region:
         size = ((y1 - y0 + 1) * tiles.TILE, (x1 - x0 + 1) * tiles.TILE)
         index = self.ecoregion(rasterize, tiles.transform(FALLBACK_ZOOM, x0, y0), size)
         steps = round(REACH_M / tiles.texel_m(FALLBACK_ZOOM, (y0 + y1) // 2))
-        self.fallback = spread(index, index == 255, self.ids["world"], steps=steps)
+        self.fallback = spread(index, index == REGION_NO_DATA, self.ids["world"], steps=steps)
 
     def ecoregion(self, rasterize, transform, size):
-        """The id of the ecoregion's region over each texel, 255 under none."""
+        """The id of the ecoregion's region over each texel, REGION_NO_DATA under none."""
         shapes = [(shape(polygon), code) for code, polygon in self.ecoregions]
-        return rasterize(shapes, out_shape=size, transform=transform, fill=255, dtype=np.uint8) if shapes else np.full(size, 255, np.uint8)
+        return (rasterize(shapes, out_shape=size, transform=transform, fill=REGION_NO_DATA, dtype=np.uint8) if shapes
+                else np.full(size, REGION_NO_DATA, np.uint8))
 
     def __call__(self, z, x, y):
         from rasterio.features import rasterize
 
         transform = tiles.transform(z, x, y)
         index = self.ecoregion(rasterize, transform, (tiles.TILE, tiles.TILE))
-        gaps = index == 255
+        gaps = index == REGION_NO_DATA
         if gaps.any():
             scale = 1 << (z - FALLBACK_ZOOM)
             rows = (y * tiles.TILE + np.arange(tiles.TILE)) // scale - self.origin[1]
@@ -467,12 +470,10 @@ def step():
             paths = [next(path for name, path in files[0].items() if name.endswith(".gpkg")), igme_shapefile(files[1])]
             bake, top = Lithology(lithology_units(paths, (EGDI, IGME5000), bounds, vocabulary)), LITHOLOGY_ZOOM
         else:
-            forests, areas = osm_areas(layers["planner/osm"]["osm.pbf"], vocabulary)
-            mosaics = None
-            if "sentinel-2-mosaics" in request["snapshots"]:
-                from . import colour
+            from . import colour
 
-                mosaics = colour.mosaics(step_request.files(request, "sentinel-2-mosaics"))
+            forests, areas = osm_areas(layers["planner/osm"]["osm.pbf"], vocabulary)
+            mosaics = colour.mosaics(step_request.files(request, "sentinel-2-mosaics"))
             corine = clc_images(step_request.files(request, "corine-land-cover"), vocabulary)
             worldcovers = sorted(step_request.files(request, "esa-worldcover").values())
             bake, top = Material(vocabulary, bounds, worldcovers, corine, forests, areas, mosaics), MATERIAL_ZOOM
@@ -481,26 +482,23 @@ def step():
 
 
 def bake_layer(layer, bake, top, bounds, output, metadata):
-    """Write `<layer>.pmtiles` from zoom 0 to `top`; return its bytes per zoom. A material tile that
-    lies outside the bounds is left out."""
-    no_data = NO_DATA if layer == "material" else None
+    """Write `<layer>.pmtiles` from zoom 0 to `top`; return its bytes per zoom. A tile with no data is
+    left out."""
+    no_data = {"material": NO_DATA, "region": REGION_NO_DATA}.get(layer)
     encode = lambda texels: {} if no_data is not None and (texels == no_data).all() else {layer: tiles.lossless(texels)}
     sizes = tiles.pyramid(bounds, range(top + 1), bake, lambda children: tiles.mode(children, no_data), encode, output, metadata)
     return sizes.get(layer, {})
 
 
 def igme_shapefile(files):
-    """The polygon shapefile of the IGME 5000 archive, unpacked beside the step's output."""
+    """The GDAL path of the polygon shapefile in the IGME 5000 archive, read in place. The braces let
+    GDAL open an archive whose name, as a store object's, has no `.zip`."""
     import zipfile
-    import tempfile
 
-    folder = Path(tempfile.mkdtemp())
     archive, = files.values()
     with zipfile.ZipFile(archive) as z:
-        for member in z.namelist():
-            if Path(member).stem == IGME5000[0]:
-                (folder / Path(member).name).write_bytes(z.read(member))
-    return folder / f"{IGME5000[0]}.shp"
+        member = next(name for name in z.namelist() if name.endswith(f"/{IGME5000[0]}.shp"))
+    return f"/vsizip/{{{archive}}}/{member}"
 
 
 def fetch_corine(bounds, version, out):

@@ -171,8 +171,9 @@ def satellite_heath(quarters, most):
 
 def average(children):
     """A coarser tile of the four quarters (4, H, W, 4) from its children: each texel the mean colour, in
-    linear light, of the children that looked, and the mean NDVI of those that measured one; SNOW_MARK
-    where more of them saw snow than measured."""
+    linear light, of the children that looked, without the black that `snow_free` leaves where no quarter
+    was free of snow, and the mean NDVI of those that measured one; SNOW_MARK where more of them saw snow
+    than measured."""
     mosaic = np.zeros((4, 2 * tiles.TILE, 2 * tiles.TILE, 4), np.uint8)
     for (dx, dy), child in children.items():
         if child is not None:
@@ -181,7 +182,8 @@ def average(children):
     a = four[..., 3].astype(np.float32)
     looked, measured = a > 0, a > SNOW_MARK
     n, m = looked.sum(axis=0), measured.sum(axis=0)
-    linear = ((four[..., :3] / 255.0) ** 2.2 * looked[..., None]).sum(axis=0) / np.maximum(n, 1)[..., None]
+    coloured = looked & ~((a == SNOW_MARK) & (four[..., :3].max(axis=-1) == 0))
+    linear = ((four[..., :3] / 255.0) ** 2.2 * coloured[..., None]).sum(axis=0) / np.maximum(coloured.sum(axis=0), 1)[..., None]
     code = np.round((a * measured).sum(axis=0) / np.maximum(m, 1))
     alpha = np.where(n == 0, 0, np.where(n - m > m, SNOW_MARK, code))
     return np.concatenate([np.round(255.0 * linear ** (1 / 2.2)), alpha[..., None]], axis=-1).astype(np.uint8)
