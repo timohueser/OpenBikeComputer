@@ -2,14 +2,12 @@ import { UNITS, type Anchor } from '../frame/space';
 
 /** Cells along a node edge in the one grid mesh. */
 export const GRID = 64;
-/** Page texels along a node edge: a stored tile of zoom z holds the pages of its four nodes of level z + 1. */
-export const TEXELS = 256;
 /** The finest level: about 0.4 m per texel in the Alps. */
 export const FINEST = 18;
 /** The coarsest level with pages: the quadrants of tile 0/0/0. */
 export const COARSEST = 1;
-/** The morph band of a CDLOD level, in levels of log2 distance. */
-export const MORPH = 0.3;
+/** The morph band of a CDLOD level, in levels of log2 distance, as MORPH in drawn-height.wgsl. */
+const MORPH = 0.3;
 /** Nodes along an edge of the LOD map window of each level. */
 export const MAP = 32;
 /** A node splits this far, in levels, before its finest point reaches the next level, so float32 shaders see exact plateaus. */
@@ -40,7 +38,6 @@ export const key = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
  * `lod()` in drawn-height.wgsl.
  */
 export interface Rule {
-    readonly name: 'cdlod' | 'clipmap';
     /** The finest level that draws. */
     readonly finest: number;
     /** CDLOD: the distance in metres where the LOD is 0. Clipmap: the ring half-width in nodes. */
@@ -77,7 +74,7 @@ export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
         return Math.min(finest, Math.max(COARSEST, k - 1 + Math.min(1, (q - k) / MORPH)));
     };
     return {
-        name: 'cdlod', finest, range,
+        finest, range,
         split: node => node.level < finest && Math.log2(range / distances(eye, node)[0]) > node.level + 1 - MARGIN,
         morphs: node => Math.log2(range / distances(eye, node)[1]) < node.level + MORPH + MARGIN,
         lod: ([sx, sy]) => plateau(Math.log2(range / Math.hypot(sx, sy, eye.above))),
@@ -99,7 +96,7 @@ export function clipmap(eye: Eye, half: number, finest = FINEST): Rule {
         return [Math.round(ex / step) * step, Math.round(ey / step) * step];
     };
     return {
-        name: 'clipmap', finest: top, range: half, centre,
+        finest: top, range: half, centre,
         split: ({ level, x, y }) => {
             if (level >= top) return false;
             const [cx, cy] = centre(level + 1), reach = half * size(level + 1), s = size(level);

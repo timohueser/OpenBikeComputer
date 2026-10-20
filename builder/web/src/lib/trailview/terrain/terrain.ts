@@ -137,6 +137,11 @@ export class Terrain {
         this.floor = this.frameNumber;
     }
 
+    /** Nodes drawn in the last frame. */
+    get drawn(): number {
+        return this.nodes.length;
+    }
+
     get stats(): TerrainStats {
         const resident = { stored: 0, synth: 0 };
         for (const page of this.pages.pages.values()) if (page.ready) resident[page.kind]++;

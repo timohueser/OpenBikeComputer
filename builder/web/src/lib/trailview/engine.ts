@@ -241,7 +241,7 @@ export class TrailView {
         read();
         probed();
         this.cpu = performance.now() - start;
-        this.drawn = eye ? this.terrain.stats.nodes : 0;
+        this.drawn = eye ? this.terrain.drawn : 0;
         // Frames go on while the eye moves or settles on the ground, and while the terrain has work that no load waits for.
         if (steer || !settled || this.terrain.working) this.request();
         if (steer || this.moved) this.onView?.(this.view);
