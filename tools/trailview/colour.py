@@ -203,10 +203,10 @@ def encoder(variant):
             stream = io.BytesIO()
             image = Image.fromarray(texels[q], "RGBA")
             if codec == "webp":
-                image.save(stream, "WEBP", quality=QUALITY, alpha_quality=100, method=6)
+                image.save(stream, "WEBP", quality=QUALITY, alpha_quality=100)
                 out[f"q{q + 1}"] = (TileType.WEBP, stream.getvalue())
             else:
-                image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, speed=4, max_threads=1)
+                image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, max_threads=1)
                 out[f"q{q + 1}"] = (TileType.AVIF, stream.getvalue())
         out["ndvimax"] = tiles.lossless(texels[..., 3].max(axis=0))
         return out
