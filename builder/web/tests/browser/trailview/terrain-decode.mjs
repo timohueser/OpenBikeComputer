@@ -1,7 +1,7 @@
 // The time that a worker takes to decode one 512 px terrain tile into metres, as TrailView does:
 // createImageBitmap without colour conversion, then the pixels, then R × 256 + G + B / 256 − 32768.
 //
-//   node trailview/terrain-decode.mjs TILE.webp|URL [--runs N] [--channel chrome]
+//   node trailview/terrain-decode.mjs TILE.webp|URL [--runs N] [--channel chrome | --executable PATH]
 //
 // Run it from builder/web/tests/browser on the machine that is measured. It prints the median, the
 // 95th percentile and the maximum of N decodes in milliseconds. The first decode is not counted.
@@ -52,7 +52,7 @@ const server = createServer((request, response) => {
     response.end(tiled ? tile : page);
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ channel: option('--channel', undefined) });
+const browser = await chromium.launch({ channel: option('--channel', undefined), executablePath: option('--executable', undefined) });
 try {
     const tab = await browser.newPage();
     await tab.goto(`http://127.0.0.1:${server.address().port}/`);
