@@ -43,7 +43,7 @@ def webp(code):
     rgb = np.zeros((*code.shape, 3), np.uint8)
     rgb[..., 0], rgb[..., 1] = code & 0xFF, code >> 8
     out = io.BytesIO()
-    Image.fromarray(rgb, "RGB").save(out, "WEBP", lossless=True, quality=100, method=6, exact=True)
+    Image.fromarray(rgb, "RGB").save(out, "WEBP", lossless=True, method=6, quality=75, exact=True)
     return out.getvalue()
 
 
