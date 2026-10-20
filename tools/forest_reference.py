@@ -303,11 +303,24 @@ def read_newest(rasters, coverage, rows, cols):
         base_r, base_c = r0 // factor * factor, c0 // factor * factor
         r0, r1 = max(r0, base_r + has_rows[0] * factor), min(r1, base_r + (has_rows[-1] + 1) * factor)
         c0, c1 = max(c0, base_c + has_cols[0] * factor), min(c1, base_c + (has_cols[-1] + 1) * factor)
-        values = raster.read(1, window=Window(c0, r0, c1 - c0, r1 - r0), out_dtype=np.float32)
+        values = read_window(raster, Window(c0, r0, c1 - c0, r1 - r0))
         values[values == raster.nodata] = np.nan
         part = heights[r0 - rows[0]:r1 - rows[0], c0 - cols[0]:c1 - cols[0]]
         np.copyto(part, values, where=np.isnan(part))
     return None if np.isnan(heights).all() else heights
+
+
+def read_window(raster, window, tries=4):
+    """The pixels of `window`. A cut range request gives a broken block, so a read tries again."""
+    import rasterio
+
+    for attempt in range(tries):
+        try:
+            return raster.read(1, window=window, out_dtype=np.float32)
+        except rasterio.errors.RasterioIOError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def pixel_digest(bands):
