@@ -1,0 +1,18 @@
+[
+  {"kind": "road", "tags": {"highway": "track", "surface": "gravel", "tracktype": "grade2"}, "geometry": "line",
+   "parts": [{"outer": false, "xy": [[-120, 4000], [300, 4100], [8300, 4096]]}]},
+  {"kind": "main-road", "tags": {"bridge": "yes", "highway": "primary", "layer": "1"}, "geometry": "line",
+   "parts": [{"outer": false, "xy": [[100, 100], [200, 150], [260, 180]], "z": [1032.15, 1031.9, null]},
+             {"outer": false, "xy": [[300, 200], [320, 240]], "z": [null, 1030.07]}]},
+  {"kind": "building", "tags": {"building": "church", "roof:shape": "gabled"}, "geometry": "area",
+   "parts": [{"outer": true, "xy": [[1000, 1000], [1100, 1000], [1100, 1100], [1000, 1100]],
+              "z": [1520.5, 1520.5, 1520.5, 1520.5]},
+             {"outer": false, "xy": [[1020, 1020], [1020, 1040], [1040, 1040], [1040, 1020]],
+              "z": [1520.5, 1520.5, 1520.5, 1520.5]},
+             {"outer": true, "xy": [[2000, 2000], [2050, 2000], [2050, 2050]], "z": [null, null, null]}]},
+  {"kind": "waterfall", "tags": {"height": "12"}, "geometry": "point", "parts": [{"outer": false, "xy": [[5000, -40]]}]},
+  {"kind": "lake", "tags": {"landuse": "reservoir", "water": "Stausee Göscheneralp"}, "geometry": "area",
+   "parts": [{"outer": true, "xy": [[6000, 6000], [6400, 6100], [6200, 6500]]}]},
+  {"kind": "orchard", "tags": {}, "geometry": "area",
+   "parts": [{"outer": true, "xy": [[-300, -300], [8492, -300], [8492, 8492], [-300, 8492]]}]}
+]

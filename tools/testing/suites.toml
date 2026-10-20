@@ -330,6 +330,9 @@ triggers = [
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
+  # test_planner_trailview_features.py validates the kind table and reads the shared vectors.
+  "data/trailview/kinds.json",
+  "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
   "builder/web/src/App.svelte",
