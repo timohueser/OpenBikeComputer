@@ -1,21 +1,37 @@
 """Partition a planner map into immutable PMTiles grid archives."""
 
 from collections import OrderedDict
+from itertools import islice
 import argparse
 import json
 from pathlib import Path
 import tempfile
 
-from . import planner_offline as offline, planner_runtime as runtime, step_request
-from .planner_map_archive import empty_mbtiles
+from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
+from .planner_map_archive import empty_mbtiles, lossless
 
 MAP_ZOOM = 11
+# Only TrailView reads terrain of this zoom: its own archives keep it out of the planner and the offline areas.
+FINE_ZOOM = 13
 
 
 def map_kinds(maps):
     """The tile archives of a map bundle; optional layers exist only when requested."""
     return ["basemap", "places", "overlays", "terrain"] + [
         layer for layer in runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
+
+
+def recoded(tiles):
+    """Terrain tiles encoded again by libwebp: the same pixels in fewer bytes than `planner-dem` writes. Pillow holds
+    the GIL while it encodes, so the tiles go to processes."""
+    workers = step_pool.worker_count()
+    with step_pool.pool(workers) as pool:
+        while batch := list(islice(tiles, 4 * workers)):
+            yield from zip((zxy for zxy, _ in batch), pool.map(smaller, (data for _, data in batch)))
+
+
+def smaller(data):
+    return lossless(data)[0]
 
 
 def map_tiles(source, output, kinds=None):
@@ -36,19 +52,25 @@ def map_tiles(source, output, kinds=None):
                     read = MmapSource(file)
                     reader = Reader(read)
                     header, metadata = reader.header(), reader.metadata()
-                    for (z, x, y), data in all_tiles(read):
+                    terrain = kind == "terrain"
+                    for (z, x, y), data in recoded(all_tiles(read)) if terrain else all_tiles(read):
                         level = min(z, MAP_ZOOM)
                         name = f"{level}-{x >> (z-level)}-{y >> (z-level)}"
+                        if terrain and z >= FINE_ZOOM: name = f"{FINE_ZOOM}/{name}"
                         stream = cache.pop(name, None)
-                        if stream is None: stream = (Path(temporary) / name).open("ab")
+                        if stream is None:
+                            (Path(temporary) / name).parent.mkdir(exist_ok=True)
+                            stream = (Path(temporary) / name).open("ab")
                         stream.write(struct.pack("<QI", zxy_to_tileid(z, x, y), len(data)))
                         stream.write(data)
                         cache[name] = stream
                         if len(cache) > 16: cache.popitem(last=False)[1].close()
             finally:
                 for stream in cache.values(): stream.close()
-            for path in sorted(Path(temporary).iterdir()):
-                with path.open("rb") as records, (target / f"{path.name}.pmtiles").open("wb") as destination:
+            for path in sorted(path for path in Path(temporary).rglob("*") if path.is_file()):
+                archive = target / f"{path.relative_to(temporary)}.pmtiles"
+                archive.parent.mkdir(exist_ok=True)
+                with path.open("rb") as records, archive.open("wb") as destination:
                     writer = Writer(destination)
                     try:
                         while record := records.read(12):
@@ -100,10 +122,14 @@ def step(request):
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
         objects = output / "objects"
-        files = {f"maps/tiles/{kind}/{path.name}": offline.pack_file(path, objects)
-                 for path in sorted((work / "tiles" / kind).glob("*.pmtiles"))}
+        tiles = work / "tiles" / kind
+        files = {f"maps/tiles/{kind}/{path.relative_to(tiles).as_posix()}": offline.pack_file(path, objects)
+                 for path in sorted(tiles.rglob("*.pmtiles"))}
         metadata = {**metadata, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
                     "maxzoom": header["max_zoom"], "bounds": request["options"]["bounds"]}
+        if any(name.startswith(f"maps/tiles/terrain/{FINE_ZOOM}/") for name in files):
+            # The tile service and an offline area stop at zoom 12; TrailView reads the zoom 13 packs.
+            metadata.update(maxzoom=FINE_ZOOM - 1, trailview_maxzoom=FINE_ZOOM)
         if kind == "overlays":
             routing = json.loads(Path(request["layers"]["planner/routing/grid"]["index.json"]).read_bytes())
             if metadata.get("routing_package") != routing["graph"]["source"]:

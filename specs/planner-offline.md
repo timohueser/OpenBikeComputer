@@ -34,14 +34,16 @@ The returned coverage contains the complete requested rectangle.
 
 The publisher creates routing page packs, search databases, and PMTiles packs
 once. Map packs group each tile under its ancestor at `min(tile_zoom, 11)`.
-Original compressed tile payloads remain unchanged.
+Original compressed tile payloads remain unchanged. Terrain is the exception: its
+tiles are encoded again with the same pixels, and its zoom 13 tiles have packs of
+their own ([terrain tiles](planner-release.md#terrain-tiles)).
 A routing pack contains pages with the same cell consumers, up to 16 MiB.
 Search retains whole intersecting records and their dependencies.
 Each cell also has its [route catalog](route-catalog.md) file.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file
 names, map packs, and routing cell descriptors. Its map packs omit the online
-places archive. Each routing descriptor has a manifest path and SHA-256, source
+places archive and the zoom 13 terrain packs. Each routing descriptor has a manifest path and SHA-256, source
 adjacency ranges, and retained geometry bounds. `shared` maps
 each map asset path of a selection to its publication file. Files carry the
 decoded and transport hashes above.
@@ -63,7 +65,8 @@ The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`,
 `source_routing`, and `cells`. Each cell has `id`, `bounds`, and `files`: the
 cell's search databases and route catalog file.
 `routing/blocks.json` follows the [routing selection contract](route-package.md#grid-selections).
-Map selection takes basemap, overlay and terrain packs. It covers retained road
+Map selection takes basemap, overlay and terrain packs, without the zoom 13
+terrain packs. It covers retained road
 geometry; terrain includes tile neighbours. `maps/basemap.json`,
 `maps/overlays.json` and `maps/terrain.json` are TileJSON for these packs. Their
 tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves

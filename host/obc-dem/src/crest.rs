@@ -207,7 +207,8 @@ impl LiftMap {
                 if holed[at] {
                     return;
                 }
-                node_max[at] = node_max[at].max(height);
+                // A max archive holds whole metres.
+                node_max[at] = node_max[at].max(height as i16);
                 gap[at] = gap[at].max(f64::from(height) - heights.roof(lat, lon));
                 any = true;
             });

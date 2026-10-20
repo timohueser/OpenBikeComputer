@@ -88,13 +88,23 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 }
 
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in
-/// degrees, and `attribution` the credit of GLO-30. The layer is `terrain.mbtiles`: the bytes that
-/// `planner-dem` writes from the same GLO-30 tiles without a reference archive.
+/// degrees, and `attribution` the credit of GLO-30. The layer input, when the request has one, is
+/// the mean archive of the national models below `reference/`. The layer is `terrain.mbtiles`: the
+/// bytes that `planner-dem` writes from the same GLO-30 tiles and archive.
 #[cfg(feature = "terrarium")]
 pub fn planner_terrain(request: &Request) -> Result<(), String> {
     let bounds = bounds(&request.options)?;
     let credit = request.options["attribution"].as_str().ok_or("option `attribution` is not a string")?;
-    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, None, bounds)?;
+    let reference = match request.layers.values().collect::<Vec<_>>()[..] {
+        [] => None,
+        [files] => {
+            let view = request.output.with_file_name("view");
+            obc_data::engine::view(files, &view)?;
+            Some(view.join("reference"))
+        }
+        _ => return Err("the request reads more than one layer: the planner has one reference archive".into()),
+    };
+    let mut terrain = crate::planner::Terrain::open(&glo30(request, bounds), credit, reference.as_deref(), bounds)?;
     let text = bounds.map(|value| value.to_string()).join(",");
     crate::terrarium::write(&mut terrain, bounds, &text, &request.output.join("terrain.mbtiles"))
 }
