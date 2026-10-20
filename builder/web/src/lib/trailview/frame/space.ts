@@ -34,11 +34,11 @@ export function cubic(c: ArrayLike<number>, x: number, y: number, at = 0): numbe
 const FIT_STEP = 1500;
 
 /**
- * The cubics that take LOD space to render space (frame metres about the eye) and back: x then y,
- * 20 coefficients each. They are fitted about the eye, so the error grows with d⁴/R³: 0.5 mm at
- * 30 km, 7 cm at 100 km and 6 m at 300 km; the inverse has about three times that.
+ * The cubic that takes LOD space to render space (frame metres about the eye): x then y, 20
+ * coefficients. It is fitted about the eye, so the error grows with d⁴/R³: 0.5 mm at 30 km, 7 cm at
+ * 100 km and 6 m at 300 km.
  */
-export function renderMap(frame: Frame, anchor: Anchor): { forward: Float64Array; inverse: Float64Array } {
+export function renderMap(frame: Frame, anchor: Anchor): Float64Array {
     const eye = [anchor.whole[0] + anchor.part[0], anchor.whole[1] + anchor.part[1]];
     const [eyeEast, eyeNorth] = frame.local(...tileLonLat(eye[0], eye[1], 30));
     const lod: [number, number][] = [], render: [number, number][] = [];
@@ -48,12 +48,9 @@ export function renderMap(frame: Frame, anchor: Anchor): { forward: Float64Array
         lod.push(s);
         render.push([east - eyeEast, north - eyeNorth]);
     }
-    const fit = (from: [number, number][], to: [number, number][]) => {
-        const out = new Float64Array(20);
-        for (let axis = 0; axis < 2; axis++) out.set(leastSquares(from, to.map(point => point[axis])), 10 * axis);
-        return out;
-    };
-    return { forward: fit(lod, render), inverse: fit(render, lod) };
+    const out = new Float64Array(20);
+    for (let axis = 0; axis < 2; axis++) out.set(leastSquares(lod, render.map(point => point[axis])), 10 * axis);
+    return out;
 }
 
 /** The cubic through the points (x, y) → v, by normal equations in units of FIT_STEP. */

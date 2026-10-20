@@ -11,7 +11,7 @@ import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, FINEST, GRID, MAP, RANGE, RINGS, rings, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, Pages, type Kind, type Page, type Work } from './pages';
 
-/** GPU memory for pages, heights and normals: the stored and the synthesized budgets of #2747 for a laptop. */
+/** GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in MiB. */
 const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
@@ -19,13 +19,15 @@ const MAX_NODES = 4096;
 const CELL_PIXELS = 4;
 /** Frames without a shortage before the quality rises again, when each pool would still have room: the share that it fills at most. */
 const CALM = 120, ROOM = 0.6;
-/** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bilinear overshoot. */
+/** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bicubic overshoot. */
 const ANY_HEIGHT: [number, number] = [-500, 9000];
 const MARGIN = 50;
 /** Pages per texture array layer: 8 × 8, so a device with the least layers that WebGPU allows holds every pool. */
 const LAYER_PAGES = 64;
 /** Points of a check at most. */
 const CHECKS = 64;
+/** The probe reads the eye and four points this many metres east, west, north and south of it, for the slope. */
+const PROBE_STEP = 1;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
@@ -95,8 +97,11 @@ interface Resources {
  */
 export class Terrain {
     readonly pages: Pages;
-    /** The probed ground under the eye, NaN where no level knows it, and the frame that it comes from. */
-    ground?: { height: number; frame: number };
+    /**
+     * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
+     * level knows a point about it, and the frame that it comes from.
+     */
+    ground?: { height: number; slope: [number, number]; lonLat: [number, number]; frame: number };
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
@@ -111,6 +116,7 @@ export class Terrain {
     private probed = '';
     private changes = 0;
     private above = 0;
+    private lonLat: [number, number] = [0, 0];
     private floor = 0;
 
     constructor(private readonly frame: Frame, source: TerrainSource, bounds: Bounds, private readonly labs: Labs, private readonly changed: () => void) {
@@ -174,10 +180,10 @@ export class Terrain {
             extent: buffer('compute', ARRIVALS * 8, storage),
             codes: buffer('compute', r16 ? ARRIVALS * texels * 2 : 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
             indices: buffer('terrain', GRID_INDICES.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
-            // One point: the eye, at the origin of LOD space.
-            points: buffer('probe', 8, storage),
-            probed: buffer('probe', 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
-            readbacks: Array.from({ length: READBACKS }, () => buffer('probe', 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
+            // The eye and four points about it, for the slope.
+            points: buffer('probe', 40, storage),
+            probed: buffer('probe', 20, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
+            readbacks: Array.from({ length: READBACKS }, () => buffer('probe', 20, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
         };
         device.queue.writeBuffer(r.indices, 0, GRID_INDICES);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
@@ -241,9 +247,9 @@ export class Terrain {
         this.frameNumber++;
         const anchor = anchorAt(...view.lonLat), eye = { anchor, above: view.above };
         const rule = this.rule(eye, view.pixels);
-        const map = renderMap(this.frame, anchor);
+        const forward = renderMap(this.frame, anchor);
         const start = performance.now();
-        const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, map.forward, view));
+        const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
         this.selection = performance.now() - start;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
@@ -262,7 +268,8 @@ export class Terrain {
         this.work = work;
         this.anchor = anchor;
         this.above = view.above;
-        this.write(r, anchor, rule, map.forward, work, view.above);
+        this.lonLat = view.lonLat;
+        this.write(r, anchor, rule, forward, work, view.above);
     }
 
     /**
@@ -311,14 +318,16 @@ export class Terrain {
         probe.setBindGroup(1, r.surfaceGroup);
         probe.dispatchWorkgroups(1);
         probe.end();
-        encoder.copyBufferToBuffer(r.probed, 0, readback, 0, 4);
-        const frame = this.frameNumber;
+        encoder.copyBufferToBuffer(r.probed, 0, readback, 0, 20);
+        const frame = this.frameNumber, lonLat = this.lonLat;
         this.probing++;
         return () => readback.mapAsync(GPUMapMode.READ).then(() => {
-            const height = new Float32Array(readback.getMappedRange())[0];
+            const [height, east, west, north, south] = new Float32Array(readback.getMappedRange());
             readback.unmap();
             r.readbacks.push(readback);
-            if (frame > this.floor && (!this.ground || frame > this.ground.frame)) this.ground = { height: height > -1e29 ? height : NaN, frame };
+            const known = (h: number) => h > -1e29, step = 2 * PROBE_STEP;
+            const slope: [number, number] = [east, west, north, south].every(known) ? [(east - west) / step, (north - south) / step] : [0, 0];
+            if (frame > this.floor && (!this.ground || frame > this.ground.frame)) this.ground = { height: known(height) ? height : NaN, slope, lonLat, frame };
         }, () => {}).finally(() => {
             this.probing--;
             this.changed();
@@ -409,6 +418,9 @@ export class Terrain {
             ints.set([...origin, centre[0] - anchor.whole[0], centre[1] - anchor.whole[1]], 28 + 4 * level);
         });
         device.queue.writeBuffer(r.surface, 0, surface);
+        // The points of the probe in LOD space, by the linear part of the cubic at the eye.
+        const [a, b, c, d] = [forward[1], forward[2], forward[11], forward[12]], k = PROBE_STEP / (a * d - b * c);
+        device.queue.writeBuffer(r.points, 0, new Float32Array([0, 0, d * k, -c * k, -d * k, c * k, -b * k, a * k, b * k, -a * k]));
         if (work.map) device.queue.writeBuffer(r.map, 0, work.map);
         for (const { page, data } of work.uploads) {
             device.queue.writeTexture({ texture: r.heights, origin: origin(page.slot) }, data.texels, { bytesPerRow: PAGE * data.texels.BYTES_PER_ELEMENT }, [PAGE, PAGE, 1]);

@@ -11,9 +11,7 @@ describe('LOD space and render space', () => {
     const error = (distance: number) => Math.max(...[0, 1, 2, 3, 4, 5, 6, 7].map(k => {
         const bearing = k * Math.PI / 4, s: [number, number] = [distance * Math.sin(bearing), distance * Math.cos(bearing)];
         const [east, north] = frame.local(...tileLonLat(anchor.whole[0] + anchor.part[0] + s[0] / anchor.unit, anchor.whole[1] + anchor.part[1] - s[1] / anchor.unit, 30));
-        const x = cubic(map.forward, ...s, 0), y = cubic(map.forward, ...s, 10);
-        const back = [cubic(map.inverse, x, y, 0), cubic(map.inverse, x, y, 10)];
-        return Math.max(Math.hypot(x - (east - eyeEast), y - (north - eyeNorth)), Math.hypot(back[0] - s[0], back[1] - s[1]));
+        return Math.hypot(cubic(map, ...s, 0) - (east - eyeEast), cubic(map, ...s, 10) - (north - eyeNorth));
     }));
 
     it('splits the eye into whole units and a part, at the scale of its latitude', () => {
@@ -26,7 +24,7 @@ describe('LOD space and render space', () => {
         expect(lodSpace(anchor, x + 100, y - 100)).toEqual([100 * anchor.unit, 100 * anchor.unit]);
     });
 
-    it('places the terrain where the frame places a point, and back, to 3 mm within 30 km and 5 m at 200 km', () => {
+    it('places the terrain where the frame places a point, to 3 mm within 30 km and 5 m at 200 km', () => {
         expect(error(3_000)).toBeLessThan(1e-5);
         expect(error(30_000)).toBeLessThan(3e-3);
         expect(error(200_000)).toBeLessThan(5);

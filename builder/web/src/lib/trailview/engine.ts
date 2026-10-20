@@ -1,6 +1,6 @@
 import type { PlannerConfig } from '../planner/config';
 import { instantAt, solarPosition, solarTerms } from '../planner/layers/sun';
-import { eyeAltitude, follow, move, viewProjection, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, move, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
@@ -64,8 +64,8 @@ export class TrailView {
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
     private gpuState!: { gpu: Gpu; uniform: GPUBuffer; times: PassTimes; depth?: GPUTexture };
-    /** The ground under the eye, following the probe; a new view forgets it. */
-    private held?: number;
+    /** The ground under the eye, on the plane of the last probe; a new view forgets it. */
+    private footing?: Footing;
     private ready = false;
     private pending = false;
     private moved = false;
@@ -110,7 +110,7 @@ export class TrailView {
         const pose = this.poseOf(view);
         // A view at another place forgets the ground; a scripted flight step keeps it for the probe to follow.
         if (Math.hypot(pose.east - this.pose.east, pose.north - this.pose.north) > NEW_PLACE) {
-            this.held = undefined;
+            this.footing = undefined;
             this.terrain.forget();
         }
         this.pose = pose;
@@ -175,13 +175,13 @@ export class TrailView {
 
     /** The ground under the eye, from the GPU probe; where no level knows it, the last known ground. */
     private ground(): number | undefined {
-        return this.held;
+        return this.footing && groundOf(this.footing, this.pose.east, this.pose.north);
     }
 
-    /** Whether the eye stands on the last probe. */
+    /** Whether the eye stands on the last probe, with no step left to fade out. */
     private settled(): boolean {
-        const probe = this.terrain.ground?.height;
-        return probe === undefined || Number.isNaN(probe) || probe === this.held;
+        const probe = this.terrain.ground;
+        return !probe || Number.isNaN(probe.height) || (probe.frame === this.footing?.probe.frame && this.footing.step === 0);
     }
 
     /** The eye; a walking eye waits for a known ground. */
@@ -213,8 +213,11 @@ export class TrailView {
         const start = performance.now();
         const steer = this.controls.steer(), dt = this.last ? Math.min(0.1, (now - this.last) / 1000) : 0;
         if (steer) this.pose = move(this.pose, steer, dt, this.ground());
-        const probe = this.terrain.ground?.height;
-        if (probe !== undefined && !Number.isNaN(probe)) this.held = follow(this.held, probe, dt);
+        const probe = this.terrain.ground;
+        if (probe && !Number.isNaN(probe.height)) {
+            const [east, north] = this.frame.local(...probe.lonLat);
+            this.footing = follow(this.footing, { ...probe, east, north }, this.pose.east, this.pose.north, dt);
+        }
         const settled = this.settled();
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
