@@ -214,7 +214,7 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            osmium.map_err(Unplanned::Invalid)?;
+            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
         let mut reads = vec![Input::step(osm.name.clone())];
@@ -396,6 +396,7 @@ impl Planner {
             ));
         }
         if on("trailview-features") {
+            osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
             steps.push(python(
@@ -977,6 +978,17 @@ mod tests {
             ("planner/places", "planner/search/pois"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
+    }
+
+    #[test]
+    fn trailview_features_need_osmium_in_the_plan() {
+        let temp = temp("planner-trailview-features");
+        let store = store(&temp, &["2026-10-01"]);
+        let plan = |layers: &[&str]| {
+            Planner.steps_with_tool(&root(), &inputs(AREA, layers), &regions(), &store, Err("no osmium".into()))
+        };
+        assert!(plan(&[]).is_ok(), "one source area needs no Osmium");
+        assert!(matches!(plan(&["trailview-features"]), Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
     }
 
     #[test]

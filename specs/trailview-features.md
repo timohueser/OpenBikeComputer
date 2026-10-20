@@ -30,17 +30,26 @@ nearer the pole, so it is at least `buffer_m` at every point of the tile. The wi
 cut and fill cone of a road, reaches 25 m past the road edge. 40 m holds it for a road up to
 30 m wide, so neighbouring terrain nodes stamp the same apron.
 
+The buffer is for the stamps. A tile owns the points from 0 to less than 8192 on each axis: a
+reader that draws or places features uses only the part of a feature in that square, so a point
+on a shared edge or in the buffer of two tiles is drawn once.
+
 ### Generalization
 
 Zoom 14 keeps each vertex. Below zoom 14, the bake simplifies each line and ring with
 Douglas-Peucker to `extent / 2048` tile units, a quarter texel of a 512-texel terrain node. A
 vertex that two features share stays, and so do the ends of a line. Thus road junctions stay
-joined, and a river keeps its end on the shore of its lake. The bake simplifies a feature once
-for each zoom, before it cuts the feature into tiles, so neighbouring tiles hold the same line.
+joined, and a river keeps its end on the shore of its lake. Then each edge of an area that
+crosses another edge of the same feature gets back the vertex at which Douglas-Peucker would
+split it next, until no two edges cross. Thus a ring that does not cross itself in OSM does not
+cross itself after the simplification, and an island stays inside its lake. The bake simplifies a
+feature once for each zoom, before it cuts the feature into tiles, so neighbouring tiles hold the
+same line.
 
-After the cut, the bake rounds each vertex to tile units and removes repeated vertices. A line
-part with fewer than 2 vertices goes. A ring with fewer than 3 vertices or with no area goes; when
-an outer ring goes, its holes go too.
+The cut of a concave ring can leave edges on the border of the buffered square, outside the tile
+square. After the cut, the bake rounds each vertex to tile units, which moves it by at most half a
+unit, and removes repeated vertices. A line part with fewer than 2 vertices goes. A ring with
+fewer than 3 vertices or with no area goes; when an outer ring goes, its holes go too.
 
 ## Tile
 
@@ -100,8 +109,8 @@ and a selector that matches its tags. An object that no entry takes is not in th
 | Field | Value |
 | --- | --- |
 | `kind` | The name: lowercase kebab-case, unique. A tile names its kinds; the engine module of the same name draws it |
-| `geometry` | `point`: a node. `line`: a way, open or closed. `area`: a closed way, or a multipolygon relation with its holes. A closed way is a line and an area, so it can give one feature of each |
-| `match` | A list of selectors. One selector must match. A selector maps OSM keys to `"*"`, any value other than `no`, or to a list of values. Each key of the selector must match. Keys and values hold no `,` or `=` |
+| `geometry` | `point`: a node. `line`: a way, open or closed. `area`: a closed way, or a multipolygon relation with its holes. A closed way with `area=yes` is an area only, and one with `area=no` is a line only. Another closed way is a line and an area, and can give one feature of each, except when one tag selects it for a line entry and for an area entry: then it is an area only, as a closed `waterway=dam` is |
+| `match` | A list of selectors. One selector must match. A selector maps OSM keys to `"*"`, any value other than `no`, or to a list of values. Each key of the selector must match |
 | `keep` | The OSM keys whose values the tiles keep, when the object has them |
 | `height` | `surface`: it stands on the drawn surface and has no height of its own. `pad`: one height for the whole feature, such as a house floor or a lake level. `profile`: a height for each vertex, such as a road or a river level. `none`: no height, such as an outline |
 | `min_zoom` | 8 to 14, 14 when absent: the lowest zoom that holds the kind |

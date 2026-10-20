@@ -37,7 +37,7 @@ def validate(kinds):
     if not isinstance(kinds, list) or not kinds:
         raise ValueError("The kind table is a list of entries")
     names = set()
-    word = lambda text: isinstance(text, str) and text != "" and not set(text) & set(",=")
+    word = lambda text: isinstance(text, str) and text != ""
     for entry in kinds:
         name = entry.get("kind") if isinstance(entry, dict) else None
 
@@ -61,7 +61,7 @@ def validate(kinds):
             for key, values in selector.items():
                 check(word(key) and (values == "*" or isinstance(values, list) and values
                                      and all(map(word, values)) and len(set(values)) == len(values)),
-                      f"{key!r} takes \"*\" or a list of unique values without ',' or '='")
+                      f"{key!r} takes \"*\" or a list of unique values")
         keep = entry.get("keep")
         check(isinstance(keep, list) and all(map(word, keep)) and len(set(keep)) == len(keep),
               "keep is a list of unique keys")
@@ -77,6 +77,11 @@ def kind_of(kinds, geometry, tags):
     """The first entry of `geometry` with a selector that matches `tags`, active or not."""
     return next((entry for entry in kinds if entry["geometry"] == geometry
                  and any(matches(selector, tags) for selector in entry["match"])), None)
+
+
+def selected_by(entry, tags):
+    """The tags through which a selector of `entry` matches."""
+    return {(key, tags[key]) for selector in entry["match"] if matches(selector, tags) for key in selector}
 
 
 def world(lon, lat):
@@ -96,6 +101,12 @@ def objects(kinds, pbf, binary):
             if not entry or not entry.get("active", True):
                 continue
             coordinates = geometry["coordinates"]
+            # Osmium gives a closed way as a line and as an area. When one tag selects it for both, as
+            # `waterway=dam` does, it is an area.
+            if kind == "line" and coordinates[0] == coordinates[-1] and tags.get("area") != "no":
+                area = kind_of(kinds, "area", tags)
+                if area and selected_by(entry, tags) & selected_by(area, tags):
+                    continue
             if kind == "point":
                 parts = [(False, [world(*coordinates)])]
             elif kind == "line":
@@ -110,40 +121,97 @@ def objects(kinds, pbf, binary):
 
 def simplified(geometry, parts, anchors, tolerance):
     """Douglas-Peucker on each part. The anchors, vertices that other features share, and the ends
-    of a line stay: junctions and the joins of rivers and lakes keep their places."""
+    of a line stay: junctions and the joins of rivers and lakes keep their places. The rings of an
+    area then take back vertices until no two of their edges cross."""
     if geometry == "point":
         return parts
-    result = []
+    sequences = []
     for (outer, points), fixed in zip(parts, anchors):
         if geometry == "line":
-            result.append((outer, reduced(points, sorted({0, len(points) - 1, *fixed}), tolerance)))
-            continue
-        start, count = (fixed or [0])[0], len(points)
-        ring = points[start:] + points[:start + 1]
-        stops = sorted({(index - start) % count for index in fixed} | {0, count})
-        result.append((outer, reduced(ring, stops, tolerance)[:-1]))
-    return result
+            stops = sorted({0, len(points) - 1, *fixed})
+        else:
+            start = (fixed or [0])[0]
+            stops = sorted({(index - start) % len(points) for index in fixed} | {0, len(points)})
+            points = points[start:] + points[:start + 1]
+        sequences.append((points, reduced(points, stops, tolerance)))
+    if geometry == "area":
+        untangle(sequences)
+    end = -1 if geometry == "area" else None
+    return [(outer, [points[index] for index in kept[:end]]) for (outer, _), (points, kept) in zip(parts, sequences)]
+
+
+def farthest(points, i, j):
+    """The index between i and j of the point farthest from the chord i-j, or None, and its distance."""
+    (ax, ay), (bx, by) = points[i], points[j]
+    dx, dy = bx - ax, by - ay
+    length = math.hypot(dx, dy)
+    distance, index = -1.0, None
+    for k in range(i + 1, j):
+        px, py = points[k]
+        d = abs(dx * (ay - py) - dy * (ax - px)) / length if length else math.hypot(px - ax, py - ay)
+        if d > distance:
+            distance, index = d, k
+    return index, distance
 
 
 def reduced(points, stops, tolerance):
-    keep = set(stops)
-    for first, last in zip(stops, stops[1:]):
-        spans = [(first, last)]
-        while spans:
-            i, j = spans.pop()
-            (ax, ay), (bx, by) = points[i], points[j]
-            dx, dy = bx - ax, by - ay
-            length = math.hypot(dx, dy)
-            farthest, index = tolerance, None
-            for k in range(i + 1, j):
-                px, py = points[k]
-                distance = abs(dx * (ay - py) - dy * (ax - px)) / length if length else math.hypot(px - ax, py - ay)
-                if distance > farthest:
-                    farthest, index = distance, k
+    """The sorted indices that Douglas-Peucker keeps between the stops."""
+    keep, spans = set(stops), list(zip(stops, stops[1:]))
+    while spans:
+        i, j = spans.pop()
+        index, distance = farthest(points, i, j)
+        if index is not None and distance > tolerance:
+            keep.add(index)
+            spans += [(i, index), (index, j)]
+    return sorted(keep)
+
+
+def untangle(sequences):
+    """Give each edge that crosses another edge of the rings the vertex at which Douglas-Peucker
+    would split it next, until no edges cross. Rings without crossings at full detail end without
+    crossings."""
+    while True:
+        added = set()
+        for ring, edge in crossings(sequences):
+            points, kept = sequences[ring]
+            index, _ = farthest(points, kept[edge], kept[edge + 1])
             if index is not None:
-                keep.add(index)
-                spans += [(i, index), (index, j)]
-    return [points[index] for index in sorted(keep)]
+                added.add((ring, index))
+        if not added:
+            return
+        for ring, index in added:
+            sequences[ring][1].append(index)
+        for _, kept in sequences:
+            kept.sort()
+
+
+def crosses(a, b, c, d):
+    side = lambda p, q, r: (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    return side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0
+
+
+def crossings(sequences):
+    """(ring, edge) of each kept edge that crosses another one. A grid of about one edge per cell
+    finds the pairs to test."""
+    edges = [(ring, n, points[kept[n]], points[kept[n + 1]])
+             for ring, (points, kept) in enumerate(sequences) for n in range(len(kept) - 1)]
+    if len(edges) < 4:
+        return set()
+    xs, ys = [x for *_, a, b in edges for x in (a[0], b[0])], [y for *_, a, b in edges for y in (a[1], b[1])]
+    cell = max(max(xs) - min(xs), max(ys) - min(ys)) / math.isqrt(len(edges)) or 1.0
+    grid = {}
+    for number, (*_, (ax, ay), (bx, by)) in enumerate(edges):
+        for column in range(int(min(ax, bx) // cell), int(max(ax, bx) // cell) + 1):
+            for row in range(int(min(ay, by) // cell), int(max(ay, by) // cell) + 1):
+                grid.setdefault((column, row), []).append(number)
+    found = set()
+    for members in grid.values():
+        for position, first in enumerate(members):
+            for second in members[position + 1:]:
+                (r1, n1, a, b), (r2, n2, c, d) = edges[first], edges[second]
+                if len({a, b, c, d}) == 4 and crosses(a, b, c, d):
+                    found |= {(r1, n1), (r2, n2)}
+    return found
 
 
 def clip_line(points, rect):
@@ -252,33 +320,51 @@ class Tiles:
     def meets(self, zoom, parts):
         """Whether the parts come within one tile of the tiles of the region at `zoom`."""
         n, (c0, r0, c1, r1) = 1 << zoom, self.span(zoom)
-        xs, ys = [x * n for _, points in parts for x, _ in points], [y * n for _, points in parts for _, y in points]
-        return min(xs) < c1 + 2 and max(xs) > c0 - 1 and min(ys) < r1 + 2 and max(ys) > r0 - 1
+        x0, y0, x1, y1 = (value * n for value in extent(parts))
+        return x0 < c1 + 2 and x1 > c0 - 1 and y0 < r1 + 2 and y1 > r0 - 1
 
     def add(self, zoom, entry, tags, parts):
         """Add the feature to each tile of `zoom` in the region whose buffered square it meets, cut to
         that square. Whether a tile took it."""
-        scale, geometry = (1 << zoom) * EXTENT, entry["geometry"]
+        scale = (1 << zoom) * EXTENT
         parts = [(outer, [(x * scale, y * scale) for x, y in points]) for outer, points in parts]
-        xs, ys = [x for _, points in parts for x, _ in points], [y for _, points in parts for _, y in points]
-        box = (min(xs), min(ys), max(xs), max(ys))
+        box = extent(parts)
         # The buffer grows towards the pole: twice that of the outer rows bounds every row's.
         margin = 2 * max(pad(zoom, int(box[1] // EXTENT) - 1), pad(zoom, int(box[3] // EXTENT) + 1))
         c0, r0, c1, r1 = self.span(zoom)
-        taken = False
-        for row in range(max(r0, int((box[1] - margin) // EXTENT)), min(r1, int((box[3] + margin) // EXTENT)) + 1):
-            buffer = pad(zoom, row)
-            for column in range(max(c0, int((box[0] - margin) // EXTENT)), min(c1, int((box[2] + margin) // EXTENT)) + 1):
-                rect = (column * EXTENT - buffer, row * EXTENT - buffer,
-                        (column + 1) * EXTENT + buffer, (row + 1) * EXTENT + buffer)
-                if box[0] > rect[2] or box[2] < rect[0] or box[1] > rect[3] or box[3] < rect[1]:
-                    continue
-                inside = rect[0] <= box[0] and box[2] <= rect[2] and rect[1] <= box[1] and box[3] <= rect[3]
-                cut = quantized(geometry, parts if inside else clipped(geometry, parts, rect), column * EXTENT, row * EXTENT)
-                if cut:
-                    self.tiles.setdefault((zoom, column, row), Tile()).add(entry["kind"], tags, geometry, cut)
-                    taken = True
-        return taken
+        c0, r0 = max(c0, int((box[0] - margin) // EXTENT)), max(r0, int((box[1] - margin) // EXTENT))
+        c1, r1 = min(c1, int((box[2] + margin) // EXTENT)), min(r1, int((box[3] + margin) // EXTENT))
+        return c0 <= c1 and r0 <= r1 and self.cut(zoom, entry, tags, parts, box, c0, r0, c1, r1)
+
+    def cut(self, zoom, entry, tags, parts, box, c0, r0, c1, r1):
+        """Cut the parts to the buffered square of the tiles c0..c1 × r0..r1, then halve the range: a
+        feature over many tiles is not cut once for each of them. Whether a tile took it."""
+        geometry, buffer = entry["geometry"], max(pad(zoom, r0), pad(zoom, r1))
+        rect = (c0 * EXTENT - buffer, r0 * EXTENT - buffer, (c1 + 1) * EXTENT + buffer, (r1 + 1) * EXTENT + buffer)
+        if box[0] > rect[2] or box[2] < rect[0] or box[1] > rect[3] or box[3] < rect[1]:
+            return False
+        if not (rect[0] <= box[0] and box[2] <= rect[2] and rect[1] <= box[1] and box[3] <= rect[3]):
+            parts = clipped(geometry, parts, rect)
+            if (box := extent(parts)) is None:
+                return False
+        if (c0, r0) == (c1, r1):
+            cut = quantized(geometry, parts, c0 * EXTENT, r0 * EXTENT)
+            if cut:
+                self.tiles.setdefault((zoom, c0, r0), Tile()).add(entry["kind"], tags, geometry, cut)
+            return bool(cut)
+        if c1 - c0 >= r1 - r0:
+            middle = (c0 + c1) // 2
+            halves = ((c0, r0, middle, r1), (middle + 1, r0, c1, r1))
+        else:
+            middle = (r0 + r1) // 2
+            halves = ((c0, r0, c1, middle), (c0, middle + 1, c1, r1))
+        return any([self.cut(zoom, entry, tags, parts, box, *half) for half in halves])
+
+
+def extent(parts):
+    """The box (x0, y0, x1, y1) of the points of the parts, or None when they have none."""
+    xs, ys = [x for _, points in parts for x, _ in points], [y for _, points in parts for _, y in points]
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
 def varint(out, value):
@@ -427,17 +513,20 @@ def bake(kinds, pbf, bounds, output, attribution):
             "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
             "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
             "center_zoom": MAX_ZOOM, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
-        }, {"features_format": FORMAT, "extent": EXTENT, "buffer_m": BUFFER_M, "attribution": attribution})
+        }, {"features_format": FORMAT, "extent": EXTENT, "buffer_m": BUFFER_M, "attribution": attribution,
+            "bounds": bounds})
     size = output.stat().st_size
     return {"osmium": version.splitlines()[0], "kinds": counts, "tiles": len(tiles.tiles), "bytes": size,
             "bytes_per_km2": round(size / area_km2(bounds))}
 
 
 def step(request):
-    options = request["options"]
+    options, output = request["options"], Path(request["output"])
     (pbf,) = request["layers"]["planner/osm"].values()
-    archive = Path(request["output"]) / "trailview-features.pmtiles"
-    metrics = bake(validate(options["kinds"]), Path(pbf), options["bounds"], archive, options["attribution"])
+    # Osmium export reads the file twice and finds its format by the file name; a store object has none.
+    osm = step_request.view({"osm.pbf": pbf}, output.with_name("planner-osm")) / "osm.pbf"
+    archive = output / "trailview-features.pmtiles"
+    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"])
     step_request.metrics(request, metrics)
 
 

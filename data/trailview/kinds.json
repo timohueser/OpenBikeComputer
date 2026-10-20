@@ -2,14 +2,22 @@
   {
     "kind": "tunnel",
     "geometry": "line",
-    "match": [{"highway": "*", "tunnel": ["yes", "building_passage"]}],
+    "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
+                           "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
+                           "residential", "living_street", "service", "road", "track", "path", "footway",
+                           "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"],
+               "tunnel": ["yes", "building_passage"]}],
     "keep": ["highway", "tunnel", "width", "lanes", "layer"],
     "height": "profile"
   },
   {
     "kind": "gallery",
     "geometry": "line",
-    "match": [{"highway": "*", "tunnel": ["avalanche_protector"]}],
+    "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
+                           "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
+                           "residential", "living_street", "service", "road", "track", "path", "footway",
+                           "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"],
+               "tunnel": ["avalanche_protector"]}],
     "keep": ["highway", "width", "lanes", "layer"],
     "height": "profile"
   },
@@ -61,6 +69,13 @@
     "height": "profile"
   },
   {
+    "kind": "dam-area",
+    "geometry": "area",
+    "match": [{"waterway": ["dam", "weir"]}],
+    "keep": ["waterway", "height"],
+    "height": "pad"
+  },
+  {
     "kind": "river-area",
     "geometry": "area",
     "match": [{"waterway": ["riverbank"]}, {"natural": ["water"], "water": ["river", "canal", "stream"]}],
@@ -90,6 +105,13 @@
     "match": [{"waterway": ["dam", "weir"]}],
     "keep": ["waterway", "height"],
     "height": "profile"
+  },
+  {
+    "kind": "dam-point",
+    "geometry": "point",
+    "match": [{"waterway": ["dam", "weir"]}],
+    "keep": ["waterway", "height"],
+    "height": "surface"
   },
   {
     "kind": "waterfall",
