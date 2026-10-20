@@ -250,10 +250,10 @@ kind = "data"
 group = "Elevation, Wikimedia, climate and snow"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Mecklenburg-Vorpommern, Germany: DGM1 1 m"
-licence = "LicenseRef-GeoBasis-DE-MV-open-data"
-licence_url = "https://www.laiv-mv.de/Geoinformation/Open_Data_Angebot/"
-attribution = "© GeoBasis-DE/M-V"
-obligations = "Open data, attribution required"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+# The service asks for the year of the last delivery of the data in the credit.
+attribution = "© GeoBasis-DE/M-V {year}"
 fetch = { kind = "dtm", url = "https://www.geodaten-mv.de/dienste/dgm_wcs" }
 extent = [10.5, 53.0, 14.5, 54.8]
 areas = ["europe/germany/mecklenburg-vorpommern"]
