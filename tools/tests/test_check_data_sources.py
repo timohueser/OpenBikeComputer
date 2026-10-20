@@ -38,5 +38,20 @@ class HostGuardTests(unittest.TestCase):
         self.assertEqual(guard.hosts_in(text), set())
 
 
+class ProductGuardTests(unittest.TestCase):
+    def test_a_source_names_known_products_and_its_use(self):
+        registry = {"source": [
+            {"id": "good", "products": ["planner", "trailview"], "use": "Land cover of the basemap"},
+            {"id": "no-products", "use": "Land cover of the basemap"},
+            {"id": "no-use", "products": ["device"]},
+            {"id": "unknown", "products": ["planner", "atlas"], "use": "Land cover of the basemap"},
+        ]}
+        self.assertEqual(guard.undocumented(registry), [
+            "no-products: give `products` and `use`",
+            "no-use: give `products` and `use`",
+            "unknown: no product `atlas`",
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when code fetches from a host that is neither a declared source nor a listed non-bake host.
+"""Fail when code fetches from an undeclared host, or a source does not say who reads it and why.
 
 The registry is the one list of external data, and its licence and attribution are only as
 complete as that list. URL literals in justfile, host/, planner/, sim/, tools/, fixtures/,
@@ -8,12 +8,15 @@ builder/server/ and builder/usb/ name a host. That host is the host of a source'
 new download from a host that a source already declares (api.github.com, for one) passes. Tests
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
 cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`.
+
+Each source names its `products`, from `PRODUCTS`, and its `use`. The guide page of the data
+sources shows them.
 """
 
 from __future__ import annotations
 
 GOVERNS = ['justfile', 'host/**', 'planner/**', 'sim/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'builder/usb/**', 'data/sources.toml']
-RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/ fetches from is a source in data/sources.toml or a listed non-bake host.'
+RULE = 'Every host that code in justfile, host/, planner/, sim/, tools/, fixtures/, builder/server/ and builder/usb/ fetches from is a source in data/sources.toml or a listed non-bake host, and each source names its products and its use.'
 
 import re
 import subprocess
@@ -28,6 +31,8 @@ TEST = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_tests?\.(rs|py)$|tests\.
 URL = re.compile(r"https?://((?:\{[^{}\s]*\}|[A-Za-z0-9.-])+)")
 # RFC 2606 and RFC 6761 names, which never reach a real server.
 RESERVED = re.compile(r"(^|\.)(example|test|invalid|localhost)$|(^|\.)example\.(com|net|org)$|^127\.0\.0\.1$")
+
+PRODUCTS = ("device", "planner", "search", "trailview")
 
 NOT_SOURCES = {
     # Our own services and storage.
@@ -95,6 +100,17 @@ def undeclared(files: dict[str, str], allowed: set[str]) -> dict[str, list[str]]
     return found
 
 
+def undocumented(registry: dict) -> list[str]:
+    """Each source without `products` or `use`, and each product name that does not exist."""
+    problems = []
+    for source in registry["source"]:
+        products = source.get("products", [])
+        if not products or not source.get("use"):
+            problems.append(f"{source['id']}: give `products` and `use`")
+        problems += [f"{source['id']}: no product `{name}`" for name in products if name not in PRODUCTS]
+    return problems
+
+
 def code_files() -> dict[str, str]:
     paths = subprocess.check_output(["git", "-C", str(ROOT), "ls-files", *SCOPE], text=True).split("\n")
     return {path: (ROOT / path).read_text(errors="replace") for path in paths
@@ -109,8 +125,14 @@ def main() -> int:
         print("Add the source, or its host to `hosts` of the source it belongs to:", file=sys.stderr)
         for host, paths in sorted(missing.items()):
             print(f"  {host}: {', '.join(sorted(paths))}", file=sys.stderr)
+    problems = undocumented(registry)
+    if problems:
+        print(f"data sources: each source names its products ({', '.join(PRODUCTS)}) and its use:", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+    if missing or problems:
         return 1
-    print("data sources: every fetched host is declared")
+    print("data sources: every fetched host is declared, and every source names its products and its use")
     return 0
 
 
