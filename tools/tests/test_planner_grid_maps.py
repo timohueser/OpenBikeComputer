@@ -105,6 +105,30 @@ class MapGrid(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'tile format'):
                 planner_verify.archive(path, "basemap")
 
+    def test_trailview_archives_verify_as_their_raster_tiles(self):
+        def tile(format, **options):
+            image = io.BytesIO()
+            Image.new("RGBA", (2, 2), (90, 120, 60, 200)).save(image, format=format, **options)
+            return image.getvalue()
+
+        webp, avif = tile("WEBP", lossless=True), tile("AVIF")
+        for kind, tile_type, data, ok in [("trailview-material", TileType.WEBP, webp, True),
+                                          ("trailview-colour-ndvimax", TileType.WEBP, webp, True),
+                                          ("trailview-colour-q1", TileType.AVIF, avif, True),
+                                          ("trailview-colour-q1", TileType.WEBP, webp, True),
+                                          ("trailview-material", TileType.AVIF, avif, False)]:
+            with self.subTest(kind=kind, tile_type=tile_type), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "archive.pmtiles"
+                with write(path) as writer:
+                    writer.write_tile(zxy_to_tileid(9, 0, 0), data)
+                    writer.finalize({"tile_type": tile_type, "tile_compression": Compression.NONE, "min_zoom": 9, "max_zoom": 9},
+                                    {"trailview_format": 1})
+                if ok:
+                    planner_verify.archive(path, kind)
+                else:
+                    with self.assertRaisesRegex(ValueError, "tile format"):
+                        planner_verify.archive(path, kind)
+
     def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
         for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),
                                          ('climate', 8, 183552, {'years': 10}),

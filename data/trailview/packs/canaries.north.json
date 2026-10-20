@@ -1,0 +1,14 @@
+{
+ "name": "Canary Islands, north",
+ "extends": "canaries",
+ "about": "The windward side under the trade-wind cloud: laurel forest and tree heath, ferns, palms by the farms.",
+ "trees": {
+  "canary-pine": { "elevation": [1000, 2200] },
+  "laurel": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1500], "weight": 2, "evergreen": true },
+  "canary-palm": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 1, "evergreen": true },
+  "laurel-scrub": { "model": "laurel", "leaf": "broadleaved", "cover": "shrub", "elevation": [300, 1500], "weight": 2, "evergreen": true },
+  "faya": { "model": "holm-oak", "leaf": "broadleaved", "cover": "tree", "elevation": [300, 1400], "weight": 5, "evergreen": true },
+  "codeso": { "model": "gorse", "leaf": "broadleaved", "cover": "shrub", "elevation": [200, 2000], "weight": 3 }
+ },
+ "ground": {"fern": {}}
+}

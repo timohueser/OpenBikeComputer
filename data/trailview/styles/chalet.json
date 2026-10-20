@@ -1,0 +1,19 @@
+{
+ "name": "Chalet",
+ "pitch": [18, 26],
+ "eave": 1.1,
+ "verge": 1.4,
+ "hip": 0,
+ "timber": "upper",
+ "shutters": true,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#efe9dc", "#e9e2d0", "#f3efe6"],
+  "wood": ["#6b4a32", "#5a3b28", "#7a5434"],
+  "roof": ["#6f6a66", "#5a4f48", "#7d7670"],
+  "door": ["#5a3b28", "#7a5434"],
+  "shutter": ["#3f6a42", "#a8382e", "#5a3b28"],
+  "plinth": "#9a958c",
+  "chimney": "#d9d3c6"
+ }
+}

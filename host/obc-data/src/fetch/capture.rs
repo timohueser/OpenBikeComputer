@@ -65,6 +65,47 @@ pub(crate) fn run(
                 },
             )
         }
+        "corine-land-cover" => {
+            let [bbox] = values(request, ["bbox"])?;
+            let bbox = parse_bbox(bbox)?;
+            capture(
+                store,
+                request,
+                &format!("bbox={bbox}"),
+                &[source],
+                |_| &[0],
+                false,
+                |_, out| {
+                    let mut command = python(root, Some("trailview"))?;
+                    command
+                        .args(["-m", "tools.trailview.ground", &format!("--bounds={bbox}"), "--fetch-corine"])
+                        .arg(out);
+                    Ok(command)
+                },
+            )
+        }
+        "sentinel-2-mosaics" => {
+            let [bbox, year] = values(request, ["bbox", "year"])?;
+            let bbox = parse_bbox(bbox)?;
+            if !self::year(year) {
+                return Err(format!("`year={year}` is not a year"));
+            }
+            capture(
+                store,
+                request,
+                &format!("bbox={bbox}&year={year}"),
+                &[source],
+                |_| &[0],
+                false,
+                |_, out| {
+                    let mut command = python(root, Some("trailview"))?;
+                    command
+                        .args(["-m", "tools.trailview.colour", &format!("--bounds={bbox}"), "--year", year, "--fetch"])
+                        .arg(out);
+                    Ok(command)
+                },
+            )
+        }
         "era5-land" => {
             let [bbox, first] = values(request, ["bbox", "first-year"])?;
             let bbox = parse_bbox(bbox)?;

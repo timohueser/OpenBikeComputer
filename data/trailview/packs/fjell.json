@@ -1,0 +1,31 @@
+{
+ "name": "Scandinavian fjell",
+ "extends": "base",
+ "about": "Low mountain birch with rowan, pine and spruce in the valley bottoms; dwarf birch, willow and juniper over crowberry, bilberry, heather and pale reindeer lichen; bog cotton, mountain avens and fireweed; reindeer, and sheep on summer grazing; wooden houses and cabins.",
+ "trees": {
+  "mountain-birch": { "model": "downy-birch", "latin": "Betula pubescens subsp. czerepanovii", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1300], "weight": 8 },
+  "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1000], "weight": 3 },
+  "norway-spruce": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 2 },
+  "downy-willow": { "model": "grey-willow", "latin": "Salix lapponum", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1400], "weight": 1, "evergreen": true }
+ },
+ "ground": {
+  "dwarf-birch": { "model": "garrigue", "latin": "Betula nana", "on": ["shrub", "grass", "moss"], "height": [0.2, 0.45], "share": 0.35 },
+  "crowberry": { "on": ["shrub", "moss", "bare", "grass"], "share": 0.15 },
+  "reindeer-lichen": { "model": "heather", "latin": "Cladonia rangiferina, Cladonia stellaris", "on": ["moss", "bare", "shrub"], "height": [0.05, 0.12], "share": 0.15 },
+  "mat-grass": { "share": 0.1 },
+  "moor-grass": { "share": 0.12 },
+  "bilberry": { "share": 0.15 },
+  "heather": { "share": 0.06 },
+  "bog-cotton": {},
+  "mountain-avens": { "model": "alpine-flowers", "latin": "Dryas octopetala", "on": ["grass", "moss", "bare"], "share": 0.04 },
+  "fireweed": { "model": "alpine-flowers", "latin": "Chamerion angustifolium", "on": ["grass", "shrub"], "height": [0.6, 1.2], "share": 0.03, "clumped": true }
+ },
+ "herds": {
+  "reindeer": { "model": "goat", "latin": "Rangifer tarandus", "groups": 3, "size": [3, 12], "on": ["heath", "rough-grass", "wet-grassland", "grassland", "bog"] },
+  "sheep": { "groups": 3, "size": [2, 6], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] }
+ },
+ "style": "falu-red-house",
+ "houses": "nordic-painted-house"
+}

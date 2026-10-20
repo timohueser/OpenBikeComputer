@@ -1,0 +1,34 @@
+{
+ "name": "Aegean",
+ "extends": "base",
+ "about": "Kermes oak, lentisk and tree heath maquis with phrygana cushions; olives, holm oak, valonia and downy oak, plane trees in the valleys and cypresses by the villages; Aleppo and Calabrian pine low down, black pine, Greek fir, chestnut and beech on the massifs, Bosnian pine at the Olympus treeline; goats and sheep. The orchards are olive groves.",
+ "trees": {
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 900], "weight": 3 },
+  "calabrian-pine": { "model": "aleppo-pine", "latin": "Pinus brutia", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 2 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1800], "weight": 3 },
+  "bosnian-pine": { "model": "scots-pine", "latin": "Pinus heldreichii", "leaf": "needleleaved", "cover": "tree", "elevation": [1700, 2500], "weight": 2 },
+  "greek-fir": { "model": "silver-fir", "latin": "Abies cephalonica", "leaf": "needleleaved", "cover": "tree", "elevation": [700, 1700], "weight": 3 },
+  "italian-cypress": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 800], "weight": 0.5 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 2 },
+  "kermes-oak": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1200], "weight": 2 },
+  "olive": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 600], "weight": 2 },
+  "valonia-oak": { "model": "european-beech", "latin": "Quercus ithaburensis subsp. macrolepis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 800], "weight": 1 },
+  "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [100, 1200], "weight": 2 },
+  "oriental-plane": { "model": "sycamore-maple", "latin": "Platanus orientalis", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1000], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1100], "weight": 2 },
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1900], "weight": 2 },
+  "kermes-oak-shrub": { "model": "holm-oak", "latin": "Quercus coccifera", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 3 },
+  "tree-heath": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1200], "weight": 1 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 1 }
+ },
+ "ground": {
+  "garrigue": {},
+  "thorny-burnet": { "model": "garrigue", "latin": "Sarcopoterium spinosum", "height": [0.25, 0.5] }
+ },
+ "herds": {
+  "goat": { "groups": 3, "size": [4, 12], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "sheep": { "groups": 2, "size": [6, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] }
+ },
+ "orchard": "olive",
+ "style": { "gr-l": "whitewashed-house", "gr-f": "village-house", "*": "stone-house" }
+}

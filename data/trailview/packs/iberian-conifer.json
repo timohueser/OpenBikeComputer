@@ -1,0 +1,41 @@
+{
+ "name": "Iberian conifer forests",
+ "extends": "base",
+ "about": "Black pine above all, Scots pine on the granite and the high sierras, maritime pine on sandstone and Aleppo pine low down; Spanish juniper woodland on the plateaus; holm, Portuguese and Pyrenean oak on the lower slopes, black poplar and ash along the rivers; prickly, common, Phoenician, dwarf and savin juniper, box, laurel-leaved rockrose, holm oak scrub, purging broom and blue hedgehog broom in the scrub, bracken on the granite; sheep flocks, goats, brown cattle and horses on the pastures, Iberian ibex on the crags; low tile-roofed stone and whitewashed village houses. Hawthorn stands in for the almond and cherry orchards.",
+ "trees": {
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [700, 2000], "weight": 5 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [1000, 2200], "weight": 4 },
+  "maritime-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [400, 1500], "weight": 2 },
+  "aleppo-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 1100], "weight": 1 },
+  "spanish-juniper": { "model": "western-red-cedar", "latin": "Juniperus thurifera", "leaf": "needleleaved", "cover": "tree", "elevation": [800, 1600], "weight": 2 },
+  "holm-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 3 },
+  "portuguese-oak": { "model": "european-beech", "latin": "Quercus faginea", "leaf": "broadleaved", "cover": "tree", "elevation": [600, 1500], "weight": 2 },
+  "pyrenean-oak": { "model": "european-beech", "latin": "Quercus pyrenaica", "leaf": "broadleaved", "cover": "tree", "elevation": [900, 1800], "weight": 2 },
+  "black-poplar": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1600], "weight": 1 },
+  "narrow-leaved-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 1400], "weight": 1 },
+  "holm-oak-shrub": { "model": "holm-oak", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 3 },
+  "prickly-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [0, 1600], "weight": 2 },
+  "common-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [800, 2000], "weight": 2 },
+  "juniper": { "model": "dwarf-juniper", "leaf": "needleleaved", "cover": "shrub", "elevation": [1600, 2900], "weight": 3 },
+  "phoenician-juniper": { "leaf": "needleleaved", "cover": "shrub", "elevation": [400, 1500], "weight": 1 },
+  "box": { "model": "garrigue", "latin": "Buxus sempervirens", "leaf": "broadleaved", "cover": "shrub", "elevation": [600, 1800], "weight": 1 },
+  "laurel-leaved-rockrose": { "model": "garrigue", "latin": "Cistus laurifolius", "leaf": "broadleaved", "cover": "shrub", "elevation": [600, 1700], "weight": 2 },
+  "purging-broom": { "model": "gorse", "latin": "Cytisus oromediterraneus", "leaf": "broadleaved", "cover": "shrub", "elevation": [1500, 2600], "weight": 3 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [600, 1800], "weight": 1 }
+ },
+ "ground": {
+  "garrigue": { "share": 0.1 },
+  "bracken": {},
+  "savin-juniper": { "model": "mountain-pine", "latin": "Juniperus sabina", "on": ["shrub", "grass", "bare"], "height": [0.3, 0.6], "share": 0.15, "clumped": true },
+  "blue-hedgehog-broom": { "model": "garrigue", "latin": "Erinacea anthyllis", "on": ["shrub", "bare"], "height": [0.2, 0.4], "share": 0.12 }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [20, 80], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "goat": { "groups": 1, "size": [8, 30], "on": ["rough-grass", "wet-grassland", "grassland", "scrub", "sclerophyllous-scrub", "bare-rock", "scree", "sparse"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [4, 15], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "horse": { "groups": 1, "size": [3, 10], "on": ["rough-grass", "wet-grassland", "grassland", "heath", "pasture", "arable"] },
+  "iberian-ibex": { "model": "goat", "latin": "Capra pyrenaica", "groups": 1, "size": [3, 12], "on": ["bare-rock", "scree", "sparse"] }
+ },
+ "orchard": "hawthorn",
+ "style": "village-house"
+}

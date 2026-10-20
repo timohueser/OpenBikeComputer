@@ -1,0 +1,19 @@
+{
+ "name": "Wood cabin",
+ "pitch": [26, 36],
+ "eave": 0.6,
+ "verge": 0.5,
+ "hip": 0,
+ "timber": "all",
+ "shutters": false,
+ "chimneys": 1,
+ "palette": {
+  "render": ["#d9d0bf"],
+  "wood": ["#8a5a3a", "#a8774c", "#6b4c36", "#7a5a40"],
+  "roof": ["#3f5a48", "#4a3a30", "#5f6466", "#7a3a2c"],
+  "door": ["#4a3324", "#7a3a2c", "#2f4a3a"],
+  "shutter": ["#4a3324"],
+  "plinth": "#7d7a74",
+  "chimney": "#8f8a84"
+ }
+}

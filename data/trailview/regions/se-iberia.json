@@ -1,0 +1,8 @@
+{
+ "name": "Southeast Iberian shrubs and woodlands",
+ "ecoregion": 803,
+ "extends": "world",
+ "leaf": "mixed",
+ "pack": "se-iberia",
+ "about": "The driest coast of Europe, from the Campo de Dalías past Cabo de Gata to Cartagena: dark volcanic hills and cliffs over grey-sand coves, bare schist and marl sierras with esparto, albaida and palmito in straw-coloured ground, white flat-roofed villages and cortijos among prickly pears, agaves and date palms, a sea of plastic greenhouses on the plains, and Aleppo pine plantings and old mine works on the hills. No split: one dry haze, one weather and one grade fit the whole strip; its volcanic, schist and marl ground differs in rock colour by lithology and Sentinel-2 colour, the greenhouses come with Sentinel-2 and the buildings, the sierras up to Carrascoy take the tree elevation bands, and Almería and Murcia share one house style."
+}

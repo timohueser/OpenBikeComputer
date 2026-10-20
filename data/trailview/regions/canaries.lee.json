@@ -1,0 +1,13 @@
+{
+ "name": "La Palma, La Gomera, El Hierro and Gran Canaria, lee and summits",
+ "extends": "canaries",
+ "where": [
+  [-18.03, 28.43, -17.7, 28.88],
+  [-15.86, 27.72, -15.34, 28.2],
+  [-17.37, 27.99, -17.08, 28.23],
+  [-18.18, 27.62, -17.86, 27.87]
+ ],
+ "about": "The lee sides and summits of the other high islands, one box per island under canaries.windward: tabaiba and cardón on the dry coasts and in ravines such as Fataga, palms, junipers and almonds in the thermophilous belt, open Canary pine on black lapilli on the Cumbre Vieja, in the Caldera de Taburiente and round the Tejeda basin, codeso and retama on the summit of La Palma, ochre and rust slopes under a dusty haze. canaries.tenerife-south is the same side of Tenerife. La Palma's summit above the trade-wind inversion stays here: its clear air is a height question for the haze and the weather, as for Las Cañadas, not an area.",
+ "leaf": "needleleaved",
+ "pack": "canaries.lee"
+}

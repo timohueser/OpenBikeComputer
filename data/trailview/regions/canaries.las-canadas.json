@@ -1,0 +1,17 @@
+{
+ "name": "Las Cañadas",
+ "extends": "canaries",
+ "where": [
+  [[-16.76, 28.24], [-16.73, 28.28], [-16.66, 28.31], [-16.58, 28.3], [-16.52, 28.27], [-16.54, 28.21], [-16.62, 28.185], [-16.7, 28.2]]
+ ],
+ "about": "The high caldera and Teide above the clouds: pumice, black and rust lava, retama domes and red tajinaste spikes under a deep sky.",
+ "look": {
+  "bare_luma": [0.071, 0.109, 0.106, 0.074],
+  "snap": 0.3,
+  "ramps": { "bare": ["#8c7866", "#8a7a62", "#88785e"] },
+  "hazeKm": 120,
+  "weather": {
+   "sunny": { "cover": 0.05, "base": 3500, "zenith": "#1f58b0", "horizon": "#9cbce0", "grey": 0.6 }
+  }
+ }
+}

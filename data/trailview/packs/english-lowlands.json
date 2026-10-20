@@ -1,0 +1,45 @@
+{
+ "name": "English Lowlands beech forests",
+ "extends": "base",
+ "about": "Beech hangers on the chalk and the Cotswold scarp, pedunculate oak and ash in the hedgerows and woods, hornbeam and sweet chestnut coppice in Essex, Kent and the Weald, field maple, holly and yew on the downs, sessile oak, birch and Scots pine on the sandy heaths, conifer plantations in the Forest of Dean, the New Forest and the Weald; alder and willow by the rivers; hawthorn, blackthorn and hazel in the hedges, gorse, broom, heather and bracken on the heaths, bluebells under the woods, reed in the marshes; sheep on the downs, brown beef and black-and-white dairy cattle in the vales, horses in paddocks and ponies on the heaths; brick and tile, flint, Cotswold stone and timber-framed houses, and orchards in Kent and Herefordshire.",
+ "trees": {
+  "european-beech": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 4 },
+  "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 5 },
+  "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "common-ash": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 3 },
+  "hornbeam": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "sweet-chestnut": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "field-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "sycamore-maple": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 2 },
+  "black-alder": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 200], "weight": 1 },
+  "white-willow": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 150], "weight": 1 },
+  "holly": { "model": "holm-oak", "latin": "Ilex aquifolium", "leaf": "broadleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "yew": { "model": "holm-oak", "latin": "Taxus baccata", "leaf": "needleleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "scots-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 450], "weight": 3 },
+  "black-pine": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 300], "weight": 1 },
+  "douglas-fir": { "leaf": "needleleaved", "cover": "tree", "elevation": [0, 450], "weight": 1 },
+  "hawthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 3 },
+  "blackthorn": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
+  "hazel": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 2 },
+  "common-broom": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 450], "weight": 1 },
+  "grey-willow": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 200], "weight": 1 }
+ },
+ "ground": {
+  "bracken": {},
+  "fern": {},
+  "heather": {},
+  "heather-bloom": {},
+  "bluebell": { "model": "alpine-flowers", "latin": "Hyacinthoides non-scripta", "on": ["tree"], "height": [0.2, 0.4], "share": 0.3, "clumped": true },
+  "common-reed": { "on": ["wetland"], "height": [1.5, 2.5], "share": 0.5, "clumped": true }
+ },
+ "herds": {
+  "sheep": { "groups": 3, "size": [10, 40], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath"] },
+  "cattle": { "model": "brown-cattle", "groups": 2, "size": [5, 20], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland"] },
+  "dairy-cattle": { "groups": 1, "size": [10, 40], "on": ["pasture", "grassland", "arable"] },
+  "horse": { "groups": 2, "size": [1, 6], "on": ["pasture", "grassland", "arable", "heath"] }
+ },
+ "orchard": "hawthorn",
+ "style": "house"
+}

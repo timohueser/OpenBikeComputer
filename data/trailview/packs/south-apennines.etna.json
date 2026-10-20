@@ -1,0 +1,15 @@
+{
+ "name": "Etna",
+ "extends": "south-apennines",
+ "about": "Calabrian pine above all on the upper flanks, Etna birch at the forest edge and on old lava, beech on the north-east flank, Etna broom on young lava; milk-vetch cushions on the high ash slopes. No silver fir and no Bosnian pine.",
+ "trees": {
+  "corsican-pine": { "elevation": [900, 2000], "weight": 8 },
+  "etna-birch": { "model": "silver-birch", "latin": "Betula aetnensis", "leaf": "broadleaved", "cover": "tree", "elevation": [1200, 2100], "weight": 2 },
+  "etna-broom": { "model": "gorse", "latin": "Genista aetnensis", "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 2000], "weight": 3 },
+  "silver-fir": null,
+  "bosnian-pine": null
+ },
+ "ground": {
+  "etna-milk-vetch": { "model": "garrigue", "latin": "Astragalus siculus", "on": ["bare"], "height": [0.2, 0.5], "share": 0.05, "clumped": true }
+ }
+}

@@ -1,0 +1,8 @@
+{
+ "name": "Pontic steppe",
+ "ecoregion": 735,
+ "extends": "world",
+ "leaf": "broadleaved",
+ "pack": "pontic",
+ "about": "Wide, almost treeless plains and low plateaus north and west of the Black Sea, from Dobruja, the Bărăgan and the Budjak over southern Moldova and Ukraine to the Don, the Kuban and the southern Ural foreland: wheat, sunflower and maize fields to the horizon, cut by shelterbelts of black locust, ash and elm and by poplars along the roads; straw-coloured feather-grass and wormwood steppe on the slopes, gullies and kurgans; reed-fringed limans and lagoons, and the willow and poplar floodplains of the Danube delta; the low granite and limestone hills of Măcin and Dobruja and the granite canyons of the Southern Bug with downy oak and thorn scrub; long villages of low whitewashed houses. No split: the region lies mostly below 300 m, with the Dobruja hills, the Stavropol upland and the Ural foreland up to about 800 m, in one dry continental climate, so one haze, weather and grade fit it; the greener Moldova and delta and the browner east differ in colour, which Sentinel-2 colour and the NDVI ramps carry, the oak and beech woods of the uplands come from the tree elevation bands, the reed and willow of the delta and the limans from WorldCover's wetland and tree classes, and the houses from the house style by country and subdivision."
+}

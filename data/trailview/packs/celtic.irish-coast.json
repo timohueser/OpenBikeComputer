@@ -1,0 +1,14 @@
+{
+ "name": "Irish coast",
+ "extends": "base",
+ "about": "Wet, windswept hills by the Atlantic: grass, heather and moor, sheep on the hill, wind-bent hawthorn and gorse, Irish cottages.",
+ "trees": {
+  "hawthorn": { "leaf": "broadleaved", "cover": "tree", "elevation": [0, 250], "weight": 1 },
+  "gorse": { "leaf": "broadleaved", "cover": "shrub", "elevation": [0, 350], "weight": 1 }
+ },
+ "ground": {"heather": {}, "heather-bloom": {}},
+ "herds": {
+  "sheep": { "groups": 10, "size": [2, 8], "on": ["pasture", "grassland", "arable", "rough-grass", "wet-grassland", "heath", "bog"] }
+ },
+ "style": "irish-cottage"
+}

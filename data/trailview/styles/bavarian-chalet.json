@@ -1,0 +1,6 @@
+{
+ "name": "Bavarian chalet",
+ "extends": "chalet",
+ "about": "The chalet of Bavaria and Austria, whose baroque churches carry onion domes.",
+ "spire": "onion"
+}

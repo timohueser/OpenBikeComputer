@@ -83,6 +83,7 @@ here:
 | Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
 | Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
 | Planner climate and snow layers | `era5-land`; `hr-wsi` when the snow layer reads it, `modis-snow` and `hansen-gfc` |
+| Planner TrailView layers | The sources that each step reads, see [`planner`](#planner) |
 | Reference archive manifests | `dtm-<key>` for the national model with that key |
 
 A credit that a rider reads is the `attribution` text. An SPDX `licence` id goes only into a
@@ -388,6 +389,8 @@ no fetcher yet; the fetch fails.
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
+| `corine-land-cover` | `bbox` | `tools/trailview/ground.py --fetch-corine` | group `trailview` | `bbox=W,S,E,N` |
+| `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 | `wikidata`, `wikipedia`, `commons` | `content=<JSON exact identities>` | `tools/wikimedia_acquire.py` | none (`python3`) | SHA-256 of the identity request |
 
@@ -398,6 +401,11 @@ no fetcher yet; the fetch fails.
 - The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
   the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
+- The `corine-land-cover` files are `legend.json`, the legend of the CLC 2018 map service, and
+  `clc-W_S_E_N.png`: its raster map images in EPSG:3035 at 100 m over `bbox`, each at most
+  4096 pixels on a side and named by its box in whole metres.
+- A `sentinel-2-mosaics` file is `<mosaic tile>/<band>.tif`: the window over `bbox`, one pixel
+  wider on each side, of a band of a quarterly mosaic tile of the year, as the STAC search lists it.
 - `content` names entities, explicit links, articles, Commons files and bounded categories.
   A request has no region, OSM digest or transform hash. The Store owns compact fact records,
   their provenance manifests and local conversion inputs. Admission verifies each digest and
@@ -451,7 +459,8 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
 | `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
-| `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features` | The step of the same name and its grid |
+| `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
+| `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` and their grids |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
@@ -885,9 +894,17 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies the portable terrain tiles and reads them from their grid archives |
 | `planner/trailview-features` | `planner/osm` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 14 |
+| `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json` and `materials.json`: the region areas, the ecoregions and the vocabulary that the ground steps read |
+| `planner/trailview-material` | `materials.json` of `planner/trailview-rules`; `osm.pbf` of `planner/osm`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `corine-land-cover`, `bbox=<bounds>`; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>` | `layer`: `material`; `bounds`; `attribution` of its sources | `material.pmtiles`: [the material archive](trailview-tiles.md#ground) |
+| `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
+| `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
+| `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `snow`, `sun` or `trailview-features`. It reads only the archive of its producer.
+`terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
+`trailview-lithology` or `trailview-region`. It reads only the archive of its producer.
+`planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
+`trailview-colour-<archive>`.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
 stay the same, except for terrain: it encodes each terrain tile again with the same pixels, and
@@ -900,15 +917,17 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow`, `sun` and `trailview-features` are optional layers: a step only when `layers` of the settings
-names it. All producers are intermediate layers. Grid steps select their `objects/` and their
+`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground` and
+`trailview-colour` are optional layers: a step only when `layers` of the settings names it.
+`trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
+All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
 | --- | --- | --- |
 | `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
-| `planner/assets/grid`, `planner/model/grid` | `planner/assets` or `planner/model` | The input files, packed as `maps/assets/` or `search/model/`. The index maps logical paths to file and transport identities |
+| `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
 | `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |

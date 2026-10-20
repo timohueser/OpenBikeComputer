@@ -1,0 +1,47 @@
+{
+ "name": "Canary Islands dry woodlands and forests",
+ "ecoregion": 787,
+ "extends": "world",
+ "leaf": "mixed",
+ "about": "Volcanic islands in the trade wind: dark basalt and red cinder, a deep Atlantic blue, white surf on black rock, Canary pine on the mid slopes.",
+ "pack": "canaries",
+ "cliffs": {
+  "reach_m": 35,
+  "raise_m": 30
+ },
+ "look": {
+  "ramps": {
+   "bare": ["#6e5a4c", "#7f6a58", "#8e7a62"]
+  },
+  "snap": 0.5,
+  "hazeKm": 60,
+  "outcrops": 0.25,
+  "rock": "#5c5550",
+  "lithology": {
+   "limestone": { "colour": "#d3c6a6" },
+   "dolomite": { "colour": "#b2a894" },
+   "marl-clay": { "colour": "#cbbd98" },
+   "gypsum": { "colour": "#e2dccd" },
+   "sandstone": { "colour": "#c3a06c" },
+   "conglomerate": { "colour": "#a99878" },
+   "quartzite": { "colour": "#bfb9ae" },
+   "granite": { "colour": "#b5aba0" },
+   "schist-slate-shale": { "colour": "#6e6a66" },
+   "basalt-lava": { "colour": "#4a4541" },
+   "cinder-scoria": { "colour": "#7a5040" },
+   "pumice": { "colour": "#d6c7a2" },
+   "tuff": { "colour": "#b39a74" },
+   "alluvium-colluvium": { "colour": "#c2ad88" },
+   "variegated-marl": { "colour": "#a8604e", "banded": true },
+   "limestone-marl": { "colour": "#d3c6a6" },
+   "dolerite": { "colour": "#6f675d" },
+   "felsic-lava": { "colour": "#5e554b" }
+  },
+  "sea": { "deep": "#1d4c78", "shallow": "#357f9c" },
+  "swell": 340,
+  "grade": { "shadow": [0.008, 0.009, 0.016], "light": [0.01, 0.005, -0.005], "saturation": 1.04 },
+  "weather": {
+   "sunny": { "cover": 0.2, "base": 1500, "zenith": "#2c66b8", "horizon": "#a8c6e4", "grey": 0.5 }
+  }
+ }
+}
