@@ -123,57 +123,70 @@ def pyramid(bounds, zooms, bake, parent, encode, output, metadata, workers=None)
     bottom, top = zooms[0], zooms[-1]
     chunk = bottom or min(CHUNK_ZOOM, top)
     _job = {"bounds": bounds, "top": top, "bottom": bottom, "chunk": chunk, "bake": bake, "parent": parent, "encode": encode}
-    found, texels = {}, {}
-    try:
-        pool = step_pool.pool(workers)
+    output.mkdir(parents=True, exist_ok=True)
+    # The encoded tiles wait in this file, and each archive takes them in tile order, so its bytes do not
+    # depend on which chunk ends first.
+    found, texels, spill = {}, {}, tempfile.TemporaryFile(dir=output, prefix=".tiles-")
+
+    def store(tiles):
+        for key, (tile_type, data) in tiles.items():
+            found[key] = (tile_type, spill.tell(), len(data))
+            spill.write(data)
+
+    with spill:
         try:
-            futures = {pool.submit(_chunk, x, y): (x, y) for x, y in covered(bounds, chunk) if intersects(bounds, chunk, x, y)}
-            for done in as_completed(futures):
-                tiles, body = done.result()
-                found.update(tiles)
-                if bottom < chunk:
-                    texels[futures[done]] = body
-        finally:
-            pool.shutdown(cancel_futures=True)
-
-        def above(z, x, y):
-            if z == chunk:
-                return texels.pop((x, y), None)
-            if not intersects(bounds, z, x, y):
-                return None
-            body = parent({(dx, dy): above(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)})
-            keep(found, _job, z, x, y, body)
-            return body
-
-        if bottom < chunk:
-            above(0, 0, 0)
-    finally:
-        _job = None
-    e7 = lambda value: round(value * 1e7)
-    west, south, east, north = bounds
-    sizes = {}
-    for name in sorted({name for name, _ in found}):
-        ids = sorted(tile_id for archive, tile_id in found if archive == name)
-        target = output / f"{name}.pmtiles"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}-", delete=False) as stream:
+            pool = step_pool.pool(workers)
             try:
-                writer = Writer(stream)
-                for tile_id in ids:
-                    tile_type, data = found[name, tile_id]
-                    z = tileid_to_zxy(tile_id)[0]
-                    sizes.setdefault(name, {})[z] = sizes.get(name, {}).get(z, 0) + len(data)
-                    writer.write_tile(tile_id, data)
-                writer.finalize({
-                    "tile_type": tile_type, "tile_compression": Compression.NONE,
-                    "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
-                    "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
-                }, {**metadata, "archive": target.stem})
-                stream.flush()
-                os.replace(stream.name, target)
-            except BaseException:
-                os.unlink(stream.name)
-                raise
+                futures = {pool.submit(_chunk, x, y): (x, y) for x, y in covered(bounds, chunk) if intersects(bounds, chunk, x, y)}
+                for done in as_completed(futures):
+                    tiles, body = done.result()
+                    store(tiles)
+                    if bottom < chunk:
+                        texels[futures[done]] = body
+            finally:
+                pool.shutdown(cancel_futures=True)
+
+            def above(z, x, y):
+                if z == chunk:
+                    return texels.pop((x, y), None)
+                if not intersects(bounds, z, x, y):
+                    return None
+                body = parent({(dx, dy): above(z + 1, 2 * x + dx, 2 * y + dy) for dx in (0, 1) for dy in (0, 1)})
+                tiles = {}
+                keep(tiles, _job, z, x, y, body)
+                store(tiles)
+                return body
+
+            if bottom < chunk:
+                above(0, 0, 0)
+        finally:
+            _job = None
+        e7 = lambda value: round(value * 1e7)
+        west, south, east, north = bounds
+        sizes = {}
+        for name in sorted({name for name, _ in found}):
+            ids = sorted(tile_id for archive, tile_id in found if archive == name)
+            target = output / f"{name}.pmtiles"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}-", delete=False) as stream:
+                try:
+                    writer = Writer(stream)
+                    for tile_id in ids:
+                        tile_type, offset, length = found[name, tile_id]
+                        spill.seek(offset)
+                        z = tileid_to_zxy(tile_id)[0]
+                        sizes.setdefault(name, {})[z] = sizes.get(name, {}).get(z, 0) + length
+                        writer.write_tile(tile_id, spill.read(length))
+                    writer.finalize({
+                        "tile_type": tile_type, "tile_compression": Compression.NONE,
+                        "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
+                        "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
+                    }, {**metadata, "archive": target.stem})
+                    stream.flush()
+                    os.replace(stream.name, target)
+                except BaseException:
+                    os.unlink(stream.name)
+                    raise
     return sizes
 
 
