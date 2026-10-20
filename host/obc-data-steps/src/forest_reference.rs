@@ -81,7 +81,7 @@ impl Prepared for ForestReference {
         let digests = prepared_tiles::make(job, &tiles, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.args(["fetch", &key, "--tile", name, "--out"]).arg(&job.work);
-            job.program(&mut command)
+            Ok(command)
         })?;
         // The services have no versions of their own: the day of the prepare names what it read.
         let version = job.version.clone();

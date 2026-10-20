@@ -112,11 +112,16 @@ def command_fetch(args) -> int:
     file `<ti>-<tj>.none` where the model has no height in the tile.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
-    one tile's rasters at a time and the store never sees them.
+    only the rasters of the tiles that run and the store never sees them.
     """
 
-    # A stop ends the fetch through `finally`, which removes the raw rasters.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    def stop(*_):
+        # `uv run` forwards the SIGTERM that its process group also gets: a second one must not
+        # cut short the `finally` that removes the raw rasters.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        sys.exit(143)
+
+    signal.signal(signal.SIGTERM, stop)
     stop_with_parent()
     ti, tj = parse_tile(args.tile)
     source = registered(args.source)
