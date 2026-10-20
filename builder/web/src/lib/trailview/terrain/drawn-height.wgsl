@@ -14,13 +14,13 @@ struct Surface {
     unit: f32,
     // The eye's height above the ground, for the LOD.
     above: f32,
-    // CDLOD: the distance where the LOD is 0. Clipmap: the ring half-width in nodes.
+    // CDLOD: the distance where the LOD is 0. Rings: the ring half-width in nodes.
     range: f32,
     // The finest level that draws.
     finest: u32,
     // The cubic from LOD space to render space (frame metres about the eye): 10 coefficients of x, then 10 of y.
     forward: array<vec4f, 5>,
-    // Per level: xy the node at the origin of its LOD map window, zw the clipmap ring centre in units about the anchor.
+    // Per level: xy the node at the origin of its LOD map window, zw the ring centre in units about the anchor.
     levels: array<vec4i, 19>,
 }
 
@@ -34,7 +34,7 @@ struct Surface {
 // Per texel: x east and y north of the unit normal.
 @group(1) @binding(4) var normals: texture_2d_array<f32>;
 
-override CLIPMAP: bool = false;
+override RINGS: bool = false;
 override R16: bool = false;
 
 const MAP: i32 = 32;
@@ -169,7 +169,7 @@ fn units_height(u: vec2i, top: u32) -> f32 {
 
 // The LOD at a point: a whole level on its plateau, and between two levels in a morph band.
 fn lod(s: vec2f) -> f32 {
-    if (CLIPMAP) {
+    if (RINGS) {
         return ring_lod(s);
     }
     let q = log2(surface.range / length(vec3f(s, surface.above)));
@@ -177,7 +177,7 @@ fn lod(s: vec2f) -> f32 {
     return clamp(k - 1.0 + min(1.0, (q - k) / MORPH), f32(COARSEST), f32(surface.finest));
 }
 
-// The finest clipmap ring that holds the point, and its blend by the distance from the eye in nodes.
+// The finest ring that holds the point, and its blend by the distance from the eye in nodes.
 fn ring_lod(s: vec2f) -> f32 {
     let u = units_of(s);
     let e = max(abs(s.x), abs(s.y)) / surface.unit;

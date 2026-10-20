@@ -17,10 +17,12 @@ const MARGIN = 1e-3;
  * level, and neighbours would not meet; above the most, a level leaves its LOD map window.
  */
 export const RANGE = { least: 4.6, most: 8 } as const;
-/** Clipmap ring half-widths in nodes: even, so a ring aligns with the nodes of the next coarser level. */
+/** Ring half-widths in nodes: even, so a ring aligns with the nodes of the next coarser level. */
 export const RINGS = [6, 4] as const;
-/** A clipmap level is active while its ring reaches this many times the eye's height above the ground. */
+/** A ring level is active while its ring reaches this many times the eye's height above the ground. */
 const RING_REACH = 2.5;
+/** The coarse cover lies this many levels above the drawn level: few pages, so a turn never finds a hole. */
+const COVER = 3;
 
 /** Node `x`, `y` of a level: the Mercator tile of zoom `level`. */
 export interface Node { level: number; x: number; y: number }
@@ -40,13 +42,14 @@ export const key = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 export interface Rule {
     /** The finest level that draws. */
     readonly finest: number;
-    /** CDLOD: the distance in metres where the LOD is 0. Clipmap: the ring half-width in nodes. */
+    /** CDLOD: the distance in metres where the LOD is 0. Rings: the ring half-width in nodes. */
     readonly range: number;
-    split(node: Node): boolean;
+    /** Whether some point of the node wants a level finer than its own + `coarser`. */
+    split(node: Node, coarser?: number): boolean;
     /** Whether some point of a drawn node morphs toward its parent's level, so the node reads its parent's page. */
     morphs(node: Node): boolean;
     lod(s: [number, number]): number;
-    /** Clipmap: the ring centre of a level in whole units. */
+    /** Rings: the ring centre of a level in whole units. */
     centre(level: number): [number, number];
 }
 
@@ -75,7 +78,7 @@ export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
     };
     return {
         finest, range,
-        split: node => node.level < finest && Math.log2(range / distances(eye, node)[0]) > node.level + 1 - MARGIN,
+        split: (node, coarser = 0) => node.level + coarser < finest && Math.log2(range / distances(eye, node)[0]) > node.level + 1 + coarser - MARGIN,
         morphs: node => Math.log2(range / distances(eye, node)[1]) < node.level + MORPH + MARGIN,
         lod: ([sx, sy]) => plateau(Math.log2(range / Math.hypot(sx, sy, eye.above))),
         centre: () => [0, 0],
@@ -83,11 +86,13 @@ export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
 }
 
 /**
- * Geometry clipmaps (Losasso and Hoppe 2004) on the node grid: each level is a square ring of
- * `half` nodes about the eye, snapped to the next coarser level's nodes, that blends to that level
- * over a band of its outer nodes. A level is active while its ring reaches far enough below a high eye.
+ * The rings of geometry clipmaps (Losasso and Hoppe 2004) as a LOD rule of the same quadtree: each
+ * level is a square ring of `half` nodes about the eye, snapped to the next coarser level's nodes,
+ * that blends to that level over a band of its outer nodes. A level is active while its ring reaches
+ * far enough below a high eye. It is not a geometry clipmap: it has no ring textures and no
+ * toroidal update.
  */
-export function clipmap(eye: Eye, half: number, finest = FINEST): Rule {
+export function rings(eye: Eye, half: number, finest = FINEST): Rule {
     const [ex, ey] = eyeUnits(eye.anchor), unit = eye.anchor.unit;
     let top = finest;
     while (top > COARSEST + 1 && half * size(top) * unit < RING_REACH * eye.above) top--;
@@ -97,10 +102,11 @@ export function clipmap(eye: Eye, half: number, finest = FINEST): Rule {
     };
     return {
         finest: top, range: half, centre,
-        split: ({ level, x, y }) => {
-            if (level >= top) return false;
-            const [cx, cy] = centre(level + 1), reach = half * size(level + 1), s = size(level);
-            return x * s >= cx - reach && (x + 1) * s <= cx + reach && y * s >= cy - reach && (y + 1) * s <= cy + reach;
+        // A node of level k lies inside ring k + 1 or outside it, because the rings align with the nodes.
+        split: ({ level, x, y }, coarser = 0) => {
+            if (level + coarser >= top) return false;
+            const [cx, cy] = centre(level + 1 + coarser), reach = half * size(level + 1 + coarser), s = size(level);
+            return x * s < cx + reach && (x + 1) * s > cx - reach && y * s < cy + reach && (y + 1) * s > cy - reach;
         },
         morphs: ({ level, x, y }) => {
             const s = size(level), far = Math.max(Math.abs(x * s - ex), Math.abs((x + 1) * s - ex), Math.abs(y * s - ey), Math.abs((y + 1) * s - ey));
@@ -118,21 +124,30 @@ export function clipmap(eye: Eye, half: number, finest = FINEST): Rule {
     };
 }
 
-/** The drawn nodes, and the nodes whose pages they read: their own, and their parents' where they morph. */
+/**
+ * The drawn nodes, and the nodes whose pages they read: the coarse cover first, then their own
+ * pages, and their parents' where they morph.
+ */
 export interface Selection { nodes: Node[]; wanted: Node[] }
 
 /**
  * The quadtree selection: from the four nodes of level 1 down, a node inside `bounds` (units: west,
  * north, east, south) that `visible` keeps either splits or draws. A culled node takes its subtree.
+ * The coarse cover is the same selection COVER levels coarser and in every direction, so that the
+ * pages under any new view are resident before the view turns there.
  */
 export function select(rule: Rule, bounds: [number, number, number, number], visible: (node: Node) => boolean): Selection {
     const nodes: Node[] = [], wanted = new Map<string, Node>();
-    const visit = (node: Node) => {
+    const visit = (node: Node, cover: boolean) => {
         const s = size(node.level);
         if (node.x * s >= bounds[2] || (node.x + 1) * s <= bounds[0] || node.y * s >= bounds[3] || (node.y + 1) * s <= bounds[1]) return;
-        if (!visible(node)) return;
-        if (rule.split(node)) {
-            for (let q = 0; q < 4; q++) visit({ level: node.level + 1, x: 2 * node.x + (q & 1), y: 2 * node.y + (q >> 1) });
+        if (!cover && !visible(node)) return;
+        if (rule.split(node, cover ? COVER : 0)) {
+            for (let q = 0; q < 4; q++) visit({ level: node.level + 1, x: 2 * node.x + (q & 1), y: 2 * node.y + (q >> 1) }, cover);
+            return;
+        }
+        if (cover) {
+            wanted.set(key(node), node);
             return;
         }
         nodes.push(node);
@@ -142,6 +157,7 @@ export function select(rule: Rule, bounds: [number, number, number, number], vis
             wanted.set(key(parent), parent);
         }
     };
-    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 });
+    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, true);
+    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, false);
     return { nodes, wanted: [...wanted.values()] };
 }

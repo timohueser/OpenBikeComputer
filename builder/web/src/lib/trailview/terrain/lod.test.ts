@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, lodSpace, UNITS } from '../frame/space';
-import { cdlod, clipmap, GRID, MAP, RANGE, RINGS, select, size, type Eye, type Node, type Rule } from './lod';
+import { cdlod, GRID, MAP, RANGE, RINGS, rings, select, size, type Eye, type Node, type Rule } from './lod';
 
 const BOX = [7.6, 46.46, 8.95, 47.25] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -10,7 +10,7 @@ const eye = (lon: number, lat: number, above: number): Eye => ({ anchor: anchorA
 const EYES = [eye(8.403, 46.8205, 1.6), eye(8.39, 46.8, 900), eye(8.415, 46.7, 12_000), eye(8.2, 46.85, 60_000)];
 const RULES: [string, (eye: Eye) => Rule][] = [
     ...[RANGE.least, RANGE.most].map((factor): [string, (eye: Eye) => Rule] => [`cdlod ${factor}`, e => cdlod(e, factor)]),
-    ...RINGS.map((half): [string, (eye: Eye) => Rule] => [`clipmap ${half}`, e => clipmap(e, half)]),
+    ...RINGS.map((half): [string, (eye: Eye) => Rule] => [`rings ${half}`, e => rings(e, half)]),
 ];
 
 /** The LOD at the grid vertex (i, j) of a node, from whole units, as the vertex shader has it. */

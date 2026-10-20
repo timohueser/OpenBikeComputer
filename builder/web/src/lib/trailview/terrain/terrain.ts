@@ -8,7 +8,7 @@ import { wgsl } from '../gpu/wgsl';
 import type { Labs } from '../labs';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, clipmap, distances, FINEST, GRID, MAP, RANGE, RINGS, select, size, type Node, type Rule } from './lod';
+import { cdlod, distances, FINEST, GRID, MAP, RANGE, RINGS, rings, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, Pages, type Kind, type Page, type Work } from './pages';
 
 /** GPU memory for pages, heights and normals: the stored and the synthesized budgets of #2747 for a laptop. */
@@ -90,7 +90,7 @@ interface Resources {
 }
 
 /**
- * The terrain: CDLOD or geometry clipmaps (the `terrain` lab) over pages of the stored terrain and of
+ * The terrain: CDLOD by distance or by rings (the `terrain` lab) over pages of the stored terrain and of
  * levels synthesized below it, in fixed pools. One instanced grid mesh draws every node.
  */
 export class Terrain {
@@ -154,7 +154,7 @@ export class Terrain {
         this.pages.lost();
         const { device } = gpu, labs = this.labs, pages = this.pages.capacity.stored + this.pages.capacity.synth;
         const layers = Math.ceil(pages / LAYER_PAGES), side = PAGE * Math.sqrt(LAYER_PAGES);
-        const r16 = labs.pages === 'r16', constants = { CLIPMAP: labs.terrain === 'clipmap' ? 1 : 0, R16: r16 ? 1 : 0 };
+        const r16 = labs.pages === 'r16', constants = { RINGS: labs.terrain === 'rings' ? 1 : 0, R16: r16 ? 1 : 0 };
         const texels = PAGE * PAGE;
         const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
         const heights = gpu.texture('pages', { size: [side, side, layers], format: r16 ? 'r16uint' : 'r32uint', usage }, layers * side * side * (r16 ? 2 : 4));
@@ -374,7 +374,7 @@ export class Terrain {
     }
 
     private rule(eye: { anchor: Anchor; above: number }, pixels: number): Rule {
-        if (this.labs.terrain === 'clipmap') return clipmap(eye, RINGS[Math.min(this.quality, RINGS.length - 1)], FINEST - Math.max(0, this.quality - RINGS.length + 1));
+        if (this.labs.terrain === 'rings') return rings(eye, RINGS[Math.min(this.quality, RINGS.length - 1)], FINEST - Math.max(0, this.quality - RINGS.length + 1));
         // The range at which a level's grid cell spans CELL_PIXELS, a quarter step smaller per quality step.
         const best = Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
         const steps = Math.ceil(4 * Math.log2(best / RANGE.least));

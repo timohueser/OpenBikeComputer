@@ -70,6 +70,8 @@ export class Pages {
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private arrivals: { node: Node; data: PageData }[] = [];
+    /** Tiles whose decoded pages wait in `arrivals`, by name. */
+    private readonly queued = new Map<string, number>();
     private readonly refresh = new Set<Page>();
     private frame = 0;
     /** Tile loads and decodes in flight. */
@@ -107,10 +109,17 @@ export class Pages {
         this.missing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], normals: [], origins: this.window(anchor) };
+        // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
+        for (const node of wanted) {
+            const page = this.pages.get(key(node));
+            if (page) page.used = this.frame;
+        }
         for (const node of wanted) this.want(node, work);
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
+            const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`;
+            this.queued.set(tile, this.queued.get(tile)! - 1);
             const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', [data.min, data.max], keys.has(key(node)));
             if (!page || page.ready) continue;
             page.range = [data.min, data.max];
@@ -137,6 +146,7 @@ export class Pages {
     lost(): void {
         this.pages.clear();
         this.arrivals = [];
+        this.queued.clear();
         this.refresh.clear();
         this.free.stored = range(0, this.capacity.stored);
         this.free.synth = range(this.capacity.stored, this.capacity.stored + this.capacity.synth);
@@ -164,10 +174,16 @@ export class Pages {
         if (!ancestor) return;
         this.wanted.synth++;
         this.missing++;
-        if (ancestor === 'wait' || work.uploads.length + work.syntheses.length >= ARRIVALS) return;
-        const ready = this.around(ancestor).every(near => {
-            const state = this.stored(near);
-            if (state === 'no' || this.pages.get(key(near))?.ready) return true;
+        if (ancestor === 'wait') return;
+        // The synthesis reads the ancestor and its neighbours: no allocation of this frame takes them.
+        const inputs = this.around(ancestor).map(near => {
+            const page = this.pages.get(key(near));
+            if (page) page.used = this.frame;
+            return { near, page };
+        });
+        if (work.uploads.length + work.syntheses.length >= ARRIVALS) return;
+        const ready = inputs.every(({ near, page }) => {
+            if (page?.ready || this.stored(near) === 'no') return true;
             this.load(near.level - 1, near.x >> 1, near.y >> 1);
             return false;
         });
@@ -193,7 +209,9 @@ export class Pages {
             level--; x >>= 1; y >>= 1;
             const parent = { level, x, y }, state = this.stored(parent);
             if (state === 'no') continue;
-            if (state === 'yes' && this.pages.get(key(parent))?.ready) return parent;
+            const page = this.pages.get(key(parent));
+            if (page) page.used = this.frame;
+            if (state === 'yes' && page?.ready) return parent;
             this.load(level - 1, x >> 1, y >> 1);
             return 'wait';
         }
@@ -219,7 +237,7 @@ export class Pages {
     /** Requests a stored tile, or decodes its kept body again. */
     private load(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
-        if (tile && tile.state !== 'done') return;
+        if ((tile && tile.state !== 'done') || this.queued.get(name)) return;
         if (this.loads >= LOADS) return;
         const body = this.bodies.get(name);
         this.loads++;
@@ -238,6 +256,7 @@ export class Pages {
             quadrants.forEach((data, q) => {
                 if (data) this.arrivals.push({ node: { level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) }, data });
             });
+            this.queued.set(name, quadrants.filter(Boolean).length);
         })().catch(error => {
             // A tile that fails stays out for this page, as an absent one.
             console.warn(`Terrain tile ${name}: ${error instanceof Error ? error.message : error}`);

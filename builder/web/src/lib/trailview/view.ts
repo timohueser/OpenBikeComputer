@@ -70,6 +70,6 @@ export function formatView(view: View, search = ''): string {
     q.set('time', view.time);
     q.set('weather', view.weather);
     if (view.debug !== 'off') q.set('debug', view.debug);
-    // A copied address stays readable: `lab=terrain:clipmap`, not `lab=terrain%3Aclipmap`.
+    // A copied address stays readable: `lab=terrain:rings`, not `lab=terrain%3Arings`.
     return `?${q}`.replace(/%3A/g, ':').replace(/%2C/g, ',');
 }

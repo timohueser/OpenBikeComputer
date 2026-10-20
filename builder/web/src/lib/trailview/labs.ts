@@ -1,10 +1,14 @@
 /**
- * The variant registry. Each lab lists its variants, the default first. `?lab=terrain:clipmap` selects
- * a variant; `?lab=terrain:clipmap,pages:r16` or a repeated `lab` selects several.
+ * The variant registry. Each lab lists its variants, the default first. `?lab=terrain:rings` selects
+ * a variant; `?lab=terrain:rings,pages:r16` or a repeated `lab` selects several.
  */
 export const LABS = {
-    /** The LOD: CDLOD by distance, or geometry clipmaps in rings about the eye. */
-    terrain: ['cdlod', 'clipmap'],
+    /**
+     * The LOD rule of the one quadtree: CDLOD by distance, or square rings about the eye as geometry
+     * clipmaps select them. Both draw nodes with the same mesh and pages; a geometry clipmap with ring
+     * textures and a toroidal update is not built.
+     */
+    terrain: ['cdlod', 'rings'],
     /** The micro-relief of the synthesized levels: none beyond the bicubic, or erosion gullies. */
     relief: ['bicubic', 'erosion'],
     /** The page heights: float32, or 16 bits with an offset and a scale per page. */

@@ -54,7 +54,7 @@ builds the variant that `?lab=` selects.
 
 | Lab | Variants |
 | --- | --- |
-| `terrain` | `cdlod`, `clipmap` |
+| `terrain` | `cdlod`, `rings`: the LOD rule of the one quadtree; no geometry clipmap is built |
 | `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
 | `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 
@@ -73,7 +73,7 @@ npm run test:trailview                     # the smoke
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
 pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:clipmap`
+of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:rings`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
@@ -108,6 +108,6 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
-- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the clipmap
+- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the ring
   band of `lod.ts`; `lod.test.ts` holds both.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.

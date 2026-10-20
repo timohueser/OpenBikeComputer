@@ -3,7 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, key, RANGE, select, type Node } from './lod';
+import { cdlod, COARSEST, key, RANGE, select, size, type Node } from './lod';
 import { Pages, STORED_BIT, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
@@ -12,17 +12,21 @@ const BOUNDS: [number, number, number, number] = [west, north, east, south];
 const anchor = anchorAt(8.415, 46.7975);
 const flat = () => pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true, 'r32float');
 
-/** Tiles of zooms 0 to 12, each fetched once; zoom 13 is absent. */
-function source(): TerrainSource & { fetched: string[] } {
+/** Tiles of zooms 0 to 12; zoom 13 is absent. */
+function source(): TerrainSource & { fetched: string[]; decoded: number } {
     const fetched: string[] = [];
-    return {
-        fetched,
-        fetch: async (z, x, y) => {
+    const tiles = {
+        fetched, decoded: 0,
+        fetch: async (z: number, x: number, y: number) => {
             fetched.push(`${z}/${x}/${y}`);
             return z <= 12 ? new ArrayBuffer(8) : undefined;
         },
-        decode: async () => [flat(), flat(), flat(), flat()],
+        decode: async () => {
+            tiles.decoded++;
+            return [flat(), flat(), flat(), flat()];
+        },
     };
+    return tiles;
 }
 
 /** Frames of the walk view until the pages are idle; the work of each frame. */
@@ -74,5 +78,66 @@ describe('the page pools', () => {
         expect(new Set(tiles.fetched).size).toBe(requests);
         expect([...before].every(name => pages.pages.get(name)?.ready)).toBe(true);
         expect(wanted.some(node => !before.has(key(node)))).toBe(false);
+    });
+
+    it('decode each tile once, while its pages wait to arrive', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(pages, wanted);
+        expect(tiles.decoded).toBe(tiles.fetched.filter(name => Number(name.split('/')[0]) <= 12).length);
+    });
+
+    it('count a shortage in the frame that wants too many pages, and evict none that it wants', async () => {
+        const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(all, wanted);
+        const synth = all.wanted.synth, pages = new Pages(source(), { stored: 400, synth }, BOUNDS, () => {});
+        await settle(pages, wanted);
+        // One more synthesized node, a child of a drawn one, before the finer ones in the list.
+        const keys = new Set(wanted.map(key));
+        const extra = wanted.filter(node => node.level === 16).map(node => ({ level: 17, x: 2 * node.x, y: 2 * node.y })).find(node => !keys.has(key(node)))!;
+        const more = [...wanted, extra].sort((a, b) => a.level - b.level);
+        const work = pages.update(more, anchor);
+        expect(pages.shortage).toBe(1);
+        expect(work.syntheses).toEqual([]);
+        expect(wanted.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+    });
+
+    it('keep the stored pages that a synthesis reads when a page arrives in the same frame', async () => {
+        const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
+        const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
+        const stored = at(13), around = [-1, 0, 1].flatMap(dy => [-1, 0, 1].map(dx => ({ level: 13, x: stored.x + dx, y: stored.y + dy })));
+        const pages = new Pages(source(), { stored: 9, synth: 10 }, [w, n, e, s], () => {});
+        // The pool holds the stored ancestor of the synthesis and its eight neighbours; zoom 13 is known absent.
+        await settle(pages, [...around, at(14)]);
+        expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+        // A stored page far away is decoded and waits to arrive.
+        const far = { level: 13, x: stored.x + 6, y: stored.y };
+        pages.update([far], anchor);
+        await new Promise(resolve => setTimeout(resolve));
+        const work = pages.update([at(15), far], anchor);
+        expect(work.syntheses.map(({ page, stored }) => [key(page.node), stored])).toEqual([[key(at(15)), 13]]);
+        expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+        expect(pages.shortage).toBe(1);
+    });
+});
+
+describe('a turn', () => {
+    // A flight 1 km above the ground over Engelberg, in the whole box of the bakes.
+    const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
+    const box: [number, number, number, number] = [w, n, e, s];
+    const rule = cdlod({ anchor, above: 1000 }, RANGE.least);
+    const ex = anchor.whole[0] + anchor.part[0];
+    const side = (east: boolean) => select(rule, box, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex));
+    const ready = (pages: Pages, node: Node) => {
+        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (pages.pages.get(`${level}/${x}/${y}`)?.ready) return true;
+        return false;
+    };
+
+    it('finds a ready page under every node of the new view before a tile of it arrives', async () => {
+        const pages = new Pages(source(), { stored: 600, synth: 600 }, box, () => {});
+        const east = side(true).wanted.sort((a, b) => a.level - b.level);
+        await settle(pages, east);
+        expect(pages.idle).toBe(true);
+        const west = side(false).nodes;
+        expect(west.filter(node => !ready(pages, node))).toEqual([]);
     });
 });
