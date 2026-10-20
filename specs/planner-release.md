@@ -139,10 +139,11 @@ services of each release that `release.json` of its target names.
 
 ## Terrain tiles
 
-One terrain pyramid serves the planner and TrailView. A tile is a 512 × 512 lossless WebP in the
-Terrarium encoding. A pixel is the height at its centre in metres, R × 256 + G + B / 256 − 32768,
-rounded to the nearest decimetre: B is the tenths × 25.6, rounded, so B is one of 0, 26, 51, 77,
-102, 128, 154, 179, 205 and 230. A pixel with alpha 0 has no known height.
+One terrain pyramid serves the planner and TrailView: format 2 of the layer `planner/terrain`. A
+tile is a 512 × 512 lossless WebP in the Terrarium encoding. A pixel is the height at its centre
+in metres, R × 256 + G + B / 256 − 32768, rounded to the nearest decimetre: B is the tenths ×
+25.6, rounded, so B is one of 0, 26, 51, 77, 102, 128, 154, 179, 205 and 230. A pixel with alpha 0
+has no known height.
 
 | Zoom | Tiles |
 | --- | --- |

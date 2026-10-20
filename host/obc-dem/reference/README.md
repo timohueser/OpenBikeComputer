@@ -31,9 +31,9 @@ tile against the contract below. `publish` and `mirror` are `rclone copy`; a pub
 adds, and it merges its index with the one already on R2.
 
 `obc data source prepare terrain-reference/<key>` runs `ingest.py fetch <key> --tile <ti>-<tj>`
-per tile: the two pooled tiles and their pixel SHA-256, then `index-tiles` per pool. `merge.py
---step` is the steps `device/reference/<leaf>` and `planner/reference`: those tiles of each model,
-best first, into an empty archive (`specs/obc-data.md`, `device` and `planner`).
+per tile: both pooled tiles and their pixel SHA-256, then `index-tiles` per pool. `merge.py
+--step` is `device/reference/<leaf>` and `planner/reference`: those tiles of each model, best
+first, into an empty archive.
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk
@@ -42,8 +42,7 @@ moves hundreds of gigabytes and takes days: run one source at a time, `check` be
 
 ## The tile contract
 
-The baker and the ingest tool both hold to this. `tile_problems` in `ingest/archive.py` is the
-contract as code, and `check` runs it.
+`tile_problems` in `ingest/archive.py` is the contract as code, and `check` runs it.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
   (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
@@ -52,11 +51,8 @@ contract as code, and `check` runs it.
 - **Value**: `int16` little-endian orthometric metres, the **maximum** of every source pixel centre
   inside the lattice square. `−32768` is the only nodata. Single band, `PixelIsArea`, EPSG:4326,
   deflate, 256 × 256 internal tiles. The GeoTIFF stores rows north-up.
-- **Mean**: a version of `terrain-reference/<key>` also holds the **mean** of the same centres,
-  as `int32` decimetres with nodata `−2^31` and the horizontal predictor, at
-  `mean/16/<ti:04>/<tj:04>.tif` with its own `mean/index.json`. The planner terrain reads it. A
-  lattice pixel at the edge of two source rasters takes centres from both, so `fetch` pools all
-  rasters of a tile at once.
+- **Mean** (prepared versions only): the **mean** of the same centres in `int32` decimetres,
+  nodata `−2^31`, predictor 2, in `mean/`.
 - **Transform** must be exactly the lattice (`a = 2^6 / 1e6`, `e = −2^6 / 1e6`, origin on lattice
   lines) within 1e-9 degrees. The baker does no reprojection and no resampling.
 - **`index.json`** at the archive root names every tile. A tile the index does not name is not in
@@ -71,20 +67,18 @@ contract as code, and `check` runs it.
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
 
-`pool` is `max` or `mean`; an index without it is `max`. `sha256` is over the tile's **pixels**,
-in their own dtype, not the file, because two GDAL builds deflate the same
+`pool` is `max` or `mean`. `sha256` is over the tile's **pixels**, not the
+file, because two GDAL builds deflate the same
 heights into different bytes and the terrain bakery keys its skip decision on the digest.
 `contributors` lists every source holding a pixel in the tile, best priority first; `tiles` names
 the first of them. `index` rebuilds all of this from the manifests in `sources/<key>.json`.
 
 ## The code
 
-`ingest.py` is the entry point. The tool is the `ingest/` package beside it.
-
 | module | what is in it |
 | --- | --- |
 | `lattice.py` | Integer microdegrees: the grid, `Window`, tile ids, and the refusals for a box the lattice cannot hold. |
-| `pool.py` | One source raster in, the lattice maximum and mean out: the void convention and the pooling rule. |
+| `pool.py` | One source raster in, the lattice maximum and mean out: voids and the pooling rule. |
 | `archive.py` | Tiles, `PRIORITY`, the per-pixel merge, the manifests, `index.json` and `tile_problems`. |
 | `publish.py` | The rclone remote and the `publish` and `mirror` plans. |
 | `sources/` | One module per country, one row per product. `base.py` is what an adapter is; `__init__.py` is the `SOURCES` registry. |
