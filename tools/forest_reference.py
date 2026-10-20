@@ -48,10 +48,9 @@ DLT = ("https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/
 
 
 @njit(nogil=True, cache=True)
-def smoothed(heights, row0, col0):
+def smoothed(heights):
     """The binomial 3 × 3 mean of `heights` (unknown as 0 m), which removes the maxima of single
-    branches, plus a sub-millimetre ramp of the position in the raster (`row0`, `col0` is the
-    first pixel), which breaks the ties of a flat crown the same way in every window."""
+    branches."""
     rows, cols = heights.shape
     level = np.zeros((rows, cols), np.float32)
     for i in range(rows):
@@ -65,44 +64,85 @@ def smoothed(heights, row0, col0):
                         value = heights[r, c]
                         total += w * (0.0 if math.isnan(value) else value)
                         weight += w
-            ramp = ((i + row0) * 7919 + (j + col0) * 104729) % 1024
-            level[i, j] = total / weight + ramp * 1e-6
+            level[i, j] = total / weight
     return level
 
 
 @njit(nogil=True, cache=True)
+def crown_radius(height, pixel_m):
+    """The crown radius in pixels: 0.5 m + 8 % of the height, from 1 m to 4 m, as the crown of a
+    Central European conifer grows."""
+    return min(max(0.5 + 0.08 * height, 1.0), 4.0) / pixel_m
+
+
+@njit(nogil=True, cache=True)
+def root(parent, p):
+    while parent[p] != p:
+        parent[p] = parent[parent[p]]
+        p = parent[p]
+    return p
+
+
+@njit(nogil=True, cache=True)
 def crown_tops(level, pixel_m, top_m, offsets):
-    """The tree tops of the smoothed canopy `level`: each pixel at or above `top_m` that no pixel
-    within its crown radius exceeds. The radius grows with the height, as the crown of a Central
-    European conifer does: 0.5 m + 8 % of the height, from 1 m to 4 m. `offsets` are the pixel
-    offsets nearest first: most pixels are not tops, and a near pixel shows it."""
+    """The tree tops of the smoothed canopy `level`. A peak is a pixel at or above `top_m` that no
+    pixel within its crown radius exceeds. Peaks of one height within the crown radius of each
+    other, directly or through other such peaks, are one tree, such as a flat crown: its top is the
+    first of them in raster order. `offsets` are the pixel offsets nearest first: most pixels are
+    not peaks, and a near pixel shows it."""
     rows, cols = level.shape
-    tops = np.zeros((rows, cols), np.bool_)
+    parent = np.full(rows * cols, -1, np.int64)
     for i in range(rows):
         for j in range(cols):
             height = level[i, j]
             if height < top_m:
                 continue
-            radius = min(max(0.5 + 0.08 * height, 1.0), 4.0) / pixel_m
-            top = True
+            radius = crown_radius(height, pixel_m)
+            peak = True
             for di, dj in offsets:
                 if di * di + dj * dj > radius * radius:
                     break
                 r, c = i + di, j + dj
                 if 0 <= r < rows and 0 <= c < cols and level[r, c] > height:
-                    top = False
+                    peak = False
                     break
-            tops[i, j] = top
+            if peak:
+                parent[i * cols + j] = i * cols + j
+    for i in range(rows):
+        for j in range(cols):
+            p = i * cols + j
+            if parent[p] < 0:
+                continue
+            radius = crown_radius(level[i, j], pixel_m)
+            for di, dj in offsets:
+                if di * di + dj * dj > radius * radius:
+                    break
+                r, c = i + di, j + dj
+                earlier = di < 0 or di == 0 and dj < 0
+                if earlier and 0 <= r < rows and 0 <= c < cols and parent[r * cols + c] >= 0 and level[r, c] == level[i, j]:
+                    a, b = root(parent, p), root(parent, r * cols + c)
+                    parent[max(a, b)] = min(a, b)
+    tops = np.zeros((rows, cols), np.bool_)
+    for p in range(rows * cols):
+        if parent[p] >= 0 and root(parent, p) == p:
+            tops[p // cols, p % cols] = True
     return tops
 
 
-def tree_tops(heights, pixel_m, origin=(0, 0)):
-    """The mask of the tree tops of the canopy height model `heights` (metres, NaN unknown), whose
-    first pixel is at `origin` of its raster."""
+def tree_tops(heights, pixel_m):
+    """The mask of the tree tops of the canopy height model `heights` (metres, NaN unknown). A
+    flat crown that reaches more than `halo(pixel_m)` past the edge of a window can count once on
+    each side."""
     reach = math.ceil(4.0 / pixel_m)
     offsets = np.array([(di, dj) for di in range(-reach, reach + 1) for dj in range(-reach, reach + 1) if di or dj])
     offsets = offsets[np.argsort((offsets ** 2).sum(axis=1), kind="stable")]
-    return crown_tops(smoothed(np.asarray(heights, np.float32), *origin), pixel_m, TOP_M, offsets)
+    return crown_tops(smoothed(np.asarray(heights, np.float32)), pixel_m, TOP_M, offsets)
+
+
+def halo(pixel_m):
+    """The pixels around a window that its tree tops depend on: the widest crown radius, and one
+    pixel of the smoothing."""
+    return math.ceil(4.0 / pixel_m) + 1
 
 
 @njit(nogil=True, cache=True)
@@ -244,7 +284,7 @@ def tile_ch(x, y):
         left, bottom, right, upper = transform_bounds("EPSG:3857", "EPSG:2056", *bounds, densify_pts=32)
         (r0, r1), (c0, c1) = (sorted(values) for values in rasterio.transform.rowcol(
             grid.transform, [left, right], [upper, bottom], op=math.floor))
-        return (max(r0 - halo, 0), min(r1 + 1 + halo, grid.height)), (max(c0 - halo, 0), min(c1 + 1 + halo, grid.width))
+        return (max(r0 - margin, 0), min(r1 + 1 + margin, grid.height)), (max(c0 - margin, 0), min(c1 + 1 + margin, grid.width))
 
     def read(rows, cols):
         with rasterio.Env(**GDAL):
@@ -259,7 +299,7 @@ def tile_ch(x, y):
         if any(raster.transform != grid.transform or raster.shape != grid.shape for raster in rasters):
             raise ValueError("the acquisitions of the vegetation height model have different grids")
         pixel_m, (west, top) = grid.res[0], tile_origin(x, y)
-        halo = math.ceil(4.0 / pixel_m)
+        margin = halo(pixel_m)
         windows = {ci: window(ci) for ci in range(0, SIZE, BAND)}
         with ThreadPoolExecutor(1) as reader:
             reads = {ci: reader.submit(read, rows, cols) for ci, (rows, cols) in windows.items()
@@ -270,7 +310,7 @@ def tile_ch(x, y):
                     continue
                 rows, cols = windows[ci]
                 cells = band_cells(x, y, ci, rows, cols, grid.transform)
-                tops = tree_tops(heights, pixel_m, (rows[0], cols[0]))
+                tops = tree_tops(heights, pixel_m)
                 out[:3, ci:ci + BAND] = cell_stats(cells, heights, tops, BAND * SIZE, pixel_m).reshape(3, BAND, SIZE)
                 del heights, cells, tops
     finally:

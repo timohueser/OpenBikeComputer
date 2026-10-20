@@ -1579,7 +1579,9 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
 
 - A canopy pixel is 3 m high or more. A tree top is a pixel of the canopy that a binomial 3 × 3
   mean smooths, 5 m high or more, that no pixel within its crown radius exceeds: 0.5 m plus 8 % of
-  its height, from 1 m to 4 m.
+  its height, from 1 m to 4 m. Tops of one height within the crown radius of each other, directly
+  or through other such tops, are one tree, such as a flat crown; its top is the first in raster
+  order.
 - `ch` reads `vhm-lidar-ch`: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
   type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell.
 - The run uploads the tiles in batches of 64. Last, `index-tiles` writes `index.json`: each tile
