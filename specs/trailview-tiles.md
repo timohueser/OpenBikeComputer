@@ -51,7 +51,7 @@ The material byte:
 | Bits | Meaning |
 | --- | --- |
 | 0–5 | The index of the material in `materials` of `materials.json` |
-| 6 | Barren: the highest NDVI of the year is below 0.25 |
+| 6 | Barren: the highest NDVI that a quarter of the year measured is below 0.25 |
 | 7 | No data: the texel is outside the region bounds. The other bits are 0 |
 
 A material code above 63 needs a new format. A region id above 255 needs a new format, with
@@ -99,7 +99,8 @@ round(255 × refl^(1/2.2)). The alpha is lossless.
 | 2–255 | NDVI = (alpha − 1) / 127 − 1 |
 
 In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
-shadow. It takes the chroma of the third quarter at its own brightness.
+shadow, unless it is snow in shade. Where the third quarter looked, it takes the chroma of the third
+quarter at its own brightness.
 
 The archives hold zoom 9 to the last zoom of the variant. A coarser texel is the mean colour, in
 linear light, of its children that looked, and the mean NDVI code of those that measured one. It
