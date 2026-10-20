@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 
 from . import planner_grid_index as index, planner_offline as offline, planner_runtime as runtime
+from . import planner_trailview_features as trailview_features
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
 
@@ -44,7 +45,7 @@ def archive(path, kind, vector=None):
         read = MmapSource(stream)
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
-        expected = TileType.WEBP if kind in {'terrain', 'sun'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
+        expected = TileType.WEBP if kind in {'terrain', 'sun'} else TileType.UNKNOWN if kind in {'snow', 'climate', 'trailview-features'} else TileType.MVT
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
         if expected == TileType.MVT and vector is None:
@@ -62,6 +63,8 @@ def archive(path, kind, vector=None):
                 pixels(data)
             elif expected == TileType.MVT:
                 vector(data)
+            elif kind == 'trailview-features':
+                trailview_features.decode(data)
             elif kind == 'snow':
                 seasons = metadata.get('seasons')
                 if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:

@@ -2,7 +2,8 @@
 //! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
-//! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
+//! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-features` are
+//! Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
 //! The release document, the public files and the grid indexes are the files that a client finds
 //! by name; `planner/catalog` points at them. `data/planner.toml` holds the options that are the
@@ -43,6 +44,8 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
+/// Its format is `features_format` of `specs/trailview-features.md`.
+pub static PLANNER_TRAILVIEW_FEATURES: Layer = whole("planner/trailview-features", 1, &[&WEB_PLANNER]);
 /// The offline catalog, the release document, the joined fonts of every planner layer and the
 /// pointer. Its format is that of the offline catalog and of `search/<region>.grid.json`, which the
 /// downloads and search services check: a change of either file format changes it, and
@@ -129,7 +132,7 @@ impl Product for Planner {
     }
 
     fn optional(&self) -> &'static [&'static str] {
-        &["climate", "snow", "sun"]
+        &["climate", "snow", "sun", "trailview-features"]
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -392,7 +395,19 @@ impl Planner {
                 &["sun"],
             ));
         }
-        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun"];
+        if on("trailview-features") {
+            let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
+            steps.push(python(
+                &PLANNER_TRAILVIEW_FEATURES,
+                "planner/trailview-features",
+                vec![Input::step("planner/osm")],
+                json!({"bounds": bounds, "kinds": kinds, "attribution": attribution("osm-planet")}),
+                ("tools.planner_trailview_features", Some("planner-maps")),
+                &["trailview-features.pmtiles"],
+            ));
+        }
+        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun", "trailview-features"];
         let grids = steps
             .iter_mut()
             .filter_map(|step| {
@@ -902,7 +917,7 @@ mod tests {
     fn each_step_belongs_to_the_layer_of_its_producer() {
         let temp = temp("planner-layers");
         let store = store(&temp, &["2026-10-01"]);
-        let inputs = resolved(inputs(AREA, &["climate", "snow", "sun"]), &regions(), &store);
+        let inputs = resolved(inputs(AREA, &["climate", "snow", "sun", "trailview-features"]), &regions(), &store);
         crate::device::tests::with_model_areas(&store);
         let mut steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         steps.extend(Device.steps_with_tool(&root(), &inputs, &regions(), &store, Ok(())).unwrap().steps);
@@ -924,6 +939,7 @@ mod tests {
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
                 ["planner", "sun", ..] => "planner/sun",
+                ["planner", "trailview-features", ..] => "planner/trailview-features",
                 ["planner", "fonts" | "index" | "catalog", ..] => "planner/index",
                 _ => panic!("{name} has no layer"),
             }
@@ -932,7 +948,7 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 14, "thirteen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(named.len(), 15, "fourteen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A

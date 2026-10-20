@@ -450,7 +450,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `device/landmarks` | `device/landmark-content…`, `device/peak-content…`, `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` |
 | `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
-| `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun` | The step of the same name and its grid |
+| `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features` | The step of the same name and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
@@ -879,9 +879,10 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies the portable terrain tiles and reads them from their grid archives |
+| `planner/trailview-features` | `planner/osm` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 14 |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `snow` or `sun`. It reads only the archive of its producer.
+`terrain`, `overlays`, `climate`, `snow`, `sun` or `trailview-features`. It reads only the archive of its producer.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
 stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
@@ -892,7 +893,7 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow` and `sun` are optional layers: a step only when `layers` of the settings
+`climate`, `snow`, `sun` and `trailview-features` are optional layers: a step only when `layers` of the settings
 names it. All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
