@@ -2,7 +2,8 @@
 //! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
-//! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
+//! the optional layers `planner/climate`, `planner/snow`, `planner/sun` and `planner/trailview-canopy`
+//! are Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
 //! The release document, the public files and the grid indexes are the files that a client finds
 //! by name; `planner/catalog` points at them. `data/planner.toml` holds the options that are the
@@ -12,6 +13,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
+use obc_data::prepared::{Manifest, MANIFEST};
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
@@ -43,6 +45,8 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
+/// Its format is `canopy_format` of `specs/trailview-tiles.md`.
+pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1, &[&WEB_PLANNER]);
 /// The offline catalog, the release document, the joined fonts of every planner layer and the
 /// pointer. Its format is that of the offline catalog and of `search/<region>.grid.json`, which the
 /// downloads and search services check: a change of either file format changes it, and
@@ -129,7 +133,7 @@ impl Product for Planner {
     }
 
     fn optional(&self) -> &'static [&'static str] {
-        &["climate", "snow", "sun"]
+        &["climate", "snow", "sun", "trailview-canopy"]
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -392,7 +396,10 @@ impl Planner {
                 &["sun"],
             ));
         }
-        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun"];
+        if on("trailview-canopy") {
+            steps.extend(canopy(inputs, store, bounds, &mut wanted)?);
+        }
+        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun", "trailview-canopy"];
         let grids = steps
             .iter_mut()
             .filter_map(|step| {
@@ -569,6 +576,67 @@ fn snow(
         ("tools.planner_snow", Some("planner-snow")),
         &["snow.pmtiles"],
     ))
+}
+
+/// The canopy layer of `bounds`: the zoom 12 tiles of each `forest-reference/<key>` that meets
+/// `bounds`, in the order of `data/sources.toml`, which is best first. None while the store lacks
+/// a manifest; then `wanted` has its fetch.
+fn canopy(
+    inputs: &Inputs,
+    store: &Store,
+    bounds: [f64; 4],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    let ((left, top), (right, bottom)) = (mercator(bounds[0], bounds[3], 12), mercator(bounds[2], bounds[1], 12));
+    let span = |from: f64, to: f64| from.floor() as u32..to.ceil() as u32;
+    let paths: HashSet<String> =
+        span(left, right).flat_map(|x| span(top, bottom).map(move |y| format!("12/{x}/{y}.tif"))).collect();
+    let (mut reads, mut references, mut credits, asked) = (Vec::new(), Vec::new(), Vec::new(), wanted.len());
+    for source in obc_data::sources::all().iter().filter(|source| source.id.starts_with("forest-reference/")) {
+        if !source.meets(bounds) {
+            continue;
+        }
+        let id = &source.id;
+        let pinned = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
+            Ok(pinned) => pinned,
+            Err(fetch) => {
+                wanted.push(fetch);
+                continue;
+            }
+        };
+        let manifest = snapshot_files(store, id, &pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)?;
+        let Some(manifest) = manifest else {
+            wanted.push(Wanted { source: id.clone(), version: Some(pinned), params: Vec::new() });
+            continue;
+        };
+        let path = &manifest[MANIFEST];
+        let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+        let manifest: Manifest =
+            serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))?;
+        let files: Vec<String> =
+            manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
+        if !files.is_empty() {
+            reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
+            references.push(id.clone());
+            credits.push(attribution(id));
+        }
+    }
+    if wanted.len() > asked {
+        return Ok(None);
+    }
+    if reads.is_empty() {
+        return Err(invalid(
+            "the layer trailview-canopy needs a forest reference: none has a tile in the region".into(),
+        ));
+    }
+    Ok(Some(python(
+        &PLANNER_TRAILVIEW_CANOPY,
+        "planner/trailview-canopy",
+        reads,
+        json!({"bounds": bounds, "references": references, "attribution": credits.join("; ")}),
+        ("tools.planner_trailview_canopy", Some("planner-snow")),
+        &["trailview-canopy.pmtiles"],
+    )))
 }
 
 /// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
@@ -896,6 +964,47 @@ mod tests {
         let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         assert_eq!(pois.options["time_zone"], "UTC");
+    }
+
+    #[test]
+    fn the_canopy_reads_the_tiles_of_the_region_from_the_manifest_of_the_forest_reference() {
+        use obc_data::store::sha256_hex;
+
+        let temp = temp("planner-canopy");
+        let store = Store::at(temp.0.join("store"));
+        let id = "forest-reference/ch";
+        let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
+        let manifest = Manifest {
+            source: id.into(),
+            version: "2026-10-20".into(),
+            format: 1,
+            revision: 1,
+            inputs: Vec::new(),
+            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif", "index.json"].map(file).into(),
+            scope: None,
+            languages: Vec::new(),
+            licence: None,
+            attribution: None,
+            machine: "test".into(),
+            time: "2026-10-20T00:00:00Z".into(),
+            cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+        };
+        let bytes = manifest.canonical();
+        let pinned = format!("2026-10-20/{}", sha256_hex(&bytes));
+        let mut inputs = Inputs::default();
+        inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
+        // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
+        let bounds = [8.40, 46.81, 8.45, 46.83];
+        let mut wanted = Vec::new();
+        assert!(canopy(&inputs, &store, bounds, &mut wanted).unwrap().is_none());
+        assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned.clone()), params: Vec::new() }]);
+
+        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+        let step = canopy(&inputs, &store, bounds, &mut Vec::new()).unwrap().unwrap();
+        let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
+        assert_eq!((source.as_str(), version), (id, &pinned));
+        assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);
+        assert_eq!(step.options["references"], json!([id]));
     }
 
     #[test]

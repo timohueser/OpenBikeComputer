@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 # the region recipe has the field NAME. The value is a metadata key that every complete archive has.
 # The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
 # builder/web/src/lib/planner/layers/registry.ts.
-DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
+DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-canopy": "canopy_format"}
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
 INDEX_FORMAT = 3

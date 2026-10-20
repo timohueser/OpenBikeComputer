@@ -44,7 +44,7 @@ def archive(path, kind, vector=None):
         read = MmapSource(stream)
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
-        expected = TileType.WEBP if kind in {'terrain', 'sun'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
+        expected = TileType.WEBP if kind in {'terrain', 'sun', 'trailview-canopy'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
         if expected == TileType.MVT and vector is None:

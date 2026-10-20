@@ -81,7 +81,7 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("release.json: {e}"))?;
     let tiles = format!("{}/releases/{id}", origins.tiles_origin);
     let files = document["files"].as_object().ok_or("planner index has no files")?;
-    let layers: BTreeMap<_, _> = ["snow", "climate", "sun"]
+    let layers: BTreeMap<_, _> = ["snow", "climate", "sun", "trailview-canopy"]
         .into_iter()
         .filter(|kind| files.contains_key(&format!("maps/{kind}.json")))
         .map(|kind| (kind, format!("{tiles}/{kind}.json")))

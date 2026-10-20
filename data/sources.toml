@@ -460,6 +460,50 @@ areas = ["north-america/us"]
 version = "date"
 redistribute = true
 
+# ── TrailView forest ─────────────────────────────────────────────────────────
+
+# The canopy of each cell of the TrailView canopy layer, from the two sources below.
+[[source]]
+id = "forest-reference/ch"
+kind = "data"
+group = "TrailView forest"
+licence = "CC-BY-4.0 AND LicenseRef-Copernicus-CLMS"
+attribution = "Vegetation Height Model LiDAR NFI © WSL/FOEN; Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
+obligations = "Credit the NFI and the Copernicus Land Monitoring Service; state modifications"
+fetch = { kind = "prepared" }
+hosts = ["data.geo.admin.ch", "image.discomap.eea.europa.eu"]
+extent = [5.9, 45.8, 10.5, 47.9]
+version = "date"
+refresh = 365
+redistribute = true
+
+# Only the producer of `forest-reference/ch` reads the next two, through HTTP range requests.
+[[source]]
+id = "vhm-lidar-ch"
+kind = "data"
+group = "TrailView forest"
+licence = "CC-BY-4.0"
+licence_url = "https://www.envidat.ch/#/metadata/vegetation-height-model-lidar-nfi"
+attribution = "Vegetation Height Model LiDAR NFI © WSL/FOEN (doi:10.16904/envidat.664)"
+fetch = { kind = "capture", url = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/items" }
+extent = [5.9, 45.8, 10.5, 47.9]
+version = "date"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "hrl-dominant-leaf-type"
+kind = "data"
+group = "TrailView forest"
+licence = "LicenseRef-Copernicus-CLMS"
+licence_url = "https://land.copernicus.eu/en/data-policy"
+attribution = "Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
+obligations = "Credit the Copernicus Land Monitoring Service; state modifications"
+fetch = { kind = "capture", url = "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominanteLeafType_2018/ImageServer" }
+version = "date"
+refresh = "manual"
+redistribute = true
+
 # ── Wikimedia ────────────────────────────────────────────────────────────────
 
 [[source]]

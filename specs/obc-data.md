@@ -878,10 +878,11 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
+| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: their credits | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 | `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies the portable terrain tiles and reads them from their grid archives |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `snow` or `sun`. It reads only the archive of its producer.
+`terrain`, `overlays`, `climate`, `snow`, `sun` or `trailview-canopy`. It reads only the archive of its producer.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
 stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
@@ -892,8 +893,8 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow` and `sun` are optional layers: a step only when `layers` of the settings
-names it. All producers are intermediate layers. Grid steps select their `objects/` and their
+`climate`, `snow`, `sun` and `trailview-canopy` are optional layers: a step only when `layers` of
+the settings names it. All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
@@ -1519,6 +1520,39 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
+
+#### `forest-reference/<key>`
+
+The producer `forest-reference`, format 1, makes the forest of each cell of the zoom 12 tiles at
+256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs:
+
+- The tiles are the zoom 12 tiles whose inside meets the `extent` of the source. A version of a
+  region of boxes has only the tiles that meet its box. A region of another area refuses.
+- For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
+  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
+  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It reads the sources through
+  HTTP range requests and keeps no raw raster. The run keeps the SHA-256 or the `.none` of each
+  tile until the version is complete, so a resume makes no tile again that it has.
+- A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
+  65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
+  endian.
+
+  | Band | Value of a cell |
+  | --- | --- |
+  | `height_dm` | The 95th percentile of the canopy pixels in decimetres, at most 800; 0 without a canopy pixel |
+  | `cover_pct` | The share of the pixels that are canopy, in % |
+  | `stems_per_ha` | The tree tops per hectare of the known pixels |
+  | `conifer_pct` | The share of coniferous trees of the leaf type samples with a tree, in %; 65535 without one |
+
+- A canopy pixel is 3 m high or more. A tree top is a pixel of the canopy that a binomial 3 × 3
+  mean smooths, 5 m high or more, that no pixel within its crown radius exceeds: 0.5 m plus 8 % of
+  its height, from 1 m to 4 m.
+- `ch` reads `vhm-lidar-ch`: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
+  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell.
+- The run uploads the tiles in batches of 64. Last, `index-tiles` writes `index.json`: each tile
+  `<x>/<y>` of the version with the SHA-256 of its pixels in `sha256`, the `bands`, the `source`
+  key and `fetched`, the date of the version. The manifest names each source that the key reads
+  at that date, with the [digest](#keys) of the pixel SHA-256 of the tiles.
 
 #### `wiki`
 

@@ -2,6 +2,7 @@
 //! producers of prepared sources.
 
 pub mod device;
+pub mod forest_reference;
 mod functions;
 pub mod planner;
 mod readers;
@@ -20,7 +21,8 @@ pub const PRODUCTS: &[&dyn Product] = &[&device::Device, &planner::Planner];
 pub use functions::FUNCTIONS;
 
 /// The producers of the prepared sources.
-pub const PREPARED: &[&dyn Prepared] = &[&terrain_reference::TERRAIN_REFERENCE, &wiki::WIKI];
+pub const PREPARED: &[&dyn Prepared] =
+    &[&terrain_reference::TERRAIN_REFERENCE, &forest_reference::FOREST_REFERENCE, &wiki::WIKI];
 
 /// A Python step of `layer`: `entry`, a `tools.*` module or a script, with the argument `--step`,
 /// under `uv run` with the packages of `group` of `pyproject.toml`. The hash seed is fixed, so the
