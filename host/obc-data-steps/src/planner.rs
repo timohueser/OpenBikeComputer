@@ -58,6 +58,8 @@ pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer = whole("planner/index", 3, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]);
 
+const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
+
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static Reader]) -> Layer {
     Layer { name, shape: Shape::Whole, format, revision: 1, readers }
 }
@@ -647,9 +649,13 @@ fn trailview(
     let credit = |sources: &[&str]| {
         sources.iter().map(|id| attribution(id).replace("{year}", &year)).collect::<Vec<_>>().join("; ")
     };
-    if on("trailview-ground") {
+    let grid = match on("trailview-ground") {
+        true => crate::device::text(inputs, store, WORLDCOVER_GRID, &[], wanted)?,
+        false => None,
+    };
+    if let Some(grid) = grid {
         let rules = |file: &str| layer_files("planner/trailview-rules", &[file]);
-        let tiles = worldcover_tiles(bounds).into_iter().map(|tile| ("tile".to_string(), tile)).collect();
+        let tiles = worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
         let ground = |layer: &str, reads: Vec<Input>, text: String| {
             let options = json!({"layer": layer, "bounds": bounds, "attribution": text});
             let output = format!("{layer}.pmtiles");
@@ -730,8 +736,21 @@ fn ruleset(root: &Path) -> Result<String, String> {
     Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
 }
 
-/// The 3° WorldCover tiles that `bounds` overlaps, named by their south-west corner.
-fn worldcover_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
+/// The 3° WorldCover tiles that `bounds` overlaps and that its grid lists, named by their south-west
+/// corner. WorldCover has no tile over open sea.
+fn worldcover_tiles(bounds: [f64; 4], grid: &str) -> Result<Vec<String>, Unplanned> {
+    let grid: serde_json::Value =
+        serde_json::from_str(grid).map_err(|e| Unplanned::Failed(format!("{WORLDCOVER_GRID}: {e}")))?;
+    let land: HashSet<&str> = grid["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|feature| feature["properties"]["ll_tile"].as_str())
+        .collect();
+    Ok(worldcover_squares(bounds).into_iter().filter(|tile| land.contains(tile.as_str())).collect())
+}
+
+fn worldcover_squares([west, south, east, north]: [f64; 4]) -> Vec<String> {
     let corner = |degrees: f64| (degrees / 3.0).floor() as i32 * 3;
     let name = |lat: i32, lon: i32| {
         let (ns, ew) = (if lat >= 0 { 'N' } else { 'S' }, if lon >= 0 { 'E' } else { 'W' });
@@ -861,6 +880,9 @@ mod tests {
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
         fetched(&store, obc_bake::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
+        // The box of the region touches the WorldCover squares N45E006 and N48E006; the second is sea here.
+        let grid = r#"{"features": [{"properties": {"ll_tile": "N45E006"}}, {"properties": {"ll_tile": "N45E003"}}]}"#;
+        fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
         }
@@ -1222,13 +1244,13 @@ mod tests {
             [
                 r#"planner/trailview-rules["materials.json"]"#,
                 r#"planner/osm["osm.pbf"]"#,
-                r#"esa-worldcover[("tile", "N45E006"), ("tile", "N48E006")]"#,
+                r#"esa-worldcover[("tile", "N45E006")]"#,
                 r#"corine-land-cover[("bbox", "7.79,47.99,7.82,48.02")]"#,
                 r#"sentinel-2-mosaics[("bbox", "7.79,47.99,7.82,48.02"), ("year", "2025")]"#,
             ]
         );
         assert_eq!(read(get("planner/trailview-region")), [r#"planner/trailview-rules["regions.json"]"#]);
-        assert_eq!(worldcover_tiles([7.6, 46.4, 8.95, 47.25]), ["N45E006"]);
+        assert_eq!(worldcover_squares([7.79, 47.99, 7.82, 48.02]), ["N45E006", "N48E006"]);
         let grids: Vec<(&str, &serde_json::Value)> = steps
             .iter()
             .filter(|step| step.name.starts_with("planner/trailview") && step.name.ends_with("/grid"))

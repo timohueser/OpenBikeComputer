@@ -588,6 +588,19 @@ version = "release"
 start = "v200"
 redistribute = true
 
+# The tiles of `esa-worldcover`: it has none over open sea.
+[[source]]
+id = "esa-worldcover-grid"
+kind = "data"
+group = "TrailView ground and colour"
+licence = "CC-BY-4.0"
+licence_url = "https://esa-worldcover.org/en/data-access"
+attribution = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium"
+fetch = { kind = "http", url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/{version}/2021/esa_worldcover_grid.geojson" }
+version = "release"
+start = "v200"
+redistribute = true
+
 # The legend and the map images of the CORINE Land Cover raster over a box.
 [[source]]
 id = "corine-land-cover"
