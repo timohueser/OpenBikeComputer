@@ -17,8 +17,8 @@ const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 2
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
 const CELL_PIXELS = 4;
-/** Frames without a shortage, and with half the pools free, before the quality rises again. */
-const CALM = 120;
+/** Frames without a shortage before the quality rises again, when each pool would still have room: the share that it fills at most. */
+const CALM = 120, ROOM = 0.6;
 /** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bilinear overshoot. */
 const ANY_HEIGHT: [number, number] = [-500, 9000];
 const MARGIN = 50;
@@ -245,11 +245,11 @@ export class Terrain {
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.nodes = nodes.slice(0, MAX_NODES);
         const work = this.pages.update(wanted, anchor);
-        const total = this.pages.capacity.stored + this.pages.capacity.synth;
+        const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
-        } else if (++this.calm > CALM && this.quality > 0 && wanted.length < total / 2) {
+        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth) {
             this.quality--;
             this.calm = 0;
         }

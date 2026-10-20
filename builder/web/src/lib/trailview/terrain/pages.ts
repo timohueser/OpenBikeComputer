@@ -60,6 +60,8 @@ export class Pages {
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
+    /** Pages of each pool that the last frame wanted. */
+    wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
@@ -95,6 +97,7 @@ export class Pages {
         this.frame++;
         this.shortage = 0;
         this.missing = 0;
+        this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], normals: [], origins: this.window(anchor) };
         for (const node of wanted) this.want(node, work);
         const keys = new Set(wanted.map(key));
@@ -136,11 +139,13 @@ export class Pages {
         const page = this.pages.get(key(node));
         if (page) {
             page.used = this.frame;
+            this.wanted[page.kind]++;
             if (!page.ready) this.missing++;
             return;
         }
         const stored = this.stored(node);
         if (stored !== 'no') {
+            this.wanted.stored++;
             this.missing++;
             this.load(node.level - 1, node.x >> 1, node.y >> 1);
             return;
@@ -148,6 +153,7 @@ export class Pages {
         const ancestor = this.storedAncestor(node);
         // No stored tile above the node knows a height: nothing draws there.
         if (!ancestor) return;
+        this.wanted.synth++;
         this.missing++;
         if (ancestor === 'wait' || work.uploads.length + work.syntheses.length >= ARRIVALS) return;
         const ready = this.around(ancestor).every(near => {

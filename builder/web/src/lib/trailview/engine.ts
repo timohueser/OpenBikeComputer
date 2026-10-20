@@ -11,6 +11,8 @@ import { Terrain, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View, type Weather } from './view';
 
 const PASSES = ['terrain'];
+/** Metres to a view that is at another place. */
+const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
 const RED = { r: 1, g: 0, b: 0, a: 1 };
 const DEPTH: GPUTextureFormat = 'depth32float';
@@ -105,10 +107,14 @@ export class TrailView {
     }
 
     set view(view: View) {
-        this.pose = this.poseOf(view);
+        const pose = this.poseOf(view);
+        // A view at another place forgets the ground; a scripted flight step keeps it for the probe to follow.
+        if (Math.hypot(pose.east - this.pose.east, pose.north - this.pose.north) > NEW_PLACE) {
+            this.held = undefined;
+            this.terrain.forget();
+        }
+        this.pose = pose;
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.held = undefined;
-        this.terrain.forget();
         this.moved = true;
         this.request();
     }
