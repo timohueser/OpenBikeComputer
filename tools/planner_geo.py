@@ -21,12 +21,6 @@ def mercator(lon, lat, zoom):
     return (lon + 180) / 360 * count, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count
 
 
-def km2(bounds):
-    """The area of `bounds` on the sphere of the mean Earth radius, in square kilometres."""
-    west, south, east, north = bounds
-    return 6371.0088 ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
-
-
 def tile_bounds(z, x, y):
     n = 1 << z
     latitude = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))

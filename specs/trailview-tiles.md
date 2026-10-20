@@ -167,20 +167,21 @@ takes its values from the first of them, in the order of `data/sources.toml`, th
 | Bounds | The region bounds |
 
 Cell (column, row) of tile 12/x/y covers that cell of the 256 × 256 grid of the tile. Row 0 is the
-north edge and column 0 is the west edge. A tile that the archive does not hold has no forest
-cell, or no forest reference covers it. The release packs the archive in PMTiles per zoom 11
-parent: `maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON
-`maps/trailview-canopy.json`.
+north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no
+forest reference has it. The release packs the archive in PMTiles per zoom 11 parent:
+`maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-canopy.json`.
 
 | Metadata | Value |
 | --- | --- |
 | `canopy_format` | `1`. A reader reads only the format that it knows |
+| `archive` | `trailview-canopy` |
 | `attribution` | Text to show with the layer |
 
 Decode a tile without colour conversion (`createImageBitmap` with `colorSpaceConversion:
-'none'`). The code of a cell is red + 256 × green; blue is 0. Every bit of the code of a cell that
-is not a forest cell is 0. A forest cell has a canopy height of 3 m or more and a cover of 5 % or
-more.
+'none'`). The code of a cell is red + 256 × green; blue is 0. The code 65535 is a cell that no
+forest reference knows. The code 0 is a known cell that is not a forest cell. A forest cell has a
+canopy height of 3 m or more and a cover of 5 % or more; its code is the bits below, and its cover
+bits are never 15.
 
 | Bits | Meaning |
 | --- | --- |
