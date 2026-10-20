@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4", "colour-ndvimax")
 DATA_LAYERS = {
     "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
+    "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
 }
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,

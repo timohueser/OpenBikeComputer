@@ -899,10 +899,12 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
+| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
-`trailview-lithology` or `trailview-region`. It reads only the archive of its producer.
+`trailview-lithology`, `trailview-region` or `trailview-canopy`. It reads only the archive of its
+producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
 `trailview-colour-<archive>`.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
@@ -917,8 +919,9 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground` and
-`trailview-colour` are optional layers: a step only when `layers` of the settings names it.
+`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground`,
+`trailview-colour` and `trailview-canopy` are optional layers: a step only when `layers` of the
+settings names it.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
@@ -1549,6 +1552,41 @@ maximum, which `device/terrain` reads, and under `mean/` the mean, which `planne
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
+
+#### `forest-reference/<key>`
+
+The producer `forest-reference`, format 1, makes the forest of each cell of the zoom 12 tiles at
+256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs:
+
+- The tiles are the zoom 12 tiles whose inside meets the `extent` of the source. A version of a
+  region of boxes has only the tiles that meet the bounds of its boxes. A region of another area
+  refuses.
+- For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
+  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
+  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The
+  run keeps the SHA-256 or the `.none` of each
+  tile until the version is complete, so a resume makes no tile again that it has.
+- A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
+  65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
+  endian.
+
+  | Band | Value of a cell |
+  | --- | --- |
+  | `height_dm` | The 95th percentile of the canopy pixels in decimetres, at most 800; 0 without a canopy pixel |
+  | `cover_pct` | The share of the pixels that are canopy, in % |
+  | `stems_per_ha` | The tree tops per hectare of the known pixels |
+  | `conifer_pct` | The share of coniferous trees of the leaf type samples with a tree, in %; 65535 without one |
+
+- A canopy pixel is 3 m high or more. A tree top is a pixel of the canopy that a binomial 3 × 3
+  mean smooths, 5 m high or more, that no pixel within its crown radius exceeds: 0.5 m plus 8 % of
+  its height, from 1 m to 4 m. Tops of one height within the crown radius of each other, directly
+  or through other such tops, are one tree, such as a flat crown; its top is the first in raster
+  order.
+- `ch` reads `vhm-lidar-ch` through HTTP range requests, in strips of whole block rows, so each
+  block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
+  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
+- The run uploads the tiles in batches of 64. The manifest names each source that the key reads
+  at the date of the version, with the [digest](#keys) of the pixel SHA-256 of the tiles.
 
 #### `wiki`
 
