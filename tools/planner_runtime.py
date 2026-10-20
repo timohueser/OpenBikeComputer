@@ -10,9 +10,12 @@ from urllib.request import Request, urlopen
 # field NAME. The value is a metadata key that every complete archive has. The catalogue entry lists
 # each layer in `layers`; the web planner shows snow, climate and sun through its module in
 # builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
-# specs/trailview-tiles.md.
+# specs/trailview-features.md and specs/trailview-tiles.md.
 TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4", "colour-ndvimax")
-DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format", **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW}}
+DATA_LAYERS = {
+    "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
+    **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
+}
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
 INDEX_FORMAT = 3

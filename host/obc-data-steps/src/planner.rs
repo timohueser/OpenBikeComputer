@@ -9,7 +9,7 @@
 //! by name; `planner/catalog` points at them. `data/planner.toml` holds the options that are the
 //! same for each region.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
@@ -18,20 +18,23 @@ use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
+use obc_dem::reference::{Window, TILE_LOG2};
 use obc_dem::step::GLO30;
+use obc_map_core::grid::CellId;
 use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::device::{invalid, text, TILE_LIST};
+use crate::device::{invalid, text, Models, TILE_LIST};
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 use crate::{functions, python};
 
 /// The offline Protomaps map, with its fonts and sprites.
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
-/// The terrain of the maps.
-pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 1, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
+/// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
+/// `specs/planner-release.md`.
+pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -44,6 +47,8 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
+/// Its format is `features_format` of `specs/trailview-features.md`.
+pub static PLANNER_TRAILVIEW_FEATURES: Layer = whole("planner/trailview-features", 1, &[&WEB_PLANNER]);
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
@@ -148,7 +153,7 @@ impl Product for Planner {
     }
 
     fn optional(&self) -> &'static [&'static str] {
-        &["climate", "snow", "sun", "trailview-rules", "trailview-ground", "trailview-colour"]
+        &["climate", "snow", "sun", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"]
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -230,7 +235,7 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            osmium.map_err(Unplanned::Invalid)?;
+            osmium.clone().map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
         let mut reads = vec![Input::step(osm.name.clone())];
@@ -252,10 +257,14 @@ impl Planner {
             ("tools.planner_basemap", None),
             &["basemap.pmtiles"],
         );
+        let reference = reference(inputs, store, coverage, &mut wanted)?;
         let terrain = Step {
             layer: &PLANNER_TERRAIN,
             name: "planner/terrain".into(),
-            inputs: tiles(coverage, &land, &glo30),
+            inputs: tiles(coverage, &land, &glo30)
+                .into_iter()
+                .chain(reference.iter().map(|step| Input::step(&step.name)))
+                .collect(),
             options: json!({"bounds": coverage, "attribution": attribution(GLO30)}),
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(&functions::PLANNER_TERRAIN),
@@ -376,6 +385,7 @@ impl Planner {
         );
         let mut steps = source_steps;
         steps.extend(content.steps);
+        steps.extend(reference);
         steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
         ]);
@@ -411,6 +421,19 @@ impl Planner {
                 &["sun"],
             ));
         }
+        if on("trailview-features") {
+            osmium.map_err(Unplanned::Invalid)?;
+            let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
+            steps.push(python(
+                &PLANNER_TRAILVIEW_FEATURES,
+                "planner/trailview-features",
+                vec![Input::step("planner/osm")],
+                json!({"bounds": bounds, "kinds": kinds, "attribution": attribution("osm-planet")}),
+                ("tools.planner_trailview_features", Some("planner-maps")),
+                &["trailview-features.pmtiles"],
+            ));
+        }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         let maps = [
             "basemap",
@@ -420,6 +443,7 @@ impl Planner {
             "climate",
             "snow",
             "sun",
+            "trailview-features",
             "trailview-material",
             "trailview-lithology",
             "trailview-region",
@@ -549,6 +573,37 @@ fn snapshot(
         String::new()
     });
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
+}
+
+/// The mean archive of the national models whose tiles meet `bounds`, merged best first into one
+/// archive: the step `planner/reference`. `None` when no model has a tile there.
+fn reference(
+    inputs: &Inputs,
+    store: &Store,
+    [west, south, east, north]: [f64; 4],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    let udeg = |degrees: f64| (degrees * 1e6) as i64;
+    let window = Window { lat_lo: udeg(south), lat_hi: udeg(north) + 1, lon_lo: udeg(west), lon_hi: udeg(east) + 1 };
+    let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
+    let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
+    // Without a layer, the read writes no note and reads no polygon.
+    let models = Models { tiles: &tiles, pool: "mean/", layer: None };
+    let Some((reads, models)) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
+        return Ok(None);
+    };
+    let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
+    Ok(Some(Step {
+        client: Client::None,
+        ..python(
+            &PLANNER_TERRAIN,
+            "planner/reference",
+            reads,
+            json!({"models": models, "tiles": tiles, "pool": "mean"}),
+            ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
+            &["reference"],
+        )
+    }))
 }
 
 /// The GLO-30 tiles of `bounds` that the tile list names, as an input. A square that it does not
@@ -824,7 +879,8 @@ mod tests {
         "egdi-geology",
         "igme5000",
     ];
-    const OPTIONAL: [&str; 6] = ["climate", "snow", "sun", "trailview-rules", "trailview-ground", "trailview-colour"];
+    const OPTIONAL: [&str; 7] =
+        ["climate", "snow", "sun", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
 
     /// The inputs of `region` with `layers` on, whose serving release reads each source without
     /// params of the planner at `1`, and the canopy at `v1.11`.
@@ -961,6 +1017,28 @@ mod tests {
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
         assert_eq!(inputs.requests.borrow().iter().filter(|(source, _)| source == EXTRACTS).count(), 2);
+    }
+
+    #[test]
+    fn the_terrain_reads_the_mean_tiles_of_a_national_model_in_its_bounds() {
+        let temp = temp("planner-reference");
+        let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
+        let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
+        let (pinned, manifest) = crate::device::tests::swiss_version(&mut inputs, &paths);
+        let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
+        crate::device::tests::stored(&store, "terrain-reference/ch", &pinned, &[], &manifest);
+        let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+        let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
+        let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
+        assert_eq!(
+            (&files[..], &reference.options["pool"]),
+            (&["mean/16/4825/4218.tif".to_string()][..], &json!("mean"))
+        );
+        let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
+        assert!(terrain
+            .inputs
+            .iter()
+            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
     }
 
     #[test]
@@ -1128,6 +1206,7 @@ mod tests {
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
                 ["planner", "sun", ..] => "planner/sun",
+                ["planner", "trailview-features", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
                 ["planner", "trailview-material" | "trailview-lithology" | "trailview-region", ..] => {
                     "planner/trailview-ground"
@@ -1141,7 +1220,7 @@ mod tests {
             assert_eq!(step.layer.name, layer(&step.name), "{}", step.name);
         }
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
-        assert_eq!(named.len(), 17, "sixteen operator layers and the OSM of the region: {named:?}");
+        assert_eq!(named.len(), 18, "seventeen operator layers and the OSM of the region: {named:?}");
 
         // A target holds only client files: a step reads only those of a step of another layer
         // that a program reads, so another machine can bake it without baking that step again. A
@@ -1174,6 +1253,17 @@ mod tests {
             ("planner/trailview-region", "planner/trailview-rules"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
+    }
+
+    #[test]
+    fn trailview_features_need_osmium_in_the_plan() {
+        let temp = temp("planner-trailview-features");
+        let store = store(&temp, &["2026-10-01"]);
+        let plan = |layers: &[&str]| {
+            Planner.steps_with_tool(&root(), &inputs(AREA, layers), &regions(), &store, Err("no osmium".into()))
+        };
+        assert!(plan(&[]).is_ok(), "one source area needs no Osmium");
+        assert!(matches!(plan(&["trailview-features"]), Err(Unplanned::Invalid(reason)) if reason == "no osmium"));
     }
 
     #[test]

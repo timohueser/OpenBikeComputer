@@ -10,6 +10,7 @@ The rules that the TrailView ground layers index and that the engine reads. The 
 | `regions/`, `packs/`, `styles/` | Rulesets, asset packs and house styles. A file inherits what it does not say from the file it `extends` | snapshot |
 | `ecoregions.json` | The RESOLVE ecoregions of Europe, simplified to about 1 km | snapshot |
 | `countries.json` | Natural Earth countries and first-level subdivisions | snapshot |
+| `kinds.json` | The feature kinds of `planner/trailview-features`: [specs/trailview-features.md](../../specs/trailview-features.md) | this repository |
 | `overlays/<region>.json` | Look keys of the engine that the prototype does not have | this repository |
 
 ## Re-sync
