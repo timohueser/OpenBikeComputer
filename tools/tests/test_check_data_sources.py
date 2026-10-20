@@ -12,7 +12,7 @@ sys.modules[SPEC.name] = guard
 SPEC.loader.exec_module(guard)
 
 REGISTRY = {"source": [
-    {"id": "osm", "fetch": {"kind": "osm", "url": "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"}},
+    {"id": "osm", "fetch": {"kind": "http", "url": "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"}},
     {"id": "wikipedia", "fetch": {"kind": "capture", "url": "https://{language}.wikipedia.org/w/api.php"},
      "hosts": ["upload.wikimedia.org"]},
     {"id": "nominatim", "fetch": {"kind": "installed"}},
@@ -36,6 +36,21 @@ class HostGuardTests(unittest.TestCase):
         text = ('"https://maps.example/x" "http://127.0.0.1:8080" "https://{site}/w/api.php" '
                 r're.compile(r"https://github\.com/x")')
         self.assertEqual(guard.hosts_in(text), set())
+
+
+class UseGuardTests(unittest.TestCase):
+    def test_a_source_names_what_reads_it_and_what_for(self):
+        registry = {"source": [
+            {"id": "good", "used_by": ["planner", "trailview"], "use": "Land cover of the basemap"},
+            {"id": "no-readers", "use": "Land cover of the basemap"},
+            {"id": "no-use", "used_by": ["device"]},
+            {"id": "unknown", "used_by": ["planner", "atlas"], "use": "Land cover of the basemap"},
+        ]}
+        self.assertEqual(guard.undocumented(registry), [
+            "no-readers: give `used_by` and `use`",
+            "no-use: give `used_by` and `use`",
+            "unknown: `used_by` names `atlas`",
+        ])
 
 
 if __name__ == "__main__":

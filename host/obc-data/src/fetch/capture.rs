@@ -48,23 +48,6 @@ pub(crate) fn run(
                 },
             )
         }
-        "osm-trails" => {
-            let [bbox] = values(request, ["bbox"])?;
-            let bbox = parse_bbox(bbox)?;
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}"),
-                &[source],
-                |_| &[0],
-                false,
-                |_, out| {
-                    let mut command = python(root, Some("planner-snow"))?;
-                    command.args(["-m", "tools.planner_snow", &format!("--bounds={bbox}"), "--fetch-trails"]).arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [bbox] = values(request, ["bbox"])?;
             let bbox = parse_bbox(bbox)?;

@@ -59,8 +59,6 @@ enum Check {
     /// The URL with `latest` for `{yymmdd}` redirects to the file of the newest day, such as
     /// `planet-latest.osm.pbf` to `planet-YYMMDD.osm.pbf`.
     LatestRedirect(String),
-    /// The `state.txt` of a replication directory names the day of its newest diff.
-    ReplicationState(String),
     LastModified(String),
     /// The newest commit of the default branch, from the API URL of the repository.
     GithubCommit(String),
@@ -133,7 +131,6 @@ pub fn observe(
 fn plan(source: &Source, params: &[(String, String)]) -> Result<Vec<Check>, Upstream> {
     let Some(url) = source.fetch.url.as_deref() else { return Err(Upstream::CannotCheck) };
     let check = match source.fetch.kind {
-        FetchKind::Osm => Ok(Check::ReplicationState(format!("{url}state.txt"))),
         FetchKind::Http | FetchKind::Geofabrik if url.contains("{yymmdd}") => {
             return super::expand(&url.replace("{yymmdd}", "latest"), None, params)
                 .map(|urls| urls.into_iter().map(Check::LatestRedirect).collect())
@@ -178,7 +175,6 @@ fn run(http: &Http, check: &Check) -> Result<String, String> {
             let day = digits.map(|d| format!("20{}-{}-{}", &d[..2], &d[2..4], &d[4..]));
             day.filter(|day| date::parse(day).is_some()).ok_or_else(|| format!("{target} names no day"))
         }
-        Check::ReplicationState(url) => Ok(date::format(super::osm::state(http, url)?.1)),
         Check::LastModified(url) => http.modified(url)?.ok_or_else(|| format!("{url} has no Last-Modified")),
         Check::GithubCommit(api) => {
             let sha = http.text(&format!("{api}/commits/HEAD"), "application/vnd.github.sha")?;

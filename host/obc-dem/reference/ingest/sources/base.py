@@ -531,13 +531,13 @@ class Source:
         return self.fill(self.attribution, fetched)
 
     def fill(self, attribution: str, fetched: str) -> str:
-        """`attribution` for a source fetched on that day.
+        """`attribution` for a source fetched on that day: a `{year}` is the year of `fetched`.
 
         Most agencies ask for a fixed sentence. One asks for the month of the delivery in
-        it, which is what `fetched` is for and what a row overrides this to fill.
+        it, which a row overrides this to fill.
         """
 
-        return attribution
+        return attribution.replace("{year}", fetched[:4])
 
     def fetch(self, bbox, workdir) -> list[Path]:
         raise Refuse(f"{self.key} has no adapter; fetch the rasters by hand and pass --input")
