@@ -12,7 +12,7 @@ sys.modules[SPEC.name] = guard
 SPEC.loader.exec_module(guard)
 
 REGISTRY = {"source": [
-    {"id": "osm", "fetch": {"kind": "osm", "url": "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"}},
+    {"id": "osm", "fetch": {"kind": "http", "url": "https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"}},
     {"id": "wikipedia", "fetch": {"kind": "capture", "url": "https://{language}.wikipedia.org/w/api.php"},
      "hosts": ["upload.wikimedia.org"]},
     {"id": "nominatim", "fetch": {"kind": "installed"}},

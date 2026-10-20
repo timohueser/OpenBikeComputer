@@ -73,7 +73,6 @@ fn fetch_files(
         FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
-        FetchKind::Osm => osm::replication(store, http, request),
         // Only the producer of `terrain-reference/<key>` reads a national model, through its adapter.
         FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => {
             Err(format!("source `{}` is read through `terrain-reference/{}`", source.id, &source.id["dtm-".len()..]))
@@ -294,13 +293,13 @@ fn get(
     Ok(file)
 }
 
-/// The part of `url` that names its file within the source, unique in a record: for a program or
-/// `osm` fetcher the part after `fetch.url`; for a template, the URL from the segment of the first
+/// The part of `url` that names its file within the source, unique in a record: for a program
+/// fetcher the part after `fetch.url`; for a template, the URL from the segment of the first
 /// `{name}` that a `NAME=VALUE` fills; else the last segment.
 fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let prefix = match source.fetch.kind {
-        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
+        FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
         _ => template
             .match_indices('{')
             .map(|(at, _)| at)
@@ -792,144 +791,6 @@ pub(crate) mod tests {
         assert_eq!(expand("https://h/p-{yymmdd}.pbf", Some("2026-09-28"), &[]).unwrap(), ["https://h/p-260928.pbf"]);
     }
 
-    /// A replication directory at the test server, with the daily diff of each `(sequence, day)`.
-    /// Its `state.txt` is the last of them.
-    fn replication(diffs: &'static [(u32, &'static str)]) -> (Source, Log) {
-        let state = |&(sequence, day): &(u32, &str)| {
-            whole(format!("sequenceNumber={sequence}\ntimestamp={day}T00\\:00\\:00Z\n").as_bytes())
-        };
-        let (url, log) = serve(move |_, headers| {
-            let path = header(headers, ":path").unwrap_or_default();
-            if path == "/replication/day/state.txt" {
-                return state(diffs.last().unwrap());
-            }
-            for diff in diffs {
-                let stem = format!("/replication/day/000/005/{}", diff.0 - 5000);
-                if path == format!("{stem}.state.txt") {
-                    return state(diff);
-                }
-                if path == format!("{stem}.osc.gz") {
-                    return whole(path.as_bytes());
-                }
-            }
-            not_found()
-        });
-        let mut source = located(FetchKind::Osm, &url.replace("data/file.bin", "replication/day/"));
-        source.fetch.from = Some("osm-planet".into());
-        (source, log)
-    }
-
-    fn changes(snapshot: &Snapshot) -> Vec<&str> {
-        snapshot.files.iter().map(|file| file.name.as_str()).filter(|name| name.ends_with(".osc.gz")).collect()
-    }
-
-    fn from(day: &str) -> Vec<(String, String)> {
-        vec![("from".into(), day.into())]
-    }
-
-    #[test]
-    fn replication_is_the_daily_diffs_after_the_base_up_to_the_version() {
-        let (diffs, log) = replication(&[
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-29"),
-            (5131, "2026-09-30"),
-            (5132, "2026-10-01"),
-        ]);
-        let scratch = Scratch::new("replication");
-        let store = Store::at(&scratch.0);
-        let wednesday =
-            Request { refresh: false, source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
-        let snapshot = fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap();
-        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz"]);
-        assert_eq!(snapshot.files[0].name, "000/005/129.state.txt", "the state of the base day");
-        let asked = log.lock().unwrap().len();
-        assert_eq!(fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap(), snapshot);
-        let later = Request { refresh: false, params: from("2026-09-29"), ..wednesday };
-        assert_eq!(fetch(&tooling_root(), &store, &quick(), &later).unwrap().files, snapshot.files[2..]);
-        assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
-        // The newest version keeps the base and downloads the diff of the new day only.
-        let newest = Request { refresh: false, source: &diffs, version: None, params: from("2026-09-28") };
-        let refreshed = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
-        assert_eq!(refreshed.version, "2026-10-01");
-        assert_eq!(refreshed.files[..5], snapshot.files);
-        let log = log.lock().unwrap();
-        let downloads: Vec<_> =
-            log[asked..].iter().filter_map(|h| header(h, ":path")).filter(|p| p.ends_with(".osc.gz")).collect();
-        assert_eq!(downloads, ["/replication/day/000/005/132.osc.gz"]);
-    }
-
-    #[test]
-    fn replication_takes_any_day_that_has_a_diff() {
-        // 2026-10-01 has no diff.
-        let (diffs, log) = replication(&[
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-29"),
-            (5131, "2026-09-30"),
-            (5132, "2026-10-02"),
-        ]);
-        let scratch = Scratch::new("gaps");
-        let store = Store::at(&scratch.0);
-        let get = |version: &str, params: Vec<(String, String)>| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &diffs, version: Some(version.into()), params },
-            )
-        };
-        assert!(get("2026-09-30", vec![]).unwrap_err().contains("a version of `osm-planet`"));
-        assert!(get("2026-09-30", from("2026-10-01")).unwrap_err().contains("after the version"));
-        assert!(log.lock().unwrap().is_empty());
-        let err = get("2026-10-01", from("2026-09-28")).unwrap_err();
-        assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
-        assert_eq!(store.snapshot(&diffs.id, "2026-10-01").unwrap(), None, "a probe records nothing");
-        let err = get("2026-10-03", from("2026-10-03")).unwrap_err();
-        assert!(err.contains("the newest daily diff is of 2026-10-02"), "{err}");
-        let downloaded = |log: &Log| {
-            let log = log.lock().unwrap();
-            log.iter().filter_map(|h| header(h, ":path").map(str::to_string)).filter(|p| p.ends_with(".osc.gz")).count()
-        };
-        assert_eq!(downloaded(&log), 0);
-        let snapshot = get("2026-10-02", from("2026-09-28")).unwrap();
-        assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz", "000/005/132.osc.gz"]);
-        // The stored states name the days, so other ranges need no request.
-        let asked = log.lock().unwrap().len();
-        assert_eq!(changes(&get("2026-09-30", from("2026-09-29")).unwrap()), ["000/005/131.osc.gz"]);
-        assert_eq!(get("2026-09-30", from("2026-09-30")).unwrap().files.len(), 1, "only the state of the base");
-        assert_eq!(log.lock().unwrap().len(), asked);
-    }
-
-    #[test]
-    fn a_day_with_two_diffs_is_no_base_and_no_version() {
-        let (diffs, _log) = replication(&[
-            (5127, "2026-09-26"),
-            (5128, "2026-09-27"),
-            (5129, "2026-09-28"),
-            (5130, "2026-09-28"),
-            (5131, "2026-09-29"),
-        ]);
-        let scratch = Scratch::new("twice");
-        let store = Store::at(&scratch.0);
-        let get = |version: &str, base: &str| {
-            fetch(
-                &tooling_root(),
-                &store,
-                &quick(),
-                &Request { refresh: false, source: &diffs, version: Some(version.into()), params: from(base) },
-            )
-        };
-        let twice = |result: Result<Snapshot, String>| result.unwrap_err().contains("two daily diffs of 2026-09-28");
-        assert!(twice(get("2026-09-29", "2026-09-28")));
-        assert!(twice(get("2026-09-28", "2026-09-27")));
-        assert_eq!(store.snapshot(&diffs.id, "2026-09-29").unwrap(), None);
-        // Between the base and the version, a day may have two diffs; the stored states then still
-        // refuse that day as a base.
-        assert_eq!(changes(&get("2026-09-29", "2026-09-27").unwrap()).len(), 3);
-        assert!(twice(get("2026-09-29", "2026-09-28")));
-    }
-
     #[test]
     fn a_file_is_named_by_the_part_of_its_url_within_the_source() {
         use FetchKind::*;
@@ -956,7 +817,6 @@ pub(crate) mod tests {
                 "https://h/europe/monaco-261003.osm.pbf",
                 "europe/monaco-261003.osm.pbf",
             ),
-            (Osm, "https://h/day/", Some("2026-10-03"), "https://h/day/000/005/130.osc.gz", "000/005/130.osc.gz"),
             (
                 Dtm,
                 "https://h/wcs",

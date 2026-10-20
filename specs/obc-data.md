@@ -26,7 +26,7 @@ One `[[source]]` table per source.
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose version is the base day. See below |
+| `fetch` | table | yes | `kind` and `url`. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
@@ -42,7 +42,6 @@ One `[[source]]` table per source.
 | Kind | Fetch |
 | --- | --- |
 | `http` | A file, or one file per tile |
-| `osm` | The daily OSM replication diffs |
 | `geofabrik` | A Geofabrik extract or `.poly` of an area |
 | `glo30` | Copernicus GLO-30 tiles |
 | `dtm` | A national terrain model service |
@@ -65,7 +64,6 @@ Rules:
 - A `prepared` source has `version = "date"` and `redistribute = true`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - A credential has `env` or `file`, not both.
-- An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
 Each row `dtm-<key>` with `redistribute = true` also gives the `prepared` source
 `terrain-reference/<key>`, which has no row of its own. It has the `licence`, `licence_url`,
@@ -192,7 +190,7 @@ reads. The source has the least state of its fetches, in the order of this table
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
-| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture. Or its version is before the serving version of the source that `fetch.from` names |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture |
 | `unused` | The serving release reads no fetch of the source |
 | `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
@@ -252,9 +250,8 @@ A snapshot record is a JSON object:
 | `version` | The version, as `SOURCE@VERSION` names it |
 | `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
 
-The `name` of a file is the part of its URL that identifies it in the source. For an `osm`,
-`dtm` or `capture` fetch, it is the URL after `fetch.url`, such as `000/005/130.osc.gz` or
-`#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
+The `name` of a file is the part of its URL that identifies it in the source. For a `dtm`
+or `capture` fetch, it is the URL after `fetch.url`, such as `#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
 `{name}` other than `{version}` and `{yymmdd}`, such as `europe/monaco-261003.osm.pbf`; without
 such a `{name}`, it is the last segment. A name is unique in a record: a file whose name the
 record has for another URL fails the fetch.
@@ -337,7 +334,6 @@ version. A file that fails it is deleted.
 | `fetch.kind` | Fetcher |
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
-| `osm` | The daily diffs from a base day, see below |
 | `capture` | A program writes the files, see below |
 | `dtm`, `by-hand`, `installed` | None; the fetch fails. A `dtm-*` source is read through `terrain-reference/<key>` |
 | `prepared` | The manifest and the files that a step names, from a target, see [Prepared sources](#prepared-sources) |
@@ -346,31 +342,8 @@ A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. With
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
 it takes the earliest day.
 
-The OSM planet is two sources with date versions. `osm-planet` is the weekly planet file of one
-day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Their two versions
-together fix the bytes of the OSM data.
-
-An `osm` URL is an Osmosis replication directory that ends with `/`, such as
-`<server>/replication/day/`. A fetch of version `E` takes `from=B`, a version of the
-`fetch.from` source, and no other `NAME=VALUE`. `B` is on or before `E`. The sequence
-of a day is the one diff whose `state.txt` has the `timestamp` of that day; a day with two
-diffs has no sequence. The snapshot is the
-`state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
-to the sequence of `E`, in order.
-
-- When the store has the diff and the `state.txt` of each of these sequences, in the record of
-  any version, the fetch makes no request. The stored states name the day of each sequence.
-- Else the fetch reads the newest `state.txt` first, and fails when `E` is after its day. Then it
-  finds the sequence of `B` and of `E`: the newest sequence less the days between, then, when
-  the `timestamp` of that sequence is another day, moved by the difference once, and the states
-  of the sequences next to it. It fails before a diff downloads when it finds no sequence of `B`
-  or `E`. These reads record nothing.
-- A diff and its state never change. A file in the record of another version comes from the
-  store, so a fetch of a later `E` from the same `B` downloads only the new days.
-
-A late or missing weekly planet does not block a version of `osm-replication`, because its base
-is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
-sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
+`osm-planet` is the weekly planet file of one day, an `http` URL with `{yymmdd}`. No step reads
+it: the [`wiki`](#wiki) preparation reads a planet file of it, and it gives the OSM credit.
 
 A `capture` fetch runs in the explicit repository root. The offline system selector
 of `uv python find` selects its Python and honors `UV_PYTHON`. A standard-library capture
@@ -390,7 +363,6 @@ no fetcher yet; the fetch fails.
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `corine-land-cover` | `bbox` | `tools/trailview/ground.py --fetch-corine` | group `trailview` | `bbox=W,S,E,N` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
@@ -400,8 +372,6 @@ no fetcher yet; the fetch fails.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
-- The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
-  the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
 - The `corine-land-cover` files are `legend.json`, the legend of the CLC 2018 map service, and
   `clc-W_S_E_N.png`: its raster map images in EPSG:3035 at 100 m over `bbox`, each at most
@@ -425,7 +395,6 @@ the cached observation. Refresh policy changes do not invalidate acquisition evi
 
 | Source | Check |
 | --- | --- |
-| `osm` | `GET` of `<fetch.url>state.txt`; the day of its `timestamp` |
 | `http` or `geofabrik`, with `{yymmdd}` and known request params | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
 | `capture` | On-demand capture policy, with no network check or probe time |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
@@ -2423,13 +2392,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Fetch": {
       "additionalProperties": false,
       "properties": {
-        "from": {
-          "description": "Only for `osm`: the source whose version is the base day, `from=`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "kind": {
           "$ref": "#/$defs/FetchKind"
         },
@@ -2450,7 +2412,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "enum": [
             "http",
-            "osm",
             "geofabrik",
             "glo30",
             "dtm",
