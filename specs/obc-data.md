@@ -1413,7 +1413,7 @@ is compact JSON with the keys of each object in byte order:
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
-| `cost` | The wall time of the last run of the version, and the peak memory of its process or of the largest program that it ran (`null` when the system does not report it) |
+| `cost` | The wall time of the last run of the version, and the peak memory of its process or, when that is more, of the largest program that it ran times the most programs that ran at once (`null` when the system does not report it) |
 
 #### Prepare
 
@@ -1446,7 +1446,8 @@ is compact JSON with the keys of each object in byte order:
 4. A run of a new version deletes the folders of older versions of the source on the target that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock.
-5. The producer writes each file. The run uploads it at once, records its SHA-256 in the journal
+5. The producer writes each file. `terrain-reference` and `forest-reference` run the programs of
+   two tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the upload
    replaces a key that a stopped run left with other bytes.
 6. The run checks that it still holds the lock, and that the target has each file of the journal

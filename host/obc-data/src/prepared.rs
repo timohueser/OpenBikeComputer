@@ -9,6 +9,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -151,8 +153,9 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct Cost {
     pub wall_ms: u64,
-    /// The peak of the process of the run, or of the largest program that it ran; `null` when the
-    /// system does not report it.
+    /// The peak of the process of the run, or, when that is more, the peak of the largest program
+    /// that it ran times the most programs that ran at once; `null` when the system does not
+    /// report it.
     pub peak_rss_bytes: Option<u64>,
 }
 
@@ -354,6 +357,8 @@ pub struct Job<'a> {
     inputs: BTreeMap<(String, String), BTreeMap<String, String>>,
     /// The files that this run uploaded.
     pub(crate) uploaded: u64,
+    /// The programs that run now, and the most that ran at once.
+    programs: (Arc<AtomicU64>, AtomicU64),
 }
 
 /// What [`Job::open`] needs besides the run.
@@ -414,6 +419,7 @@ impl<'a> Job<'a> {
             files: BTreeMap::new(),
             inputs: BTreeMap::new(),
             uploaded: 0,
+            programs: Default::default(),
         };
         let text = fs::read_to_string(&job.journal).unwrap_or_default();
         // A run that stopped in a write leaves a part of its last line.
@@ -496,21 +502,34 @@ impl<'a> Job<'a> {
     /// Run `command`, a program of the producer, in the repository root, and wait for it. Its
     /// error names the program, the arguments before the first option, and its last error line.
     pub fn program(&self, command: &mut Command) -> Result<(), String> {
-        self.start(command)?.wait()
+        self.start(command, None)?.wait()
     }
 
-    /// Start `command` as [`Job::program`] does, and give it without a wait.
-    pub fn start(&self, command: &mut Command) -> Result<Program, String> {
+    /// Start `command` as [`Job::program`] does, and give it without a wait. With `label`, each line
+    /// of its output goes to standard error after `label`, and its error starts with `label`.
+    pub fn start(&self, command: &mut Command, label: Option<&str>) -> Result<Program, String> {
         self.run.check_stop(self.store)?;
         // The program stops when this process does, so no orphan writes into a later run.
         command.current_dir(self.root).env("OBC_PARENT_PID", std::process::id().to_string());
         let program = Path::new(command.get_program()).file_name().unwrap_or_default().to_string_lossy();
         let args = command.get_args().map(|arg| arg.to_string_lossy()).take_while(|arg| !arg.starts_with("--"));
         let name = std::iter::once(program).chain(args).collect::<Vec<_>>().join(" ");
+        if label.is_some() {
+            command.stdout(std::process::Stdio::piped());
+        }
         let mut child =
             command.stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
-        let errors = Some(crate::engine::copy_errors(&mut child));
-        Ok(Program { child, name, errors })
+        // The copy of the output ends with the program, which `Program::wait` waits for.
+        let _ = crate::engine::copy_lines(child.stdout.take(), label.unwrap_or_default());
+        let errors = Some(crate::engine::copy_lines(child.stderr.take(), label.unwrap_or_default()));
+        let (running, most) = &self.programs;
+        most.fetch_max(running.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
+        Ok(Program { child, name, label: label.map(String::from), errors, running: Arc::clone(running) })
+    }
+
+    /// The peak memory of the run: of this process, or of the most programs that ran at once.
+    pub(crate) fn peak_rss_bytes(&self) -> Option<u64> {
+        crate::engine::peak_rss(self.programs.1.load(Ordering::Relaxed).max(1))
     }
 
     /// Upload the files `paths` of `work` to the target in one call, record each, and delete them
@@ -561,32 +580,50 @@ impl<'a> Job<'a> {
 pub struct Program {
     child: std::process::Child,
     name: String,
+    label: Option<String>,
     /// `None` once the wait gave the status.
     errors: Option<std::sync::mpsc::Receiver<String>>,
+    /// The programs of the job that run.
+    running: Arc<AtomicU64>,
 }
 
 impl Program {
     /// Wait for the program; its error is that of [`Job::program`].
     pub fn wait(mut self) -> Result<(), String> {
-        let status = self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?;
         let errors = self.errors.take().expect("a program is waited for once");
-        crate::engine::ended(&self.name, status, errors)
+        let ended = match self.child.wait() {
+            Ok(status) => crate::engine::ended(&self.name, status, errors),
+            Err(e) => Err(format!("wait for `{}`: {e}", self.name)),
+        };
+        ended.map_err(|e| match &self.label {
+            Some(label) => format!("{label}: {e}"),
+            None => e,
+        })
+    }
+
+    /// Whether the program ended and failed.
+    pub fn failed(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|status| status.is_some_and(|status| !status.success()))
     }
 }
 
 impl Drop for Program {
     fn drop(&mut self) {
+        self.running.fetch_sub(1, Ordering::Relaxed);
         if self.errors.is_none() {
             return;
         }
-        // SIGTERM, not SIGKILL, so that the program can remove what it wrote.
-        #[cfg(unix)]
-        // SAFETY: kill sends a signal. The child is not reaped, so its pid is still its own.
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        // SIGTERM, not SIGKILL, so that the program can remove what it wrote. `try_wait` reaps a
+        // program that ended, whose pid can then be another's: it gets no signal.
+        if let Ok(None) = self.child.try_wait() {
+            #[cfg(unix)]
+            // SAFETY: kill sends a signal. The child is not reaped, so its pid is still its own.
+            unsafe {
+                libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+            }
+            #[cfg(not(unix))]
+            let _ = self.child.kill();
         }
-        #[cfg(not(unix))]
-        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }

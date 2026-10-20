@@ -112,8 +112,7 @@ def command_fetch(args) -> int:
     file `<ti>-<tj>.none` where the model has no height in the tile.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
-    only the rasters of the tiles that run and the store never sees them. `obc data` runs two
-    fetches at once, so each line of output starts with `tile <progress> <tile>`.
+    only the rasters of the tiles that run and the store never sees them.
     """
 
     def stop(*_):
@@ -129,9 +128,6 @@ def command_fetch(args) -> int:
     work, out = Path(args.work), Path(args.out)
     box = tile_bounds(ti, tj)
     check_world(box, f"--tile {args.tile}")
-    label = f"tile {args.progress} {args.tile}"
-    print(label, flush=True)
-    stdout, sys.stdout = sys.stdout, Labelled(sys.stdout, label)
     try:
         if isinstance(source, ManualSource):
             # A delivery is like a credential: the environment names its directory and the datum
@@ -167,26 +163,8 @@ def command_fetch(args) -> int:
             # Last, and the maximum last of all: a digest names a whole tile.
             (out / f"{name}.{mark}").write_text(tile_digest(path), encoding="utf-8")
     finally:
-        sys.stdout = stdout
         shutil.rmtree(work, ignore_errors=True)
     return 0
-
-
-class Labelled:
-    """A text stream that writes whole lines to `stream`, each after `label`."""
-
-    def __init__(self, stream, label: str):
-        self.stream, self.label, self.line = stream, label, ""
-
-    def write(self, text: str) -> int:
-        *lines, self.line = (self.line + text).split("\n")
-        for line in lines:
-            self.stream.write(f"{self.label} {line}\n")
-        self.stream.flush()
-        return len(text)
-
-    def flush(self) -> None:
-        self.stream.flush()
 
 
 def command_index_tiles(args) -> int:
@@ -444,7 +422,6 @@ def main(argv=None) -> int:
     fetch.add_argument("--tile", required=True, help="<ti>-<tj>, the archive tile")
     fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
     fetch.add_argument("--out", required=True, help="where the pooled tile goes")
-    fetch.add_argument("--progress", required=True, help="k/K: the tile is tile k of the K tiles of the prepare")
     fetch.set_defaults(run=command_fetch)
 
     tiles = commands.add_parser("index-tiles", help="index.json of the tiles that fetch wrote, for obc data")

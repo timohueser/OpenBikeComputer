@@ -7,7 +7,7 @@ pub mod changes;
 pub mod plan;
 mod process;
 pub use process::{child, peak_rss, python_executable};
-pub(crate) use process::{copy_errors, ended, panicked};
+pub(crate) use process::{copy_lines, ended, panicked};
 
 pub mod runs;
 pub mod state;

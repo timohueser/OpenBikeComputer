@@ -2,7 +2,7 @@
 cell of a zoom 12 tile at 256 px, the canopy height, the cover, the stems per hectare and the conifer
 share.
 
-    python -m tools.forest_reference fetch ch --tile 12-2143-1443 --out DIR --progress 1/1
+    python -m tools.forest_reference fetch ch --tile 12-2143-1443 --out DIR
 
 `fetch` reads the source rasters over HTTP and keeps no raw raster on disk.
 """
@@ -425,7 +425,6 @@ def command_fetch(args):
         raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    print(f"tile {args.progress} {args.tile}", flush=True)
     bands = TILES[args.source](x, y)
     if bands is None:
         (out / f"{args.tile}.none").touch()
@@ -442,7 +441,6 @@ def main():
     fetch.add_argument("source", choices=sorted(TILES))
     fetch.add_argument("--tile", required=True)
     fetch.add_argument("--out", required=True)
-    fetch.add_argument("--progress", required=True, help="k/K: the tile is tile k of the K tiles of the prepare")
     return command_fetch(parser.parse_args())
 
 

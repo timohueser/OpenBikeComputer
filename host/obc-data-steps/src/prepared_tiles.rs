@@ -21,15 +21,15 @@ pub struct Tile {
 }
 
 /// Make each tile that the version lacks, [`RUNNING`] at a time, and upload its files in batches.
-/// `command(job, name, progress)` is the program that writes the files of tile `name` into
-/// `job.work`, then their marks, the mark of the last file last; or the empty `<name>.none` for a
-/// tile without data. `progress` is `k/K`: the tile is tile k of the K tiles of the version.
-/// `state/tiles/` keeps the marks, so a resume makes no tile again that it has. Gives the pixel
-/// digest of each file of the version by path.
+/// `command(job, name)` is the program that writes the files of tile `name` into `job.work`, then
+/// their marks, the mark of the last file last; or the empty `<name>.none` for a tile without data.
+/// Each line of its output, and its error, starts with `tile k/K <name>`: tile k of the K tiles of
+/// the version. `state/tiles/` keeps the marks, so a resume makes no tile again that it has. Gives
+/// the pixel digest of each file of the version by path.
 pub fn make(
     job: &mut Job,
     tiles: &[Tile],
-    command: impl Fn(&Job, &str, &str) -> Result<Command, String>,
+    command: impl Fn(&Job, &str) -> Result<Command, String>,
 ) -> Result<BTreeMap<String, String>, String> {
     let marks = job.state.join("tiles");
     fs::create_dir_all(&marks).map_err(|e| format!("{}: {e}", marks.display()))?;
@@ -50,8 +50,15 @@ pub fn make(
             program.wait()?;
             keep(job, &marks, made, &mut batch)?;
         }
-        let mut program = command(job, &tile.name, &format!("{}/{}", k + 1, tiles.len()))?;
-        running.push_back((tile, job.start(&mut program)?));
+        if let Some(at) = running.iter_mut().position(|(_, program)| program.failed()) {
+            running.remove(at).expect("a program runs").1.wait()?;
+        }
+        let label = format!("tile {}/{} {}", k + 1, tiles.len(), tile.name);
+        eprintln!("{label}");
+        // The programs are Python, which holds the lines that it writes to a pipe until it ends.
+        let mut program = command(job, &tile.name)?;
+        program.env("PYTHONUNBUFFERED", "1");
+        running.push_back((tile, job.start(&mut program, Some(&label))?));
     }
     while let Some((made, program)) = running.pop_front() {
         program.wait()?;

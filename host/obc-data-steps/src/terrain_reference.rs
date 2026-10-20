@@ -97,11 +97,11 @@ impl Prepared for TerrainReference {
                 Tile { name, files }
             })
             .collect();
-        let digests = prepared_tiles::make(job, &tiles, |job, name, progress| {
+        let digests = prepared_tiles::make(job, &tiles, |job, name| {
             let mut command = (self.ingest)(job.root)?;
             // A folder per tile: `fetch` removes its `--work` at the end, and two tiles run at once.
             command.args(["fetch", key, "--tile", name, "--work"]).arg(job.state.join("raw").join(name));
-            command.arg("--out").arg(&job.work).args(["--progress", progress]);
+            command.arg("--out").arg(&job.work);
             Ok(command)
         })?;
         // Each index names the tiles of its pool, each with the pixel digest of its mark.
@@ -219,14 +219,14 @@ mod tests {
         redistribute = true
     "#;
 
-    /// `ingest.py` as a script that logs each call to `calls`, with the progress of a fetch, and
-    /// the `--work` of a fetch to `works` once it holds a raw file there. A tile with a file
+    /// `ingest.py` as a script that logs each call to `calls`, and the `--work` of a fetch to
+    /// `works` once it holds a raw file there. A tile with a file
     /// `none-<tile>` has no height, and one with `fail-<tile>` fails. One with `wait-<tile>` waits
     /// until `works` has as many lines as that file says, and one with `hold-<tile>` runs until a
     /// signal stops it. `index-tiles` writes the digests that it gets unless `fail-index` exists.
     const INGEST: &str = r#"case "$1" in
 fetch)
-    echo "fetch $4 ${10}" >> calls
+    echo "fetch $4" >> calls
     # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
     trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
     mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works
@@ -312,12 +312,17 @@ esac
             (done, calls)
         }
 
-        /// The calls of the fetches of tiles `k`, each with its progress among all tiles, sorted.
+        /// The calls of the fetches of tiles `k`, sorted.
         fn fetches(&self, k: impl Iterator<Item = usize>) -> Vec<String> {
-            let count = self.tiles.len();
-            let mut calls: Vec<String> = k.map(|k| format!("fetch {} {}/{count}", self.tiles[k], k + 1)).collect();
+            let mut calls: Vec<String> = k.map(|k| format!("fetch {}", self.tiles[k])).collect();
             calls.sort();
             calls
+        }
+
+        /// Whether `done` failed in the program of tile `k`, named with its progress.
+        fn failed_in(&self, done: Result<(), String>, k: usize) -> bool {
+            let label = format!("tile {}/{} {}: ", k + 1, self.tiles.len(), self.tiles[k]);
+            done.is_err_and(|e| e.starts_with(&label))
         }
     }
 
@@ -327,20 +332,30 @@ esac
         let tiles = &fixture.tiles;
         let index = || vec!["index-tiles max".to_string(), "index-tiles mean".to_string()];
 
+        let last = tiles.len() - 1;
+        // Tile 2 fails once tile 3 runs beside it, and the failure stops tile 3.
         fixture.mark("none", 0, "");
         fixture.mark("fail", 2, "");
+        fixture.mark("wait", 2, "4");
         let (done, calls) = fixture.prepare();
-        assert!(done.is_err());
-        // The failure stops the fetch that runs beside it, which can be the next one.
-        assert!(calls == fixture.fetches(0..3) || calls == fixture.fetches(0..4), "{calls:?}");
+        assert!(fixture.failed_in(done, 2));
+        assert_eq!(calls, fixture.fetches(0..4));
 
-        // The tile in `work/` is uploaded with its digest, and no tile without a height is fetched.
-        // The progress counts the tiles that the version has.
-        fs::remove_file(fixture.root().join(format!("fail-{}", tiles[2]))).unwrap();
+        // No tile without a height is fetched, and the progress counts each tile of the version.
+        for what in ["fail", "wait"] {
+            fs::remove_file(fixture.root().join(format!("{what}-{}", tiles[2]))).unwrap();
+        }
+        fixture.mark("fail", last, "");
+        let (done, calls) = fixture.prepare();
+        assert!(fixture.failed_in(done, last));
+        assert_eq!(calls, fixture.fetches(2..tiles.len()));
+
+        // The tiles in `work/` are uploaded with their digests.
+        fs::remove_file(fixture.root().join(format!("fail-{}", tiles[last]))).unwrap();
         fs::write(fixture.root().join("fail-index"), "").unwrap();
         let (done, calls) = fixture.prepare();
         assert!(done.is_err());
-        assert_eq!(calls, [fixture.fetches(2..tiles.len()), index()[..1].to_vec()].concat());
+        assert_eq!(calls, [fixture.fetches(last..tiles.len()), index()[..1].to_vec()].concat());
 
         fs::remove_file(fixture.root().join("fail-index")).unwrap();
         // A mark of a tile that is not in the version.
@@ -375,7 +390,7 @@ esac
         fixture.mark("fail", 2, "");
         fixture.mark("hold", 3, "");
         let (done, calls) = fixture.prepare();
-        assert!(done.is_err());
+        assert!(fixture.failed_in(done, 2));
         assert_eq!(calls, fixture.fetches(0..4));
         let mut works: Vec<String> =
             fs::read_to_string(fixture.root().join("works")).unwrap().lines().map(String::from).collect();

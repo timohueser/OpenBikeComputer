@@ -7,9 +7,7 @@ maximum of the source pixels whose centres lie in it, which is what lets a 7 m a
 carry a one-pixel rock tower without spreading it over its neighbours.
 """
 
-import contextlib
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -439,13 +437,12 @@ class BoxService(ingest.Source):
 class Fetch(ArchiveCase):
     """`ingest.py fetch`: one archive tile of a model, pooled, and nothing of the raw rasters."""
 
-    def fetch(self, key, tile, progress="1/1"):
+    def fetch(self, key, tile):
         """`ingest.py fetch` of `key` and `tile`: its exit code and the files it wrote."""
 
         out = self.root / "out"
         shutil.rmtree(out, ignore_errors=True)
-        code = ingest.main(["fetch", key, "--tile", tile, "--work", str(self.root / "work"), "--out", str(out),
-                            "--progress", progress])
+        code = ingest.main(["fetch", key, "--tile", tile, "--work", str(self.root / "work"), "--out", str(out)])
         return code, sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
 
     def serve(self, service):
@@ -520,7 +517,6 @@ class Fetch(ArchiveCase):
 
             def fetch(self, bbox, workdir):
                 self.boxes.append(bbox)
-                print("  fetch [1/1] void.tif")
                 workdir.mkdir(parents=True, exist_ok=True)
                 void = np.full((SIDE, SIDE), -9999.0, dtype="float32")
                 path = source_raster(workdir / "void.tif", void, nodata=-9999.0)
@@ -530,10 +526,7 @@ class Fetch(ArchiveCase):
 
         self.serve(Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008"))
         # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9], and tile 4823-4256 straddles 10.5°.
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(self.fetch("ch", "4823-4256", "2/5"), (0, ["4823-4256.none"]))
-        # Two fetches run at once: each line names its tile.
-        self.assertEqual(output.getvalue(), "tile 2/5 4823-4256\ntile 2/5 4823-4256   fetch [1/1] void.tif\n")
+        self.assertEqual(self.fetch("ch", "4823-4256"), (0, ["4823-4256.none"]))
         west, south, _, north = ingest.tile_bounds(4823, 4256)
         self.assertEqual(Service.boxes, [(west, south, 10.5, north)])
         self.assertEqual(self.fetch("ch", "4823-4300"), (0, ["4823-4300.none"]))
