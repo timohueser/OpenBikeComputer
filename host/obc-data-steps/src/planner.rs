@@ -397,7 +397,7 @@ impl Planner {
             ));
         }
         if on("trailview-canopy") {
-            steps.extend(canopy(inputs, store, bounds, &mut wanted)?);
+            steps.extend(trailview_canopy(inputs, store, bounds, &mut wanted)?);
         }
         let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun", "trailview-canopy"];
         let grids = steps
@@ -581,7 +581,7 @@ fn snow(
 /// The canopy layer of `bounds`: the zoom 12 tiles of each `forest-reference/<key>` that meets
 /// `bounds`, in the order of `data/sources.toml`, which is best first. None while the store lacks
 /// a manifest; then `wanted` has its fetch.
-fn canopy(
+fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
     bounds: [f64; 4],
@@ -996,11 +996,11 @@ mod tests {
         // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
         let bounds = [8.40, 46.81, 8.45, 46.83];
         let mut wanted = Vec::new();
-        assert!(canopy(&inputs, &store, bounds, &mut wanted).unwrap().is_none());
+        assert!(trailview_canopy(&inputs, &store, bounds, &mut wanted).unwrap().is_none());
         assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned.clone()), params: Vec::new() }]);
 
         fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
-        let step = canopy(&inputs, &store, bounds, &mut Vec::new()).unwrap().unwrap();
+        let step = trailview_canopy(&inputs, &store, bounds, &mut Vec::new()).unwrap().unwrap();
         let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
         assert_eq!((source.as_str(), version), (id, &pinned));
         assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);

@@ -1527,7 +1527,8 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
 256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs:
 
 - The tiles are the zoom 12 tiles whose inside meets the `extent` of the source. A version of a
-  region of boxes has only the tiles that meet its box. A region of another area refuses.
+  region of boxes has only the tiles that meet the bounds of its boxes. A region of another area
+  refuses.
 - For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
   `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
   have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It reads the sources through
