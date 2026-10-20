@@ -47,7 +47,7 @@ describe('the page pools', () => {
         expect(syntheses.length).toBeGreaterThan(0);
         // Zoom 12 holds the pages of level 13, the deepest stored level.
         expect(syntheses.every(({ page, stored }) => page.node.level > 13 && stored === 13)).toBe(true);
-        const map = works.findLast(work => work.map)!.map!;
+        const map = works.filter(work => work.map).at(-1)!.map!;
         const ready = [...pages.pages.values()].filter(page => page.ready);
         expect(map.filter(entry => entry !== 0).length).toBe(ready.length);
         expect(map.filter(entry => entry & STORED_BIT).length).toBe(ready.filter(page => page.kind === 'stored').length);
