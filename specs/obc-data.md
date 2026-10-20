@@ -899,7 +899,7 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
-| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: their credits | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
@@ -1585,10 +1585,8 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
 - `ch` reads `vhm-lidar-ch` through HTTP range requests, in strips of whole block rows, so each
   block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
   type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
-- The run uploads the tiles in batches of 64. Last, `index-tiles` writes `index.json`: each tile
-  `<x>/<y>` of the version with the SHA-256 of its pixels in `sha256`, the `bands`, the `source`
-  key and `fetched`, the date of the version. The manifest names each source that the key reads
-  at that date, with the [digest](#keys) of the pixel SHA-256 of the tiles.
+- The run uploads the tiles in batches of 64. The manifest names each source that the key reads
+  at the date of the version, with the [digest](#keys) of the pixel SHA-256 of the tiles.
 
 #### `wiki`
 

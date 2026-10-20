@@ -5,6 +5,7 @@ pub mod device;
 pub mod forest_reference;
 mod functions;
 pub mod planner;
+mod prepared_tiles;
 mod readers;
 mod region_sources;
 pub mod terrain_reference;

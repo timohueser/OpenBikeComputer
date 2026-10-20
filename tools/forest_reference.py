@@ -3,9 +3,8 @@ cell of a zoom 12 tile at 256 px, the canopy height, the cover, the stems per he
 share.
 
     python -m tools.forest_reference fetch ch --tile 12-2143-1443 --out DIR
-    python -m tools.forest_reference index-tiles ch --fetched DAY --digests FILE --out FILE
 
-`fetch` reads the source rasters through HTTP range requests and keeps no raw raster on disk.
+`fetch` reads the source rasters over HTTP and keeps no raw raster on disk.
 """
 
 import argparse
@@ -13,9 +12,6 @@ import hashlib
 import json
 import math
 import os
-import signal
-import sys
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -424,8 +420,6 @@ def command_fetch(args):
     """One tile of `forest-reference/<key>` into `--out`: `12/<x>/<y>.tif`, then
     `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where the source
     has no pixel in the tile."""
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    stop_with_parent()
     z, x, y = map(int, args.tile.split("-"))
     if z != ZOOM or not (0 <= x < 1 << z and 0 <= y < 1 << z):
         raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
@@ -440,33 +434,6 @@ def command_fetch(args):
     return 0
 
 
-def command_index_tiles(args):
-    """`index.json` of a version: each tile of `--digests`, a JSON object of `<x>/<y>` to the pixel
-    digest that `fetch` wrote."""
-    digests = dict(sorted(json.loads(Path(args.digests).read_text()).items()))
-    index = {"schema": 1, "zoom": ZOOM, "size": SIZE, "bands": list(BANDS), "source": args.source,
-             "fetched": args.fetched, "sha256": digests}
-    Path(args.out).write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
-    return 0
-
-
-def stop_with_parent():
-    """Stop when the process `OBC_PARENT_PID` names ends, so no orphan writes into a later run."""
-    parent = int(os.environ.get("OBC_PARENT_PID") or 0)
-
-    def watch():
-        while True:
-            time.sleep(2)
-            try:
-                os.kill(parent, 0)
-            except ProcessLookupError:
-                os.kill(os.getpid(), signal.SIGTERM)
-                return
-
-    if parent:
-        threading.Thread(target=watch, daemon=True).start()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -474,13 +441,7 @@ def main():
     fetch.add_argument("source", choices=sorted(TILES))
     fetch.add_argument("--tile", required=True)
     fetch.add_argument("--out", required=True)
-    index = commands.add_parser("index-tiles")
-    index.add_argument("source", choices=sorted(TILES))
-    index.add_argument("--fetched", required=True)
-    index.add_argument("--digests", required=True)
-    index.add_argument("--out", required=True)
-    args = parser.parse_args()
-    return {"fetch": command_fetch, "index-tiles": command_index_tiles}[args.command](args)
+    return command_fetch(parser.parse_args())
 
 
 if __name__ == "__main__":

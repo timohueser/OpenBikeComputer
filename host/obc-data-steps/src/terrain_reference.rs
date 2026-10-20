@@ -18,9 +18,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
 use crate::device::{box_poly, POLY};
-
-/// The tiles of one upload.
-const BATCH: usize = 64;
+use crate::prepared_tiles::{self, Tile};
 
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
@@ -88,53 +86,29 @@ impl Prepared for TerrainReference {
             let inside = scope_tiles(job, &scope)?;
             tiles.retain(|tile| inside.contains(tile));
         }
-        let marks = job.state.join("tiles");
-        fs::create_dir_all(&marks).map_err(|e| format!("{}: {e}", marks.display()))?;
-        let mut batch = Vec::new();
-        for tile in tiles {
-            let name = format!("{:04}-{:04}", tile.i, tile.j);
-            let (path, mean) =
-                (format!("16/{:04}/{:04}.tif", tile.i, tile.j), format!("mean/16/{:04}/{:04}.tif", tile.i, tile.j));
-            let (digests, none) = ([format!("{name}.mean.sha256"), format!("{name}.sha256")], format!("{name}.none"));
-            if job.done(&path) && job.done(&mean) || marks.join(&none).exists() {
-                continue;
-            }
-            let fetched = digests.iter().all(|digest| marks.join(digest).exists());
-            if !(fetched && job.work.join(&path).exists() && job.work.join(&mean).exists()) {
-                let mut command = (self.ingest)(job.root)?;
-                command.args(["fetch", key, "--tile", &name, "--work"]).arg(job.state.join("raw"));
-                job.program(command.arg("--out").arg(&job.work))?;
-                // The program writes the tiles and then their digests, the maximum last, or `.none`.
-                for mark in digests.iter().chain([&none]).filter(|mark| job.work.join(mark).exists()) {
-                    fs::rename(job.work.join(mark), marks.join(mark)).map_err(|e| format!("{mark}: {e}"))?;
-                }
-                if marks.join(&none).exists() {
-                    continue;
-                }
-                if !marks.join(&digests[1]).exists() {
-                    return Err(format!("`ingest.py fetch {key} --tile {name}` wrote neither a tile nor `.none`"));
-                }
-            }
-            batch.extend([path, mean]);
-            if batch.len() >= BATCH {
-                job.finish(&std::mem::take(&mut batch))?;
-            }
-        }
-        job.finish(&batch)?;
+        // The program writes the tiles and then their digests, the maximum last, or `.none`.
+        let tiles: Vec<Tile> = tiles
+            .into_iter()
+            .map(|tile| {
+                let (name, path) =
+                    (format!("{:04}-{:04}", tile.i, tile.j), format!("16/{:04}/{:04}.tif", tile.i, tile.j));
+                let files =
+                    vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
+                Tile { name, files }
+            })
+            .collect();
+        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+            let mut command = (self.ingest)(job.root)?;
+            command.args(["fetch", key, "--tile", name, "--work"]).arg(job.state.join("raw"));
+            job.program(command.arg("--out").arg(&job.work))
+        })?;
         // Each index names the tiles of its pool, each with the pixel digest of its mark.
-        let mut digests = BTreeMap::new();
-        for (pool, prefix, mark) in [("max", "", "sha256"), ("mean", "mean/", "mean.sha256")] {
-            let mut tiles = BTreeMap::new();
-            let files = job.files().map(|file| file.path.clone()).collect::<Vec<_>>();
-            for path in
-                files.into_iter().filter(|path| path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with("16/")))
-            {
-                let tile = path[prefix.len() + "16/".len()..].trim_end_matches(".tif").to_string();
-                let file = marks.join(format!("{}.{mark}", tile.replace('/', "-")));
-                let digest = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-                tiles.insert(tile, digest.trim().to_string());
-                digests.insert(path, digest.trim().to_string());
-            }
+        for (pool, prefix) in [("max", ""), ("mean", "mean/")] {
+            let tiles: BTreeMap<&str, &String> = digests
+                .iter()
+                .filter_map(|(path, digest)| Some((path.strip_prefix(prefix)?.strip_prefix("16/")?, digest)))
+                .map(|(tile, digest)| (tile.trim_end_matches(".tif"), digest))
+                .collect();
             let listed = job.state.join(format!("{pool}-digests.json"));
             obc_data::store::write_atomic(&listed, &serde_json::to_vec(&tiles).expect("digests serialize"))?;
             let mut command = (self.ingest)(job.root)?;

@@ -462,14 +462,13 @@ redistribute = true
 
 # ── TrailView forest ─────────────────────────────────────────────────────────
 
-# The canopy of each cell of the TrailView canopy layer, from the two sources below.
+# The canopy of each cell of the TrailView canopy layer, from the two sources below. The canopy
+# layer credits the sources that the manifest of its version names.
 [[source]]
 id = "forest-reference/ch"
 kind = "data"
 group = "TrailView forest"
-licence = "CC-BY-4.0 AND LicenseRef-Copernicus-CLMS"
-attribution = "Vegetation Height Model LiDAR NFI © WSL/FOEN; Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
-obligations = "Credit the NFI and the Copernicus Land Monitoring Service; state modifications"
+licence = "LicenseRef-opendata-swiss-BY AND LicenseRef-Copernicus-CLMS"
 fetch = { kind = "prepared" }
 hosts = ["data.geo.admin.ch", "image.discomap.eea.europa.eu"]
 extent = [5.9, 45.8, 10.5, 47.9]
@@ -477,14 +476,16 @@ version = "date"
 refresh = 365
 redistribute = true
 
-# Only the producer of `forest-reference/ch` reads the next two, through HTTP range requests.
+# Only the producer of `forest-reference/ch` reads the next two: the rasters of the first through
+# HTTP range requests, the second through the image export of its service.
 [[source]]
 id = "vhm-lidar-ch"
 kind = "data"
 group = "TrailView forest"
-licence = "CC-BY-4.0"
-licence_url = "https://www.envidat.ch/#/metadata/vegetation-height-model-lidar-nfi"
-attribution = "Vegetation Height Model LiDAR NFI © WSL/FOEN (doi:10.16904/envidat.664)"
+licence = "LicenseRef-opendata-swiss-BY"
+licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
+attribution = "Vegetation Height Model LiDAR NFI © FOEN/WSL"
+obligations = "Open use; provide the source"
 fetch = { kind = "capture", url = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/items" }
 extent = [5.9, 45.8, 10.5, 47.9]
 version = "date"

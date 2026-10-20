@@ -572,18 +572,7 @@ impl Models<'_> {
                 }
                 continue;
             };
-            let manifest = snapshot_files(store, id, &pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)?;
-            let Some(manifest) = manifest else {
-                let fetch = Wanted { source: id.clone(), version: Some(pinned), params: Vec::new() };
-                if !wanted.contains(&fetch) {
-                    wanted.push(fetch);
-                }
-                continue;
-            };
-            let path = &manifest[MANIFEST];
-            let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
-            let manifest: Manifest =
-                serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))?;
+            let Some(manifest) = manifest(store, id, &pinned, wanted)? else { continue };
             let files: Vec<String> =
                 manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
             if !files.is_empty() {
@@ -594,6 +583,26 @@ impl Models<'_> {
         }
         Ok((!models.is_empty()).then_some((reads, models)))
     }
+}
+
+/// The manifest of version `pinned` of the prepared source `id`, or `None` while the store lacks
+/// it; then `wanted` has its fetch.
+pub(crate) fn manifest(
+    store: &Store,
+    id: &str,
+    pinned: &str,
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Manifest>, Unplanned> {
+    let Some(files) = snapshot_files(store, id, pinned, &[], &[MANIFEST.into()]).map_err(Unplanned::Failed)? else {
+        let fetch = Wanted { source: id.into(), version: Some(pinned.into()), params: Vec::new() };
+        if !wanted.contains(&fetch) {
+            wanted.push(fetch);
+        }
+        return Ok(None);
+    };
+    let path = &files[MANIFEST];
+    let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| Unplanned::Failed(format!("{id}@{pinned}: {e}")))
 }
 
 /// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches and
