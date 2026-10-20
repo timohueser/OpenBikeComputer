@@ -152,10 +152,11 @@ def pyramid(bounds, zooms, bake, parent, encode, output, metadata, workers=None)
     e7 = lambda value: round(value * 1e7)
     west, south, east, north = bounds
     sizes = {}
-    output.mkdir(parents=True, exist_ok=True)
     for name in sorted({name for name, _ in found}):
         ids = sorted(tile_id for archive, tile_id in found if archive == name)
-        with tempfile.NamedTemporaryFile(dir=output, prefix=f".{name}-", delete=False) as stream:
+        target = output / f"{name}.pmtiles"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}-", delete=False) as stream:
             try:
                 writer = Writer(stream)
                 for tile_id in ids:
@@ -167,9 +168,9 @@ def pyramid(bounds, zooms, bake, parent, encode, output, metadata, workers=None)
                     "tile_type": tile_type, "tile_compression": Compression.NONE,
                     "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
                     "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
-                }, {**metadata, "archive": name})
+                }, {**metadata, "archive": target.stem})
                 stream.flush()
-                os.replace(stream.name, output / f"{name}.pmtiles")
+                os.replace(stream.name, target)
             except BaseException:
                 os.unlink(stream.name)
                 raise
