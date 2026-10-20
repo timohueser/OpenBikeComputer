@@ -150,6 +150,18 @@ has no known height.
 | 0–12 | Each tile of `terrain_bounds` that has a known height |
 | 13 | Only where a national terrain model holds the ground, in tiles whose centre is between 58.4° S and 58.4° N. TileJSON `maxzoom` is then 13 |
 
+The `planner/terrain/grid` step packs the tiles in two sets of archives, so the planner, the tile
+service and an offline area never load zoom 13:
+
+| Archive | Tiles |
+| --- | --- |
+| `maps/tiles/terrain/<z>-<x>-<y>.pmtiles`, `z` ≤ 11 | Tile `z/x/y`; at zoom 11 also its zoom 12 tiles |
+| `maps/tiles/terrain/13/11-<x>-<y>.pmtiles` | The zoom 13 tiles inside zoom 11 tile `x/y`. Only TrailView reads them |
+
+The step encodes each tile again with libwebp (`lossless` in `tools/planner_map_archive.py`). The
+pixels stay the same; the bytes differ from those of `terrain.mbtiles`. An opaque tile can lose
+its alpha chunk: a decoder then gives alpha 255.
+
 The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
 national terrain models (`terrain-reference/<key>`) where they hold the ground, and Copernicus
 GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines: the national

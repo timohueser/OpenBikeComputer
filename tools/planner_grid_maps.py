@@ -1,21 +1,33 @@
 """Partition a planner map into immutable PMTiles grid archives."""
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 import argparse
 import json
 from pathlib import Path
 import tempfile
 
-from . import planner_offline as offline, planner_runtime as runtime, step_request
-from .planner_map_archive import empty_mbtiles
+from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
+from .planner_map_archive import empty_mbtiles, lossless
 
 MAP_ZOOM = 11
+# Only TrailView reads terrain of this zoom: its own archives keep it out of the planner and the offline areas.
+FINE_ZOOM = 13
 
 
 def map_kinds(maps):
     """The tile archives of a map bundle; optional layers exist only when requested."""
     return ["basemap", "places", "overlays", "terrain"] + [
         layer for layer in runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
+
+
+def recoded(tiles):
+    """Terrain tiles encoded again by libwebp: the same pixels in fewer bytes than `planner-dem` writes."""
+    workers = step_pool.cores()
+    with ThreadPoolExecutor(workers) as pool:
+        while batch := list(islice(tiles, 2 * workers)):
+            yield from zip((zxy for zxy, _ in batch), pool.map(lambda tile: lossless(tile[1])[0], batch))
 
 
 def map_tiles(source, output, kinds=None):
@@ -36,19 +48,25 @@ def map_tiles(source, output, kinds=None):
                     read = MmapSource(file)
                     reader = Reader(read)
                     header, metadata = reader.header(), reader.metadata()
-                    for (z, x, y), data in all_tiles(read):
+                    terrain = kind == "terrain"
+                    for (z, x, y), data in recoded(all_tiles(read)) if terrain else all_tiles(read):
                         level = min(z, MAP_ZOOM)
                         name = f"{level}-{x >> (z-level)}-{y >> (z-level)}"
+                        if terrain and z >= FINE_ZOOM: name = f"{FINE_ZOOM}/{name}"
                         stream = cache.pop(name, None)
-                        if stream is None: stream = (Path(temporary) / name).open("ab")
+                        if stream is None:
+                            (Path(temporary) / name).parent.mkdir(exist_ok=True)
+                            stream = (Path(temporary) / name).open("ab")
                         stream.write(struct.pack("<QI", zxy_to_tileid(z, x, y), len(data)))
                         stream.write(data)
                         cache[name] = stream
                         if len(cache) > 16: cache.popitem(last=False)[1].close()
             finally:
                 for stream in cache.values(): stream.close()
-            for path in sorted(Path(temporary).iterdir()):
-                with path.open("rb") as records, (target / f"{path.name}.pmtiles").open("wb") as destination:
+            for path in sorted(path for path in Path(temporary).rglob("*") if path.is_file()):
+                archive = target / f"{path.relative_to(temporary)}.pmtiles"
+                archive.parent.mkdir(exist_ok=True)
+                with path.open("rb") as records, archive.open("wb") as destination:
                     writer = Writer(destination)
                     try:
                         while record := records.read(12):
@@ -100,8 +118,9 @@ def step(request):
                 reader = Reader(MmapSource(stream))
                 header, metadata = reader.header(), reader.metadata()
         objects = output / "objects"
-        files = {f"maps/tiles/{kind}/{path.name}": offline.pack_file(path, objects)
-                 for path in sorted((work / "tiles" / kind).glob("*.pmtiles"))}
+        tiles = work / "tiles" / kind
+        files = {f"maps/tiles/{kind}/{path.relative_to(tiles).as_posix()}": offline.pack_file(path, objects)
+                 for path in sorted(tiles.rglob("*.pmtiles"))}
         metadata = {**metadata, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
                     "maxzoom": header["max_zoom"], "bounds": request["options"]["bounds"]}
         if kind == "overlays":

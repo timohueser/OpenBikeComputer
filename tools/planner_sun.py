@@ -20,7 +20,7 @@ from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
 from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
-from .planner_grid_maps import MAP_ZOOM
+from .planner_grid_maps import FINE_ZOOM, MAP_ZOOM
 from .planner_map_archive import tile_window
 
 SIZE, DEM_ZOOM, INDEX_ZOOM, UNKNOWN = 512, 12, 10, 32767
@@ -183,9 +183,10 @@ def terrain_grid(request, directory):
     index = json.loads((source / "index.json").read_bytes())
     if index["format"] != 1 or index["kind"] != "terrain" or index["map_zoom"] != 11:
         raise ValueError("Use a terrain grid index")
+    archives = {"maps/tiles/terrain", f"maps/tiles/terrain/{FINE_ZOOM}"}
     for name in index["files"]:
         runtime.relative_path(name)
-        if name != "maps/terrain.json" and not (Path(name).parent.as_posix() == "maps/tiles/terrain" and name.endswith(".pmtiles")):
+        if name != "maps/terrain.json" and not (Path(name).parent.as_posix() in archives and name.endswith(".pmtiles")):
             raise ValueError("Terrain grid selects an unrelated file")
     offline.materialize(source, directory, index, ("maps/terrain.json",))
     metadata = json.loads((directory / "maps/terrain.json").read_bytes())
@@ -195,7 +196,8 @@ def terrain_grid(request, directory):
     # A grid archive is stored as it is, so its object is the archive, and one hash verifies it.
     parts, entries = {}, []
     for name, entry in sorted(index["files"].items()):
-        if name.endswith(".pmtiles"):
+        # The sun reads zoom 12, so the archives of zoom 13 stay unread.
+        if name.endswith(".pmtiles") and Path(name).parent.as_posix() == "maps/tiles/terrain":
             if entry["transport"] != {"bytes": entry["bytes"], "sha256": entry["sha256"], "encoding": "identity"}:
                 raise ValueError("Terrain grid archives must be stored as they are")
             parts[Path(name).stem] = source / "objects" / entry["sha256"]

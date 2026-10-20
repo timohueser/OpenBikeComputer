@@ -889,7 +889,9 @@ Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`,
 `terrain`, `overlays`, `climate`, `snow` or `sun`. It reads only the archive of its producer.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
-stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
+stay the same, except for terrain: it encodes each terrain tile again with the same pixels, and
+puts zoom 13 in archives of its own ([terrain tiles](planner-release.md#terrain-tiles)). Each
+archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
 as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
 The step writes the packed bytes in `objects/<transport sha256>`, and selects `objects` and
 `index.json` for clients. Its `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`,
