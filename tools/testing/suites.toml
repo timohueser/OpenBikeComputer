@@ -277,6 +277,40 @@ triggers = [
   "builder/web/vite.config.ts",
 ]
 
+# Every WGSL file of the TrailView engine through naga, without a GPU.
+[[suite]]
+id = "web.trailview-wgsl"
+route = "ordinary"
+command = "npm run check:wgsl --prefix builder/web"
+jobs = ["web"]
+platforms = ["linux", "macos"]
+triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/package.json"]
+
+# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one frame with no
+# WebGPU error, a lost device that recovers, and the notice without WebGPU.
+[[suite]]
+id = "web.trailview-smoke"
+route = "ordinary"
+command = "npm run test:trailview --prefix builder/web/tests/browser"
+jobs = ["web-browser"]
+platforms = ["linux", "macos"]
+triggers = [
+  "builder/web/src/lib/trailview/**",
+  "builder/web/src/lib/planner/config.ts",
+  "builder/web/src/lib/planner/release.ts",
+  "builder/web/src/lib/planner/layers/archive.ts",
+  "builder/web/src/lib/planner/layers/mercator.ts",
+  "builder/web/src/lib/planner/layers/sun.ts",
+  "builder/web/src/lib/planner/layers/terrain.ts",
+  "builder/web/src/trailview.ts",
+  "builder/web/trailview.html",
+  "builder/web/tests/browser/trailview/**",
+  "builder/web/tests/browser/playwright.trailview.config.js",
+  "builder/web/tests/browser/package.json",
+  "builder/web/package.json",
+  "builder/web/vite.config.ts",
+]
+
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.
 # The `guards` job is unconditional, so they also run on every pull request regardless.

@@ -15,17 +15,26 @@ class StacSource(Source):
         self.stac = stac
         self.gsd = gsd
 
-    def fetch(self, bbox, workdir) -> list[Path]:
+    def assets(self, bbox) -> list[tuple[str, str]]:
+        """The name and the URL of each raster of the box, sorted by name."""
+
         url = f"{self.stac}?bbox={bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}&limit=100"
-        assets, seen = [], set()
+        # A square is published again after each survey: the newest item holds today's ground,
+        # and an older one would raise the maximum and move the mean.
+        newest = {}
         for feature in stac_items(url):
-            for name, asset in feature["assets"].items():
-                if name.endswith(".tif") and f"_{self.gsd}_" in name and name not in seen:
-                    seen.add(name)
-                    assets.append((name, asset["href"]))
+            square = tuple(feature["bbox"])
+            if square not in newest or feature["properties"]["datetime"] > newest[square]["properties"]["datetime"]:
+                newest[square] = feature
+        assets = {name: asset["href"] for feature in newest.values() for name, asset in feature["assets"].items()
+                  if name.endswith(".tif") and f"_{self.gsd}_" in name}
+        return sorted(assets.items())
+
+    def fetch(self, bbox, workdir) -> list[Path]:
+        assets = self.assets(bbox)
         workdir.mkdir(parents=True, exist_ok=True)
         paths = []
-        for i, (name, href) in enumerate(sorted(assets), 1):
+        for i, (name, href) in enumerate(assets, 1):
             path = workdir / name
             if not path.exists():
                 # A half-written file in the cache would look complete to the next run, so

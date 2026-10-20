@@ -450,7 +450,8 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `device/landmarks` | `device/landmark-content…`, `device/peak-content…`, `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` |
 | `device/catalog` | `device/catalog` |
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
-| `planner/terrain`, `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features` | The step of the same name and its grid |
+| `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
+| `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features` | The step of the same name and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
@@ -860,13 +861,17 @@ Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO
 at its version (see [Versions](#versions)), as for `device`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
-reads no snapshot. No layer reads a national terrain model yet.
+reads no snapshot. `planner/terrain` reads the mean of the national terrain models as `device`
+reads their maximum: each `terrain-reference/<key>` whose `extent` meets one of the archive tiles of
+its `bounds`, at the version that the target reads, and the files `mean/16/<ti:04>/<tj:04>.tif` of
+its manifest among those tiles. A model without a version adds nothing.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
-| `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
+| `planner/reference` | Each `terrain-reference/<key>` with a mean tile in `bounds` of `planner/terrain`, without params, those files of its version; only when one has a tile | `models` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of the models, best first by `PRIORITY`: a pixel keeps the best model that has it. A Python step with the group `terrain-reference` |
+| `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles and archive |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
 | `planner/assets` | `protomaps-assets`, `tangrams-icons` | None | `assets/fonts/` and `assets/sprites/` of the assets archive; `assets/sprites/LICENSE.txt`: the MIT notice of `tangrams-icons` |
@@ -885,7 +890,9 @@ Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`,
 `terrain`, `overlays`, `climate`, `snow`, `sun` or `trailview-features`. It reads only the archive of its producer.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
-stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
+stay the same, except for terrain: it encodes each terrain tile again with the same pixels, and
+puts zoom 13 in archives of its own ([terrain tiles](planner-release.md#terrain-tiles)). Each
+archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
 as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
 The step writes the packed bytes in `objects/<transport sha256>`, and selects `objects` and
 `index.json` for clients. Its `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`,
@@ -1497,25 +1504,28 @@ as [Clean](#clean) says, also after the target deleted the version.
 
 #### `terrain-reference/<key>`
 
-The producer `terrain-reference`, format 1, makes the tiles of the reference archive
-(`host/obc-dem/reference/README.md`) of the national terrain model `dtm-<key>`:
+The producer `terrain-reference`, format 2, makes the tiles of the reference archive
+(`host/obc-dem/reference/README.md`) of the national terrain model `dtm-<key>`, in two pools: the
+maximum, which `device/terrain` reads, and under `mean/` the mean, which `planner/terrain` reads:
 
 - The tiles are those that meet the `extent` of the source and the `geofabrik-poly` polygon of one
   of its `areas`: the boundary of the polygon crosses the tile, or the polygon holds the centre of
   the tile. A version of a region has only the tiles of its boxes and of the polygons of its areas.
   A run keeps the version of each polygon that the first run of the version read.
-  The review counts the tiles of the `extent`, in the box of a region of boxes, and `index.json`.
-- For each tile, `host/obc-dem/reference/ingest.py fetch <key> --tile <ti:04>-<tj:04>` writes
-  `16/<ti:04>/<tj:04>.tif`, the rasters of the model in the tile pooled onto the lattice, and then
-  `<ti:04>-<tj:04>.sha256`, the SHA-256 of its pixels. Where the model has no height in the tile,
+  The review counts the two pools of the tiles of the `extent`, in the box of a region of boxes,
+  and their two `index.json`.
+- For each tile, `host/obc-dem/reference/ingest.py fetch <key> --tile <ti:04>-<tj:04>` pools the
+  rasters of the model in the tile onto the lattice in one pass. It writes `16/<ti:04>/<tj:04>.tif`
+  and `mean/16/<ti:04>/<tj:04>.tif`, and then `<ti:04>-<tj:04>.mean.sha256` and
+  `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where the model has no height in the tile,
   it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile in
   the `extent`, and it removes the raw rasters. The run keeps the SHA-256 or the `.none` of each
   tile until the version is complete, so a resume fetches no tile again that it has.
-- The run uploads the tiles in batches of 64, one upload each.
-- Last, `ingest.py index-tiles` writes `index.json`: each tile of the version with the SHA-256 of
-  its pixels, `contributors` `[<key>]`, and the facts of the model with `fetched`, the date of the
-  version. The manifest names the input `dtm-<key>` at that date, with the [digest](#keys) of the
-  pixel SHA-256 of the tiles.
+- The run uploads the files in batches of 64, one upload each.
+- Last, `ingest.py index-tiles` writes `index.json` and `mean/index.json`: each tile of the pool
+  with the SHA-256 of its pixels, `contributors` `[<key>]`, and the facts of the model with
+  `fetched`, the date of the version. The manifest names the input `dtm-<key>` at that date, with
+  the [digest](#keys) of the pixel SHA-256 of the files.
 - Only the machine that prepares needs the `credential` of `dtm-<key>`. A `by-hand` model reads
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.

@@ -1,7 +1,8 @@
 """Turn a national DTM into reference archive tiles, and move the archive to and from R2.
 
-The archive is one format: max-pooled bare-earth height on the OBCT lattice at 2^6 µdeg,
-`int16` metres, one GeoTIFF per 2^16 µdeg tile. Every country branch is an adapter in
+The archive is one format: pooled bare-earth height on the OBCT lattice at 2^6 µdeg, one
+GeoTIFF per 2^16 µdeg tile: the maximum in `int16` metres, and in a prepared version also the
+mean in `int32` decimetres. Every country branch is an adapter in
 `ingest/sources/`, and the tool runs once per source release. The baker knows the tiles
 only, and `README.md` beside this file holds the contract both sides read.
 
@@ -28,8 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import publish, wizard
-from .archive import (ingest_rasters, load_manifests, local_rasters, rebuild_index, read_index,
-                      tile_path, tile_problems, tile_digest, write_manifest)
+from .archive import (MEAN, ingest_rasters, load_manifests, local_rasters, pool_tile, rebuild_index,
+                      read_index, tile_path, tile_problems, tile_digest, write_manifest, write_tile)
 from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
 from .sources import SOURCES, ManualSource
 
@@ -106,8 +107,9 @@ def ingest_today(rasters, source, root: Path) -> None:
 
 def command_fetch(args) -> int:
     """One archive tile of a model into `--out`, for `obc data source prepare`: `16/<ti>/<tj>.tif`,
-    the rasters of the tile pooled onto the lattice, then `<ti>-<tj>.sha256`, the digest of its
-    pixels; or the empty file `<ti>-<tj>.none` where the model has no height in the tile.
+    the maximum of the rasters of the tile on the lattice, and `mean/16/<ti>/<tj>.tif`, their mean;
+    then `<ti>-<tj>.mean.sha256` and `<ti>-<tj>.sha256`, the digests of their pixels; or the empty
+    file `<ti>-<tj>.none` where the model has no height in the tile.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
     one tile's rasters at a time and the store never sees them.
@@ -141,30 +143,34 @@ def command_fetch(args) -> int:
             west, south, east, north = source.extent
             box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
             rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
-        pooled = work / "pooled"
-        ingest_rasters(rasters, source, pooled, "", "", {tile_id(ti, tj)})
+        tiles = pool_tile(rasters, source, ti, tj)
         out.mkdir(parents=True, exist_ok=True)
-        if tile_path(pooled, ti, tj).is_file():
-            tile_path(out, ti, tj).parent.mkdir(parents=True, exist_ok=True)
-            os.replace(tile_path(pooled, ti, tj), tile_path(out, ti, tj))
-            # Last: a digest names a whole tile.
-            (out / f"{ti:04}-{tj:04}.sha256").write_text(tile_digest(tile_path(out, ti, tj)), encoding="utf-8")
-        else:
-            (out / f"{ti:04}-{tj:04}.none").touch()
+        name = f"{ti:04}-{tj:04}"
+        if tiles is None:
+            (out / f"{name}.none").touch()
+            return 0
+        maximum, mean = tiles
+        for root, tile, mark in ((MEAN, mean, "mean.sha256"), ("", maximum, "sha256")):
+            written, path = tile_path(work / "pooled" / root, ti, tj), tile_path(out / root, ti, tj)
+            write_tile(written, ti, tj, tile)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(written, path)
+            # Last, and the maximum last of all: a digest names a whole tile.
+            (out / f"{name}.{mark}").write_text(tile_digest(path), encoding="utf-8")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return 0
 
 
 def command_index_tiles(args) -> int:
-    """`index.json` of a version of `terrain-reference/<key>`: each tile of `--digests`, a JSON
-    object of tile id to the pixel digest that `fetch` wrote."""
+    """`index.json` of the tiles of `--pool` in a version of `terrain-reference/<key>`: each tile of
+    `--digests`, a JSON object of tile id to the pixel digest that `fetch` wrote."""
 
     source = registered(args.source)
     digests = dict(sorted(json.loads(Path(args.digests).read_text(encoding="utf-8")).items()))
     facts = {"product": source.product, "attribution": source.credit(args.fetched), "licence": source.licence,
              "vertical_datum": source.vertical_datum, "fetched": args.fetched}
-    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "sources": {source.key: facts},
+    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": args.pool, "sources": {source.key: facts},
              "tiles": {tile: source.key for tile in digests},
              "contributors": {tile: [source.key] for tile in digests}, "sha256": digests}
     Path(args.out).write_text(json.dumps(index, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -283,7 +289,7 @@ def command_check(args) -> int:
         if not path.is_file():
             problems.append(f"{tile}: the index names it, but {path} is missing")
             continue
-        problems.extend(tile_problems(path, ti, tj))
+        problems.extend(tile_problems(path, ti, tj, index.get("pool", "max")))
         if tile_digest(path) != index.get("sha256", {}).get(tile):
             problems.append(f"{tile}: the sha256 in the index is not this tile's pixels")
     for path in sorted((root / "16").rglob("*.tif")) if (root / "16").is_dir() else []:
@@ -418,6 +424,7 @@ def main(argv=None) -> int:
     tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
     tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
     tiles.add_argument("--out", required=True, help="the index.json to write")
+    tiles.add_argument("--pool", choices=("max", MEAN), default="max", help="the pool of the tiles")
     tiles.set_defaults(run=command_index_tiles)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)

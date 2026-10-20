@@ -1,4 +1,6 @@
-//! The terrain of the planner maps: lossless Terrarium WebP tiles of zooms 0 to 12 in MBTiles.
+//! The terrain of the planner maps and of TrailView: lossless Terrarium WebP tiles in MBTiles, of
+//! zooms 0 to 12, and of zoom 13 where the reference archive holds the ground. A pixel is the
+//! height at its centre in decimetres: whole metres in R and G, the tenths in B.
 //!
 //! One sweep from north to south fills the tiles of every zoom, so each GLO-30 square decodes
 //! once and at most two rows of squares are decoded at a time. The tiles of one row fill on every
@@ -19,6 +21,10 @@ use rusqlite::{params, Connection};
 use crate::planner::{squares, Recent, Terrain};
 
 const SIZE: u32 = 512;
+/// The last zoom. Its tiles exist only where the archive holds the ground, south of
+/// [`FINE_NORTH`]: there zoom 12 is already 10 m or finer.
+const FINE: u32 = 13;
+const FINE_NORTH: f64 = 58.4;
 
 fn latitude(y: f64, n: f64) -> f64 {
     ((PI * (1.0 - 2.0 * y / n)).sinh().atan()).to_degrees()
@@ -36,28 +42,40 @@ struct Level {
     lats: Vec<i32>,
     /// The RGBA pixels of each tile of row `y`, west to east, and whether a pixel has a height.
     tiles: Vec<(Vec<u8>, bool)>,
+    /// Whether each tile of row `y` is filled: at [`FINE`], only where the archive holds the ground.
+    wanted: Vec<bool>,
     /// The spool offset and length of each finished tile, with its column and MBTiles row.
     spooled: Vec<(u32, u32, u64, usize)>,
 }
 
 impl Level {
-    fn new(z: u32, [w, s, e, n]: [f64; 4]) -> Self {
+    fn new(z: u32, [w, s, e, n]: [f64; 4], terrain: &Terrain) -> Self {
         let count = f64::from(1u32 << z);
         let row = |lat: f64| (1.0 - (lat.to_radians().tan() + 1.0 / lat.to_radians().cos()).ln() / PI) / 2.0 * count;
         let west = ((w + 180.0) / 360.0 * count).floor() as u32;
         let east = (((e + 180.0) / 360.0 * count).ceil() as u32).min(count as u32);
         let (y, south) = (row(n).floor() as u32, (row(s).ceil() as u32).min(count as u32));
         let tiles = vec![(Vec::new(), false); (east - west) as usize];
-        let mut level = Self { z, west, y, south, py: 0, lats: Vec::new(), tiles, spooled: Vec::new() };
-        level.start_row();
+        let wanted = Vec::new();
+        let mut level = Self { z, west, y, south, py: 0, lats: Vec::new(), tiles, wanted, spooled: Vec::new() };
+        level.start_row(terrain);
         level
     }
 
-    fn start_row(&mut self) {
+    fn start_row(&mut self, terrain: &Terrain) {
         let count = f64::from(1u32 << self.z);
         self.lats = (0..SIZE)
             .map(|py| {
                 (latitude(f64::from(self.y) + (f64::from(py) + 0.5) / f64::from(SIZE), count) * 1e6).round() as i32
+            })
+            .collect();
+        let (north, south) = (latitude(f64::from(self.y), count), latitude(f64::from(self.y + 1), count));
+        let fine = (north + south).abs() / 2.0 < FINE_NORTH;
+        self.wanted = (0..self.tiles.len() as u32)
+            .map(|i| {
+                let lon = |x: u32| f64::from(x) / count * 360.0 - 180.0;
+                let x = self.west + i;
+                self.z < FINE || fine && terrain.national_in([lon(x), south, lon(x + 1), north])
             })
             .collect();
         for (rgba, known) in &mut self.tiles {
@@ -76,8 +94,11 @@ impl Level {
     fn fill(&mut self, terrain: &Terrain, decoded: &RangeInclusive<i32>, spool: &File) -> Result<(), String> {
         let end = (self.py..SIZE).find(|&py| squares(self.lats[py as usize]).start() < decoded.start()).unwrap_or(SIZE);
         let (count, rows, z, west) = (f64::from(1u32 << self.z), self.py..end, self.z, self.west);
-        let lats = &self.lats;
+        let (lats, wanted) = (&self.lats, &self.wanted);
         self.tiles.par_iter_mut().enumerate().try_for_each(|(i, (rgba, known))| {
+            if !wanted[i] {
+                return Ok(());
+            }
             let x = f64::from(west + i as u32);
             let mut recent = Recent::default();
             for py in rows.clone() {
@@ -85,18 +106,11 @@ impl Level {
                 for px in 0..SIZE {
                     let lon = ((x + (f64::from(px) + 0.5) / f64::from(SIZE)) / count * 360.0 - 180.0) * 1e6;
                     let height = terrain.height(lat, lon.round() as i32, &mut recent)?;
-                    // Whole metres: relief and contours need no finer height, and lossless WebP
-                    // compresses fewer distinct values better.
-                    let value = height
-                        .map(|h| ((h.round() + 32768.0) * 256.0).clamp(0.0, 16777215.0) as u32)
-                        .unwrap_or(8388608);
                     let at = ((py * SIZE + px) * 4) as usize;
-                    rgba[at..at + 4].copy_from_slice(&[
-                        (value >> 16) as u8,
-                        (value >> 8) as u8,
-                        value as u8,
-                        if height.is_some() { 255 } else { 0 },
-                    ]);
+                    rgba[at..at + 4].copy_from_slice(&match height {
+                        Some(metres) => terrarium(metres),
+                        None => [128, 0, 0, 0],
+                    });
                     *known |= height.is_some();
                 }
             }
@@ -127,11 +141,21 @@ impl Level {
         self.y += 1;
         self.py = 0;
         match self.y < self.south {
-            true => self.start_row(),
+            true => self.start_row(terrain),
             false => self.tiles.clear(),
         }
         Ok(())
     }
+}
+
+/// The opaque Terrarium pixel of a height: R × 256 + G + B / 256 − 32768 metres, rounded to the
+/// nearest decimetre. B is the tenths × 25.6, rounded, so the nearest decimetre of the decoded
+/// height is the decimetre that was encoded.
+pub fn terrarium(metres: f64) -> [u8; 4] {
+    let decimetres = (metres * 10.0).round() as i64;
+    let (whole, tenths) = (decimetres.div_euclid(10), decimetres.rem_euclid(10));
+    let rg = (whole + 32768).clamp(0, 65535) as u32;
+    [(rg >> 8) as u8, rg as u8, ((tenths * 256 + 5) / 10) as u8, 255]
 }
 
 /// Write the tiles of `bounds` (west, south, east, north in degrees) to the new file `output`.
@@ -150,7 +174,7 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
     let spool = spool.map_err(|e| format!("{}: {e}", path.display()))?;
     std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    let mut levels: Vec<Level> = (0..=12).map(|z| Level::new(z, bounds)).collect();
+    let mut levels: Vec<Level> = (0..=FINE).map(|z| Level::new(z, bounds, terrain)).collect();
     // The northmost pending pixel row decides the squares: no pending row needs one north of them.
     let mut last = None;
     while let Some(level) = levels.iter_mut().filter(|level| level.next().is_some()).max_by_key(|level| level.next()) {
@@ -181,12 +205,13 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
         eprintln!("Terrain zoom {} complete", level.z);
     }
     let identities = serde_json::to_string(&terrain.identities).expect("strings serialize");
+    let maxzoom = levels.iter().rev().find(|level| !level.spooled.is_empty()).map_or(12, |level| level.z.max(12));
     for (key, value) in [
         ("name", "OpenBikeComputer terrain".into()),
         ("format", "webp".into()),
         ("type", "baselayer".into()),
         ("minzoom", "0".into()),
-        ("maxzoom", "12".into()),
+        ("maxzoom", maxzoom.to_string()),
         ("bounds", bounds_text.into()),
         ("attribution", terrain.attribution().join("; ")),
         ("source_sha256", identities),
@@ -194,4 +219,27 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
         db.execute("INSERT INTO metadata VALUES (?1,?2)", params![key, value]).map_err(sql)?;
     }
     db.execute_batch("COMMIT;").map_err(sql)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terrarium;
+
+    /// A height decodes as MapLibre reads Terrarium, and its nearest decimetre is the decimetre of
+    /// the height: B takes ten values, one per tenth.
+    #[test]
+    fn a_height_comes_back_as_its_decimetre() {
+        let mut blues = std::collections::BTreeSet::new();
+        for step in -5_000_i64..=90_000 {
+            for offset in [-0.0499, 0.0, 0.0499] {
+                let metres = step as f64 / 10.0 + offset;
+                let [r, g, b, a] = terrarium(metres);
+                let decoded = f64::from(r) * 256.0 + f64::from(g) + f64::from(b) / 256.0 - 32768.0;
+                assert_eq!((decoded * 10.0).round() as i64, step, "{metres} m");
+                assert!((decoded - step as f64 / 10.0).abs() < 0.002 && a == 255, "{metres} m");
+                blues.insert(b);
+            }
+        }
+        assert_eq!(blues.into_iter().collect::<Vec<_>>(), [0, 26, 51, 77, 102, 128, 154, 179, 205, 230]);
+    }
 }

@@ -1,0 +1,46 @@
+// Draws a list of views of the built TrailView page in headless Chromium and writes one PNG per view.
+//
+//   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
+//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--hud] [--gpu]
+//
+// --views is a JSON list of {name, view}, where view is a query string (default: views.json).
+// --gpu draws on the machine's GPU in a browser window, else SwiftShader draws on the CPU.
+// Prints one JSON line per view: the file, the adapter, the tiles drawn, the requests and page errors.
+
+import { mkdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseArgs } from 'node:util';
+import { chromium } from 'playwright';
+import { errorsOf, EXECUTABLE, routeFixture, serve, SWIFTSHADER } from './harness.js';
+
+const { values } = parseArgs({
+    options: {
+        views: { type: 'string', default: new URL('./views.json', import.meta.url).pathname },
+        out: { type: 'string', default: new URL('../../../../../.artifacts/trailview-shots', import.meta.url).pathname },
+        hud: { type: 'boolean' },
+        gpu: { type: 'boolean' },
+    },
+});
+const views = JSON.parse(readFileSync(values.views, 'utf8'));
+mkdirSync(values.out, { recursive: true });
+const { origin, close } = await serve();
+const browser = await chromium.launch({ executablePath: EXECUTABLE, headless: !values.gpu, args: values.gpu ? [] : SWIFTSHADER });
+try {
+    for (const { name, view } of views) {
+        const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+        const errors = errorsOf(page);
+        await routeFixture(page);
+        await page.goto(`${origin}/trailview.html${view}`);
+        await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
+        await page.evaluate(() => window.trailView.waitForIdle());
+        if (!values.hud) await page.addStyleTag({ content: '#hud { display: none; }' });
+        const file = join(values.out, `${name}.png`);
+        await page.screenshot({ path: file });
+        const stats = await page.evaluate(() => window.trailView.stats());
+        console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, errors }));
+        await page.close();
+    }
+} finally {
+    await browser.close();
+    close();
+}
