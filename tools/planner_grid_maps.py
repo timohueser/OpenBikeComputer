@@ -68,7 +68,8 @@ def step(request):
 
     kind = request["options"]["kind"]
     output = Path(request["output"])
-    layer = request["layers"][f"planner/{kind}"]
+    # A step that writes more than one archive names itself; its grid selects one archive.
+    layer = request["layers"][request["options"].get("step", f"planner/{kind}")]
     if len(layer) != 1:
         raise ValueError("A map grid reads one archive")
     name, source = next(iter(layer.items()))

@@ -6,11 +6,13 @@ from pathlib import Path, PurePosixPath
 import re
 from urllib.request import Request, urlopen
 
-# Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
-# the region recipe has the field NAME. The value is a metadata key that every complete archive has.
-# The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
-# builder/web/src/lib/planner/layers/registry.ts.
-DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
+# Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked when the region recipe has the
+# field NAME. The value is a metadata key that every complete archive has. The catalogue entry lists
+# each layer in `layers`; the web planner shows snow, climate and sun through its module in
+# builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
+# specs/trailview-tiles.md.
+TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4", "colour-ndvimax")
+DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format", **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW}}
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
 INDEX_FORMAT = 3
@@ -65,7 +67,7 @@ def public_metadata(document):
         return {}
     result = {"public/grid.json": encoded({"format": 2, "map_zoom": document["grid"]["map_zoom"]})}
     for name, item in document["files"].items():
-        if name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json",
+        if name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json", "trailview/rules.json",
                                                                          *(f"maps/{layer}.json" for layer in DATA_LAYERS)}:
             result["public/" + name + ".json"] = encoded({**item["transport"], "decoded_bytes": item["bytes"]})
     return result

@@ -47,7 +47,7 @@ def step(request):
         files, extra = routing(request["layers"])
     else:
         layer, = request["layers"].values()
-        prefix = {"assets": "maps/", "model": "search/"}[kind]
+        prefix = {"assets": "maps/", "model": "search/", "trailview-rules": "trailview/"}[kind]
         files, extra = {prefix + name: source for name, source in layer.items()}, {}
     pack_index(request, files, **extra)
 
