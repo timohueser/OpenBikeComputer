@@ -23,8 +23,10 @@ export interface Page {
     slot: number;
     /** The last frame that wanted the page. */
     used: number;
-    /** Heights for culling: a synthesized page has its stored ancestor's. */
+    /** The range of its known heights; a synthesized page has the range of its stored ancestor. */
     range: [number, number];
+    /** Whether the page knows every height; where it does not, the next coarser page draws. */
+    complete: boolean;
     /** The heights and normals are on the GPU. */
     ready: boolean;
 }
@@ -83,13 +85,19 @@ export class Pages {
         return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.refresh.size === 0;
     }
 
-    /** The heights of the finest page that covers a node, or of none. */
+    /**
+     * The heights that a node can draw: the range of the finest page that covers it, with the ranges
+     * of the coarser pages that draw where it knows no height. Undefined while no page covers it.
+     */
     range(node: Node): [number, number] | undefined {
+        let out: [number, number] | undefined;
         for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) {
             const page = this.pages.get(`${level}/${x}/${y}`);
-            if (page) return page.range;
+            if (!page) continue;
+            out = out ? [Math.min(out[0], page.range[0]), Math.max(out[1], page.range[1])] : page.range;
+            if (page.complete) return out;
         }
-        return undefined;
+        return out;
     }
 
     /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. */
@@ -106,6 +114,7 @@ export class Pages {
             const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', [data.min, data.max], keys.has(key(node)));
             if (!page || page.ready) continue;
             page.range = [data.min, data.max];
+            page.complete = data.complete;
             work.uploads.push({ page, data });
         }
         for (const { page } of [...work.uploads, ...work.syntheses]) {
@@ -163,7 +172,7 @@ export class Pages {
             return false;
         });
         if (!ready) return;
-        const synth = this.allocate(node, 'synth', this.pages.get(key(ancestor))!.range, true);
+        const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (synth) work.syntheses.push({ page: synth, stored: ancestor.level });
     }
 
@@ -268,7 +277,8 @@ export class Pages {
             if (oldest.ready) this.dirty = true;
             slot = oldest.slot;
         }
-        const page: Page = { node, kind, slot, used: this.frame, range: heights, ready: false };
+        // A synthesized page reads its stored ancestors only, and `heights` holds all that they draw.
+        const page: Page = { node, kind, slot, used: this.frame, range: heights, complete: true, ready: false };
         this.pages.set(key(node), page);
         return page;
     }
