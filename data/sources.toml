@@ -629,17 +629,19 @@ fetch = { kind = "http", url = "https://egeologija.si/download/GeologicUnitView.
 version = "digest"
 redistribute = true
 
-# The archive holds the general terms of BGR: they grant no right to publish a reconfigured work,
-# unless the geodata ordinance GeoNutzV applies. No licence is recorded until that is decided.
+# The federal metadata record of IGME 5000 names the geodata ordinance GeoNutzV, with the source note
+# "IGME5000, BGR".
 [[source]]
 id = "igme5000"
 kind = "data"
 group = "TrailView ground and colour"
-licence_url = "https://www.bgr.bund.de/agb"
+licence = "LicenseRef-GeoNutzV"
+licence_url = "https://sg.geodatenzentrum.de/web_public/gdz/lizenz/geonutzv.pdf"
 attribution = "IGME 5000 © BGR, Hannover"
+obligations = "Credit the source as the attribution says; state modifications"
 fetch = { kind = "http", url = "https://download.bgr.de/bgr/Geologie/IGME5000/shp/IGME5000.zip" }
 version = "digest"
-redistribute = false
+redistribute = true
 
 # The source of data/trailview/ecoregions.json; its borders are Natural Earth's.
 [[source]]
