@@ -44,7 +44,10 @@ def archive(path, kind, vector=None):
         read = MmapSource(stream)
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
-        expected = TileType.WEBP if kind in {'terrain', 'sun'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
+        expected = TileType.WEBP if kind in {'terrain', 'sun'} or kind.startswith('trailview-') else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
+        # A colour quarter of TrailView is WebP or AVIF, as its variant says: specs/trailview-tiles.md.
+        if kind.startswith('trailview-colour-q') and header['tile_type'] == TileType.AVIF:
+            expected = TileType.AVIF
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
         if expected == TileType.MVT and vector is None:
@@ -58,7 +61,7 @@ def archive(path, kind, vector=None):
                 data = gzip.decompress(data)
             elif header['tile_compression'] != Compression.NONE:
                 raise ValueError('Unsupported tile compression')
-            if expected == TileType.WEBP:
+            if expected in (TileType.WEBP, TileType.AVIF):
                 pixels(data)
             elif expected == TileType.MVT:
                 vector(data)
