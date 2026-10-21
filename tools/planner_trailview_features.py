@@ -1,8 +1,9 @@
 """The TrailView feature tiles of a region: `trailview-features.pmtiles`, as
 `specs/trailview-features.md` defines it.
 
-The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, and the kind table
-`data/trailview/kinds.json` from its options. Osmium selects the objects and assembles the areas."""
+The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
+the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
+objects and assembles the areas; `trailview/profiles.py` sets the heights of roads and lakes."""
 
 import argparse
 from functools import lru_cache
@@ -14,6 +15,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
+from .trailview import profiles
 
 FORMAT = 1
 EXTENT = 8192
@@ -120,13 +122,13 @@ def objects(kinds, pbf, binary):
 
 
 def simplified(geometry, parts, anchors, tolerance):
-    """Douglas-Peucker on each part. The anchors, vertices that other features share, and the ends
-    of a line stay: junctions and the joins of rivers and lakes keep their places. The rings of an
-    area then take back vertices until no two of their edges cross."""
+    """Douglas-Peucker on each part (outer, points, heights). The anchors, vertices that other features
+    share, and the ends of a line stay: junctions and the joins of rivers and lakes keep their places.
+    The rings of an area then take back vertices until no two of their edges cross."""
     if geometry == "point":
         return parts
     sequences = []
-    for (outer, points), fixed in zip(parts, anchors):
+    for (outer, points, _), fixed in zip(parts, anchors):
         if geometry == "line":
             stops = sorted({0, len(points) - 1, *fixed})
         else:
@@ -137,7 +139,13 @@ def simplified(geometry, parts, anchors, tolerance):
     if geometry == "area":
         untangle(sequences)
     end = -1 if geometry == "area" else None
-    return [(outer, [points[index] for index in kept[:end]]) for (outer, _), (points, kept) in zip(parts, sequences)]
+    result = []
+    for (outer, original, z), (points, kept), fixed in zip(parts, sequences, anchors):
+        # A ring was turned to start at its first anchor.
+        start = (fixed or [0])[0] if geometry == "area" else 0
+        indices = [(start + index) % len(original) for index in kept[:end]]
+        result.append((outer, [original[index] for index in indices], z and [z[index] for index in indices]))
+    return result
 
 
 def farthest(points, i, j):
@@ -214,57 +222,64 @@ def crossings(sequences):
     return found
 
 
+def meets(a, b, rect):
+    """Whether the segment a-b meets `rect` (x0, y0, x1, y1), by Liang-Barsky."""
+    (ax, ay), (bx, by), (x0, y0, x1, y1) = a, b, rect
+    dx, dy = bx - ax, by - ay
+    enter, leave = 0.0, 1.0
+    for p, q in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
+        if p == 0:
+            if q < 0:
+                return False
+        elif p < 0:
+            enter = max(enter, q / p)
+        else:
+            leave = min(leave, q / p)
+    return enter <= leave
+
+
 def clip_line(points, rect):
-    """The pieces of a polyline inside `rect` (x0, y0, x1, y1), by Liang-Barsky per segment."""
-    x0, y0, x1, y1 = rect
+    """The pieces of a polyline that meet `rect`, as lists of vertex indices. A piece keeps its first
+    and last segment whole, so the tiles that hold a segment hold the same segment."""
     pieces, piece = [], []
-    for (ax, ay), (bx, by) in zip(points, points[1:]):
-        dx, dy = bx - ax, by - ay
-        enter, leave = 0.0, 1.0
-        for p, q in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
-            if p == 0:
-                if q < 0:
-                    enter, leave = 1.0, 0.0
-            elif p < 0:
-                enter = max(enter, q / p)
-            else:
-                leave = min(leave, q / p)
-        if enter > leave:
-            pieces += [piece] if piece else []
-            piece = []
-            continue
-        if not piece:
-            piece = [(ax + enter * dx, ay + enter * dy)]
-        piece.append((ax + leave * dx, ay + leave * dy))
-        if leave < 1:
+    for k in range(len(points) - 1):
+        if meets(points[k], points[k + 1], rect):
+            piece = piece or [k]
+            piece.append(k + 1)
+        elif piece:
             pieces.append(piece)
             piece = []
     return pieces + ([piece] if piece else [])
 
 
 def clip_ring(ring, rect):
-    """A ring cut to `rect` by Sutherland-Hodgman. A concave ring can keep edges along the border."""
+    """The vertex indices of a ring cut to `rect`, one side at a time. An edge that crosses a side
+    stays whole, and the vertices outside it join directly: such a join lies outside the side, so
+    inside `rect` the ring and its edges are the original ones."""
+    indices = list(range(len(ring)))
     for axis, bound, side in ((0, rect[0], 1), (0, rect[2], -1), (1, rect[1], 1), (1, rect[3], -1)):
-        result, previous = [], ring[-1] if ring else None
-        for point in ring:
-            if ((point[axis] - bound) * side >= 0) != ((previous[axis] - bound) * side >= 0):
-                t = (bound - previous[axis]) / (point[axis] - previous[axis])
-                across = previous[1 - axis] + t * (point[1 - axis] - previous[1 - axis])
-                result.append((bound, across) if axis == 0 else (across, bound))
-            if (point[axis] - bound) * side >= 0:
-                result.append(point)
-            previous = point
-        ring = result
-    return ring
+        inside = lambda index: (ring[index][axis] - bound) * side >= 0
+        result = []
+        for n, index in enumerate(indices):
+            previous = indices[n - 1]
+            if inside(index):
+                result += [previous, index] if not inside(previous) else [index]
+            elif inside(previous):
+                result.append(index)
+        indices = [index for n, index in enumerate(result) if len(result) == 1 or index != result[n - 1]]
+    return indices
 
 
 def clipped(geometry, parts, rect):
-    x0, y0, x1, y1 = rect
+    """Parts (outer, points, heights) cut to `rect`. The cut makes no new vertex."""
+    pick = lambda outer, points, z, indices: (outer, [points[i] for i in indices], z and [z[i] for i in indices])
     if geometry == "point":
-        return [(outer, [(x, y) for x, y in points if x0 <= x <= x1 and y0 <= y <= y1]) for outer, points in parts]
+        x0, y0, x1, y1 = rect
+        return [pick(outer, points, z, [i for i, (x, y) in enumerate(points) if x0 <= x <= x1 and y0 <= y <= y1])
+                for outer, points, z in parts]
     if geometry == "line":
-        return [(False, piece) for _, points in parts for piece in clip_line(points, rect)]
-    return [(outer, clip_ring(points, rect)) for outer, points in parts]
+        return [pick(False, points, z, piece) for _, points, z in parts for piece in clip_line(points, rect)]
+    return [pick(outer, points, z, clip_ring(points, rect)) for outer, points, z in parts]
 
 
 def twice_area(ring):
@@ -275,22 +290,24 @@ def quantized(geometry, parts, left, top):
     """Parts in integer tile units. A part without enough distinct points goes, and the holes of an
     outer ring that goes go with it."""
     result, kept = [], False
-    for outer, points in parts:
-        xy = []
-        for x, y in points:
+    for outer, points, z in parts:
+        xy, heights = [], []
+        for n, (x, y) in enumerate(points):
             point = (round(x) - left, round(y) - top)
             if not xy or point != xy[-1]:
                 xy.append(point)
+                heights.append(z[n] if z else None)
         if geometry == "area":
             if len(xy) > 1 and xy[0] == xy[-1]:
                 xy.pop()
+                heights.pop()
             solid = len(xy) >= 3 and twice_area(xy) != 0
             kept = solid if outer else kept
             if not (kept and solid):
                 continue
         elif len(xy) < (2 if geometry == "line" else 1):
             continue
-        result.append((outer, xy, None))
+        result.append((outer, xy, heights if z else None))
     return result
 
 
@@ -327,7 +344,7 @@ class Tiles:
         """Add the feature to each tile of `zoom` in the region whose buffered square it meets, cut to
         that square. Whether a tile took it."""
         scale = (1 << zoom) * EXTENT
-        parts = [(outer, [(x * scale, y * scale) for x, y in points]) for outer, points in parts]
+        parts = [(outer, [(x * scale, y * scale) for x, y in points], z) for outer, points, z in parts]
         box = extent(parts)
         # The buffer grows towards the pole: twice that of the outer rows bounds every row's.
         margin = 2 * max(pad(zoom, int(box[1] // EXTENT) - 1), pad(zoom, int(box[3] // EXTENT) + 1))
@@ -363,7 +380,7 @@ class Tiles:
 
 def extent(parts):
     """The box (x0, y0, x1, y1) of the points of the parts, or None when they have none."""
-    xs, ys = [x for _, points in parts for x, _ in points], [y for _, points in parts for _, y in points]
+    xs, ys = [x for _, points, _ in parts for x, _ in points], [y for _, points, _ in parts for _, y in points]
     return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
@@ -482,23 +499,37 @@ def area_km2(bounds):
     return EARTH_RADIUS_KM ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
 
 
-def bake(kinds, pbf, bounds, output, attribution):
-    """Write the archive of the region `bounds` from the OSM `pbf`; return the metrics."""
+def bake(kinds, pbf, bounds, output, attribution, terrain=None):
+    """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads and lakes
+    from the `profiles.Terrain` when there is one; return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
     binary, version = region_osm.probe()
-    tiles, low, shared, counts = Tiles(bounds), [], {}, {}
-    for entry, tags, parts in objects(kinds, pbf, binary):
+    tiles, low, shared, counts, held = Tiles(bounds), [], {}, {}, []
+
+    def place(entry, tags, parts):
         if tiles.add(MAX_ZOOM, entry, tags, parts):
             counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
         if entry.get("min_zoom", MAX_ZOOM) < MAX_ZOOM and tiles.meets(entry["min_zoom"], parts):
             low.append((entry, tags, parts))
-            for _, points in parts:
+            for _, points, _ in parts:
                 for point in points:
                     shared[point] = shared.get(point, 0) + 1
+
+    for entry, tags, parts in objects(kinds, pbf, binary):
+        parts = [(outer, points, None) for outer, points in parts]
+        if terrain and profiles.solves(entry["kind"], tags) and tiles.meets(MAX_ZOOM, parts):
+            held.append((entry, tags, parts))
+        else:
+            place(entry, tags, parts)
+    # The heights of a junction need every road that meets there.
+    if held:
+        solved = profiles.solve([(entry["kind"], tags, parts) for entry, tags, parts in held], terrain)
+        for (entry, tags, parts), heights in zip(held, solved):
+            place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
     for entry, tags, parts in low:
-        anchors = [[index for index, point in enumerate(points) if shared[point] > 1] for _, points in parts]
+        anchors = [[index for index, point in enumerate(points) if shared[point] > 1] for _, points, _ in parts]
         for zoom in range(entry["min_zoom"], MAX_ZOOM):
             tiles.add(zoom, entry, tags, simplified(entry["geometry"], parts, anchors, TOLERANCE / ((1 << zoom) * EXTENT)))
     if not tiles.tiles:
@@ -523,10 +554,11 @@ def bake(kinds, pbf, bounds, output, attribution):
 def step(request):
     options, output = request["options"], Path(request["output"])
     (pbf,) = request["layers"]["planner/osm"].values()
+    terrain = profiles.Terrain.grid(request["layers"]["planner/terrain/grid"])
     # Osmium export reads the file twice and finds its format by the file name; a store object has none.
     osm = step_request.view({"osm.pbf": pbf}, output.with_name("planner-osm")) / "osm.pbf"
     archive = output / "trailview-features.pmtiles"
-    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"])
+    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain)
     step_request.metrics(request, metrics)
 
 

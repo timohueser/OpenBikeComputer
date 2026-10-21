@@ -1,6 +1,7 @@
 """The kind table, the feature tile codec and the bake of a small OSM file."""
 
 import gzip
+import io
 import json
 import math
 import os
@@ -8,6 +9,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+
+import numpy as np
 
 from tools import planner_trailview_features as features, region_osm
 
@@ -45,12 +48,12 @@ class Generalization(unittest.TestCase):
         metres = lambda x, y: features.world(8.2 + x / 76_220, 46.8 + y / 111_320)
         shore = [(x, -45 * (1 - ((x - 1000) / 1000) ** 2)) for x in range(0, 2001, 50)] + [(2000, 800), (0, 800)]
         island = [(900, -36), (1100, -36), (1100, 164), (900, 164)]
-        lake = [(True, [metres(*point) for point in shore]), (False, [metres(*point) for point in island])]
+        lake = [(True, [metres(*point) for point in shore], None), (False, [metres(*point) for point in island], None)]
         side = lambda p, q, r: (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
         cross = lambda a, b, c, d: side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0
         for zoom in range(features.MIN_ZOOM, features.MAX_ZOOM):
             tolerance = features.TOLERANCE / ((1 << zoom) * features.EXTENT)
-            rings = [points for _, points in features.simplified("area", lake, [[], []], tolerance)]
+            rings = [points for _, points, _ in features.simplified("area", lake, [[], []], tolerance)]
             edges = [edge for ring in rings for edge in zip(ring, ring[1:] + ring[:1])]
             crossing = [(e, f) for n, e in enumerate(edges) for f in edges[n + 1:] if len({*e, *f}) == 4 and cross(*e, *f)]
             with self.subTest(zoom=zoom):
@@ -96,6 +99,30 @@ class Bake(unittest.TestCase):
                     + "</relation>")
         return f'<osm version="0.6">{nodes}{ways}{relation}</osm>'
 
+    def terrain(self, root):
+        """The grid of `planner/terrain` with one zoom-13 tile under the two zoom-14 tiles: a plane that
+        rises 5 cm per pixel to the east."""
+        from PIL import Image
+        from pmtiles.tile import Compression, TileType, zxy_to_tileid
+        from pmtiles.writer import Writer
+
+        heights = 1000 + 0.05 * np.arange(512, dtype=np.float64)[None, :].repeat(512, 0)
+        code = np.round((heights + 32768) * 256).astype(np.int64)
+        rgba = np.stack([code >> 16, (code >> 8) & 255, code & 255, np.full(code.shape, 255)], -1).astype(np.uint8)
+        data = io.BytesIO()
+        Image.fromarray(rgba, "RGBA").save(data, format="WEBP", lossless=True, exact=True)
+        x, y = self.COLUMN >> 1, self.ROW >> 1
+        (root / "objects").mkdir()
+        with (root / "objects/archive").open("wb") as stream:
+            writer = Writer(stream)
+            writer.write_tile(zxy_to_tileid(13, x, y), data.getvalue())
+            writer.finalize({"tile_type": TileType.WEBP, "tile_compression": Compression.NONE}, {})
+        name = f"maps/tiles/terrain/13/11-{x >> 2}-{y >> 2}.pmtiles"
+        (root / "index.json").write_text(json.dumps({"files": {name: {"sha256": "archive"}}}))
+        files = {"index.json": str(root / "index.json"), "objects/archive": str(root / "objects/archive")}
+        # The height at u tile units east in the zoom-14 tile COLUMN: its pixel of zoom 13 is u / 32.
+        return files, lambda u: 1000 + 0.05 * (u / 32 - 0.5)
+
     def test_a_small_region_bakes_into_buffered_tiles_at_every_zoom(self):
         from pmtiles.reader import MmapSource, Reader, all_tiles
         from pmtiles.tile import TileType
@@ -110,8 +137,9 @@ class Bake(unittest.TestCase):
             bounds = [west, south, east, north]
             (root / "output").mkdir()
             kinds = json.loads(features.TABLE.read_text())
+            grid, height = self.terrain(root)
             features.step({"options": {"bounds": bounds, "kinds": kinds, "attribution": "© OSM"},
-                           "layers": {"planner/osm": {"osm.pbf": str(root / "object")}},
+                           "layers": {"planner/osm": {"osm.pbf": str(root / "object")}, "planner/terrain/grid": grid},
                            "output": str(root / "output"), "metrics": str(root / "metrics.json")})
             with (root / "output/trailview-features.pmtiles").open("rb") as stream:
                 source = MmapSource(stream)
@@ -133,8 +161,16 @@ class Bake(unittest.TestCase):
         buffer = features.pad(14, self.ROW)
         road = next(feature for feature in left if feature["kind"] == "road")
         self.assertEqual(road["tags"], {"highway": "track", "surface": "gravel"})
-        self.assertEqual(road["parts"][0]["xy"], [[7000, 4000], [8192 + round(buffer), 4000]])
-        self.assertEqual(right[0]["parts"][0]["xy"], [[-round(buffer), 4000], [9500 - 8192, 4000]])
+        # A cut keeps the segment whole, so both tiles hold the same one, and its heights follow the terrain.
+        self.assertEqual(road["parts"][0]["xy"], [[7000, 4000], [9500, 4000]])
+        self.assertEqual(right[0]["parts"][0]["xy"], [[7000 - 8192, 4000], [9500 - 8192, 4000]])
+        for tile in (road, right[0]):
+            self.assertEqual(tile["parts"][0]["z"], [round(height(7000), 2), round(height(9500), 2)])
+        self.assertNotIn("z", tunnel["parts"][0], "a tunnel has no height of its own yet")
+        lake = next(feature for feature in left if feature["kind"] == "lake")
+        level = lake["parts"][0]["z"]
+        self.assertEqual(len(set(level)), 1, "a lake has one height")
+        self.assertLess(abs(level[0] - height(2300)), 0.05, "the median of the terrain inside it")
         ground = features.EQUATOR_M * math.cos(math.radians(north)) / (1 << 14) / features.EXTENT
         self.assertGreater(buffer * ground, features.BUFFER_M - 1e-9)
         building = next(feature for feature in left if feature["kind"] == "building")
