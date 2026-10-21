@@ -104,10 +104,14 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             }
         }
     }
-    // A point under other water has no bank: a river's mouth in a lake, a river across a lake.
-    const rivers = lines.filter(line => line.kind === RIVER);
-    const wet = (x: number, y: number) => lakes.some(({ rings }) => insideRings(rings, x, y)) || rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], line.h / unit)));
-    for (const { level, rings } of lakes) {
+    // A point under water has no bank, and the mesh at a bank reads texels a mesh reach away: so no
+    // other water may lie that near (a river's mouth in a lake, the channels of a braided river).
+    const rivers = lines.filter(line => line.kind === RIVER), near = BANK_TEXELS * texel;
+    const wet = (x: number, y: number, self: unknown) =>
+        lakes.some(lake => insideRings(lake.rings, x, y) || (lake !== self && shoreDistance(lake.rings, x, y) * unit < near)) ||
+        rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], (line === self ? line.h : line.h + near) / unit)));
+    for (const lake of lakes) {
+        const { level, rings } = lake;
         // Inside: a grid over the node, every point at its distance from the shore.
         const grid = side / 32;
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
@@ -121,7 +125,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
                     const d = (BANK_TEXELS * texel + extra) / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
-                    if (inNode(x, y) && !wet(x, y)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                    if (inNode(x, y) && !wet(x, y, lake)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
                 }
             }
         }
@@ -156,7 +160,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
                     const d = line.h + BANK_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
                     const level = roadHeight(line, [x, y], 1.5 * d / unit);
-                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y)) push(x, y, ON_BANK, level, line.h, d - line.h, Infinity, 0, [0, 0], steepest);
+                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d - line.h, Infinity, 0, [0, 0], steepest);
                 }
             }
         }
