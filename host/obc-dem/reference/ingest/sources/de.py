@@ -91,7 +91,7 @@ TH = GridTiles(
 
 MV = Wcs20Source(
     "de-mv", "Germany, Mecklenburg-Vorpommern", "DGM1 1 m", 1.0,
-    "Open data, attribution required", DHHN,
+    "CC BY 4.0", DHHN,
     url="https://www.geodaten-mv.de/dienste/dgm_wcs",
     coverage="mv_dgm",
     epsg=25833,

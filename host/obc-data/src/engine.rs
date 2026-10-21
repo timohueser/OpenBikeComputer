@@ -7,7 +7,7 @@ pub mod changes;
 pub mod plan;
 mod process;
 pub use process::{child, peak_rss, python_executable};
-pub(crate) use process::{copy_errors, ended, panicked};
+pub(crate) use process::{copy_lines, ended, panicked};
 
 pub mod runs;
 pub mod state;
@@ -496,7 +496,11 @@ fn chosen<'a, T>(
         .iter()
         .filter(|item| {
             let name = name(item).as_str();
-            wanted.contains(name) && (found.insert(name) || true)
+            let hit = wanted.contains(name);
+            if hit {
+                found.insert(name);
+            }
+            hit
         })
         .collect();
     (chosen, selected.iter().map(String::as_str).filter(|name| !found.contains(name)).collect())

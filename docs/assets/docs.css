@@ -155,6 +155,8 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 }
 .prose tbody tr:hover { background: var(--parchment-2); }
 .prose td code { white-space: nowrap; }
+/* The registry tables scroll on a phone: narrower, their text columns wrap to a word per line. */
+.prose .sources-table table { min-width: 880px; }
 
 body.wide { --content-max: 1320px; }
 body.wide .layout { max-width: 1660px; }
