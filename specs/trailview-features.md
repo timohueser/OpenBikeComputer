@@ -114,10 +114,8 @@ rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m) acros
 `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a level never
 rises through a junction, and the waterways at a junction have one level there. In a loop of
 waterways, the waterways go from the highest start down, and one that flows back into a junction
-before it ends below that junction's level. A point in a lake, or
-within 2 m of its shore, holds the lake's level. A `river` without a `width` tag that lies inside
-`river-area` polygons for a third of its length or more gets the tag: twice the median distance from
-its line to their edges.
+before it ends below that junction's level. A point in a lake, or within 2 m of its shore, holds the
+lake's level.
 
 Each vertex of a `lake` has one level. It is the median of the terrain inside the lake when 80 % of
 that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 m inside the shore.
