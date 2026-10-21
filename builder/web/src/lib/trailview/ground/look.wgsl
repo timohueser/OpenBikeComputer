@@ -16,6 +16,8 @@
 // rough, moor and green; bare_from, barren, blades and banded; the relief (the normal two levels
 // coarser, xy as 0.5 + 0.5 n, its openness, and the texel's own openness).
 @group(2) @binding(5) var cache: texture_2d_array<f32>;
+// A table of 256 × 256 hash values that repeats, for value noise in one fetch.
+@group(2) @binding(6) var noise_table: texture_2d<f32>;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -56,18 +58,19 @@ fn luma(c: vec3f) -> f32 {
     return dot(c, vec3f(0.3, 0.59, 0.11));
 }
 
-// Dave Hoskins' hash and a smooth value noise over it.
+// Dave Hoskins' hash.
 fn hash(q: vec2f) -> f32 {
     var p3 = fract(q.xyx * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// Smooth value noise over the table: the bilinear fetch at a point moved by the smooth step between
+// two texels interpolates as smoothly as four hashes would.
 fn noise(q: vec2f) -> f32 {
     let i = floor(q);
-    var f = q - i;
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2f(1.0, 0.0)), f.x), mix(hash(i + vec2f(0.0, 1.0)), hash(i + vec2f(1.0)), f.x), f.y);
+    let f = q - i;
+    return textureSampleLevel(noise_table, filtered, (i + f * f * (3.0 - 2.0 * f) + 0.5) / 256.0, 0.0).r;
 }
 
 fn rule(region: u32, slot: i32) -> vec4f {
@@ -561,9 +564,11 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
         face *= tone * bulge * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
         face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * g.green);
-        face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
-        face = mix(face, vec3f(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
-            * smoothstep(0.45, 0.7, noise(world / 3.0 + altitude / 2.0)));
+        if (altitude < 16.0) {
+            face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
+            face = mix(face, vec3f(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
+                * smoothstep(0.45, 0.7, noise(world / 3.0 + altitude / 2.0)));
+        }
         albedo = mix(albedo, face, walled);
     }
     // Past about 1 km, the eye sees woodland's crowns, not the snow on the ground under them. Snow slides

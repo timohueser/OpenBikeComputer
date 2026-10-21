@@ -15,6 +15,8 @@ const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 128;
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
 const RAD = Math.PI / 180;
+/** Texels a side of the noise table, as in look.wgsl. */
+const NOISE = 256;
 
 /** Without a ruleset, the ground is the palette under the light and haze of the prototype's `world` region. */
 const NEUTRAL: Rules = {
@@ -37,6 +39,7 @@ interface Resources {
     colour: GPUTexture;
     snow: GPUTexture;
     rules: GPUTexture;
+    noise: GPUTexture;
     map: GPUBuffer;
     jobs: GPUBuffer;
     group: GPUBindGroup;
@@ -95,7 +98,9 @@ export class Ground {
         ];
         // The compute writes the cache: its bind group does not hold it for sampling.
         this.layout = {
-            render: device.createBindGroupLayout({ entries: [...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }] }),
+            render: device.createBindGroupLayout({ entries: [
+                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
                     { binding: 0, visibility: compute, buffer: { type: 'read-only-storage' } },
@@ -126,10 +131,13 @@ export class Ground {
             cache: texture('ground', 'rgba8unorm', side, 4 * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
             colour: texture('compute', 'rgba8unorm', PAGE, JOBS, usage), snow: texture('compute', 'rgba8unorm', PAGE, JOBS, usage),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
+            noise: gpu.texture('ground', { size: [NOISE, NOISE], format: 'r8unorm', usage }, NOISE * NOISE),
             map: gpu.buffer('ground', (this.finest + 1) * MAP * MAP * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
             jobs: gpu.buffer('compute', JOBS * JOB_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
         };
-        const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+        device.queue.writeTexture({ texture: r.noise }, noiseTable(), { bytesPerRow: NOISE }, [NOISE, NOISE]);
+        // It repeats for the noise table; a cache read stays inside its page.
+        const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
         const view = (t: GPUTexture) => t.createView({ dimension: '2d-array' });
         const inputs: GPUBindGroupEntry[] = [
             { binding: 0, resource: { buffer: look } }, { binding: 1, resource: { buffer: r.map } }, { binding: 2, resource: view(r.cells) },
@@ -142,7 +150,7 @@ export class Ground {
         });
         this.resources = {
             ...r, compute,
-            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 5, resource: view(r.cache) }] }),
+            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 5, resource: view(r.cache) }, { binding: 6, resource: r.noise.createView() }] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.compute[0], entries: [
                     { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
@@ -222,3 +230,16 @@ export class Ground {
 
 /** Where a ground page lies: one of SIDE × SIDE tiles of a layer, as `in_page` in look.wgsl. */
 const origin = (slot: number): [number, number, number] => [PAGE * (slot % SIDE), PAGE * (Math.floor(slot / SIDE) % SIDE), Math.floor(slot / LAYER_PAGES)];
+
+/** The noise table of look.wgsl: one hash byte per texel, the same on every run. */
+function noiseTable(): Uint8Array<ArrayBuffer> {
+    const table = new Uint8Array(NOISE * NOISE);
+    let x = 0x9e3779b9;
+    for (let i = 0; i < table.length; i++) {
+        x ^= x << 13;
+        x ^= x >>> 17;
+        x ^= x << 5;
+        table[i] = x & 0xff;
+    }
+    return table;
+}
