@@ -15,13 +15,13 @@ const MITRE = 3;
 
 export interface WaterMesh {
     vertices: ArrayBuffer;
+    /** The ribbons' triangles, then the lakes'. */
     indices: Uint32Array<ArrayBuffer>;
+    /** The indices of the ribbons. */
+    ribbons: number;
 }
 
-/**
- * The water mesh of a node from the features of its feature tile, null without water. The ribbons come
- * first, so that a lake draws over the ribbon of a river that runs on through it.
- */
+/** The water mesh of a node from the features of its feature tile, null without water. */
 export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | null {
     const { lines, lakes } = features(list, tile);
     const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [];
@@ -84,7 +84,7 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
     if (!ribbons.length && !surfaces.length) return null;
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);
     words.forEach((word, i) => (i % WATER_VERTEX < 2 ? (ints[i] = word) : (floats[i] = word)));
-    return { vertices, indices: new Uint32Array([...ribbons, ...surfaces]) };
+    return { vertices, indices: new Uint32Array([...ribbons, ...surfaces]), ribbons: ribbons.length };
 }
 
 /** The unit direction of segment v of a line. */

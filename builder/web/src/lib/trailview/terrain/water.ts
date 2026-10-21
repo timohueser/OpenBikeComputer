@@ -15,7 +15,8 @@ interface Draw { mesh: WaterMesh; level: number; nodes: number[] }
 
 interface Resources {
     device: GPUDevice;
-    pipeline: GPURenderPipeline;
+    lakes: GPURenderPipeline;
+    ribbons: GPURenderPipeline;
     group: GPUBindGroup;
     vertices: GPUBuffer;
     indices: GPUBuffer;
@@ -24,13 +25,15 @@ interface Resources {
 
 /**
  * The water of the drawn nodes, with water.wgsl: each draws the mesh of the node whose stamps it
- * draws, its own once they are known, and its nearest ancestor's until then.
+ * draws, its own once they are known, and its nearest ancestor's until then. The lakes draw opaque and
+ * write their depth, so the GPU skips the terrain under them and the ribbons under a lake stay hidden;
+ * then the ribbons blend.
  */
 export class Water {
     private resources?: Resources;
     private draws: Draw[] = [];
-    /** Per mesh in the pool: its first index, its first vertex and its index count. */
-    private placed = new Map<WaterMesh, { first: number; base: number; count: number }>();
+    /** Per mesh in the pool: its first index and its first vertex. */
+    private placed = new Map<WaterMesh, { first: number; base: number }>();
     private vertexEnd = 0;
     private indexEnd = 0;
 
@@ -47,8 +50,8 @@ export class Water {
         const instances = gpu.buffer('water', nodes.size / 2, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl') });
         const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };
-        const pipeline = await device.createRenderPipelineAsync({
-            label: 'water', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout] }),
+        const pipeline = (ribbons: boolean) => device.createRenderPipelineAsync({
+            label: ribbons ? 'ribbons' : 'lakes', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout] }),
             vertex: {
                 module, entryPoint: 'water_vertex', buffers: [{
                     arrayStride: WATER_VERTEX * 4, attributes: [
@@ -57,14 +60,15 @@ export class Water {
                     ],
                 }],
             },
-            fragment: { module, entryPoint: 'water_fragment', targets: [{ format: gpu.format, blend: { color: blend, alpha: blend } }] },
+            fragment: { module, entryPoint: 'water_fragment', targets: [{ format: gpu.format, ...(ribbons ? { blend: { color: blend, alpha: blend } } : {}) }] },
             primitive: { topology: 'triangle-list' },
-            depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'greater' },
+            depthStencil: { format: depthFormat, depthWriteEnabled: !ribbons, depthCompare: 'greater' },
         });
+        const [lakes, ribbons] = await Promise.all([pipeline(false), pipeline(true)]);
         this.placed.clear();
         this.vertexEnd = this.indexEnd = 0;
         this.resources = {
-            device, pipeline, instances,
+            device, lakes, ribbons, instances,
             group: device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 2, resource: { buffer: nodes } }, { binding: 3, resource: { buffer: instances } }] }),
             vertices: gpu.buffer('water', VERTEX_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
             indices: gpu.buffer('water', INDEX_BYTES, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
@@ -106,7 +110,7 @@ export class Water {
         if (this.vertexEnd + mesh.vertices.byteLength > VERTEX_BYTES || this.indexEnd + mesh.indices.byteLength > INDEX_BYTES) return false;
         r.device.queue.writeBuffer(r.vertices, this.vertexEnd, mesh.vertices);
         r.device.queue.writeBuffer(r.indices, this.indexEnd, mesh.indices);
-        this.placed.set(mesh, { first: this.indexEnd / 4, base: this.vertexEnd / (WATER_VERTEX * 4), count: mesh.indices.length });
+        this.placed.set(mesh, { first: this.indexEnd / 4, base: this.vertexEnd / (WATER_VERTEX * 4) });
         this.vertexEnd += mesh.vertices.byteLength;
         this.indexEnd += mesh.indices.byteLength;
         return true;
@@ -115,18 +119,21 @@ export class Water {
     draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.draws.length) return;
-        pass.setPipeline(r.pipeline);
         pass.setBindGroup(0, r.group);
         pass.setBindGroup(1, surfaceGroup);
         pass.setBindGroup(2, ground);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
-        let instance = 0;
-        for (const { mesh, nodes } of this.draws) {
-            const at = this.placed.get(mesh);
-            if (!at) continue;
-            pass.drawIndexed(at.count, nodes.length, at.first, at.base, instance);
-            instance += nodes.length;
+        for (const ribbons of [false, true]) {
+            pass.setPipeline(ribbons ? r.ribbons : r.lakes);
+            let instance = 0;
+            for (const { mesh, nodes } of this.draws) {
+                const at = this.placed.get(mesh);
+                if (!at) continue;
+                const [first, count] = ribbons ? [at.first, mesh.ribbons] : [at.first + mesh.ribbons, mesh.indices.length - mesh.ribbons];
+                if (count) pass.drawIndexed(count, nodes.length, first, at.base, instance);
+                instance += nodes.length;
+            }
         }
     }
 }
