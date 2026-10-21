@@ -125,9 +125,9 @@ describe('the stamps', () => {
     const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
-    const stamps = (baked: boolean): StampSource => {
+    const stamps = (baked: boolean, water = false): StampSource => {
         const asked = new Set<string>();
-        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, water: false } : void asked.add(key(node))) };
+        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, water } : void asked.add(key(node))) };
     };
 
     it('draw a stored page as a stamped copy, keep its raw layer for the syntheses, and stamp a synthesized page as it is made', async () => {
@@ -160,6 +160,20 @@ describe('the stamps', () => {
             const ancestor = { level: 13, x: page.node.x >> (page.node.level - 13), y: page.node.y >> (page.node.level - 13) };
             expect(stamped.get(key(ancestor))).toBeLessThan(frame(work));
         }
+    });
+
+    it('count a shortage while a page with water has no water layer, and give it one when a layer frees', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false, true), { mask: 0, water: 8 });
+        await settle(pages, wanted);
+        const dry = () => [...pages.pages.values()].filter(page => page.dry && page.drawn !== undefined);
+        expect(pages.shortage).toBeGreaterThan(0);
+        expect(dry().length).toBeGreaterThan(0);
+        // A view of fewer pages: the dry pages that it wants take the layers of the pages that it no longer wants.
+        const fewer = dry().slice(0, 8).map(({ node }) => node);
+        const works = await settle(pages, fewer, 2);
+        expect(pages.shortage).toBe(0);
+        expect(fewer.map(node => pages.pages.get(key(node))!).every(page => page.water !== undefined && !page.dry)).toBe(true);
+        expect(works[0].stamps.filter(({ mode }) => mode === MODE.WATER)).toHaveLength(fewer.length);
     });
 });
 

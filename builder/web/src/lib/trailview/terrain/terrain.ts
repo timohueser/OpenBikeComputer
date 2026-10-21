@@ -10,7 +10,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { featureTile } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, RINGS, rings, select, size, type Node, type Rule } from './lod';
-import { ARRIVALS, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
+import { ARRIVALS, copies, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 
 /**
@@ -340,7 +340,8 @@ export class Terrain {
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
-        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth) {
+        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth
+            && this.pages.watered < ROOM * this.pages.extraCapacity.water) {
             this.quality--;
             this.calm = 0;
         }
@@ -378,7 +379,7 @@ export class Terrain {
             pass.end();
         }
         // The heights of page k of `out` go to its layer: the syntheses, then the stamped copies of stored pages.
-        const targets = [...work.syntheses.map(({ page }) => page.slot), ...work.stamps.filter(({ page }) => page.kind === 'stored').map(({ target }) => target)];
+        const targets = [...work.syntheses.map(({ page }) => page.slot), ...copies(work).map(({ target }) => target)];
         if (targets.length) {
             if (r16) {
                 const quantize = encoder.beginComputePass({ label: 'quantize' });
@@ -633,7 +634,7 @@ export class Terrain {
         const heightsOf = new Set(work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS).map(({ page }) => page));
         device.queue.writeBuffer(r.synthJobs, 0, jobs([
             ...work.syntheses.map(({ page, stored }) => ({ page, stored, slot: page.slot, stamped: heightsOf.has(page) })),
-            ...work.stamps.filter(({ page }) => page.kind === 'stored').map(({ page, target }) => ({ page, stored: 0, slot: target, stamped: true })),
+            ...copies(work).map(({ page, target }) => ({ page, stored: 0, slot: target, stamped: true })),
         ]));
         device.queue.writeBuffer(r.normalJobs, 0, jobs(work.normals.map(page => ({ page, stored: 0, slot: page.drawn!, stamped: false }))));
         if (work.stamps.length) this.writeStamps(r, work.stamps);

@@ -43,6 +43,8 @@ export interface Page {
     copy?: number;
     mask?: number;
     water?: number;
+    /** Water is near, and the page has no water layer: it asks again each frame that wants it. */
+    dry?: boolean;
 }
 
 /** What stamps a node: the binned features, while they are known. */
@@ -71,7 +73,7 @@ export interface Work {
     uploads: { page: Page; data: PageData }[];
     /** Each with the level of its stored ancestor; the synthesis of page k goes to `out` page k. */
     syntheses: { page: Page; stored: number }[];
-    /** The stamps of the syntheses, then those of stored pages, which go to `out` after the syntheses. */
+    /** The stamps of the syntheses, then those of stored pages, whose heights go to `out` after the syntheses (`copies`). */
     stamps: Stamp[];
     normals: Page[];
     /** The LOD map: MAP × MAP entries per level from 0 to FINEST, when it changed. */
@@ -82,6 +84,9 @@ export interface Work {
     origins: [number, number][];
 }
 
+/** The stamps that write the heights of a stored page: they go to `out` after the syntheses. */
+export const copies = (work: Work): Stamp[] => work.stamps.filter(({ page, mode }) => page.kind === 'stored' && mode & MODE.HEIGHTS);
+
 interface Tile {
     state: 'loading' | 'decoding' | 'done' | 'absent';
     /** Quadrants without a known height, once decoded. */
@@ -91,20 +96,21 @@ interface Tile {
 /**
  * The page pools and what fills them. Stored pages come from the stored tiles, synthesized pages from
  * their deepest stored ancestor. The pools have a fixed size: the page that the frames wanted longest
- * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage.
+ * ago leaves first, and a frame that wants more pages or water layers than a pool holds counts a
+ * shortage. A page without a mask layer goes without; a page without a water layer asks again.
  */
 export class Pages {
     requests = 0;
     bytes = 0;
     failed = 0;
-    /** Wanted pages that found no free slot in the last frame. */
+    /** Wanted pages and water layers that found no free slot in the last frame. */
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
-    /** Masks and water pages that the frames wanted and found no layer for. */
-    extraShortage = 0;
+    /** Pages that the last frame wanted with water near them: with a water layer, or dry. */
+    watered = 0;
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
@@ -150,7 +156,6 @@ export class Pages {
     update(wanted: Node[], anchor: Anchor): Work {
         this.frame++;
         this.shortage = 0;
-        this.extraShortage = 0;
         this.missing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], normals: [], origins: this.window(anchor) };
@@ -177,6 +182,17 @@ export class Pages {
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
             if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
+        }
+        // A dry page asks for a water layer again, and a stamp job writes only its water.
+        this.watered = 0;
+        for (const page of this.pages.values()) {
+            if (page.used !== this.frame) continue;
+            if (page.water !== undefined || page.dry) this.watered++;
+            if (!page.dry || page.drawn === undefined) continue;
+            const stamps = this.stamps.get(page.node);
+            if (!stamps?.data || this.busy(work, stamps.data.length) || !this.water(page)) continue;
+            const baked = page.kind === 'stored' && this.stamps.baked;
+            work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (baked ? MODE.BAKED : 0) });
         }
         for (const page of fresh) {
             this.dirty = true;
@@ -250,7 +266,7 @@ export class Pages {
         synth.drawn = synth.slot;
         if (stamps.data) {
             const mode = (stamps.heights && !this.stamps.baked ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.extra(synth, 'mask') ? MODE.MASK : 0)
-                | (stamps.water && this.extra(synth, 'water') ? MODE.WATER : 0);
+                | (stamps.water && this.water(synth) ? MODE.WATER : 0);
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
@@ -259,7 +275,7 @@ export class Pages {
     /** Whether the frame has no room for another arrival, synthesis or stamp, or for `words` of stamp data. */
     private busy(work: Work, words = 0): boolean {
         const used = work.stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0);
-        return work.uploads.length + work.syntheses.length + work.stamps.filter(({ page }) => page.kind === 'stored').length >= ARRIVALS || used + words > STAMP_WORDS;
+        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || used + words > STAMP_WORDS;
     }
 
     /**
@@ -283,9 +299,9 @@ export class Pages {
             }
             page.copy = target = copy;
         }
-        const mode = MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) | (stamps.water && this.extra(page, 'water') ? MODE.WATER : 0);
+        const mode = MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) | (stamps.water && this.water(page) ? MODE.WATER : 0);
         page.drawn = target;
-        work.stamps.push({ page, out: work.syntheses.length + work.stamps.filter(stamp => stamp.page.kind === 'stored').length, target, data: stamps.data, mode });
+        work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target, data: stamps.data, mode });
         return true;
     }
 
@@ -299,16 +315,21 @@ export class Pages {
             const rank = (other: Page) => (other.used < this.frame ? other.used - this.frame - FINEST : other.node.level - page.node.level);
             let donor: Page | undefined;
             for (const other of this.pages.values()) if (other[kind] !== undefined && rank(other) < 0 && (!donor || rank(other) < rank(donor))) donor = other;
-            if (!donor) {
-                this.extraShortage++;
-                return false;
-            }
+            if (!donor) return false;
             slot = donor[kind];
             donor[kind] = undefined;
+            donor.dry ||= kind === 'water';
         }
         page[kind] = slot;
         this.dirty = true;
         return true;
+    }
+
+    /** A water layer for a page; without one the page is dry, and the frame counts a shortage. */
+    private water(page: Page): boolean {
+        page.dry = !this.extra(page, 'water');
+        if (page.dry) this.shortage++;
+        return !page.dry;
     }
 
     /**
