@@ -104,6 +104,7 @@ test('the stamps hold in a lake at every level that the frame draws, at its one 
     await open(page, LAKE);
     const audit = await audited(page);
     expect(audit.checks.inWater.checked).toBeGreaterThan(50);
+    expect(audit.checks.onBank.checked).toBeGreaterThan(0);
     expect(audit.levels.lakes).toBeGreaterThan(0);
     expect(errors).toEqual([]);
 });
