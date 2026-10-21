@@ -38,6 +38,34 @@ const browser = await chromium.launch({
     executablePath: EXECUTABLE, headless: !values.gpu,
     args: values.gpu ? ['--enable-webgpu-developer-features'] : SWIFTSHADER,
 });
+/**
+ * Keeps the GPU at its high clock: macOS lowers the clock while a frame leaves the GPU time to spare, so
+ * a pass then measures much longer than its work. Before each submit of the
+ * engine, about 5 ms of compute writes the node buffer without a change, so the terrain pass waits for
+ * it and never overlaps it. It reaches into the engine, so it lives here and not in the engine.
+ */
+function heat() {
+    const device = window.trailView.gpuState.gpu.device, nodes = window.trailView.terrain.resources.nodes;
+    const module = device.createShaderModule({ code: `
+@group(0) @binding(0) var<storage, read_write> nodes: array<u32>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {
+    var x = f32(id.x) * 1e-6;
+    for (var i = 0u; i < 20000u; i++) { x = fma(x, 0.999999, 1e-7); }
+    nodes[id.x % 1024u] = nodes[id.x % 1024u] | select(0u, 1u, x < -1.0);
+}` });
+    const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+    const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: nodes } }] });
+    const submit = device.queue.submit.bind(device.queue);
+    device.queue.submit = buffers => {
+        const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, group);
+        pass.dispatchWorkgroups(1024);
+        pass.end();
+        submit([encoder.finish(), ...buffers]);
+    };
+}
+
 const summary = (list) => {
     const sorted = [...list].sort((a, b) => a - b), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     return sorted.length ? { median: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) } : null;
@@ -52,21 +80,29 @@ try {
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
         await page.evaluate(() => window.trailView.waitForIdle());
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });
+        if (values.gpu) await page.evaluate(heat);
         const start = await page.evaluate(() => ({ ...window.trailView.view }));
         const frames = [], red = [], audit = { checks: {}, water: { checked: 0, wrong: 0, missing: 0 }, apron: { checked: 0, differ: 0 }, found: [] };
-        for (let i = 0; i <= flight.frames; i++) {
-            const frame = await page.evaluate(async ({ start, to, frames, i }) => {
-                const tv = window.trailView, end = { ...start, ...to }, t = i / frames, mix = (a, b) => a + (b - a) * t;
-                // A flight that climbs or sinks changes its height by the same share each frame.
-                const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
-                tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
-                await tv.nextFrame();
-                const { gpu, cpu, drawn, requests, bytes, terrain } = tv.stats();
-                return { gpu, cpu, drawn, requests, bytes, terrain };
-            }, { ...flight, start, i });
-            frames.push(frame);
-            if (values.cracks && i % Number(values.cracks) === 0) red.push(await redPixels(page));
-            if (values.audit && i % Number(values.audit) === 0) {
+        const stops = [values.cracks, values.audit].filter(Boolean).map(Number);
+        // The frames run in the page, one per display frame, as a rider's flight does: a round trip per
+        // frame leaves the GPU idle, and macOS then lowers its clock. Only a crack count or an audit leaves the page.
+        for (let i = 0; i <= flight.frames;) {
+            const until = Math.min(flight.frames, ...stops.map(n => Math.ceil(i / n) * n));
+            frames.push(...await page.evaluate(async ({ start, to, frames, from, until }) => {
+                const tv = window.trailView, end = { ...start, ...to }, out = [];
+                for (let i = from; i <= until; i++) {
+                    const t = i / frames, mix = (a, b) => a + (b - a) * t;
+                    // A flight that climbs or sinks changes its height by the same share each frame.
+                    const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
+                    tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
+                    await tv.nextFrame();
+                    const { gpu, cpu, drawn, requests, bytes, terrain } = tv.stats();
+                    out.push({ gpu, cpu, drawn, requests, bytes, terrain });
+                }
+                return out;
+            }, { ...flight, start, from: i, until }));
+            if (values.cracks && until % Number(values.cracks) === 0) red.push(await redPixels(page));
+            if (values.audit && until % Number(values.audit) === 0) {
                 const result = await page.evaluate(async () => {
                     await window.trailView.waitForIdle();
                     return window.trailView.audit();
@@ -79,6 +115,7 @@ try {
                 for (const part of ['water', 'apron']) for (const key of Object.keys(audit[part])) audit[part][key] += result[part][key];
                 audit.found.push(...result.found.slice(0, 8 - audit.found.length));
             }
+            i = until + 1;
         }
         const passes = [...new Set(frames.flatMap(frame => Object.keys(frame.gpu)))];
         const last = frames.at(-1), stats = await page.evaluate(() => ({ ...window.trailView.stats(), pools: [...window.trailView.stats().pools] }));
