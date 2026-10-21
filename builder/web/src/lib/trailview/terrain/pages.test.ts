@@ -4,7 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, COARSEST, key, MAP, RANGE, select, size, type Node } from './lod';
-import { MODE, Pages, type StampSource, type Work } from './pages';
+import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -164,7 +164,8 @@ describe('the stamps', () => {
 
     it('count a shortage while a page with water has no water layer, and give it one when a layer frees', async () => {
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false, true), { mask: 0, water: 8 });
-        await settle(pages, wanted);
+        const all = await settle(pages, wanted);
+        expect(Math.max(...all.map(work => work.stamps.length))).toBeLessThanOrEqual(ARRIVALS);
         const dry = () => [...pages.pages.values()].filter(page => page.dry && page.drawn !== undefined);
         expect(pages.shortage).toBeGreaterThan(0);
         expect(dry().length).toBeGreaterThan(0);

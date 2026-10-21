@@ -275,10 +275,10 @@ export class Pages {
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
 
-    /** Whether the frame has no room for another arrival, synthesis or stamp, or for `words` of stamp data. */
+    /** Whether the frame has no room for another arrival, synthesis or stamp job, or for `words` of stamp data. */
     private busy(work: Work, words = 0): boolean {
         const used = work.stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0);
-        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || used + words > STAMP_WORDS;
+        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || work.stamps.length >= ARRIVALS || used + words > STAMP_WORDS;
     }
 
     /**
