@@ -1,5 +1,5 @@
 // The samples of the invariant audit in a node, as audit.wgsl reads them: across each carriageway,
-// in each lake and river and on their banks; and the checks of a tile's water levels. A worker uses it.
+// in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
@@ -9,11 +9,10 @@ export const SAMPLE = 12;
 export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4, SHORE_SIDE = 5;
 /** Samples per node at most. */
 const MOST = 8192;
-/**
- * The reach of the mesh about a point: a mesh cell and a texel, as `read` in audit.wgsl. No other water
- * may lie within 13 texels of a bank sample, which the mesh at a bank may read.
- */
-const READ_TEXELS = RULES.MESH_TEXELS + 1, DRY_TEXELS = 13;
+/** No river or other lake may lie within 13 texels of a shore sample, which the mesh there may read. */
+const DRY_TEXELS = 13;
+/** As SHORE_CELLS of stamp-core.wgsl: the shore samples lie in the ramp's band. */
+const SHORE_CELLS = 1.5;
 /** The side of a shore is checked on a grid of this many points across a node, this many texels from a shore at most. */
 const SIDE_GRID = 64, SIDE_TEXELS = 20;
 
@@ -85,9 +84,8 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const { lines, lakes } = features(list, tile);
     const shift = 22 - node.level, side = PAGE * 2 ** shift;
     const x0 = node.x * side, y0 = node.y * side, unit = metresPerUnit(y0 + side / 2), texel = unit * 2 ** shift;
-    // Metres past a shore or a bed where audit.wgsl checks a bank on the node's level: in [read, water_bank − read], none where that is empty.
-    const read = READ_TEXELS * texel, band = RULES.BANK_M + 2 * RULES.MESH_TEXELS * texel - 2 * read;
-    const banks = band > 0 ? [1, 3, 5].map(k => read + band * k / 6) : [];
+    // The band of a lake's ramp on the node's level, where audit.wgsl checks the shore.
+    const band = SHORE_CELLS * RULES.MESH_TEXELS * texel;
     const inNode = (x: number, y: number) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const out: number[][] = [];
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
@@ -121,14 +119,11 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             }
         }
     }
-    // A point under water has no bank, and the mesh at a bank reads texels a mesh reach away: so no
-    // other water may lie that near (a river's mouth in a lake, the channels of a braided river), and
-    // no other part of its own river within its bed and the reach of the mesh (a tight bend).
+    // A shore sample has no other water near: a river's mouth, another lake.
     const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel;
-    const bed = (line: Line) => Math.max(line.h, RULES.MESH_TEXELS * texel);
     const wet = (x: number, y: number, self: unknown) =>
-        lakes.some(lake => insideRings(lake.rings, x, y) || (lake !== self && shoreDistance(lake.rings, x, y) * unit < near)) ||
-        rivers.some(line => lineDistance(line, x, y) * unit < bed(line) + (line === self ? read : near));
+        lakes.some(lake => lake !== self && (insideRings(lake.rings, x, y) || shoreDistance(lake.rings, x, y) * unit < near)) ||
+        rivers.some(line => lineDistance(line, x, y) * unit < line.h + near);
     for (const lake of lakes) {
         const { level, rings } = lake;
         // Inside: a grid over the node, every point at its distance from the shore.
@@ -136,15 +131,15 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
             if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
         }
-        // Banks: points outside each edge in the node.
+        // The shore: points outside each edge in the node, in the band of its ramp.
         for (const ring of rings) {
             for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
                 const mx = (ring[i] + ring[j]) / 2, my = (ring[i + 1] + ring[j + 1]) / 2, length = Math.hypot(ring[i] - ring[j], ring[i + 1] - ring[j + 1]);
                 if (!length || !inNode(mx, my)) continue;
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
-                for (const sign of [-1, 1]) for (const past of banks) {
-                    const d = past / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
-                    if (inNode(x, y) && !wet(x, y, lake)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                for (const sign of [-1, 1]) for (const past of [0.25, 0.75, 1.25]) {
+                    const d = past * band / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
+                    if (inNode(x, y) && !insideRings(rings, x, y) && !wet(x, y, lake)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
                 }
             }
         }
@@ -161,8 +156,8 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         const d = Math.min(...near.map(({ rings }) => shoreDistance(rings, px, py))) * unit;
         if (d < SIDE_TEXELS * texel) push(px, py, SHORE_SIDE, 0, 0, near.some(({ rings }) => insideRings(rings, px, py)) ? -d : d);
     }
-    // Rivers: the middle of the river, and points across it on its banks. The level
-    // may leave the mesh by the steepest grade of the segment and its neighbours across a cell.
+    // Rivers: the middle of the river, away from a lake's bed. Its level may leave the mesh by the
+    // steepest grade of the segment and its neighbours across a cell.
     const grade = (line: Line, w: number) => {
         const [ax, ay, bx, by] = line.xy.slice(2 * w, 2 * w + 4);
         return w < 0 || w + 1 >= line.z.length ? 0 : Math.abs(line.z[w + 1] - line.z[w]) / (Math.hypot(bx - ax, by - ay) * unit || 1);
@@ -171,17 +166,10 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), length = Math.hypot(bx - ax, by - ay);
             if (!length) continue;
-            const across = [-(by - ay) / length, (bx - ax) / length], count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
+            const count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
             for (let i = 0; i < count; i++) {
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
-                if (!inNode(cx, cy) || Number.isNaN(z)) continue;
-                push(cx, cy, IN_WATER, z, line.h, 0, Infinity, 0, [0, 0], steepest);
-                // Past the bed of the node's level, as river_half of stamp-core.wgsl.
-                for (const sign of [-1, 1]) for (const past of banks) {
-                    const d = bed(line) + past, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
-                    const level = roadHeight(line, [x, y], 1.5 * d / unit);
-                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d, Infinity, 0, [0, 0], steepest);
-                }
+                if (inNode(cx, cy) && !Number.isNaN(z) && !lakes.some(({ rings }) => insideRings(rings, cx, cy) || shoreDistance(rings, cx, cy) * unit < near)) push(cx, cy, IN_WATER | (line.profile << 8), z, line.h, 0, Infinity, 0, [0, 0], steepest);
             }
         }
     }

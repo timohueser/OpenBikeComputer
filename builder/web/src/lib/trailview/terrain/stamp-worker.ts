@@ -1,5 +1,5 @@
-// Bins the features of a node's feature tile for stamp.wgsl, makes the audit samples of a node and the
-// water meshes of a tile, off the main thread.
+// Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
+// samples, off the main thread.
 import { decodeFeatures, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
@@ -24,7 +24,7 @@ async function decoded(name: string, body: ArrayBuffer): Promise<Feature[]> {
     return features;
 }
 
-export type Request = 'stamps' | 'samples' | 'water';
+export type Request = 'stamps' | 'samples';
 
 self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request }>) => {
     try {
@@ -32,12 +32,9 @@ self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{
         if (what === 'samples') {
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
-        } else if (what === 'water') {
-            const result = waterMesh(features, tile);
-            self.postMessage({ id, result }, { transfer: result ? [result.vertices, result.indices.buffer] : [] });
         } else {
-            const result = nodeStamps(features, tile, node);
-            self.postMessage({ id, result }, { transfer: result.data ? [result.data.buffer] : [] });
+            const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node) };
+            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...(result.water ? [result.water.vertices, result.water.indices.buffer] : [])] });
         }
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });

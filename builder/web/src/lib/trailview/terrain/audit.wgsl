@@ -201,27 +201,24 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         }
         return;
     }
-    // A river shapes only the levels that show it, and its level changes along it.
-    if (q.half > 0.0 && (!river_shows(q.half, level) || !river_shows(q.half, coarse))) {
-        return;
-    }
     if (q.half > 0.0) {
-        // A river sample carries its metres from the middle; the bed and the banks of each level begin past river_half.
+        // A river holds its level over its middle, a read inside its edges, on the levels that show it.
+        let rule = profiles[q.kind >> 8u];
+        if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || q.half <= read) {
+            return;
+        }
         let along = max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide;
-        let past = vec2f(q.shore - river_half(q.half, fine), q.shore - river_half(q.half, wide));
-        if (kind == IN_WATER && all(past <= vec2f(-read))) {
-            check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
-        }
-        if (kind == ON_BANK && all(past >= vec2f(read)) && all(past + read <= vec2f(water_bank(fine), water_bank(wide)))) {
-            check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
-        }
+        check(IN_WATER, abs(drawn - q.expected), rule.tol + along + ROUNDING, false, s, level, drawn, q.expected, q.shore);
         return;
     }
     if (kind == IN_WATER && q.shore >= read) {
-        check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING, false, s, level, drawn, q.expected, q.shore);
+        // The 16-bit pages round a deep bed by millimetres: half its depth is the promise.
+        check(IN_WATER, drawn - (q.expected - 0.5 * min(BED_DEPTH, SHORE_SLOPE * (q.shore - read))), ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
-    if (kind == ON_BANK && banks_show(level) && banks_show(coarse) && q.shore >= read && q.shore + read <= min(water_bank(fine), water_bank(wide))) {
-        check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING, false, s, level, drawn, q.expected, q.shore);
+    // The mesh at a shore point reads the texels a read nearer the shore, under the ramp of either level.
+    if (kind == ON_BANK && shore_shows(level) && shore_shows(coarse)) {
+        let cap = max(shore_cap(q.shore + read, fine), shore_cap(q.shore + read, wide));
+        check(ON_BANK, drawn - (q.expected + cap), ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
 }
 
