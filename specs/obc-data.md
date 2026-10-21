@@ -20,11 +20,13 @@ One `[[source]]` table per source.
 | `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
 | `group` | string | no | The heading under which the operator page lists the source |
+| `used_by` | array of strings | yes | What reads the source, one or more of the [products](#products) `device` and `planner`, and of `search` and `trailview`, the search and TrailView layers of `planner`. `tools/check_data_sources.py` refuses a source without one, or with another name |
+| `use` | string | yes | What `used_by` reads the source for, in one line. `tools/check_data_sources.py` refuses a source without it |
 | `licence` | string | no | SPDX licence expression: ids or `LicenseRef-…`, joined by `AND`, `OR`, `WITH` and parentheses |
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose version is the base day. See below |
+| `fetch` | table | yes | `kind` and `url`. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
@@ -40,7 +42,6 @@ One `[[source]]` table per source.
 | Kind | Fetch |
 | --- | --- |
 | `http` | A file, or one file per tile |
-| `osm` | The daily OSM replication diffs |
 | `geofabrik` | A Geofabrik extract or `.poly` of an area |
 | `glo30` | Copernicus GLO-30 tiles |
 | `dtm` | A national terrain model service |
@@ -63,7 +64,6 @@ Rules:
 - A `prepared` source has `version = "date"` and `redistribute = true`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - A credential has `env` or `file`, not both.
-- An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
 Each row `dtm-<key>` with `redistribute = true` also gives the `prepared` source
 `terrain-reference/<key>`, which has no row of its own. It has the `licence`, `licence_url`,
@@ -190,7 +190,7 @@ reads. The source has the least state of its fetches, in the order of this table
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or a due fetch has no successful upstream result |
-| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture. Or its version is before the serving version of the source that `fetch.from` names |
+| `stale` | A date fetch is older than its `refresh`, and upstream names a later version or the fetch is a capture |
 | `unused` | The serving release reads no fetch of the source |
 | `ok` | Otherwise. A fetch without a serving version is never stale. A `manual` source and a `prepared` source are never stale by age |
 
@@ -250,9 +250,8 @@ A snapshot record is a JSON object:
 | `version` | The version, as `SOURCE@VERSION` names it |
 | `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
 
-The `name` of a file is the part of its URL that identifies it in the source. For an `osm`,
-`dtm` or `capture` fetch, it is the URL after `fetch.url`, such as `000/005/130.osc.gz` or
-`#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
+The `name` of a file is the part of its URL that identifies it in the source. For a `dtm`
+or `capture` fetch, it is the URL after `fetch.url`, such as `#bbox=W,S,E,N/sub/a.tif`. For a URL template, it is the URL from the segment of the first
 `{name}` other than `{version}` and `{yymmdd}`, such as `europe/monaco-261003.osm.pbf`; without
 such a `{name}`, it is the last segment. A name is unique in a record: a file whose name the
 record has for another URL fails the fetch.
@@ -335,7 +334,6 @@ version. A file that fails it is deleted.
 | `fetch.kind` | Fetcher |
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
-| `osm` | The daily diffs from a base day, see below |
 | `capture` | A program writes the files, see below |
 | `dtm`, `by-hand`, `installed` | None; the fetch fails. A `dtm-*` source is read through `terrain-reference/<key>` |
 | `prepared` | The manifest and the files that a step names, from a target, see [Prepared sources](#prepared-sources) |
@@ -344,31 +342,8 @@ A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. With
 fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more than one area,
 it takes the earliest day.
 
-The OSM planet is two sources with date versions. `osm-planet` is the weekly planet file of one
-day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Their two versions
-together fix the bytes of the OSM data.
-
-An `osm` URL is an Osmosis replication directory that ends with `/`, such as
-`<server>/replication/day/`. A fetch of version `E` takes `from=B`, a version of the
-`fetch.from` source, and no other `NAME=VALUE`. `B` is on or before `E`. The sequence
-of a day is the one diff whose `state.txt` has the `timestamp` of that day; a day with two
-diffs has no sequence. The snapshot is the
-`state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
-to the sequence of `E`, in order.
-
-- When the store has the diff and the `state.txt` of each of these sequences, in the record of
-  any version, the fetch makes no request. The stored states name the day of each sequence.
-- Else the fetch reads the newest `state.txt` first, and fails when `E` is after its day. Then it
-  finds the sequence of `B` and of `E`: the newest sequence less the days between, then, when
-  the `timestamp` of that sequence is another day, moved by the difference once, and the states
-  of the sequences next to it. It fails before a diff downloads when it finds no sequence of `B`
-  or `E`. These reads record nothing.
-- A diff and its state never change. A file in the record of another version comes from the
-  store, so a fetch of a later `E` from the same `B` downloads only the new days.
-
-A late or missing weekly planet does not block a version of `osm-replication`, because its base
-is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
-sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
+`osm-planet` is the weekly planet file of one day, an `http` URL with `{yymmdd}`. No step reads
+it: the [`wiki`](#wiki) preparation reads a planet file of it, and it gives the OSM credit.
 
 A `capture` fetch runs in the explicit repository root. The offline system selector
 of `uv python find` selects its Python and honors `UV_PYTHON`. A standard-library capture
@@ -388,7 +363,6 @@ no fetcher yet; the fetch fails.
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
-| `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `corine-land-cover` | `bbox` | `tools/trailview/ground.py --fetch-corine` | group `trailview` | `bbox=W,S,E,N` |
 | `sentinel-2-mosaics` | `bbox`, `year` | `tools/trailview/colour.py --fetch` | group `trailview` | `bbox=W,S,E,N&year=YEAR` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
@@ -398,8 +372,6 @@ no fetcher yet; the fetch fails.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September. An `hr-wsi` box without a
   product gives a fetch without files.
-- The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
-  the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
 - The `corine-land-cover` files are `legend.json`, the legend of the CLC 2018 map service, and
   `clc-W_S_E_N.png`: its raster map images in EPSG:3035 at 100 m over `bbox`, each at most
@@ -423,7 +395,6 @@ the cached observation. Refresh policy changes do not invalidate acquisition evi
 
 | Source | Check |
 | --- | --- |
-| `osm` | `GET` of `<fetch.url>state.txt`; the day of its `timestamp` |
 | `http` or `geofabrik`, with `{yymmdd}` and known request params | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
 | `capture` | On-demand capture policy, with no network check or probe time |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
@@ -899,10 +870,12 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
+| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
-`trailview-lithology` or `trailview-region`. It reads only the archive of its producer.
+`trailview-lithology`, `trailview-region` or `trailview-canopy`. It reads only the archive of its
+producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
 `trailview-colour-<archive>`.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
@@ -917,8 +890,9 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground` and
-`trailview-colour` are optional layers: a step only when `layers` of the settings names it.
+`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground`,
+`trailview-colour` and `trailview-canopy` are optional layers: a step only when `layers` of the
+settings names it.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
@@ -1439,7 +1413,7 @@ is compact JSON with the keys of each object in byte order:
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
-| `cost` | The wall time of the last run of the version, and the peak memory of its process or of the largest program that it ran (`null` when the system does not report it) |
+| `cost` | The wall time of the last run of the version, and the peak memory of its process or, when that is more, of the largest program that it ran times the most programs that ran at once (`null` when the system does not report it) |
 
 #### Prepare
 
@@ -1472,7 +1446,8 @@ is compact JSON with the keys of each object in byte order:
 4. A run of a new version deletes the folders of older versions of the source on the target that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock.
-5. The producer writes each file. The run uploads it at once, records its SHA-256 in the journal
+5. The producer writes each file. `terrain-reference` and `forest-reference` run the programs of
+   two tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the upload
    replaces a key that a stopped run left with other bytes.
 6. The run checks that it still holds the lock, and that the target has each file of the journal
@@ -1549,6 +1524,41 @@ maximum, which `device/terrain` reads, and under `mean/` the mean, which `planne
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
+
+#### `forest-reference/<key>`
+
+The producer `forest-reference`, format 1, makes the forest of each cell of the zoom 12 tiles at
+256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs:
+
+- The tiles are the zoom 12 tiles whose inside meets the `extent` of the source. A version of a
+  region of boxes has only the tiles that meet the bounds of its boxes. A region of another area
+  refuses.
+- For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
+  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
+  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The
+  run keeps the SHA-256 or the `.none` of each
+  tile until the version is complete, so a resume makes no tile again that it has.
+- A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
+  65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
+  endian.
+
+  | Band | Value of a cell |
+  | --- | --- |
+  | `height_dm` | The 95th percentile of the canopy pixels in decimetres, at most 800; 0 without a canopy pixel |
+  | `cover_pct` | The share of the pixels that are canopy, in % |
+  | `stems_per_ha` | The tree tops per hectare of the known pixels |
+  | `conifer_pct` | The share of coniferous trees of the leaf type samples with a tree, in %; 65535 without one |
+
+- A canopy pixel is 3 m high or more. A tree top is a pixel of the canopy that a binomial 3 × 3
+  mean smooths, 5 m high or more, that no pixel within its crown radius exceeds: 0.5 m plus 8 % of
+  its height, from 1 m to 4 m. Tops of one height within the crown radius of each other, directly
+  or through other such tops, are one tree, such as a flat crown; its top is the first in raster
+  order.
+- `ch` reads `vhm-lidar-ch` through HTTP range requests, in strips of whole block rows, so each
+  block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
+  type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
+- The run uploads the tiles in batches of 64. The manifest names each source that the key reads
+  at the date of the version, with the [digest](#keys) of the pixel SHA-256 of the tiles.
 
 #### `wiki`
 
@@ -2383,13 +2393,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Fetch": {
       "additionalProperties": false,
       "properties": {
-        "from": {
-          "description": "Only for `osm`: the source whose version is the base day, `from=`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "kind": {
           "$ref": "#/$defs/FetchKind"
         },
@@ -2410,7 +2413,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "enum": [
             "http",
-            "osm",
             "geofabrik",
             "glo30",
             "dtm",
@@ -4895,6 +4897,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "description": "By target: its policy, and the state of each request that its serving release reads.",
           "type": "object"
+        },
+        "use": {
+          "description": "What `used_by` reads the source for, in one line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used_by": {
+          "description": "What reads the source: the products `device` and `planner`, or the `search` and `trailview`\nlayers of `planner`. `tools/check_data_sources.py` checks the names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "version": {
           "$ref": "#/$defs/VersionScheme"

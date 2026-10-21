@@ -527,12 +527,12 @@ fn make(
         sources: &sources,
         target: (name, target),
     };
-    let (files, inputs, uploaded) = {
+    let (files, inputs, uploaded, peak_rss_bytes) = {
         let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
         crate::store::write_atomic(&job.state.join("plan.json"), &serde_json::to_vec(&made).expect("plan serializes"))?;
         job.plan = made;
         producer.prepare(&mut job).map_err(|e| Code::RunFailed.error(format!("{id}@{version}: {e}")))?;
-        (job.files().cloned().collect::<Vec<_>>(), job.reads(), job.uploaded)
+        (job.files().cloned().collect::<Vec<_>>(), job.reads(), job.uploaded, job.peak_rss_bytes())
     };
     if files.is_empty() {
         return Err(Code::RunFailed.error(format!("{id}@{version}: the producer made no file; nothing is published")));
@@ -551,7 +551,7 @@ fn make(
         attribution: source.attribution.clone(),
         machine: crate::machine(),
         time: crate::date::timestamp(crate::date::now()),
-        cost: prepared::Cost { wall_ms: start.elapsed().as_millis() as u64, peak_rss_bytes: crate::engine::peak_rss() },
+        cost: prepared::Cost { wall_ms: start.elapsed().as_millis() as u64, peak_rss_bytes },
     };
     let listed = prepared::complete(target, &manifest)?;
     prepared::forget(context.store, name, id, version)?;

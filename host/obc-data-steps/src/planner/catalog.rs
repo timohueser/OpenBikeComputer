@@ -73,11 +73,12 @@ pub fn named<'a>(
 
 /// The data layers of a release, as `DATA_LAYERS` of `tools/planner_runtime.py`, that `layers` of the
 /// catalogue lists where the release has their TileJSON.
-const DATA_LAYERS: [&str; 12] = [
+const DATA_LAYERS: [&str; 13] = [
     "snow",
     "climate",
     "sun",
     "trailview-features",
+    "trailview-canopy",
     "trailview-material",
     "trailview-lithology",
     "trailview-region",
