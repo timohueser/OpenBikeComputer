@@ -65,6 +65,24 @@ class Rivers(unittest.TestCase):
         self.assertEqual(a[-1], c[0])
         self.assertEqual(b[-1], c[0])
 
+    def test_a_loop_of_channels_is_flat_and_nothing_rises_out_of_it_in_any_order(self):
+        # A loop P → Q → P around an island, with Q its low point, and an outflow from Q that OSM draws
+        # up a slope too gentle to turn.
+        terrain = Terrain(lambda e, s: 1000 - 0.01 * np.minimum(e, 400) + 0.01 * np.maximum(e - 400, 0) + 0 * s)
+        ways = {"there": [at(0, 0), at(200, 50), at(400, 0)], "back": [at(400, 0), at(200, -50), at(0, 0)],
+                "out": [at(400, 0), at(600, 0), at(800, 0)]}
+        solved = []
+        for order in (["out", "there", "back"], ["there", "back", "out"]):
+            heights = water.solve([("river", {"waterway": "river"}, [(False, list(ways[name]), None)]) for name in order], terrain)[0]
+            solved.append({name: z for name, (z,) in zip(order, heights)})
+        self.assertEqual(solved[0], solved[1])
+        z = solved[0]
+        self.assertTrue(all(falls(v) for v in z.values()))
+        self.assertEqual(z["there"][-1], z["back"][0])
+        self.assertEqual(z["back"][-1], z["there"][0])
+        self.assertLessEqual(z["out"][0], z["there"][-1])
+        self.assertAlmostEqual(z["there"][0], 996.0, delta=0.1)
+
     def test_a_fall_keeps_its_step_and_the_pools_above_and_below_stay_flat(self):
         # Two flat pools, 10 m apart, with a fall between them at 500 m.
         step = Terrain(lambda e, s: np.where(e < 500, 1010.0, 1000.0) + 0 * s)

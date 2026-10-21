@@ -112,7 +112,8 @@ bake turns a way whose terrain rises by more than 5 m from end to end. The level
 rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m) across the line, every
 5 m, with a fall of at least 0.05 % in a pool, smoothed over ±25 m. The smoothing does not cross a
 `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a level never
-rises through a junction, and the waterways at a junction have one level there. A point in a lake, or
+rises through a junction, and the waterways at a junction have one level there. Waterways that flow
+in a loop are flat at the lowest level of the loop. A point in a lake, or
 within 2 m of its shore, holds the lake's level. A `river` without a `width` tag that lies inside
 `river-area` polygons for a third of its length or more gets the tag: twice the median distance from
 its line to their edges.

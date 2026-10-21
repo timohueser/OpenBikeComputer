@@ -3,6 +3,7 @@ the rivers and streams as one network whose levels never rise downstream. specs/
 says what the levels promise."""
 
 import math
+import re
 
 import numpy as np
 
@@ -178,10 +179,11 @@ def ring_points(rings, step_m, offset_m):
     return p + sign * normal * step
 
 
-def lake_level(tags, rings, terrain):
+def lake_level(tags, parts, terrain):
     """The level of a lake: the median of its interior where it is flat; else the SHORE_QUANTILE of its
     shore, INSET_M inside. A pond takes its lowest shore, a reservoir its shore at the outline, the full
     level. An `ele` tag within ELE_M wins. NaN where the terrain knows none of it."""
+    rings = [points for _, points, *_ in parts]
     with np.errstate(all="ignore"):
         shore = terrain.heights(*ring_points(rings, STEP_M, INSET_M).T)
         if tags.get("water") == "pond":
@@ -190,7 +192,7 @@ def lake_level(tags, rings, terrain):
             outline = terrain.heights(*ring_points(rings, STEP_M, 0.0).T)
             level = np.nanmedian(outline) if np.isfinite(outline).any() else math.nan
         else:
-            h = interior(rings, terrain)
+            h = interior(parts, terrain)
             h = h[np.isfinite(h)]
             median = np.median(h) if h.size else math.nan
             if h.size and np.mean(np.abs(h - median) <= FLAT_M) >= FLAT_SHARE:
@@ -203,12 +205,14 @@ def lake_level(tags, rings, terrain):
     return float(ele if abs(ele - level) <= ELE_M else level)
 
 
-def interior(rings, terrain):
-    """The terrain on a grid inside the rings, at the stored resolution or LAKE_POINTS points at most."""
+def interior(parts, terrain):
+    """The terrain on a grid inside the rings of the parts (outer, points), at the stored resolution or
+    LAKE_POINTS points at most."""
+    rings = [points for _, points, *_ in parts]
     x0, y0, x1, y1 = box(rings)
-    area = sum(abs(np.sum(r[:, 0] * np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) * r[:, 1])) / 2
-               for r in (np.asarray(ring, np.float64) for ring in rings))
-    step = max(1 / ((1 << terrain.top) * TILE), math.sqrt(area / LAKE_POINTS))
+    area = sum((1 if outer else -1) * abs(np.sum(r[:, 0] * np.roll(r[:, 1], -1) - np.roll(r[:, 0], -1) * r[:, 1])) / 2
+               for outer, r in ((outer, np.asarray(points, np.float64)) for outer, points, *_ in parts))
+    step = max(1 / ((1 << terrain.top) * TILE), math.sqrt(max(area, 0.0) / LAKE_POINTS))
     xs, ys = np.arange(x0 + step / 2, x1, step), np.arange(y0 + step / 2, y1, step)
     gx, gy = np.meshgrid(xs, ys)
     at = contains(rings, gx, gy) if xs.size and ys.size else np.zeros((0, 0), bool)
@@ -238,7 +242,7 @@ def solve(features, terrain):
     for index, (kind, tags, parts) in enumerate(features):
         if kind in LAKES:
             rings = [points for _, points, *_ in parts]
-            lakes.append((index, rings, box(rings), lake_level(tags, rings, terrain)))
+            lakes.append((index, rings, box(rings), lake_level(tags, parts, terrain)))
     areas = [[points for _, points, *_ in parts] for kind, _, parts in features if kind in AREAS]
     area_boxes = [box(rings) for rings in areas]
     marks = np.array([point for kind, _, parts in features if kind in MARKS for _, points, *_ in parts for point in points]
@@ -283,10 +287,9 @@ def solve(features, terrain):
 
 
 def number(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return math.nan
+    """The leading number of a tag, as JavaScript's parseFloat reads it: "8 m" is 8. NaN without one."""
+    match = re.match(r"\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", value or "")
+    return float(match.group()) if match else math.nan
 
 
 def river_area_half(ways, areas, area_boxes):
@@ -311,6 +314,8 @@ def pin(ways, boxes, lakes):
     for _, rings, bounds, level in lakes:
         if not math.isfinite(level):
             continue
+        margin = SHORE_M / metres(bounds[1])
+        bounds = (bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin)
         for i in overlapping(boxes, bounds):
             way = ways[i]
             near = near_box(way.xy, bounds)
@@ -325,7 +330,8 @@ def pin(ways, boxes, lakes):
 def network(ways, marks):
     """The levels of every sample of the ways. The ways split into reaches at the vertices that they
     share; the reaches are solved downstream in turn, each held under the levels that flow into its
-    start, and all reaches at a junction then take one level there."""
+    start, and all reaches at a junction then take one level there. Levels that never rise round a loop
+    of reaches are equal, so the reaches that flow into each other take the lowest level of them all."""
     counts = {}
     for way in ways:
         for point in way.points:
@@ -338,35 +344,68 @@ def network(ways, marks):
             junctions.setdefault(way.points[a], ([], []))[1].append(len(reaches) - 1)
             junctions.setdefault(way.points[b], ([], []))[0].append(len(reaches) - 1)
     levels = {id(way): np.full(len(way.xy), np.nan) for way in ways}
-    waiting = [len(junctions[start][0]) for *_, start, _ in reaches]
-    ready, done, ends = [r for r, count in enumerate(waiting) if count == 0], [False] * len(reaches), {}
-    while not all(done):
-        # A loop of channels has no reach without one upstream of it: one of them goes as it comes.
-        r = ready.pop() if ready else done.index(False)
-        if done[r]:
-            continue
-        done[r] = True
-        way, a, b, start, end = reaches[r]
-        z = reach_levels(way, a, b, min(ends.get(start, [math.inf])), marks)
-        levels[id(way)][a:b + 1] = z
-        ends.setdefault(end, []).append(z[-1])
-        for after in junctions[end][1]:
-            waiting[after] -= 1
-            if waiting[after] == 0:
-                ready.append(after)
-    # One level at a junction: the highest start that flows out of it, which lies below every level
-    # that flows into it; where nothing flows out, the lowest level that flows in.
+    ends = {}
+    after = [junctions[end][1] for *_, end in reaches]
+    for loop in reversed(components(after)):
+        cap = min((v for r in loop for v in ends.get(reaches[r][3], [])), default=math.inf)
+        z = {r: reach_levels(reaches[r][0], *reaches[r][1:3], cap, marks) for r in loop}
+        if len(loop) > 1 or loop[0] in after[loop[0]]:
+            known = np.concatenate(list(z.values()))
+            known = known[np.isfinite(known)]
+            z = {r: np.full_like(v, known.min() if known.size else math.nan) for r, v in z.items()}
+        for r, v in z.items():
+            way, a, b, _, end = reaches[r]
+            levels[id(way)][a:b + 1] = v
+            if math.isfinite(v[-1]):
+                ends.setdefault(end, []).append(v[-1])
+    # One level at a junction: the highest start that flows out of it, held under every level that
+    # flows into it; where nothing flows out, the lowest level that flows in.
     for into, out in junctions.values():
-        starts = [levels[id(reaches[r][0])][reaches[r][1]] for r in out]
-        known = [v for v in starts if math.isfinite(v)]
-        level = max(known) if known else min((levels[id(reaches[r][0])][reaches[r][2]] for r in into), default=math.nan)
-        if not math.isfinite(level):
+        ins = [v for r in into if math.isfinite(v := levels[id(reaches[r][0])][reaches[r][2]])]
+        starts = [v for r in out if math.isfinite(v := levels[id(reaches[r][0])][reaches[r][1]])]
+        if not ins and not starts:
             continue
+        level = min([max(starts, default=math.inf), *ins])
         for r in into:
             levels[id(reaches[r][0])][reaches[r][2]] = min(levels[id(reaches[r][0])][reaches[r][2]], level)
         for r in out:
             levels[id(reaches[r][0])][reaches[r][1]] = level
     return levels
+
+
+def components(after):
+    """The strongly connected components of the graph whose node r leads to the nodes after[r], each
+    after every component that it leads to (Tarjan)."""
+    index, low, stack, on, out = {}, {}, [], set(), []
+    for root in range(len(after)):
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on.add(root)
+        work = [(root, iter(after[root]))]
+        while work:
+            node, rest = work[-1]
+            for next_ in rest:
+                if next_ not in index:
+                    index[next_] = low[next_] = len(index)
+                    stack.append(next_)
+                    on.add(next_)
+                    work.append((next_, iter(after[next_])))
+                    break
+                if next_ in on:
+                    low[node] = min(low[node], index[next_])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[node])
+                if low[node] == index[node]:
+                    component = []
+                    while not component or component[-1] != node:
+                        component.append(stack.pop())
+                        on.discard(component[-1])
+                    out.append(component)
+    return out
 
 
 def reach_levels(way, a, b, cap, marks):
