@@ -145,8 +145,9 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
     const pick = (raster: Raster | undefined) => (raster ? nearest(raster, z, x, y) : undefined);
     const lithology = pick(input.lithology), region = pick(input.region);
     const regionAt = (t: number) => {
+        // `shares` has one entry per region of the rules: a code outside them is no data.
         const r = region ? input.region!.data[region[t] * input.region!.channels] : NO_REGION;
-        return r === NO_REGION ? input.world : r;
+        return r === NO_REGION || r >= input.date.shares.length ? input.world : r;
     };
     for (let t = 0; t < n; t++) {
         const byte = material.data[t * material.channels];
