@@ -4,6 +4,7 @@ import { VFOV } from '../frame/camera';
 import { CURVATURE, EARTH_RADIUS, tileLonLat, type Frame } from '../frame/frame';
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
+import { CLIP_DISTANCES } from '../gpu/include';
 import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
@@ -215,7 +216,7 @@ export class Terrain {
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
 
-        const swap: Record<string, string> = device.features.has('clip-distances') ? { 'terrain/unknown.wgsl': 'terrain/unknown-clip.wgsl' } : {};
+        const swap = device.features.has('clip-distances') ? CLIP_DISTANCES : {};
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
         const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });

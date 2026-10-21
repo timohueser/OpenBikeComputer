@@ -44,8 +44,6 @@ const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
 const MARGIN: f32 = 1e-3;
 const STORED: u32 = 0x80000000u;
-// The float32 bits of an unknown height in the output of the synthesis, before its 16-bit codes.
-const UNKNOWN32: u32 = 0xffffffffu;
 const UNKNOWN16: u32 = 0xffffu;
 // A height that no page knows. Never NaN: shader compilers may assume that there is none.
 const NONE: f32 = -1e30;

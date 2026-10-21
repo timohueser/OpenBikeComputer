@@ -41,9 +41,8 @@ const browser = await chromium.launch({
 });
 /**
  * Keeps the GPU at its high clock: macOS lowers the clock while a frame leaves the GPU time to spare, so
- * a pass then measures much longer than its work. Before each submit of the
- * engine, about 5 ms of compute writes the node buffer without a change, so the terrain pass waits for
- * it and never overlaps it. It reaches into the engine, so it lives here and not in the engine.
+ * a pass then measures much longer than its work. Before each submit of the engine, a compute load
+ * writes the node buffer without a change, so the terrain pass waits for it and never overlaps it. It reaches into the engine, so it lives here and not in the engine.
  */
 function heat() {
     const device = window.trailView.gpuState.gpu.device, nodes = window.trailView.terrain.resources.nodes;

@@ -22,3 +22,6 @@ function normal(path: string): string {
     }
     return parts.join('/');
 }
+
+/** The includes that a device with `clip-distances` reads in place of the default ones. */
+export const CLIP_DISTANCES: Record<string, string> = { 'terrain/unknown.wgsl': 'terrain/unknown-clip.wgsl' };
