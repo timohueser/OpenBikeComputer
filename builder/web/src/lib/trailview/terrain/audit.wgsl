@@ -16,7 +16,7 @@ struct Sample {
     // Metres to the nearest junction, and its widest half-width.
     junction: f32,
     junction_half: f32,
-    // The other edge of a cross-fall pair, and the road height there.
+    // The other edge of a cross-fall pair, and the road height there; for a river, its grade.
     other: vec2i,
     other_expected: f32,
     // The level of the node that the sample comes from: its feature tile has the sample's shapes.
@@ -58,7 +58,7 @@ const FOUND_MAX: u32 = 64u;
 // Cross-fall on a carriageway, as the epic sets it, and a kink of the grade across one mesh cell: the
 // mesh draws a straight line between its vertices, 4 texels apart, so a bend or a change of grade of
 // the profile between them is lost. A road height may leave its profile by the core tolerance and the
-// kink, and a river level changes along it in the same way.
+// kink, and a river level by its grade, which the samples carry.
 const CROSS_FALL_MAX: f32 = 0.05;
 const ROAD_KINK: f32 = 0.03;
 // The float32 rounding of a height of some 1000 m, and of the mesh position about the eye.
@@ -192,7 +192,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     if (q.half > 0.0 && (!river_shows(q.half, level) || !river_shows(q.half, coarse))) {
         return;
     }
-    let along = select(0.0, kink, q.half > 0.0);
+    let along = select(0.0, max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide, q.half > 0.0);
     if (q.kind == IN_WATER && q.shore >= reach) {
         check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
     }

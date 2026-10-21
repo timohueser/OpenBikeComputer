@@ -138,20 +138,25 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         const d = Math.min(...near.map(({ rings }) => shoreDistance(rings, px, py))) * unit;
         if (d < SIDE_TEXELS * texel) push(px, py, SHORE_SIDE, 0, 0, near.some(({ rings }) => insideRings(rings, px, py)) ? -d : d);
     }
-    // Rivers: the middle of the river, and points across it where its bank band begins.
+    // Rivers: the middle of the river, and points across it where its bank band begins. The level
+    // may leave the mesh by the steepest grade of the segment and its neighbours across a cell.
+    const grade = (line: Line, w: number) => {
+        const [ax, ay, bx, by] = line.xy.slice(2 * w, 2 * w + 4);
+        return w < 0 || w + 1 >= line.z.length ? 0 : Math.abs(line.z[w + 1] - line.z[w]) / (Math.hypot(bx - ax, by - ay) * unit || 1);
+    };
     for (const line of rivers) {
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), length = Math.hypot(bx - ax, by - ay);
             if (!length) continue;
-            const across = [-(by - ay) / length, (bx - ax) / length], count = Math.ceil(length / step);
+            const across = [-(by - ay) / length, (bx - ax) / length], count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
             for (let i = 0; i < count; i++) {
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
                 if (!inNode(cx, cy) || Number.isNaN(z)) continue;
-                push(cx, cy, IN_WATER, z, line.h, line.h);
+                push(cx, cy, IN_WATER, z, line.h, line.h, Infinity, 0, [0, 0], steepest);
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
                     const d = line.h + BANK_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
                     const level = roadHeight(line, [x, y], 1.5 * d / unit);
-                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y)) push(x, y, ON_BANK, level, line.h, d - line.h);
+                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y)) push(x, y, ON_BANK, level, line.h, d - line.h, Infinity, 0, [0, 0], steepest);
                 }
             }
         }

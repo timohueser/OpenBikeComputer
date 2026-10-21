@@ -19,8 +19,8 @@ import { Water } from './water';
  * MiB. The feature masks take their share of the synthesized budget, as the epic has them.
  */
 const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
-/** Feature masks of near pages, 8 bytes per texel. */
-const MASKS = 64, MASK_BYTES = PAGE * PAGE * MASKS * 8;
+/** Feature masks of the finest near pages, 8 bytes per texel: 12 MiB of the synthesized budget. */
+const MASKS = 24, MASK_BYTES = PAGE * PAGE * MASKS * 8;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
