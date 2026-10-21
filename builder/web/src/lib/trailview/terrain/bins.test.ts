@@ -5,7 +5,7 @@ import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, type Line, type Profile } from './bins';
+import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -51,6 +51,7 @@ describe('the stamp data of a node', () => {
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
+        expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
     });
@@ -159,7 +160,7 @@ describe('a rounded line', () => {
 });
 
 describe('the plane of a junction', () => {
-    it('tilts a side road across its mouth to the surface of the through road', () => {
+    it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
         // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
         const tile = { level: 14, x: 8574, y: 5778 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * 2 ** 3);
         const metres = 2 ** (17 - tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
@@ -173,7 +174,9 @@ describe('the plane of a junction', () => {
         // 2 m east of the side road's middle and 1 m north of the junction, inside the through road.
         const p: [number, number] = [side.xy[0] + 2 / unit, side.xy[1] - 1 / unit];
         expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2 + 0.1 / (20 * metres), 2);
-        expect(side.plane!.slice(-2)).toEqual([0, 0]);
+        // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
+        const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
+        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
     });
 });
 

@@ -2,7 +2,7 @@
 // in each lake and river and on their banks; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { crossSlopes, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
+import { crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -30,9 +30,9 @@ export function roadHeight(line: Line, p: [number, number], reach: number, unit:
         const da = ((p[0] - ax) * mx + (p[1] - ay) * my) / Math.max(dx * mx + dy * my, 0.1), db = ((bx - p[0]) * nx + (by - p[1]) * ny) / Math.max(dx * nx + dy * ny, 0.1);
         const cross = ((bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)) / (length || 1), lateral = Math.abs(cross);
         if (da >= 0 && db >= 0 && lateral <= best) {
-            const t = da / Math.max(da + db, 1e-6), [ca, cb] = crossSlopes(line, v);
+            const t = da / Math.max(da + db, 1e-6);
             best = lateral;
-            z = line.z[v] + (line.z[v + 1] - line.z[v]) * t + cross * unit * (ca + (cb - ca) * t);
+            z = line.z[v] + (line.z[v + 1] - line.z[v]) * t + cross * unit * crossSlope(line, v, da * unit, db * unit);
         }
     }
     return z;
