@@ -59,10 +59,6 @@ builds the variant that `?lab=` selects. The HUD has a menu per lab; a change lo
 at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
 pages with an offset and a scale per page.
 
-| Lab | Variants |
-| --- | --- |
-| `stamps` | `runtime`, `none`: the stamps on every page as it loads; `none` draws neither stamps nor water |
-
 ## Shots and flights
 
 From `builder/web/tests/browser`:

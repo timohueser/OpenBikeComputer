@@ -6,7 +6,6 @@ import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../fra
 import type { Gpu } from '../gpu/device';
 import { CLIP_DISTANCES } from '../gpu/include';
 import { wgsl } from '../gpu/wgsl';
-import type { Labs } from '../labs';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { featureTile, NEAR, profileTable } from './bins';
@@ -174,14 +173,14 @@ export class Terrain {
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
     private floor = 0;
 
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, labs: Labs, private readonly changed: () => void) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // 16-bit heights and rg8snorm normals.
         const bytes = PAGE * PAGE * 4;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
-        this.stamps = new Stamps(labs.stamps === 'none' ? undefined : features, changed);
+        this.stamps = new Stamps(features, changed);
         this.water = new Water(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }

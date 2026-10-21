@@ -2,13 +2,7 @@
  * The variant registry. Each lab lists its variants, the default first. `?lab=name:variant` selects
  * a variant; `?lab=a:x,b:y` or a repeated `lab` selects several.
  */
-export const LABS: Record<string, readonly string[]> = {
-    /**
-     * The feature stamps and the water: stamps on every page at every level as it loads, or neither
-     * stamps nor water, as L1 draws the terrain.
-     */
-    stamps: ['runtime', 'none'],
-};
+export const LABS: Record<string, readonly string[]> = {};
 
 export type Labs = Record<string, string>;
 
