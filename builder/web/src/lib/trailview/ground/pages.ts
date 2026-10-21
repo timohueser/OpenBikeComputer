@@ -10,11 +10,17 @@ import { dayOfYear, mosaicsAt } from './rules';
 const ARRIVALS = 8, LOADS = 4, REFRESHES = 8;
 /** Levels that every view keeps: the ground under every other page while its own loads. */
 const COARSE = 8;
+/** The cover of a drawn page lies this many levels above it, never coarser than the coloured levels: what a short pool draws in its place. */
+const COVER = 2;
+/** The distance factor of a resident page in the order of the pool. */
+const STAY = 0.7;
 /** The look at the eye blends the regions at the nodes of this level about it (0.84 km at 47°), with a tent weight of this reach in nodes. */
 const LOOK_LEVEL = 15, LOOK_REACH = 3;
 
 /** The ground pages of material tile z/x/y on a date; null where it has no ground. */
 export interface GroundTiles {
+    /** The coarsest level whose pages carry the satellite colour. */
+    readonly coloured?: number;
     pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<(GroundPage | null)[]>;
 }
 
@@ -40,10 +46,12 @@ export interface GroundWork {
 
 /**
  * The ground pages without the GPU: per node of the levels with ground tiles, the ground on the date
- * in a pool of `capacity` slots. The coarse levels, then the drawn nodes and their morph parents
- * nearest first, then the rest of the selection take the slots, so the pages that a full pool leaves
- * out are the farthest and the least needed. A node finer than the ground draws the ground of its
- * ancestor; a tile that fails stays out for the page's life, as an absent one.
+ * in a pool of `capacity` slots. The coarse levels, then the cover of the drawn nodes, then the drawn
+ * nodes and their morph parents nearest first, then the rest of the selection take the slots, so a
+ * full pool leaves out the farthest and least needed pages, and their cover draws in their place. A
+ * page takes its slot when its content arrives, so the page it replaces draws until then. A node
+ * finer than the ground draws the ground of its ancestor; a tile that fails stays out for the page's
+ * life, as an absent one.
  */
 export class GroundPages {
     wanted = 0;
@@ -66,6 +74,7 @@ export class GroundPages {
     /** Wanted pages without the content of the date. */
     private missing = 0;
     private dirty = true;
+    private kept = new Set<string>();
     private origins: [number, number][] = [];
 
     constructor(
@@ -106,14 +115,20 @@ export class GroundPages {
         const work: GroundWork = { uploads: [], refreshes: [] };
         if (!this.source) return work;
         const anchor = anchorAt(...eye), ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
-        const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey);
+        // A resident page counts as nearer, so a page at the edge of a full pool does not leave and come back as the eye moves.
+        const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) * (this.pages.has(key(node)) ? STAY : 1);
         const keys = new Set(wanted.map(key));
         const near = drawn.flatMap(node => {
             const parent = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 };
             return keys.has(key(parent)) ? [node, parent] : [node];
         }).map(this.ground).sort((a, b) => far(a) - far(b));
+        const coloured = this.source.coloured ?? COARSEST;
+        const cover = drawn.map(this.ground).map(node => {
+            const shift = node.level - Math.max(node.level - COVER, Math.min(coloured, node.level));
+            return { level: node.level - shift, x: node.x >> shift, y: node.y >> shift };
+        }).sort((a, b) => far(a) - far(b));
         const order = new Map<string, Node>();
-        for (const node of [...wanted.filter(n => n.level <= COARSE).map(this.ground), ...near, ...wanted.map(this.ground)]) {
+        for (const node of [...wanted.filter(n => n.level <= COARSE).map(this.ground), ...cover, ...near, ...wanted.map(this.ground)]) {
             if (!order.has(key(node)) && !this.absent.has(key(node))) order.set(key(node), node);
         }
         const kept = [...order.values()].slice(0, this.capacity);
@@ -121,13 +136,11 @@ export class GroundPages {
         this.shortage = order.size - kept.length;
         this.missing = 0;
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
+        this.kept = new Set(kept.map(key));
         for (const node of kept) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
-        }
-        for (const node of kept) {
-            const page = this.pages.get(key(node)) ?? this.allocate(node);
-            if (page.date !== this.date) {
+            if (page?.date !== this.date) {
                 this.missing++;
                 this.load(node);
             }
@@ -135,8 +148,9 @@ export class GroundPages {
         while (work.uploads.length < ARRIVALS && this.arrivals.length) {
             const { node, page: data, date } = this.arrivals.shift()!;
             this.settle(tileOf(node, date));
-            const page = this.pages.get(key(node));
-            if (!page || date !== this.date) continue;
+            if (date !== this.date || !this.kept.has(key(node))) continue;
+            const page = this.pages.get(key(node)) ?? this.allocate(node);
+            if (!page) continue;
             page.date = date;
             page.regions = Uint8Array.from({ length: PAGE * PAGE }, (_, i) => data.cells[4 * i + 2]);
             this.refresh.delete(page);
@@ -238,16 +252,17 @@ export class GroundPages {
         else this.loading.delete(name);
     }
 
-    /** A free slot, or the one that the frames used longest ago: `update` keeps every page it needs from this. */
-    private allocate(node: Node): Slot {
+    /** A free slot, or the one that the frames used longest ago; none when this frame keeps them all. */
+    private allocate(node: Node): Slot | undefined {
         let slot = this.free.pop();
         if (slot === undefined) {
             let oldest: Slot | undefined;
             for (const page of this.pages.values()) if (page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
-            this.pages.delete(key(oldest!.node));
-            this.refresh.delete(oldest!);
-            if (oldest!.date >= 0) this.dirty = true;
-            slot = oldest!.slot;
+            if (!oldest) return undefined;
+            this.pages.delete(key(oldest.node));
+            this.refresh.delete(oldest);
+            this.dirty = true;
+            slot = oldest.slot;
         }
         const page: Slot = { node, slot, used: this.frame, date: -1 };
         this.pages.set(key(node), page);

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
-import type { Node } from '../terrain/lod';
+import { key, type Node } from '../terrain/lod';
 import { GroundPages, type GroundTiles } from './pages';
 
 const page = (): GroundPage => ({ cells: new Uint8Array(4 * PAGE * PAGE), colour: new Uint8Array(4 * PAGE * PAGE), snow: new Uint8Array(4 * PAGE * PAGE) });
@@ -9,11 +9,11 @@ const page = (): GroundPage => ({ cells: new Uint8Array(4 * PAGE * PAGE), colour
 const EYE: [number, number] = [8.525390625, 46.890231573593994];
 const row = (x0: number, n: number): Node[] => Array.from({ length: n }, (_, i) => ({ level: 14, x: x0 + i, y: 5770 }));
 
-/** Material tiles that answer with four pages, except `failing`; the tiles asked for. */
-function tiles(failing?: string): GroundTiles & { asked: string[] } {
+/** Material tiles that answer with four pages, except `failing`, coloured from level `coloured`; the tiles asked for. */
+function tiles(failing?: string, coloured = 14): GroundTiles & { asked: string[] } {
     const asked: string[] = [];
     return {
-        asked,
+        asked, coloured,
         async pages(z, x, y) {
             asked.push(`${z}/${x}/${y}`);
             if (`${z}/${x}/${y}` === failing) throw new Error('Tile answered 500.');
@@ -52,6 +52,16 @@ describe('the ground pages', () => {
         await settle(pages, row(8578, 6), [...row(8578, 6), ...row(8600, 4)]);
         expect(resident(pages)).toEqual([8578, 8579, 8580, 8581]);
         expect(pages.shortage).toBe(6);
+    });
+
+    it('keep the coloured cover of the drawn pages first, and draw a replaced page until its replacement arrives', async () => {
+        const pages = new GroundPages(tiles(undefined, 12), 4, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        await settle(pages, row(8578, 6));
+        const keys = () => [...pages.pages.values()].filter(slot => slot.date >= 0).map(slot => key(slot.node)).sort();
+        expect(keys()).toEqual(['12/2144/1442', '12/2145/1442', '14/8579/5770', '14/8580/5770']);
+        pages.update(row(8574, 6), row(8574, 6), [], [], EYE);
+        expect(keys()).toEqual(['12/2144/1442', '12/2145/1442', '14/8579/5770', '14/8580/5770']);
     });
 
     it('keep the openness refreshes that a frame has no room for', async () => {

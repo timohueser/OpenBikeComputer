@@ -132,7 +132,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
-  them from a coarser page; the HUD counts them as short.
+  them from their cover, two levels coarser and never without the satellite colour; the HUD counts
+  them as short.
 - A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date
   and the snow are part of a page. The tile bodies of a view are more than the 96 MiB that the
   ground keeps, so most of them come again.

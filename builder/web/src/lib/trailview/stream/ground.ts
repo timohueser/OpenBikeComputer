@@ -70,6 +70,11 @@ export class GroundSource {
         return [...new Set(Object.values(this.sources).map(source => String(source.metadata.attribution ?? '')).filter(Boolean))];
     }
 
+    /** The coarsest level whose pages carry the satellite colour. */
+    get coloured(): number {
+        return (this.sources.q1?.minZoom ?? Infinity) + 1;
+    }
+
     /** The colour variant of the release, from the colour metadata. */
     get colour(): string {
         return String(this.sources.q1?.metadata.variant ?? 'none');
