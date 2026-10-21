@@ -79,7 +79,8 @@ npm run test:trailview                     # the smoke
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
-pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
+pages over the flights of `flights.json`. The `ground` pass is the compute of the ground pages that
+arrive; its times are of the frames that have it. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:rings`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with

@@ -252,8 +252,8 @@ export class Ground {
         this.dirty = false;
     }
 
-    /** Encodes the openness and the cache of the pages that arrived or whose heights changed. */
-    encode(encoder: GPUCommandEncoder): void {
+    /** Encodes the openness and the cache of the pages that arrived or whose heights changed, timed by `timing` when it runs. */
+    encode(encoder: GPUCommandEncoder, timing?: () => GPUComputePassTimestampWrites | undefined): void {
         const r = this.resources, jobs = this.jobs.splice(0);
         if (!r || !jobs.length || !this.surfaceGroup) return;
         const data = new ArrayBuffer(jobs.length * JOB_BYTES), ints = new Int32Array(data), floats = new Float32Array(data);
@@ -263,7 +263,7 @@ export class Ground {
             ints[8 * k + 5] = work;
         });
         r.gpu.device.queue.writeBuffer(r.jobs, 0, data);
-        const pass = encoder.beginComputePass({ label: 'ground' });
+        const pass = encoder.beginComputePass({ label: 'ground', timestampWrites: timing?.() });
         pass.setPipeline(r.compute);
         pass.setBindGroup(0, r.computeGroups[0]);
         pass.setBindGroup(1, this.surfaceGroup);

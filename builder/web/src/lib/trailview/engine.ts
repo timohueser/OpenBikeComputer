@@ -15,7 +15,7 @@ import { pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain'];
+const PASSES = ['terrain', 'ground'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -246,7 +246,7 @@ export class TrailView {
         }
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder);
-        this.groundLook.encode(encoder);
+        this.groundLook.encode(encoder, () => times.writes('ground'));
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store',
