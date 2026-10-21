@@ -67,8 +67,7 @@ pub(super) fn requests(
         .map(|key| {
             let read = serving.get(key).cloned();
             let observation = upstream::observe(store, http, source, &key.1, max_age, now);
-            let base = source.fetch.from.as_ref().and_then(|id| serving.get(&(id.clone(), key.1.clone())));
-            let status = sources::status(source, read.as_deref(), base.map(String::as_str), &observation.result, today);
+            let status = sources::status(source, read.as_deref(), &observation.result, today);
             RequestStatus {
                 params: key.1.clone(),
                 serving: read,

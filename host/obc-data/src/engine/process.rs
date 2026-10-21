@@ -1,6 +1,6 @@
 //! Running a step in a child process and measuring what it cost.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -99,7 +99,7 @@ pub fn run(root: &Path, run: &Run, request: &Request, stop: &AtomicBool) -> Resu
     }
     let start = Instant::now();
     let mut child = command.spawn().map_err(|e| format!("cannot start `{name}`: {e}"))?;
-    let errors = copy_errors(&mut child);
+    let errors = copy_lines(child.stderr.take(), "");
     let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
     // A step that does not read its request closes the pipe; its exit status tells the rest.
     let unwritten = match child.stdin.take().map(|mut stdin| stdin.write_all(&json)) {
@@ -122,26 +122,51 @@ fn this_binary() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("the program of `obc data`: {e}"))
 }
 
-/// Copy the standard error of `child`, which a command pipes, to that of this process on a thread.
-/// When the pipe closes, the receiver gets the last line that is not blank.
-pub fn copy_errors(child: &mut Child) -> Receiver<String> {
+/// Copy `pipe`, an output of a child that a command pipes, to the standard error of this process on
+/// a thread, each line that is not blank after `label` and a space. A carriage return ends a line
+/// too, so a line that the child writes over shows at once. When the pipe closes, the receiver gets
+/// the last line that is not blank.
+pub fn copy_lines(pipe: Option<impl Read + Send + 'static>, label: &str) -> Receiver<String> {
     let (send, receive) = mpsc::channel();
-    if let Some(errors) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let mut last = String::new();
-            for line in BufReader::new(errors).split(b'\n') {
-                let Ok(line) = line else { break };
-                let mut log = std::io::stderr().lock();
-                let _ = log.write_all(&line).and_then(|()| log.write_all(b"\n"));
-                let text = String::from_utf8_lossy(&line);
-                if !text.trim().is_empty() {
-                    last = text.trim().to_string();
-                }
+    let Some(pipe) = pipe else { return receive };
+    let label = if label.is_empty() { String::new() } else { format!("{label} ") };
+    std::thread::spawn(move || {
+        let (mut pipe, mut last) = (BufReader::new(pipe), String::new());
+        loop {
+            let mut line = segment(&mut pipe);
+            if line.is_empty() {
+                break;
             }
-            let _ = send.send(last);
-        });
-    }
+            let text = String::from_utf8_lossy(&line).trim().to_string();
+            if !text.is_empty() {
+                line = [label.as_bytes(), &line].concat();
+                last = text;
+            }
+            if !line.ends_with(b"\n") && !line.ends_with(b"\r") {
+                line.push(b'\n');
+            }
+            let _ = std::io::stderr().write_all(&line);
+        }
+        let _ = send.send(last);
+    });
     receive
+}
+
+/// The bytes of `pipe` up to and with the next line feed or carriage return; none at the end.
+fn segment(pipe: &mut impl BufRead) -> Vec<u8> {
+    let mut line = Vec::new();
+    while !line.ends_with(b"\n") && !line.ends_with(b"\r") {
+        let buffer = match pipe.fill_buf() {
+            Ok([]) => break,
+            Ok(buffer) => buffer,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let end = buffer.iter().position(|&byte| byte == b'\n' || byte == b'\r').map_or(buffer.len(), |at| at + 1);
+        line.extend_from_slice(&buffer[..end]);
+        pipe.consume(end);
+    }
+    line
 }
 
 /// Wait until the copy of `errors` ends, and give the error of the program `name` that ended
@@ -231,20 +256,20 @@ fn wait(mut child: Child, _: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Op
     Ok((child.wait().map_err(|e| format!("wait for the step: {e}"))?, None, None))
 }
 
-/// The peak resident bytes of this process, or of the largest child that it waited for, when that is
-/// more.
+/// The peak resident bytes of this process, or, when that is more, `at_once` times the peak of the
+/// largest child that it waited for: a bound for `at_once` children that run at the same time.
 #[cfg(unix)]
-pub fn peak_rss() -> Option<u64> {
+pub fn peak_rss(at_once: u64) -> Option<u64> {
     let peak = |who| {
         // SAFETY: rusage is plain data, and getrusage fills it.
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
         (unsafe { libc::getrusage(who, &mut usage) } == 0).then(|| measure(&usage).1)
     };
-    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN))
+    peak(libc::RUSAGE_SELF).max(peak(libc::RUSAGE_CHILDREN).map(|peak| peak * at_once))
 }
 
 #[cfg(not(unix))]
-pub fn peak_rss() -> Option<u64> {
+pub fn peak_rss(_: u64) -> Option<u64> {
     None
 }
 
@@ -268,12 +293,15 @@ mod tests {
     fn a_failed_program_names_the_last_line_that_it_wrote_to_standard_error() {
         let ended_by = |script: &str| {
             let mut child = Command::new("sh").args(["-c", script]).stderr(Stdio::piped()).spawn().unwrap();
-            let errors = copy_errors(&mut child);
+            let errors = copy_lines(child.stderr.take(), "");
             let status = child.wait().unwrap();
             ended("sh", status, errors).unwrap_err()
         };
         let failed = ended_by("echo working >&2; echo 'ValueError: boom' >&2; echo >&2; exit 3");
         assert_eq!(failed, "`sh` failed (exit status: 3): ValueError: boom");
+        // A carriage return ends a line, as a progress that writes over its line does.
+        let progress = ended_by("printf 'a.zip: 10%%\\ra.zip: 100%%\\r' >&2; exit 3");
+        assert_eq!(progress, "`sh` failed (exit status: 3): a.zip: 100%");
         let stopped = ended_by("echo 'a warning' >&2; kill -TERM $$");
         assert_eq!(stopped, "`sh` failed: signal: 15 (SIGTERM)");
     }

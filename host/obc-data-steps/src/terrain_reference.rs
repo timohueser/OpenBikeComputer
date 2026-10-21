@@ -18,9 +18,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::CellId;
 
 use crate::device::{box_poly, POLY};
-
-/// The tiles of one upload.
-const BATCH: usize = 64;
+use crate::prepared_tiles::{self, Tile};
 
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
@@ -88,53 +86,31 @@ impl Prepared for TerrainReference {
             let inside = scope_tiles(job, &scope)?;
             tiles.retain(|tile| inside.contains(tile));
         }
-        let marks = job.state.join("tiles");
-        fs::create_dir_all(&marks).map_err(|e| format!("{}: {e}", marks.display()))?;
-        let mut batch = Vec::new();
-        for tile in tiles {
-            let name = format!("{:04}-{:04}", tile.i, tile.j);
-            let (path, mean) =
-                (format!("16/{:04}/{:04}.tif", tile.i, tile.j), format!("mean/16/{:04}/{:04}.tif", tile.i, tile.j));
-            let (digests, none) = ([format!("{name}.mean.sha256"), format!("{name}.sha256")], format!("{name}.none"));
-            if job.done(&path) && job.done(&mean) || marks.join(&none).exists() {
-                continue;
-            }
-            let fetched = digests.iter().all(|digest| marks.join(digest).exists());
-            if !(fetched && job.work.join(&path).exists() && job.work.join(&mean).exists()) {
-                let mut command = (self.ingest)(job.root)?;
-                command.args(["fetch", key, "--tile", &name, "--work"]).arg(job.state.join("raw"));
-                job.program(command.arg("--out").arg(&job.work))?;
-                // The program writes the tiles and then their digests, the maximum last, or `.none`.
-                for mark in digests.iter().chain([&none]).filter(|mark| job.work.join(mark).exists()) {
-                    fs::rename(job.work.join(mark), marks.join(mark)).map_err(|e| format!("{mark}: {e}"))?;
-                }
-                if marks.join(&none).exists() {
-                    continue;
-                }
-                if !marks.join(&digests[1]).exists() {
-                    return Err(format!("`ingest.py fetch {key} --tile {name}` wrote neither a tile nor `.none`"));
-                }
-            }
-            batch.extend([path, mean]);
-            if batch.len() >= BATCH {
-                job.finish(&std::mem::take(&mut batch))?;
-            }
-        }
-        job.finish(&batch)?;
+        // The program writes the tiles and then their digests, the maximum last, or `.none`.
+        let tiles: Vec<Tile> = tiles
+            .into_iter()
+            .map(|tile| {
+                let (name, path) =
+                    (format!("{:04}-{:04}", tile.i, tile.j), format!("16/{:04}/{:04}.tif", tile.i, tile.j));
+                let files =
+                    vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
+                Tile { name, files }
+            })
+            .collect();
+        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+            let mut command = (self.ingest)(job.root)?;
+            // A folder per tile: `fetch` removes its `--work` at the end, and two tiles run at once.
+            command.args(["fetch", key, "--tile", name, "--work"]).arg(job.state.join("raw").join(name));
+            command.arg("--out").arg(&job.work);
+            Ok(command)
+        })?;
         // Each index names the tiles of its pool, each with the pixel digest of its mark.
-        let mut digests = BTreeMap::new();
-        for (pool, prefix, mark) in [("max", "", "sha256"), ("mean", "mean/", "mean.sha256")] {
-            let mut tiles = BTreeMap::new();
-            let files = job.files().map(|file| file.path.clone()).collect::<Vec<_>>();
-            for path in
-                files.into_iter().filter(|path| path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with("16/")))
-            {
-                let tile = path[prefix.len() + "16/".len()..].trim_end_matches(".tif").to_string();
-                let file = marks.join(format!("{}.{mark}", tile.replace('/', "-")));
-                let digest = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-                tiles.insert(tile, digest.trim().to_string());
-                digests.insert(path, digest.trim().to_string());
-            }
+        for (pool, prefix) in [("max", ""), ("mean", "mean/")] {
+            let tiles: BTreeMap<&str, &String> = digests
+                .iter()
+                .filter_map(|(path, digest)| Some((path.strip_prefix(prefix)?.strip_prefix("16/")?, digest)))
+                .map(|(tile, digest)| (tile.trim_end_matches(".tif"), digest))
+                .collect();
             let listed = job.state.join(format!("{pool}-digests.json"));
             obc_data::store::write_atomic(&listed, &serde_json::to_vec(&tiles).expect("digests serialize"))?;
             let mut command = (self.ingest)(job.root)?;
@@ -222,13 +198,14 @@ fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::tests::temp;
+    use crate::device::tests::{temp, Temp};
     use obc_data::engine::runs::Run;
     use obc_data::fetch::http::Http;
     use obc_data::prepared::Opening;
     use obc_data::sources::Registry;
     use obc_data::store::Store;
     use obc_data::target::Target;
+    use std::path::PathBuf;
 
     const SOURCES: &str = r#"
         [[source]]
@@ -242,17 +219,27 @@ mod tests {
         redistribute = true
     "#;
 
-    /// `ingest.py` as a script that logs each call to `calls`: a tile with a file `none-<tile>`
-    /// has no height, one with `fail-<tile>` fails, and `index-tiles` writes the digests that it
-    /// gets unless `fail-index` exists.
-    const INGEST: &str = r#"echo "$1 $4" >> calls
-case "$1" in
+    /// `ingest.py` as a script that logs each call to `calls`, and the `--work` of a fetch to
+    /// `works` once it holds a raw file there. A tile with a file
+    /// `none-<tile>` has no height, and one with `fail-<tile>` fails. One with `wait-<tile>` waits
+    /// until `works` has as many lines as that file says, and one with `hold-<tile>` runs until a
+    /// signal stops it. `index-tiles` writes the digests that it gets unless `fail-index` exists.
+    const INGEST: &str = r#"case "$1" in
 fetch)
+    echo "fetch $4" >> calls
+    # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
+    trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
+    mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works
+    if [ -e "wait-$4" ]; then
+        n=0; until [ "$(wc -l < works)" -ge "$(cat "wait-$4")" ]; do n=$((n + 1)); [ $n -gt 1000 ] && exit 2; sleep 0.01; done
+    fi
+    if [ -e "hold-$4" ]; then while :; do sleep 0.01; done; fi
     [ -e "fail-$4" ] && exit 1
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
 index-tiles)
+    echo "$1 $4" >> calls
     [ -e fail-index ] && exit 1
     cp "$8" "${10}" ;;
 esac
@@ -264,57 +251,119 @@ esac
         Ok(command)
     }
 
+    const ID: &str = "terrain-reference/xx";
+
+    /// A repository with [`INGEST`], a store and a target for `terrain-reference/xx@2026-10-01`.
+    struct Fixture {
+        temp: Temp,
+        sources: Vec<obc_data::sources::Source>,
+        store: Store,
+        target: Target,
+        /// The tiles of the extent, in the order of the prepare.
+        tiles: Vec<String>,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Fixture {
+            let temp = temp(name);
+            let root = temp.0.join("repository");
+            fs::create_dir_all(root.join("data")).unwrap();
+            fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
+            fs::write(root.join("ingest.sh"), INGEST).unwrap();
+            let sources = Registry::load(&root).unwrap().sources;
+            let tiles = extent_tiles(sources.iter().find(|source| source.id == ID).unwrap()).unwrap();
+            let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}-{:04}", tile.i, tile.j)).collect();
+            assert!(tiles.len() > 3, "{tiles:?}");
+            let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
+            Fixture { temp, sources, store, target, tiles }
+        }
+
+        fn root(&self) -> PathBuf {
+            self.temp.0.join("repository")
+        }
+
+        fn state(&self) -> PathBuf {
+            self.store.root().join("prepared/t/terrain-reference/xx/2026-10-01/state")
+        }
+
+        /// Write the file `<what>-<tile k>` that changes what [`INGEST`] does.
+        fn mark(&self, what: &str, k: usize, text: &str) {
+            fs::write(self.root().join(format!("{what}-{}", self.tiles[k])), text).unwrap();
+        }
+
+        /// A run of the prepare, and the calls of the script, sorted: two fetches run at once.
+        fn prepare(&self) -> (Result<(), String>, Vec<String>) {
+            let root = self.root();
+            let _ = fs::remove_file(root.join("calls"));
+            let (producer, http) = (TerrainReference { ingest: script }, Http::new());
+            let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
+            let opening = Opening {
+                root: &root,
+                store: &self.store,
+                http: &http,
+                sources: &self.sources,
+                target: ("t", &self.target),
+            };
+            let done = Job::open(opening, (ID, "2026-10-01"), None, &[], &mut run)
+                .and_then(|mut job| producer.prepare(&mut job));
+            let mut calls: Vec<String> =
+                fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(String::from).collect();
+            calls.sort();
+            (done, calls)
+        }
+
+        /// The calls of the fetches of tiles `k`, sorted.
+        fn fetches(&self, k: impl Iterator<Item = usize>) -> Vec<String> {
+            let mut calls: Vec<String> = k.map(|k| format!("fetch {}", self.tiles[k])).collect();
+            calls.sort();
+            calls
+        }
+
+        /// Whether `done` failed in the program of tile `k`, named with its progress.
+        fn failed_in(&self, done: Result<(), String>, k: usize) -> bool {
+            let label = format!("tile {}/{} {}: ", k + 1, self.tiles.len(), self.tiles[k]);
+            done.is_err_and(|e| e.starts_with(&label))
+        }
+    }
+
     #[test]
     fn a_resume_fetches_no_tile_that_it_has_and_the_index_holds_the_digest_of_each_tile() {
-        let temp = temp("terrain-reference");
-        let root = temp.0.join("repository");
-        fs::create_dir_all(root.join("data")).unwrap();
-        fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
-        fs::write(root.join("ingest.sh"), INGEST).unwrap();
-        let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
-        let sources = Registry::load(&root).unwrap().sources;
-        let id = "terrain-reference/xx";
-        let tiles: Vec<String> = extent_tiles(sources.iter().find(|source| source.id == id).unwrap())
-            .unwrap()
-            .iter()
-            .map(|tile| format!("{:04}-{:04}", tile.i, tile.j))
-            .collect();
-        assert!(tiles.len() > 3, "{tiles:?}");
-        let (producer, http) = (TerrainReference { ingest: script }, Http::new());
-        let prepare = || {
-            let _ = fs::remove_file(root.join("calls"));
-            let mut run = Run::create(&store, ["source", "prepare", id]).unwrap();
-            let opening =
-                Opening { root: &root, store: &store, http: &http, sources: &sources, target: ("t", &target) };
-            let done = Job::open(opening, (id, "2026-10-01"), None, &[], &mut run)
-                .and_then(|mut job| producer.prepare(&mut job));
-            let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
-            (done, calls.lines().map(String::from).collect::<Vec<_>>())
-        };
-        let fetches = |tiles: &[String]| tiles.iter().map(|tile| format!("fetch {tile}")).collect::<Vec<_>>();
+        let fixture = Fixture::new("terrain-reference");
+        let tiles = &fixture.tiles;
         let index = || vec!["index-tiles max".to_string(), "index-tiles mean".to_string()];
 
-        fs::write(root.join(format!("none-{}", tiles[0])), "").unwrap();
-        fs::write(root.join(format!("fail-{}", tiles[2])), "").unwrap();
-        let (done, calls) = prepare();
-        assert!(done.is_err());
-        assert_eq!(calls, fetches(&tiles[..3]));
+        let last = tiles.len() - 1;
+        // Tile 2 fails once tile 3 runs beside it, and the failure stops tile 3.
+        fixture.mark("none", 0, "");
+        fixture.mark("fail", 2, "");
+        fixture.mark("wait", 2, "4");
+        let (done, calls) = fixture.prepare();
+        assert!(fixture.failed_in(done, 2));
+        assert_eq!(calls, fixture.fetches(0..4));
 
-        // The tile in `work/` is uploaded with its digest, and no tile without a height is fetched.
-        fs::remove_file(root.join(format!("fail-{}", tiles[2]))).unwrap();
-        fs::write(root.join("fail-index"), "").unwrap();
-        let (done, calls) = prepare();
-        assert!(done.is_err());
-        assert_eq!(calls, [fetches(&tiles[2..]), index()[..1].to_vec()].concat());
+        // No tile without a height is fetched, and the progress counts each tile of the version.
+        for what in ["fail", "wait"] {
+            fs::remove_file(fixture.root().join(format!("{what}-{}", tiles[2]))).unwrap();
+        }
+        fixture.mark("fail", last, "");
+        let (done, calls) = fixture.prepare();
+        assert!(fixture.failed_in(done, last));
+        assert_eq!(calls, fixture.fetches(2..tiles.len()));
 
-        fs::remove_file(root.join("fail-index")).unwrap();
+        // The tiles in `work/` are uploaded with their digests.
+        fs::remove_file(fixture.root().join(format!("fail-{}", tiles[last]))).unwrap();
+        fs::write(fixture.root().join("fail-index"), "").unwrap();
+        let (done, calls) = fixture.prepare();
+        assert!(done.is_err());
+        assert_eq!(calls, [fixture.fetches(last..tiles.len()), index()[..1].to_vec()].concat());
+
+        fs::remove_file(fixture.root().join("fail-index")).unwrap();
         // A mark of a tile that is not in the version.
-        let marks = store.root().join("prepared/t/terrain-reference/xx/2026-10-01/state/tiles");
-        fs::write(marks.join("9999-9999.sha256"), "pixels of 9999-9999\n").unwrap();
-        let (done, calls) = prepare();
+        fs::write(fixture.state().join("tiles/9999-9999.sha256"), "pixels of 9999-9999\n").unwrap();
+        let (done, calls) = fixture.prepare();
         done.unwrap();
         assert_eq!(calls, index(), "a resume fetches no tile that the target has");
-        let Target::Dir(dir) = &target else { unreachable!() };
+        let Target::Dir(dir) = &fixture.target else { unreachable!() };
         let version = dir.join("sources/terrain-reference/xx/2026-10-01");
         for (prefix, pixels) in [("", "pixels of"), ("mean/", "mean of")] {
             let digests: BTreeMap<String, String> =
@@ -329,5 +378,28 @@ esac
             }
             assert!(!version.join(format!("{prefix}16/{}.tif", tiles[0].replace('-', "/"))).exists());
         }
+    }
+
+    #[test]
+    fn two_fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_other_which_removes_its_folder() {
+        let fixture = Fixture::new("terrain-reference-raw");
+        // Tile 0 ends only once tile 1 runs beside it. Tile 2 fails once tile 3 runs beside it, and
+        // tile 3 runs until the failure stops it.
+        fixture.mark("wait", 0, "2");
+        fixture.mark("wait", 2, "4");
+        fixture.mark("fail", 2, "");
+        fixture.mark("hold", 3, "");
+        let (done, calls) = fixture.prepare();
+        assert!(fixture.failed_in(done, 2));
+        assert_eq!(calls, fixture.fetches(0..4));
+        let mut works: Vec<String> =
+            fs::read_to_string(fixture.root().join("works")).unwrap().lines().map(String::from).collect();
+        works.sort();
+        let raw = fixture.state().join("raw");
+        let mut folders: Vec<String> =
+            fixture.tiles[..4].iter().map(|tile| raw.join(tile).display().to_string()).collect();
+        folders.sort();
+        assert_eq!(works, folders);
+        assert_eq!(fs::read_dir(&raw).unwrap().count(), 0, "each fetch removed its folder before the end");
     }
 }

@@ -11,6 +11,7 @@
       "pages": [
         { "path": "software/architecture", "title": "System architecture" },
         { "path": "software/data", "title": "Data operations" },
+        { "path": "software/data-sources", "title": "Data sources" },
         { "path": "software/formats", "title": "Data formats" },
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },

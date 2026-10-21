@@ -51,7 +51,6 @@ CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 SAS = "https://planetarycomputer.microsoft.com/api/sas/v1/token/{}/{}"
-OVERPASS = "https://overpass-api.de/api/interpreter"
 ODATA = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 COPERNICUS_PRODUCT = "CLMS_WSI_SP_020m_"
 CDSE_KEYS = Path.home() / ".config/openbikecomputer/cdse-s3.env"
@@ -243,23 +242,6 @@ def canopy_cover(grid, paths):
             reproject(rasterio.band(src, 1), cover, dst_transform=grid.transform, dst_crs=grid.crs,
                       resampling=Resampling.average, init_dest_nodata=False)
     return cover
-
-
-def overpass_trails(bounds):
-    """The Overpass answer, in JSON, with the OSM `highway=path|track` ways that the bounds touch."""
-    west, south, east, north = bounds
-    query = f'[out:json][timeout:180];way["highway"~"^(path|track)$"]({south},{west},{north},{east});out geom;'
-    request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
-                                     headers={"User-Agent": USER_AGENT})
-    for attempt in range(4):
-        try:
-            with urllib.request.urlopen(request, timeout=300) as response:
-                return response.read()
-        except urllib.error.HTTPError as error:
-            # Overpass answers 429 and 504 when it is busy.
-            if error.code not in (429, 504) or attempt == 3:
-                raise
-            time.sleep(60 * (attempt + 1))
 
 
 # What a chunk of the bake that runs reads: its worker processes fork from it, so they read the
@@ -696,15 +678,10 @@ def main():
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
     parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
-    parser.add_argument("--fetch-trails", type=Path, help="only write the Overpass answer of the trails to trails.json in this directory")
     args = parser.parse_args()
-    if not args.region and not ((args.fetch or args.fetch_trails) and args.bounds):
-        parser.error("give a region, or --bounds with --fetch or --fetch-trails")
+    if not args.region and not (args.fetch and args.bounds):
+        parser.error("give a region, or --bounds with --fetch")
     bounds = args.bounds or data_registry.region_box(args.region)
-    if args.fetch_trails:
-        args.fetch_trails.mkdir(parents=True, exist_ok=True)
-        (args.fetch_trails / "trails.json").write_bytes(overpass_trails(bounds))
-        return
     if args.fetch:
         fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
         return
