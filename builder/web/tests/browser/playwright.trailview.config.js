@@ -24,7 +24,8 @@ export default defineConfig({
   use: {
     browserName: 'chromium',
     baseURL: `http://127.0.0.1:${PORT}`,
-    viewport: { width: 960, height: 600 },
+    // SwiftShader shades and selects per pixel on the CPU: a small frame keeps each test well inside the timeout.
+    viewport: { width: 640, height: 400 },
     launchOptions: { executablePath: EXECUTABLE, args: SWIFTSHADER },
     actionTimeout: 15_000,
     navigationTimeout: 15_000,
