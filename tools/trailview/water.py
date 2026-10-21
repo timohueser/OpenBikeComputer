@@ -330,8 +330,9 @@ def pin(ways, boxes, lakes):
 def network(ways, marks):
     """The levels of every sample of the ways. The ways split into reaches at the vertices that they
     share; the reaches are solved downstream in turn, each held under the levels that flow into its
-    start, and all reaches at a junction then take one level there. Levels that never rise round a loop
-    of reaches are equal, so the reaches that flow into each other take the lowest level of them all."""
+    start, and all reaches at a junction then take one level there. A loop of reaches has no order of
+    flow: its reaches go from the highest start down (a spanning DAG), and a reach that flows back into a
+    junction solved before it keeps its own end there, a step down to it."""
     counts = {}
     for way in ways:
         for point in way.points:
@@ -344,30 +345,29 @@ def network(ways, marks):
             junctions.setdefault(way.points[a], ([], []))[1].append(len(reaches) - 1)
             junctions.setdefault(way.points[b], ([], []))[0].append(len(reaches) - 1)
     levels = {id(way): np.full(len(way.xy), np.nan) for way in ways}
-    ends = {}
+    ends, rank = {}, {}
     after = [junctions[end][1] for *_, end in reaches]
+    start = lambda r: reaches[r][0].low[reaches[r][1]]
     for loop in reversed(components(after)):
-        cap = min((v for r in loop for v in ends.get(reaches[r][3], [])), default=math.inf)
-        z = {r: reach_levels(reaches[r][0], *reaches[r][1:3], cap, marks) for r in loop}
-        if len(loop) > 1 or loop[0] in after[loop[0]]:
-            known = np.concatenate(list(z.values()))
-            known = known[np.isfinite(known)]
-            z = {r: np.full_like(v, known.min() if known.size else math.nan) for r, v in z.items()}
-        for r, v in z.items():
-            way, a, b, _, end = reaches[r]
-            levels[id(way)][a:b + 1] = v
-            if math.isfinite(v[-1]):
-                ends.setdefault(end, []).append(v[-1])
+        for r in sorted(loop, key=lambda r: -start(r) if math.isfinite(start(r)) else math.inf):
+            way, a, b, first, end = reaches[r]
+            z = reach_levels(way, a, b, min(ends.get(first, [math.inf])), marks)
+            levels[id(way)][a:b + 1] = z
+            rank[r] = len(rank)
+            if math.isfinite(z[-1]):
+                ends.setdefault(end, []).append(z[-1])
     # One level at a junction: the highest start that flows out of it, held under every level that
-    # flows into it; where nothing flows out, the lowest level that flows in.
+    # flows into it before them; where nothing flows out, the lowest level that flows in.
     for into, out in junctions.values():
-        ins = [v for r in into if math.isfinite(v := levels[id(reaches[r][0])][reaches[r][2]])]
+        first = min((rank[r] for r in out), default=math.inf)
+        ins = [v for r in into if rank[r] < first and math.isfinite(v := levels[id(reaches[r][0])][reaches[r][2]])]
         starts = [v for r in out if math.isfinite(v := levels[id(reaches[r][0])][reaches[r][1]])]
         if not ins and not starts:
             continue
         level = min([max(starts, default=math.inf), *ins])
         for r in into:
-            levels[id(reaches[r][0])][reaches[r][2]] = min(levels[id(reaches[r][0])][reaches[r][2]], level)
+            if rank[r] < first:
+                levels[id(reaches[r][0])][reaches[r][2]] = min(levels[id(reaches[r][0])][reaches[r][2]], level)
         for r in out:
             levels[id(reaches[r][0])][reaches[r][1]] = level
     return levels

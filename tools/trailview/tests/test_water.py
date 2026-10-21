@@ -65,9 +65,9 @@ class Rivers(unittest.TestCase):
         self.assertEqual(a[-1], c[0])
         self.assertEqual(b[-1], c[0])
 
-    def test_a_loop_of_channels_is_flat_and_nothing_rises_out_of_it_in_any_order(self):
-        # A loop P → Q → P around an island, with Q its low point, and an outflow from Q that OSM draws
-        # up a slope too gentle to turn.
+    def test_a_loop_of_channels_keeps_its_fall_and_nothing_rises_through_it_in_any_order(self):
+        # A loop P → Q → P around an island, with Q its low point: "back" is drawn up a slope too gentle
+        # to turn, and so is an outflow from Q.
         terrain = Terrain(lambda e, s: 1000 - 0.01 * np.minimum(e, 400) + 0.01 * np.maximum(e - 400, 0) + 0 * s)
         ways = {"there": [at(0, 0), at(200, 50), at(400, 0)], "back": [at(400, 0), at(200, -50), at(0, 0)],
                 "out": [at(400, 0), at(600, 0), at(800, 0)]}
@@ -78,10 +78,10 @@ class Rivers(unittest.TestCase):
         self.assertEqual(solved[0], solved[1])
         z = solved[0]
         self.assertTrue(all(falls(v) for v in z.values()))
-        self.assertEqual(z["there"][-1], z["back"][0])
-        self.assertEqual(z["back"][-1], z["there"][0])
-        self.assertLessEqual(z["out"][0], z["there"][-1])
-        self.assertAlmostEqual(z["there"][0], 996.0, delta=0.1)
+        # The channel down the valley keeps its fall; the one drawn back up it stays under Q.
+        self.assertGreater(z["there"][0], z["there"][-1] + 3)
+        self.assertEqual(z["back"][0], z["there"][-1])
+        self.assertEqual(z["out"][0], z["there"][-1])
 
     def test_a_fall_keeps_its_step_and_the_pools_above_and_below_stay_flat(self):
         # Two flat pools, 10 m apart, with a fall between them at 500 m.
