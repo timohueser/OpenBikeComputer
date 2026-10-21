@@ -3,7 +3,7 @@ import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource } from '../stream/terrain';
 import { NEAR, type NodeStamps } from './bins';
-import { COARSEST, FINEST, key, MAP, size, type Node } from './lod';
+import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
 const LOADS = 6;
@@ -91,8 +91,8 @@ interface Tile {
 /**
  * The page pools and what fills them. Stored pages come from the stored tiles, synthesized pages from
  * their deepest stored ancestor. The pools have a fixed size: the page that the frames wanted longest
- * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. Mask
- * layers go to the finest pages first.
+ * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. The mask
+ * layers go to the nearest near pages with features.
  */
 export class Pages {
     requests = 0;
@@ -110,6 +110,8 @@ export class Pages {
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
+    /** Metres from the eye to the nearest near page with features that the mask pool cannot hold: the paint fades out before it. */
+    maskReach = NO_LIMIT;
     private arrivals: { node: Node; data: PageData }[] = [];
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
@@ -118,6 +120,8 @@ export class Pages {
     /** Tile loads and decodes in flight. */
     loads = 0;
     private dirty = true;
+    /** The masks changed, or the reach of the paint, while the LOD map did not. */
+    private masksDirty = true;
     private origins: [number, number][] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
@@ -166,7 +170,8 @@ export class Pages {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
         }
-        for (const node of wanted) this.want(node, work);
+        const holders = this.holders(wanted, anchor);
+        for (const node of wanted) this.want(node, work, holders);
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
@@ -186,6 +191,8 @@ export class Pages {
             // The fresh pages of a frame take its normals jobs: at most ARRIVALS of them, and the refreshes.
             if (fresh.length < ARRIVALS && page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
+        // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
+        this.lateMasks(holders, work);
         for (const page of fresh) {
             this.dirty = true;
             work.normals.push(page);
@@ -196,11 +203,9 @@ export class Pages {
             this.refresh.delete(page);
             if (page.drawn !== undefined && !work.normals.includes(page)) work.normals.push(page);
         }
-        if (this.dirty) {
-            work.map = this.map();
-            work.masks = this.masks();
-        }
-        this.dirty = false;
+        if (this.dirty) work.map = this.map();
+        if (this.dirty || this.masksDirty) work.masks = this.masks();
+        this.dirty = this.masksDirty = false;
         return work;
     }
 
@@ -217,7 +222,7 @@ export class Pages {
         this.dirty = true;
     }
 
-    private want(node: Node, work: Work): void {
+    private want(node: Node, work: Work, holders: Map<string, Node>): void {
         const page = this.pages.get(key(node));
         if (page) {
             page.used = this.frame;
@@ -256,16 +261,39 @@ export class Pages {
         if (!synth) return;
         synth.drawn = synth.slot;
         if (stamps.data) {
-            const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.mask(synth) ? MODE.MASK : 0);
+            const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (holders.has(key(node)) && this.mask(synth, holders, work) ? MODE.MASK : 0);
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
 
-    /** Whether the frame has no room for another arrival, synthesis or stamp, or for `words` of stamp data. */
+    /**
+     * The near pages with features that hold the masks in this frame, nearest first, by name: as many
+     * as the pool holds. The first page beyond them sets the reach of the paint.
+     */
+    private holders(wanted: Node[], anchor: Anchor): Map<string, Node> {
+        const near = wanted.filter(node => node.level >= NEAR && this.stamps.get(node)?.data)
+            .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
+        const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
+        if (reach !== this.maskReach) this.masksDirty = true;
+        this.maskReach = reach;
+        return new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
+    }
+
+    /** A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized while the pool was full gets its mask later. */
+    private lateMasks(holders: Map<string, Node>, work: Work): void {
+        for (const node of holders.values()) {
+            const page = this.pages.get(key(node)), data = this.stamps.get(node)?.data;
+            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
+            if (this.busy(work, data.length) || !this.mask(page, holders, work)) return;
+            work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
+        }
+    }
+
+    /** Whether the frame has no room for another arrival, synthesis, copy or stamp job, or for `words` of stamp data. */
     private busy(work: Work, words = 0): boolean {
         const used = work.stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0);
-        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || used + words > STAMP_WORDS;
+        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || work.stamps.length >= ARRIVALS || used + words > STAMP_WORDS;
     }
 
     /**
@@ -291,21 +319,23 @@ export class Pages {
     }
 
     /**
-     * A mask layer for a page: a free one, or the one of the page that the frames wanted longest ago,
-     * or else that of a coarser page of this frame: the finest pages, near the eye, keep theirs.
+     * A mask layer for a holder: a free one, or that of the page wanted longest ago that is no holder
+     * and has no stamp job in this frame, which would write the layer.
      */
-    private mask(page: Page): boolean {
+    private mask(page: Page, holders: Map<string, Node>, work: Work): boolean {
         let slot = this.maskFree.pop();
         if (slot === undefined) {
-            const rank = (other: Page) => (other.used < this.frame ? other.used - this.frame - FINEST : other.node.level - page.node.level);
             let donor: Page | undefined;
-            for (const other of this.pages.values()) if (other.mask !== undefined && rank(other) < 0 && (!donor || rank(other) < rank(donor))) donor = other;
+            for (const other of this.pages.values()) {
+                if (other.mask === undefined || holders.has(key(other.node)) || work.stamps.some(stamp => stamp.page === other)) continue;
+                if (!donor || other.used < donor.used) donor = other;
+            }
             if (!donor) return false;
             slot = donor.mask;
             donor.mask = undefined;
         }
         page.mask = slot;
-        this.dirty = true;
+        this.masksDirty = true;
         return true;
     }
 
@@ -449,11 +479,16 @@ export class Pages {
         return map;
     }
 
+    /** As `Masks` in features.wgsl: the reach of the paint, then per layer the mask layer + 1, 0 for none. */
     private masks(): Uint32Array<ArrayBuffer> {
-        const masks = new Uint32Array(this.capacity.stored + this.capacity.synth);
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[page.drawn] = page.mask + 1;
+        const masks = new Uint32Array(1 + this.capacity.stored + this.capacity.synth);
+        new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[1 + page.drawn] = page.mask + 1;
         return masks;
     }
 }
+
+/** A reach that no view meets: no shader takes an infinity. */
+export const NO_LIMIT = 1e9;
 
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => to - 1 - i);

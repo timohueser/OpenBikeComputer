@@ -12,14 +12,16 @@
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
-// cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes.
-// A uniform array element takes a multiple of 16 bytes.
+// cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
+// and how far a path's bench may follow the hillside across it. A uniform array element takes a
+// multiple of 16 bytes.
 struct Profile {
     tol: f32,
     reach: f32,
     least: f32,
     cut: f32,
-    @size(16) fill: f32,
+    fill: f32,
+    @size(12) tilt: f32,
 }
 
 // Per class, the row that a segment record names. A uniform, as the audit has every storage buffer that a stage may have.
@@ -44,6 +46,8 @@ const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
 const CONE_A: u32 = 8u;
 const CONE_B: u32 = 16u;
+const JOIN_A: u32 = 32u;
+const JOIN_B: u32 = 64u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
@@ -75,6 +79,8 @@ const BANK_M: f32 = 2.0;
 const FREEBOARD: f32 = 0.3;
 const BANK_RAMP: f32 = 8.0;
 const INF: f32 = 1e30;
+// As WARP_M of bins.ts: the metres over which the cross-slope of a junction fades out.
+const WARP_M: f32 = 6.0;
 
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
@@ -162,22 +168,30 @@ fn point(at: u32) -> vec2i {
 }
 
 // Where a texel lies on a road or path segment: metres from its line, the height there, the side,
-// and whether the core and the cone apply. Inside the segment's mitre quad the height runs from end
-// to end along it; past an end of a line, a round cap holds the end's height.
+// and whether the core, the cone and the paint apply. Inside the segment's mitre quad the height runs
+// from end to end along it; past an end of a line, a round cap holds the end's height. Near a junction
+// the height tilts across the segment by the cross-slopes of its ends.
 struct Along {
     lateral: f32,
     z: f32,
     side: f32,
     core: bool,
     cone: bool,
+    paint: bool,
     // Metres from the segment's line where the foot of the perpendicular lies on the segment, else INF.
     beside: f32,
+}
+
+// The slope across a segment from one of its ends, `s` metres from it, as packTilt of bins.ts packs it:
+// the rise per metre in steps of 1e-4, held up to WARP_M before its reach in cm, and zero past the reach.
+fn end_tilt(w: u32, s: f32) -> f32 {
+    return f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4 * clamp((f32(w >> 16u) * 0.01 - s) / WARP_M, 0.0, 1.0);
 }
 
 fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let a = point(r);
     let b = point(r + 2u);
-    let flags = word(r + 5u) >> 8u;
+    let flags = (word(r + 5u) >> 8u) & 0xffu;
     let ab = vec2f(b - a);
     let ap = vec2f(p - a);
     let bp = vec2f(p - b);
@@ -188,19 +202,20 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
+    let tilt = cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit));
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
         let t = da / max(da + db, 1e-6);
-        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t), sign(cross), true, true, beside);
+        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt, sign(cross), true, true, true, beside);
     }
     if (da < 0.0 && db >= 0.0 && (flags & (CORE_A | CONE_A)) != 0u) {
-        return Along(length(ap) * unit, real(r + 6u), sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, beside);
+        return Along(length(ap) * unit, real(r + 6u) + tilt, sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, (flags & (CORE_A | JOIN_A)) != 0u, beside);
     }
     if (db < 0.0 && da >= 0.0 && (flags & (CORE_B | CONE_B)) != 0u) {
-        return Along(length(bp) * unit, real(r + 7u), sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, beside);
+        return Along(length(bp) * unit, real(r + 7u) + tilt, sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, (flags & (CORE_B | JOIN_B)) != 0u, beside);
     }
-    return Along(INF, 0.0, 0.0, false, false, beside);
+    return Along(INF, 0.0, 0.0, false, false, false, beside);
 }
 
 fn segment_distance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
@@ -225,8 +240,7 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
 }
 
 // The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the
-// across coordinate and surface of that road, the nearest waterline (negative in water), the water
-// height (NONE without water) and the flags.
+// metres from the middle of that road (signed by side) and its surface, the nearest waterline (negative in water), the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
     hi: f32,
@@ -338,7 +352,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 line_held = false;
             }
             let h = real(r + 8u);
-            let rule = profiles[word(r + 14u)];
+            let rule = profiles[word(r + 5u) >> 16u];
             let g = along(r, p, unit);
             if (kind == ROAD && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
                 line_near = true;
@@ -347,9 +361,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             if (g.lateral >= INF) {
                 continue;
             }
-            if (g.lateral - h < out.road) {
+            // The paint follows the carriageway: a road that ends at a junction ends at its mitre line,
+            // but for the round cap that fills the outer wedge of a bend where the through road runs on.
+            if (g.paint && g.lateral - h < out.road) {
                 out.road = g.lateral - h;
-                out.across = g.side * min(g.lateral / max(h, 0.1), 1.0);
+                out.across = g.side * g.lateral;
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
@@ -367,9 +383,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 }
             } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
+                let tol = rule.tol + rule.tilt * min(g.lateral, h);
                 if ((g.core || g.cone) && x < rule.reach) {
-                    lo[BENCH] = max(lo[BENCH], g.z - rule.tol - widen(x, rule.reach, rule.fill));
-                    hi[BENCH] = min(hi[BENCH], g.z + rule.tol + widen(x, rule.reach, rule.cut));
+                    lo[BENCH] = max(lo[BENCH], g.z - tol - widen(x, rule.reach, rule.fill));
+                    hi[BENCH] = min(hi[BENCH], g.z + tol + widen(x, rule.reach, rule.cut));
                 }
             }
         }

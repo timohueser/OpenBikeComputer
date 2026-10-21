@@ -24,8 +24,8 @@ struct StampJob {
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
 // Per job, the least and the greatest height as ordered bits, for the offset and the scale of its page.
 @group(0) @binding(3) var<storage, read_write> extent: array<atomic<u32>>;
-@group(0) @binding(5) var mask_shape: texture_storage_2d_array<rgba8unorm, write>;
-@group(0) @binding(6) var mask_kind: texture_storage_2d_array<rgba8uint, write>;
+// The feature mask, as features.wgsl reads it.
+@group(0) @binding(5) var mask_out: texture_storage_2d_array<rgba8unorm, write>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -55,17 +55,17 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let at = job.out * 65536u + id.y * 256u + id.x;
-    var base = NONE;
-    if (job.base == SYNTHESIZED) {
-        let raw = out[at];
-        base = select(bitcast<f32>(raw), NONE, raw == UNKNOWN32);
-    } else {
-        base = slot_height(job.base, t);
-    }
     let s = stamp_at(job.level, job.first, job.data, p);
-    let h = select(NONE, clamp(base, s.lo, s.hi), known(base));
     if ((job.mode & HEIGHTS) != 0u) {
+        let at = job.out * 65536u + id.y * 256u + id.x;
+        var base = NONE;
+        if (job.base == SYNTHESIZED) {
+            let raw = out[at];
+            base = select(bitcast<f32>(raw), NONE, raw == UNKNOWN32);
+        } else {
+            base = slot_height(job.base, t);
+        }
+        let h = select(NONE, clamp(base, s.lo, s.hi), known(base));
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -73,11 +73,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         }
     }
     if ((job.mode & MASK) != 0u) {
-        let cut = select(0.0, h - base, known(base));
         let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
-        textureStore(mask_shape, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), distance_code(s.shore), s.across * 0.5 + 0.5, distance_code(cut)));
-        textureStore(mask_kind, in_layer(job.mask, t), job.mask >> 6u,
-            vec4u(select(0u, s.surface, s.road < MASK_RANGE), select(0u, 1u, s.water > -1e29), flags, 0u));
+        let byte = select(0u, s.surface, s.road < MASK_RANGE) | (flags << 3u);
+        textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
+            vec4f(distance_code(s.road), distance_code(s.shore), distance_code(s.across), f32(byte) / 255.0));
     }
 }

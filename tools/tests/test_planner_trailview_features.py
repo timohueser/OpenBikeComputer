@@ -13,6 +13,7 @@ import unittest
 import numpy as np
 
 from tools import planner_trailview_features as features, region_osm
+from tools.trailview import roads
 
 VECTORS = Path(__file__).resolve().parents[2] / "specs/vectors"
 
@@ -138,7 +139,8 @@ class Bake(unittest.TestCase):
             (root / "output").mkdir()
             kinds = json.loads(features.TABLE.read_text())
             grid, height = self.terrain(root)
-            features.step({"options": {"bounds": bounds, "kinds": kinds, "attribution": "© OSM"},
+            classes = json.loads(roads.TABLE.read_text())
+            features.step({"options": {"bounds": bounds, "kinds": kinds, "roads": classes, "attribution": "© OSM"},
                            "layers": {"planner/osm": {"osm.pbf": str(root / "object")}, "planner/terrain/grid": grid},
                            "output": str(root / "output"), "metrics": str(root / "metrics.json")})
             with (root / "output/trailview-features.pmtiles").open("rb") as stream:
@@ -166,7 +168,9 @@ class Bake(unittest.TestCase):
         self.assertEqual(right[0]["parts"][0]["xy"], [[7000 - 8192, 4000], [9500 - 8192, 4000]])
         for tile in (road, right[0]):
             self.assertEqual(tile["parts"][0]["z"], [round(height(7000), 2), round(height(9500), 2)])
-        self.assertNotIn("z", tunnel["parts"][0], "a tunnel has no height of its own yet")
+        # A tunnel that meets no road takes the terrain at its ends: nothing else gives it heights.
+        for z, u in zip(tunnel["parts"][0]["z"], (1000, 1500)):
+            self.assertAlmostEqual(z, height(u), delta=0.05)
         lake = next(feature for feature in left if feature["kind"] == "lake")
         level = lake["parts"][0]["z"]
         self.assertEqual(len(set(level)), 1, "a lake has one height")

@@ -112,7 +112,7 @@ fn conflict_near(s: vec2f, level: u32) -> bool {
             let whole = t + vec2i(i, j);
             let mask = mask_of(level, whole);
             if (mask != 0u) {
-                if ((textureLoad(mask_kinds, in_layer(mask - 1u, whole), (mask - 1u) >> 6u, 0).z & CONFLICT) != 0u) {
+                if ((mask_flags(mask - 1u, whole) & CONFLICT) != 0u) {
                     return true;
                 }
                 continue;

@@ -4,7 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, key, MAP, RANGE, select, size, type Node } from './lod';
-import { MODE, Pages, type StampSource, type Work } from './pages';
+import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -154,6 +154,19 @@ describe('the stamps', () => {
         for (const work of works) {
             work.syntheses.forEach(({ page }, k) => expect(work.stamps.find(stamp => stamp.page === page)).toMatchObject({ out: k, target: page.slot, mode: MODE.HEIGHTS }));
         }
+    });
+
+    it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {
+        // The synthesized pages draw before their features are known, the stored pages wait for theirs; then every node has some.
+        let known = false;
+        const late: StampSource = { get: node => (known ? { data: new Uint32Array(8), heights: true } : node.level > 13 ? { data: null, heights: false } : undefined) };
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, late, 128);
+        await settle(pages, wanted, 100);
+        known = true;
+        const works = await settle(pages, wanted);
+        expect(works.some(work => work.stamps.some(({ mode }) => mode === MODE.MASK))).toBe(true);
+        expect(works.some(work => work.stamps.some(({ page }) => page.kind === 'stored'))).toBe(true);
+        expect(Math.max(...works.map(work => work.stamps.length))).toBeLessThanOrEqual(ARRIVALS);
     });
 });
 

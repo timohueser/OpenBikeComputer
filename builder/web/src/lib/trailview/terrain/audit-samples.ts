@@ -2,7 +2,7 @@
 // in each lake and river and on their banks; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
+import { crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -19,18 +19,20 @@ const SIDE_GRID = 64, SIDE_TEXELS = 20;
 
 /**
  * The road height at a point as stamp-core.wgsl gives it: in the mitre quad of the nearest segment
- * that holds it, within `reach` units of its line; NaN in none.
+ * that holds it, within `reach` units of its line, tilted by its cross-slopes; NaN in none. `unit` is
+ * metres per world unit there.
  */
-export function roadHeight(line: Line, p: [number, number], reach: number): number {
+export function roadHeight(line: Line, p: [number, number], reach: number, unit: number): number {
     let best = reach, z = NaN;
     for (let v = 0; v + 1 < line.z.length; v++) {
         const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
         const length = Math.hypot(bx - ax, by - ay), dx = (bx - ax) / (length || 1), dy = (by - ay) / (length || 1);
         const da = ((p[0] - ax) * mx + (p[1] - ay) * my) / Math.max(dx * mx + dy * my, 0.1), db = ((bx - p[0]) * nx + (by - p[1]) * ny) / Math.max(dx * nx + dy * ny, 0.1);
-        const lateral = Math.abs((bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)) / (length || 1);
+        const cross = ((bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)) / (length || 1), lateral = Math.abs(cross);
         if (da >= 0 && db >= 0 && lateral <= best) {
+            const t = da / Math.max(da + db, 1e-6);
             best = lateral;
-            z = line.z[v] + (line.z[v + 1] - line.z[v]) * da / Math.max(da + db, 1e-6);
+            z = line.z[v] + (line.z[v + 1] - line.z[v]) * t + cross * unit * crossSlope(line, v, da * unit, db * unit);
         }
     }
     return z;
@@ -114,7 +116,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 // Whole world units, as the shader reads them.
                 const at = (x: number, y: number): [number, number] => [Math.round(x), Math.round(y)];
                 const left = at(cx - across[0] * half, cy - across[1] * half), right = at(cx + across[0] * half, cy + across[1] * half), centre = at(cx, cy);
-                const [zl, zr, zc] = [left, right, centre].map(point => roadHeight(line, point, 2 * line.h / unit));
+                const [zl, zr, zc] = [left, right, centre].map(point => roadHeight(line, point, 2 * line.h / unit, unit));
                 if (Number.isNaN(zl) || Number.isNaN(zr) || Number.isNaN(zc)) continue;
                 push(...left, CROSS_FALL | (line.profile << 8), zl, line.h, 0, junction, junctionHalf, right, zr);
                 push(...centre, ROAD_HEIGHT | (line.profile << 8), zc, line.h, 0, junction, junctionHalf);
@@ -173,13 +175,13 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             if (!length) continue;
             const across = [-(by - ay) / length, (bx - ax) / length], count = Math.ceil(length / step), steepest = Math.max(grade(line, v - 1), grade(line, v), grade(line, v + 1));
             for (let i = 0; i < count; i++) {
-                const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
+                const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit, unit);
                 if (!inNode(cx, cy) || Number.isNaN(z)) continue;
                 push(cx, cy, IN_WATER, z, line.h, 0, Infinity, 0, [0, 0], steepest);
                 // Past the bed of the node's level, as river_half of stamp-core.wgsl.
                 for (const sign of [-1, 1]) for (const past of banks) {
                     const d = bed(line) + past, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
-                    const level = roadHeight(line, [x, y], 1.5 * d / unit);
+                    const level = roadHeight(line, [x, y], 1.5 * d / unit, unit);
                     if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d, Infinity, 0, [0, 0], steepest);
                 }
             }

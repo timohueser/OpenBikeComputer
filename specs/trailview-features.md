@@ -45,7 +45,7 @@ on a shared edge or in the buffer of two tiles is drawn once.
 
 ### Generalization
 
-Zoom 14 keeps each vertex. Below zoom 14, the bake simplifies each line and ring with
+Zoom 14 keeps each vertex, and the vertices that the road solver adds (see Heights). Below zoom 14, the bake simplifies each line and ring with
 Douglas-Peucker to `extent / 2048` tile units, a quarter texel of a 512-texel terrain node. A
 vertex that two features share stays, and so do the ends of a line. Thus road junctions stay
 joined, and a river keeps its end on the shore of its lake. Then each edge of an area that
@@ -101,13 +101,34 @@ first vertex of a feature is the difference from (0, 0).
 ### Heights
 
 The solvers of the bake set the heights of a feature. A feature with no height has `has_z` 0.
-The bake sets simple heights from the master terrain. Each vertex of a `main-road`, `road` or
-`path` that is not a bridge has the height of a straight line fitted to the terrain, sampled every
-2 m, over ±12 m of the line; near an end the window holds the part of it on the line. Roads that
-share a vertex take the mean of their heights there. Each vertex of a `river` or `stream` that is not in a
-tunnel has that height too, but never higher than a vertex before it: OSM draws a waterway in the
-direction of its flow. Each vertex of a `lake` has the median of the terrain inside it. Other kinds
-have no height yet.
+
+Each vertex of a `main-road`, `road`, `path`, `tunnel` or `gallery` has the height of the road surface,
+except a `via_ferrata`, which has none. The class table
+[`data/trailview/roads.json`](../data/trailview/roads.json) gives the rules per `highway` class: the
+steepest grade and a smoothing length. It is part of the options of the step. The road solver:
+
+- samples the master terrain every 2 m along each way,
+- fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
+  go, so that it does not move the road,
+- holds each segment within the grade of its class, but not the approach of a side road, so that a
+  side road does not move the through road,
+- gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
+  surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
+  way between two junctions. The through road is the first class of the table at the junction, and
+  of two ways of that class, the pair that runs most nearly straight on,
+- ignores the terrain under a bridge and in a tunnel: these run between their ends,
+- puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
+  with a waterway, 0.2 m below the water.
+
+The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
+a vertex between two of them where the solved height leaves the straight line between them by more
+than 20 cm. A bridge shorter than 8 m whose deck lies
+no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
+
+Each vertex of a `river` or `stream` that is not in a tunnel has the height of a straight line fitted
+to the terrain, sampled every 2 m, over ±12 m of the line; near an end the window holds the part of
+it on the line. It is never higher than a vertex before it: OSM draws a waterway in the direction of
+its flow. Each vertex of a `lake` has the median of the terrain inside it. Other kinds have no height yet.
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of

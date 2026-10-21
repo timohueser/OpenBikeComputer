@@ -10,17 +10,21 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { featureTile, NEAR, profileTable } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, select, size, type Node, type Rule } from './lod';
-import { ARRIVALS, copies, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
+import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { Water } from './water';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
- * MiB. The feature masks take their share of the synthesized budget, as the epic has them.
+ * MiB. The feature masks take their share of the synthesized budget.
  */
-const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
-/** Feature masks of the finest near pages, 8 bytes per texel: 12 MiB of the synthesized budget. */
-const MASKS = 24, MASK_BYTES = PAGE * PAGE * MASKS * 8;
+const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 70 * 2 ** 20 };
+/**
+ * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
+ * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
+ * page without one draws its roads unpainted.
+ */
+const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -95,8 +99,7 @@ interface Resources {
     gpu: Gpu;
     heights: GPUTexture;
     normals: GPUTexture;
-    maskShapes: GPUTexture;
-    maskKinds: GPUTexture;
+    mask: GPUTexture;
     masks: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
@@ -124,6 +127,7 @@ interface Resources {
     stampGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
     mesh: GPURenderPipeline;
+    plainMesh: GPURenderPipeline;
     synthesize: GPUComputePipeline;
     normalsOf: GPUComputePipeline;
     quantize: GPUComputePipeline;
@@ -239,17 +243,16 @@ export class Terrain {
         const heights = gpu.texture('pages', { size: [side, side, layers], format: 'r16uint', usage }, layers * side * side * 2);
         const normals = gpu.texture('pages', { size: [side, side, layers], format: 'rg8snorm', usage }, layers * side * side * 2);
         // The masks: written by the stamp pass, read by the shaders that draw.
-        const mask = (format: GPUTextureFormat) => gpu.texture('features', {
-            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, MASKS * texels * 4);
+        const mask = gpu.texture('features', {
+            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MASK_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize'
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
-            maskShapes: mask('rgba8unorm'),
-            maskKinds: mask('rgba8uint'),
-            masks: buffer('features', pages * 4, storage),
+            mask,
+            masks: buffer('features', (1 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
             profiles: buffer('compute', PROFILE_TABLE.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
@@ -289,10 +292,10 @@ export class Terrain {
         const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
         const stampLayout = layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
-            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }], [C, { storageTexture: { format: 'rgba8uint', viewDimension: '2d-array' } }],
+            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
         ]);
         const featureLayout = layout([
-            [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
+            [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
         ]);
         // The audit reads the feature mask in group 3, where the terrain draw has it after the ground.
         const emptyLayout = layout([]);
@@ -304,14 +307,15 @@ export class Terrain {
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
         const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
-        const [mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
-            device.createRenderPipelineAsync({
-                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-                vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
-                fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }] },
-                primitive: { topology: 'triangle-list' },
-                depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
-            }),
+        const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
+            label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
+            vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
+            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
+            primitive: { topology: 'triangle-list' },
+            depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
+        });
+        const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
+            terrainPipeline(true), terrainPipeline(false),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
             compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
@@ -327,12 +331,13 @@ export class Terrain {
             compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
-        device.queue.writeBuffer(r.masks, 0, new Uint32Array(pages));
+        // No mask yet, and a reach of the paint that no view meets.
+        device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
         this.resources = {
-            ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
-            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.maskShapes), view(r.maskKinds)]),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.maskShapes), view(r.maskKinds)]),
+            ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
+            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
@@ -361,8 +366,9 @@ export class Terrain {
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
-        // After the update, so that a page draws in the frame that it arrives in.
-        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
+        // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
+        // with masks come first: they draw with the road paint.
+        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
         this.water.update(this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
@@ -458,13 +464,16 @@ export class Terrain {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
-        pass.setPipeline(r.mesh);
+        const painted = this.nodes.filter(node => node.level >= NEAR).length;
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
-        pass.drawIndexed(GRID_INDICES.length, this.nodes.length);
+        pass.setPipeline(r.mesh);
+        if (painted) pass.drawIndexed(GRID_INDICES.length, painted);
+        pass.setPipeline(r.plainMesh);
+        if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
         this.water.draw(pass, r.surfaceGroup, ground);
     }
 

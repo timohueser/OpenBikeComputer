@@ -51,7 +51,7 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 3, ..whole("planner/trailview-features", 1, &[&WEB_PLANNER]) };
+    Layer { revision: 4, ..whole("planner/trailview-features", 1, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
@@ -439,12 +439,14 @@ impl Planner {
             osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
-            // The heights of roads and lakes come from the master terrain.
+            let roads: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/roads.json"))
+                .map_err(|e| Unplanned::Failed(format!("data/trailview/roads.json: {e}")))?;
+            // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the roads.
             steps.push(python(
                 &PLANNER_TRAILVIEW_FEATURES,
                 "planner/trailview-features",
                 vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
-                json!({"bounds": bounds, "kinds": kinds, "attribution": attribution("osm-planet")}),
+                json!({"bounds": bounds, "kinds": kinds, "roads": roads, "attribution": attribution("osm-planet")}),
                 ("tools.planner_trailview_features", Some("trailview")),
                 &["trailview-features.pmtiles"],
             ));

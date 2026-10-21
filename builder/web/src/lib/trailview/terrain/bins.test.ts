@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures } from '../stream/features';
+import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, type Line, type Profile } from './bins';
+import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -51,6 +51,8 @@ describe('the stamp data of a node', () => {
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
+        expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
+        expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
     });
 
@@ -157,15 +159,36 @@ describe('a rounded line', () => {
     });
 });
 
+describe('the plane of a junction', () => {
+    it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
+        // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
+        const tile = { level: 14, x: 8574, y: 5778 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * 2 ** 3);
+        const metres = 2 ** (17 - tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
+        const road = (kind: string, highway: string, xy: number[], z: number[]) => ({ kind, tags: { highway }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z) }] });
+        const { lines } = features([
+            road('main-road', 'secondary', [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),
+            // Its vertex at the approach distance of the solver, 20 units (4.1 m) from the junction.
+            road('road', 'residential', [3000, 4000, 3000, 3980, 3000, 2000], [at(3000), at(3000) + 0.1, at(3000) + 20]),
+        ], tile);
+        const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
+        // 2 m east of the side road's middle and 1 m north of the junction, inside the through road.
+        const p: [number, number] = [side.xy[0] + 2 / unit, side.xy[1] - 1 / unit];
+        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2 + 0.1 / (20 * metres), 2);
+        // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
+        const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
+        expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+    });
+});
+
 describe('the road height of the audit', () => {
     it('runs from end to end of each segment and meets at the bisector of a bend', () => {
         // Two segments of 100 units, with a bend of 90° at (100, 0).
         const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, profile: 0 };
-        expect(roadHeight(line, [50, 0], 10)).toBeCloseTo(10.5);
-        expect(roadHeight(line, [100, 50], 10)).toBeCloseTo(12);
+        expect(roadHeight(line, [50, 0], 10, 1)).toBeCloseTo(10.5);
+        expect(roadHeight(line, [100, 50], 10, 1)).toBeCloseTo(12);
         // Either side of the bisector, close to it: the height of the bend.
-        expect(roadHeight(line, [96, 3.9], 10)).toBeCloseTo(11, 1);
-        expect(roadHeight(line, [96, 4.1], 10)).toBeCloseTo(11, 1);
-        expect(roadHeight(line, [50, 30], 10)).toBeNaN();
+        expect(roadHeight(line, [96, 3.9], 10, 1)).toBeCloseTo(11, 1);
+        expect(roadHeight(line, [96, 4.1], 10, 1)).toBeCloseTo(11, 1);
+        expect(roadHeight(line, [50, 30], 10, 1)).toBeNaN();
     });
 });
