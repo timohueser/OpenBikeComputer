@@ -2,9 +2,10 @@
 // buckets that combine from the top, then clamp(base, lo, hi). The result does not depend on the
 // order of the features, and neighbouring nodes get the same intervals where their data overlap.
 // stamp.wgsl stamps pages with it and audit.wgsl checks against it. Include it with
-// `// #include stamp-core.wgsl`; bins.ts packs the data and mirrors the gates of `road_shows` and `path_shows`.
+// `// #include stamp-core.wgsl`; bins.ts packs the data and mirrors the gates of `road_shows`, `path_shows` and `river_shows`.
 
-// Per node: the record count, the entry count, GRID² + 1 cell offsets, the cell entries, then RECORD
+// Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
+// cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
 // words per primitive. A cell lists its junctions, then per lake its edges and its marker, then the
 // segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
@@ -43,13 +44,15 @@ const RADIUS: f32 = 6371000.0;
 const BUFFER_M: f32 = 40.0;
 // A level shows a road at least one mesh cell (4 texels) wide. Its core holds MARGIN_TEXELS past the
 // edge: a point of the mesh reads texels within 13 texels of it, through its triangle, the four texels
-// of each vertex and the slide of a morphing vertex toward the coarser grid.
+// of each vertex and the slide of a morphing vertex toward the coarser grid. The gates of a level use
+// its texel at 45° N, so that a feature shows on all of a level or on none of it.
+const GATE_COS: f32 = 0.70710678;
 const SHOW_CELLS: f32 = 1.0;
 const MESH_TEXELS: f32 = 4.0;
 const MARGIN_TEXELS: f32 = 13.0;
-// Road cores: z ± 2 cm, ± 10 cm at a junction, where the tolerance grows with the grade of its roads.
+// Road cores: z ± 2 cm. Near a junction, where the cores of its roads overlap, they hold the middle of
+// their heights where these disagree by more; the reach of a junction is at most JUNCTION_CAP.
 const CORE_TOL: f32 = 0.02;
-const JUNCTION_TOL: f32 = 0.1;
 const JUNCTION_CAP: f32 = 15.0;
 // Cut and fill of a road at the prototype's GRADE_BANK; it stops binding at its reach.
 const CONE_REACH: f32 = 25.0;
@@ -82,8 +85,14 @@ fn reach_limit(texel: f32) -> f32 {
     return BUFFER_M - 2.0 * texel - 1.0;
 }
 
-// Whether a level of this texel size shows a road of half-width h. The bake conditions every level that holds it.
-fn road_shows(h: f32, texel: f32, baked: bool) -> bool {
+// The texel of a level at 45° N: north of it the texels are smaller, so a gate that holds there holds on every row.
+fn gate_texel(level: u32) -> f32 {
+    return 2.0 * PI * RADIUS * GATE_COS / 256.0 / f32(1u << level);
+}
+
+// Whether a level shows a road of half-width h. The bake conditions every level that holds it.
+fn road_shows(h: f32, level: u32, baked: bool) -> bool {
+    let texel = gate_texel(level);
     return (baked || 2.0 * h >= SHOW_CELLS * MESH_TEXELS * texel) && h + margin(texel, baked) + CONE_LEAST <= reach_limit(texel);
 }
 
@@ -92,12 +101,14 @@ fn cone_reach(h: f32, texel: f32, baked: bool) -> f32 {
 }
 
 // A path bench shows from one texel: the mesh cannot show it, the normals can.
-fn path_shows(h: f32, texel: f32) -> bool {
+fn path_shows(h: f32, level: u32) -> bool {
+    let texel = gate_texel(level);
     return 2.0 * h >= texel && h + BENCH_REACH <= reach_limit(texel);
 }
 
 // Whether a level shows a river of half-width h: at least one mesh cell wide, inside the buffer.
-fn river_shows(h: f32, texel: f32) -> bool {
+fn river_shows(h: f32, level: u32) -> bool {
+    let texel = gate_texel(level);
     return 2.0 * h >= MESH_TEXELS * texel && h <= reach_limit(texel);
 }
 
@@ -105,13 +116,19 @@ fn bank_width(texel: f32, baked: bool) -> f32 {
     return BANK_M + 2.0 * margin(texel, baked);
 }
 
-fn banks_show(texel: f32, baked: bool) -> bool {
+fn banks_show(level: u32, baked: bool) -> bool {
+    let texel = gate_texel(level);
     return bank_width(texel, baked) + BANK_RAMP <= reach_limit(texel);
 }
 
 // How far past the shore the water height goes, under the bank, so the water meets the terrain.
 fn water_reach(texel: f32, baked: bool) -> f32 {
     return max(0.0, min(margin(texel, baked) + texel, reach_limit(texel)));
+}
+
+// How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
+fn junction_reach(h: f32, texel: f32, m: f32) -> f32 {
+    return min(min(JUNCTION_CAP, 2.0 * (h + m)), reach_limit(texel) * 0.5);
 }
 
 // A width that grows at `slope` and goes to infinity at `reach`, so an interval stops binding
@@ -221,9 +238,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
     let size = CELL_TEXELS << shift;
     let origin = (first << vec2u(shift)) - vec2i(size);
     let cell = clamp((p - origin) / size, vec2i(0), vec2i(GRID - 1));
-    // The cell's origin of the lake crossings: its centre, held inside the node, where the feature tile is valid.
-    let centre = clamp(origin + cell * size + vec2i(size / 2), first << vec2u(shift), ((first + vec2i(255)) << vec2u(shift)) + vec2i((1 << shift) - 1));
     let c = cell.y * GRID + cell.x;
+    let offset = word(data + HEAD + u32(c));
+    // The cell's origin of the lake crossings: its centre, held inside the node, where the feature tile
+    // is valid, moved off every shore line of the cell by the worker.
+    let nudge = vec2i(i32((offset >> 24u) & 15u), i32(offset >> 28u)) - vec2i(8);
+    let centre = clamp(origin + cell * size + vec2i(size / 2), first << vec2u(shift), ((first + vec2i(255)) << vec2u(shift)) + vec2i((1 << shift) - 1)) + nudge;
     let records = data + HEAD + OFFSETS + word(data + 1u);
     var lo: array<f32, BUCKETS>;
     var hi: array<f32, BUCKETS>;
@@ -231,27 +251,26 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
         lo[b] = -INF;
         hi[b] = INF;
     }
-    var relax = 0.0;
+    // Whether the texel is within the reach of a junction.
+    var junction = false;
     // The lake of the edges so far: whether they cross the way from the cell's origin to p, and the shore distance.
     var crossed = false;
     var shore = INF;
     var water_in = -1e30;
     var water_near = -1e30;
     // The road line of the segments so far: whether p lies in its core band, and whether a segment
-    // holds it there. Inside a bend tighter than the core, none does: a conflict, where the shader draws a wall.
+    // holds it there. Inside a bend tighter than the core, none does: a conflict, which the mask flags.
     var line = NO_DATA;
     var line_near = false;
     var line_held = false;
-    let first_entry = word(data + HEAD + u32(c));
-    let last_entry = word(data + HEAD + u32(c) + 1u);
+    let first_entry = offset & 0xffffffu;
+    let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
         let entry = word(data + HEAD + OFFSETS + e);
         let r = records + RECORD * (entry & 0x3fffffffu);
         let kind = word(r + 4u);
         if (kind == JUNCTION) {
-            let reach = min(min(JUNCTION_CAP, 2.0 * (real(r + 6u) + m)), reach_limit(texel) * 0.5);
-            let d = length(vec2f(p - point(r))) * unit;
-            relax = max(relax, (JUNCTION_TOL - CORE_TOL + 2.0 * real(r + 7u) * reach) * max(0.0, 1.0 - d / (2.0 * reach)));
+            junction = junction || length(vec2f(p - point(r))) * unit < 2.0 * junction_reach(real(r + 6u), texel, m);
         } else if (kind == EDGE) {
             // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
             let a = point(r);
@@ -259,18 +278,18 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             crossed = crossed != crosses(vec2f(0.0), vec2f(p - centre), vec2f(a - centre), vec2f(b - centre));
             shore = min(shore, segment_distance(vec2f(p - a), vec2f(0.0), vec2f(b - a)) * unit);
         } else if (kind == LAKE) {
-            let level = real(r + 6u);
+            let water = real(r + 6u);
             if (((entry & INSIDE) != 0u) != crossed) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], level - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * shore));
-                water_in = max(water_in, level);
+                hi[WATER_CORE] = min(hi[WATER_CORE], water - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * shore));
+                water_in = max(water_in, water);
                 out.shore = min(out.shore, -shore);
             } else {
-                if (banks_show(texel, baked)) {
+                if (banks_show(level, baked)) {
                     let x = max(0.0, shore - bank_width(texel, baked));
-                    lo[BANKS] = max(lo[BANKS], level + FREEBOARD - widen(x, BANK_RAMP, 1.0));
+                    lo[BANKS] = max(lo[BANKS], water + FREEBOARD - widen(x, BANK_RAMP, 1.0));
                 }
                 if (shore <= water_reach(texel, baked)) {
-                    water_near = max(water_near, level);
+                    water_near = max(water_near, water);
                 }
                 out.shore = min(out.shore, shore);
             }
@@ -279,7 +298,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
         } else if (kind == RIVER) {
             let h = real(r + 8u);
             let g = along(r, p, unit);
-            if (g.lateral >= INF || !river_shows(h, texel)) {
+            if (g.lateral >= INF || !river_shows(h, level)) {
                 continue;
             }
             // Metres from the water's edge, negative in the river; the level runs along it as a road's height does.
@@ -288,7 +307,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 hi[WATER_CORE] = min(hi[WATER_CORE], g.z - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * -d));
                 water_in = max(water_in, g.z);
             } else {
-                if (banks_show(texel, baked)) {
+                if (banks_show(level, baked)) {
                     lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - bank_width(texel, baked)), BANK_RAMP, 1.0));
                 }
                 if (d <= water_reach(texel, baked)) {
@@ -305,7 +324,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             }
             let h = real(r + 8u);
             let g = along(r, p, unit);
-            if (kind == ROAD && road_shows(h, texel, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
+            if (kind == ROAD && road_shows(h, level, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h + m);
             }
@@ -318,8 +337,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
-            if (kind == ROAD && road_shows(h, texel, baked)) {
-                let tol = CORE_TOL + relax;
+            if (kind == ROAD && road_shows(h, level, baked)) {
+                let tol = CORE_TOL;
                 if (g.core && g.lateral <= h + m) {
                     lo[ROAD_CORE] = max(lo[ROAD_CORE], g.z - tol);
                     hi[ROAD_CORE] = min(hi[ROAD_CORE], g.z + tol);
@@ -331,7 +350,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                     lo[CONES] = max(lo[CONES], g.z - w);
                     hi[CONES] = min(hi[CONES], g.z + w);
                 }
-            } else if (kind == PATH && path_shows(h, texel)) {
+            } else if (kind == PATH && path_shows(h, level)) {
                 let x = max(0.0, g.lateral - h);
                 if ((g.core || g.cone) && x < BENCH_REACH) {
                     lo[BENCH] = max(lo[BENCH], g.z - CORE_TOL - widen(x, BENCH_REACH, BENCH_FILL));
@@ -346,7 +365,22 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
     if (hi[WATER_CORE] < INF) {
         lo[BANKS] = -INF;
     }
-    // A bucket that is empty, or that would make the interval empty, does not apply: a conflict.
+    // Near a junction the cores of its roads, and their cones, hold the middle of their heights where
+    // they disagree, and a core outranks the cones: the simple profiles of the bake meet there.
+    if (junction) {
+        for (var b = ROAD_CORE; b <= CONES; b += CONES - ROAD_CORE) {
+            if (lo[b] > hi[b]) {
+                let middle = 0.5 * (lo[b] + hi[b]);
+                lo[b] = middle;
+                hi[b] = middle;
+            }
+        }
+        if (hi[ROAD_CORE] < INF) {
+            lo[CONES] = -INF;
+            hi[CONES] = INF;
+        }
+    }
+    // A bucket that is empty, or that would make the interval empty, does not apply: a conflict, which the mask flags.
     for (var b = 0u; b < BUCKETS; b++) {
         if (lo[b] <= -INF && hi[b] >= INF) {
             continue;

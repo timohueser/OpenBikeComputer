@@ -46,34 +46,62 @@ const CROSS_FALL: u32 = 1u;
 const ROAD_HEIGHT: u32 = 2u;
 const IN_WATER: u32 = 3u;
 const ON_BANK: u32 = 4u;
-// counts: per kind 1 to 4 at 4 × kind the checked samples, the violations, the conflicts, the largest
-// error in micrometres; 20 apron texels compared, 21 apron texels that differ; 22 the violations found.
-const APRON_CHECKS: u32 = 20u;
-const FOUND: u32 = 22u;
+const SHORE_SIDE: u32 = 5u;
+// counts: per kind 1 to 5 at 6 × kind the checked samples, the violations, the conflicts, the misses
+// within the reach of a junction, the largest error elsewhere and the largest at a junction in
+// micrometres; 36 apron texels compared, 37 apron texels that differ; 38 the violations found.
+const SLOTS: u32 = 6u;
+const APRON_CHECKS: u32 = 36u;
+const FOUND: u32 = 38u;
 const FOUND_MAX: u32 = 64u;
 // Cross-fall on a carriageway, as the epic sets it, and a kink of the grade across one mesh cell: the
 // mesh draws a straight line between its vertices, 4 texels apart, so a bend or a change of grade of
-// the profile between them is lost. A road height may leave its profile by the core tolerance and the kink.
+// the profile between them is lost. A road height may leave its profile by the core tolerance and the
+// kink, and a river level changes along it in the same way.
 const CROSS_FALL_MAX: f32 = 0.05;
 const ROAD_KINK: f32 = 0.03;
 // The float32 rounding of a height of some 1000 m, and of the mesh position about the eye.
 const ROUNDING: f32 = 0.002;
+// As TILE_ZOOM + 1 of pages.ts: baked conditioning stamps the stored levels up to it, and the finer levels upsample them.
+const STORED_FINEST: u32 = 14u;
 
-fn violate(kind: u32, s: vec2f, drawn: f32, expected: f32, level: u32, shore: f32) {
-    atomicAdd(&counts[4u * kind + 1u], 1u);
+// Counts a checked sample with its error and what it may leave: a miss near a junction, where the
+// simple profiles of its roads meet, a conflict, or a violation.
+fn check(kind: u32, e: f32, limit: f32, junction: bool, s: vec2f, level: u32, drawn: f32, expected: f32, detail: f32) {
+    let at = SLOTS * kind;
+    atomicAdd(&counts[at], 1u);
+    atomicMax(&counts[at + select(4u, 5u, junction)], u32(clamp(e, 0.0, 4000.0) * 1e6));
+    if (e <= limit) {
+        return;
+    }
+    if (junction) {
+        atomicAdd(&counts[at + 3u], 1u);
+        return;
+    }
+    if (conflict_near(s, level)) {
+        atomicAdd(&counts[at + 2u], 1u);
+        return;
+    }
+    atomicAdd(&counts[at + 1u], 1u);
     let n = atomicAdd(&counts[FOUND], 1u);
     if (n < FOUND_MAX) {
         found[2u * n] = vec4f(s, drawn, expected);
-        found[2u * n + 1u] = vec4f(f32(kind), f32(level), shore, 0.0);
+        found[2u * n + 1u] = vec4f(f32(kind), f32(level), detail, 0.0);
     }
 }
 
-fn error(kind: u32, e: f32) {
-    atomicMax(&counts[4u * kind + 3u], u32(clamp(e, 0.0, 4000.0) * 1e6));
+// The stamp data of the node of a level that holds a world point, from the node table, NO_DATA for none.
+fn node_data(at: vec2i, level: u32) -> u32 {
+    let slot = (at >> vec2u(30u - level)) - surface.levels[level].xy;
+    if (any(slot < vec2i(0)) || any(slot >= vec2i(MAP))) {
+        return NO_DATA;
+    }
+    let data = stamp_data[(i32(level) * MAP + slot.y) * MAP + slot.x];
+    return select(NO_DATA, data - 1u, data != 0u);
 }
 
 // Whether a texel of a level within the reach of a point's mesh has a conflict in its stamps: there
-// the higher bucket won, and the shader draws a wall.
+// the higher bucket won, and the mask flags it. A page with a mask holds the flag; another page stamps the texel again.
 fn conflict_near(s: vec2f, level: u32) -> bool {
     let t = texel_of(s, level).whole;
     let reach = i32(MARGIN_TEXELS);
@@ -81,13 +109,16 @@ fn conflict_near(s: vec2f, level: u32) -> bool {
     for (var j = -reach; j <= reach + 1; j++) {
         for (var i = -reach; i <= reach + 1; i++) {
             let whole = t + vec2i(i, j);
-            let node = whole >> vec2u(8u);
-            let slot = node - surface.levels[level].xy;
-            if (any(slot < vec2i(0)) || any(slot >= vec2i(MAP))) {
+            let mask = mask_of(level, whole);
+            if (mask != 0u) {
+                if ((textureLoad(mask_kinds, in_layer(mask - 1u, whole), (mask - 1u) >> 6u, 0).z & CONFLICT) != 0u) {
+                    return true;
+                }
                 continue;
             }
-            let data = stamp_data[(i32(level) * MAP + slot.y) * MAP + slot.x];
-            if (data != 0u && stamp_at(level, node << vec2u(8u), data - 1u, (whole << vec2u(shift)) + vec2i(1 << (shift - 1u)), BAKED).conflict) {
+            let p = (whole << vec2u(shift)) + vec2i(1 << (shift - 1u));
+            let data = node_data(p, level);
+            if (data != NO_DATA && stamp_at(level, (whole >> vec2u(8u)) << vec2u(8u), data, p, BAKED).conflict) {
                 return true;
             }
         }
@@ -123,78 +154,49 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     let fine = texel_m(q.at, level);
     let wide = texel_m(q.at, coarse);
     let reach = MARGIN_TEXELS * fine;
+    let kink = ROAD_KINK * MESH_TEXELS * wide;
+    if (q.kind == SHORE_SIDE) {
+        // The stamps put a point more than a texel from a shore on its side: in the water or out of it.
+        let data = node_data(q.at, level);
+        if (abs(q.shore) < fine || data == NO_DATA) {
+            return;
+        }
+        let stamp = stamp_at(level, (q.at >> vec2u(30u - level)) << vec2u(8u), data, q.at, BAKED);
+        check(SHORE_SIDE, select(0.0, abs(q.shore), (stamp.shore < 0.0) != (q.shore < 0.0)), 0.0, false, s, level, stamp.shore, q.shore, q.shore);
+        return;
+    }
     let drawn = drawn_height(s);
     if (!known(drawn)) {
         return;
     }
     if (q.kind == CROSS_FALL || q.kind == ROAD_HEIGHT) {
-        if (!road_shows(q.half, fine, BAKED) || !road_shows(q.half, wide, BAKED)) {
+        // Baked conditioning stamps the stored levels only.
+        if (!road_shows(q.half, level, BAKED) || !road_shows(q.half, coarse, BAKED) || (BAKED && level > STORED_FINEST)) {
             return;
         }
-        // Junctions relax the cores near them, up to twice the widest reach of a junction.
-        if (q.junction < 2.0 * min(JUNCTION_CAP, reach_limit(fine) * 0.5) + q.half) {
-            return;
-        }
-        var e = 0.0;
-        var limit = 0.0;
+        let junction = q.junction < 2.0 * junction_reach(q.junction_half, fine, reach) + q.half;
         if (q.kind == CROSS_FALL) {
             let t = lod_space(vec2f(q.other - surface.anchor));
             let other = drawn_height(t);
             if (!known(other) || drawn_level(t) != level) {
                 return;
             }
-            if (conflict_near(t, level)) {
-                atomicAdd(&counts[4u * q.kind], 1u);
-                atomicAdd(&counts[4u * q.kind + 2u], 1u);
-                return;
-            }
-            e = abs((other - drawn) - (q.other_expected - q.expected));
-            limit = CROSS_FALL_MAX + ROAD_KINK * MESH_TEXELS * wide;
+            check(CROSS_FALL, abs((other - drawn) - (q.other_expected - q.expected)), CROSS_FALL_MAX + kink, junction, 0.5 * (s + t), level, other - drawn, q.other_expected - q.expected, q.junction);
         } else {
-            e = abs(drawn - q.expected);
-            limit = CORE_TOL + ROAD_KINK * MESH_TEXELS * wide + ROUNDING;
+            check(ROAD_HEIGHT, abs(drawn - q.expected), CORE_TOL + kink + ROUNDING, junction, s, level, drawn, q.expected, q.junction);
         }
-        atomicAdd(&counts[4u * q.kind], 1u);
-        if (e > limit) {
-            if (conflict_near(s, level)) {
-                atomicAdd(&counts[4u * q.kind + 2u], 1u);
-                return;
-            }
-            violate(q.kind, s, drawn, q.expected, level, e);
-        }
-        error(q.kind, e);
         return;
     }
-    // A river shapes only the levels that show it.
-    if (q.half > 0.0 && (!river_shows(q.half, fine) || !river_shows(q.half, wide))) {
+    // A river shapes only the levels that show it, and its level changes along it.
+    if (q.half > 0.0 && (!river_shows(q.half, level) || !river_shows(q.half, coarse))) {
         return;
     }
-    if (q.kind == IN_WATER) {
-        if (q.shore < reach) {
-            return;
-        }
-        atomicAdd(&counts[4u * IN_WATER], 1u);
-        let top = q.expected - LAKE_DEPTH + ROUNDING;
-        if (drawn > top) {
-            violate(IN_WATER, s, drawn, q.expected, level, q.shore);
-        }
-        error(IN_WATER, drawn - q.expected + LAKE_DEPTH);
-        return;
+    let along = select(0.0, kink, q.half > 0.0);
+    if (q.kind == IN_WATER && q.shore >= reach) {
+        check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
     }
-    if (q.kind == ON_BANK) {
-        if (!banks_show(fine, BAKED) || !banks_show(wide, BAKED) || q.shore < reach || q.shore > reach + BANK_M) {
-            return;
-        }
-        atomicAdd(&counts[4u * ON_BANK], 1u);
-        let bottom = q.expected + FREEBOARD - ROUNDING;
-        if (drawn < bottom) {
-            if (conflict_near(s, level)) {
-                atomicAdd(&counts[4u * ON_BANK + 2u], 1u);
-                return;
-            }
-            violate(ON_BANK, s, drawn, q.expected, level, q.shore);
-        }
-        error(ON_BANK, q.expected + FREEBOARD - drawn);
+    if (q.kind == ON_BANK && banks_show(level, BAKED) && banks_show(coarse, BAKED) && q.shore >= reach && q.shore <= reach + BANK_M) {
+        check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
     }
 }
 

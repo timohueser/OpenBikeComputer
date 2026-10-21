@@ -176,7 +176,8 @@ export class Pages {
         const fresh = work.syntheses.map(({ page }) => page);
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
-            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
+            // The fresh pages of a frame take its normals jobs: at most ARRIVALS of them, and the refreshes.
+            if (fresh.length < ARRIVALS && page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
         for (const page of fresh) {
             this.dirty = true;
@@ -242,14 +243,15 @@ export class Pages {
             if (!page) this.load(near.level - 1, near.x >> 1, near.y >> 1);
             return false;
         });
+        if (!ready) return;
         const stamps = this.stamps.get(node);
-        if (!ready || !stamps || this.busy(work, stamps.data?.length)) return;
+        if (!stamps || this.busy(work, stamps.data?.length)) return;
         const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (!synth) return;
         synth.drawn = synth.slot;
         if (stamps.data) {
             const mode = (stamps.heights && !this.stamps.baked ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.mask(synth) ? MODE.MASK : 0);
-            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
+            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode: mode | (this.stamps.baked ? MODE.BAKED : 0) });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }

@@ -33,6 +33,8 @@ export interface Stats {
     adapter: string;
     /** Milliseconds per render pass, from timestamp queries. */
     gpu: Record<string, number>;
+    /** The stamp jobs of the frame whose times `gpu` holds, by kind, and that frame's start in milliseconds. */
+    timed?: Record<string, number>;
     cpu: number;
     /** Bytes per GPU pool. */
     pools: Map<string, number>;
@@ -122,7 +124,7 @@ export class TrailView {
     stats(): Stats {
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats;
         return {
-            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools), requests: pages.requests, bytes: pages.bytes, failed: pages.failed + this.terrain.stamps.failed,
+            adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools), requests: pages.requests, bytes: pages.bytes, failed: pages.failed + this.terrain.stamps.failed,
             drawn: this.drawn, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain,
         };
     }
@@ -244,7 +246,7 @@ export class TrailView {
         });
         if (eye) this.terrain.draw(pass);
         pass.end();
-        const read = times.resolve(encoder);
+        const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
         read();
         probed();

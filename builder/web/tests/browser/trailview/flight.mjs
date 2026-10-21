@@ -9,7 +9,9 @@
 // lat, lon, heading, pitch and height where the flight ends, the frames between (default:
 // flights.json), and the CSS pixels of the page (default 1280 × 800). --tiles serves a
 // `planner-dem` MBTiles instead of the fixture, --features a folder of feature tiles `z/x/y.bin`.
-// The stamp line is the GPU time of the frames with a stamp pass and the pages that they stamp.
+// The stamp line pairs the GPU time of each timed frame with that frame's own stamp jobs, as the
+// readback of its timestamps returns them frames later: the time per job, the time per job of the
+// frames that stamp near pages only (a dense village node is one such page), and the jobs by kind.
 // --lab adds `lab=LAB` to each view. --cracks N
 // draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
 // flight too: the flight must look down on known terrain. --audit N waits until every Nth frame is
@@ -66,6 +68,18 @@ function heat() {
     };
 }
 
+/** The stamp time per job of each timed frame, once per frame: a readback that no newer one replaced shows in several records. */
+function stampLine(frames) {
+    const timed = [...new Map(frames.filter(({ gpu, timed }) => gpu.stamp !== undefined && timed).map(({ gpu, timed }) => [timed.frame, { ms: gpu.stamp, ...timed }])).values()];
+    const jobs = ({ near, coarse, masks }) => near + coarse + masks;
+    return {
+        frames: timed.length,
+        msPerJob: summary(timed.filter(frame => jobs(frame) > 0).map(frame => frame.ms / jobs(frame))),
+        msPerNearJob: summary(timed.filter(frame => frame.near > 0 && frame.coarse + frame.masks === 0).map(frame => frame.ms / frame.near)),
+        jobs: Object.fromEntries(['near', 'coarse', 'masks'].map(kind => [kind, timed.reduce((sum, frame) => sum + frame[kind], 0)])),
+    };
+}
+
 const summary = (list) => {
     const sorted = [...list].sort((a, b) => a - b), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     return sorted.length ? { median: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) } : null;
@@ -96,8 +110,8 @@ try {
                     const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
                     tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
                     await tv.nextFrame();
-                    const { gpu, cpu, drawn, requests, bytes, terrain } = tv.stats();
-                    out.push({ gpu, cpu, drawn, requests, bytes, terrain });
+                    const { gpu, timed, cpu, drawn, requests, bytes, terrain } = tv.stats();
+                    out.push({ gpu, timed, cpu, drawn, requests, bytes, terrain });
                 }
                 return out;
             }, { ...flight, start, from: i, until }));
@@ -108,9 +122,9 @@ try {
                     return window.trailView.audit();
                 });
                 for (const [name, check] of Object.entries(result.checks)) {
-                    const sum = audit.checks[name] ??= { checked: 0, violations: 0, conflicts: 0, largest: 0 };
-                    for (const key of ['checked', 'violations', 'conflicts']) sum[key] += check[key];
-                    sum.largest = Math.max(sum.largest, check.largest);
+                    const sum = audit.checks[name] ??= { checked: 0, violations: 0, conflicts: 0, junctions: 0, largest: 0, junctionLargest: 0 };
+                    for (const key of ['checked', 'violations', 'conflicts', 'junctions']) sum[key] += check[key];
+                    for (const key of ['largest', 'junctionLargest']) sum[key] = Math.max(sum[key], check[key]);
                 }
                 for (const part of ['levels', 'rivers', 'apron']) for (const key of Object.keys(audit[part])) audit[part][key] += result[part][key];
                 audit.found.push(...result.found.slice(0, 8 - audit.found.length));
@@ -123,7 +137,7 @@ try {
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
             gpu: Object.fromEntries(passes.map(pass => [pass, summary(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined))])),
-            stamp: { ms: summary(frames.map(frame => frame.gpu.stamp).filter(ms => ms !== undefined)), pages: summary(of('stamps').filter(pages => pages > 0)) },
+            stamp: stampLine(frames),
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },

@@ -66,7 +66,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     let texel = metres * f32(1 << (22u - node.level));
     var out: WaterOut;
     // A river shows only where the stamps of the level carve its bed.
-    if (v.half > 0.0 && !river_shows(v.half, texel)) {
+    if (v.half > 0.0 && !river_shows(v.half, node.level)) {
         out.clip = vec4f(2.0, 2.0, 2.0, 1.0);
         return out;
     }

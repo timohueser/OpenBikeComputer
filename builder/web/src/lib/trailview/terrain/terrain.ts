@@ -8,7 +8,7 @@ import { wgsl } from '../gpu/wgsl';
 import type { Labs } from '../labs';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { featureTile } from './bins';
+import { featureTile, NEAR } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, RINGS, rings, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
@@ -16,7 +16,7 @@ import { Water } from './water';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
- * MiB. The feature masks take their share of the stored budget.
+ * MiB. The feature masks take their share of the synthesized budget, as the epic has them.
  */
 const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
 /** Feature masks of near pages, 8 bytes per texel. */
@@ -43,7 +43,7 @@ const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
-const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 23, FOUND = 64;
+const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 39, FOUND = 64;
 const GRID_INDICES = gridIndices();
 
 /** What the terrain draws from: the eye, its height above the ground, and the camera. */
@@ -67,16 +67,19 @@ export interface TerrainStats {
     capacity: Record<Kind, number>;
     /** 0 is the best; each step draws coarser to stay in the pools. */
     quality: number;
-    /** Pages stamped in the last frame. */
-    stamps: number;
+    /** The stamp jobs of the last frame: heights on near pages, heights on coarser pages (lakes), and masks only. */
+    jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
     masks: number;
 }
 
 /** What the audit counts, as audit.wgsl does. */
 export interface Audit {
-    /** Per check: samples checked, violations, samples in a conflict, the largest error in metres. */
-    checks: Record<'crossFall' | 'roadHeight' | 'inWater' | 'onBank', { checked: number; violations: number; conflicts: number; largest: number }>;
+    /**
+     * Per check: samples checked, violations, misses in a conflict, misses within the reach of a junction,
+     * where the simple profiles of the bake meet, and the largest error elsewhere and at a junction in metres.
+     */
+    checks: Record<'crossFall' | 'roadHeight' | 'inWater' | 'onBank' | 'shoreSide', { checked: number; violations: number; conflicts: number; junctions: number; largest: number; junctionLargest: number }>;
     /** Lakes of the frame's feature tiles, and those with more than one level. */
     levels: { lakes: number; mixed: number };
     /** Rivers of the frame's feature tiles, and those whose level rises downstream. */
@@ -148,6 +151,7 @@ export class Terrain {
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
     private work?: Work;
+    private jobs = { near: 0, coarse: 0, masks: 0 };
     private anchor?: Anchor;
     private quality = 0;
     private calm = 0;
@@ -168,7 +172,7 @@ export class Terrain {
         this.bounds = [west, north, east, south];
         const bytes = PAGE * PAGE * ((labs.pages === 'r16' ? 2 : 4) + 2);
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
-        const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor(BUDGET.synth / bytes);
+        const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
         this.stamps = new Stamps(labs.stamps === 'none' ? undefined : features, labs.stamps === 'baked', changed);
         this.water = new Water(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
@@ -203,7 +207,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            stamps: this.work?.stamps.length ?? 0, masks,
+            jobs: this.jobs, masks,
         };
     }
 
@@ -349,6 +353,8 @@ export class Terrain {
         }
         if (work.map || work.uploads.length || work.syntheses.length) this.changes++;
         this.work = work;
+        this.jobs = { near: 0, coarse: 0, masks: 0 };
+        for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
         this.anchor = anchor;
         this.above = view.above;
         this.lonLat = view.lonLat;
@@ -566,12 +572,12 @@ export class Terrain {
         }));
         for (const buffer of [...buffers, ...read]) buffer.destroy();
         const c = new Uint32Array(counts), f = new Float32Array(found);
-        const check = (kind: number) => ({ checked: c[4 * kind], violations: c[4 * kind + 1], conflicts: c[4 * kind + 2], largest: c[4 * kind + 3] / 1e6 });
+        const check = (kind: number) => ({ checked: c[6 * kind], violations: c[6 * kind + 1], conflicts: c[6 * kind + 2], junctions: c[6 * kind + 3], largest: c[6 * kind + 4] / 1e6, junctionLargest: c[6 * kind + 5] / 1e6 });
         return {
-            checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4) },
+            checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4), shoreSide: check(5) },
             levels: { lakes: sum('lakes'), mixed: sum('mixed') }, rivers: { checked: sum('rivers'), rising: sum('rising') },
-            apron: { checked: c[20], differ: c[21] },
-            found: Array.from({ length: Math.min(c[22], FOUND) }, (_, i) => ({
+            apron: { checked: c[36], differ: c[37] },
+            found: Array.from({ length: Math.min(c[38], FOUND) }, (_, i) => ({
                 kind: f[8 * i + 4], level: f[8 * i + 5], s: [f[8 * i], f[8 * i + 1]] as [number, number], drawn: f[8 * i + 2], expected: f[8 * i + 3], detail: f[8 * i + 6],
             })),
         };

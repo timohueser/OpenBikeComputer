@@ -10,6 +10,8 @@ const READBACKS = 3;
 export class PassTimes {
     /** Milliseconds of each pass in the last frame that was read; a pass that the frame did not run is absent. */
     readonly ms: Record<string, number> = {};
+    /** What the caller told `resolve()` of the frame that `ms` holds: the readback ends frames after the submit. */
+    tag?: Record<string, number>;
     private readonly set?: GPUQuerySet;
     private readonly resolved?: GPUBuffer;
     private readonly free: GPUBuffer[] = [];
@@ -30,8 +32,8 @@ export class PassTimes {
         return { querySet: this.set, beginningOfPassWriteIndex: 2 * index, endOfPassWriteIndex: 2 * index + 1 };
     }
 
-    /** Encodes the readback of this frame's passes. Call the returned function after the submit. */
-    resolve(encoder: GPUCommandEncoder): () => void {
+    /** Encodes the readback of this frame's passes, with a tag of the frame. Call the returned function after the submit. */
+    resolve(encoder: GPUCommandEncoder, tag?: Record<string, number>): () => void {
         const target = this.free.pop(), passes = [...this.written];
         this.written.clear();
         if (!this.set || !this.resolved || !target) return () => {};
@@ -44,6 +46,7 @@ export class PassTimes {
                 const index = this.passes.indexOf(pass);
                 this.ms[pass] = Number(times[2 * index + 1] - times[2 * index]) / 1e6;
             }
+            this.tag = tag;
             target.unmap();
             this.free.push(target);
         }, () => {});
