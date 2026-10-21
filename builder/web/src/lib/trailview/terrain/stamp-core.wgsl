@@ -6,7 +6,7 @@
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets, the cell entries, then RECORD
 // words per primitive. A cell lists its junctions, then per lake its edges and its marker, then the
-// segments of the roads and paths, line by line: so no list of lakes or lines has a size limit.
+// segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 const GRID: i32 = 18;
@@ -21,6 +21,7 @@ const PATH: u32 = 2u;
 const EDGE: u32 = 3u;
 const LAKE: u32 = 4u;
 const JUNCTION: u32 = 5u;
+const RIVER: u32 = 6u;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
@@ -93,6 +94,11 @@ fn cone_reach(h: f32, texel: f32, baked: bool) -> f32 {
 // A path bench shows from one texel: the mesh cannot show it, the normals can.
 fn path_shows(h: f32, texel: f32) -> bool {
     return 2.0 * h >= texel && h + BENCH_REACH <= reach_limit(texel);
+}
+
+// Whether a level shows a river of half-width h: at least one mesh cell wide, inside the buffer.
+fn river_shows(h: f32, texel: f32) -> bool {
+    return 2.0 * h >= MESH_TEXELS * texel && h <= reach_limit(texel);
 }
 
 fn bank_width(texel: f32, baked: bool) -> f32 {
@@ -270,6 +276,26 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             }
             crossed = false;
             shore = INF;
+        } else if (kind == RIVER) {
+            let h = real(r + 8u);
+            let g = along(r, p, unit);
+            if (g.lateral >= INF || !river_shows(h, texel)) {
+                continue;
+            }
+            // Metres from the water's edge, negative in the river; the level runs along it as a road's height does.
+            let d = g.lateral - h;
+            if (d <= 0.0) {
+                hi[WATER_CORE] = min(hi[WATER_CORE], g.z - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * -d));
+                water_in = max(water_in, g.z);
+            } else {
+                if (banks_show(texel, baked)) {
+                    lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - bank_width(texel, baked)), BANK_RAMP, 1.0));
+                }
+                if (d <= water_reach(texel, baked)) {
+                    water_near = max(water_near, g.z);
+                }
+            }
+            out.shore = min(out.shore, d);
         } else {
             if (word(r + 13u) != line) {
                 out.conflict = out.conflict || (line_near && !line_held);
@@ -316,6 +342,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
     }
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = select(water_near, water_in, water_in > -1e29);
+    // Under water no bank holds: where a river meets a lake or another river.
+    if (hi[WATER_CORE] < INF) {
+        lo[BANKS] = -INF;
+    }
     // A bucket that is empty, or that would make the interval empty, does not apply: a conflict.
     for (var b = 0u; b < BUCKETS; b++) {
         if (lo[b] <= -INF && hi[b] >= INF) {

@@ -16,7 +16,7 @@ const REFRESHES = 8;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
-export const MODE = { HEIGHTS: 1, BAKED: 2, MASK: 4, WATER: 8, EXTENT: 16 } as const;
+export const MODE = { HEIGHTS: 1, BAKED: 2, MASK: 4, EXTENT: 8 } as const;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
@@ -42,9 +42,6 @@ export interface Page {
     drawn?: number;
     copy?: number;
     mask?: number;
-    water?: number;
-    /** Water is near, and the page has no water layer: it asks again each frame that wants it. */
-    dry?: boolean;
 }
 
 /** What stamps a node: the binned features, while they are known. */
@@ -54,7 +51,7 @@ export interface StampSource {
     readonly baked: boolean;
 }
 
-const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false, water: false }), baked: false };
+const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }), baked: false };
 
 /**
  * A stamp job: its page's heights are in `out` (the synthesized base, or none for a stored page,
@@ -78,8 +75,8 @@ export interface Work {
     normals: Page[];
     /** The LOD map: MAP × MAP entries per level from 0 to FINEST, when it changed. */
     map?: Uint32Array<ArrayBuffer>;
-    /** Per layer, the mask layer + 1 and the water layer + 1 << 16, when they changed. */
-    extras?: Uint32Array<ArrayBuffer>;
+    /** Per layer, the mask layer + 1 (0 for none), when they changed. */
+    masks?: Uint32Array<ArrayBuffer>;
     /** The node of each level at the LOD map window's origin. */
     origins: [number, number][];
 }
@@ -96,8 +93,8 @@ interface Tile {
 /**
  * The page pools and what fills them. Stored pages come from the stored tiles, synthesized pages from
  * their deepest stored ancestor. The pools have a fixed size: the page that the frames wanted longest
- * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. Mask and
- * water layers go to the finest pages first; a drawn page without a water layer asks again each frame.
+ * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. Mask
+ * layers go to the finest pages first.
  */
 export class Pages {
     requests = 0;
@@ -109,14 +106,12 @@ export class Pages {
     missing = 0;
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
-    /** The nodes that the frame draws. */
-    private shown = new Set<string>();
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
     private readonly bodies = new Map<string, ArrayBuffer>();
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
-    private readonly extraFree: Record<'mask' | 'water', number[]>;
+    private maskFree: number[];
     private arrivals: { node: Node; data: PageData }[] = [];
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
@@ -128,9 +123,9 @@ export class Pages {
     private origins: [number, number][] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
-        private readonly stamps: StampSource = NO_STAMPS, readonly extraCapacity: Record<'mask' | 'water', number> = { mask: 0, water: 0 }) {
+        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
         this.free = { stored: range(0, capacity.stored), synth: range(capacity.stored, capacity.stored + capacity.synth) };
-        this.extraFree = { mask: range(0, extraCapacity.mask), water: range(0, extraCapacity.water) };
+        this.maskFree = range(0, maskCapacity);
     }
 
     get idle(): boolean {
@@ -152,10 +147,9 @@ export class Pages {
         return out;
     }
 
-    /** Takes the pages that a frame wants, coarse and near first, and those that it draws, and returns its GPU work. */
-    update(wanted: Node[], anchor: Anchor, drawn: Node[] = wanted): Work {
+    /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. */
+    update(wanted: Node[], anchor: Anchor): Work {
         this.frame++;
-        this.shown = new Set(drawn.map(key));
         this.shortage = 0;
         this.missing = 0;
         this.wanted = { stored: 0, synth: 0 };
@@ -184,16 +178,6 @@ export class Pages {
         for (const page of this.pages.values()) {
             if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
-        // A drawn page with water near it asks for a water layer until it has one, for a stamp job that
-        // writes only its water. A shortage does not lower the quality: a coarser view draws more pages with water.
-        for (const node of drawn) {
-            const page = this.pages.get(key(node));
-            if (!page?.dry || page.drawn === undefined) continue;
-            const stamps = this.stamps.get(node);
-            if (!stamps || this.busy(work, stamps.data?.length)) this.missing++;
-            else if (!stamps.data) page.dry = false;
-            else if (this.water(page)) work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
-        }
         for (const page of fresh) {
             this.dirty = true;
             work.normals.push(page);
@@ -206,7 +190,7 @@ export class Pages {
         }
         if (this.dirty) {
             work.map = this.map();
-            work.extras = this.extras();
+            work.masks = this.masks();
         }
         this.dirty = false;
         return work;
@@ -215,8 +199,7 @@ export class Pages {
     /** A lost device keeps the tiles that were absent and their bodies; every page comes again. */
     lost(): void {
         this.pages.clear();
-        this.extraFree.mask = range(0, this.extraCapacity.mask);
-        this.extraFree.water = range(0, this.extraCapacity.water);
+        this.maskFree = range(0, this.maskCapacity);
         this.arrivals = [];
         this.queued.clear();
         this.refresh.clear();
@@ -264,18 +247,17 @@ export class Pages {
         const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (!synth) return;
         synth.drawn = synth.slot;
-        synth.dry = stamps.water;
         if (stamps.data) {
-            const mode = (stamps.heights && !this.stamps.baked ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.extra(synth, 'mask') ? MODE.MASK : 0);
+            const mode = (stamps.heights && !this.stamps.baked ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.mask(synth) ? MODE.MASK : 0);
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
 
-    /** Whether the frame has no room for another arrival, synthesis or stamp job, or for `words` of stamp data. */
+    /** Whether the frame has no room for another arrival, synthesis or stamp, or for `words` of stamp data. */
     private busy(work: Work, words = 0): boolean {
         const used = work.stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0);
-        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || work.stamps.length >= ARRIVALS || used + words > STAMP_WORDS;
+        return work.uploads.length + work.syntheses.length + copies(work).length >= ARRIVALS || used + words > STAMP_WORDS;
     }
 
     /**
@@ -299,36 +281,28 @@ export class Pages {
             }
             page.copy = target = copy;
         }
-        page.dry = stamps.water;
         page.drawn = target;
         work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target, data: stamps.data, mode: MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) });
         return true;
     }
 
     /**
-     * A mask or water layer for a page: a free one, or the one of a page that the frame does not draw,
-     * wanted longest ago first, or else that of a coarser drawn page: the finest pages, near the eye, keep theirs.
+     * A mask layer for a page: a free one, or the one of the page that the frames wanted longest ago,
+     * or else that of a coarser page of this frame: the finest pages, near the eye, keep theirs.
      */
-    private extra(page: Page, kind: 'mask' | 'water'): boolean {
-        let slot = this.extraFree[kind].pop();
+    private mask(page: Page): boolean {
+        let slot = this.maskFree.pop();
         if (slot === undefined) {
-            const rank = (other: Page) => (this.shown.has(key(other.node)) ? other.node.level - page.node.level : other.used - this.frame - FINEST);
+            const rank = (other: Page) => (other.used < this.frame ? other.used - this.frame - FINEST : other.node.level - page.node.level);
             let donor: Page | undefined;
-            for (const other of this.pages.values()) if (other[kind] !== undefined && rank(other) < 0 && (!donor || rank(other) < rank(donor))) donor = other;
+            for (const other of this.pages.values()) if (other.mask !== undefined && rank(other) < 0 && (!donor || rank(other) < rank(donor))) donor = other;
             if (!donor) return false;
-            slot = donor[kind];
-            donor[kind] = undefined;
-            donor.dry ||= kind === 'water';
+            slot = donor.mask;
+            donor.mask = undefined;
         }
-        page[kind] = slot;
+        page.mask = slot;
         this.dirty = true;
         return true;
-    }
-
-    /** A water layer for a page; without one the page is dry. */
-    private water(page: Page): boolean {
-        page.dry = !this.extra(page, 'water');
-        return !page.dry;
     }
 
     /**
@@ -433,7 +407,7 @@ export class Pages {
         return page;
     }
 
-    /** A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its copy, mask and water. */
+    /** A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its copy and mask. */
     private slot(kind: Kind): number | undefined {
         const free = this.free[kind].pop();
         if (free !== undefined) return free;
@@ -444,8 +418,7 @@ export class Pages {
         this.refresh.delete(oldest);
         if (oldest.ready) this.dirty = true;
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
-        if (oldest.mask !== undefined) this.extraFree.mask.push(oldest.mask);
-        if (oldest.water !== undefined) this.extraFree.water.push(oldest.water);
+        if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
         return oldest.slot;
     }
 
@@ -472,13 +445,10 @@ export class Pages {
         return map;
     }
 
-    private extras(): Uint32Array<ArrayBuffer> {
-        const extras = new Uint32Array(this.capacity.stored + this.capacity.synth);
-        for (const page of this.pages.values()) {
-            if (page.drawn === undefined) continue;
-            extras[page.drawn] = (page.mask === undefined ? 0 : page.mask + 1) | (page.water === undefined ? 0 : (page.water + 1) << 16);
-        }
-        return extras;
+    private masks(): Uint32Array<ArrayBuffer> {
+        const masks = new Uint32Array(this.capacity.stored + this.capacity.synth);
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[page.drawn] = page.mask + 1;
+        return masks;
     }
 }
 

@@ -8,7 +8,7 @@ describe('the lab registry', () => {
     });
 
     it('refuses an unknown lab or variant and names the labs', () => {
-        expect(() => labsOf('?lab=terrain:naive')).toThrow('The lab "terrain:naive" does not exist. The labs are terrain:cdlod, terrain:rings, relief:bicubic, relief:erosion, pages:r32float, pages:r16, stamps:runtime, stamps:baked.');
+        expect(() => labsOf('?lab=terrain:naive')).toThrow('The lab "terrain:naive" does not exist. The labs are terrain:cdlod, terrain:rings, relief:bicubic, relief:erosion, pages:r32float, pages:r16, stamps:runtime, stamps:baked, stamps:none.');
         expect(() => labsOf('?lab=water')).toThrow(/does not exist/);
     });
 });

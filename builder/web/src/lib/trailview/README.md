@@ -3,8 +3,8 @@
 TrailView is the 3D view of the planner. The engine is TypeScript with raw WebGPU and WGSL, and
 it uses no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
 the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The feature
-tiles of `trailview-features` (specs/trailview-features.md) stamp the roads, paths and lakes into
-each page as it loads.
+tiles of `trailview-features` (specs/trailview-features.md) stamp the roads, paths, rivers and lakes
+into each page as it loads, and give the water its meshes.
 
 ## Build and run
 
@@ -27,7 +27,7 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec |
-| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask and water height (`features.wgsl`), the invariant audit (`audit.wgsl`) |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
 | `hud.ts` | The lab HUD |
@@ -60,7 +60,7 @@ at the same view.
 | `terrain` | `cdlod`, `rings`: the LOD rule of the one quadtree; no geometry clipmap is built |
 | `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
 | `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
-| `stamps` | `runtime`, `baked`: the stamps on every page as it loads, or conditioning baked into the stored levels, which the synthesized levels upsample |
+| `stamps` | `runtime`, `baked`, `none`: the stamps on every page as it loads, or conditioning baked into the stored levels, which the synthesized levels upsample; `none` draws neither stamps nor water |
 
 ## Shots and flights
 
@@ -122,8 +122,7 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the ring
   band of `lod.ts`; `lod.test.ts` holds both.
-- The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD. The
-  water layers go to the finest drawn pages: a coarser view draws more pages with water, not fewer.
+- The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - A stored page with stamps takes two layers: its raw heights for the syntheses below it, and a
   stamped copy that draws. Never let a synthesis read a stamped page.
 - `bins.ts` mirrors the gates of `stamp-core.wgsl`; `bins.test.ts` holds their numbers equal.

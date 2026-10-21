@@ -68,11 +68,14 @@ test('the probe gives the height that an instance shader evaluates, to 1 mm', as
     for (const [i, height] of probe.entries()) expect(Math.abs(height - instance[i])).toBeLessThan(1e-3);
 });
 
-/** The audit of the frame: no violation of a stamp at any level that the frame draws, and neighbouring nodes stamp the same texels. */
+/**
+ * The audit of the frame: no violation of a stamp at any level that the frame draws, one level per
+ * lake, no river that rises downstream, and neighbouring nodes stamp the same texels.
+ */
 async function audited(page) {
     const audit = await page.evaluate(() => window.trailView.audit());
     for (const [name, check] of Object.entries(audit.checks)) expect(check.violations, `${name}: ${JSON.stringify(audit.found)}`).toBe(0);
-    expect(audit.water.wrong).toBe(0);
+    expect([audit.levels.mixed, audit.rivers.rising]).toEqual([0, 0]);
     expect(audit.apron.checked).toBeGreaterThan(0);
     expect(audit.apron.differ).toBe(0);
     return audit;
@@ -89,16 +92,16 @@ test('the stamps hold along the roads of a village, and debug=mask draws them', 
         tv.view = { ...tv.view, debug: 'mask' };
         await tv.nextFrame();
     });
-    expect((await page.evaluate(() => window.trailView.stats())).terrain.extras.mask).toBeGreaterThan(0);
+    expect((await page.evaluate(() => window.trailView.stats())).terrain.masks).toBeGreaterThan(0);
     expect(errors).toEqual([]);
 });
 
-test('the stamps hold in a lake at every level that the frame draws, and its water height is its level', { tag: '@gpu' }, async ({ page }) => {
+test('the stamps hold in a lake at every level that the frame draws, at its one level', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, LAKE);
     const audit = await audited(page);
-    expect(audit.checks.inLake.checked).toBeGreaterThan(50);
-    expect(audit.water.checked).toBeGreaterThan(50);
+    expect(audit.checks.inWater.checked).toBeGreaterThan(50);
+    expect(audit.levels.lakes).toBeGreaterThan(0);
     expect(errors).toEqual([]);
 });
 

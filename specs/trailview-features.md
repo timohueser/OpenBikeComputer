@@ -104,8 +104,10 @@ The solvers of the bake set the heights of a feature. A feature with no height h
 The bake sets simple heights from the master terrain. Each vertex of a `main-road`, `road` or
 `path` that is not a bridge has the height of a straight line fitted to the terrain, sampled every
 2 m, over ±12 m of the line; near an end the window holds the part of it on the line. Roads that
-share a vertex take the mean of their heights there. Each vertex of a `lake` has the median of the terrain
-inside it. Other kinds have no height yet.
+share a vertex take the mean of their heights there. Each vertex of a `river` or `stream` that is not in a
+tunnel has that height too, but never higher than a vertex before it: OSM draws a waterway in the
+direction of its flow. Each vertex of a `lake` has the median of the terrain inside it. Other kinds
+have no height yet.
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of

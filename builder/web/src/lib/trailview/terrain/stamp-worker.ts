@@ -1,7 +1,9 @@
-// Bins the features of a node's feature tile for stamp.wgsl, and makes the audit samples of a node, off the main thread.
+// Bins the features of a node's feature tile for stamp.wgsl, makes the audit samples of a node and the
+// water meshes of a tile, off the main thread.
 import { decodeFeatures, type Feature } from '../stream/features';
-import { auditSamples } from './audit-samples';
+import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
+import { waterMesh } from './water-mesh';
 
 /** Decoded tiles kept, by name. */
 const KEPT = 24;
@@ -22,16 +24,21 @@ async function decoded(name: string, body: ArrayBuffer): Promise<Feature[]> {
     return features;
 }
 
-self.onmessage = async ({ data: { id, tile, node, body, baked, samples } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; baked: boolean; samples: boolean }>) => {
+export type Request = 'stamps' | 'samples' | 'water';
+
+self.onmessage = async ({ data: { id, tile, node, body, baked, what } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; baked: boolean; what: Request }>) => {
     try {
         const features = await decoded(`${tile.level}/${tile.x}/${tile.y}`, body);
-        if (samples) {
-            const result = auditSamples(features, tile, node);
-            self.postMessage({ id, result }, { transfer: [result.buffer] });
-            return;
+        if (what === 'samples') {
+            const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
+            self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
+        } else if (what === 'water') {
+            const result = waterMesh(features, tile);
+            self.postMessage({ id, result }, { transfer: result ? [result.vertices, result.indices.buffer] : [] });
+        } else {
+            const result = nodeStamps(features, tile, node, baked);
+            self.postMessage({ id, result }, { transfer: result.data ? [result.data.buffer] : [] });
         }
-        const result = nodeStamps(features, tile, node, baked);
-        self.postMessage({ id, result }, { transfer: result.data ? [result.data.buffer] : [] });
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
     }

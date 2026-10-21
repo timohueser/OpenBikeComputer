@@ -9,7 +9,7 @@ struct Sample {
     kind: u32,
     // The road height at `at`, or the lake level.
     expected: f32,
-    // The road's half-width.
+    // The half-width of the road or river, 0 for a lake.
     half: f32,
     // Metres from the shore.
     shore: f32,
@@ -44,14 +44,12 @@ override BAKED: bool = false;
 
 const CROSS_FALL: u32 = 1u;
 const ROAD_HEIGHT: u32 = 2u;
-const IN_LAKE: u32 = 3u;
+const IN_WATER: u32 = 3u;
 const ON_BANK: u32 = 4u;
-// counts: 0 water samples on a page without a water layer; per kind 1 to 4 at 4 × kind the checked
-// samples, the violations, the conflicts, the largest error in micrometres; 20 water checked, 21 water
-// wrong; 22 apron texels compared, 23 apron texels that differ; 24 the violations found.
-const WATER_CHECKS: u32 = 20u;
-const APRON_CHECKS: u32 = 22u;
-const FOUND: u32 = 24u;
+// counts: per kind 1 to 4 at 4 × kind the checked samples, the violations, the conflicts, the largest
+// error in micrometres; 20 apron texels compared, 21 apron texels that differ; 22 the violations found.
+const APRON_CHECKS: u32 = 20u;
+const FOUND: u32 = 22u;
 const FOUND_MAX: u32 = 64u;
 // Cross-fall on a carriageway, as the epic sets it, and a kink of the grade across one mesh cell: the
 // mesh draws a straight line between its vertices, 4 texels apart, so a bend or a change of grade of
@@ -167,31 +165,20 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         error(q.kind, e);
         return;
     }
-    if (q.kind == IN_LAKE) {
+    // A river shapes only the levels that show it.
+    if (q.half > 0.0 && (!river_shows(q.half, fine) || !river_shows(q.half, wide))) {
+        return;
+    }
+    if (q.kind == IN_WATER) {
         if (q.shore < reach) {
             return;
         }
-        atomicAdd(&counts[4u * IN_LAKE], 1u);
+        atomicAdd(&counts[4u * IN_WATER], 1u);
         let top = q.expected - LAKE_DEPTH + ROUNDING;
         if (drawn > top) {
-            violate(IN_LAKE, s, drawn, q.expected, level, q.shore);
+            violate(IN_WATER, s, drawn, q.expected, level, q.shore);
         }
-        error(IN_LAKE, drawn - q.expected + LAKE_DEPTH);
-        // A page that found no water layer in its pool cannot hold the level.
-        if (extras_of(level, texel_of(s, level).whole).y == 0u) {
-            atomicAdd(&counts[0], 1u);
-            return;
-        }
-        atomicAdd(&counts[WATER_CHECKS], 1u);
-        let water = water_at(s, level);
-        if (water != q.expected) {
-            atomicAdd(&counts[WATER_CHECKS + 1u], 1u);
-            let n = atomicAdd(&counts[FOUND], 1u);
-            if (n < FOUND_MAX) {
-                found[2u * n] = vec4f(s, water, q.expected);
-                found[2u * n + 1u] = vec4f(5.0, f32(level), q.shore, 0.0);
-            }
-        }
+        error(IN_WATER, drawn - q.expected + LAKE_DEPTH);
         return;
     }
     if (q.kind == ON_BANK) {

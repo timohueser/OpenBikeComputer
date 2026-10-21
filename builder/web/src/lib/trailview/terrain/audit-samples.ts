@@ -1,12 +1,12 @@
 // The samples of the invariant audit in a node, as audit.wgsl reads them: across each carriageway,
-// inside each lake and on its banks. A worker uses it.
+// in each lake and river and on their banks; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { features, insideRings, junctions, metresPerUnit, mitre, ROAD, type Line, type Node } from './bins';
+import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
-export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_LAKE = 3, ON_BANK = 4;
+export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4;
 /** Samples per node at most. */
 const MOST = 8192;
 /** Distances outside a shore at which banks are checked, in texels of the node and metres beyond. */
@@ -44,6 +44,26 @@ function shoreDistance(rings: number[][], x: number, y: number): number {
     return best;
 }
 
+/**
+ * The water levels of a tile: lakes, and lakes with more than one level; rivers, and rivers whose
+ * level rises downstream by more than the centimetre of the tiles.
+ */
+export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed: number; rivers: number; rising: number } {
+    const out = { lakes: 0, mixed: 0, rivers: 0, rising: 0 };
+    for (const { kind, parts } of list) {
+        const levels = new Set(parts.flatMap(({ z }) => (z ? Array.from(z).filter(Number.isFinite) : [])));
+        if (kind !== 'lake' || !levels.size) continue;
+        out.lakes++;
+        if (levels.size > 1) out.mixed++;
+    }
+    for (const { kind, z } of features(list, tile).lines) {
+        if (kind !== RIVER) continue;
+        out.rivers++;
+        if (z.some((level, i) => i > 0 && level > z[i - 1] + 0.005)) out.rising++;
+    }
+    return out;
+}
+
 /** The audit samples of a node from the features of its feature tile: SAMPLE words each. */
 export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Array<ArrayBuffer> {
     const { lines, lakes } = features(list, tile);
@@ -56,7 +76,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const push = (x: number, y: number, kind: number, expected: number, half: number, shore: number, junction = Infinity, junctionHalf = 0, other: [number, number] = [0, 0], otherExpected = 0) =>
         out.push([Math.round(x), Math.round(y), kind, f(expected), f(half), f(shore), f(junction), f(junctionHalf), Math.round(other[0]), Math.round(other[1]), f(otherExpected), 0]);
 
-    const joins = [...junctions(lines).values()];
+    const joins = [...junctions(lines.filter(line => line.kind !== RIVER)).values()];
     const step = Math.max(0.25, 2 * texel) / unit;
     for (const line of lines) {
         if (line.kind !== ROAD) continue;
@@ -82,11 +102,14 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             }
         }
     }
+    // A point under other water has no bank: a river's mouth in a lake, a river across a lake.
+    const rivers = lines.filter(line => line.kind === RIVER);
+    const wet = (x: number, y: number) => lakes.some(({ rings }) => insideRings(rings, x, y)) || rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], line.h / unit)));
     for (const { level, rings } of lakes) {
         // Inside: a grid over the node, every point at its distance from the shore.
         const grid = side / 32;
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
-            if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_LAKE, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
+            if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
         }
         // Banks: points outside each edge in the node, where the bank band begins.
         for (const ring of rings) {
@@ -96,7 +119,25 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
                     const d = (BANK_TEXELS * texel + extra) / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
-                    if (inNode(x, y) && !insideRings(rings, x, y)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                    if (inNode(x, y) && !wet(x, y)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                }
+            }
+        }
+    }
+    // Rivers: the middle of the river, and points across it where its bank band begins.
+    for (const line of rivers) {
+        for (let v = 0; v + 1 < line.z.length; v++) {
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), length = Math.hypot(bx - ax, by - ay);
+            if (!length) continue;
+            const across = [-(by - ay) / length, (bx - ax) / length], count = Math.ceil(length / step);
+            for (let i = 0; i < count; i++) {
+                const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
+                if (!inNode(cx, cy) || Number.isNaN(z)) continue;
+                push(cx, cy, IN_WATER, z, line.h, line.h);
+                for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
+                    const d = line.h + BANK_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
+                    const level = roadHeight(line, [x, y], 1.5 * d / unit);
+                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y)) push(x, y, ON_BANK, level, line.h, d - line.h);
                 }
             }
         }

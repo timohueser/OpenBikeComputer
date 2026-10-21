@@ -1,7 +1,7 @@
 // The stamp pass: each page that arrives or is synthesized gets its node's stamps before the mesh,
 // drawnHeight and the normals read it. A stored page keeps its raw heights for the syntheses below
 // it and draws a stamped copy; a synthesized page reads the raw stored pages only, so no level ever
-// upsamples a stamped parent. Near pages get the feature mask, pages with water the water height.
+// upsamples a stamped parent. Near pages get the feature mask.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
 
@@ -17,11 +17,6 @@ struct StampJob {
     base: u32,
     mode: u32,
     mask: u32,
-    water: u32,
-    // Three words, so that the struct is 48 bytes.
-    unused_a: u32,
-    unused_b: u32,
-    unused_c: u32,
 }
 
 @group(0) @binding(0) var<storage, read> stamp_jobs: array<StampJob>;
@@ -31,15 +26,13 @@ struct StampJob {
 @group(0) @binding(3) var<storage, read_write> extent: array<atomic<u32>>;
 @group(0) @binding(4) var mask_shape: texture_storage_2d_array<rgba8unorm, write>;
 @group(0) @binding(5) var mask_kind: texture_storage_2d_array<rgba8uint, write>;
-@group(0) @binding(6) var water_level: texture_storage_2d_array<r32float, write>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
-// Modes: stamp the heights, as the bake would (every feature, nominal margins), write the mask, the water, the extent.
+// Modes: stamp the heights, as the bake would (every feature, nominal margins), write the mask, the extent.
 const HEIGHTS: u32 = 1u;
 const BAKED: u32 = 2u;
 const MASK: u32 = 4u;
-const WATER: u32 = 8u;
-const EXTENT: u32 = 16u;
+const EXTENT: u32 = 8u;
 // The mask holds distances of ±MASK_RANGE metres in 0.1 m steps.
 const MASK_RANGE: f32 = 12.75;
 // Mask flags, as features.wgsl reads them.
@@ -86,8 +79,5 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             vec4f(distance_code(s.road), distance_code(s.shore), s.across * 0.5 + 0.5, distance_code(cut)));
         textureStore(mask_kind, in_layer(job.mask, t), job.mask >> 6u,
             vec4u(select(0u, s.surface, s.road < MASK_RANGE), select(0u, 1u, s.water > -1e29), flags, 0u));
-    }
-    if ((job.mode & WATER) != 0u) {
-        textureStore(water_level, in_layer(job.water, t), job.water >> 6u, vec4f(s.water, 0.0, 0.0, 0.0));
     }
 }

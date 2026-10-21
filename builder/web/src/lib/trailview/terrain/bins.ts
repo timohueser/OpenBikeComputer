@@ -15,7 +15,7 @@ const OFFSETS = GRID * GRID + 1;
 /** A cell entry of a lake marker: the lake's cell centre lies inside it. */
 export const INSIDE = 1 << 30;
 /** Primitive kinds, as in stamp-core.wgsl. */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5;
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6;
 /** Road flags: a ford, and the round caps of the core and the cone at the start and the end. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -32,6 +32,8 @@ type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
 const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
+/** The half-width of a waterway without a `width` tag. */
+const WATERWAYS: Record<string, number> = { river: 5, canal: 5, stream: 1 };
 
 export interface Node { level: number; x: number; y: number }
 
@@ -68,22 +70,24 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
 export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; closed: boolean }
-export interface Lake { level: number; rings: number[][] }
+/** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
+export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
 /**
- * As road_shows and path_shows of stamp-core.wgsl: whether a level with texels of this size can stamp
- * a line. bins.test.ts holds these numbers equal to the shader's.
+ * As road_shows, path_shows and river_shows of stamp-core.wgsl: whether a level with texels of this
+ * size can stamp a line. bins.test.ts holds these numbers equal to the shader's.
  */
 export const RULES = { BUFFER_M: 40, SHOW_CELLS: 1, MESH_TEXELS: 4, MARGIN_TEXELS: 13, CONE_LEAST: 5, BENCH_REACH: 3 } as const;
 
 export function shows(kind: number, h: number, texel: number, baked: boolean): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1;
     if (kind === PATH) return 2 * h >= texel && h + RULES.BENCH_REACH <= limit;
+    if (kind === RIVER) return 2 * h >= RULES.MESH_TEXELS * texel && h <= limit;
     const margin = baked ? 0 : RULES.MARGIN_TEXELS * texel;
     return (baked || 2 * h >= RULES.SHOW_CELLS * RULES.MESH_TEXELS * texel) && h + margin + RULES.CONE_LEAST <= limit;
 }
 
-/** The roads, paths and lakes of a tile that have heights, in world units. */
+/** The roads, paths, rivers and lakes of a tile that have heights, in world units. */
 export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: Lake[] } {
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
@@ -92,11 +96,13 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
         if (kind === 'lake') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
-            lakes.push({ level, rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()) });
+            lakes.push({ level, rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
             continue;
         }
-        if (!['main-road', 'road', 'path'].includes(kind) || (tags.bridge && tags.bridge !== 'no')) continue;
-        const surface = surfaceOf(tags), h = halfWidth(tags, surface), code = Object.keys(SURFACES).indexOf(surface) + 1;
+        const river = kind === 'river' || kind === 'stream';
+        if (!river && (!['main-road', 'road', 'path'].includes(kind) || (tags.bridge && tags.bridge !== 'no'))) continue;
+        const surface = surfaceOf(tags), width = parseFloat(tags.width ?? '');
+        const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
         for (const { xy, z } of parts) {
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m.
@@ -104,7 +110,7 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
             const flush = () => {
                 if (heights.length >= 2) {
                     const n = heights.length, closed = n >= 3 && run[0] === run[2 * n - 2] && run[1] === run[2 * n - 1];
-                    lines.push({ kind: kind === 'path' ? PATH : ROAD, xy: run, z: heights, h, code, ford: !!tags.ford && tags.ford !== 'no', closed });
+                    lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, xy: run, z: heights, h, code, ford: !!tags.ford && tags.ford !== 'no', closed });
                 }
                 run = [];
                 heights = [];
@@ -175,8 +181,6 @@ export interface NodeStamps {
     data: Uint32Array<ArrayBuffer> | null;
     /** A road, a path or a lake is near: the node may stamp heights. */
     heights: boolean;
-    /** A lake is near: the node gets a water page. */
-    water: boolean;
 }
 
 /**
@@ -207,7 +211,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
     const f = (value: number) => ((floats[0] = value), ints[0]);
 
-    const joins = junctions(lines);
+    const joins = junctions(lines.filter(line => line.kind !== RIVER));
     for (const { x, y, h, grade } of joins.values()) {
         const at = records.length;
         if (bin(0, at, [x, y, x, y]).length) record([x, y, 0, 0, JUNCTION, 0, f(h), f(grade)]);
@@ -229,7 +233,6 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
             heights ||= stamps;
         }
     });
-    let water = false;
     lakes.forEach(lake => {
         const box = [Infinity, Infinity, -Infinity, -Infinity];
         for (const ring of lake.rings) for (let i = 0; i < ring.length; i += 2) {
@@ -260,9 +263,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
         if (!marked.length) return;
         const marker = record([0, 0, 0, 0, LAKE, 0, f(lake.level)]);
         for (const entry of marked) cells[1][entry & ~INSIDE].push(marker | (entry & INSIDE));
-        water = heights = true;
+        heights = true;
     });
-    if (!records.length || (!heights && node.level < NEAR)) return { data: null, heights: false, water: false };
+    if (!records.length || (!heights && node.level < NEAR)) return { data: null, heights: false };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
     const count = entries.reduce((sum, list) => sum + list.length, 0);
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);
@@ -276,5 +279,5 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
     });
     data[HEAD + GRID * GRID] = count;
     records.forEach((words, r) => data.set(words.map(w => w >>> 0), HEAD + OFFSETS + count + RECORD * r));
-    return { data, heights, water };
+    return { data, heights };
 }

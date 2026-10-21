@@ -4,7 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, COARSEST, key, MAP, RANGE, select, size, type Node } from './lod';
-import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
+import { MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -125,9 +125,9 @@ describe('the stamps', () => {
     const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
-    const stamps = (baked: boolean, water = false): StampSource => {
+    const stamps = (baked: boolean): StampSource => {
         const asked = new Set<string>();
-        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, water } : void asked.add(key(node))) };
+        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : void asked.add(key(node))) };
     };
 
     it('draw a stored page as a stamped copy, keep its raw layer for the syntheses, and stamp a synthesized page as it is made', async () => {
@@ -160,21 +160,6 @@ describe('the stamps', () => {
             const ancestor = { level: 13, x: page.node.x >> (page.node.level - 13), y: page.node.y >> (page.node.level - 13) };
             expect(stamped.get(key(ancestor))).toBeLessThan(frame(work));
         }
-    });
-
-    it('keep the water layers for the finest pages, and give a dry page one when a layer frees', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false, true), { mask: 0, water: 8 });
-        const all = await settle(pages, wanted);
-        expect(Math.max(...all.map(work => work.stamps.length))).toBeLessThanOrEqual(ARRIVALS);
-        const drawn = () => wanted.map(node => pages.pages.get(key(node))!).filter(page => page.drawn !== undefined);
-        const dry = drawn().filter(page => page.dry), wet = drawn().filter(page => page.water !== undefined);
-        expect([wet.length, dry.length > 0]).toEqual([8, true]);
-        expect(Math.min(...wet.map(page => page.node.level))).toBeGreaterThanOrEqual(Math.max(...dry.map(page => page.node.level)));
-        // A view of fewer pages: the dry pages that it draws take the layers of the pages that it no longer draws.
-        const fewer = dry.slice(0, 8).map(({ node }) => node);
-        const works = await settle(pages, fewer, 2);
-        expect(fewer.map(node => pages.pages.get(key(node))!).every(page => page.water !== undefined && !page.dry)).toBe(true);
-        expect(works[0].stamps.filter(({ mode }) => mode === MODE.WATER)).toHaveLength(fewer.length);
     });
 });
 

@@ -12,15 +12,15 @@ import { featureTile } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, RINGS, rings, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
+import { Water } from './water';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
- * MiB. The feature masks and the water heights take their share of the stored budget.
+ * MiB. The feature masks take their share of the stored budget.
  */
 const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
-/** Feature masks of near pages (8 bytes per texel) and water heights (4 bytes per texel). */
-const EXTRAS = { mask: 64, water: 48 };
-const EXTRA_BYTES = PAGE * PAGE * (EXTRAS.mask * 8 + EXTRAS.water * 4);
+/** Feature masks of near pages, 8 bytes per texel. */
+const MASKS = 64, MASK_BYTES = PAGE * PAGE * MASKS * 8;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -39,11 +39,11 @@ const PROBE_STEP = 1;
 const READBACKS = 3;
 const RAD = Math.PI / 180;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
-const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 48, NODE_BYTES = 16;
+const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
-const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 25, FOUND = 64;
+const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 23, FOUND = 64;
 const GRID_INDICES = gridIndices();
 
 /** What the terrain draws from: the eye, its height above the ground, and the camera. */
@@ -69,16 +69,18 @@ export interface TerrainStats {
     quality: number;
     /** Pages stamped in the last frame. */
     stamps: number;
-    /** Masks and water pages in use. */
-    extras: Record<'mask' | 'water', number>;
+    /** Masks in use. */
+    masks: number;
 }
 
 /** What the audit counts, as audit.wgsl does. */
 export interface Audit {
     /** Per check: samples checked, violations, samples in a conflict, the largest error in metres. */
-    checks: Record<'crossFall' | 'roadHeight' | 'inLake' | 'onBank', { checked: number; violations: number; conflicts: number; largest: number }>;
-    /** Water heights checked, wrong, and missing where a page found no water layer in its pool. */
-    water: { checked: number; wrong: number; missing: number };
+    checks: Record<'crossFall' | 'roadHeight' | 'inWater' | 'onBank', { checked: number; violations: number; conflicts: number; largest: number }>;
+    /** Lakes of the frame's feature tiles, and those with more than one level. */
+    levels: { lakes: number; mixed: number };
+    /** Rivers of the frame's feature tiles, and those whose level rises downstream. */
+    rivers: { checked: number; rising: number };
     apron: { checked: number; differ: number };
     /** The first violations: kind, level, the point in LOD space, drawnHeight and the expected height. */
     found: { kind: number; level: number; s: [number, number]; drawn: number; expected: number; detail: number }[];
@@ -90,8 +92,7 @@ interface Resources {
     normals: GPUTexture;
     maskShapes: GPUTexture;
     maskKinds: GPUTexture;
-    water: GPUTexture;
-    extras: GPUBuffer;
+    masks: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     surface: GPUBuffer;
@@ -137,6 +138,7 @@ interface Resources {
 export class Terrain {
     readonly pages: Pages;
     readonly stamps: Stamps;
+    private readonly water: Water;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -166,9 +168,10 @@ export class Terrain {
         this.bounds = [west, north, east, south];
         const bytes = PAGE * PAGE * ((labs.pages === 'r16' ? 2 : 4) + 2);
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
-        const pages = Math.floor((BUDGET.stored + BUDGET.synth - EXTRA_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor(BUDGET.synth / bytes);
-        this.stamps = new Stamps(features, labs.stamps === 'baked', changed);
-        this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, EXTRAS);
+        const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor(BUDGET.synth / bytes);
+        this.stamps = new Stamps(labs.stamps === 'none' ? undefined : features, labs.stamps === 'baked', changed);
+        this.water = new Water(this.stamps);
+        this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
 
     get idle(): boolean {
@@ -192,15 +195,15 @@ export class Terrain {
     }
 
     get stats(): TerrainStats {
-        const resident = { stored: 0, synth: 0 }, extras = { mask: 0, water: 0 };
+        const resident = { stored: 0, synth: 0 };
+        let masks = 0;
         for (const page of this.pages.pages.values()) {
             if (page.ready) resident[page.kind] += page.copy === undefined ? 1 : 2;
-            if (page.mask !== undefined) extras.mask++;
-            if (page.water !== undefined) extras.water++;
+            if (page.mask !== undefined) masks++;
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            stamps: this.work?.stamps.length ?? 0, extras,
+            stamps: this.work?.stamps.length ?? 0, masks,
         };
     }
 
@@ -215,19 +218,18 @@ export class Terrain {
         const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
         const heights = gpu.texture('pages', { size: [side, side, layers], format: r16 ? 'r16uint' : 'r32uint', usage }, layers * side * side * (r16 ? 2 : 4));
         const normals = gpu.texture('pages', { size: [side, side, layers], format: 'rg8snorm', usage }, layers * side * side * 2);
-        // The masks and the water heights: written by the stamp pass, read by the shaders that draw.
-        const extra = (pages: number, format: GPUTextureFormat, bytes: number) => gpu.texture('features', {
-            size: [side, Math.ceil(Math.min(pages, LAYER_PAGES) / 8) * PAGE, Math.ceil(pages / LAYER_PAGES)], format, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, pages * texels * bytes);
+        // The masks: written by the stamp pass, read by the shaders that draw.
+        const mask = (format: GPUTextureFormat) => gpu.texture('features', {
+            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MASKS * texels * 4);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout'> = {
             gpu, heights, normals,
-            maskShapes: extra(EXTRAS.mask, 'rgba8unorm', 4),
-            maskKinds: extra(EXTRAS.mask, 'rgba8uint', 4),
-            water: extra(EXTRAS.water, 'r32float', 4),
-            extras: buffer('features', pages * 4, storage),
+            maskShapes: mask('rgba8unorm'),
+            maskKinds: mask('rgba8uint'),
+            masks: buffer('features', pages * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
@@ -266,11 +268,9 @@ export class Terrain {
         const stampLayout = layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }],
             [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }], [C, { storageTexture: { format: 'rgba8uint', viewDimension: '2d-array' } }],
-            [C, { storageTexture: { format: 'r32float', viewDimension: '2d-array' } }],
         ]);
         const featureLayout = layout([
             [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
-            [F, { texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } }],
         ]);
         const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: read }]]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
@@ -304,11 +304,12 @@ export class Terrain {
             compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, featureLayout), { ...constants, BAKED: baked }),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
-        device.queue.writeBuffer(r.extras, 0, new Uint32Array(pages));
+        device.queue.writeBuffer(r.masks, 0, new Uint32Array(pages));
+        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, depthFormat, constants);
         this.resources = {
             ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout,
-            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, view(r.maskShapes), view(r.maskKinds), view(r.water)]),
-            featureGroup: group(featureLayout, [{ buffer: r.extras }, view(r.maskShapes), view(r.maskKinds), view(r.water)]),
+            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, view(r.maskShapes), view(r.maskKinds)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.maskShapes), view(r.maskKinds)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
@@ -336,7 +337,8 @@ export class Terrain {
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.nodes = nodes.slice(0, MAX_NODES);
-        const work = this.pages.update(wanted, anchor, this.nodes);
+        this.water.update(this.nodes, this.stamps.baked);
+        const work = this.pages.update(wanted, anchor);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -437,6 +439,7 @@ export class Terrain {
         pass.setBindGroup(2, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
         pass.drawIndexed(GRID_INDICES.length, this.nodes.length);
+        this.water.draw(pass, r.surfaceGroup);
     }
 
     /**
@@ -486,7 +489,10 @@ export class Terrain {
         const r = this.resources;
         if (!r || !this.anchor) throw new Error('The audit runs after the first frame.');
         const { device } = r.gpu, nodes = this.nodes;
-        const lists = await Promise.all(nodes.map(node => this.stamps.samples(node)));
+        const results = await Promise.all(nodes.map(node => this.stamps.samples(node))), lists = results.map(({ samples }) => samples);
+        // The water levels of each feature tile that a drawn node reads, once.
+        const tiles = new Map(nodes.map((node, i) => [key(featureTile(node, this.stamps.baked) ?? node), results[i]]));
+        const sum = (name: 'lakes' | 'mixed' | 'rivers' | 'rising') => [...tiles.values()].reduce((total, result) => total + result[name], 0);
         // A drawn node at the edge of the frame borders culled nodes, whose pages may be absent: only what the frame shows counts.
         const visible = lists.map(list => Array.from({ length: list.length / SAMPLE_WORDS }, (_, k) => this.shows(list, k * SAMPLE_WORDS)));
         const total = visible.reduce((sum, list) => sum + list.filter(Boolean).length, 0), every = Math.max(1, Math.ceil(total / SAMPLES));
@@ -562,9 +568,10 @@ export class Terrain {
         const c = new Uint32Array(counts), f = new Float32Array(found);
         const check = (kind: number) => ({ checked: c[4 * kind], violations: c[4 * kind + 1], conflicts: c[4 * kind + 2], largest: c[4 * kind + 3] / 1e6 });
         return {
-            checks: { crossFall: check(1), roadHeight: check(2), inLake: check(3), onBank: check(4) },
-            water: { checked: c[20], wrong: c[21], missing: c[0] }, apron: { checked: c[22], differ: c[23] },
-            found: Array.from({ length: Math.min(c[24], FOUND) }, (_, i) => ({
+            checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4) },
+            levels: { lakes: sum('lakes'), mixed: sum('mixed') }, rivers: { checked: sum('rivers'), rising: sum('rising') },
+            apron: { checked: c[20], differ: c[21] },
+            found: Array.from({ length: Math.min(c[22], FOUND) }, (_, i) => ({
                 kind: f[8 * i + 4], level: f[8 * i + 5], s: [f[8 * i], f[8 * i + 1]] as [number, number], drawn: f[8 * i + 2], expected: f[8 * i + 3], detail: f[8 * i + 6],
             })),
         };
@@ -626,7 +633,7 @@ export class Terrain {
         const [a, b, c, d] = [forward[1], forward[2], forward[11], forward[12]], k = PROBE_STEP / (a * d - b * c);
         device.queue.writeBuffer(r.points, 0, new Float32Array([0, 0, d * k, -c * k, -d * k, c * k, -b * k, a * k, b * k, -a * k]));
         if (work.map) device.queue.writeBuffer(r.map, 0, work.map);
-        if (work.extras) device.queue.writeBuffer(r.extras, 0, work.extras);
+        if (work.masks) device.queue.writeBuffer(r.masks, 0, work.masks);
         for (const { page, data } of work.uploads) {
             device.queue.writeTexture({ texture: r.heights, origin: origin(page.slot) }, data.texels, { bytesPerRow: PAGE * data.texels.BYTES_PER_ELEMENT }, [PAGE, PAGE, 1]);
             if (r16) device.queue.writeBuffer(r.scales, 8 * page.slot, new Float32Array([data.offset, data.scale]));
@@ -642,6 +649,7 @@ export class Terrain {
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
+        this.water.write();
     }
 }
 
@@ -670,7 +678,7 @@ function stampJobs(stamps: Stamp[], r16: boolean, base = 0): { jobs: ArrayBuffer
         const w = (STAMP_JOB_BYTES / 4) * k;
         ints.set([page.node.x * PAGE, page.node.y * PAGE], w);
         words.set([page.node.level, node ? base + at : 0xffffffff, out, page.kind === 'stored' ? page.slot : SYNTHESIZED,
-            mode | (r16 && mode & MODE.HEIGHTS ? MODE.EXTENT : 0), page.mask ?? 0, page.water ?? 0], w + 2);
+            mode | (r16 && mode & MODE.HEIGHTS ? MODE.EXTENT : 0), page.mask ?? 0], w + 2);
         if (node) {
             data.set(node, at);
             at += node.length;

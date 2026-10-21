@@ -1,22 +1,36 @@
 import { featureTile, type NodeStamps } from './bins';
 import { key, type Node } from './lod';
 import type { StampSource } from './pages';
+import type { Request } from './stamp-worker';
+import type { WaterMesh } from './water-mesh';
 
-/** Feature tile bodies kept, and binned nodes kept. */
-const BODIES = 32 * 2 ** 20, NODES = 4096;
+/** Feature tile bodies kept, binned nodes kept, and water meshes kept. */
+const BODIES = 32 * 2 ** 20, NODES = 4096, MESHES = 256;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
-const NOTHING: NodeStamps = { data: null, heights: false, water: false };
+const NOTHING: NodeStamps = { data: null, heights: false };
 
 /** The body of feature tile z/x/y, undefined where it is absent. */
 export type FeatureTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
 
+/** The audit samples of a node, as audit.wgsl reads them, and the water levels of its feature tile. */
+export interface NodeSamples {
+    samples: Uint32Array<ArrayBuffer>;
+    lakes: number;
+    mixed: number;
+    rivers: number;
+    rising: number;
+}
+
+const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 0, rivers: 0, rising: 0 };
+
 /**
- * The binned features of each node, from the feature tiles, binned in a worker. A node without a
- * feature tile above it, or without a feature archive, stamps nothing.
+ * The binned features of each node and the water meshes of each feature tile, made in a worker. A node
+ * without a feature tile above it, or without a feature archive, stamps nothing and has no water.
  */
 export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeStamps>();
+    private readonly meshes = new Map<string, WaterMesh | null>();
     private readonly pending = new Set<string>();
     private readonly bodies = new Map<string, Promise<ArrayBuffer | undefined>>();
     private readonly sizes = new Map<string, number>();
@@ -49,7 +63,7 @@ export class Stamps implements StampSource {
         }
         if (!this.pending.has(name) && this.pending.size < REQUESTS) {
             this.pending.add(name);
-            this.ask<NodeStamps>(tile, node, false).then(stamps => this.keep(name, stamps), error => {
+            this.ask<NodeStamps>(tile, node, 'stamps').then(stamps => this.keep(name, stamps), error => {
                 // A tile that fails stamps nothing, as an absent one.
                 console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
                 this.failed++;
@@ -62,10 +76,30 @@ export class Stamps implements StampSource {
         return undefined;
     }
 
-    /** The audit samples of a node, as audit.wgsl reads them. */
-    async samples(node: Node): Promise<Uint32Array> {
+    /** The audit samples of a node. */
+    async samples(node: Node): Promise<NodeSamples> {
         const tile = featureTile(node, this.baked);
-        return this.tiles && tile ? this.ask<Uint32Array>(tile, node, true) : new Uint32Array(0);
+        return this.tiles && tile ? this.ask<NodeSamples>(tile, node, 'samples') : NO_SAMPLES;
+    }
+
+    /** The water mesh of a feature tile, null without water, undefined while it is on its way. */
+    mesh(tile: Node): WaterMesh | null | undefined {
+        const name = `water/${key(tile)}`, known = this.meshes.get(name);
+        if (!this.tiles) return null;
+        if (known !== undefined) return known;
+        if (!this.pending.has(name) && this.pending.size < REQUESTS) {
+            this.pending.add(name);
+            this.ask<WaterMesh | null>(tile, tile, 'water').then(mesh => mesh, () => {
+                this.failed++;
+                return null;
+            }).then(mesh => {
+                this.meshes.set(name, mesh);
+                if (this.meshes.size > MESHES) this.meshes.delete(this.meshes.keys().next().value!);
+                this.pending.delete(name);
+                this.changed();
+            });
+        }
+        return undefined;
     }
 
     private keep(name: string, stamps: NodeStamps): void {
@@ -73,13 +107,13 @@ export class Stamps implements StampSource {
         if (this.nodes.size > NODES) this.nodes.delete(this.nodes.keys().next().value!);
     }
 
-    private async ask<T>(tile: Node, node: Node, samples: boolean): Promise<T> {
+    private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
         const body = await this.body(tile);
-        if (!body) return (samples ? new Uint32Array(0) : NOTHING) as T;
+        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES, water: null } as const)[what] as T;
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, baked: this.baked, samples });
+            this.worker!.postMessage({ id, tile, node, body, baked: this.baked, what });
         });
     }
 

@@ -82,7 +82,7 @@ try {
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });
         if (values.gpu) await page.evaluate(heat);
         const start = await page.evaluate(() => ({ ...window.trailView.view }));
-        const frames = [], red = [], audit = { checks: {}, water: { checked: 0, wrong: 0, missing: 0 }, apron: { checked: 0, differ: 0 }, found: [] };
+        const frames = [], red = [], audit = { checks: {}, levels: { lakes: 0, mixed: 0 }, rivers: { checked: 0, rising: 0 }, apron: { checked: 0, differ: 0 }, found: [] };
         const stops = [values.cracks, values.audit].filter(Boolean).map(Number);
         // The frames run in the page, one per display frame, as a rider's flight does: a round trip per
         // frame leaves the GPU idle, and macOS then lowers its clock. Only a crack count or an audit leaves the page.
@@ -112,7 +112,7 @@ try {
                     for (const key of ['checked', 'violations', 'conflicts']) sum[key] += check[key];
                     sum.largest = Math.max(sum.largest, check.largest);
                 }
-                for (const part of ['water', 'apron']) for (const key of Object.keys(audit[part])) audit[part][key] += result[part][key];
+                for (const part of ['levels', 'rivers', 'apron']) for (const key of Object.keys(audit[part])) audit[part][key] += result[part][key];
                 audit.found.push(...result.found.slice(0, 8 - audit.found.length));
             }
             i = until + 1;

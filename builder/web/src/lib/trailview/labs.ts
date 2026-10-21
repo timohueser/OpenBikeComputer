@@ -14,10 +14,11 @@ export const LABS = {
     /** The page heights: float32, or 16 bits with an offset and a scale per page. */
     pages: ['r32float', 'r16'],
     /**
-     * The feature stamps: on every page at every level as it loads, or conditioning baked into the
-     * stored levels, which the synthesized levels upsample, with no stamp of their own.
+     * The feature stamps and the water: stamps on every page at every level as it loads, or conditioning
+     * baked into the stored levels, which the synthesized levels upsample, with no stamp of their own;
+     * or neither stamps nor water, as L1 draws the terrain.
      */
-    stamps: ['runtime', 'baked'],
+    stamps: ['runtime', 'baked', 'none'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Labs = { -readonly [K in keyof typeof LABS]: (typeof LABS)[K][number] };
