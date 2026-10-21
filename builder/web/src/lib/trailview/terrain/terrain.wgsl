@@ -93,8 +93,8 @@ fn fragment_main(in: Varyings) -> @location(0) vec4f {
         return vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0);
     }
     if (frame.debug == 4u) {
-        // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere: the float32 varyings of a
-        // pixel some km away lose about 1 cm on a steep slope.
+        // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere. The rounding of the float32
+        // position about the eye grows with the distance, so a far pixel on a steep slope can show red.
         let error = abs(drawn_height(in.s) - in.h);
         return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
     }
