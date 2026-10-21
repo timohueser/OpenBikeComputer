@@ -267,9 +267,10 @@ export class Terrain {
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
-        this.nodes = nodes.slice(0, MAX_NODES);
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
+        // After the update, so that a page draws in the frame that it arrives in.
+        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
