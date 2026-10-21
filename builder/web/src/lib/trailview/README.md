@@ -126,6 +126,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   "A valid external Instance reference no longer exists".
 - Chrome rounds timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
+- A `--gpu` run opens a browser window. `OBC_BROWSER_WS` names the endpoint of a Playwright browser
+  server that the scripts connect to instead, so many runs share one window.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;

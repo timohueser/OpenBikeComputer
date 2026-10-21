@@ -11,15 +11,14 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { chromium } from 'playwright';
-import { EXECUTABLE, routeFixture, serve, SWIFTSHADER } from './harness.js';
+import { launch, routeFixture, serve } from './harness.js';
 
 const PHOTOS = new URL('../../../../../fixtures/sources/peak-view/photos/', import.meta.url).pathname;
 const PHONE_M = 1.6;
 const { values } = parseArgs({ options: { tiles: { type: 'string' }, lab: { type: 'string' }, gpu: { type: 'boolean' } } });
 const photos = readdirSync(PHOTOS).filter(file => file.endsWith('.json')).map(file => ({ name: file.slice(0, -5), ...JSON.parse(readFileSync(PHOTOS + file, 'utf8')) }));
 const { origin, close } = await serve();
-const browser = await chromium.launch({ executablePath: EXECUTABLE, headless: !values.gpu, args: values.gpu ? [] : SWIFTSHADER });
+const browser = await launch(values.gpu);
 let failed = 0;
 try {
     for (const photo of photos) {

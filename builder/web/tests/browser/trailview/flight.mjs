@@ -19,8 +19,7 @@
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { chromium } from 'playwright';
-import { EXECUTABLE, redPixels, routeFixture, serve, SWIFTSHADER } from './harness.js';
+import { launch, redPixels, routeFixture, serve } from './harness.js';
 
 const { values } = parseArgs({
     options: {
@@ -35,10 +34,7 @@ const { values } = parseArgs({
 });
 const flights = JSON.parse(readFileSync(values.flights, 'utf8'));
 const { origin, close } = await serve();
-const browser = await chromium.launch({
-    executablePath: EXECUTABLE, headless: !values.gpu,
-    args: values.gpu ? ['--enable-webgpu-developer-features'] : SWIFTSHADER,
-});
+const browser = await launch(values.gpu);
 /**
  * Keeps the GPU at its high clock: macOS lowers the clock while a frame leaves the GPU time to spare, so
  * a pass then measures much longer than its work. Before each submit of the engine, a compute load

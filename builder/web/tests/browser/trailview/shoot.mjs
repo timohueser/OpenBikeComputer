@@ -13,8 +13,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chromium } from 'playwright';
-import { errorsOf, EXECUTABLE, redPixels, routeFixture, serve, SWIFTSHADER } from './harness.js';
+import { errorsOf, launch, redPixels, routeFixture, serve } from './harness.js';
 
 const { values } = parseArgs({
     options: {
@@ -31,7 +30,7 @@ const { values } = parseArgs({
 const views = JSON.parse(readFileSync(values.views, 'utf8'));
 mkdirSync(values.out, { recursive: true });
 const { origin, close } = await serve();
-const browser = await chromium.launch({ executablePath: EXECUTABLE, headless: !values.gpu, args: values.gpu ? [] : SWIFTSHADER });
+const browser = await launch(values.gpu);
 try {
     for (const { name, view } of views) {
         const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });

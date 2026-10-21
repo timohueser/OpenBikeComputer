@@ -1,12 +1,22 @@
 import { existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
+import { chromium } from 'playwright';
 import { PMTiles } from 'pmtiles';
 
 /** WebGPU on the CPU: SwiftShader draws the same picture as a GPU, slowly. Its times say nothing about a GPU. */
 export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'];
 /** A Chromium other than the one Playwright installed, such as /opt/pw-browsers/chromium. */
 export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
+/**
+ * The browser of a script: with `gpu`, the machine's GPU in a window, else SwiftShader headless. With
+ * OBC_BROWSER_WS set, it connects to that Playwright browser server instead, so GPU runs reuse one
+ * window; closing it then only disconnects.
+ */
+export function launch(gpu) {
+    if (process.env.OBC_BROWSER_WS) return chromium.connect(process.env.OBC_BROWSER_WS);
+    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features'] : SWIFTSHADER });
+}
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
