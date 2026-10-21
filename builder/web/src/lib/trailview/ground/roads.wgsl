@@ -13,6 +13,8 @@ struct Road {
     colour: vec3f,
     // The share of the pixel that the road covers.
     cover: f32,
+    // On a cut or a fill face of a paved road, where a steep face is a retaining wall: faded as the paint.
+    wall: f32,
 }
 
 // The share of a pixel w metres wide, centred on x, that falls inside [a, b].
@@ -50,30 +52,46 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f
     return c;
 }
 
+// A retaining wall of `stone`, `along` metres along its face and `altitude` up it, seen by a pixel w
+// metres wide: courses 0.42 m high of blocks 0.9 m long, each its own tone, in dark joints.
+fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
+    let course = altitude / 0.42;
+    let row = floor(course);
+    let block = along / 0.9 + 0.5 * row + 0.3 * hash(vec2f(row, 7.0));
+    let near = 1.0 - smoothstep(0.3, 1.0, w);
+    let c = stone * (1.0 + 0.3 * (hash(vec2f(floor(block), row)) - 0.5) * near);
+    let bed = abs(fract(course + 0.5) - 0.5) * 0.42;
+    let head = abs(fract(block + 0.5) - 0.5) * 0.9;
+    let joint = max(band(bed, -0.025, 0.025, w), band(head, -0.025, 0.025, w));
+    // Far off, the joints are a share of the tone.
+    return c * mix(0.93, 1.0 - 0.45 * joint, near);
+}
+
 // The road at a point of the ground: `s` in LOD space, `p` in world metres, a pixel `w` metres wide,
 // over `ground`, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, ground: vec3f, region: u32) -> Road {
     if (!PAINT) {
-        return Road(ground, 0.0);
+        return Road(ground, 0.0, 0.0);
     }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
-        return Road(ground, 0.0);
+        return Road(ground, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return Road(ground, 0.0);
+        return Road(ground, 0.0, 0.0);
     }
+    let code = min(mask.kind.x, 6u);
+    let wall = select(0.0, reach * mask.shape.w, code <= 2u);
     var edge = mask_metres(mask.shape.x);
     if (edge > w + 0.5) {
-        return Road(ground, 0.0);
+        return Road(ground, 0.0, wall);
     }
     let across = abs(mask_metres(mask.shape.z));
     let half = max(across - edge, 0.05);
-    let code = min(mask.kind.x, 6u);
     let colour = road_surface(region, code, max(-edge, 0.0), across, p, w, ground);
     // Unpaved edges fray into the ground.
     if (code > 2u) {
@@ -81,5 +99,5 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, ground: vec3f, region: u32
     }
     let thin = max(0.0, 0.5 * w - half);
     let cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35) * reach;
-    return Road(colour, cover);
+    return Road(colour, cover, wall);
 }

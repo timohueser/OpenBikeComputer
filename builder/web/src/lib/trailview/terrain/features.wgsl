@@ -47,8 +47,13 @@ fn mask_flags(page: u32, t: vec2i) -> u32 {
     return mask_byte(page, t) >> 3u;
 }
 
+// 1 where a texel lies on a road's cut or fill face.
+fn faced(texel: vec4f) -> f32 {
+    return select(0.0, 1.0, ((u32(round(texel.w * 255.0)) >> 3u) & WALL) != 0u);
+}
+
 struct Mask {
-    // The distances of the texel layout, and w 0.
+    // The distances of the texel layout, and in w the share of the texels on a road's cut or fill face.
     shape: vec4f,
     // The surface code, 1 in water, the flags.
     kind: vec4u,
@@ -56,9 +61,9 @@ struct Mask {
     level: u32,
 }
 
-// The mask at a point, from the finest page at or above `top` that has a mask: the shapes filtered
-// between the four texels around the point, held in that page, so that an edge is smooth below a
-// texel; the kinds of the nearest texel.
+// The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the
+// faces filtered between the four texels around the point, held in that page, so that an edge is
+// smooth below a texel; the kinds of the nearest texel.
 // With `roads`, none where the nearest texel holds no road within MASK_M: one texel read decides.
 fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     for (var level = top; level >= MASK_LEVEL; level--) {
@@ -74,9 +79,10 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let first = (whole >> vec2u(8u)) << vec2u(8u);
             let a = clamp(t.whole, first, first + vec2i(255));
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
-            let shape = mix(mix(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), t.part.x),
-                mix(shape_at(page, vec2i(a.x, b.y)), shape_at(page, b), t.part.x), t.part.y);
-            return Mask(vec4f(shape.xyz, 0.0), vec4u(byte & 7u, select(0u, 1u, shape.y < 0.5), byte >> 3u, 0u), level);
+            let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
+            let shape = mix(mix(ab[0], ab[1], t.part.x), mix(ab[2], ab[3], t.part.x), t.part.y);
+            let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
+            return Mask(vec4f(shape.xyz, face), vec4u(byte & 7u, select(0u, 1u, shape.y < 0.5), byte >> 3u, 0u), level);
         }
     }
     return Mask(vec4f(0.5), vec4u(0u), 0u);

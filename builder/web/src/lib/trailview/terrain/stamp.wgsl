@@ -13,7 +13,8 @@ struct StampJob {
     data: u32,
     // The page in `out` that receives the heights, and that holds the synthesized base.
     out: u32,
-    // The raw stored page that is the base, or SYNTHESIZED for the base in `out`.
+    // The raw stored page that is the base, or SYNTHESIZED for the base in `out`; for a mask alone,
+    // the drawn page.
     base: u32,
     mode: u32,
     mask: u32,
@@ -33,9 +34,13 @@ const UNKNOWN32: u32 = 0xffffffffu;
 // Modes: stamp the heights, write the mask.
 const HEIGHTS: u32 = 1u;
 const MASK: u32 = 4u;
+// A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
+// page's 16-bit heights.
+const FACE_M: f32 = 0.02;
 // The mask holds distances of ±MASK_RANGE metres in 0.1 m steps.
 const MASK_RANGE: f32 = 12.75;
 // Mask flags, as features.wgsl reads them.
+const WALL_FLAG: u32 = 2u;
 const CONFLICT_FLAG: u32 = 4u;
 const FORD_FLAG: u32 = 8u;
 
@@ -56,6 +61,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_at(job.level, job.first, job.data, p);
+    var h = NONE;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;
         var base = NONE;
@@ -65,7 +71,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         } else {
             base = slot_height(job.base, t);
         }
-        let h = select(NONE, clamp(base, s.lo, s.hi), known(base));
+        h = select(NONE, clamp(base, s.lo, s.hi), known(base));
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -73,7 +79,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         }
     }
     if ((job.mode & MASK) != 0u) {
-        let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
+        if ((job.mode & HEIGHTS) == 0u) {
+            h = slot_height(job.base, t);
+        }
+        // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
+        let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
+        let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
         let byte = select(0u, s.surface, s.road < MASK_RANGE) | (flags << 3u);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(s.road), distance_code(s.shore), distance_code(s.across), f32(byte) / 255.0));

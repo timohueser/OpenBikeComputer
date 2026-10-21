@@ -253,12 +253,15 @@ struct Stamp {
     shore: f32,
     // The nearest lake shore alone, negative in a lake.
     lake: f32,
+    // Whether the cones of the roads hold the lower bound (a fill) and the upper bound (a cut).
+    fill: bool,
+    cut: bool,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -293,6 +296,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var line = NO_DATA;
     var line_near = false;
     var line_held = false;
+    // The metres from the road that holds each bound of the cones.
+    var cone_lo_x = INF;
+    var cone_hi_x = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
@@ -378,8 +384,16 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let x = max(0.0, g.lateral - h);
                 let reach = cone_reach(h, rule, texel);
                 if (g.cone && x < reach) {
-                    lo[CONES] = max(lo[CONES], g.z - (tol + widen(x, reach, rule.fill)));
-                    hi[CONES] = min(hi[CONES], g.z + (tol + widen(x, reach, rule.cut)));
+                    let l = g.z - (tol + widen(x, reach, rule.fill));
+                    let u = g.z + (tol + widen(x, reach, rule.cut));
+                    if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
+                        lo[CONES] = l;
+                        cone_lo_x = x;
+                    }
+                    if (u < hi[CONES] || (u == hi[CONES] && x < cone_hi_x)) {
+                        hi[CONES] = u;
+                        cone_hi_x = x;
+                    }
                 }
             } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
@@ -412,8 +426,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             hi[CONES] = INF;
         }
     }
-    // A conflict, which the mask flags: an empty bucket holds the middle of its bounds, and a bucket
-    // outside the interval pulls it to its nearest end. So the height has no step where a conflict begins.
+    // A conflict, which the mask flags: an empty bucket holds the middle of its bounds, but for the
+    // cones, and a bucket outside the interval pulls it to its nearest end. So the height has no step
+    // where a conflict begins.
     for (var b = 0u; b < BUCKETS; b++) {
         if (lo[b] <= -INF && hi[b] >= INF) {
             continue;
@@ -422,7 +437,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         var u = hi[b];
         if (l > u) {
             out.conflict = true;
-            l = 0.5 * (l + u);
+            // The cones of two roads: the nearer road's face holds, so the ground steps where the
+            // two are equally far, by nothing where the conflict begins. The look draws a wall there.
+            if (b == CONES) {
+                l = select(u, l, cone_lo_x < cone_hi_x);
+            } else {
+                l = 0.5 * (l + u);
+            }
             u = l;
         }
         if (l > out.hi || u < out.lo) {
@@ -432,8 +453,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             out.hi = end;
             continue;
         }
-        out.lo = max(out.lo, l);
-        out.hi = min(out.hi, u);
+        if (l > out.lo) {
+            out.lo = l;
+            out.fill = b == CONES;
+        }
+        if (u < out.hi) {
+            out.hi = u;
+            out.cut = b == CONES;
+        }
     }
     return out;
 }

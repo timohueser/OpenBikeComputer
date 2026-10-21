@@ -709,7 +709,7 @@ function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32
     stamps.forEach(({ page, out, data: node, mode }, k) => {
         const w = (STAMP_JOB_BYTES / 4) * k;
         ints.set([page.node.x * PAGE, page.node.y * PAGE], w);
-        words.set([page.node.level, node ? base + at : 0xffffffff, out, page.kind === 'stored' ? page.slot : SYNTHESIZED, mode, page.mask ?? 0], w + 2);
+        words.set([page.node.level, node ? base + at : 0xffffffff, out, page.kind === 'stored' || !(mode & MODE.HEIGHTS) ? page.slot : SYNTHESIZED, mode, page.mask ?? 0], w + 2);
         if (node) {
             data.set(node, at);
             at += node.length;

@@ -47,7 +47,7 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, conflicts red, fords cyan) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, cut and fill faces orange, conflicts red, fords cyan) |
 | `lab` | `name:variant`, a list with commas |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.

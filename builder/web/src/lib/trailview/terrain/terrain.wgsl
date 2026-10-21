@@ -55,7 +55,8 @@ const MASK_VIEW: u32 = 10u;
 const SURFACE_COLOURS = array<vec3f, 6>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
     vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55));
 
-// The decoded features, flat on grey terrain: water blue, roads by surface, conflicts red, fords cyan.
+// The decoded features, flat on grey terrain: water blue, roads by surface, cut and fill faces
+// orange, conflicts red, fords cyan.
 fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
     let mask = mask_at(s, u32(ceil(lod(s))), false);
     var colour = grey;
@@ -68,6 +69,7 @@ fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
     if (mask.kind.x != 0u && mask.shape.x < 0.5) {
         colour = select(SURFACE_COLOURS[min(mask.kind.x, 6u) - 1u], vec3f(0.2, 0.85, 0.9), (mask.kind.z & FORDED) != 0u);
     }
+    colour = mix(colour, vec3f(0.95, 0.55, 0.1), 0.7 * mask.shape.w);
     if ((mask.kind.z & CONFLICT) != 0u) {
         colour = vec3f(0.9, 0.1, 0.1);
     }

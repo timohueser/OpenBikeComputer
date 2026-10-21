@@ -412,6 +412,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let region = g.region;
     // The road paint first, so that only its colour and cover stay live through the rest.
     let road = road_at(s, world, footprint, length(relative.xy), g.albedo, region);
+    // A cut or a fill face of a paved road steeper than about 55° is a retaining wall, but for a cut in
+    // bare rock. The ground's normals, not the mesh's facets, so that its edge does not follow the triangles.
+    let masoned = road.wall * (1.0 - smoothstep(0.5, 0.65, n.z)) * (1.0 - road.cover) * (1.0 - g.barren);
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
@@ -483,6 +486,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
     albedo = mix(albedo, road.colour, road.cover);
+    if (masoned > 0.0) {
+        let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
+        albedo = mix(albedo, masonry(stone, dot(world, normalize(vec2f(-facet.y, facet.x) + 1e-6)), altitude, surface_size), masoned);
+    }
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
@@ -510,7 +517,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (view >= 5u) {
         return ground_debug(view, level, s, g) * (0.45 + 0.55 * max(dot(n, vec3f(-0.4, 0.4, 0.82)), 0.0));
     }
-    let walled = steep * (1.0 - g.tree) * (1.0 - road.cover);
+    let walled = steep * (1.0 - g.tree) * (1.0 - road.cover) * (1.0 - masoned);
     if (walled > 0.0) {
         // Variegated clays erode into badlands, so their beds show on gentler slopes: red, white and
         // green-grey, streaked by gullies.
