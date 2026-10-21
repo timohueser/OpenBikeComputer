@@ -1,6 +1,6 @@
 // The probe: drawnHeight at points of LOD space, read back to the CPU, such as the ground under the
 // eye. `check_vertex` evaluates the same points in a vertex shader, as an object instance does.
-// #include drawn-height.wgsl
+// #include drawn-mesh.wgsl
 
 @group(0) @binding(0) var<storage, read> points: array<vec2f>;
 @group(0) @binding(1) var<storage, read_write> probed: array<f32>;

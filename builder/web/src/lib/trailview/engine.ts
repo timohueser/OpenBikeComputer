@@ -9,6 +9,7 @@ import { Ground, type GroundStats } from './ground/ground';
 import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Sky } from './light/sky';
+import type { Labs } from './labs';
 import { GroundSource } from './stream/ground';
 import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
@@ -75,12 +76,12 @@ export class TrailView {
     private drawn = 0;
     private rendered: (() => void)[] = [];
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, labs: Labs) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request(), labs.edges === 'snap');
         this.groundLook = new Ground(ground, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
@@ -91,9 +92,9 @@ export class TrailView {
     }
 
     /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, labs: Labs = {}): Promise<TrailView> {
         const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, labs);
         await engine.attach(gpu);
         engine.request();
         return engine;

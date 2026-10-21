@@ -126,6 +126,7 @@ interface Resources {
     probeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
+    emptyGroup: GPUBindGroup;
     mesh: GPURenderPipeline;
     plainMesh: GPURenderPipeline;
     synthesize: GPUComputePipeline;
@@ -177,7 +178,7 @@ export class Terrain {
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
     private floor = 0;
 
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, private readonly snap = false) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // 16-bit heights and rg8snorm normals.
@@ -248,7 +249,7 @@ export class Terrain {
         }, MASK_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
             mask,
@@ -289,7 +290,7 @@ export class Terrain {
         const quantizeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const probeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const checkLayout = layout([[GPUShaderStage.VERTEX, { buffer: read }]]);
-        const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
+        const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
         const stampLayout = layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
             [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
@@ -297,7 +298,7 @@ export class Terrain {
         const featureLayout = layout([
             [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
         ]);
-        // The audit reads the feature mask in group 3, where the terrain draw has it after the ground.
+        // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
         const emptyLayout = layout([]);
         const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }], [C, { buffer: read }]]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
@@ -305,12 +306,14 @@ export class Terrain {
 
         const swap = device.features.has('clip-distances') ? CLIP_DISTANCES : {};
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
-        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
-            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
+        // The mesh's snap onto the road edges, for every shader that draws or evaluates the mesh.
+        const constants = { SNAP: this.snap ? 1 : 0 };
+        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout, mesh = false) =>
+            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint, ...(mesh ? { constants } : {}) } });
         const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
             label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-            vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
-            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
+            vertex: { module: modules.terrain, entryPoint: 'vertex_main', constants },
+            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { ...constants, PAINT: paint ? 1 : 0 } },
             primitive: { topology: 'triangle-list' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
@@ -319,16 +322,16 @@ export class Terrain {
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
             compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
-            compute('probe', 'probe', pipelineLayout(probeLayout, surfaceLayout)),
+            compute('probe', 'probe', pipelineLayout(probeLayout, surfaceLayout, emptyLayout, featureLayout), true),
             device.createRenderPipelineAsync({
-                label: 'check', layout: pipelineLayout(checkLayout, surfaceLayout),
-                vertex: { module: modules.probe, entryPoint: 'check_vertex' },
+                label: 'check', layout: pipelineLayout(checkLayout, surfaceLayout, emptyLayout, featureLayout),
+                vertex: { module: modules.probe, entryPoint: 'check_vertex', constants },
                 fragment: { module: modules.probe, entryPoint: 'check_fragment', targets: [{ format: 'r32float' }] },
                 primitive: { topology: 'point-list' },
             }),
             compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
-            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
-            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
+            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout), true),
+            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout), true),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
@@ -338,6 +341,7 @@ export class Terrain {
             ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask)]),
+            emptyGroup: group(emptyLayout, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
@@ -443,6 +447,8 @@ export class Terrain {
         probe.setPipeline(r.probe);
         probe.setBindGroup(0, r.probeGroup);
         probe.setBindGroup(1, r.surfaceGroup);
+        probe.setBindGroup(2, r.emptyGroup);
+        probe.setBindGroup(3, r.featureGroup);
         probe.dispatchWorkgroups(1);
         probe.end();
         encoder.copyBufferToBuffer(r.probed, 0, readback, 0, 20);
@@ -496,12 +502,16 @@ export class Terrain {
         compute.setPipeline(r.probe);
         compute.setBindGroup(0, device.createBindGroup({ layout: r.probeLayout, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: output } }] }));
         compute.setBindGroup(1, r.surfaceGroup);
+        compute.setBindGroup(2, r.emptyGroup);
+        compute.setBindGroup(3, r.featureGroup);
         compute.dispatchWorkgroups(1);
         compute.end();
         const render = encoder.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] });
         render.setPipeline(r.check);
         render.setBindGroup(0, device.createBindGroup({ layout: r.checkLayout, entries: [{ binding: 0, resource: { buffer: input } }] }));
         render.setBindGroup(1, r.surfaceGroup);
+        render.setBindGroup(2, r.emptyGroup);
+        render.setBindGroup(3, r.featureGroup);
         render.draw(n);
         render.end();
         encoder.copyBufferToBuffer(output, 0, read[0], 0, 4 * n);
@@ -582,7 +592,7 @@ export class Terrain {
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
-        pass.setBindGroup(2, device.createBindGroup({ layout: r.emptyLayout, entries: [] }));
+        pass.setBindGroup(2, r.emptyGroup);
         pass.setBindGroup(3, r.featureGroup);
         if (n) {
             pass.setPipeline(r.audit);

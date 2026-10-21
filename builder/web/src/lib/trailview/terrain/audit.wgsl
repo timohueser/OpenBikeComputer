@@ -1,7 +1,7 @@
 // The invariant audit: drawnHeight at samples along the features near the eye, checked against what
 // the stamps promise at the level that draws each sample, and the stamps of neighbouring nodes at
 // the texels on both sides of their border.
-// #include features.wgsl
+// #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 
 struct Sample {
