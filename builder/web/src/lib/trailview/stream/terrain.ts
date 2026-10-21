@@ -1,7 +1,7 @@
 import { PMTiles } from 'pmtiles';
 import type { PlannerConfig } from '../../planner/config';
 import { fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
-import type { PageData, PageFormat } from './heights';
+import type { PageData } from './heights';
 
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
 export const TILE_ZOOM = 13;
@@ -44,7 +44,7 @@ export function releaseTiles(config: PlannerConfig): TerrainSource['fetch'] {
 }
 
 /** The pages of tile bodies, decoded in workers. */
-export function pageDecoder(format: PageFormat): TerrainSource['decode'] {
+export function pageDecoder(): TerrainSource['decode'] {
     const workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./decode-worker.ts', import.meta.url), { type: 'module' }));
     const waiting = new Map<number, { resolve: (pages: (PageData | null)[]) => void; reject: (error: Error) => void }>();
     for (const worker of workers) {
@@ -60,7 +60,7 @@ export function pageDecoder(format: PageFormat): TerrainSource['decode'] {
         const id = next++;
         return new Promise((resolve, reject) => {
             waiting.set(id, { resolve, reject });
-            workers[id % WORKERS].postMessage({ id, body, format });
+            workers[id % WORKERS].postMessage({ id, body });
         });
     };
 }

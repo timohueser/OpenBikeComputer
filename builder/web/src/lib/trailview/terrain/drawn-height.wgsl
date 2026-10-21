@@ -14,13 +14,13 @@ struct Surface {
     unit: f32,
     // The eye's height above the ground, for the LOD.
     above: f32,
-    // CDLOD: the distance where the LOD is 0. Rings: the ring half-width in nodes.
+    // The distance where the LOD is 0.
     range: f32,
     // The finest level that draws.
     finest: u32,
     // The cubic from LOD space to render space (frame metres about the eye): 10 coefficients of x, then 10 of y.
     forward: array<vec4f, 5>,
-    // Per level: xy the node at the origin of its LOD map window, zw the ring centre in units about the anchor.
+    // Per level: xy the node at the origin of its LOD map window. zw is unused: a uniform array element takes 16 bytes.
     levels: array<vec4i, 19>,
 }
 
@@ -29,17 +29,14 @@ struct Surface {
 // 16 bits, and of the raw stored page in the high 16 bits (0 for a synthesized page). A stored page
 // with stamps draws a stamped copy.
 @group(1) @binding(1) var<storage, read> lod_map: array<u32>;
-// Per texel: the bits of a float32 height, or an r16 code with an offset and a scale per page. A
-// page is one of 8 × 8 tiles of a layer.
+// Per texel: a 16-bit code; the height is the page's offset + code × its scale. A page is one of
+// 8 × 8 tiles of a layer.
 @group(1) @binding(2) var heights: texture_2d_array<u32>;
 @group(1) @binding(3) var<storage, read> scales: array<vec2f>;
 // Per texel: x east and y north of the unit normal.
 @group(1) @binding(4) var normals: texture_2d_array<f32>;
 // For textureGather only: it reads the four texels of a 2 × 2 quad in one access, unfiltered.
 @group(1) @binding(5) var quad_sampler: sampler;
-
-override RINGS: bool = false;
-override R16: bool = false;
 
 const MAP: i32 = 32;
 // Texels across a layer: 8 pages of 256.
@@ -48,7 +45,6 @@ const COARSEST: u32 = 1u;
 const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
 const MARGIN: f32 = 1e-3;
-const UNKNOWN32: u32 = 0xffffffffu;
 const UNKNOWN16: u32 = 0xffffu;
 // A height that no page knows. Never NaN: shader compilers may assume that there is none.
 const NONE: f32 = -1e30;
@@ -147,17 +143,11 @@ fn quad_at(page: u32, t: vec2i) -> vec2f {
 
 // The height of a raw texel of a page; NONE for unknown.
 fn decode(page: u32, raw: u32) -> f32 {
-    if (R16) {
-        if (raw == UNKNOWN16) {
-            return NONE;
-        }
-        let scale = scales[page];
-        return scale.x + f32(raw) * scale.y;
-    }
-    if (raw == UNKNOWN32) {
+    if (raw == UNKNOWN16) {
         return NONE;
     }
-    return bitcast<f32>(raw);
+    let scale = scales[page];
+    return scale.x + f32(raw) * scale.y;
 }
 
 // The bilinear height between four texels, or NONE unless all four are known.
@@ -202,26 +192,9 @@ fn units_height(u: vec2i, top: u32) -> f32 {
 
 // The LOD at a point: a whole level on its plateau, and between two levels in a morph band.
 fn lod(s: vec2f) -> f32 {
-    if (RINGS) {
-        return ring_lod(s);
-    }
     let q = log2(surface.range / length(vec3f(s, surface.above)));
     let k = floor(q);
     return clamp(k - 1.0 + min(1.0, (q - k) / MORPH), f32(COARSEST), f32(surface.finest));
-}
-
-// The finest ring that holds the point, and its blend by the distance from the eye in nodes.
-fn ring_lod(s: vec2f) -> f32 {
-    let u = units_of(s);
-    let e = max(abs(s.x), abs(s.y)) / surface.unit;
-    for (var level = surface.finest; level > COARSEST; level--) {
-        let size = f32(1 << (30u - level));
-        let c = vec2f(surface.levels[level].zw);
-        if (max(abs(u.x - c.x), abs(u.y - c.y)) <= surface.range * size) {
-            return f32(level) - clamp((e / size - (surface.range * 0.5 + 0.55)) / (surface.range * 0.5 - 1.6), 0.0, 1.0);
-        }
-    }
-    return f32(COARSEST);
 }
 
 // Whether the selection splits the node of a level that holds a point at `u` units about the anchor,
@@ -234,11 +207,6 @@ fn splits(level: u32, u: vec2f) -> bool {
     let low = surface.anchor & vec2i((1 << shift) - 1);
     let corner = vec2f(vec2i(floor((vec2f(low) + u) / f32(1 << shift))) * (1 << shift) - low);
     let size = f32(1 << shift);
-    if (RINGS) {
-        let c = vec2f(surface.levels[level + 1u].zw);
-        let reach = surface.range * f32(1 << (shift - 1u));
-        return all(corner < c + reach) && all(corner + size > c - reach);
-    }
     let near = max(max(corner - surface.part, vec2f(0.0)), surface.part - corner - size) * surface.unit;
     return log2(surface.range / length(vec3f(near, surface.above))) > f32(level) + 1.0 - MARGIN;
 }

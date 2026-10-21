@@ -1,4 +1,4 @@
-// r16 pages: the synthesized heights of each job as 16-bit codes, with the offset and the scale of its page.
+// The synthesized heights of each job as 16-bit codes, with the offset and the scale of its page.
 
 struct Job {
     texel: vec2i,

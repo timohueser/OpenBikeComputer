@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { errorsOf, redPixels, routeFixture } from './harness.js';
 
-const VIEW = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=5.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny';
+// A walking eye that looks down: few pages to synthesize, which SwiftShader does on the CPU, twice in a test.
+const WALK = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=-45.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny';
 // Down onto the middle of the fixture, so that only known terrain fills the frame and several levels meet.
 const DOWN = '?lat=46.797500&lon=8.415000&heading=20.0&pitch=-60.0&alt=2500.0&date=2026-08-15&time=15:00&weather=sunny';
 // Straight down onto the roads of Engelberg from 500 m, and onto Trübsee from 2 km.
@@ -19,7 +20,7 @@ test('the page draws the fixture with no WebGPU error, and a lost device recover
     // SwiftShader loads, synthesizes and stamps the walk twice.
     test.slow();
     const errors = errorsOf(page);
-    await open(page, VIEW);
+    await open(page, WALK);
     const before = await page.evaluate(() => window.trailView.stats());
     expect(before.drawn).toBeGreaterThan(0);
     expect(before.failed).toBe(0);
@@ -33,7 +34,7 @@ test('the page draws the fixture with no WebGPU error, and a lost device recover
     expect(errors).toEqual([]);
 });
 
-test('the terrain has no crack: no pixel shows the red clear colour', async ({ page }) => {
+test('the terrain has no crack: no pixel shows the red clear colour', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, `${DOWN}&debug=cracks`);
     await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
@@ -44,7 +45,7 @@ test('the terrain has no crack: no pixel shows the red clear colour', async ({ p
     expect(errors).toEqual([]);
 });
 
-test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', async ({ page }) => {
+test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, DOWN);
     await page.addStyleTag({ content: '#hud, #credits { display: none; }' });

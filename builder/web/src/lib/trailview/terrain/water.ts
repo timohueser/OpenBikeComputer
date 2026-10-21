@@ -32,7 +32,7 @@ export class Water {
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat, constants: Record<string, number>): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, V = GPUShaderStage.VERTEX;
         const layout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -44,14 +44,14 @@ export class Water {
         const pipeline = await device.createRenderPipelineAsync({
             label: 'water', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout] }),
             vertex: {
-                module, entryPoint: 'water_vertex', constants, buffers: [{
+                module, entryPoint: 'water_vertex', buffers: [{
                     arrayStride: WATER_VERTEX * 4, attributes: [
                         { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' }, { shaderLocation: 2, offset: 12, format: 'float32x2' },
                         { shaderLocation: 3, offset: 20, format: 'float32' }, { shaderLocation: 4, offset: 24, format: 'float32' }, { shaderLocation: 5, offset: 28, format: 'float32' },
                     ],
                 }],
             },
-            fragment: { module, entryPoint: 'water_fragment', constants, targets: [{ format: gpu.format }] },
+            fragment: { module, entryPoint: 'water_fragment', targets: [{ format: gpu.format }] },
             primitive: { topology: 'triangle-list' },
             depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'greater' },
         });

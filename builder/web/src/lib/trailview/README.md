@@ -53,13 +53,11 @@ zooms. H hides the HUD.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view.
+at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+pages with an offset and a scale per page.
 
 | Lab | Variants |
 | --- | --- |
-| `terrain` | `cdlod`, `rings`: the LOD rule of the one quadtree; no geometry clipmap is built |
-| `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
-| `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 | `stamps` | `runtime`, `baked`, `none`: the stamps on every page as it loads, or conditioning baked into the stored levels, which the synthesized levels upsample; `none` draws neither stamps nor water |
 
 ## Shots and flights
@@ -70,7 +68,7 @@ From `builder/web/tests/browser`:
 npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
-npm run test:trailview                     # the smoke
+npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
@@ -79,7 +77,7 @@ pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chr
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture, and `--features` a folder of feature tiles `z/x/y.bin`; build the page with a config
 whose `bounds` are its box. `--audit` prints `trailView.audit()` of each view; `--audit 10` adds
-up the audit of every tenth frame of a flight, as over `audits.json`. `--lab terrain:rings` adds
+up the audit of every tenth frame of a flight, as over `audits.json`. `--lab NAME:VARIANT` adds
 the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
@@ -113,6 +111,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - macOS lowers the GPU clock while a frame leaves the GPU time to spare, and a pass then measures
   much longer than its work. `flight.mjs --gpu` keeps the clock high with a compute load before each
   frame; a measurement without it is not comparable.
+- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`. Pull requests skip
+  it, and `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Without it, the device is lost with
   "A valid external Instance reference no longer exists".
@@ -120,8 +120,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
-- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the ring
-  band of `lod.ts`; `lod.test.ts` holds both.
+- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
+  `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - A stored page with stamps takes two layers: its raw heights for the syntheses below it, and a
   stamped copy that draws. Never let a synthesis read a stamped page.

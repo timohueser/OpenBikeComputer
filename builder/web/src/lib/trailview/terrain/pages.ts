@@ -16,7 +16,7 @@ const REFRESHES = 8;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
-export const MODE = { HEIGHTS: 1, BAKED: 2, MASK: 4, EXTENT: 8 } as const;
+export const MODE = { HEIGHTS: 1, BAKED: 2, MASK: 4 } as const;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.

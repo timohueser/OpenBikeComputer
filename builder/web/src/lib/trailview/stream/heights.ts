@@ -3,24 +3,21 @@
 
 /** Texels along a page edge. */
 export const PAGE = 256;
-/** The raw texel of a height that is not known: a float32 NaN for `r32float`, the top code for `r16`. */
-export const UNKNOWN32 = 0xffffffff;
+/** The raw texel of a height that is not known: the top code. */
 export const UNKNOWN16 = 0xffff;
-
-export type PageFormat = 'r32float' | 'r16';
 
 /**
  * One page: its texels as stored on the GPU, the range of its known heights, and whether it knows
- * every height. `r16` stores offset + code × scale.
+ * every height. A height is offset + code × scale.
  */
-export interface PageData { texels: Uint32Array<ArrayBuffer> | Uint16Array<ArrayBuffer>; min: number; max: number; complete: boolean; offset: number; scale: number }
+export interface PageData { texels: Uint16Array<ArrayBuffer>; min: number; max: number; complete: boolean; offset: number; scale: number }
 
 /**
  * The pages of the north-west, north-east, south-west and south-east quadrants of a tile's RGBA
  * pixels; null for a quadrant without a known height. A pixel is R × 256 + G + B / 256 − 32768
  * metres, and unknown unless it is opaque.
  */
-export function tilePages(rgba: ArrayLike<number>, size: number, format: PageFormat): (PageData | null)[] {
+export function tilePages(rgba: ArrayLike<number>, size: number): (PageData | null)[] {
     if (size !== 2 * PAGE) throw new Error(`A terrain tile has ${size} px, not ${2 * PAGE}.`);
     return [0, 1, 2, 3].map(q => {
         const heights = new Float32Array(PAGE * PAGE);
@@ -33,17 +30,12 @@ export function tilePages(rgba: ArrayLike<number>, size: number, format: PageFor
             if (h > max) max = h;
             if (!Number.isNaN(h)) known++;
         }
-        return known ? pageData(heights, min, max, known === PAGE * PAGE, format) : null;
+        return known ? pageData(heights, min, max, known === PAGE * PAGE) : null;
     });
 }
 
-/** Heights (NaN where unknown) as the texels of a page format. */
-export function pageData(heights: Float32Array<ArrayBuffer>, min: number, max: number, complete: boolean, format: PageFormat): PageData {
-    if (format === 'r32float') {
-        const texels = new Uint32Array(heights.buffer.slice(0));
-        heights.forEach((h, i) => { if (Number.isNaN(h)) texels[i] = UNKNOWN32; });
-        return { texels, min, max, complete, offset: 0, scale: 1 };
-    }
+/** Heights (NaN where unknown) as the 16-bit codes of a page. */
+export function pageData(heights: Float32Array<ArrayBuffer>, min: number, max: number, complete: boolean): PageData {
     const scale = Math.max((max - min) / (UNKNOWN16 - 1), 1e-4);
     return { texels: Uint16Array.from(heights, h => (Number.isNaN(h) ? UNKNOWN16 : Math.round((h - min) / scale))), min, max, complete, offset: min, scale };
 }

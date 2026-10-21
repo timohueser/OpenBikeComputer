@@ -22,17 +22,18 @@ struct StampJob {
 @group(0) @binding(0) var<storage, read> stamp_jobs: array<StampJob>;
 // Per job, one page of float32 height bits.
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
-// Per job, the least and the greatest height as ordered bits, for r16 pages.
+// Per job, the least and the greatest height as ordered bits, for the offset and the scale of its page.
 @group(0) @binding(3) var<storage, read_write> extent: array<atomic<u32>>;
 @group(0) @binding(4) var mask_shape: texture_storage_2d_array<rgba8unorm, write>;
 @group(0) @binding(5) var mask_kind: texture_storage_2d_array<rgba8uint, write>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
-// Modes: stamp the heights, as the bake would (every feature, nominal margins), write the mask, the extent.
+// The float32 bits of an unknown height in `out`, as in pages.wgsl.
+const UNKNOWN32: u32 = 0xffffffffu;
+// Modes: stamp the heights, as the bake would (every feature, nominal margins), write the mask.
 const HEIGHTS: u32 = 1u;
 const BAKED: u32 = 2u;
 const MASK: u32 = 4u;
-const EXTENT: u32 = 8u;
 // The mask holds distances of ±MASK_RANGE metres in 0.1 m steps.
 const MASK_RANGE: f32 = 12.75;
 // Mask flags, as features.wgsl reads them.
@@ -67,7 +68,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let h = select(NONE, clamp(base, s.lo, s.hi), known(base));
     if ((job.mode & HEIGHTS) != 0u) {
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
-        if ((job.mode & EXTENT) != 0u && known(h)) {
+        if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
             atomicMax(&extent[2u * job.out + 1u], ordered(h));
         }
