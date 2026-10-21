@@ -50,7 +50,8 @@ zooms. H hides the HUD.
 ## Labs
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
-builds the variant that `?lab=` selects.
+builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
+at the same view.
 
 | Lab | Variants |
 | --- | --- |
