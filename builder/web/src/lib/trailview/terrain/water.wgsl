@@ -1,5 +1,5 @@
 // The water: the meshes of water-mesh.ts, one flat colour, drawn after the terrain and hidden where
-// the terrain stands above them. Each drawn node draws the mesh of the node whose stamps it draws and
+// the terrain stands above them. Each drawn node draws the mesh of the node whose page it draws and
 // keeps the part over its own square. A lake lies at its level; a river or a stream is a ribbon on the
 // drawn surface at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
 // haze and `finish()` are those of the ground, from the look in group 2.
@@ -57,17 +57,13 @@ struct WaterOut {
 // The one colour of the water, in linear light.
 const WATER: vec3f = vec3f(0.018, 0.071, 0.119);
 const RIBBON_PIXELS: f32 = 1.5;
-// Water lies LIFT_M plus LIFT of a mesh cell above the terrain that it meets, so that the mesh between
-// the vertices of a ribbon, and the terrain at a lake's shore, stay under it.
-const LIFT_M: f32 = 0.03;
-const LIFT: f32 = 0.02;
 
 @vertex
 fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut {
     let drawn = water_nodes[instance];
     let node = nodes[drawn.x];
     let metres = unit_metres(v.at.y);
-    let lift = LIFT_M + LIFT * MESH_TEXELS * metres * f32(1 << (22u - drawn.y));
+    let lift = water_lift(metres * f32(1 << (22u - drawn.y)));
     var u = vec2f(v.at - surface.anchor);
     var z = v.level + lift;
     var out: WaterOut;

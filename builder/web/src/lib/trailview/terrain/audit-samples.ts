@@ -2,7 +2,7 @@
 // in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
+import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -11,8 +11,6 @@ export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4, SHORE_S
 const MOST = 8192;
 /** No river or other lake may lie within 13 texels of a shore sample, which the mesh there may read. */
 const DRY_TEXELS = 13;
-/** As SHORE_CELLS of stamp-core.wgsl: the shore samples lie in the ramp's band. */
-const SHORE_CELLS = 1.5;
 /** The side of a shore is checked on a grid of this many points across a node, this many texels from a shore at most. */
 const SIDE_GRID = 64, SIDE_TEXELS = 20;
 
@@ -72,7 +70,7 @@ export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed
         if (levels.size > 1) out.mixed++;
     }
     for (const { kind, z } of features(list, tile).lines) {
-        if (kind !== RIVER) continue;
+        if (kind !== RIVER && kind !== STREAM) continue;
         out.rivers++;
         if (z.some((level, i) => i > 0 && level > z[i - 1] + 0.005)) out.rising++;
     }
@@ -85,7 +83,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const shift = 22 - node.level, side = PAGE * 2 ** shift;
     const x0 = node.x * side, y0 = node.y * side, unit = metresPerUnit(y0 + side / 2), texel = unit * 2 ** shift;
     // The band of a lake's ramp on the node's level, where audit.wgsl checks the shore.
-    const band = SHORE_CELLS * RULES.MESH_TEXELS * texel;
+    const band = RULES.SHORE_CELLS * RULES.MESH_TEXELS * texel;
     const inNode = (x: number, y: number) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const out: number[][] = [];
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
@@ -131,7 +129,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
             if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
         }
-        // The shore: points outside each edge in the node, in the band of its ramp.
+        // The shore: points on both sides of each edge in the node, in the band of its ramp.
         for (const ring of rings) {
             for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
                 const mx = (ring[i] + ring[j]) / 2, my = (ring[i + 1] + ring[j + 1]) / 2, length = Math.hypot(ring[i] - ring[j], ring[i + 1] - ring[j + 1]);
@@ -139,7 +137,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
                 for (const sign of [-1, 1]) for (const past of [0.25, 0.75, 1.25]) {
                     const d = past * band / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
-                    if (inNode(x, y) && !insideRings(rings, x, y) && !wet(x, y, lake)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
+                    if (inNode(x, y) && !wet(x, y, lake)) push(x, y, insideRings(rings, x, y) ? IN_WATER : ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
                 }
             }
         }

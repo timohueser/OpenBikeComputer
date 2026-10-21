@@ -75,6 +75,10 @@ const SHORE_CELLS: f32 = 1.5;
 const BED_DEPTH: f32 = 4.0;
 // The least widening that a level must fit past the ramp.
 const SHORE_EASE: f32 = 4.0;
+// Water lies LIFT_M plus LIFT of a mesh cell above the terrain that it meets, so that the mesh between
+// the vertices of a ribbon, and the terrain at a lake's shore, stay under it.
+const LIFT_M: f32 = 0.03;
+const LIFT: f32 = 0.02;
 const INF: f32 = 1e30;
 
 // Metres per world unit at world row y.
@@ -115,6 +119,11 @@ fn shore_band(texel: f32) -> f32 {
 fn shore_shows(level: u32) -> bool {
     let texel = gate_texel(level);
     return shore_band(texel) + SHORE_EASE <= reach_limit(texel);
+}
+
+// How far water lies above the terrain that it meets, on a level with texels of this size.
+fn water_lift(texel: f32) -> f32 {
+    return LIFT_M + LIFT * MESH_TEXELS * texel;
 }
 
 // The most that the terrain may rise d metres from a lake's shore.
@@ -261,6 +270,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var crossed = false;
     var shore = INF;
     var water_in = -1e30;
+    var in_lake = false;
     // The road line of the segments so far: whether p lies in its core band, and whether a segment
     // holds it there. Inside a bend tighter than the core, none does: a conflict, which the mask flags.
     var line = NO_DATA;
@@ -285,6 +295,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             if (((entry & INSIDE) != 0u) != crossed) {
                 hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
                 water_in = max(water_in, water);
+                in_lake = true;
                 out.shore = min(out.shore, -shore);
                 out.lake = min(out.lake, -shore);
             } else {
@@ -298,11 +309,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             shore = INF;
         } else if (kind == RIVER) {
             // A river holds its level over its width as a road holds its height, with banks for cones.
-            // In a lake the lake's bed holds: its river line runs on through it.
+            // In a lake the lake's bed holds: its river line runs on through it. The cell lists its lakes
+            // before its lines, so in_lake is final here.
             let h = real(r + 8u);
             let rule = profiles[word(r + 14u)];
             let g = along(r, p, unit);
-            if (g.lateral >= INF || water_in > -1e29 || !road_shows(h, rule, level)) {
+            if (g.lateral >= INF || in_lake || !road_shows(h, rule, level)) {
                 continue;
             }
             let x = g.lateral - h;

@@ -107,10 +107,10 @@ export interface Line { kind: number; xy: number[]; z: number[]; h: number; code
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
 /**
- * As road_shows and path_shows of stamp-core.wgsl: whether a level with texels of this
- * size can stamp a line. bins.test.ts holds these numbers equal to the shader's.
+ * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
+ * bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 

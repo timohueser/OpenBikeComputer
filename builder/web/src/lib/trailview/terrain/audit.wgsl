@@ -212,8 +212,11 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     if (kind == IN_WATER && q.shore >= read) {
-        // The 16-bit pages round a deep bed by millimetres: half its depth is the promise.
+        // Half the bed's depth is the promise: a 16-bit page over an alpine range rounds by centimetres.
         check(IN_WATER, drawn - (q.expected - 0.5 * min(BED_DEPTH, SHORE_SLOPE * (q.shore - read))), ROUNDING, false, s, level, drawn, q.expected, q.shore);
+    } else if (kind == IN_WATER && shore_shows(level) && shore_shows(coarse)) {
+        // Nearer the shore the mesh reads the bank's ramp: the terrain stays under the water's surface.
+        check(IN_WATER, drawn - (q.expected + water_lift(fine)), ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
     // The mesh at a shore point reads the texels a read nearer the shore, under the ramp of either level.
     if (kind == ON_BANK && shore_shows(level) && shore_shows(coarse)) {
