@@ -65,7 +65,7 @@ builds the variant that `?lab=` selects.
 | `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
 | `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 | `ground` | `pixel`, `cache`: the ground parameters per pixel, or per texel when a page arrives |
-| `rock` | `toon`, `slope`: rock in the toon bands, or in smooth light on the normals of its facets |
+| `rock` | `toon`, `slope`: rock in the toon bands, or in smooth light on the terrain's normals with less sky on steep faces |
 
 ## Shots and flights
 

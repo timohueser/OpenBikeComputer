@@ -20,9 +20,9 @@ export const LABS = {
      */
     ground: ['pixel', 'cache'],
     /**
-     * The light on rock (walls, crags, slabs): the prototype's toon bands with the facets in the
-     * albedo, or smooth light on normals that the facets turn, with less sky on steep faces, so ledges
-     * and bands read. Every other ground keeps the toon bands.
+     * The light on rock (walls, crags, slabs): the prototype's toon bands, or smooth light on the
+     * terrain's own normals with less sky on steep faces, so ledges and bands read. Every other ground
+     * keeps the toon bands.
      */
     rock: ['toon', 'slope'],
 } as const satisfies Record<string, readonly string[]>;

@@ -692,13 +692,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         tilt *= 1.0 - 0.35 * calm;
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
+        face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
         if (look.modes.z == 1u) {
-            // Slope light: the facets turn the normal, so the light and the shade follow them, and a
-            // steep face sees less sky than a ledge.
-            n = normalize(n + 0.9 * turned * walled);
+            // Slope light: a steep face sees less sky than a ledge.
             open *= mix(1.0, 0.65 + 0.5 * max(n.z, 0.0), walled);
-        } else {
-            face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
         }
         open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(look.sun.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
         // Cracks run along some sides of some crags and blocks only, so they never close into a net.
