@@ -1091,7 +1091,7 @@ jobs:
         run: npm run test:data --prefix builder/web/tests/browser
       - name: TrailView smoke on SwiftShader
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-smoke')
-        run: npm run test:trailview --prefix builder/web/tests/browser
+        run: npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

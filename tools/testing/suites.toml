@@ -287,11 +287,12 @@ platforms = ["linux", "macos"]
 triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/package.json"]
 
 # The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one frame with no
-# WebGPU error, a lost device that recovers, and the notice without WebGPU.
+# WebGPU error, a lost device that recovers, and the notice without WebGPU. A test that draws for
+# minutes on SwiftShader takes the tag @gpu: pull requests skip it, `web.trailview-weekly` runs it.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"
-command = "npm run test:trailview --prefix builder/web/tests/browser"
+command = "npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
@@ -310,6 +311,14 @@ triggers = [
   "builder/web/package.json",
   "builder/web/vite.config.ts",
 ]
+
+# Every TrailView browser test, the @gpu ones too. `test-weekly.yml` runs it each Monday.
+[[suite]]
+id = "web.trailview-weekly"
+route = "manual"
+command = "npm run test:trailview --prefix builder/web/tests/browser"
+platforms = ["linux", "macos"]
+triggers = ["builder/web/tests/browser/trailview/**"]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
 # it against `build-wasm-bridges.sh` and the Trunk page are triggered by those files too.

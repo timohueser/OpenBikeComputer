@@ -32,6 +32,36 @@ jobs:
           name: ios-application-${{ github.run_attempt }}
           path: .artifacts/ios-application.xcresult
           if-no-files-found: error
+  trailview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: builder/web/package-lock.json
+      - name: Install the builder's build dependencies
+        working-directory: builder/web
+        run: npm ci
+      - name: Install builder browser runner
+        working-directory: builder/web/tests/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+      - name: Run registered weekly TrailView suites
+        id: test
+        run: npm run test:trailview --prefix builder/web/tests/browser
+      - name: Upload TrailView browser results
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trailview-weekly-${{ github.run_attempt }}
+          path: .artifacts/web-builder/
+          if-no-files-found: error
   storage:
     runs-on: ubuntu-latest
     timeout-minutes: 10
