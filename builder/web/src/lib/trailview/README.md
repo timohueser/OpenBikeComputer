@@ -109,6 +109,6 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
-- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the ring
-  band of `lod.ts`; `lod.test.ts` holds both.
+- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
+  `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.

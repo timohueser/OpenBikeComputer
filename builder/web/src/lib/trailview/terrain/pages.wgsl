@@ -19,11 +19,13 @@ struct Job {
 // Per job, the least and the greatest height as ordered bits, for the offset and the scale of its page.
 @group(0) @binding(2) var<storage, read_write> extent: array<atomic<u32>>;
 
-// Catmull-Rom weights of the four texels about a part t, and their slopes.
+// The float32 bits of an unknown height in `out`, before its 16-bit codes.
+const UNKNOWN32: u32 = 0xffffffffu;
+
+// Catmull-Rom weights of the four texels about a part t.
 fn spline(t: f32) -> vec4f {
     return 0.5 * vec4f(-t + 2.0 * t * t - t * t * t, 2.0 - 5.0 * t * t + 3.0 * t * t * t, t + 4.0 * t * t - 3.0 * t * t * t, -t * t + t * t * t);
 }
-
 
 // The bicubic height of the finest stored level up to `top` that knows all 16 texels about a point.
 fn stored_base(u: vec2i, top: u32) -> f32 {

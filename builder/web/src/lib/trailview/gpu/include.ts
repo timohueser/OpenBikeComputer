@@ -12,3 +12,6 @@ export function include(path: string, read: (path: string) => string): string {
     };
     return compose(path);
 }
+
+/** The includes that a device with `clip-distances` reads in place of the default ones. */
+export const CLIP_DISTANCES: Record<string, string> = { 'terrain/unknown.wgsl': 'terrain/unknown-clip.wgsl' };
