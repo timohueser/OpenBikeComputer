@@ -192,10 +192,12 @@ export class Pages {
             const page = this.pages.get(key(node));
             if (!page || (page.water === undefined && !page.dry)) continue;
             this.watered++;
-            const stamps = page.dry && page.drawn !== undefined ? this.stamps.get(node) : undefined;
-            if (!stamps?.data || this.busy(work, stamps.data.length)) continue;
-            if (!this.water(page)) this.shortage++;
-            else work.stamps.push({ page, out: 0, target: page.drawn!, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
+            if (!page.dry || page.drawn === undefined) continue;
+            const stamps = this.stamps.get(node);
+            if (!stamps || this.busy(work, stamps.data?.length)) this.missing++;
+            else if (!stamps.data) page.dry = false;
+            else if (!this.water(page)) this.shortage++;
+            else work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
         }
         for (const page of fresh) {
             this.dirty = true;

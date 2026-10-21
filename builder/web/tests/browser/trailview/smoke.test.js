@@ -78,7 +78,7 @@ async function audited(page) {
     return audit;
 }
 
-test('the stamps hold along the roads of a village, and debug=mask draws them', async ({ page }) => {
+test('the stamps hold along the roads of a village, and debug=mask draws them', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, VILLAGE);
     const audit = await audited(page);
@@ -93,7 +93,7 @@ test('the stamps hold along the roads of a village, and debug=mask draws them', 
     expect(errors).toEqual([]);
 });
 
-test('the stamps hold in a lake at every level that the frame draws, and its water height is its level', async ({ page }) => {
+test('the stamps hold in a lake at every level that the frame draws, and its water height is its level', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, LAKE);
     const audit = await audited(page);
