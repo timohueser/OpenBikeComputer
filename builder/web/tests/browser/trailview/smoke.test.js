@@ -28,7 +28,7 @@ test('the page draws the fixture with no WebGPU error, and a lost device recover
     expect(errors).toEqual([]);
 });
 
-test('the terrain has no crack: no pixel shows the red clear colour', async ({ page }) => {
+test('the terrain has no crack: no pixel shows the red clear colour', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, `${DOWN}&debug=cracks`);
     await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
@@ -39,7 +39,7 @@ test('the terrain has no crack: no pixel shows the red clear colour', async ({ p
     expect(errors).toEqual([]);
 });
 
-test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', async ({ page }) => {
+test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, DOWN);
     await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
