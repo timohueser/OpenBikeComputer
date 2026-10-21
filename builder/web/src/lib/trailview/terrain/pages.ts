@@ -172,7 +172,6 @@ export class Pages {
         }
         const holders = this.holders(wanted, anchor);
         for (const node of wanted) this.want(node, work, holders);
-        this.lateMasks(holders, work);
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
@@ -192,6 +191,8 @@ export class Pages {
             // The fresh pages of a frame take its normals jobs: at most ARRIVALS of them, and the refreshes.
             if (fresh.length < ARRIVALS && page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
+        // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
+        this.lateMasks(holders, work);
         for (const page of fresh) {
             this.dirty = true;
             work.normals.push(page);
