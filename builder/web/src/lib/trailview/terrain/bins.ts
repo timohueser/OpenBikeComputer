@@ -37,11 +37,12 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
  * The profile of a road or path class, as `Profile` in stamp-core.wgsl. The core holds the road height
  * ± `tol`. The cut and the fill (rise per metre) widen until they stop binding `reach` metres past the
  * core, or for a path past its edge: its bench. A level stamps a road only where
- * `least` metres of its cut and fill fit inside the buffer.
+ * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
+ * across it by `tilt` metres per metre.
  */
-export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number }
+export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number }
 /** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too. */
-export const PROFILES: Record<string, Profile> = Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill }]) => [name, { tol, reach, least, cut, fill }]));
+export const PROFILES: Record<string, Profile> = Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt }]));
 const CLASSES = Object.keys(PROFILES);
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, highway = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, highway) ? highway : kind === 'path' ? 'path' : 'road');
@@ -50,7 +51,7 @@ export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8;
 export function profileTable(): Float32Array<ArrayBuffer> {
     const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
-    rows.forEach(({ tol, reach, least, cut, fill }, i) => table.set([tol, reach, least, cut, fill], PROFILE_FLOATS * i));
+    rows.forEach(({ tol, reach, least, cut, fill, tilt }, i) => table.set([tol, reach, least, cut, fill, tilt], PROFILE_FLOATS * i));
     return table;
 }
 /** The half-width of a waterway without a `width` tag. */

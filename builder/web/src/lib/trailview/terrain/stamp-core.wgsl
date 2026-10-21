@@ -12,14 +12,16 @@
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
-// cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes.
-// A uniform array element takes a multiple of 16 bytes.
+// cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
+// and how far a path's bench may follow the hillside across it. A uniform array element takes a
+// multiple of 16 bytes.
 struct Profile {
     tol: f32,
     reach: f32,
     least: f32,
     cut: f32,
-    @size(16) fill: f32,
+    fill: f32,
+    @size(12) tilt: f32,
 }
 
 // Per class, the row that a segment record names. A uniform, as the audit has every storage buffer that a stage may have.
@@ -369,9 +371,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 }
             } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
+                let tol = rule.tol + rule.tilt * min(g.lateral, h);
                 if ((g.core || g.cone) && x < rule.reach) {
-                    lo[BENCH] = max(lo[BENCH], g.z - rule.tol - widen(x, rule.reach, rule.fill));
-                    hi[BENCH] = min(hi[BENCH], g.z + rule.tol + widen(x, rule.reach, rule.cut));
+                    lo[BENCH] = max(lo[BENCH], g.z - tol - widen(x, rule.reach, rule.fill));
+                    hi[BENCH] = min(hi[BENCH], g.z + tol + widen(x, rule.reach, rule.cut));
                 }
             }
         }

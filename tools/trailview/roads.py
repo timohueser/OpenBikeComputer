@@ -19,7 +19,7 @@ from scipy.sparse.linalg import splu
 from .profiles import metres
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
-FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill"}
+FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
 KINDS = {"main-road", "road", "path", "tunnel", "gallery"}
 # A cable route on rock has no bench to stamp.
 UNSOLVED = {"via_ferrata"}
