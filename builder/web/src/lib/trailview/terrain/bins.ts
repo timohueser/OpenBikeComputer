@@ -99,7 +99,7 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
 /** A line; `anchors` marks its OSM vertices among the points of its rounded bends. */
-export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; closed: boolean; profile: number; anchors?: boolean[] }
+export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[] }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
@@ -143,10 +143,7 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m.
             let run: number[] = [], heights: number[] = [];
             const flush = () => {
-                if (heights.length >= 2) {
-                    const n = heights.length, closed = n >= 3 && run[0] === run[2 * n - 2] && run[1] === run[2 * n - 1];
-                    lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, ...smoothed(run, heights, closed), h, code, ford: !!tags.ford && tags.ford !== 'no', closed, profile });
-                }
+                if (heights.length >= 2) lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, ...smoothed(run, heights), h, code, ford: !!tags.ford && tags.ford !== 'no', profile });
                 run = [];
                 heights = [];
             };
@@ -169,22 +166,19 @@ const SAGITTA = 4, CHORDS = 16;
 /**
  * A line through its vertices with its bends rounded: each segment between two other segments follows
  * the centripetal Catmull-Rom curve through the four vertices about it, in chords of whole world
- * units, with the height linear along it. The first and last segments stay straight. The feature
- * tiles cut a line one vertex past the segments that meet a tile's buffer, so every segment that a
- * tile's nodes stamp gets the same curve in each tile that holds it; and every vertex stays, so
- * junctions stay where they are.
+ * units, with the height linear along it. The first and last segments stay straight, also of a
+ * closed way: the feature tiles cut a ring into open pieces, so every line is open. They cut a line
+ * one vertex past the segments that meet a tile's buffer, so every segment that a tile's nodes stamp
+ * gets the same curve in each tile that holds it; and every vertex stays, so junctions stay where they are.
  */
-export function smoothed(xy: number[], z: number[], closed: boolean): { xy: number[]; z: number[]; anchors: boolean[] } {
+export function smoothed(xy: number[], z: number[]): { xy: number[]; z: number[]; anchors: boolean[] } {
     const n = z.length, segments = n - 1;
     if (n < 3) return { xy, z, anchors: z.map(() => true) };
-    const point = (i: number): [number, number] => {
-        const k = closed ? (i + segments) % segments : i;
-        return [xy[2 * k], xy[2 * k + 1]];
-    };
+    const point = (i: number): [number, number] => [xy[2 * i], xy[2 * i + 1]];
     const outXy = [xy[0], xy[1]], outZ = [z[0]], anchors = [true];
     for (let i = 0; i < segments; i++) {
         const [b, c] = [point(i), point(i + 1)];
-        if (closed || (i > 0 && i < segments - 1)) {
+        if (i > 0 && i < segments - 1) {
             const [a, d] = [point(i - 1), point(i + 2)], curve = catmullRom(a, b, c, d), middle = curve(0.5);
             const sagitta = Math.hypot(middle[0] - (b[0] + c[0]) / 2, middle[1] - (b[1] + c[1]) / 2);
             const chords = Math.min(CHORDS, Math.max(1, Math.ceil(Math.sqrt(sagitta / SAGITTA))));
@@ -215,12 +209,11 @@ function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: num
     };
 }
 
-/** Junctions: vertices that two road lines meet at, or that one line passes twice, with the widest half-width there. */
+/** Junctions: vertices that two road lines meet at, or that one line passes twice (a ring's start), with the widest half-width there. */
 export function junctions(lines: Line[]): Map<string, { x: number; y: number; h: number }> {
     const seen = new Map<string, { x: number; y: number; h: number; count: number }>();
     for (const line of lines) {
-        const n = line.z.length - (line.closed ? 1 : 0);
-        for (let v = 0; v < n; v++) {
+        for (let v = 0; v < line.z.length; v++) {
             const x = line.xy[2 * v], y = line.xy[2 * v + 1], key = `${x},${y}`;
             const entry = seen.get(key) ?? { x, y, h: 0, count: 0 };
             entry.count++;
@@ -251,8 +244,8 @@ export function mitre(line: Line, v: number): [number, number] {
         while (anchored && w < n - 1 && !line.anchors![w]) w++;
         return w;
     };
-    const before = v > 0 ? dir(back(v), v) : line.closed ? dir(back(n - 1), n - 1) : undefined;
-    const after = v < n - 1 ? dir(v, ahead(v)) : line.closed ? dir(0, ahead(0)) : undefined;
+    const before = v > 0 ? dir(back(v), v) : undefined;
+    const after = v < n - 1 ? dir(v, ahead(v)) : undefined;
     const [x, y] = before && after ? [before[0] + after[0], before[1] + after[1]] : (before ?? after)!;
     const l = Math.hypot(x, y);
     return l > 1e-9 ? [x / l, y / l] : (after ?? before)! as [number, number];
@@ -316,7 +309,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         if (!stamps && node.level < NEAR) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
-        const n = line.z.length, end = (v: number) => !line.closed && (v === 0 || v === n - 1);
+        const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
         for (let v = 0; v + 1 < n; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
             const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);

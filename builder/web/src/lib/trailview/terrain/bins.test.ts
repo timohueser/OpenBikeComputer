@@ -143,11 +143,11 @@ describe('the side of a shore', () => {
 describe('a rounded line', () => {
     it('keeps every vertex, and two tiles that cut it one vertex past their segments round them alike', () => {
         const xy = [0, 0, 400, 0, 800, 300, 900, 800, 1300, 1000, 1700, 900, 2000, 400], z = [1, 2, 3, 4, 5, 6, 7];
-        const whole = smoothed(xy, z, false), at = (line: { xy: number[] }) => new Set(Array.from({ length: line.xy.length / 2 }, (_, i) => `${line.xy[2 * i]},${line.xy[2 * i + 1]}`));
+        const whole = smoothed(xy, z), at = (line: { xy: number[] }) => new Set(Array.from({ length: line.xy.length / 2 }, (_, i) => `${line.xy[2 * i]},${line.xy[2 * i + 1]}`));
         for (let v = 0; v < z.length; v++) expect(at(whole).has(`${xy[2 * v]},${xy[2 * v + 1]}`)).toBe(true);
         expect(whole.z.length).toBeGreaterThan(z.length);
         // Tile A holds vertices 0 to 4 and tile B vertices 2 to 6: A rounds segment 2-3 and B segment 3-4 as the whole line does.
-        const a = smoothed(xy.slice(0, 10), z.slice(0, 5), false), b = smoothed(xy.slice(4), z.slice(2), false);
+        const a = smoothed(xy.slice(0, 10), z.slice(0, 5)), b = smoothed(xy.slice(4), z.slice(2));
         const between = (line: { xy: number[] }, from: number, to: number) => {
             const keys = [...at(line)], i = keys.indexOf(`${xy[2 * from]},${xy[2 * from + 1]}`), j = keys.indexOf(`${xy[2 * to]},${xy[2 * to + 1]}`);
             return keys.slice(i, j + 1);
@@ -160,7 +160,7 @@ describe('a rounded line', () => {
 describe('the road height of the audit', () => {
     it('runs from end to end of each segment and meets at the bisector of a bend', () => {
         // Two segments of 100 units, with a bend of 90° at (100, 0).
-        const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, closed: false, profile: 0 };
+        const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, profile: 0 };
         expect(roadHeight(line, [50, 0], 10)).toBeCloseTo(10.5);
         expect(roadHeight(line, [100, 50], 10)).toBeCloseTo(12);
         // Either side of the bisector, close to it: the height of the bend.
