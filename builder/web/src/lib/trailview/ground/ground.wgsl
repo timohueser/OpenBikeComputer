@@ -69,7 +69,8 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
         let sat = satellite(sat_texel);
         let ndvi = ndvi_of(sat_texel);
         let barren = f32(cell.a) / 255.0;
-        var parts: Parts;
+        // Zeroed for each texel: SwiftShader does not zero a declaration in a loop body again.
+        var parts = Parts();
         add_texel(&parts, cell, 1.0, clamp((ndvi - 0.15) / 0.6, 0.0, 1.0), smoothstep(0.35, 0.6, ndvi), barren, data.g > 0.5 || sat.a > 0.0);
         let albedo = albedo_of(parts, cell.b, cell.r, sat, barren);
         textureStore(cache_out, at, 4 * layer, vec4f(sqrt(albedo), parts.water));
