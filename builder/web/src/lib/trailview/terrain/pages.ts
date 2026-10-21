@@ -108,6 +108,15 @@ export class Pages {
         return out;
     }
 
+    /**
+     * Whether a ready page holds a node, at its level or a coarser one. If none does, the node draws
+     * nothing: each bilinear quad that it reads has a texel in its own page of that level.
+     */
+    covers(node: Node): boolean {
+        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (this.pages.get(`${level}/${x}/${y}`)?.ready) return true;
+        return false;
+    }
+
     /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. */
     update(wanted: Node[], anchor: Anchor): Work {
         this.frame++;
