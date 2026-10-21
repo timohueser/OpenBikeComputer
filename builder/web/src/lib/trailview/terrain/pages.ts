@@ -181,18 +181,18 @@ export class Pages {
         const fresh = work.syntheses.map(({ page }) => page);
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
-            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
+            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work, keys.has(key(page.node)))) fresh.push(page);
         }
-        // A dry page asks for a water layer again, and a stamp job writes only its water.
+        // A wanted dry page asks for a water layer again, for a stamp job that writes only its water.
         this.watered = 0;
-        for (const page of this.pages.values()) {
-            if (page.used !== this.frame) continue;
-            if (page.water !== undefined || page.dry) this.watered++;
-            if (!page.dry || page.drawn === undefined) continue;
-            const stamps = this.stamps.get(page.node);
-            if (!stamps?.data || this.busy(work, stamps.data.length) || !this.water(page)) continue;
-            const baked = page.kind === 'stored' && this.stamps.baked;
-            work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (baked ? MODE.BAKED : 0) });
+        for (const node of wanted) {
+            const page = this.pages.get(key(node));
+            if (!page || (page.water === undefined && !page.dry)) continue;
+            this.watered++;
+            const stamps = page.dry && page.drawn !== undefined ? this.stamps.get(node) : undefined;
+            if (!stamps?.data || this.busy(work, stamps.data.length)) continue;
+            if (!this.water(page)) this.shortage++;
+            else work.stamps.push({ page, out: 0, target: page.drawn!, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
         }
         for (const page of fresh) {
             this.dirty = true;
@@ -281,8 +281,9 @@ export class Pages {
     /**
      * Puts the stamps on a ready stored page once its features are known: none, a stamped copy that
      * draws while the raw page stays for the syntheses, or, with baked conditioning, the page itself.
+     * A page that only a synthesis reads gets no water layer until a frame wants it.
      */
-    private resolve(page: Page, work: Work): boolean {
+    private resolve(page: Page, work: Work, wanted: boolean): boolean {
         const stamps = this.stamps.get(page.node);
         if (!stamps) return false;
         if (!stamps.data || !stamps.heights) {
@@ -299,7 +300,8 @@ export class Pages {
             }
             page.copy = target = copy;
         }
-        const mode = MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) | (stamps.water && this.water(page) ? MODE.WATER : 0);
+        page.dry = stamps.water && !wanted;
+        const mode = MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) | (stamps.water && wanted && this.water(page) ? MODE.WATER : 0);
         page.drawn = target;
         work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target, data: stamps.data, mode });
         return true;
@@ -325,10 +327,9 @@ export class Pages {
         return true;
     }
 
-    /** A water layer for a page; without one the page is dry, and the frame counts a shortage. */
+    /** A water layer for a page; without one the page is dry. */
     private water(page: Page): boolean {
         page.dry = !this.extra(page, 'water');
-        if (page.dry) this.shortage++;
         return !page.dry;
     }
 
