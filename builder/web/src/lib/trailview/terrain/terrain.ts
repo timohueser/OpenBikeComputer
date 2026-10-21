@@ -73,6 +73,8 @@ export interface TerrainStats {
     jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
     masks: number;
+    /** Water meshes of the last frame that did not fit in their pool. */
+    waterDropped: number;
 }
 
 /** What the audit counts, as audit.wgsl does. */
@@ -214,7 +216,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks,
+            jobs: this.jobs, masks, waterDropped: this.water.dropped,
         };
     }
 
@@ -363,7 +365,7 @@ export class Terrain {
         const work = this.pages.update(wanted, anchor);
         // After the update, so that a page draws in the frame that it arrives in.
         this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
-        this.water.update(this.nodes);
+        this.water.update(this.nodes.map(node => this.pages.drawing(node)!));
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;

@@ -5,8 +5,9 @@ import type { Stamps } from './stamps';
 import { WATER_VERTEX, type WaterMesh } from './water-mesh';
 
 /**
- * The water meshes on the GPU, a fixed pool. A new mesh goes after the others; when it does not fit,
- * the pool starts again with the meshes of the frame.
+ * The water meshes on the GPU, a fixed pool. A new mesh goes after the others; when one does not fit
+ * and the pool holds meshes that the frame does not draw, the pool starts again with the meshes of the
+ * frame, finest first.
  */
 const VERTEX_BYTES = 4 * 2 ** 20, INDEX_BYTES = 2 * 2 ** 20;
 
@@ -24,8 +25,8 @@ interface Resources {
 }
 
 /**
- * The water of the drawn nodes, with water.wgsl: each draws the mesh of the node whose stamps it
- * draws, its own once they are known, and its nearest ancestor's until then. The lakes draw opaque and
+ * The water of the drawn nodes, with water.wgsl: each draws the mesh of the node whose page it draws,
+ * or of that node's nearest ancestor whose mesh is known. The lakes draw opaque and
  * write their depth, so the GPU skips the terrain under them and the ribbons under a lake stay hidden;
  * then the ribbons blend.
  */
@@ -36,6 +37,8 @@ export class Water {
     private placed = new Map<WaterMesh, { first: number; base: number }>();
     private vertexEnd = 0;
     private indexEnd = 0;
+    /** The meshes of the last frame that did not fit in the pool. */
+    dropped = 0;
 
     constructor(private readonly stamps: Stamps) {}
 
@@ -75,10 +78,10 @@ export class Water {
         };
     }
 
-    /** The draws of a frame: per mesh, the drawn nodes that draw it. */
-    update(nodes: Node[]): void {
+    /** The draws of a frame: per mesh, the drawn nodes that draw it. `drawing` has the node of the page that each drawn node draws. */
+    update(drawing: Node[]): void {
         const draws = new Map<string, Draw>();
-        nodes.forEach((node, i) => {
+        drawing.forEach((node, i) => {
             for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) {
                 const known = this.stamps.known({ level, x, y });
                 if (!known) continue;
@@ -89,19 +92,26 @@ export class Water {
                 return;
             }
         });
-        this.draws = [...draws.values()];
+        this.draws = [...draws.values()].sort((a, b) => b.level - a.level);
     }
 
     /** Uploads the meshes that the pool lacks, and the instances of each draw. */
     write(): void {
         const r = this.resources;
         if (!r) return;
-        const missing = this.draws.filter(({ mesh }) => !this.placed.has(mesh));
-        if (!missing.every(({ mesh }) => this.place(r, mesh))) {
+        const placeAll = () => {
+            for (const { mesh } of this.draws) if (!this.placed.has(mesh)) this.place(r, mesh);
+        };
+        const missing = () => this.draws.filter(({ mesh }) => !this.placed.has(mesh)).length;
+        placeAll();
+        // Without a mesh to free, the pool keeps its meshes: starting again would upload them every frame.
+        const used = new Set(this.draws.map(({ mesh }) => mesh));
+        if (missing() && [...this.placed.keys()].some(mesh => !used.has(mesh))) {
             this.placed.clear();
             this.vertexEnd = this.indexEnd = 0;
-            for (const { mesh } of this.draws) this.place(r, mesh);
+            placeAll();
         }
+        this.dropped = missing();
         const instances = this.draws.flatMap(({ mesh, level, nodes }) => (this.placed.has(mesh) ? nodes.flatMap(node => [node, level]) : []));
         if (instances.length) r.device.queue.writeBuffer(r.instances, 0, new Uint32Array(instances));
     }
