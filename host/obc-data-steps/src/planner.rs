@@ -35,7 +35,8 @@ use crate::{functions, python};
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
-pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
+pub static PLANNER_TERRAIN: Layer =
+    whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN, &readers::PLANNER_TRAILVIEW_FEATURES]);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
@@ -49,7 +50,8 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`.
-pub static PLANNER_TRAILVIEW_FEATURES: Layer = whole("planner/trailview-features", 1, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_FEATURES: Layer =
+    Layer { revision: 3, ..whole("planner/trailview-features", 1, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
@@ -437,12 +439,13 @@ impl Planner {
             osmium.map_err(Unplanned::Invalid)?;
             let kinds: serde_json::Value = serde_json::from_str(include_str!("../../../data/trailview/kinds.json"))
                 .map_err(|e| Unplanned::Failed(format!("data/trailview/kinds.json: {e}")))?;
+            // The heights of roads and lakes come from the master terrain.
             steps.push(python(
                 &PLANNER_TRAILVIEW_FEATURES,
                 "planner/trailview-features",
-                vec![Input::step("planner/osm")],
+                vec![Input::step("planner/osm"), Input::step("planner/terrain/grid")],
                 json!({"bounds": bounds, "kinds": kinds, "attribution": attribution("osm-planet")}),
-                ("tools.planner_trailview_features", Some("planner-maps")),
+                ("tools.planner_trailview_features", Some("trailview")),
                 &["trailview-features.pmtiles"],
             ));
         }

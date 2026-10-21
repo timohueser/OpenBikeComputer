@@ -1,11 +1,12 @@
 // Draws a list of views of the built TrailView page in headless Chromium and writes one PNG per view.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--hud] [--gpu]
+//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
 //
 // --views is a JSON list of {name, view}, where view is a query string (default: views.json).
 // --tiles serves a `planner-dem` MBTiles instead of the fixture. --ground serves the TrailView bakes
-// of a folder, --colour its colour variant (webp-12). --lab adds `lab=LAB` to each view.
+// of a folder, --colour its colour variant (webp-12), --features a folder of feature tiles `z/x/y.bin`.
+// --lab adds `lab=LAB` to each view. --audit prints the invariant audit of each view.
 // --gpu draws on the machine's GPU in a browser window, else SwiftShader draws on the CPU.
 // Prints one JSON line per view: the file, the adapter, the nodes drawn, the requests, the red
 // pixels of a `debug=cracks` view and page errors.
@@ -22,8 +23,10 @@ const { values } = parseArgs({
         tiles: { type: 'string' },
         ground: { type: 'string' },
         colour: { type: 'string' },
+        features: { type: 'string' },
         lab: { type: 'string' },
         hud: { type: 'boolean' },
+        audit: { type: 'boolean' },
         gpu: { type: 'boolean' },
     },
 });
@@ -35,7 +38,7 @@ try {
     for (const { name, view } of views) {
         const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
         const errors = errorsOf(page);
-        await routeFixture(page, values.tiles, values.ground, values.colour);
+        await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
         await page.goto(`${origin}/trailview.html${values.lab ? `${view}&lab=${values.lab}` : view}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
         await page.evaluate(() => window.trailView.waitForIdle());
@@ -44,7 +47,8 @@ try {
         await page.screenshot({ path: file });
         const stats = await page.evaluate(() => window.trailView.stats());
         const red = view.includes('debug=cracks') ? { redPixels: await redPixels(page) } : {};
-        console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, errors }));
+        const audit = values.audit ? { audit: await page.evaluate(() => window.trailView.audit()) } : {};
+        console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, errors }));
         await page.close();
     }
 } finally {

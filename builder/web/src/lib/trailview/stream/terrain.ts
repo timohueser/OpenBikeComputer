@@ -1,6 +1,6 @@
 import { PMTiles } from 'pmtiles';
 import type { PlannerConfig } from '../../planner/config';
-import { fetchTile, requestSignal } from '../../planner/layers/archive';
+import { fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
 import type { PageData } from './heights';
 
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
@@ -62,5 +62,20 @@ export function pageDecoder(): TerrainSource['decode'] {
             waiting.set(id, { resolve, reject });
             workers[id % WORKERS].postMessage({ id, body });
         });
+    };
+}
+
+/**
+ * The feature tiles of a release: the body of tile z/x/y, undefined where it is absent. Undefined
+ * when the release has no feature layer.
+ */
+export function featureTiles(config: PlannerConfig): ((z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>) | undefined {
+    const url = (config.layers as Record<string, string | undefined>)['trailview-features'];
+    if (!url) return undefined;
+    let source: Promise<Source> | undefined;
+    return async (z, x, y) => {
+        source ??= openSource(url);
+        source.catch(() => (source = undefined));
+        return (await source).get(z, x, y, requestSignal());
     };
 }

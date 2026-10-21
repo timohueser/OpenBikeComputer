@@ -6,6 +6,9 @@ import { DIST, errorsOf, redPixels, routeFixture } from './harness.js';
 const WALK = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=-45.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny';
 // Down onto the middle of the fixture, so that only known terrain fills the frame and several levels meet.
 const DOWN = '?lat=46.797500&lon=8.415000&heading=20.0&pitch=-60.0&alt=2500.0&date=2026-08-15&time=15:00&weather=sunny';
+// Straight down onto the roads of Engelberg from 100 m, where the finest level shows them, and onto Trübsee from 2 km.
+const VILLAGE = '?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1100.0&date=2026-08-15&time=15:00&weather=sunny';
+const LAKE = '?lat=46.782500&lon=8.391000&heading=0.0&pitch=-35.0&alt=2400.0&date=2026-08-15&time=15:00&weather=sunny';
 
 async function open(page, view) {
     await routeFixture(page);
@@ -15,6 +18,8 @@ async function open(page, view) {
 }
 
 test('the page draws the fixture with no WebGPU error, and a lost device recovers without a request', async ({ page }) => {
+    // SwiftShader loads, synthesizes and stamps the walk twice.
+    test.slow();
     const errors = errorsOf(page);
     await open(page, WALK);
     const before = await page.evaluate(() => window.trailView.stats());
@@ -22,7 +27,8 @@ test('the page draws the fixture with no WebGPU error, and a lost device recover
     expect(before.failed).toBe(0);
 
     await page.evaluate(() => window.trailView.gpu.device.destroy());
-    await page.waitForFunction(() => window.trailView.recoveries === 1);
+    // SwiftShader compiles every pipeline again, which takes it some 20 s.
+    await page.waitForFunction(() => window.trailView.recoveries === 1, null, { timeout: 60_000 });
     await page.evaluate(() => window.trailView.waitForIdle());
     const after = await page.evaluate(() => window.trailView.stats());
     expect(after.drawn).toBe(before.drawn);
@@ -63,6 +69,44 @@ test('the probe gives the height that an instance shader evaluates, to 1 mm', as
     const { probe, instance } = await page.evaluate(points => window.trailView.check(points), points);
     expect(probe.every(Number.isFinite)).toBe(true);
     for (const [i, height] of probe.entries()) expect(Math.abs(height - instance[i])).toBeLessThan(1e-3);
+});
+
+/**
+ * The audit of the frame: no violation of a stamp at any level that the frame draws, one level per
+ * lake, no river that rises downstream, and neighbouring nodes stamp the same texels.
+ */
+async function audited(page) {
+    const audit = await page.evaluate(() => window.trailView.audit());
+    for (const [name, check] of Object.entries(audit.checks)) expect(check.violations, `${name}: ${JSON.stringify(audit.found)}`).toBe(0);
+    expect([audit.levels.mixed, audit.rivers.rising]).toEqual([0, 0]);
+    expect(audit.apron.checked).toBeGreaterThan(0);
+    expect(audit.apron.differ).toBe(0);
+    return audit;
+}
+
+test('the stamps hold along the roads of a village, and debug=mask draws them', { tag: '@gpu' }, async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, VILLAGE);
+    const audit = await audited(page);
+    expect(audit.checks.crossFall.checked).toBeGreaterThan(100);
+    expect(audit.checks.roadHeight.checked).toBeGreaterThan(100);
+    await page.evaluate(async () => {
+        const tv = window.trailView;
+        tv.view = { ...tv.view, debug: 'mask' };
+        await tv.nextFrame();
+    });
+    expect((await page.evaluate(() => window.trailView.stats())).terrain.masks).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+});
+
+test('the stamps hold in a lake at every level that the frame draws, at its one level', { tag: '@gpu' }, async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, LAKE);
+    const audit = await audited(page);
+    expect(audit.checks.inWater.checked).toBeGreaterThan(50);
+    expect(audit.checks.onBank.checked).toBeGreaterThan(0);
+    expect(audit.levels.lakes).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
 });
 
 test('a ground worker keeps the colour under the snow mark of a colour tile', async ({ page }) => {

@@ -10,7 +10,9 @@ struct Job {
     // Metres per texel at the node's latitude.
     metres: f32,
     slot: u32,
-    unused: vec2u,
+    // 1 when the stamp pass takes the page next: it writes the extent of the stamped heights.
+    stamped: u32,
+    unused: u32,
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;
@@ -71,8 +73,10 @@ fn synthesize(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     out[at] = bitcast<u32>(h);
-    atomicMin(&extent[2u * id.z], ordered(h));
-    atomicMax(&extent[2u * id.z + 1u], ordered(h));
+    if (job.stamped == 0u) {
+        atomicMin(&extent[2u * id.z], ordered(h));
+        atomicMax(&extent[2u * id.z + 1u], ordered(h));
+    }
 }
 
 // The height of a neighbour texel, or of the coarser levels at its centre, or else of the centre texel.

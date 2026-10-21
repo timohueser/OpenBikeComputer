@@ -16,5 +16,7 @@
   "sprites": "https://tiles.test/sprites",
   "routing": "https://api.test/routing",
   "search": "https://api.test/search",
-  "layers": {}
+  "layers": {
+    "trailview-features": "https://tiles.test/trailview-features.json"
+  }
 }

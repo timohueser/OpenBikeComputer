@@ -60,6 +60,33 @@ fn relief_of(job: Job, t: vec2i) -> vec4f {
     return vec4f(n * 0.5 + 0.5, coarse_open, open);
 }
 
+// The water meshes draw the water. So a texel that the ground layers call water, or where the satellite
+// saw water, takes the ground of a dry texel on one of 8 rays within 16 texels of its page, and no blue
+// of the layers climbs a shore. The satellite's snow mark is not water: snow has a low NDVI too.
+const DRY_STEPS = array<i32, 5>(1, 2, 4, 8, 16);
+const DRY_WAYS = array<vec2i, 8>(vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1), vec2i(1, 1), vec2i(-1, 1), vec2i(1, -1), vec2i(-1, -1));
+
+fn wet(cell: vec4u, sat_texel: vec4f, snow: vec4f) -> bool {
+    let cover = u32(rule(cell.b, slot_kinds() + i32(cell.r)).x + 0.5);
+    return cover == COVER_WATER || (satellite(sat_texel).a > 0.0 && ndvi_of(sat_texel) < 0.0 && snow.b < 0.5);
+}
+
+// The texel of a page whose ground a texel takes: its own, or the first dry one on the rays.
+fn dry_texel(page: i32, layer: i32, job: u32, c: vec2i) -> vec2i {
+    if (!wet(textureLoad(cells, in_page(page, c), layer, 0), textureLoad(colour_in, c, i32(job), 0), textureLoad(snow_in, c, i32(job), 0))) {
+        return c;
+    }
+    for (var i = 0; i < 5; i++) {
+        for (var w = 0; w < 8; w++) {
+            let d = clamp(c + DRY_WAYS[w] * DRY_STEPS[i], vec2i(0), vec2i(255));
+            if (!wet(textureLoad(cells, in_page(page, d), layer, 0), textureLoad(colour_in, d, i32(job), 0), textureLoad(snow_in, d, i32(job), 0))) {
+                return d;
+            }
+        }
+    }
+    return c;
+}
+
 @compute @workgroup_size(16, 16)
 fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let job = jobs[id.z];
@@ -71,9 +98,10 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     if ((job.work & 2u) == 0u) {
         return;
     }
-    let cell = textureLoad(cells, at, layer, 0);
-    let sat_texel = textureLoad(colour_in, c, i32(id.z), 0);
-    let data = textureLoad(snow_in, c, i32(id.z), 0);
+    let source = dry_texel(page, layer, id.z, c);
+    let cell = textureLoad(cells, in_page(page, source), layer, 0);
+    let sat_texel = textureLoad(colour_in, source, i32(id.z), 0);
+    let data = textureLoad(snow_in, source, i32(id.z), 0);
     let sat = satellite(sat_texel);
     let ndvi = ndvi_of(sat_texel);
     let t_ndvi = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);

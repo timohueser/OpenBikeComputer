@@ -10,11 +10,11 @@ import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Sky } from './light/sky';
 import { GroundSource } from './stream/ground';
-import { pageDecoder, releaseTiles } from './stream/terrain';
-import { Terrain, type TerrainStats } from './terrain/terrain';
+import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
+import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground'];
+const PASSES = ['terrain', 'ground', 'stamp'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -29,6 +29,8 @@ export interface Stats {
     adapter: string;
     /** Milliseconds per render pass, from timestamp queries. */
     gpu: Record<string, number>;
+    /** The stamp jobs of the frame whose times `gpu` holds, by kind, and that frame's start in milliseconds. */
+    timed?: Record<string, number>;
     cpu: number;
     /** Bytes per GPU pool. */
     pools: Map<string, number>;
@@ -78,7 +80,7 @@ export class TrailView {
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, config.bounds, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
@@ -123,8 +125,8 @@ export class TrailView {
     stats(): Stats {
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats;
         return {
-            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools),
-            requests: pages.requests + ground.requests, bytes: pages.bytes + ground.bytes, failed: pages.failed + ground.failed,
+            adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
+            requests: pages.requests + ground.requests, bytes: pages.bytes + ground.bytes, failed: pages.failed + ground.failed + this.terrain.stamps.failed,
             drawn: this.drawn, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground,
         };
     }
@@ -137,6 +139,11 @@ export class TrailView {
     /** drawnHeight at points from the probe and from an instance shader, with the state of the last frame. */
     check(points: [number, number][]): Promise<{ probe: number[]; instance: number[] }> {
         return this.terrain.check(points);
+    }
+
+    /** The invariant audit of the drawn terrain, with the state of the last frame: call it after `waitForIdle()`. */
+    audit(): Promise<Audit> {
+        return this.terrain.audit();
     }
 
     /** Resolves after the next frame is drawn. */
@@ -243,7 +250,7 @@ export class TrailView {
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect));
         }
         const encoder = gpu.device.createCommandEncoder();
-        const probed = this.terrain.encode(encoder);
+        const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
@@ -260,7 +267,7 @@ export class TrailView {
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
         }
         pass.end();
-        const read = times.resolve(encoder);
+        const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
         read();
         probed();

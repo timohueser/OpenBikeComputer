@@ -29,7 +29,7 @@ is the palette of the `world` region.
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
-| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the rules packing and the per-page compute |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -47,12 +47,10 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), or `albedo` (the ground colour without light) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, conflicts red, fords cyan) |
 | `lab` | `name:variant`, a list with commas |
 
-Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows
-move, Q and E sink and rise in flight, Shift runs, F walks or flies, a drag looks and the wheel
-zooms. H hides the HUD.
+The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 ## Labs
 
@@ -67,8 +65,8 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--hud] [--gpu]
-node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--cracks N]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
+node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
@@ -78,8 +76,8 @@ bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the no
 pages over the flights of `flights.json`. The `ground` pass runs only when ground pages arrive:
 read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
-adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
+whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
@@ -105,12 +103,14 @@ npm run check:wgsl          # cargo install naga-cli --version 30.0.1 --locked
 ## The fixture
 
 `tests/browser/trailview/fixture/` holds the planner terrain of a box at Engelberg, from
-Copernicus GLO-30 square N46 E008, and its config. To make it again:
+Copernicus GLO-30 square N46 E008, its feature tiles and its config. To make it again from OSM.pbf:
 
 ```sh
 cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
   --dem DIR --bounds 8.37,46.765,8.46,46.83 --output terrain.mbtiles
-uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles
+uv run --locked --group trailview python -m tools.planner_trailview_features --osm OSM.pbf \
+  --terrain terrain.mbtiles --bounds 8.37,46.765,8.46,46.83 --output features.pmtiles
+uv run --locked --group planner-maps python builder/web/tests/browser/trailview/make-fixture.py terrain.mbtiles features.pmtiles
 ```
 
 ## What bites
@@ -132,6 +132,7 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
   `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
+- Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
 - The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
   them from their cover, two levels coarser; the HUD counts them as short.
 - A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date

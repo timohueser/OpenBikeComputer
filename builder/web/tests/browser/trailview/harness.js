@@ -19,16 +19,18 @@ export function launch(gpu) {
 }
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
+const FEATURES = new URL('./fixture/features/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
 
 /**
  * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
  * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. With
  * `ground`, a folder of the TrailView bakes, it serves their TileJSON and tiles as the tile service
- * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. Every other
- * public host is refused.
+ * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. The feature
+ * tiles come from the fixture, or from `features`, a folder of `z/x/y.bin`. Every other public host is
+ * refused.
  */
-export async function routeFixture(page, tiles, ground, colour = 'webp-12') {
+export async function routeFixture(page, tiles, ground, colour = 'webp-12', features = FEATURES) {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
@@ -38,6 +40,16 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12') {
     await page.route(url => url.hostname !== '127.0.0.1', async route => {
         const url = new URL(route.request().url());
         if (url.hostname !== 'tiles.test') return route.abort();
+        if (url.pathname === '/trailview-features.json') {
+            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 14, bounds: [-180, -85, 180, 85] };
+            return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
+        }
+        const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);
+        if (feature) {
+            const path = join(features, feature[1]);
+            if (!existsSync(path)) return route.fulfill({ status: 204, headers: cors });
+            return route.fulfill({ body: readFileSync(path), contentType: 'application/octet-stream', headers: cors });
+        }
         const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
         if (tile) {
             const body = read(...tile.slice(1).map(Number));

@@ -288,8 +288,8 @@ triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trai
 
 # The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: no WebGPU error, a
 # lost device that recovers, the probe, and the notice without WebGPU. A test that draws for minutes on
-# SwiftShader takes the tag @gpu (the crack and surface audits): pull requests skip it,
-# `web.trailview-weekly` runs it.
+# SwiftShader takes the tag @gpu (the crack and surface audits, the invariant audits of the stamps along
+# the roads of a village and in a lake, debug=mask): pull requests skip it, `web.trailview-weekly` runs it.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"

@@ -1,7 +1,9 @@
 # TrailView feature tiles
 
 The layer `planner/trailview-features` holds the OSM features that TrailView draws. Its step
-reads the OSM of `planner/osm` in the same release. The kind table
+reads the OSM of `planner/osm` and the master terrain of the grid of `planner/terrain` in the same
+release.
+The kind table
 [`data/trailview/kinds.json`](../data/trailview/kinds.json) selects the features and the tags
 that the tiles keep. A new kind is one entry in that table. The format does not change.
 
@@ -30,6 +32,13 @@ nearer the pole, so it is at least `buffer_m` at every point of the tile. The wi
 cut and fill cone of a road, reaches 25 m past the road edge. 40 m holds it for a road up to
 30 m wide, so neighbouring terrain nodes stamp the same apron.
 
+The cut makes no vertex. A piece of a line keeps the segments that meet the buffered square whole,
+and one more vertex at each end, so that both tiles know the bend at each end of such a segment.
+A ring keeps each edge that crosses a side of the square whole, and joins the vertices outside
+the side directly. Such a join lies outside the square. Thus inside the buffered square, the
+tiles that hold a feature hold the same vertices and edges, and a stamp near a tile edge gets
+the same answer in both tiles.
+
 The buffer is for the stamps. A tile owns the points from 0 to less than 8192 on each axis: a
 reader that draws or places features uses only the part of a feature in that square, so a point
 on a shared edge or in the buffer of two tiles is drawn once.
@@ -46,9 +55,9 @@ cross itself after the simplification, and an island stays inside its lake. The 
 feature once for each zoom, before it cuts the feature into tiles, so neighbouring tiles hold the
 same line.
 
-The cut of a concave ring can leave edges on the border of the buffered square, outside the tile
-square. After the cut, the bake rounds each vertex to tile units, which moves it by at most half a
-unit, and removes repeated vertices. A line part with fewer than 2 vertices goes. A ring with
+The cut of a ring can leave edges outside the buffered square, between vertices of the feature.
+After the cut, the bake rounds each vertex to tile units, which moves it by at most half a unit,
+and removes repeated vertices. A line part with fewer than 2 vertices goes. A ring with
 fewer than 3 vertices or with no area goes; when an outer ring goes, its holes go too.
 
 ## Tile
@@ -92,6 +101,13 @@ first vertex of a feature is the difference from (0, 0).
 ### Heights
 
 The solvers of the bake set the heights of a feature. A feature with no height has `has_z` 0.
+The bake sets simple heights from the master terrain. Each vertex of a `main-road`, `road` or
+`path` that is not a bridge has the height of a straight line fitted to the terrain, sampled every
+2 m, over ±12 m of the line; near an end the window holds the part of it on the line. Roads that
+share a vertex take the mean of their heights there. Each vertex of a `river` or `stream` that is not in a
+tunnel has that height too, but never higher than a vertex before it: OSM draws a waterway in the
+direction of its flow. Each vertex of a `lake` has the median of the terrain inside it. Other kinds
+have no height yet.
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of

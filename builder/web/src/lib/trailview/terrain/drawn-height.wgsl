@@ -25,7 +25,9 @@ struct Surface {
 }
 
 @group(1) @binding(0) var<uniform> surface: Surface;
-// MAP × MAP entries per level: the page layer + 1 (0 for no page), with STORED for a stored page.
+// MAP × MAP entries per level: the layer + 1 of the page that draws (0 while none does) in the low
+// 16 bits, and of the raw stored page in the high 16 bits (0 for a synthesized page). A stored page
+// with stamps draws a stamped copy.
 @group(1) @binding(1) var<storage, read> lod_map: array<u32>;
 // Per texel: a 16-bit code; the height is the page's offset + code × its scale. A page is one of
 // 8 × 8 tiles of a layer.
@@ -43,7 +45,6 @@ const COARSEST: u32 = 1u;
 const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
 const MARGIN: f32 = 1e-3;
-const STORED: u32 = 0x80000000u;
 const UNKNOWN16: u32 = 0xffffu;
 // A height that no page knows. Never NaN: shader compilers may assume that there is none.
 const NONE: f32 = -1e30;
@@ -115,13 +116,18 @@ fn entry(level: u32, t: vec2i) -> u32 {
     return lod_map[(i32(level) * MAP + slot.y) * MAP + slot.x];
 }
 
-// The height of a texel; NONE where no page holds it or it is unknown. `stored` reads stored pages only.
+// The height of a texel: the drawn page's, or with `stored` the raw stored page's. NONE where no page holds it or it is unknown.
 fn texel_height(level: u32, t: vec2i, stored: bool) -> f32 {
     let e = entry(level, t);
-    if (e == 0u || (stored && e < STORED)) {
+    let page = select(e & 0xffffu, e >> 16u, stored);
+    if (page == 0u) {
         return NONE;
     }
-    let page = (e & ~STORED) - 1u;
+    return slot_height(page - 1u, t);
+}
+
+// The height of a texel in the page at a layer, NONE where it is unknown.
+fn slot_height(page: u32, t: vec2i) -> f32 {
     return decode(page, textureLoad(heights, in_layer(page, t), page >> 6u, 0).x);
 }
 
@@ -146,7 +152,7 @@ fn decode(page: u32, raw: u32) -> f32 {
 
 // The bilinear height between four texels, or NONE unless all four are known.
 fn bilinear(level: u32, t: Texel) -> f32 {
-    let e = entry(level, t.whole);
+    let e = entry(level, t.whole) & 0xffffu;
     if (e == 0u) {
         return NONE;
     }
@@ -155,7 +161,7 @@ fn bilinear(level: u32, t: Texel) -> f32 {
     var c: f32;
     var d: f32;
     if (in_one_page(t.whole)) {
-        let page = (e & ~STORED) - 1u;
+        let page = e - 1u;
         let q = textureGather(0, heights, quad_sampler, quad_at(page, t.whole), page >> 6u);
         a = decode(page, q.w);
         b = decode(page, q.z);
@@ -285,11 +291,11 @@ fn drawn_height(s: vec2f) -> f32 {
 
 // The normal of a texel, with z 1; z −1 where no page holds the texel or its height is unknown.
 fn texel_normal(level: u32, t: vec2i) -> vec3f {
-    let e = entry(level, t);
+    let e = entry(level, t) & 0xffffu;
     if (e == 0u) {
         return vec3f(0.0, 0.0, -1.0);
     }
-    let page = (e & ~STORED) - 1u;
+    let page = e - 1u;
     return marked(textureLoad(normals, in_layer(page, t), page >> 6u, 0).xy);
 }
 
@@ -301,7 +307,7 @@ fn marked(n: vec2f) -> vec3f {
 fn level_normal(s: vec2f, top: u32) -> vec2f {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
-        let e = entry(level, t.whole);
+        let e = entry(level, t.whole) & 0xffffu;
         if (e == 0u) {
             continue;
         }
@@ -310,7 +316,7 @@ fn level_normal(s: vec2f, top: u32) -> vec2f {
         var c: vec3f;
         var d: vec3f;
         if (in_one_page(t.whole)) {
-            let page = (e & ~STORED) - 1u;
+            let page = e - 1u;
             let x = textureGather(0, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
             let y = textureGather(1, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
             a = marked(vec2f(x.w, y.w));
