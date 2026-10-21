@@ -35,7 +35,7 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
 /**
  * The profile of a road or path class, as `Profile` in stamp-core.wgsl. The core holds the road height
  * ± `tol`. The cut and the fill (rise per metre) widen until they stop binding `reach` metres past the
- * core and its margin, or for a path past its edge: its bench. A level stamps a road only where
+ * core, or for a path past its edge: its bench. A level stamps a road only where
  * `least` metres of its cut and fill fit inside the buffer.
  */
 export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number }
@@ -107,7 +107,7 @@ export interface Lake { level: number; rings: number[][]; outer: boolean[] }
  * As road_shows, path_shows and river_shows of stamp-core.wgsl: whether a level with texels of this
  * size can stamp a line. bins.test.ts holds these numbers equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, BANK_M: 2, BANK_RAMP: 8 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
@@ -117,7 +117,7 @@ export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.G
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
-    if (kind === RIVER) return 2 * h >= RULES.MESH_TEXELS * texel && h <= limit;
+    if (kind === RIVER) return 2 * h >= texel && Math.max(h, RULES.MESH_TEXELS * texel) + RULES.BANK_M + 2 * RULES.MESH_TEXELS * texel + RULES.BANK_RAMP <= limit;
     return 2 * h >= texel && h + least <= limit;
 }
 

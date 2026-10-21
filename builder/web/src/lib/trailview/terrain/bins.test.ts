@@ -5,7 +5,7 @@ import { decodeFeatures } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, ROAD, RULES, type Line, type Profile } from './bins';
+import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -29,6 +29,16 @@ function crosses([ox, oy]: number[], [px, py]: number[], [ax, ay, bx, by]: numbe
     return left(ax - ox, ay - oy, px - ox, py - oy) !== left(bx - ox, by - oy, px - ox, py - oy) && one !== left(bx - ax, by - ay, px - ax, py - ay);
 }
 
+/** The gates of stamp-core.wgsl in JavaScript: its f32 constants and the functions that the gates call, as written there. */
+function shaderGates(): Record<'road_shows' | 'path_shows' | 'river_shows', (h: number, ...rest: unknown[]) => boolean> {
+    const constants = [...shader.matchAll(/^const (\w+): f32 = ([^;]+);/gm)].map(([, name, value]) => `const ${name} = ${value};`);
+    const functions = ['reach_limit', 'gate_texel', 'river_half', 'water_bank', 'road_shows', 'path_shows', 'river_shows'].map(name => {
+        const [, args, body] = new RegExp(`fn ${name}\\(([^)]*)\\) -> \\w+ \\{([^}]*)\\}`).exec(shader)!;
+        return `function ${name}(${args.replace(/: \w+/g, '')}) {${body.replace(/\blet\b/g, 'const').replace(/\b(max|min)\(/g, 'Math.$1(').replace(/\bf32\(/g, '(').replace(/(\d)u\b/g, '$1')}}`;
+    });
+    return new Function(`${constants.join('\n')}\n${functions.join('\n')}\nreturn { road_shows, path_shows, river_shows };`)();
+}
+
 const lakeNode = () => {
     const { rings } = features(fixture(TILE.level, TILE.x, TILE.y), TILE).lakes[0], xs = rings[0].filter((_, i) => i % 2 === 0), ys = rings[0].filter((_, i) => i % 2 === 1);
     const middle = (values: number[]) => (Math.min(...values) + Math.max(...values)) / 2;
@@ -42,6 +52,17 @@ describe('the stamp data of a node', () => {
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
+    });
+
+    it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
+        const gates = shaderGates(), seen = new Set<boolean>();
+        for (const [kind, profile] of [[ROAD, 0], [PATH, Object.keys(PROFILES).indexOf('path')], [RIVER, 0]]) for (const h of [0.6, 2, 5, 12]) for (let level = 12; level <= 18; level++) {
+            const line = { kind, h, profile } as Line, rule = Object.values(PROFILES)[profile];
+            const expected = kind === RIVER ? gates.river_shows(h, level) : (kind === PATH ? gates.path_shows : gates.road_shows)(h, rule, level);
+            expect(shows(line, gateTexel(level)), `kind ${kind}, h ${h}, level ${level}`).toBe(expected);
+            seen.add(expected);
+        }
+        expect(seen.size).toBe(2);
     });
 
     it('lists in each cell every segment and edge within the buffer of the feature tiles, and the lakes over its centre, in the order of the shader', () => {
