@@ -115,7 +115,7 @@ class Network:
         lengths = np.hypot(*d.T) * metres(self.osm_xy[sa, 1] + d[:, 1] / 2)
         segment_of = np.full(len(self.osm_xy), -1)
         segment_of[sa] = np.arange(len(sa))
-        self.sides = self.junction_sides(np.bincount(self.osm_var) >= 2, last, names)
+        self.sides, self.pairs = self.junction_sides(np.bincount(self.osm_var) >= 2, last, names)
         # The cuts of each OSM segment: evenly spaced, and at the approach distance of a side road.
         regular = np.maximum(1, np.ceil(lengths / VERTEX_M)).astype(np.int64)
         cut_segment = np.repeat(np.arange(len(sa)), regular - 1)
@@ -177,11 +177,12 @@ class Network:
     def junction_sides(self, junction, last, names):
         """The side directions of the junctions, and the through road of each: its occurrence, step and
         approach metres, and per through direction (at most two) the occurrence and step, -1 for none.
-        The through road is the best class at the junction, and of two ways of that class, the pair
-        that runs most nearly straight on."""
+        Then the through roads of two ways, as (occurrence, step) of each: the grade runs smoothly on
+        across the junction, where OSM splits a way. The through road is the best class at the
+        junction, and of two ways of that class, the pair that runs most nearly straight on."""
         at = np.flatnonzero(junction[self.osm_var])
         if not len(at):
-            return [np.zeros(0, np.int64)] * 2 + [np.zeros(0)] + [np.zeros(0, np.int64)] * 4
+            return [np.zeros(0, np.int64)] * 2 + [np.zeros(0)] + [np.zeros(0, np.int64)] * 4, np.zeros((0, 4), np.int64)
         rows = []
         for step in (1, -1):
             ok = ~last[at] if step == 1 else np.isin(at, self.osm_first, invert=True)
@@ -198,7 +199,7 @@ class Network:
         starts = np.flatnonzero(np.concatenate([[True], var[1:] != var[:-1]]))
         ends = np.concatenate([starts[1:], [len(var)]])
         path = names.index("path")
-        out = [[] for _ in range(7)]
+        out, pairs = [[] for _ in range(7)], []
         for s, e in zip(starts.tolist(), ends.tolist()):
             top = [i for i in range(s, e) if rank[i] == rank[s]]
             if len(top) >= 2:
@@ -207,12 +208,14 @@ class Network:
                 through = (top[0],)
             metres_ = APPROACH_PATH_M if rank[s] >= path else APPROACH_M
             t1, t2 = through[0], through[1] if len(through) > 1 else -1
+            if t2 >= 0 and occurrence[t1] != occurrence[t2]:
+                pairs.append((occurrence[t1], step[t1], occurrence[t2], step[t2]))
             for i in range(s, e):
                 if i not in through:
                     for column, value in enumerate((occurrence[i], step[i], metres_, occurrence[t1], step[t1],
                                                     occurrence[t2] if t2 >= 0 else -1, step[t2] if t2 >= 0 else 0)):
                         out[column].append(value)
-        return [np.array(column, float if c == 2 else np.int64) for c, column in enumerate(out)]
+        return [np.array(column, float if c == 2 else np.int64) for c, column in enumerate(out)], np.array(pairs, np.int64).reshape(-1, 4)
 
 
 def solve(features, terrain, rivers=(), classes=CLASSES):
@@ -270,10 +273,23 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     # Smoothness: per vertex inside a way, the change of grade over the mean of its two segments.
     inner = np.flatnonzero(net.segment_way[:-1] == net.segment_way[1:])
     inner = inner[known[a[inner]] & known[b[inner]] & known[b[inner + 1]]]
+    triples = np.column_stack([a[inner], b[inner], b[inner + 1]])
     la, lb = length[inner], length[inner + 1]
-    lam = np.array([row["smooth_m"] ** 4 for row in rows])[net.rule[net.segment_way[inner]]] / ((la + lb) / 2)
+    smooth_m = np.array([row["smooth_m"] for row in rows])
+    lam = smooth_m[net.rule[net.segment_way[inner]]] ** 4
+    # Across a junction the through road runs on from one way into the other: the vertex next to the
+    # junction on each, and the junction.
+    o1, s1, o2, s2 = net.pairs.T
+    j = net.osm_position[o1]
+    across = np.column_stack([net.vertex_var[j + s1], net.vertex_var[j], net.vertex_var[net.osm_position[o2] + s2]])
+    span = lambda p, q: np.hypot(*(net.vertex_xy[p] - net.vertex_xy[q]).T) * metres(net.vertex_xy[q][:, 1])
+    whole = np.all(known[across], axis=1)
+    triples = np.concatenate([triples, across[whole]])
+    la = np.concatenate([la, span(j + s1, j)[whole]])
+    lb = np.concatenate([lb, span(net.osm_position[o2] + s2, j)[whole]])
+    lam = np.concatenate([lam, smooth_m[net.rule[net.osm_way[o1]]][whole] ** 4]) / ((la + lb) / 2)
     D2 = sparse.csr_matrix((np.column_stack([1 / la, -1 / la - 1 / lb, 1 / lb]).ravel(),
-                            (np.repeat(np.arange(len(inner)), 3), np.column_stack([a[inner], b[inner], b[inner + 1]]).ravel())), shape=(len(inner), n))
+                            (np.repeat(np.arange(len(triples)), 3), triples.ravel())), shape=(len(triples), n))
     # Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a tunnel
     # has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit could meet.
     grade = np.array([np.inf if row["grade"] is None else row["grade"] for row in rows])[net.rule[net.segment_way]]

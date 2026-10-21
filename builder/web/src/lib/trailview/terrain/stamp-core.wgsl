@@ -163,7 +163,8 @@ fn point(at: u32) -> vec2i {
 
 // Where a texel lies on a road or path segment: metres from its line, the height there, the side,
 // and whether the core and the cone apply. Inside the segment's mitre quad the height runs from end
-// to end along it; past an end of a line, a round cap holds the end's height.
+// to end along it; past an end of a line, a round cap holds the end's height. Near a junction the
+// height tilts across the segment by its cross-slopes, which run from end to end too.
 struct Along {
     lateral: f32,
     z: f32,
@@ -177,7 +178,7 @@ struct Along {
 fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let a = point(r);
     let b = point(r + 2u);
-    let flags = word(r + 5u) >> 8u;
+    let flags = (word(r + 5u) >> 8u) & 0xffu;
     let ab = vec2f(b - a);
     let ap = vec2f(p - a);
     let bp = vec2f(p - b);
@@ -188,17 +189,18 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
+    let tilt = cross * unit;
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
         let t = da / max(da + db, 1e-6);
-        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t), sign(cross), true, true, beside);
+        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt * mix(real(r + 14u), real(r + 15u), t), sign(cross), true, true, beside);
     }
     if (da < 0.0 && db >= 0.0 && (flags & (CORE_A | CONE_A)) != 0u) {
-        return Along(length(ap) * unit, real(r + 6u), sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, beside);
+        return Along(length(ap) * unit, real(r + 6u) + tilt * real(r + 14u), sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, beside);
     }
     if (db < 0.0 && da >= 0.0 && (flags & (CORE_B | CONE_B)) != 0u) {
-        return Along(length(bp) * unit, real(r + 7u), sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, beside);
+        return Along(length(bp) * unit, real(r + 7u) + tilt * real(r + 15u), sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, beside);
     }
     return Along(INF, 0.0, 0.0, false, false, beside);
 }
@@ -337,7 +339,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 line_held = false;
             }
             let h = real(r + 8u);
-            let rule = profiles[word(r + 14u)];
+            let rule = profiles[word(r + 5u) >> 16u];
             let g = along(r, p, unit);
             if (kind == ROAD && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
                 line_near = true;

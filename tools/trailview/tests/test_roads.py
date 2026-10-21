@@ -74,8 +74,9 @@ class RoadSolverTest(unittest.TestCase):
         self.assertLess(abs(z[-1] - (1000 + 0.30 * 92)), 0.5)
 
     def test_a_side_road_meets_the_through_road_flat_and_on_one_height(self):
-        # The through road climbs east at 8 % on a hillside that rises north at 15 %; OSM splits it at the junction.
-        terrain = Terrain(lambda east, north: 1000 + 0.08 * east + 0.15 * north)
+        # The through road climbs east at 2 %, and from the junction on at 10 %, on a hillside that rises
+        # north at 15 %; OSM splits it at the junction.
+        terrain = Terrain(lambda east, north: 1000 + 0.02 * east + 0.08 * np.maximum(east, 0) + 0.15 * north)
         west = road("main-road", "secondary", line((-100, 0), (0, 0), step=20))
         east = road("main-road", "secondary", line((0, 0), (100, 0), step=20))
         side = road("road", "residential", line((0, 0), (0, 100), step=25))
@@ -89,6 +90,10 @@ class RoadSolverTest(unittest.TestCase):
         self.assertEqual(len(approach), 1)
         self.assertLess(abs(z[approach[0]] - z[0]), 0.01)
         self.assertGreater(metrics["approaches"], 0)
+        # The through road runs on smoothly from one way into the other: the kink of the terrain spreads.
+        (along_w, z_w), (along_e, z_e) = profile(w[0]), profile(e[0])
+        before, after = (z_w[-1] - z_w[-2]) / (along_w[-1] - along_w[-2]), (z_e[1] - z_e[0]) / along_e[1]
+        self.assertLess(abs(after - before), 0.025)
 
     def test_a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert(self):
         def height(east, north):

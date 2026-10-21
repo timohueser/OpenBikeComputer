@@ -90,8 +90,12 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
-/** A line; `anchors` marks its OSM vertices among the points of its rounded bends. */
-export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[] }
+/**
+ * A line; `anchors` marks its OSM vertices among the points of its rounded bends. `plane` holds, per
+ * vertex of a road, the gradient (metres per metre along world x and y) that its core takes across it:
+ * the through road's surface near a junction, zero elsewhere.
+ */
+export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; plane?: number[] }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
@@ -149,7 +153,80 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
             flush();
         }
     }
+    junctionPlanes(lines);
     return { lines, lakes };
+}
+
+/**
+ * As APPROACH_M of tools/trailview/roads.py: the solver puts the first metres of a side road on the
+ * through road's surface. Its cross-slope holds that far, or to the through road's edge, and goes over WARP_M.
+ */
+const APPROACH_M = 4, WARP_M = 6;
+
+/**
+ * The plane of the through road at each junction of roads, on the side roads. At a junction the
+ * through road is the first class of roads.json there, and of two ways of that class, the pair that
+ * runs most nearly straight on, as in the road solver of the bake; the solver puts each side road's
+ * first metres on that road's surface along its middle. Its core takes the surface's slope across it
+ * as far, or up to the through road's edge, and loses it over WARP_M beyond. Only OSM vertices and their heights
+ * decide, so every tile that holds a junction gets the same planes.
+ */
+function junctionPlanes(lines: Line[]): void {
+    const at = new Map<string, { line: Line; v: number }[]>();
+    for (const line of lines) {
+        if (line.kind !== ROAD) continue;
+        line.plane = new Array(2 * line.z.length).fill(0);
+        line.z.forEach((_, v) => {
+            if (!(line.anchors?.[v] ?? true)) return;
+            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+            at.set(name, [...(at.get(name) ?? []), { line, v }]);
+        });
+    }
+    const next = (line: Line, v: number, step: number) => {
+        let w = v + step;
+        while (w > 0 && w < line.z.length - 1 && !(line.anchors?.[w] ?? true)) w += step;
+        return w >= 0 && w < line.z.length ? w : -1;
+    };
+    const metres = (line: Line, a: number, b: number) => Math.hypot(line.xy[2 * b] - line.xy[2 * a], line.xy[2 * b + 1] - line.xy[2 * a + 1]) * metresPerUnit(line.xy[2 * a + 1]);
+    for (const meeting of at.values()) {
+        if (meeting.length < 2) continue;
+        const ways = meeting.flatMap(({ line, v }) => [-1, 1].map(step => ({ line, v, step, w: next(line, v, step) })).filter(({ w }) => w >= 0)).map(way => {
+            const { line, v, w } = way, length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
+            return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
+        });
+        if (ways.length < 2) continue;
+        const best = Math.min(...ways.map(({ line }) => line.profile)), top = ways.filter(({ line }) => line.profile === best);
+        let through = [top[0]];
+        if (top.length >= 2) {
+            let least = Infinity;
+            for (let i = 0; i < top.length; i++) for (let k = i + 1; k < top.length; k++) {
+                const dot = top[i].dir[0] * top[k].dir[0] + top[i].dir[1] * top[k].dir[1];
+                if (dot < least) [least, through] = [dot, [top[i], top[k]]];
+            }
+        }
+        const [axis] = through, grade = through.length === 2 ? (through[0].grade - through[1].grade) / 2 : axis.grade;
+        const plane = [grade * axis.dir[0], grade * axis.dir[1]], full = Math.max(APPROACH_M, ...through.map(({ line }) => line.h));
+        for (const side of ways) {
+            if (through.includes(side)) continue;
+            const { line, step } = side;
+            let v = side.v, along = 0;
+            while (v >= 0 && v < line.z.length) {
+                const share = Math.min(1, Math.max(0, (full + WARP_M - along) / WARP_M));
+                if (share * Math.hypot(...plane) > Math.hypot(line.plane![2 * v], line.plane![2 * v + 1])) line.plane!.splice(2 * v, 2, share * plane[0], share * plane[1]);
+                if (share === 0 || v + step < 0 || v + step >= line.z.length) break;
+                along += metres(line, v, v + step);
+                v += step;
+            }
+        }
+    }
+}
+
+/** The slopes across segment v of a road at its two ends: its plane on the segment's left normal, as `along` in stamp-core.wgsl reads them. */
+export function crossSlopes(line: Line, v: number): [number, number] {
+    if (!line.plane) return [0, 0];
+    const dx = line.xy[2 * v + 2] - line.xy[2 * v], dy = line.xy[2 * v + 3] - line.xy[2 * v + 1], length = Math.hypot(dx, dy) || 1;
+    const [nx, ny] = [-dy / length, dx / length];
+    return [line.plane[2 * v] * nx + line.plane[2 * v + 1] * ny, line.plane[2 * v + 2] * nx + line.plane[2 * v + 3] * ny];
 }
 
 /** The most that a chord of a rounded bend leaves the curve, in world units (about 10 cm), and the most chords per segment. */
@@ -308,7 +385,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const flags = (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id, line.profile]);
+            const [ca, cb] = crossSlopes(line, v);
+            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id, f(ca), f(cb)]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }
