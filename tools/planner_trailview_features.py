@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, roads
+from .trailview import profiles
 
 FORMAT = 1
 EXTENT = 8192
@@ -504,11 +504,16 @@ def area_km2(bounds):
     return EARTH_RADIUS_KM ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
 
 
-def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=roads.CLASSES):
+def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads, rivers and
-    lakes from the `profiles.Terrain` when there is one; return the metrics."""
+    lakes from the `profiles.Terrain` when there is one, by the road `classes` (else those of
+    `roads.TABLE`); return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
+    # The road solver needs scipy, which the readers of the tiles do not have.
+    from .trailview import roads
+
+    classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
     tiles, low, shared, counts, held, road_metrics = Tiles(bounds), [], {}, {}, [], {}
@@ -573,8 +578,7 @@ def step(request):
     # Osmium export reads the file twice and finds its format by the file name; a store object has none.
     osm = step_request.view({"osm.pbf": pbf}, output.with_name("planner-osm")) / "osm.pbf"
     archive = output / "trailview-features.pmtiles"
-    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain,
-                   roads.validate(options["roads"]))
+    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain, options["roads"])
     step_request.metrics(request, metrics)
 
 
