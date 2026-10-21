@@ -117,29 +117,45 @@ class Way:
         return slope * self.along[-1] > UPHILL_M
 
 
+# Point and edge pairs that one numpy step handles at most.
+PAIRS = 4_000_000
+
+
+def edges(rings):
+    """The edges of the rings, as ax, ay, bx, by columns."""
+    parts = [np.concatenate([r, np.roll(r, -1, 0)], 1) for r in (np.asarray(ring, np.float64) for ring in rings) if len(r) >= 3]
+    return np.concatenate(parts) if parts else np.zeros((0, 4))
+
+
+def chunks(x, y, e):
+    """The points in slices that, with the edges, stay within PAIRS pairs."""
+    step = max(1, PAIRS // max(len(e), 1))
+    for i in range(0, len(x), step):
+        yield slice(i, i + step), x[i:i + step, None], y[i:i + step, None]
+
+
 def contains(rings, x, y):
     """Per point, whether it lies inside the rings, even-odd."""
-    import shapely
-
-    inside = np.zeros(np.shape(x), bool)
-    for ring in rings:
-        if len(ring) >= 3:
-            polygon = shapely.Polygon(ring)
-            shapely.prepare(polygon)
-            inside ^= shapely.contains_xy(polygon, x, y)
-    return inside
+    shape, x, y = np.shape(x), np.ravel(x), np.ravel(y)
+    ax, ay, bx, by = edges(rings).T
+    inside = np.zeros(len(x), bool)
+    for at, px, py in chunks(x, y, ax):
+        crosses = (ay > py) != (by > py)
+        with np.errstate(all="ignore"):
+            inside[at] = np.sum(crosses & (px < ax + (py - ay) * (bx - ax) / (by - ay)), 1) % 2 == 1
+    return inside.reshape(shape)
 
 
 def distance(rings, x, y):
     """Per point, the distance to the nearest edge of the rings, in world units."""
-    import shapely
-
-    points = shapely.points(np.asarray(x, np.float64), np.asarray(y, np.float64))
-    best = np.full(np.shape(x), np.inf)
-    for ring in rings:
-        if len(ring) >= 3:
-            best = np.minimum(best, shapely.distance(shapely.LinearRing(ring), points))
-    return best
+    shape, x, y = np.shape(x), np.ravel(x), np.ravel(y)
+    ax, ay, bx, by = edges(rings).T
+    dx, dy = bx - ax, by - ay
+    best = np.full(len(x), np.inf)
+    for at, px, py in chunks(x, y, ax):
+        t = np.clip(((px - ax) * dx + (py - ay) * dy) / np.maximum(dx * dx + dy * dy, 1e-30), 0, 1)
+        best[at] = np.min(np.hypot(px - ax - t * dx, py - ay - t * dy), 1, initial=np.inf)
+    return best.reshape(shape)
 
 
 def box(rings, margin=0.0):
@@ -214,8 +230,16 @@ def interior(parts, terrain):
                for outer, r in ((outer, np.asarray(points, np.float64)) for outer, points, *_ in parts))
     step = max(1 / ((1 << terrain.top) * TILE), math.sqrt(max(area, 0.0) / LAKE_POINTS))
     xs, ys = np.arange(x0 + step / 2, x1, step), np.arange(y0 + step / 2, y1, step)
+    if not xs.size or not ys.size:
+        return np.zeros(0)
+    # Per row, the crossings of the edges, sorted: a point inside has an odd count of them to its left.
+    ax, ay, bx, by = edges(rings).T
+    y = ys[:, None]
+    with np.errstate(all="ignore"):
+        x = np.where((ay <= y) != (by <= y), ax + (y - ay) * (bx - ax) / (by - ay), np.inf)
+    x.sort(axis=1)
+    at = np.array([np.searchsorted(row, xs) for row in x]) % 2 == 1
     gx, gy = np.meshgrid(xs, ys)
-    at = contains(rings, gx, gy) if xs.size and ys.size else np.zeros((0, 0), bool)
     return terrain.heights(gx[at], gy[at]) if at.any() else np.zeros(0)
 
 
