@@ -324,6 +324,20 @@ fn voronoi(p: vec2f, size: f32) -> vec3f {
     return vec3f(hash(id + 5.0), d2 - d1, hash(id + 9.0));
 }
 
+// Blades of grass: BLADE_WIDTH wide and BLADE_LENGTH long in metres.
+const BLADE_WIDTH: f32 = 0.025;
+const BLADE_LENGTH: f32 = 0.3;
+
+// Rows of blades along the direction `angle`, fixed to the ground; each blade tapers to a lighter tip.
+fn blade_rows(world: vec2f, angle: f32) -> f32 {
+    let d = vec2f(cos(angle), sin(angle));
+    let across = dot(world, vec2f(-d.y, d.x)) / BLADE_WIDTH;
+    let row = floor(across);
+    let along = dot(world, d) / BLADE_LENGTH + hash(vec2f(row, 3.0));
+    let shape = 1.0 - smoothstep(0.35 - 0.3 * fract(along), 0.5 - 0.3 * fract(along), abs(fract(across) - 0.5));
+    return mix(-0.25, hash(vec2f(row, floor(along))) - 0.5 + 0.5 * (fract(along) - 0.5), shape);
+}
+
 // Value noise and its slope along x and y, per unit of q.
 fn noised(q: vec2f) -> vec3f {
     let i = floor(q);
@@ -405,6 +419,7 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f {
     let world = look.place.xy + relative.xy;
     let footprint = max(length(dpdx(relative.xy)), length(dpdy(relative.xy)));
+    let lateral = min(length(dpdx(relative.xy)), length(dpdy(relative.xy)));
     // The pixel's size on the surface itself: on a slope facing the eye it is far larger than its map
     // footprint, and texture finer than it shows as blotches.
     let surface_size = max(length(dpdx(relative)), length(dpdy(relative)));
@@ -445,18 +460,25 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         mottle += (0.22 * noise(world / 2.5) + 0.12 * noise(world / 0.8) - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
     }
     var albedo = g.albedo * (1.0 + mottle);
-    // Blades: strokes that point away from the eye, so they stand upright on the screen. Each is a
-    // fixed angle wide and a fixed share of its distance deep, and tapers to a lighter tip. Only near
-    // the eye, on ground it looks along: a bank that faces it would stretch them tall.
-    let r = max(length(relative.xy), 0.5);
+    // Blades: rows of strokes fixed to the ground, so they stay in place when the eye moves. A pixel
+    // takes the rows of the one or two of 32 directions nearest its line from the eye, so a blade
+    // stands upright on the screen. Only near the eye, on ground it looks along: a bank that faces it
+    // would stretch them tall.
+    let r = length(relative.xy);
     if (r < 45.0) {
-        let blades = (1.0 - smoothstep(0.25, 0.6, footprint / (0.08 * r))) * (1.0 - smoothstep(25.0, 45.0, r))
-            * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
+        let blades = (1.0 - smoothstep(0.4, 0.8, lateral / BLADE_WIDTH)) * (1.0 - smoothstep(0.25, 0.6, footprint / BLADE_LENGTH))
+            * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
         if (blades > 0.0) {
-            let angle = (atan2(relative.y, relative.x) / 6.2831853 + 0.5) * 1600.0;
-            let along = log(r) / 0.08 + hash(vec2f(floor(angle), 3.0));
-            let shape = 1.0 - smoothstep(0.35 - 0.3 * fract(along), 0.5 - 0.3 * fract(along), abs(fract(angle) - 0.5));
-            let blade = mix(-0.25, hash(vec2f(floor(angle), floor(along))) - 0.5 + 0.5 * (fract(along) - 0.5), shape);
+            let sector = atan2(relative.y, relative.x) / 6.2831853 * 32.0;
+            let first = floor(sector);
+            let w = smoothstep(0.35, 0.65, sector - first);
+            var blade = 0.0;
+            if (w < 1.0) {
+                blade = blade_rows(world, first * 6.2831853 / 32.0);
+            }
+            if (w > 0.0) {
+                blade = mix(blade, blade_rows(world, (first + 1.0) * 6.2831853 / 32.0), w);
+            }
             albedo *= 1.0 + 0.3 * blade * blades;
         }
     }
