@@ -39,7 +39,7 @@ export class Stamps implements StampSource {
 
     /** The node's stamps, undefined while they are on their way. */
     get(node: Node): NodeStamps | undefined {
-        const tile = featureTile(node);
+        const tile = featureTile(node, this.baked);
         if (!this.tiles || !tile) return NOTHING;
         const name = key(node), known = this.nodes.get(name);
         if (known) {
@@ -64,7 +64,7 @@ export class Stamps implements StampSource {
 
     /** The audit samples of a node, as audit.wgsl reads them. */
     async samples(node: Node): Promise<Uint32Array> {
-        const tile = featureTile(node);
+        const tile = featureTile(node, this.baked);
         return this.tiles && tile ? this.ask<Uint32Array>(tile, node, true) : new Uint32Array(0);
     }
 

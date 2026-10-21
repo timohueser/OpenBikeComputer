@@ -35,9 +35,13 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
 
 export interface Node { level: number; x: number; y: number }
 
-/** The feature tile that a node reads: the zoom above its own level, as a terrain tile holds four nodes; none above zoom 8. */
-export function featureTile({ level, x, y }: Node): Node | undefined {
-    const z = Math.min(level - 1, DEEP);
+/**
+ * The feature tile that a node reads: the zoom above its own level, as a terrain tile holds four
+ * nodes; none above zoom 8. Conditioning baked into a stored level reads the tile of its own zoom,
+ * which holds every kind at the deepest stored level.
+ */
+export function featureTile({ level, x, y }: Node, baked = false): Node | undefined {
+    const z = Math.min(baked ? level : level - 1, DEEP);
     return z < LOW ? undefined : { level: z, x: x >> (level - z), y: y >> (level - z) };
 }
 

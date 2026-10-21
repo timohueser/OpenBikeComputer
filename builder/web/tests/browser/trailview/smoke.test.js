@@ -4,6 +4,9 @@ import { errorsOf, redPixels, routeFixture } from './harness.js';
 const VIEW = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=5.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny';
 // Down onto the middle of the fixture, so that only known terrain fills the frame and several levels meet.
 const DOWN = '?lat=46.797500&lon=8.415000&heading=20.0&pitch=-60.0&alt=2500.0&date=2026-08-15&time=15:00&weather=sunny';
+// Straight down onto the roads of Engelberg from 500 m, and onto Trübsee from 2 km.
+const VILLAGE = '?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1500.0&date=2026-08-15&time=15:00&weather=sunny';
+const LAKE = '?lat=46.770000&lon=8.391000&heading=0.0&pitch=-45.0&alt=3500.0&date=2026-08-15&time=15:00&weather=sunny';
 
 async function open(page, view) {
     await routeFixture(page);
@@ -13,6 +16,8 @@ async function open(page, view) {
 }
 
 test('the page draws the fixture with no WebGPU error, and a lost device recovers without a request', async ({ page }) => {
+    // SwiftShader loads, synthesizes and stamps the walk twice.
+    test.slow();
     const errors = errorsOf(page);
     await open(page, VIEW);
     const before = await page.evaluate(() => window.trailView.stats());
@@ -61,6 +66,40 @@ test('the probe gives the height that an instance shader evaluates, to 1 mm', as
     const { probe, instance } = await page.evaluate(points => window.trailView.check(points), points);
     expect(probe.every(Number.isFinite)).toBe(true);
     for (const [i, height] of probe.entries()) expect(Math.abs(height - instance[i])).toBeLessThan(1e-3);
+});
+
+/** The audit of the frame: no violation of a stamp at any level that the frame draws, and neighbouring nodes stamp the same texels. */
+async function audited(page) {
+    const audit = await page.evaluate(() => window.trailView.audit());
+    for (const [name, check] of Object.entries(audit.checks)) expect(check.violations, `${name}: ${JSON.stringify(audit.found)}`).toBe(0);
+    expect(audit.water.wrong).toBe(0);
+    expect(audit.apron.checked).toBeGreaterThan(0);
+    expect(audit.apron.differ).toBe(0);
+    return audit;
+}
+
+test('the stamps hold along the roads of a village, and debug=mask draws them', async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, VILLAGE);
+    const audit = await audited(page);
+    expect(audit.checks.crossFall.checked).toBeGreaterThan(100);
+    expect(audit.checks.roadHeight.checked).toBeGreaterThan(100);
+    await page.evaluate(async () => {
+        const tv = window.trailView;
+        tv.view = { ...tv.view, debug: 'mask' };
+        await tv.nextFrame();
+    });
+    expect((await page.evaluate(() => window.trailView.stats())).terrain.extras.mask).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+});
+
+test('the stamps hold in a lake at every level that the frame draws, and its water height is its level', async ({ page }) => {
+    const errors = errorsOf(page);
+    await open(page, LAKE);
+    const audit = await audited(page);
+    expect(audit.checks.inLake.checked).toBeGreaterThan(50);
+    expect(audit.water.checked).toBeGreaterThan(50);
+    expect(errors).toEqual([]);
 });
 
 test('a browser without WebGPU shows a notice', async ({ page }) => {

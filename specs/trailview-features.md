@@ -32,8 +32,8 @@ nearer the pole, so it is at least `buffer_m` at every point of the tile. The wi
 cut and fill cone of a road, reaches 25 m past the road edge. 40 m holds it for a road up to
 30 m wide, so neighbouring terrain nodes stamp the same apron.
 
-The cut makes no vertex. A piece of a line keeps its first and last segment whole: it starts at
-the last vertex before the line meets the buffered square and ends at the first vertex after it.
+The cut makes no vertex. A piece of a line keeps the segments that meet the buffered square whole,
+and one more vertex at each end, so that both tiles know the bend at each end of such a segment.
 A ring keeps each edge that crosses a side of the square whole, and joins the vertices outside
 the side directly. Such a join lies outside the square. Thus inside the buffered square, the
 tiles that hold a feature hold the same vertices and edges, and a stamp near a tile edge gets

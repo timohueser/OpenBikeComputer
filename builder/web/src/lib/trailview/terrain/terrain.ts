@@ -271,7 +271,7 @@ export class Terrain {
             [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
             [F, { texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } }],
         ]);
-        const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: read }], [C, { buffer: read }]]);
+        const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: read }]]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
 
@@ -495,8 +495,10 @@ export class Terrain {
         }));
         // Side by side drawn nodes whose stamp data is known; below level 11 the buffer of the feature tiles is narrower than a texel.
         const drawn = new Map(nodes.map(node => [key(node), node]));
-        const data: Uint32Array<ArrayBuffer>[] = [], offsets = new Map<string, number>();
-        let words = 0;
+        // The node table of audit.wgsl, then the data of the nodes.
+        const table = new Uint32Array((FINEST + 1) * MAP * MAP), origins = this.work!.origins;
+        const data: Uint32Array<ArrayBuffer>[] = [table], offsets = new Map<string, number>();
+        let words = table.length;
         const offset = (node: Node) => {
             const name = key(node);
             if (!offsets.has(name)) {
@@ -510,14 +512,13 @@ export class Terrain {
             return offsets.get(name)!;
         };
         // The stamp data of the drawn nodes and of their parents, by the LOD map window, for the conflicts near a violation.
-        const table = new Uint32Array((FINEST + 1) * MAP * MAP), origins = this.work!.origins;
         for (const node of [...nodes, ...nodes.map(({ level, x, y }) => ({ level: level - 1, x: x >> 1, y: y >> 1 }))]) {
             const [ox, oy] = origins[node.level] ?? [0, 0], i = node.x - ox, j = node.y - oy, at = offset(node);
             if (i >= 0 && j >= 0 && i < MAP && j < MAP && at >= 0) table[(node.level * MAP + j) * MAP + i] = at + 1;
         }
         const pairs: number[] = [];
         for (const a of nodes) {
-            if (a.level < 11 || !featureTile(a)) continue;
+            if (a.level < 11 || !featureTile(a, this.stamps.baked)) continue;
             for (const axis of [0, 1]) {
                 const b = drawn.get(key({ level: a.level, x: a.x + 1 - axis, y: a.y + axis }));
                 if (!b) continue;
@@ -533,7 +534,7 @@ export class Terrain {
             return buffer;
         };
         const buffers = [storage(samples.subarray(0, Math.max(1, n) * SAMPLE_WORDS)), storage(packed), storage(new Uint32Array(COUNTS)), storage(new Uint32Array(FOUND * 8)),
-            storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0])), storage(table)];
+            storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: buffers.map((buffer, binding) => ({ binding, resource: { buffer } })) }));

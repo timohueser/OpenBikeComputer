@@ -239,13 +239,17 @@ def meets(a, b, rect):
 
 
 def clip_line(points, rect):
-    """The pieces of a polyline that meet `rect`, as lists of vertex indices. A piece keeps its first
-    and last segment whole, so the tiles that hold a segment hold the same segment."""
-    pieces, piece = [], []
+    """The pieces of a polyline that meet `rect`, as lists of vertex indices. A piece keeps the segments
+    that meet `rect` whole, and one more vertex at each end: the tiles that hold a segment hold the
+    same segment and the same bends at its ends."""
+    keep = set()
     for k in range(len(points) - 1):
         if meets(points[k], points[k + 1], rect):
-            piece = piece or [k]
-            piece.append(k + 1)
+            keep.update(range(max(0, k - 1), min(len(points), k + 3)))
+    pieces, piece = [], []
+    for k in range(len(points)):
+        if k in keep:
+            piece.append(k)
         elif piece:
             pieces.append(piece)
             piece = []
@@ -564,9 +568,20 @@ def step(request):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--step", action="store_true", required=True)
-    parser.parse_args()
-    step(step_request.read())
+    parser.add_argument("--step", action="store_true", help="run as the obc data step, with its request on standard input")
+    parser.add_argument("--osm", type=Path, help="bake a box without obc data: the OSM extract of the box")
+    parser.add_argument("--terrain", type=Path, help="a planner-dem MBTiles of the box")
+    parser.add_argument("--bounds", help="west,south,east,north")
+    parser.add_argument("--output", type=Path, help="the archive to write")
+    args = parser.parse_args()
+    if args.step:
+        return step(step_request.read())
+    if not (args.osm and args.terrain and args.bounds and args.output):
+        parser.error("name --step, or --osm, --terrain, --bounds and --output")
+    bounds = [float(value) for value in args.bounds.split(",")]
+    metrics = bake(validate(json.loads(TABLE.read_text())), args.osm, bounds, args.output, "© OpenStreetMap contributors",
+                   profiles.Terrain.mbtiles(args.terrain))
+    print(json.dumps(metrics, indent=1))
 
 
 if __name__ == "__main__":

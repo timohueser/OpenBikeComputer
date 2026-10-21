@@ -37,8 +37,8 @@ struct Pair {
 // The first violations: per entry the point in LOD space, drawnHeight, the expected height; then the kind, the level, the shore distance.
 @group(0) @binding(3) var<storage, read_write> found: array<vec4f>;
 @group(0) @binding(4) var<storage, read> pairs: array<Pair>;
-// Per level, MAP × MAP nodes about the eye as the LOD map has them: the offset + 1 of the node's stamp data, 0 for none.
-@group(0) @binding(5) var<storage, read> node_data: array<u32>;
+// `stamp_data` starts with a table: per level, MAP × MAP nodes about the eye as the LOD map has
+// them, the offset + 1 of each node's stamp data, 0 for none.
 
 override BAKED: bool = false;
 
@@ -88,7 +88,7 @@ fn conflict_near(s: vec2f, level: u32) -> bool {
             if (any(slot < vec2i(0)) || any(slot >= vec2i(MAP))) {
                 continue;
             }
-            let data = node_data[(i32(level) * MAP + slot.y) * MAP + slot.x];
+            let data = stamp_data[(i32(level) * MAP + slot.y) * MAP + slot.x];
             if (data != 0u && stamp_at(level, node << vec2u(8u), data - 1u, (whole << vec2u(shift)) + vec2i(1 << (shift - 1u)), BAKED).conflict) {
                 return true;
             }

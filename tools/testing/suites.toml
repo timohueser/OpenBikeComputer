@@ -287,7 +287,8 @@ platforms = ["linux", "macos"]
 triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trailview/gpu/include.ts", "builder/web/scripts/check-wgsl.mjs", "builder/web/package.json"]
 
 # The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: no WebGPU error, a
-# lost device that recovers, no crack, drawnHeight on the mesh, the probe, and the notice without WebGPU.
+# lost device that recovers, no crack, drawnHeight on the mesh, the probe, the invariant audit of the
+# stamps along the roads of a village and in a lake, debug=mask, and the notice without WebGPU.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"
