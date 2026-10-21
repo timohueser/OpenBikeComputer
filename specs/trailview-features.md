@@ -112,15 +112,16 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
   go, so that it does not move the road,
 - holds each segment within the grade of its class,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
-  surface of the through road of a junction (1.5 m where paths meet). The through road is the first
-  class of the table at the junction, and of two ways of that class, the pair that runs most nearly
-  straight on,
+  surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
+  way between two junctions. The through road is the first class of the table at the junction, and
+  of two ways of that class, the pair that runs most nearly straight on,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
-The tiles keep the vertices of OSM, and add a vertex between two of them where the solved height
-leaves the straight line between them by more than 20 cm. A bridge shorter than 8 m whose deck lies
+The tiles keep the vertices of OSM and the vertex at the end of each approach of a side road, and add
+a vertex between two of them where the solved height leaves the straight line between them by more
+than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has the height of a straight line fitted
