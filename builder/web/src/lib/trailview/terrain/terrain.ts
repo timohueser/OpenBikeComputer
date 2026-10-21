@@ -16,11 +16,15 @@ import { Water } from './water';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
- * MiB. The feature masks take their share of the synthesized budget, as the epic has them.
+ * MiB. The feature masks take their share of the synthesized budget.
  */
-const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 50 * 2 ** 20 };
-/** Feature masks of the finest near pages, 8 bytes per texel: 12 MiB of the synthesized budget. */
-const MASKS = 24, MASK_BYTES = PAGE * PAGE * MASKS * 8;
+const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 70 * 2 ** 20 };
+/**
+ * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
+ * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
+ * page without one draws its roads unpainted.
+ */
+const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -95,8 +99,7 @@ interface Resources {
     gpu: Gpu;
     heights: GPUTexture;
     normals: GPUTexture;
-    maskShapes: GPUTexture;
-    maskKinds: GPUTexture;
+    mask: GPUTexture;
     masks: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
@@ -239,17 +242,16 @@ export class Terrain {
         const heights = gpu.texture('pages', { size: [side, side, layers], format: 'r16uint', usage }, layers * side * side * 2);
         const normals = gpu.texture('pages', { size: [side, side, layers], format: 'rg8snorm', usage }, layers * side * side * 2);
         // The masks: written by the stamp pass, read by the shaders that draw.
-        const mask = (format: GPUTextureFormat) => gpu.texture('features', {
-            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, MASKS * texels * 4);
+        const mask = gpu.texture('features', {
+            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MASK_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
-            maskShapes: mask('rgba8unorm'),
-            maskKinds: mask('rgba8uint'),
-            masks: buffer('features', pages * 4, storage),
+            mask,
+            masks: buffer('features', (1 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
             profiles: buffer('compute', PROFILE_TABLE.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
@@ -289,10 +291,10 @@ export class Terrain {
         const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
         const stampLayout = layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
-            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }], [C, { storageTexture: { format: 'rgba8uint', viewDimension: '2d-array' } }],
+            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
         ]);
         const featureLayout = layout([
-            [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
+            [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
         ]);
         // The audit reads the feature mask in group 3, where the terrain draw has it after the ground.
         const emptyLayout = layout([]);
@@ -327,12 +329,12 @@ export class Terrain {
             compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
-        device.queue.writeBuffer(r.masks, 0, new Uint32Array(pages));
+        device.queue.writeBuffer(r.masks, 0, new Uint32Array(1 + pages));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
         this.resources = {
             ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
-            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.maskShapes), view(r.maskKinds)]),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.maskShapes), view(r.maskKinds)]),
+            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),

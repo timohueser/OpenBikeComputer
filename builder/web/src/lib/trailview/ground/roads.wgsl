@@ -47,9 +47,10 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f
 }
 
 // The road at a point of the ground: `s` in LOD space, `p` in world metres, a pixel `w` metres wide,
-// over `ground`. A road narrower than a pixel draws one pixel wide, as faint as its share of it. A
-// path in forest shows only where trees are drawn, which `tree` does not yet: L9 draws them.
-fn road_at(s: vec2f, p: vec2f, w: f32, ground: vec3f, region: u32, tree: f32) -> Road {
+// over `ground`, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
+// faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
+// half of the morph band of the coarsest level with masks.
+fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, ground: vec3f, region: u32) -> Road {
     let mask = mask_at(s, u32(ceil(lod(s))));
     if (mask.level == 0u || mask.kind.x == 0u) {
         return Road(ground, 0.0);
@@ -67,9 +68,7 @@ fn road_at(s: vec2f, p: vec2f, w: f32, ground: vec3f, region: u32, tree: f32) ->
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * w - half);
-    var cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35);
-    if ((mask.kind.z & PATHWAY) != 0u) {
-        cover *= 1.0 - tree;
-    }
+    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, lod(s));
+    let cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35) * reach;
     return Road(colour, cover);
 }

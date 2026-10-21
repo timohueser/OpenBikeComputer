@@ -480,7 +480,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
-    let road = road_at(s, world, footprint, albedo, region, g.tree);
+    let road = road_at(s, world, footprint, length(relative.xy), albedo, region);
     albedo = mix(albedo, road.colour, road.cover);
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.

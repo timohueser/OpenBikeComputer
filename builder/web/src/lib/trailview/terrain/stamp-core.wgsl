@@ -225,8 +225,7 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
 }
 
 // The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the
-// metres from the middle of that road (signed by side), its surface and whether it is a path, the
-// nearest waterline (negative in water), the water height (NONE without water) and the flags.
+// metres from the middle of that road (signed by side) and its surface, the nearest waterline (negative in water), the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
     hi: f32,
@@ -235,7 +234,6 @@ struct Stamp {
     road: f32,
     across: f32,
     surface: u32,
-    path: bool,
     ford: bool,
     shore: f32,
     // The nearest lake shore alone, negative in a lake.
@@ -245,7 +243,7 @@ struct Stamp {
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, false, INF, INF);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF);
     if (data == NO_DATA) {
         return out;
     }
@@ -353,7 +351,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.road = g.lateral - h;
                 out.across = g.side * g.lateral;
                 out.surface = word(r + 5u) & 0xffu;
-                out.path = kind == PATH;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
             if (kind == ROAD && road_shows(h, rule, level)) {

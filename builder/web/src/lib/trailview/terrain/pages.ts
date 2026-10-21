@@ -3,7 +3,7 @@ import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource } from '../stream/terrain';
 import { NEAR, type NodeStamps } from './bins';
-import { COARSEST, FINEST, key, MAP, size, type Node } from './lod';
+import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
 const LOADS = 6;
@@ -110,6 +110,8 @@ export class Pages {
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
+    /** Metres from the eye to the nearest near page with features that the mask pool cannot hold: the paint fades out before it. */
+    maskReach = NO_LIMIT;
     private arrivals: { node: Node; data: PageData }[] = [];
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
@@ -167,6 +169,7 @@ export class Pages {
             if (page) page.used = this.frame;
         }
         for (const node of wanted) this.want(node, work);
+        this.lateMasks(wanted, anchor, work);
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
@@ -260,6 +263,25 @@ export class Pages {
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
+    }
+
+    /**
+     * A mask-only job for each wanted near page with features that has no mask yet, nearest first, as the
+     * pool has room: a page synthesized while the pool was full gets its mask later. The pages beyond
+     * the pool's capacity, nearest first, set the reach of the paint.
+     */
+    private lateMasks(wanted: Node[], anchor: Anchor, work: Work): void {
+        const near = wanted.filter(node => node.level >= NEAR && this.stamps.get(node)?.data)
+            .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
+        const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
+        if (reach !== this.maskReach) this.dirty = true;
+        this.maskReach = reach;
+        for (const { node } of near.slice(0, this.maskCapacity)) {
+            const page = this.pages.get(key(node)), data = this.stamps.get(node)?.data;
+            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
+            if (work.stamps.length >= ARRIVALS || this.busy(work, data.length) || !this.mask(page)) return;
+            work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
+        }
     }
 
     /** Whether the frame has no room for another arrival, synthesis or stamp, or for `words` of stamp data. */
@@ -449,11 +471,16 @@ export class Pages {
         return map;
     }
 
+    /** As `Masks` in features.wgsl: the reach of the paint, then per layer the mask layer + 1, 0 for none. */
     private masks(): Uint32Array<ArrayBuffer> {
-        const masks = new Uint32Array(this.capacity.stored + this.capacity.synth);
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[page.drawn] = page.mask + 1;
+        const masks = new Uint32Array(1 + this.capacity.stored + this.capacity.synth);
+        new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[1 + page.drawn] = page.mask + 1;
         return masks;
     }
 }
+
+/** A reach that no view meets: no shader takes an infinity. */
+export const NO_LIMIT = 1e9;
 
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => to - 1 - i);
