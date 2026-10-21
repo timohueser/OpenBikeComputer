@@ -129,9 +129,10 @@ fn banks_show(level: u32) -> bool {
     return water_bank(texel) + BANK_RAMP <= reach_limit(texel);
 }
 
-// How far past the shore the water goes, under the banks, so that it meets the terrain.
-fn water_reach(texel: f32) -> f32 {
-    return max(0.0, min(MESH_TEXELS * texel, reach_limit(texel)));
+// How far past the shore the water goes, under the banks, so that it meets the terrain. A level
+// without banks keeps the water at the shore: it has nothing to reach under.
+fn water_reach(level: u32, texel: f32) -> f32 {
+    return select(0.0, MESH_TEXELS * texel, banks_show(level));
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -303,7 +304,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 if (banks_show(level)) {
                     lo[BANKS] = max(lo[BANKS], water + FREEBOARD - widen(max(0.0, shore - water_bank(texel)), BANK_RAMP, 1.0));
                 }
-                if (shore <= water_reach(texel)) {
+                if (shore <= water_reach(level, texel)) {
                     water_near = max(water_near, water);
                 }
                 out.shore = min(out.shore, shore);
@@ -324,7 +325,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 water_in = max(water_in, g.z);
             } else {
                 lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - water_bank(texel)), BANK_RAMP, 1.0));
-                if (d <= water_reach(texel)) {
+                if (d <= water_reach(level, texel)) {
                     water_near = max(water_near, g.z);
                 }
             }
