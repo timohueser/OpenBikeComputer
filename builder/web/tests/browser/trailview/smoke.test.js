@@ -1,5 +1,6 @@
+import { readdirSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { errorsOf, redPixels, routeFixture } from './harness.js';
+import { DIST, errorsOf, redPixels, routeFixture } from './harness.js';
 
 // A walking eye that looks down: few pages to synthesize, which SwiftShader does on the CPU, twice in a test.
 const WALK = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=-45.0&eye=1.6&date=2026-08-15&time=15:00&weather=sunny';
@@ -62,6 +63,25 @@ test('the probe gives the height that an instance shader evaluates, to 1 mm', as
     const { probe, instance } = await page.evaluate(points => window.trailView.check(points), points);
     expect(probe.every(Number.isFinite)).toBe(true);
     for (const [i, height] of probe.entries()) expect(Math.abs(height - instance[i])).toBeLessThan(1e-3);
+});
+
+test('a ground worker keeps the colour under the snow mark of a colour tile', async ({ page }) => {
+    // Lossless WebP (cwebp -lossless -exact): a 512 px material tile of code 13, and a 64 px quarter of
+    // colour (90, 140, 60) with alpha 1, the snow mark, which a premultiplied decode turns into (0, 255, 0).
+    const MATERIAL = 'UklGRiwAAABXRUJQVlA4TCAAAAAv/8F/AAcQbYj+BwQCyf7eMxTR/4z//Oc///nPf/7zfw==';
+    const QUARTER = 'UklGRiIAAABXRUJQVlA4TBYAAAAvP8APEAdQxmqVJwNAQvj/Xovof+oH';
+    const worker = readdirSync(`${DIST}assets`).find(file => file.startsWith('ground-worker-'));
+    await page.goto('/third-party-licenses.txt');
+    const texel = await page.evaluate(async ({ worker, material, quarter }) => {
+        const body = base64 => Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer;
+        const tile = (key, base64) => ({ key, z: 3, x: 5, y: 2, body: body(base64) });
+        const job = { z: 3, x: 5, y: 2, material: tile('material', material), quarters: [tile('q1', quarter), undefined], seasons: 0, date: { weight: 0, snowIndex: 0, shares: [0.5] }, world: 0 };
+        const ground = new Worker(`/assets/${worker}`, { type: 'module' });
+        const { data } = await new Promise(resolve => { ground.onmessage = resolve; ground.postMessage({ id: 0, job }); });
+        return [...data.pages[0].colour.subarray(0, 4), data.pages[0].snow[2]];
+    }, { worker, material: MATERIAL, quarter: QUARTER });
+    // The colour, the NDVI code of a quarter that saw snow, and the snow mark.
+    expect(texel).toEqual([90, 140, 60, 128, 255]);
 });
 
 test('a browser without WebGPU shows a notice', async ({ page }) => {
