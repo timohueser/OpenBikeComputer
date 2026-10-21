@@ -349,27 +349,14 @@ fn noised(q: vec2f) -> vec3f {
     return vec3f(a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y, du * (vec2f(b - a, c - a) + (a - b - c + d) * u.yx));
 }
 
-// Crags about `size` metres across: the nearest crag's two hashes and the gap to its edge, in crag
-// units. Each crag's point keeps to the middle of its cell, so the nearest lies among the four cells around p.
+// Crags about `size` metres across, as smooth fields in the plane of the face, so a near wall shows no
+// cells: how far a crag faces across the face and up it, each 0 to 1, and its joint, 0 on the joint line.
 fn crag(p: vec2f, size: f32) -> vec3f {
-    let q = p / size - 0.5;
-    let i = floor(q);
-    let f = q - i;
-    var d1 = 8.0;
-    var d2 = 8.0;
-    var id = i;
-    for (var j = 0; j < 4; j++) {
-        let o = vec2f(f32(j & 1), f32(j >> 1));
-        let d = length(o + 0.15 + 0.7 * vec2f(hash(i + o), hash(i + o + 17.0)) - f);
-        if (d < d1) {
-            d2 = d1;
-            d1 = d;
-            id = i + o;
-        } else if (d < d2) {
-            d2 = d;
-        }
-    }
-    return vec3f(hash(id + 5.0), hash(id + 9.0), d2 - d1);
+    let q = p / size;
+    let r = q * 2.3 + 17.0;
+    // The steep middle of the smooth step gives each crag a face with a soft edge.
+    let facing = 0.7 * smoothstep(vec2f(0.3), vec2f(0.7), vec2f(noise(q), noise(q + 41.0))) + 0.3 * vec2f(noise(r), noise(r + 23.0));
+    return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
 // A normal of LOD space axes in render space, with the linear part of the cubic.
@@ -537,7 +524,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let sheer = 1.0 - smoothstep(0.3, 0.55, n.z);
         let across = normalize(vec3f(-n.y, n.x, 0.0) + 1e-6);
         let up = cross(n, across);
-        var tilt = (crags.xy - 0.5) * 1.1 * big;
+        var tilt = (crags.xy - 0.5) * 1.3 * big;
         var gully = 0.5;
         var gully_tilt = 0.0;
         if (sheer > 0.0 && surface_size < 25.0) {
@@ -557,8 +544,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
         open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(look.sun.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
         let contrast = 1.0 - 0.5 * calm;
-        let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big * contrast);
-        var tone = 1.0 + 0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big * contrast;
+        let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.2, crags.z)), big * contrast);
+        var tone = 1.0 + 0.4 * (crags.x - crags.y) * big * contrast;
         // The bedding shows only as a faint tone that comes and goes.
         let bed = hash(vec2f(floor(dot(vec3f(world, altitude), rule(region, slot_cliff() + 4).xyz) / 11.0), 3.0));
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
