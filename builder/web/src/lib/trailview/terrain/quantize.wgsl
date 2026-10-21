@@ -6,7 +6,8 @@ struct Job {
     stored: u32,
     metres: f32,
     slot: u32,
-    unused: vec2u,
+    stamped: u32,
+    unused: u32,
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;

@@ -13,6 +13,11 @@ export const LABS = {
     relief: ['bicubic', 'erosion'],
     /** The page heights: float32, or 16 bits with an offset and a scale per page. */
     pages: ['r32float', 'r16'],
+    /**
+     * The feature stamps: on every page at every level as it loads, or conditioning baked into the
+     * stored levels, which the synthesized levels upsample, with no stamp of their own.
+     */
+    stamps: ['runtime', 'baked'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Labs = { -readonly [K in keyof typeof LABS]: (typeof LABS)[K][number] };

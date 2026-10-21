@@ -3,8 +3,8 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, COARSEST, key, RANGE, select, size, type Node } from './lod';
-import { Pages, STORED_BIT, type Work } from './pages';
+import { cdlod, COARSEST, key, MAP, RANGE, select, size, type Node } from './lod';
+import { MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -54,7 +54,8 @@ describe('the page pools', () => {
         const map = works.filter(work => work.map).at(-1)!.map!;
         const ready = [...pages.pages.values()].filter(page => page.ready);
         expect(map.filter(entry => entry !== 0).length).toBe(ready.length);
-        expect(map.filter(entry => entry & STORED_BIT).length).toBe(ready.filter(page => page.kind === 'stored').length);
+        // A stored page has its raw layer in the high half of its entry, for the syntheses.
+        expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
     it('stay at their size, and count a shortage when a view wants more pages than a pool holds', async () => {
@@ -117,6 +118,48 @@ describe('the page pools', () => {
         expect(work.syntheses.map(({ page, stored }) => [key(page.node), stored])).toEqual([[key(at(15)), 13]]);
         expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
         expect(pages.shortage).toBe(1);
+    });
+});
+
+describe('the stamps', () => {
+    const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
+    wanted.sort((a, b) => a.level - b.level);
+    /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
+    const stamps = (baked: boolean): StampSource => {
+        const asked = new Set<string>();
+        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, water: false } : void asked.add(key(node))) };
+    };
+
+    it('draw a stored page as a stamped copy, keep its raw layer for the syntheses, and stamp a synthesized page as it is made', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false));
+        const works = await settle(pages, wanted);
+        expect(pages.idle).toBe(true);
+        const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined);
+        expect(stored.length).toBeGreaterThan(0);
+        expect(stored.every(page => page.copy !== undefined && page.drawn === page.copy)).toBe(true);
+        const last = works.filter(work => work.map).at(-1)!;
+        for (const { node: { level, x, y }, slot, copy } of stored) {
+            const [ox, oy] = last.origins[level], entry = last.map![(level * MAP + y - oy) * MAP + x - ox];
+            expect([entry & 0xffff, entry >>> 16]).toEqual([copy! + 1, slot + 1]);
+        }
+        for (const work of works) {
+            work.syntheses.forEach(({ page }, k) => expect(work.stamps.find(stamp => stamp.page === page)).toMatchObject({ out: k, target: page.slot, mode: MODE.HEIGHTS }));
+        }
+    });
+
+    it('with baked conditioning, stamp the stored pages in place before a synthesis reads them, and stamp no synthesized height', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(true));
+        const works = await settle(pages, wanted);
+        expect(pages.idle).toBe(true);
+        const stamped = new Map<string, number>(), frame = (work: Work) => works.indexOf(work);
+        for (const work of works) for (const { page, target, mode } of work.stamps) {
+            expect(page.kind === 'stored' ? [target, mode] : [mode & MODE.HEIGHTS]).toEqual(page.kind === 'stored' ? [page.slot, MODE.HEIGHTS | MODE.BAKED] : [0]);
+            if (page.kind === 'stored') stamped.set(key(page.node), frame(work));
+        }
+        for (const work of works) for (const { page } of work.syntheses) {
+            const ancestor = { level: 13, x: page.node.x >> (page.node.level - 13), y: page.node.y >> (page.node.level - 13) };
+            expect(stamped.get(key(ancestor))).toBeLessThan(frame(work));
+        }
     });
 });
 

@@ -6,11 +6,11 @@ import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
 import type { Labs } from './labs';
-import { pageDecoder, releaseTiles } from './stream/terrain';
-import { Terrain, type TerrainStats } from './terrain/terrain';
+import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
+import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View, type Weather } from './view';
 
-const PASSES = ['terrain'];
+const PASSES = ['terrain', 'stamp'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -79,7 +79,7 @@ export class TrailView {
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, config.bounds, labs, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, featureTiles(config), config.bounds, labs, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -122,7 +122,7 @@ export class TrailView {
     stats(): Stats {
         const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats;
         return {
-            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools), requests: pages.requests, bytes: pages.bytes, failed: pages.failed,
+            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools), requests: pages.requests, bytes: pages.bytes, failed: pages.failed + this.terrain.stamps.failed,
             drawn: this.drawn, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain,
         };
     }
@@ -130,6 +130,11 @@ export class TrailView {
     /** drawnHeight at points from the probe and from an instance shader, with the state of the last frame. */
     check(points: [number, number][]): Promise<{ probe: number[]; instance: number[] }> {
         return this.terrain.check(points);
+    }
+
+    /** The invariant audit of the drawn terrain, with the state of the last frame: call it after `waitForIdle()`. */
+    audit(): Promise<Audit> {
+        return this.terrain.audit();
     }
 
     /** Resolves after the next frame is drawn. */
@@ -227,7 +232,7 @@ export class TrailView {
         this.terrain.update({ lonLat: this.frame.lonLat(place.east, place.north), above: place.above, z: eye?.z, viewProj, pixels: target.height });
         if (eye) gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj));
         const encoder = gpu.device.createCommandEncoder();
-        const probed = this.terrain.encode(encoder);
+        const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         const weather = WEATHER[this.extras.weather];
         const pass = encoder.beginRenderPass({
             colorAttachments: [{

@@ -8,7 +8,7 @@ const READBACKS = 3;
  * timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
  */
 export class PassTimes {
-    /** Milliseconds of each pass in the last frame that was read. */
+    /** Milliseconds of each pass in the last frame that was read; a pass that the frame did not run is absent. */
     readonly ms: Record<string, number> = {};
     private readonly set?: GPUQuerySet;
     private readonly resolved?: GPUBuffer;
@@ -39,6 +39,7 @@ export class PassTimes {
         encoder.copyBufferToBuffer(this.resolved, 0, target, 0, target.size);
         return () => target.mapAsync(GPUMapMode.READ).then(() => {
             const times = new BigInt64Array(target.getMappedRange());
+            for (const pass of this.passes) if (!passes.includes(pass)) delete this.ms[pass];
             for (const pass of passes) {
                 const index = this.passes.indexOf(pass);
                 this.ms[pass] = Number(times[2 * index + 1] - times[2 * index]) / 1e6;

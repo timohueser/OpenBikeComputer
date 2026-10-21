@@ -1,6 +1,7 @@
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
 // coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
 // #include drawn-height.wgsl
+// #include features.wgsl
 
 struct Frame {
     // Camera-relative world (x east, y north, z up) to clip space; reversed Z, infinite far plane.
@@ -13,7 +14,7 @@ struct Frame {
     eye: f32,
     // Metres of drop per square metre of distance: Earth curvature with refraction.
     curvature: f32,
-    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface.
+    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface, 5 mask.
     debug: u32,
 }
 
@@ -66,6 +67,32 @@ fn haze(relative: vec3f) -> f32 {
     return 1.0 - exp(-distance / frame.sky.w * mean);
 }
 
+// The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path.
+const SURFACE_COLOURS = array<vec3f, 6>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
+    vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55));
+
+// The decoded features, flat on grey terrain: water blue, roads by surface, conflicts red, fords cyan.
+fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
+    let mask = mask_at(s, u32(ceil(lod(s))));
+    var colour = grey;
+    if (known(water_at(s, u32(ceil(lod(s)))))) {
+        colour = vec3f(0.25, 0.45, 0.8);
+    }
+    if (mask.level == 0u) {
+        return colour;
+    }
+    if (mask.shape.y < 0.5) {
+        colour = vec3f(0.15, 0.35, 0.75);
+    }
+    if (mask.kind.x != 0u && mask.shape.x < 0.5) {
+        colour = select(SURFACE_COLOURS[min(mask.kind.x, 6u) - 1u], vec3f(0.2, 0.85, 0.9), (mask.kind.z & FORDED) != 0u);
+    }
+    if ((mask.kind.z & CONFLICT) != 0u) {
+        colour = vec3f(0.9, 0.1, 0.1);
+    }
+    return colour;
+}
+
 fn hue(level: f32) -> vec3f {
     let h = fract(level * 0.29 + vec3f(0.0, 2.0 / 3.0, 1.0 / 3.0));
     return clamp(abs(h * 6.0 - 3.0) - 1.0, vec3f(0.0), vec3f(1.0));
@@ -97,6 +124,9 @@ fn fragment_main(in: Varyings) -> @location(0) vec4f {
         // position about the eye grows with the distance, so a far pixel on a steep slope can show red.
         let error = abs(drawn_height(in.s) - in.h);
         return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
+    }
+    if (frame.debug == 5u) {
+        return vec4f(mask_view(in.s, vec3f(0.25 + 0.5 * light / 1.3)), 1.0);
     }
     let rock = smoothstep(0.75, 0.55, n.z);
     let albedo = mix(vec3f(0.36, 0.42, 0.27), vec3f(0.52, 0.5, 0.47), rock);

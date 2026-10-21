@@ -3,12 +3,14 @@
 // requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--lab LAB] [--cracks N]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--features DIR] [--lab LAB] [--cracks N]
 //
 // --flights is a JSON list of {name, from, to, frames, viewport?}: a view as a query string, the
 // lat, lon, heading, pitch and height where the flight ends, the frames between (default:
 // flights.json), and the CSS pixels of the page (default 1280 × 800). --tiles serves a
-// `planner-dem` MBTiles instead of the fixture. --lab adds `lab=LAB` to each view. --cracks N
+// `planner-dem` MBTiles instead of the fixture, --features a folder of feature tiles `z/x/y.bin`.
+// The stamp line is the GPU time of the frames with a stamp pass and the pages that they stamp.
+// --lab adds `lab=LAB` to each view. --cracks N
 // draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
 // flight too: the flight must look down on known terrain. --gpu draws 2560 × 1600 pixels on the machine's GPU in a browser window,
 // with exact timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
@@ -22,6 +24,7 @@ const { values } = parseArgs({
     options: {
         flights: { type: 'string', default: new URL('./flights.json', import.meta.url).pathname },
         tiles: { type: 'string' },
+        features: { type: 'string' },
         lab: { type: 'string' },
         cracks: { type: 'string' },
         gpu: { type: 'boolean' },
@@ -41,7 +44,7 @@ try {
     for (const flight of flights) {
         const [width, height] = flight.viewport ?? [1280, 800];
         const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
-        await routeFixture(page, values.tiles);
+        await routeFixture(page, values.tiles, values.features);
         const from = values.lab ? `${flight.from}&lab=${values.lab}` : flight.from;
         await page.goto(`${origin}/trailview.html${values.cracks ? `${from}&debug=cracks` : from}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
@@ -68,6 +71,7 @@ try {
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
             gpu: Object.fromEntries(passes.map(pass => [pass, summary(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined))])),
+            stamp: { ms: summary(frames.map(frame => frame.gpu.stamp).filter(ms => ms !== undefined)), pages: summary(of('stamps').filter(pages => pages > 0)) },
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },

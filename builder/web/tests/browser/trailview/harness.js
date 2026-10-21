@@ -8,20 +8,33 @@ export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan'
 export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
+const FEATURES = new URL('./fixture/features/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
 
 /**
  * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
- * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. Every
- * other public host is refused.
+ * or from `tiles`, a `planner-dem` MBTiles; the feature tiles from the fixture, or from `features`, a
+ * folder of `z/x/y.bin`; and 204 for an absent tile like the tile service. Every other public host is
+ * refused.
  */
-export async function routeFixture(page, tiles) {
+export async function routeFixture(page, tiles, features = FEATURES) {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
     };
     await page.route(url => url.hostname !== '127.0.0.1', route => {
         const url = new URL(route.request().url());
+        const cors = { 'access-control-allow-origin': '*' };
+        if (url.hostname === 'tiles.test' && url.pathname === '/trailview-features.json') {
+            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 14, bounds: [-180, -85, 180, 85] };
+            return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
+        }
+        const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);
+        if (url.hostname === 'tiles.test' && feature) {
+            const path = join(features, feature[1]);
+            if (!existsSync(path)) return route.fulfill({ status: 204, headers: cors });
+            return route.fulfill({ body: readFileSync(path), contentType: 'application/octet-stream', headers: cors });
+        }
         const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
         if (url.hostname !== 'tiles.test' || !tile) return route.abort();
         const body = read(...tile.slice(1).map(Number));
