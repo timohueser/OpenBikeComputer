@@ -2,13 +2,29 @@
 // buckets that combine from the top, then clamp(base, lo, hi). The result does not depend on the
 // order of the features, and neighbouring nodes get the same intervals where their data overlap.
 // stamp.wgsl stamps pages with it and audit.wgsl checks against it. Include it with
-// `// #include stamp-core.wgsl`; bins.ts packs the data and mirrors the gates of `road_shows`, `path_shows` and `river_shows`.
+// `// #include stamp-core.wgsl`; bins.ts packs the data and the profiles, and mirrors the gates of `road_shows`,
+// `path_shows` and `river_shows`.
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
 // words per primitive. A cell lists its junctions, then per lake its edges and its marker, then the
 // segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
+
+// The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
+// cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes.
+// A uniform array element takes a multiple of 16 bytes.
+struct Profile {
+    tol: f32,
+    reach: f32,
+    least: f32,
+    cut: f32,
+    @size(16) fill: f32,
+}
+
+// Per class, the row that a segment record names. A uniform, as the audit has every storage buffer that a stage may have.
+@group(0) @binding(4) var<uniform> profiles: array<Profile, PROFILE_ROWS>;
+const PROFILE_ROWS: u32 = 32u;
 
 const GRID: i32 = 18;
 const CELL_TEXELS: i32 = 16;
@@ -50,18 +66,9 @@ const GATE_COS: f32 = 0.70710678;
 const SHOW_CELLS: f32 = 1.0;
 const MESH_TEXELS: f32 = 4.0;
 const MARGIN_TEXELS: f32 = 13.0;
-// Road cores: z ± 2 cm. Near a junction, where the cores of its roads overlap, they hold the middle of
-// their heights where these disagree by more; the reach of a junction is at most JUNCTION_CAP.
-const CORE_TOL: f32 = 0.02;
+// Near a junction, where the cores of its roads overlap, they hold the middle of their heights where
+// these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
-// Cut and fill of a road at the prototype's GRADE_BANK; it stops binding at its reach.
-const CONE_REACH: f32 = 25.0;
-const CONE_LEAST: f32 = 5.0;
-const CONE_SLOPE: f32 = 0.85;
-// The path bench: cut 65°, fill 35°, reach 3 m.
-const BENCH_REACH: f32 = 3.0;
-const BENCH_CUT: f32 = 2.1445;
-const BENCH_FILL: f32 = 0.7002;
 // A lake bed: at least LAKE_DEPTH below the level, deeper by BED_SLOPE per metre from the shore to BED_DEPTH.
 const LAKE_DEPTH: f32 = 0.1;
 const BED_SLOPE: f32 = 0.2;
@@ -90,20 +97,20 @@ fn gate_texel(level: u32) -> f32 {
     return 2.0 * PI * RADIUS * GATE_COS / 256.0 / f32(1u << level);
 }
 
-// Whether a level shows a road of half-width h. The bake conditions every level that holds it.
-fn road_shows(h: f32, level: u32, baked: bool) -> bool {
+// Whether a level shows a road of half-width h and a profile. The bake conditions every level that holds it.
+fn road_shows(h: f32, rule: Profile, level: u32, baked: bool) -> bool {
     let texel = gate_texel(level);
-    return (baked || 2.0 * h >= SHOW_CELLS * MESH_TEXELS * texel) && h + margin(texel, baked) + CONE_LEAST <= reach_limit(texel);
+    return (baked || 2.0 * h >= SHOW_CELLS * MESH_TEXELS * texel) && h + margin(texel, baked) + rule.least <= reach_limit(texel);
 }
 
-fn cone_reach(h: f32, texel: f32, baked: bool) -> f32 {
-    return min(CONE_REACH, reach_limit(texel) - h - margin(texel, baked));
+fn cone_reach(h: f32, rule: Profile, texel: f32, baked: bool) -> f32 {
+    return min(rule.reach, reach_limit(texel) - h - margin(texel, baked));
 }
 
 // A path bench shows from one texel: the mesh cannot show it, the normals can.
-fn path_shows(h: f32, level: u32) -> bool {
+fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
     let texel = gate_texel(level);
-    return 2.0 * h >= texel && h + BENCH_REACH <= reach_limit(texel);
+    return 2.0 * h >= texel && h + rule.reach <= reach_limit(texel);
 }
 
 // Whether a level shows a river of half-width h: at least one mesh cell wide, inside the buffer.
@@ -333,8 +340,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 line_held = false;
             }
             let h = real(r + 8u);
+            let rule = profiles[word(r + 14u)];
             let g = along(r, p, unit);
-            if (kind == ROAD && road_shows(h, level, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
+            if (kind == ROAD && road_shows(h, rule, level, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h + m);
             }
@@ -347,24 +355,23 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
-            if (kind == ROAD && road_shows(h, level, baked)) {
-                let tol = CORE_TOL;
+            if (kind == ROAD && road_shows(h, rule, level, baked)) {
+                let tol = rule.tol;
                 if (g.core && g.lateral <= h + m) {
                     lo[ROAD_CORE] = max(lo[ROAD_CORE], g.z - tol);
                     hi[ROAD_CORE] = min(hi[ROAD_CORE], g.z + tol);
                 }
                 let x = max(0.0, g.lateral - h - m);
-                let reach = cone_reach(h, texel, baked);
+                let reach = cone_reach(h, rule, texel, baked);
                 if (g.cone && x < reach) {
-                    let w = tol + widen(x, reach, CONE_SLOPE);
-                    lo[CONES] = max(lo[CONES], g.z - w);
-                    hi[CONES] = min(hi[CONES], g.z + w);
+                    lo[CONES] = max(lo[CONES], g.z - (tol + widen(x, reach, rule.fill)));
+                    hi[CONES] = min(hi[CONES], g.z + (tol + widen(x, reach, rule.cut)));
                 }
-            } else if (kind == PATH && path_shows(h, level)) {
+            } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
-                if ((g.core || g.cone) && x < BENCH_REACH) {
-                    lo[BENCH] = max(lo[BENCH], g.z - CORE_TOL - widen(x, BENCH_REACH, BENCH_FILL));
-                    hi[BENCH] = min(hi[BENCH], g.z + CORE_TOL + widen(x, BENCH_REACH, BENCH_CUT));
+                if ((g.core || g.cone) && x < rule.reach) {
+                    lo[BENCH] = max(lo[BENCH], g.z - rule.tol - widen(x, rule.reach, rule.fill));
+                    hi[BENCH] = min(hi[BENCH], g.z + rule.tol + widen(x, rule.reach, rule.cut));
                 }
             }
         }

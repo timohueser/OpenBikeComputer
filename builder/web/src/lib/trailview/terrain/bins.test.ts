@@ -5,7 +5,7 @@ import { decodeFeatures } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, RECORD, ROAD, RULES, type Line } from './bins';
+import { CELL, EDGE, features, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, ROAD, RULES, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -36,8 +36,12 @@ const lakeNode = () => {
 };
 
 describe('the stamp data of a node', () => {
-    it('gates the lines with the numbers of stamp-core.wgsl', () => {
+    it('gates the lines with the numbers of stamp-core.wgsl, and packs the profiles in the order of its struct', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
+        const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
+        const rows = Object.values(PROFILES), table = profileTable();
+        expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
+        rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
     });
 
     it('lists in each cell every segment and edge within the buffer of the feature tiles, and the lakes over its centre, in the order of the shader', () => {
@@ -118,7 +122,7 @@ describe('the side of a shore', () => {
 describe('the road height of the audit', () => {
     it('runs from end to end of each segment and meets at the bisector of a bend', () => {
         // Two segments of 100 units, with a bend of 90° at (100, 0).
-        const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, closed: false };
+        const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, closed: false, profile: 0 };
         expect(roadHeight(line, [50, 0], 10)).toBeCloseTo(10.5);
         expect(roadHeight(line, [100, 50], 10)).toBeCloseTo(12);
         // Either side of the bisector, close to it: the height of the bend.

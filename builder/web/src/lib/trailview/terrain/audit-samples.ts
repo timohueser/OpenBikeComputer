@@ -99,8 +99,8 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const left = at(cx - across[0] * half, cy - across[1] * half), right = at(cx + across[0] * half, cy + across[1] * half), centre = at(cx, cy);
                 const [zl, zr, zc] = [left, right, centre].map(point => roadHeight(line, point, 2 * line.h / unit));
                 if (Number.isNaN(zl) || Number.isNaN(zr) || Number.isNaN(zc)) continue;
-                push(...left, CROSS_FALL, zl, line.h, 0, junction, junctionHalf, right, zr);
-                push(...centre, ROAD_HEIGHT, zc, line.h, 0, junction, junctionHalf);
+                push(...left, CROSS_FALL | (line.profile << 8), zl, line.h, 0, junction, junctionHalf, right, zr);
+                push(...centre, ROAD_HEIGHT | (line.profile << 8), zc, line.h, 0, junction, junctionHalf);
             }
         }
     }

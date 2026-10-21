@@ -9,7 +9,7 @@ import { wgsl } from '../gpu/wgsl';
 import type { Labs } from '../labs';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { featureTile, NEAR } from './bins';
+import { featureTile, NEAR, profileTable } from './bins';
 import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
@@ -46,6 +46,8 @@ const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
 const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 39, FOUND = 64;
 const GRID_INDICES = gridIndices();
+/** The road and path profiles, as stamp-core.wgsl reads them. */
+const PROFILE_TABLE = profileTable();
 
 /** What the terrain draws from: the eye, its height above the ground, and the camera. */
 export interface View {
@@ -99,6 +101,7 @@ interface Resources {
     masks: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
+    profiles: GPUBuffer;
     surface: GPUBuffer;
     map: GPUBuffer;
     scales: GPUBuffer;
@@ -237,6 +240,7 @@ export class Terrain {
             masks: buffer('features', pages * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
+            profiles: buffer('compute', PROFILE_TABLE.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage),
@@ -254,6 +258,7 @@ export class Terrain {
             readbacks: Array.from({ length: READBACKS }, () => buffer('probe', 20, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
         };
         device.queue.writeBuffer(r.indices, 0, GRID_INDICES);
+        device.queue.writeBuffer(r.profiles, 0, PROFILE_TABLE);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
         const all = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
@@ -271,13 +276,13 @@ export class Terrain {
         const checkLayout = layout([[GPUShaderStage.VERTEX, { buffer: read }]]);
         const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
         const stampLayout = layout([
-            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }],
+            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
             [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }], [C, { storageTexture: { format: 'rgba8uint', viewDimension: '2d-array' } }],
         ]);
         const featureLayout = layout([
             [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
         ]);
-        const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: read }]]);
+        const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }], [C, { buffer: read }]]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
 
@@ -313,7 +318,7 @@ export class Terrain {
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, depthFormat);
         this.resources = {
             ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout,
-            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, view(r.maskShapes), view(r.maskKinds)]),
+            stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.maskShapes), view(r.maskKinds)]),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.maskShapes), view(r.maskKinds)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
@@ -550,7 +555,7 @@ export class Terrain {
             storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
-        pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: buffers.map((buffer, binding) => ({ binding, resource: { buffer } })) }));
+        pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, r.featureGroup);
         if (n) {

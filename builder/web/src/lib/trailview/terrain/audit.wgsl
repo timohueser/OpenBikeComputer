@@ -6,6 +6,7 @@
 
 struct Sample {
     at: vec2i,
+    // The check in the low byte, the profile of a road above it.
     kind: u32,
     // The road height at `at`, or the lake level.
     expected: f32,
@@ -37,7 +38,7 @@ struct Pair {
 @group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>>;
 // The first violations: per entry the point in LOD space, drawnHeight, the expected height; then the kind, the level, the shore distance.
 @group(0) @binding(3) var<storage, read_write> found: array<vec4f>;
-@group(0) @binding(4) var<storage, read> pairs: array<Pair>;
+@group(0) @binding(5) var<storage, read> pairs: array<Pair>;
 // `stamp_data` starts with a table: per level, MAP × MAP nodes about the eye as the LOD map has
 // them, the offset + 1 of each node's stamp data, 0 for none.
 
@@ -148,6 +149,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let q = samples[id.x];
+    let kind = q.kind & 0xffu;
     let s = lod_space(vec2f(q.at - surface.anchor));
     let level = drawn_level(s);
     // In or near the morph band the vertices blend toward the coarser level, so it has to show the feature too.
@@ -156,7 +158,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     let wide = texel_m(q.at, coarse);
     let reach = MARGIN_TEXELS * fine;
     let kink = ROAD_KINK * MESH_TEXELS * wide;
-    if (q.kind == SHORE_SIDE) {
+    if (kind == SHORE_SIDE) {
         // The stamps of the sample's own node put a point more than a texel from a lake shore on its side.
         let data = node_data(q.at, q.level);
         if (abs(q.shore) < texel_m(q.at, q.level) || data == NO_DATA) {
@@ -170,13 +172,14 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     if (!known(drawn)) {
         return;
     }
-    if (q.kind == CROSS_FALL || q.kind == ROAD_HEIGHT) {
+    if (kind == CROSS_FALL || kind == ROAD_HEIGHT) {
         // Baked conditioning stamps the stored levels only.
-        if (!road_shows(q.half, level, BAKED) || !road_shows(q.half, coarse, BAKED) || (BAKED && level > STORED_FINEST)) {
+        let rule = profiles[q.kind >> 8u];
+        if (!road_shows(q.half, rule, level, BAKED) || !road_shows(q.half, rule, coarse, BAKED) || (BAKED && level > STORED_FINEST)) {
             return;
         }
         let junction = q.junction < 2.0 * junction_reach(q.junction_half, fine, reach) + q.half;
-        if (q.kind == CROSS_FALL) {
+        if (kind == CROSS_FALL) {
             let t = lod_space(vec2f(q.other - surface.anchor));
             let other = drawn_height(t);
             if (!known(other) || drawn_level(t) != level) {
@@ -184,7 +187,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
             }
             check(CROSS_FALL, abs((other - drawn) - (q.other_expected - q.expected)), CROSS_FALL_MAX + kink, junction, 0.5 * (s + t), level, other - drawn, q.other_expected - q.expected, q.junction);
         } else {
-            check(ROAD_HEIGHT, abs(drawn - q.expected), CORE_TOL + kink + ROUNDING, junction, s, level, drawn, q.expected, q.junction);
+            check(ROAD_HEIGHT, abs(drawn - q.expected), rule.tol + kink + ROUNDING, junction, s, level, drawn, q.expected, q.junction);
         }
         return;
     }
@@ -193,10 +196,10 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let along = select(0.0, max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide, q.half > 0.0);
-    if (q.kind == IN_WATER && q.shore >= reach) {
+    if (kind == IN_WATER && q.shore >= reach) {
         check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
     }
-    if (q.kind == ON_BANK && banks_show(level, BAKED) && banks_show(coarse, BAKED) && q.shore >= reach && q.shore <= reach + BANK_M) {
+    if (kind == ON_BANK && banks_show(level, BAKED) && banks_show(coarse, BAKED) && q.shore >= reach && q.shore <= reach + BANK_M) {
         check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
     }
 }

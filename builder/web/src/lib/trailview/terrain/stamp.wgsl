@@ -24,8 +24,8 @@ struct StampJob {
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
 // Per job, the least and the greatest height as ordered bits, for the offset and the scale of its page.
 @group(0) @binding(3) var<storage, read_write> extent: array<atomic<u32>>;
-@group(0) @binding(4) var mask_shape: texture_storage_2d_array<rgba8unorm, write>;
-@group(0) @binding(5) var mask_kind: texture_storage_2d_array<rgba8uint, write>;
+@group(0) @binding(5) var mask_shape: texture_storage_2d_array<rgba8unorm, write>;
+@group(0) @binding(6) var mask_kind: texture_storage_2d_array<rgba8uint, write>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
