@@ -22,6 +22,10 @@ fn mask_of(level: u32, t: vec2i) -> u32 {
     return select(0u, masks[max(page, 1u) - 1u], page != 0u);
 }
 
+fn shape_at(page: u32, t: vec2i) -> vec4f {
+    return textureLoad(mask_shapes, in_layer(page, t), page >> 6u, 0);
+}
+
 struct Mask {
     shape: vec4f,
     kind: vec4u,
@@ -29,7 +33,9 @@ struct Mask {
     level: u32,
 }
 
-// The mask at a point: the nearest texel of the finest page at or above `top` that has a mask.
+// The mask at a point, from the finest page at or above `top` that has a mask: the shapes filtered
+// between the four texels around the point, held in that page, so that an edge is smooth below a
+// texel; the kinds of the nearest texel.
 fn mask_at(s: vec2f, top: u32) -> Mask {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
@@ -37,7 +43,12 @@ fn mask_at(s: vec2f, top: u32) -> Mask {
         let slot = mask_of(level, whole);
         if (slot != 0u) {
             let page = slot - 1u;
-            return Mask(textureLoad(mask_shapes, in_layer(page, whole), page >> 6u, 0), textureLoad(mask_kinds, in_layer(page, whole), page >> 6u, 0), level);
+            let first = (whole >> vec2u(8u)) << vec2u(8u);
+            let a = clamp(t.whole, first, first + vec2i(255));
+            let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
+            let shape = mix(mix(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), t.part.x),
+                mix(shape_at(page, vec2i(a.x, b.y)), shape_at(page, b), t.part.x), t.part.y);
+            return Mask(shape, textureLoad(mask_kinds, in_layer(page, whole), page >> 6u, 0), level);
         }
     }
     return Mask(vec4f(0.5), vec4u(0u), 0u);
