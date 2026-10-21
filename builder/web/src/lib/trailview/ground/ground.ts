@@ -79,7 +79,8 @@ export class Ground {
     private date = -1;
     private dateKey = '';
     private loads = 0;
-    private readonly loading = new Set<string>();
+    /** Material tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
+    private readonly loading = new Map<string, number>();
     private arrivals: { node: Node; page: GroundPage; date: number }[] = [];
     private jobs: { page: Slot; work: number }[] = [];
     private dirty = true;
@@ -228,6 +229,7 @@ export class Ground {
         let uploads = 0;
         while (uploads < ARRIVALS && this.arrivals.length) {
             const { node, page: data, date } = this.arrivals.shift()!;
+            this.settle(tileOf(node, date));
             const page = this.pages.get(key(node));
             if (!page || date !== this.date) continue;
             this.upload(r, page, data);
@@ -276,6 +278,7 @@ export class Ground {
         this.pages.clear();
         this.free = range(POOL);
         this.arrivals = [];
+        this.loading.clear();
         this.jobs = [];
         this.dirty = true;
     }
@@ -323,23 +326,31 @@ export class Ground {
 
     /** Requests the four pages of the material tile of a node, on the current date. */
     private load(node: Node): void {
-        const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = `${z}/${x}/${y}/${this.date}`;
+        const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
         if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
         const date = this.date, { quarters, weight, snowIndex } = this.today;
         const shares = this.rules.regions.map((region: Region) => region.look.snow_share);
         this.loads++;
-        this.loading.add(name);
+        this.loading.set(name, 1);
         this.source.pages(z, x, y, quarters, { weight, snowIndex, shares }, this.world).then(pages => {
             pages.forEach((page, q) => {
                 const node = { level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) };
-                if (page) this.arrivals.push({ node, page, date });
-                else this.absent.add(key(node));
+                if (!page) return this.absent.add(key(node));
+                this.arrivals.push({ node, page, date });
+                this.loading.set(name, this.loading.get(name)! + 1);
             });
         }).catch(error => console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`)).finally(() => {
             this.loads--;
-            this.loading.delete(name);
+            this.settle(name);
             this.changed();
         });
+    }
+
+    /** One page of a material tile in flight or waiting is done; the last frees the tile for a new load. */
+    private settle(name: string): void {
+        const left = (this.loading.get(name) ?? 1) - 1;
+        if (left > 0) this.loading.set(name, left);
+        else this.loading.delete(name);
     }
 
     /** A free slot, or the one that the frames wanted longest ago; none when this frame wants them all. */
@@ -385,3 +396,6 @@ export const surfaceConstants = (labs: Labs) => ({ RINGS: labs.terrain === 'ring
 const origin = (slot: number): [number, number, number] => [PAGE * (slot % SIDE), PAGE * (Math.floor(slot / SIDE) % SIDE), Math.floor(slot / LAYER_PAGES)];
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);
+
+/** The material tile of a node, on a date. */
+const tileOf = ({ level, x, y }: Node, date: number) => `${level - 1}/${x >> 1}/${y >> 1}/${date}`;
