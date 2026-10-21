@@ -96,21 +96,19 @@ interface Tile {
 /**
  * The page pools and what fills them. Stored pages come from the stored tiles, synthesized pages from
  * their deepest stored ancestor. The pools have a fixed size: the page that the frames wanted longest
- * ago leaves first, and a frame that wants more pages or water layers than a pool holds counts a
- * shortage. A page without a mask layer goes without; a page without a water layer asks again.
+ * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. Mask and
+ * water layers go to the finest pages first; a drawn page without a water layer asks again each frame.
  */
 export class Pages {
     requests = 0;
     bytes = 0;
     failed = 0;
-    /** Wanted pages and water layers that found no free slot in the last frame. */
+    /** Wanted pages that found no free slot in the last frame. */
     shortage = 0;
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
     /** Pages of each pool that the last frame wanted. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
-    /** Pages that the last frame drew with water near them: with a water layer, or dry. */
-    watered = 0;
     /** The nodes that the frame draws. */
     private shown = new Set<string>();
     readonly pages = new Map<string, Page>();
@@ -186,18 +184,15 @@ export class Pages {
         for (const page of this.pages.values()) {
             if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
-        // A drawn page with water near it asks for a water layer until it has one, for a stamp job that writes only its water.
-        this.watered = 0;
+        // A drawn page with water near it asks for a water layer until it has one, for a stamp job that
+        // writes only its water. A shortage does not lower the quality: a coarser view draws more pages with water.
         for (const node of drawn) {
             const page = this.pages.get(key(node));
-            if (!page || (page.water === undefined && !page.dry)) continue;
-            this.watered++;
-            if (!page.dry || page.drawn === undefined) continue;
+            if (!page?.dry || page.drawn === undefined) continue;
             const stamps = this.stamps.get(node);
             if (!stamps || this.busy(work, stamps.data?.length)) this.missing++;
             else if (!stamps.data) page.dry = false;
-            else if (!this.water(page)) this.shortage++;
-            else work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
+            else if (this.water(page)) work.stamps.push({ page, out: 0, target: page.drawn, data: stamps.data, mode: MODE.WATER | (page.kind === 'stored' && this.stamps.baked ? MODE.BAKED : 0) });
         }
         for (const page of fresh) {
             this.dirty = true;

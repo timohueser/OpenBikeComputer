@@ -341,8 +341,7 @@ export class Terrain {
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
-        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth
-            && this.pages.watered < ROOM * this.pages.extraCapacity.water) {
+        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth) {
             this.quality--;
             this.calm = 0;
         }

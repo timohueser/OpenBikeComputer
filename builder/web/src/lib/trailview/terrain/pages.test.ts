@@ -162,17 +162,17 @@ describe('the stamps', () => {
         }
     });
 
-    it('count a shortage while a page with water has no water layer, and give it one when a layer frees', async () => {
+    it('keep the water layers for the finest pages, and give a dry page one when a layer frees', async () => {
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false, true), { mask: 0, water: 8 });
         const all = await settle(pages, wanted);
         expect(Math.max(...all.map(work => work.stamps.length))).toBeLessThanOrEqual(ARRIVALS);
-        const dry = () => [...pages.pages.values()].filter(page => page.dry && page.drawn !== undefined);
-        expect(pages.shortage).toBeGreaterThan(0);
-        expect(dry().length).toBeGreaterThan(0);
-        // A view of fewer pages: the dry pages that it wants take the layers of the pages that it no longer wants.
-        const fewer = dry().slice(0, 8).map(({ node }) => node);
+        const drawn = () => wanted.map(node => pages.pages.get(key(node))!).filter(page => page.drawn !== undefined);
+        const dry = drawn().filter(page => page.dry), wet = drawn().filter(page => page.water !== undefined);
+        expect([wet.length, dry.length > 0]).toEqual([8, true]);
+        expect(Math.min(...wet.map(page => page.node.level))).toBeGreaterThanOrEqual(Math.max(...dry.map(page => page.node.level)));
+        // A view of fewer pages: the dry pages that it draws take the layers of the pages that it no longer draws.
+        const fewer = dry.slice(0, 8).map(({ node }) => node);
         const works = await settle(pages, fewer, 2);
-        expect(pages.shortage).toBe(0);
         expect(fewer.map(node => pages.pages.get(key(node))!).every(page => page.water !== undefined && !page.dry)).toBe(true);
         expect(works[0].stamps.filter(({ mode }) => mode === MODE.WATER)).toHaveLength(fewer.length);
     });
