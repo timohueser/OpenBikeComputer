@@ -504,7 +504,7 @@ def area_km2(bounds):
     return EARTH_RADIUS_KM ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
 
 
-def bake(kinds, pbf, bounds, output, attribution, terrain=None):
+def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=roads.CLASSES):
     """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads, rivers and
     lakes from the `profiles.Terrain` when there is one; return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
@@ -539,7 +539,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None):
         for (entry, tags, parts), heights in zip(water, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, road_metrics = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers)
+            heights, culverts, road_metrics = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
             for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights)):
                 # A culvert is a road: the stamps build it over the ground.
                 place(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts)
@@ -573,7 +573,8 @@ def step(request):
     # Osmium export reads the file twice and finds its format by the file name; a store object has none.
     osm = step_request.view({"osm.pbf": pbf}, output.with_name("planner-osm")) / "osm.pbf"
     archive = output / "trailview-features.pmtiles"
-    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain)
+    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain,
+                   roads.validate(options["roads"]))
     step_request.metrics(request, metrics)
 
 

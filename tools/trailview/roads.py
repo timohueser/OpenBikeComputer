@@ -13,20 +13,20 @@ from pathlib import Path
 
 import numpy as np
 from scipy import sparse
+from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
-CLASSES = json.loads(TABLE.read_text())
-RANKS = {name: rank for rank, name in enumerate(CLASSES)}
+FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill"}
 KINDS = {"main-road", "road", "path", "tunnel", "gallery"}
 # A cable route on rock has no bench to stamp.
 UNSOLVED = {"via_ferrata"}
 SAMPLE_M = 2.0
 # While it solves, a way has a vertex at least every VERTEX_M; the tiles keep one only where the profile
 # bends by more than KEEP_M there.
-VERTEX_M, KEEP_M = 10.0, 0.05
+VERTEX_M, KEEP_M = 10.0, 0.2
 # A side road lies on the surface of the through road for this far from their junction; a path that
 # meets a path, for APPROACH_PATH_M.
 APPROACH_M, APPROACH_PATH_M = 4.0, 1.5
@@ -34,14 +34,35 @@ HUBER_M = 1.0
 FORD_M = 0.2
 # A bridge shorter than this that lies no higher than CULVERT_RISE_M over the terrain is a road over a culvert.
 CULVERT_M, CULVERT_RISE_M = 8.0, 1.0
-# Weights against one metre of terrain samples: the terrain under a bridge or tunnel, and a row that
-# pins a junction approach, a ford or a slope limit.
-FREE, PIN = 1e-4, 1e8
-# Rounds of the solve at most, the rounds that update the Huber weights, and the grade excess in metres
-# that a segment may have before it holds its limit.
-ROUNDS, HUBER_ROUNDS, TOLERANCE_M = 12, 3, 1e-3
+# Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no road,
+# a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
+# preference for level, so that one that meets a road at one end only is level from there.
+FREE, PIN, LEVEL = 1e-4, 1e8, 1e-3
+# Solves of the whole network, the first ones with the Huber weights of the solve before. Then rounds
+# of the slope limits solve only the network within REGION_M of the segments whose limit changed, and
+# the bridges and tunnels it meets: the terrain anchors the rest.
+SOLVES, ROUNDS, REGION_M = 2, 40, 300.0
+# The grade excess in metres that a segment may have before it holds its limit.
+TOLERANCE_M = 1e-3
 # Terrain samples per call, and the cell of the grid of waterways in world units (about 100 m).
 CHUNK, GRID_UNITS = 1 << 21, 2.5e-6
+
+
+def validate(classes):
+    """The class table, or a ValueError that names the first row that breaks a rule. The table lists
+    the classes from the most important down, as the junctions rank them; `path` and `road` are the
+    rows of a way whose class the table lacks."""
+    if not isinstance(classes, dict) or not {"road", "path"} <= classes.keys():
+        raise ValueError("The road classes are an object with the rows road and path")
+    for name, row in classes.items():
+        number = lambda value: type(value) in (int, float) and value >= 0
+        if not (isinstance(row, dict) and row.keys() == FIELDS and all(number(row[f]) for f in FIELDS - {"grade"})
+                and (row["grade"] is None or number(row["grade"]) and 0 < row["grade"] < 1)):
+            raise ValueError(f"Road class {name!r}: the fields are {sorted(FIELDS)}, numbers of 0 or more, and grade is null or below 1")
+    return classes
+
+
+CLASSES = validate(json.loads(TABLE.read_text()))
 
 
 def solves(kind, tags):
@@ -49,326 +70,383 @@ def solves(kind, tags):
     return kind in KINDS and tags.get("highway") not in UNSOLVED
 
 
-def rule_of(kind, tags):
-    """The row of `roads.json` of a way: its class, else that of its kind."""
+def rule_of(kind, tags, classes=CLASSES):
+    """The row of the class table of a way: its class, else that of its kind."""
     name = tags.get("highway", "")
-    return name if name in CLASSES else ("path" if kind == "path" else "road")
+    return name if name in classes else ("path" if kind == "path" else "road")
 
 
 def key(points):
     """One complex number per point, equal for equal points."""
-    return points[:, 0] + 1j * points[:, 1]
+    return points[..., 0] + 1j * points[..., 1]
 
 
-class Ways:
-    """The ways of the features, cut into segments of at most VERTEX_M, with one variable per vertex: a
-    vertex of OSM that ways share is one variable."""
+class Network:
+    """The ways as arrays. An OSM vertex is an occurrence of a point in a way; ways that share a point
+    share its variable. Between two occurrences a way gets vertices so that no segment is longer than
+    VERTEX_M, and one at the approach distance of a side road. `vertex_*` lists every vertex of every
+    way in order; `a`, `b` are the variables of each segment between two vertices of a way."""
 
-    def __init__(self, features):
+    def __init__(self, features, classes):
+        names = list(classes)
         self.ways = []
         for f, (kind, tags, parts) in enumerate(features):
-            rule = rule_of(kind, tags)
+            rule = names.index(rule_of(kind, tags, classes))
             free = kind == "tunnel" or tags.get("bridge", "no") != "no"
             for p, (_, points, _) in enumerate(parts):
-                xy = np.asarray(points, np.float64)
+                xy = np.asarray(points, np.float64).reshape(-1, 2)
                 # A repeated vertex has no length to solve along.
-                xy = xy[np.concatenate([[True], np.any(np.diff(xy, axis=0) != 0, axis=1)])]
+                xy = xy[np.concatenate([[True], np.any(np.diff(xy, axis=0) != 0, axis=1)])] if len(xy) else xy
                 if len(xy) >= 2:
                     self.ways.append((f, p, xy, rule, free, tags.get("ford", "no") != "no"))
-        points = np.concatenate([way[2] for way in self.ways])
-        keys, self.osm = np.unique(key(points), return_inverse=True)
-        self.osm_points = np.column_stack([keys.real, keys.imag])
-        counts = np.bincount(self.osm, minlength=len(keys))
-        offsets = np.cumsum([0] + [len(way[2]) for way in self.ways])
-        self.osm_of = [self.osm[offsets[w]:offsets[w + 1]] for w in range(len(self.ways))]
-        self.junctions = counts >= 2
-        self.approaches = self.junction_roles()
-        self.densify()
+        counts = np.array([len(way[2]) for way in self.ways])
+        self.rule = np.array([way[3] for way in self.ways])
+        self.free = np.array([way[4] for way in self.ways], bool)
+        self.osm_xy = np.concatenate([way[2] for way in self.ways])
+        self.osm_way = np.repeat(np.arange(len(self.ways)), counts)
+        self.osm_first = np.cumsum(counts) - counts
+        keys, self.osm_var = np.unique(key(self.osm_xy), return_inverse=True)
+        self.osm_count = len(keys)
+        last = np.zeros(len(self.osm_xy), bool)
+        last[self.osm_first + counts - 1] = True
+        # OSM segments, from occurrence sa to sa + 1.
+        sa = np.flatnonzero(~last)
+        d = self.osm_xy[sa + 1] - self.osm_xy[sa]
+        lengths = np.hypot(*d.T) * metres(self.osm_xy[sa, 1] + d[:, 1] / 2)
+        segment_of = np.full(len(self.osm_xy), -1)
+        segment_of[sa] = np.arange(len(sa))
+        self.sides = self.junction_sides(np.bincount(self.osm_var) >= 2, last, names)
+        # The cuts of each OSM segment: evenly spaced, and at the approach distance of a side road.
+        regular = np.maximum(1, np.ceil(lengths / VERTEX_M)).astype(np.int64)
+        cut_segment = np.repeat(np.arange(len(sa)), regular - 1)
+        cut_t = (np.arange(len(cut_segment)) - np.repeat(np.cumsum(regular - 1) - (regular - 1), regular - 1) + 1) / regular[cut_segment]
+        occurrence, step, distance = self.sides[:3]
+        s = segment_of[np.where(step == 1, occurrence, occurrence - 1)]
+        long = lengths[s] > distance + 1
+        approach = np.where(step == 1, distance / lengths[s], 1 - distance / lengths[s])[long]
+        s = s[long]
+        # A regular cut within a metre of an approach cut goes.
+        near = np.zeros(len(cut_segment), bool)
+        order = np.argsort(s, kind="stable")
+        first = np.searchsorted(s[order], cut_segment, "left")
+        stop = np.searchsorted(s[order], cut_segment, "right")
+        for k in range(int(np.max(stop - first, initial=0))):
+            at = first + k < stop
+            other = approach[order[np.minimum(first + k, len(order) - 1)]]
+            near |= at & (np.abs(cut_t - other) * lengths[cut_segment] <= 1)
+        cut_segment = np.concatenate([cut_segment[~near], s])
+        cut_t = np.concatenate([cut_t[~near], approach])
+        cut_approach = np.arange(len(cut_t)) >= len(cut_t) - len(s)
+        order = np.lexsort((cut_t, cut_segment))
+        cut_segment, cut_t, cut_approach = cut_segment[order], cut_t[order], cut_approach[order]
+        # Each occurrence moves down by the cuts of the segments before it.
+        added = np.zeros(len(self.osm_xy), np.int64)
+        np.add.at(added, sa[cut_segment] + 1, 1)
+        self.osm_position = np.arange(len(self.osm_xy)) + np.cumsum(added)
+        rank = np.arange(len(cut_segment)) - np.searchsorted(cut_segment, cut_segment, "left")
+        cut_position = self.osm_position[sa[cut_segment]] + 1 + rank
+        total = len(self.osm_xy) + len(cut_segment)
+        self.vertex_xy = np.empty((total, 2))
+        self.vertex_xy[self.osm_position] = self.osm_xy
+        self.vertex_xy[cut_position] = self.osm_xy[sa[cut_segment]] + cut_t[:, None] * d[cut_segment]
+        self.vertex_var = np.empty(total, np.int64)
+        self.vertex_var[self.osm_position] = self.osm_var
+        self.vertex_var[cut_position] = self.osm_count + np.arange(len(cut_segment))
+        self.vertex_osm = np.zeros(total, bool)
+        self.vertex_osm[self.osm_position] = True
+        # The tiles keep the vertices of OSM and those at an approach distance.
+        self.vertex_fixed = self.vertex_osm.copy()
+        self.vertex_fixed[cut_position[cut_approach]] = True
+        # The OSM segment of each vertex and its place along it, 0 at its start.
+        self.vertex_segment = np.full(total, -1)
+        self.vertex_segment[self.osm_position[sa]] = np.arange(len(sa))
+        self.vertex_segment[cut_position] = cut_segment
+        self.vertex_t = np.zeros(total)
+        self.vertex_t[cut_position] = cut_t
+        self.count = self.osm_count + len(cut_segment)
+        self.way_first = self.osm_position[self.osm_first]
+        self.way_last = self.osm_position[self.osm_first + counts - 1]
+        inside = np.ones(total, bool)
+        inside[self.way_last] = False
+        self.segment_start = np.flatnonzero(inside)
+        self.a, self.b = self.vertex_var[self.segment_start], self.vertex_var[self.segment_start + 1]
+        self.segment_way = np.repeat(np.arange(len(self.ways)), self.way_last - self.way_first)
+        pa, pb = self.vertex_xy[self.segment_start], self.vertex_xy[self.segment_start + 1]
+        self.length = np.hypot(*(pb - pa).T) * metres((pa[:, 1] + pb[:, 1]) / 2)
 
-    def junction_roles(self):
-        """Per junction, its through road and the side directions that join it: {(way, vertex, step): (through
-        directions, approach metres)}. The through road is the best class at the junction, and of two
-        ways of that class, the pair that runs most nearly straight on."""
-        at = {}
-        for w, (_, _, points, rule, _, _) in enumerate(self.ways):
-            ids = self.osm_of[w]
-            for j in np.flatnonzero(self.junctions[ids]):
-                for step in (1, -1):
-                    if 0 <= j + step < len(points):
-                        d = points[j + step] - points[j]
-                        norm = math.hypot(*d)
-                        if norm > 0:
-                            at.setdefault(ids[j], []).append((RANKS[rule], w, j, step, d / norm))
-        roles = {}
-        for directions in at.values():
-            best = min(rank for rank, *_ in directions)
-            top = [d for d in directions if d[0] == best]
+    def junction_sides(self, junction, last, names):
+        """The side directions of the junctions, and the through road of each: its occurrence, step and
+        approach metres, and per through direction (at most two) the occurrence and step, -1 for none.
+        The through road is the best class at the junction, and of two ways of that class, the pair
+        that runs most nearly straight on."""
+        at = np.flatnonzero(junction[self.osm_var])
+        if not len(at):
+            return [np.zeros(0, np.int64)] * 2 + [np.zeros(0)] + [np.zeros(0, np.int64)] * 4
+        rows = []
+        for step in (1, -1):
+            ok = ~last[at] if step == 1 else np.isin(at, self.osm_first, invert=True)
+            o = at[ok]
+            d = self.osm_xy[o + step] - self.osm_xy[o]
+            rows.append((o, np.full(len(o), step), d / np.maximum(np.hypot(*d.T), 1e-300)[:, None]))
+        occurrence = np.concatenate([r[0] for r in rows])
+        step = np.concatenate([r[1] for r in rows])
+        direction = np.concatenate([r[2] for r in rows])
+        rank = self.rule[self.osm_way[occurrence]]
+        order = np.lexsort((rank, self.osm_var[occurrence]))
+        occurrence, step, direction, rank = occurrence[order], step[order], direction[order], rank[order]
+        var = self.osm_var[occurrence]
+        starts = np.flatnonzero(np.concatenate([[True], var[1:] != var[:-1]]))
+        ends = np.concatenate([starts[1:], [len(var)]])
+        path = names.index("path")
+        out = [[] for _ in range(7)]
+        for s, e in zip(starts.tolist(), ends.tolist()):
+            top = [i for i in range(s, e) if rank[i] == rank[s]]
             if len(top) >= 2:
-                pairs = [(float(a[4] @ b[4]), i, k) for i, a in enumerate(top) for k, b in enumerate(top) if i < k]
-                _, i, k = min(pairs)
-                through = [top[i], top[k]]
+                through = min(((float(direction[i] @ direction[k]), i, k) for n, i in enumerate(top) for k in top[n + 1:]))[1:]
             else:
-                through = top[:1]
-            path = best >= RANKS["path"]
-            for direction in directions:
-                if not any(direction is t for t in through):
-                    roles[direction[1:4]] = ([t[1:4] for t in through], APPROACH_PATH_M if path else APPROACH_M)
-        return roles
-
-    def densify(self):
-        """The vertices of each way: its own, one at the approach distance of each side direction, and
-        enough between them that no segment is longer than VERTEX_M."""
-        n = len(self.osm_points)
-        self.vertex, self.point, self.osm_vertex = [], [], []
-        # Per way: the position of each OSM vertex among its vertices.
-        self.index = []
-        sides = {}
-        for (w, j, step), (_, distance) in self.approaches.items():
-            sides.setdefault(w, []).append((j, step, distance))
-        for w, (_, _, points, _, _, _) in enumerate(self.ways):
-            d = np.diff(points, axis=0)
-            lengths = np.hypot(*d.T) * metres((points[:-1, 1] + points[1:, 1]) / 2)
-            cuts = [list(np.arange(1, max(1, math.ceil(length / VERTEX_M))) / max(1, math.ceil(length / VERTEX_M))) for length in lengths]
-            for j, step, distance in sides.get(w, []):
-                s = j if step == 1 else j - 1
-                if lengths[s] > distance + 1:
-                    t = distance / lengths[s] if step == 1 else 1 - distance / lengths[s]
-                    cuts[s] = sorted({*(c for c in cuts[s] if abs(c - t) * lengths[s] > 1), t})
-            ids, xy, osm, index = [self.osm_of[w][0]], [points[0]], [True], [0]
-            for s, ts in enumerate(cuts):
-                for t in ts:
-                    ids.append(n)
-                    n += 1
-                    xy.append(points[s] + t * d[s])
-                    osm.append(False)
-                index.append(len(ids))
-                ids.append(self.osm_of[w][s + 1])
-                xy.append(points[s + 1])
-                osm.append(True)
-            self.vertex.append(np.array(ids))
-            self.point.append(np.array(xy))
-            self.osm_vertex.append(np.array(osm))
-            self.index.append(np.array(index))
-        self.count = n
+                through = (top[0],)
+            metres_ = APPROACH_PATH_M if rank[s] >= path else APPROACH_M
+            t1, t2 = through[0], through[1] if len(through) > 1 else -1
+            for i in range(s, e):
+                if i not in through:
+                    for column, value in enumerate((occurrence[i], step[i], metres_, occurrence[t1], step[t1],
+                                                    occurrence[t2] if t2 >= 0 else -1, step[t2] if t2 >= 0 else 0)):
+                        out[column].append(value)
+        return [np.array(column, float if c == 2 else np.int64) for c, column in enumerate(out)]
 
 
-def solve(features, terrain, rivers=()):
+def solve(features, terrain, rivers=(), classes=CLASSES):
     """Per feature (kind, tags, parts): its parts (outer, points, heights) with the heights solved, None
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
     features that are culverts; and the metrics of the solve. `rivers` lists (points, levels) of the
     solved waterways, for the fords."""
-    ways = Ways(features)
-    n = ways.count
-    rules = [CLASSES[way[3]] for way in ways.ways]
-    # Segments, as variable pairs, with their way and length.
-    a = np.concatenate([v[:-1] for v in ways.vertex])
-    b = np.concatenate([v[1:] for v in ways.vertex])
-    pa = np.concatenate([p[:-1] for p in ways.point])
-    pb = np.concatenate([p[1:] for p in ways.point])
-    seg_way = np.concatenate([np.full(len(v) - 1, w) for w, v in enumerate(ways.vertex)])
-    length = np.hypot(*(pb - pa).T) * metres((pa[:, 1] + pb[:, 1]) / 2)
-    free = np.array([way[4] for way in ways.ways])[seg_way]
-    # Samples: k per segment from its start, and the last vertex of each way.
+    net = Network(features, classes)
+    n, a, b, length = net.count, net.a, net.b, net.length
+    rows = [classes[name] for name in classes]
+    # Samples: k per segment from its start, and the last vertex of each way. Ordered by terrain tile, so
+    # that each tile decodes about once.
     k = np.maximum(1, np.ceil(length / SAMPLE_M)).astype(np.int64)
-    seg = np.repeat(np.arange(len(a)), k)
-    t = (np.arange(len(seg)) - np.repeat(np.cumsum(k) - k, k)) / k[seg]
-    last = np.cumsum([len(v) - 1 for v in ways.vertex]) - 1
-    seg, t = np.concatenate([seg, last]), np.concatenate([t, np.ones(len(last))])
-    weight = (length / k)[seg] * np.where(free[seg], FREE, 1.0)
-    h = np.empty(len(seg), np.float64)
-    for start in range(0, len(seg), CHUNK):
-        s, u = seg[start:start + CHUNK], t[start:start + CHUNK, None]
+    start = net.vertex_xy[net.segment_start]
+    order = np.argsort((np.floor(start[:, 1] * 8192) * 8192 + np.floor(start[:, 0] * 8192)).astype(np.int64), kind="stable")
+    seg = np.repeat(order, k[order])
+    t = (np.arange(len(seg)) - np.repeat(np.cumsum(k[order]) - k[order], k[order])) / k[seg]
+    ends = np.cumsum(net.way_last - net.way_first) - 1
+    seg, t = np.concatenate([seg, ends]), np.concatenate([t, np.ones(len(ends))])
+    free = net.free[net.segment_way]
+    # A bridge or a tunnel sees no terrain, unless nothing that it meets does.
+    weight = (length / k)[seg] * ~free[seg]
+    h = np.empty(len(seg))
+    pa, pb = net.vertex_xy[net.segment_start], net.vertex_xy[net.segment_start + 1]
+    for begin in range(0, len(seg), CHUNK):
+        s, u = seg[begin:begin + CHUNK], t[begin:begin + CHUNK, None]
         xy = pa[s] + u * (pb[s] - pa[s])
-        h[start:start + CHUNK] = terrain.heights(xy[:, 0], xy[:, 1])
-    weight[~np.isfinite(h)] = 0
+        h[begin:begin + CHUNK] = terrain.heights(xy[:, 0], xy[:, 1])
+    finite = np.isfinite(h)
+    weight[~finite] = 0
+    m = len(a)
+    touched = lambda w: np.bincount(a, np.bincount(seg, w * (1 - t), m), n) + np.bincount(b, np.bincount(seg, w * t, m), n)
+    _, component = connected_components(sparse.csr_matrix((np.ones(m), (a, b)), shape=(n, n)), directed=False)
+    seen = np.bincount(component, touched(weight)) > 0
+    alone = free[seg] & ~seen[component[a[seg]]] & finite
+    weight[alone] = (length / k)[seg[alone]] * FREE
     h[~np.isfinite(h)] = 0
-    support = np.bincount(a[seg], weight * (1 - t), n) + np.bincount(b[seg], weight * t, n)
-    known = support > 0
+    # A vertex has a height where terrain samples act on it, or where it lies on a bridge or tunnel of a
+    # network that has some.
+    support = touched(weight)
+    on_free = np.zeros(n, bool)
+    on_free[a[free]] = on_free[b[free]] = True
+    known = (support > 0) | (on_free & (np.bincount(component, support) > 0)[component])
 
     # Rows that pin a combination of variables to a value: the approaches of side roads, and the fords.
-    pins = ([], [], [], [])  # row, variable, coefficient, value per row
-
-    def pin(variables, coefficients, value):
-        if all(known[v] for v in variables):
-            row = len(pins[3])
-            pins[0].extend([row] * len(variables))
-            pins[1].extend(variables)
-            pins[2].extend(coefficients)
-            pins[3].append(value)
-
-    for (w, j, step), (through, distance) in ways.approaches.items():
-        vertices, index = ways.vertex[w], ways.index[w][j]
-        origin = ways.point[w][index]
-        position = index + step
-        while 0 <= position < len(vertices):
-            p = ways.point[w][position]
-            if np.hypot(*(p - origin)) * metres(origin[1]) > distance + 1.01:
-                break
-            best = None
-            for tw, tj, tstep in through:
-                ti = ways.index[tw][tj]
-                q = ways.point[tw][ti + tstep]
-                axis = q - ways.point[tw][ti]
-                tau = float((p - origin) @ axis / (axis @ axis))
-                if best is None or tau > best[0]:
-                    best = (min(max(tau, 0.0), 1.0), ways.vertex[tw][ti + tstep])
-            tau, other = best
-            pin([vertices[position], vertices[index], other], [1.0, -(1 - tau), -tau], 0.0)
-            position += step
-    approaches = len(pins[3])
-    for variables, coefficients, value in ford_pins(ways, rivers):
-        pin(variables, coefficients, value)
+    approach = approach_pins(net)
+    fords = ford_pins(net, rivers)
+    variables = np.concatenate([approach[0], fords[0]])
+    coefficients = np.concatenate([approach[1], fords[1]])
+    values = np.concatenate([approach[2], fords[2]])
+    ok = np.all(known[variables], axis=1)
+    variables, coefficients, values = variables[ok], coefficients[ok], values[ok]
+    P = sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(values)), 3), variables.ravel())), shape=(len(values), n))
 
     # Smoothness: per vertex inside a way, the change of grade over the mean of its two segments.
-    starts = np.cumsum([0] + [len(v) - 1 for v in ways.vertex])
-    inner = np.concatenate([np.arange(s0, s1 - 1) for s0, s1 in zip(starts[:-1], starts[1:])]).astype(np.int64)
+    inner = np.flatnonzero(net.segment_way[:-1] == net.segment_way[1:])
     inner = inner[known[a[inner]] & known[b[inner]] & known[b[inner + 1]]]
     la, lb = length[inner], length[inner + 1]
-    lam = np.array([rule["smooth_m"] ** 4 for rule in rules])[seg_way[inner]] / ((la + lb) / 2)
-    rows = np.repeat(np.arange(len(inner)), 3)
-    cols = np.column_stack([a[inner], b[inner], b[inner + 1]]).ravel()
-    vals = np.column_stack([1 / la, -1 / la - 1 / lb, 1 / lb]).ravel()
-    D2 = sparse.csr_matrix((vals, (rows, cols)), shape=(len(inner), n))
-    smooth = (D2.T @ sparse.diags(lam) @ D2)
-    # Grades: per segment of a class with a limit, z_b − z_a within ± grade × length.
-    grade = np.array([rule["grade"] if rule["grade"] is not None else np.inf for rule in rules])[seg_way]
-    limited = np.flatnonzero(np.isfinite(grade) & known[a] & known[b] & (length > 0))
+    lam = np.array([row["smooth_m"] ** 4 for row in rows])[net.rule[net.segment_way[inner]]] / ((la + lb) / 2)
+    D2 = sparse.csr_matrix((np.column_stack([1 / la, -1 / la - 1 / lb, 1 / lb]).ravel(),
+                            (np.repeat(np.arange(len(inner)), 3), np.column_stack([a[inner], b[inner], b[inner + 1]]).ravel())), shape=(len(inner), n))
+    # Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a tunnel
+    # has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit could meet.
+    grade = np.array([np.inf if row["grade"] is None else row["grade"] for row in rows])[net.rule[net.segment_way]]
+    limited = np.flatnonzero(np.isfinite(grade) & ~free & known[a] & known[b])
     G = sparse.csr_matrix((np.tile([-1.0, 1.0], len(limited)), (np.repeat(np.arange(len(limited)), 2), np.column_stack([a[limited], b[limited]]).ravel())), shape=(len(limited), n))
     bound = grade[limited] * length[limited]
-    P = sparse.csr_matrix((pins[2], (pins[0], pins[1])), shape=(len(pins[3]), n))
-    fixed = smooth + PIN * (P.T @ P) + sparse.diags(np.where(known, 0.0, 1.0))
-    pinned = PIN * (P.T @ np.asarray(pins[3]))
+    level = np.flatnonzero(free & known[a] & known[b])
+    L1 = sparse.csr_matrix((np.tile([-1.0, 1.0], len(level)), (np.repeat(np.arange(len(level)), 2), np.column_stack([a[level], b[level]]).ravel())), shape=(len(level), n))
+    fixed = (D2.T @ sparse.diags(lam) @ D2 + PIN * (P.T @ P) + L1.T @ sparse.diags(LEVEL / np.maximum(length[level], 0.01)) @ L1
+             + sparse.diags(np.where(known, 0.0, 1.0)))
+    pinned = PIN * (P.T @ values)
 
-    # Rounds of the smooth solve and the slope limits: a segment steeper than its class holds its
-    # limit, and a held segment that the solve would make less steep lets go. Each round also takes
-    # the Huber weights of the round before.
+    def factor(matrix):
+        return splu(matrix.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+
+    def update(held, gz, release=True):
+        """The slope limits after a solve: a segment past its limit holds it, a held one that the solve
+        would make less steep lets go. Without releases the rounds end: the held segments only grow."""
+        out = held.copy()
+        if release:
+            out[held * gz < bound] = 0
+        out[gz > bound + TOLERANCE_M] = 1
+        out[gz < -bound - TOLERANCE_M] = -1
+        return out
+
     held = np.zeros(len(limited))
-    w = weight.copy()
-    for rounds in range(1, ROUNDS + 1):
-        # The samples of a segment, summed: they act on its two ends only.
-        ca, cb, m = 1 - t, t, len(a)
+    w = weight
+    for solves_ in range(SOLVES):
+        ca, cb = 1 - t, t
         aa, bb, ab = (np.bincount(seg, w * c, m) for c in (ca * ca, cb * cb, ca * cb))
-        data = sparse.csr_matrix((np.concatenate([aa, bb, ab, ab]), (np.concatenate([a, b, a, b]), np.concatenate([a, b, b, a]))), shape=(n, n))
+        base = sparse.csr_matrix((np.concatenate([aa, bb, ab, ab]), (np.concatenate([a, b, a, b]), np.concatenate([a, b, b, a]))), shape=(n, n)) + fixed
         rhs = np.bincount(a, np.bincount(seg, w * ca * h, m), n) + np.bincount(b, np.bincount(seg, w * cb * h, m), n) + pinned
         on = np.flatnonzero(held)
         limits = G[on]
-        matrix = data + fixed + PIN * (limits.T @ limits)
-        z = splu(matrix.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True}).solve(rhs + PIN * (limits.T @ (held[on] * bound[on])))
-        residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
-        reweighted = weight * np.minimum(1.0, HUBER_M / np.maximum(residual, 1e-9))
-        gz = G @ z
-        before = held.copy()
-        held[held * gz < bound] = 0
-        held[gz > bound + TOLERANCE_M] = 1
-        held[gz < -bound - TOLERANCE_M] = -1
-        if rounds >= HUBER_ROUNDS and np.array_equal(held, before):
-            break
-        w = reweighted if rounds < HUBER_ROUNDS else w
+        z = factor(base + PIN * (limits.T @ limits)).solve(rhs + PIN * (limits.T @ (held[on] * bound[on])))
+        if solves_ < SOLVES - 1:
+            residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
+            w = weight * np.minimum(1.0, HUBER_M / np.maximum(residual, 1e-9))
+        before, held = held, update(held, G @ z)
+    # Rounds of the slope limits near the segments whose limit changed, the rest of the network fixed.
+    # Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
+    graph = sparse.csr_matrix((np.where(free, 1e-6, np.maximum(length, 0.01)), (a, b)), shape=(n, n))
+    graph = graph + graph.T
+    rounds = 0
+    base = base.tocsr()
+    while rounds < ROUNDS and np.any(changed := held != before):
+        rounds += 1
+        sources = np.unique(np.concatenate([a[limited[changed]], b[limited[changed]]]))
+        region = np.flatnonzero(np.isfinite(dijkstra(graph, indices=sources, limit=REGION_M, min_only=True)))
+        on = np.flatnonzero(held)
+        limits = G[on]
+        local = limits[:, region]
+        residual = (rhs[region] + PIN * (local.T @ (held[on] * bound[on])) - base[region] @ z - PIN * (local.T @ (limits @ z)))
+        z[region] += factor(base[region][:, region] + PIN * (local.T @ local)).solve(residual)
+        before, held = held, update(held, G @ z, rounds < ROUNDS // 2)
 
+    keep = kept(net, z, known)
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
-    for wi, (f, p, _, _, _, _) in enumerate(ways.ways):
-        keep = kept(ways, wi, z, known)
-        heights = [float(z[v]) if known[v] else None for v in ways.vertex[wi][keep]]
-        out[f][p] = (out[f][p][0], [tuple(point) for point in ways.point[wi][keep]], heights)
-    culverts = set()
-    first = np.cumsum(k) - k
-    for wi, (f, _, _, _, free_way, _) in enumerate(ways.ways):
-        kind, tags, _ = features[f]
-        s0, s1 = starts[wi], starts[wi + 1]
-        if free_way and kind != "tunnel" and length[s0:s1].sum() < CULVERT_M:
-            samples = np.arange(first[s0], first[s1 - 1] + k[s1 - 1])
-            samples = samples[weight[samples] > 0]
-            deck = z[a[seg[samples]]] * (1 - t[samples]) + z[b[seg[samples]]] * t[samples]
-            if samples.size and np.max(deck - h[samples]) <= CULVERT_RISE_M:
-                culverts.add(f)
+    for w_, (f, p, *_) in enumerate(net.ways):
+        span = slice(net.way_first[w_], net.way_last[w_] + 1)
+        mask = keep[span]
+        points = list(map(tuple, net.vertex_xy[span][mask].tolist()))
+        v = net.vertex_var[span][mask]
+        heights = np.where(known[v], z[v], np.nan).tolist()
+        out[f][p] = (out[f][p][0], points, [None if math.isnan(value) else value for value in heights])
+    culverts = culvert_features(net, features, z, seg, t, h, finite)
     excess = np.abs(G @ z) - bound
+    worst = limited[np.argmax(excess)] if len(excess) else 0
+    lon, lat = world_degrees(net.vertex_xy[net.segment_start[worst]]) if len(excess) else (0, 0)
+    residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
     metrics = {
-        "ways": len(ways.ways), "variables": n, "known": int(known.sum()), "approaches": approaches,
-        "fords": len(pins[3]) - approaches, "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
-        "grade_excess_m": round(float(np.max(excess, initial=0)), 4),
-        "residual_p99_m": round(float(np.percentile(residual[weight > 0], 99)), 2) if (weight > 0).any() else 0,
+        "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
+        "fords": int(np.count_nonzero(ok[len(approach[2]):])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
+        "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
+        "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
+        "residual_p99_m": round(float(np.percentile(residual[~free[seg] & (weight > 0)], 99)), 2) if (~free[seg] & (weight > 0)).any() else 0,
     }
     return out, culverts, metrics
 
 
-def kept(ways, w, z, known):
-    """The positions of the vertices of a way that the tiles keep: those of OSM, and an added vertex where
-    the profile leaves the straight line between its neighbours by more than KEEP_M (Douglas-Peucker in
-    the plane of distance and height)."""
-    osm, points = ways.osm_vertex[w], ways.point[w]
-    keep = osm.copy()
-    along = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(points, axis=0).T) * metres(points[:-1, 1]))])
-    heights = np.where(known[ways.vertex[w]], z[ways.vertex[w]], np.nan)
-    index = ways.index[w]
-    for i, j in zip(index[:-1], index[1:]):
-        if j - i < 2:
-            continue
-        if not np.isfinite(heights[i:j + 1]).all():
-            keep[i:j + 1] = True
-            continue
-        spans = [(i, j)]
-        while spans:
-            s, e = spans.pop()
-            if e - s < 2:
-                continue
-            inner = np.arange(s + 1, e)
-            line = heights[s] + (heights[e] - heights[s]) * (along[inner] - along[s]) / (along[e] - along[s])
-            far = np.argmax(np.abs(heights[inner] - line))
-            if abs(heights[inner][far] - line[far]) > KEEP_M:
-                m = inner[far]
-                keep[m] = True
-                spans += [(s, m), (m, e)]
-    return keep
+def world_degrees(point):
+    x, y = point
+    return x * 360 - 180, math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y))))
 
 
-def ford_pins(ways, rivers):
-    """(variables, coefficients, value) per ford: a road vertex that a waterway shares, or the point where
-    a way tagged as a ford crosses a waterway, lies FORD_M below the water there."""
+def approach_pins(net):
+    """Per side direction of a junction, the rows that put its vertices within its approach distance on
+    the surface of the through road: z_P − (1 − τ)·z_J − τ·z_Q = 0, with Q the next vertex of the through
+    road and τ the place of P along J-Q, from the through direction that P lies farthest along."""
+    occurrence, step, distance, t1, s1, t2, s2 = net.sides
+    if not len(occurrence):
+        return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0)
+    j = net.osm_position[occurrence]
+    way = net.osm_way[occurrence]
+    origin = net.vertex_xy[j]
+    unit = metres(origin[:, 1])
+    rows = []
+    alive = np.ones(len(j), bool)
+    for hop in range(1, 8):
+        p = j + hop * step
+        alive &= (p >= net.way_first[way]) & (p <= net.way_last[way])
+        p = np.where(alive, p, j)
+        alive &= np.hypot(*(net.vertex_xy[p] - origin).T) * unit <= distance + 1.01
+        if not alive.any():
+            break
+        best_tau, best_q = np.full(len(j), -np.inf), np.zeros(len(j), np.int64)
+        for occ, st in ((t1, s1), (t2, s2)):
+            valid = occ >= 0
+            tj = net.osm_position[np.where(valid, occ, 0)]
+            q = tj + st
+            axis = net.vertex_xy[q] - net.vertex_xy[tj]
+            tau = np.einsum("ij,ij->i", net.vertex_xy[p] - origin, axis) / np.maximum(np.einsum("ij,ij->i", axis, axis), 1e-300)
+            better = valid & (tau > best_tau)
+            best_tau, best_q = np.where(better, tau, best_tau), np.where(better, q, best_q)
+        tau = np.clip(best_tau, 0, 1)
+        sel = np.flatnonzero(alive)
+        rows.append((np.column_stack([net.vertex_var[p[sel]], net.vertex_var[j[sel]], net.vertex_var[best_q[sel]]]),
+                     np.column_stack([np.ones(len(sel)), -(1 - tau[sel]), -tau[sel]])))
+    variables = np.concatenate([r[0] for r in rows]) if rows else np.zeros((0, 3), np.int64)
+    coefficients = np.concatenate([r[1] for r in rows]) if rows else np.zeros((0, 3))
+    return variables, coefficients, np.zeros(len(variables))
+
+
+def ford_pins(net, rivers):
+    """(variables, coefficients, values) of the fords, in rows of three variables: a road vertex that a
+    waterway shares, and the point where a way tagged as a ford crosses a waterway, lie FORD_M below
+    the water there. A bridge or a tunnel has no ford."""
+    none = (np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0))
     if not rivers:
-        return []
+        return none
     levels = {}
     segments = []
     for points, z in rivers:
         for point, level in zip(points, z):
             if level is not None and math.isfinite(level):
-                levels.setdefault(tuple(point), level)
+                levels.setdefault(complex(*point), level)
         for (p, zp), (q, zq) in zip(zip(points, z), zip(points[1:], z[1:])):
             if zp is not None and zq is not None:
                 segments.append((p, q, zp, zq))
-    # A grid of the waterway segments, about GRID_UNITS of world units a cell, for the crossings of fords.
-    grid = {}
-    for number, (p, q, _, _) in enumerate(segments):
-        for cx in range(int(min(p[0], q[0]) // GRID_UNITS), int(max(p[0], q[0]) // GRID_UNITS) + 1):
-            for cy in range(int(min(p[1], q[1]) // GRID_UNITS), int(max(p[1], q[1]) // GRID_UNITS) + 1):
-                grid.setdefault((cx, cy), []).append(number)
-    out = []
-    for w, (_, _, points, _, free, ford) in enumerate(ways.ways):
-        if free:
-            continue
-        vertices, index = ways.vertex[w], ways.index[w]
-        for j, point in enumerate(points):
-            level = levels.get(tuple(point))
-            if level is not None:
-                out.append(([vertices[index[j]]], [1.0], level - FORD_M))
-        if not ford:
-            continue
-        for s in range(len(points) - 1):
-            p, q = points[s], points[s + 1]
-            near = {number for cx in range(int(min(p[0], q[0]) // GRID_UNITS), int(max(p[0], q[0]) // GRID_UNITS) + 1)
-                    for cy in range(int(min(p[1], q[1]) // GRID_UNITS), int(max(p[1], q[1]) // GRID_UNITS) + 1) for number in grid.get((cx, cy), [])}
-            for r0, r1, z0, z1 in (segments[number] for number in sorted(near)):
-                hit = crossing(p, q, np.asarray(r0), np.asarray(r1))
-                if hit is not None:
-                    tp, tr = hit
-                    # The crossing on the way's own segment lies between its vertices s and s + 1.
-                    lo, hi = index[s], index[s + 1]
-                    along = np.hypot(*(ways.point[w][lo:hi + 1] - p).T)
-                    total = along[-1]
-                    target = tp * total
-                    m = min(max(int(np.searchsorted(along, target)) - 1, 0), hi - lo - 1)
-                    u = (target - along[m]) / max(along[m + 1] - along[m], 1e-12)
-                    out.append(([vertices[lo + m], vertices[lo + m + 1]], [1 - u, u], z0 + (z1 - z0) * tr - FORD_M))
-    return out
+    variables, coefficients, values = [], [], []
+    road = ~net.free[net.osm_way]
+    shared = np.flatnonzero(road & np.isin(key(net.osm_xy), np.fromiter(levels, complex, len(levels))))
+    for occurrence in shared.tolist():
+        variables.append([net.osm_var[occurrence]] * 3)
+        coefficients.append([1.0, 0.0, 0.0])
+        values.append(levels[complex(*net.osm_xy[occurrence])] - FORD_M)
+    fords = [w for w, way in enumerate(net.ways) if way[5] and not way[4]]
+    if fords:
+        grid = {}
+        for number, (p, q, _, _) in enumerate(segments):
+            for cell in cells(p, q):
+                grid.setdefault(cell, []).append(number)
+        for w in fords:
+            first, last = net.way_first[w], net.way_last[w]
+            for v in range(first, last):
+                p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
+                for number in sorted({n for cell in cells(p, q) for n in grid.get(cell, [])}):
+                    r0, r1, z0, z1 = segments[number]
+                    hit = crossing(p, q, np.asarray(r0), np.asarray(r1))
+                    if hit is not None:
+                        u, tr = hit
+                        variables.append([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]])
+                        coefficients.append([1 - u, u, 0.0])
+                        values.append(z0 + (z1 - z0) * tr - FORD_M)
+    if not values:
+        return none
+    return np.array(variables, np.int64), np.array(coefficients), np.array(values)
+
+
+def cells(p, q):
+    """The cells of the waterway grid that the box of segment p-q meets."""
+    return [(cx, cy) for cx in range(int(min(p[0], q[0]) // GRID_UNITS), int(max(p[0], q[0]) // GRID_UNITS) + 1)
+            for cy in range(int(min(p[1], q[1]) // GRID_UNITS), int(max(p[1], q[1]) // GRID_UNITS) + 1)]
 
 
 def crossing(p, q, r, s):
@@ -381,3 +459,58 @@ def crossing(p, q, r, s):
     tp = (f[0] * e[1] - f[1] * e[0]) / denominator
     tr = (f[0] * d[1] - f[1] * d[0]) / denominator
     return (tp, tr) if 0 <= tp <= 1 and 0 <= tr <= 1 else None
+
+
+def kept(net, z, known):
+    """Per vertex, whether the tiles keep it: each vertex of OSM and at an approach distance, and an added
+    vertex where the profile leaves the straight line between its neighbours by more than KEEP_M
+    (Douglas-Peucker in the plane of distance and height, over each OSM segment)."""
+    keep = net.vertex_fixed.copy()
+    added = np.flatnonzero(~net.vertex_osm)
+    if not len(added):
+        return keep
+    segment = net.vertex_segment[added]
+    starts = np.flatnonzero(np.concatenate([[True], segment[1:] != segment[:-1]]))
+    # The OSM vertices about the added ones of each segment.
+    first = added[starts] - 1
+    last = np.concatenate([added[starts[1:] - 1], [added[-1]]]) + 1
+    zv = np.where(known[net.vertex_var], z[net.vertex_var], np.nan)
+    span = np.repeat(np.arange(len(starts)), np.diff(np.concatenate([starts, [len(added)]])))
+    line = zv[first[span]] + (zv[last[span]] - zv[first[span]]) * net.vertex_t[added]
+    off = np.abs(zv[added] - line)
+    off = np.where(np.isfinite(off), off, np.inf)
+    worst = np.maximum.reduceat(off, starts)
+    for s in np.flatnonzero(worst > KEEP_M).tolist():
+        i, j = int(first[s]), int(last[s])
+        if not np.isfinite(zv[i:j + 1]).all():
+            keep[i:j + 1] = True
+            continue
+        stops = [i, *(i + 1 + np.flatnonzero(net.vertex_fixed[i + 1:j])).tolist(), j]
+        spans = list(zip(stops, stops[1:]))
+        while spans:
+            p, q = spans.pop()
+            if q - p < 2:
+                continue
+            inner = np.arange(p + 1, q)
+            tp, tq = net.vertex_t[p] if p != i else 0.0, net.vertex_t[q] if q != j else 1.0
+            ti = net.vertex_t[inner]
+            line = zv[p] + (zv[q] - zv[p]) * (ti - tp) / (tq - tp)
+            far = int(np.argmax(np.abs(zv[inner] - line)))
+            if abs(zv[inner][far] - line[far]) > KEEP_M:
+                keep[inner[far]] = True
+                spans += [(p, int(inner[far])), (int(inner[far]), q)]
+    return keep
+
+
+def culvert_features(net, features, z, seg, t, h, finite):
+    """The features of the short low bridges: no longer than CULVERT_M, with the deck no more than
+    CULVERT_RISE_M above the terrain under it."""
+    way_length = np.bincount(net.segment_way, net.length, len(net.ways))
+    bridge = np.array([way[4] and features[way[0]][0] != "tunnel" for way in net.ways], bool) & (way_length < CULVERT_M)
+    if not bridge.any():
+        return set()
+    sample = np.flatnonzero(bridge[net.segment_way[seg]] & finite)
+    rise = np.full(len(net.ways), -np.inf)
+    deck = z[net.a[seg[sample]]] * (1 - t[sample]) + z[net.b[seg[sample]]] * t[sample]
+    np.maximum.at(rise, net.segment_way[seg[sample]], deck - h[sample])
+    return {net.ways[w][0] for w in np.flatnonzero(bridge & (rise > -np.inf) & (rise <= CULVERT_RISE_M)).tolist()}

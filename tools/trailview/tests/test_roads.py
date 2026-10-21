@@ -97,7 +97,7 @@ class RoadSolverTest(unittest.TestCase):
 
         crossing = at(50, 0)
         ford = road("road", "track", line((0, 0), (50, 0), (100, 0)))
-        culvert = road("road", "track", line((100, 50), (106, 50)), bridge="yes")
+        culvert = road("road", "track", line((30, 50), (36, 50)), bridge="yes")
         bridge = road("road", "track", line((100, 0), (130, 0)), bridge="yes")
         stream = ([at(50, -10), crossing, at(50, 10)], [999.1, 999.0, 998.9])
         solved, culverts, _ = roads.solve([ford, culvert, bridge], Terrain(height), [stream])

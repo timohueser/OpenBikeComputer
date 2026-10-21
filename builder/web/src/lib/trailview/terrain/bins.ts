@@ -3,6 +3,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import { EXTENT, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
+import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -39,17 +40,8 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
  * `least` metres of its cut and fill fit inside the buffer.
  */
 export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number }
-const CARRIAGEWAY: Profile = { tol: 0.02, reach: 25, least: 5, cut: 0.85, fill: 0.85 };
-// Cut 65°, fill 35°.
-const BENCH: Profile = { tol: 0.02, reach: 3, least: 0, cut: 2.1445, fill: 0.7002 };
-/** One row per `highway` class of the road and path kinds. L4's road solver sets them per class. */
-export const PROFILES: Record<string, Profile> = {
-    motorway: CARRIAGEWAY, motorway_link: CARRIAGEWAY, trunk: CARRIAGEWAY, trunk_link: CARRIAGEWAY,
-    primary: CARRIAGEWAY, primary_link: CARRIAGEWAY, secondary: CARRIAGEWAY, secondary_link: CARRIAGEWAY,
-    tertiary: CARRIAGEWAY, tertiary_link: CARRIAGEWAY, unclassified: CARRIAGEWAY, residential: CARRIAGEWAY,
-    living_street: CARRIAGEWAY, service: CARRIAGEWAY, road: CARRIAGEWAY, track: CARRIAGEWAY,
-    path: BENCH, footway: BENCH, cycleway: BENCH, bridleway: BENCH, steps: BENCH, pedestrian: BENCH, via_ferrata: BENCH,
-};
+/** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too. */
+export const PROFILES: Record<string, Profile> = Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill }]) => [name, { tol, reach, least, cut, fill }]));
 const CLASSES = Object.keys(PROFILES);
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, highway = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, highway) ? highway : kind === 'path' ? 'path' : 'road');
