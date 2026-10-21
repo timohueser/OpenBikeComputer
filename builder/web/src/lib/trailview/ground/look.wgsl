@@ -4,6 +4,7 @@
 // filtered. What the prototype measured from its fixed spot, this measures from the eye.
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shade.wgsl
+// #include roads.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
 @group(2) @binding(1) var<storage, read> ground_map: array<u32>;
@@ -82,6 +83,8 @@ fn slot_materials() -> i32 { return 33; }
 fn slot_satellite() -> i32 { return 33 + i32(look.codes.z); }
 fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.z); }
 fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.w); }
+fn slot_roads() -> i32 { return slot_cliff() + 8; }
+fn slot_road_line() -> i32 { return slot_cliff() + 14; }
 fn slot_kinds() -> i32 { return slot_cliff() + 15; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.z); }
 
@@ -477,6 +480,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
+    let road = road_at(s, world, footprint, albedo, region, g.tree);
+    albedo = mix(albedo, road.colour, road.cover);
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
@@ -504,7 +509,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (view >= 5u) {
         return ground_debug(view, level, s, g) * (0.45 + 0.55 * max(dot(n, vec3f(-0.4, 0.4, 0.82)), 0.0));
     }
-    let walled = steep * (1.0 - g.tree);
+    let walled = steep * (1.0 - g.tree) * (1.0 - road.cover);
     if (walled > 0.0) {
         // Variegated clays erode into badlands, so their beds show on gentler slopes: red, white and
         // green-grey, streaked by gullies.

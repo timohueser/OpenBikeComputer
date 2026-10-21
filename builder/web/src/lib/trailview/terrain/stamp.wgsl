@@ -38,6 +38,7 @@ const MASK_RANGE: f32 = 12.75;
 // Mask flags, as features.wgsl reads them.
 const CONFLICT_FLAG: u32 = 4u;
 const FORD_FLAG: u32 = 8u;
+const PATH_FLAG: u32 = 32u;
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -74,9 +75,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     }
     if ((job.mode & MASK) != 0u) {
         let cut = select(0.0, h - base, known(base));
-        let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
+        let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, PATH_FLAG, s.path);
         textureStore(mask_shape, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), distance_code(s.shore), s.across * 0.5 + 0.5, distance_code(cut)));
+            vec4f(distance_code(s.road), distance_code(s.shore), distance_code(s.across), distance_code(cut)));
         textureStore(mask_kind, in_layer(job.mask, t), job.mask >> 6u,
             vec4u(select(0u, s.surface, s.road < MASK_RANGE), select(0u, 1u, s.water > -1e29), flags, 0u));
     }
