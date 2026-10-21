@@ -76,7 +76,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
     const f = (value: number) => ((floats[0] = value), ints[0]);
     const push = (x: number, y: number, kind: number, expected: number, half: number, shore: number, junction = Infinity, junctionHalf = 0, other: [number, number] = [0, 0], otherExpected = 0) =>
-        out.push([Math.round(x), Math.round(y), kind, f(expected), f(half), f(shore), f(junction), f(junctionHalf), Math.round(other[0]), Math.round(other[1]), f(otherExpected), 0]);
+        out.push([Math.round(x), Math.round(y), kind, f(expected), f(half), f(shore), f(junction), f(junctionHalf), Math.round(other[0]), Math.round(other[1]), f(otherExpected), node.level]);
 
     const joins = [...junctions(lines.filter(line => line.kind === ROAD)).values()];
     const step = Math.max(0.25, 2 * texel) / unit;
@@ -106,21 +106,12 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     }
     // A point under other water has no bank: a river's mouth in a lake, a river across a lake.
     const rivers = lines.filter(line => line.kind === RIVER);
-    const river = (x: number, y: number) => rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], line.h / unit)));
-    const wet = (x: number, y: number) => lakes.some(({ rings }) => insideRings(rings, x, y)) || river(x, y);
+    const wet = (x: number, y: number) => lakes.some(({ rings }) => insideRings(rings, x, y)) || rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], line.h / unit)));
     for (const { level, rings } of lakes) {
         // Inside: a grid over the node, every point at its distance from the shore.
         const grid = side / 32;
         for (let y = y0 + grid / 2; y < y0 + side; y += grid) for (let x = x0 + grid / 2; x < x0 + side; x += grid) {
             if (insideRings(rings, Math.round(x), Math.round(y))) push(x, y, IN_WATER, level, 0, shoreDistance(rings, Math.round(x), Math.round(y)) * unit);
-        }
-        // The side of the shore: a finer grid near it, at its distance from the shore, negative inside.
-        const fine = side / SIDE_GRID, margin = SIDE_TEXELS * texel / unit, xs = rings.flatMap(ring => ring.filter((_, i) => i % 2 === 0)), ys = rings.flatMap(ring => ring.filter((_, i) => i % 2 === 1));
-        const box = [Math.min(...xs) - margin, Math.min(...ys) - margin, Math.max(...xs) + margin, Math.max(...ys) + margin];
-        for (let y = y0 + fine / 2; y < y0 + side; y += fine) for (let x = x0 + fine / 2; x < x0 + side; x += fine) {
-            if (x < box[0] || y < box[1] || x > box[2] || y > box[3]) continue;
-            const [px, py] = [Math.round(x), Math.round(y)], d = shoreDistance(rings, px, py) * unit;
-            if (d < SIDE_TEXELS * texel && !river(px, py)) push(px, py, SHORE_SIDE, level, 0, insideRings(rings, px, py) ? -d : d);
         }
         // Banks: points outside each edge in the node, where the bank band begins.
         for (const ring of rings) {
@@ -134,6 +125,18 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 }
             }
         }
+    }
+    // The side of the shores: a finer grid near them, at the distance from the nearest shore, negative in a lake.
+    const fine = side / SIDE_GRID, margin = SIDE_TEXELS * texel / unit;
+    const boxes = lakes.map(({ rings }) => {
+        const xs = rings.flatMap(ring => ring.filter((_, i) => i % 2 === 0)), ys = rings.flatMap(ring => ring.filter((_, i) => i % 2 === 1));
+        return [Math.min(...xs) - margin, Math.min(...ys) - margin, Math.max(...xs) + margin, Math.max(...ys) + margin];
+    });
+    for (let y = y0 + fine / 2; y < y0 + side; y += fine) for (let x = x0 + fine / 2; x < x0 + side; x += fine) {
+        const [px, py] = [Math.round(x), Math.round(y)], near = lakes.filter((_, i) => px >= boxes[i][0] && py >= boxes[i][1] && px <= boxes[i][2] && py <= boxes[i][3]);
+        if (!near.length) continue;
+        const d = Math.min(...near.map(({ rings }) => shoreDistance(rings, px, py))) * unit;
+        if (d < SIDE_TEXELS * texel) push(px, py, SHORE_SIDE, 0, 0, near.some(({ rings }) => insideRings(rings, px, py)) ? -d : d);
     }
     // Rivers: the middle of the river, and points across it where its bank band begins.
     for (const line of rivers) {

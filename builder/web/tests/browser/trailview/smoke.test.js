@@ -6,7 +6,7 @@ const VIEW = '?lat=46.820500&lon=8.403000&heading=160.0&pitch=5.0&eye=1.6&date=2
 const DOWN = '?lat=46.797500&lon=8.415000&heading=20.0&pitch=-60.0&alt=2500.0&date=2026-08-15&time=15:00&weather=sunny';
 // Straight down onto the roads of Engelberg from 500 m, and onto Trübsee from 2 km.
 const VILLAGE = '?lat=46.818000&lon=8.405000&heading=0.0&pitch=-89.0&alt=1500.0&date=2026-08-15&time=15:00&weather=sunny';
-const LAKE = '?lat=46.770000&lon=8.391000&heading=0.0&pitch=-45.0&alt=3500.0&date=2026-08-15&time=15:00&weather=sunny';
+const LAKE = '?lat=46.782500&lon=8.391000&heading=0.0&pitch=-35.0&alt=2400.0&date=2026-08-15&time=15:00&weather=sunny';
 
 async function open(page, view) {
     await routeFixture(page);

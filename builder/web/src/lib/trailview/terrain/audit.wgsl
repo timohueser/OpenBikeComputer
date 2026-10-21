@@ -19,7 +19,8 @@ struct Sample {
     // The other edge of a cross-fall pair, and the road height there.
     other: vec2i,
     other_expected: f32,
-    unused: u32,
+    // The level of the node that the sample comes from: its feature tile has the sample's shapes.
+    level: u32,
 }
 
 // Two nodes of a level side by side: B lies east of A (axis 0) or south of it (axis 1).
@@ -156,13 +157,13 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     let reach = MARGIN_TEXELS * fine;
     let kink = ROAD_KINK * MESH_TEXELS * wide;
     if (q.kind == SHORE_SIDE) {
-        // The stamps put a point more than a texel from a shore on its side: in the water or out of it.
-        let data = node_data(q.at, level);
-        if (abs(q.shore) < fine || data == NO_DATA) {
+        // The stamps of the sample's own node put a point more than a texel from a lake shore on its side.
+        let data = node_data(q.at, q.level);
+        if (abs(q.shore) < texel_m(q.at, q.level) || data == NO_DATA) {
             return;
         }
-        let stamp = stamp_at(level, (q.at >> vec2u(30u - level)) << vec2u(8u), data, q.at, BAKED);
-        check(SHORE_SIDE, select(0.0, abs(q.shore), (stamp.shore < 0.0) != (q.shore < 0.0)), 0.0, false, s, level, stamp.shore, q.shore, q.shore);
+        let stamp = stamp_at(q.level, (q.at >> vec2u(30u - q.level)) << vec2u(8u), data, q.at, BAKED);
+        check(SHORE_SIDE, select(0.0, abs(q.shore), (stamp.lake < 0.0) != (q.shore < 0.0)), 0.0, false, s, q.level, stamp.lake, q.shore, q.shore);
         return;
     }
     let drawn = drawn_height(s);

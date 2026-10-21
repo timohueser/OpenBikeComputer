@@ -222,12 +222,14 @@ struct Stamp {
     surface: u32,
     ford: bool,
     shore: f32,
+    // The nearest lake shore alone, negative in a lake.
+    lake: f32,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF);
     if (data == NO_DATA) {
         return out;
     }
@@ -283,6 +285,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 hi[WATER_CORE] = min(hi[WATER_CORE], water - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * shore));
                 water_in = max(water_in, water);
                 out.shore = min(out.shore, -shore);
+                out.lake = min(out.lake, -shore);
             } else {
                 if (banks_show(level, baked)) {
                     let x = max(0.0, shore - bank_width(texel, baked));
@@ -292,6 +295,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                     water_near = max(water_near, water);
                 }
                 out.shore = min(out.shore, shore);
+                out.lake = min(out.lake, shore);
             }
             crossed = false;
             shore = INF;
