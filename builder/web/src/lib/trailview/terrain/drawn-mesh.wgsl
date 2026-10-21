@@ -8,7 +8,7 @@
 // where the paint ends: the lab `edges`.
 override SNAP: bool = false;
 // A vertex moves onto a road edge within this many metres: 3/4 of a cell of level 18, so that every
-// triangle along an edge has a vertex on it there, and no vertex of any level moves by 3/4 of its cell.
+// triangle along an edge has a vertex on it there, and less than half a cell of level 17.
 const SNAP_M: f32 = 1.2;
 
 // Whether the selection splits the node of a level that holds a point at `u` units about the anchor,
@@ -74,7 +74,10 @@ fn snap(u: vec2i, level: u32) -> vec2i {
     }
     let fade = 1.0 - smoothstep(0.75 * masks.reach, masks.reach, length(lod_space(vec2f(u))));
     let shift_m = -(mean + 0.25 * metres) * g / g2;
-    return vec2i(round(shift_m * min(1.0, SNAP_M / length(shift_m)) * fade / surface.unit));
+    let snapped = vec2i(round(shift_m * min(1.0, SNAP_M / length(shift_m)) * fade / surface.unit));
+    // A vertex on an edge of its node moves only along it: every border between two levels lies on
+    // an edge of the coarser node, so each node draws exactly its own area, as drawn_level finds it.
+    return select(snapped, vec2i(0), ((surface.anchor + u) & vec2i((1 << (30u - level)) - 1)) == vec2i(0));
 }
 
 // The mesh vertex of a level at a grid point, `u` units about the anchor: an odd vertex slides onto the
@@ -105,14 +108,17 @@ fn grid_vertex(u: vec2i, level: u32) -> Vertex {
 fn drawn_height(s: vec2f) -> f32 {
     let level = drawn_level(s);
     let cell = 1 << (24u - level);
-    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide; with the snap, the 3 × 3
-    // cells about the point's cell, as the snap moves a vertex by less than 3/4 of a cell.
-    let snapped = SNAP && level >= MASK_LEVEL;
-    let n = select(3, 4, snapped);
-    let block = select(2 * cell, cell, snapped);
+    let block = 2 * cell;
     let low = surface.anchor & vec2i(block - 1);
-    let corner = vec2i(floor((vec2f(low) + units_of(s)) / f32(block))) * block - low - select(vec2i(0), vec2i(cell), snapped);
-    var v: array<Vertex, 16>;
+    let at = (vec2f(low) + units_of(s)) / f32(block);
+    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. With the snap, the 2 × 2
+    // coarser cells nearest the point: a snapped even vertex takes the cell that a morphed odd vertex
+    // stretches by up to SNAP_M into the next coarser cell, and SNAP_M is less than half of one.
+    let snapped = SNAP && level >= MASK_LEVEL;
+    let n = select(3, 5, snapped);
+    let before = select(vec2i(0), select(vec2i(0), vec2i(block), fract(at) < vec2f(0.5)), snapped);
+    let corner = vec2i(floor(at)) * block - low - before;
+    var v: array<Vertex, 25>;
     for (var i = 0; i < n * n; i++) {
         v[i] = grid_vertex(corner + vec2i(i % n, i / n) * cell, level);
     }
