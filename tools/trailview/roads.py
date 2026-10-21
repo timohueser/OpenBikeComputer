@@ -288,9 +288,12 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     variables, coefficients, values = variables[ok], coefficients[ok], values[ok]
     P = sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(values)), 3), variables.ravel())), shape=(len(values), n))
 
-    # Smoothness: per vertex inside a way, the change of grade over the mean of its two segments.
+    # Smoothness: per vertex inside a way, the change of grade over the mean of its two segments. A lower
+    # class never moves a higher one: no row ties a side to the vertex of its junction.
     inner = np.flatnonzero(net.segment_way[:-1] == net.segment_way[1:])
-    inner = inner[known[a[inner]] & known[b[inner]] & known[b[inner + 1]]]
+    junction = net.osm_position[net.sides[0]]
+    mouth = np.isin(net.segment_start[inner] + 1, np.concatenate([junction, junction + net.sides[1]]))
+    inner = inner[known[a[inner]] & known[b[inner]] & known[b[inner + 1]] & ~mouth]
     triples = np.column_stack([a[inner], b[inner], b[inner + 1]])
     la, lb = length[inner], length[inner + 1]
     smooth_m = np.array([row["smooth_m"] for row in rows])
@@ -310,8 +313,12 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
                             (np.repeat(np.arange(len(triples)), 3), triples.ravel())), shape=(len(triples), n))
     # Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a tunnel
     # has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit could meet.
+    # Nor has the approach of a side road, or a segment between two approaches: the through roads give
+    # them their heights.
     grade = np.array([np.inf if row["grade"] is None else row["grade"] for row in rows])[net.rule[net.segment_way]]
-    limited = np.flatnonzero(np.isfinite(grade) & ~free & known[a] & known[b])
+    pinned = np.zeros(n, bool)
+    pinned[approach[0][:, 0]] = True
+    limited = np.flatnonzero(np.isfinite(grade) & ~free & known[a] & known[b] & ~approach[3] & ~(pinned[a] & pinned[b]))
     G = sparse.csr_matrix((np.tile([-1.0, 1.0], len(limited)), (np.repeat(np.arange(len(limited)), 2), np.column_stack([a[limited], b[limited]]).ravel())), shape=(len(limited), n))
     bound = grade[limited] * length[limited]
     level = np.flatnonzero(free & known[a] & known[b])
@@ -397,10 +404,14 @@ def approach_pins(net):
     the surface of the through road: z_P − (1 − τ)·z_J − τ·z_Q = 0, with Q the next vertex of the through
     direction that the side leans along most and τ ≥ 0 the place of P along J-Q. A side pins only the
     vertices at least a metre nearer to its junction than to the next junction along its way, so that
-    the two ends of a short link do not pin one vertex."""
+    the two ends of a short link do not pin one vertex. Last, whether each segment lies within the
+    approach distance of a junction where its way is a side."""
     occurrence, step, distance, t1, s1, t2, s2 = net.sides
+    approached = np.zeros(len(net.segment_start), bool)
     if not len(occurrence):
-        return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0)
+        return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0), approached
+    segment = np.full(len(net.vertex_xy), -1)
+    segment[net.segment_start] = np.arange(len(net.segment_start))
     j = net.osm_position[occurrence]
     way = net.osm_way[occurrence]
     origin = net.vertex_xy[j]
@@ -423,6 +434,7 @@ def approach_pins(net):
         walking &= (ahead >= net.way_first[way]) & (ahead <= net.way_last[way])
         ahead = np.where(walking, ahead, p)
         along += np.hypot(*(net.vertex_xy[ahead] - net.vertex_xy[p]).T) * unit
+        approached[segment[np.minimum(p, ahead)[inside & walking & (along <= reach)]]] = True
         p = ahead
         meets = walking & net.vertex_junction[p]
         run[meets] = along[meets]
@@ -437,7 +449,7 @@ def approach_pins(net):
     tau = np.maximum(0, np.einsum("ij,ij->i", net.vertex_xy[p] - origin[i], axis) / np.maximum(np.einsum("ij,ij->i", axis, axis), 1e-300))
     variables = np.column_stack([net.vertex_var[p], net.vertex_var[j[i]], net.vertex_var[q[i]]])
     coefficients = np.column_stack([np.ones(len(i)), -(1 - tau), -tau])
-    return variables, coefficients, np.zeros(len(variables))
+    return variables, coefficients, np.zeros(len(variables)), approached
 
 
 def ford_pins(net, rivers):

@@ -1,5 +1,5 @@
 """The road solver: a road follows a noisy slope without its noise, a hairpin climbs within the grade of its
-class, a side road meets the through road flat, the two ends of a short link keep their roads apart, a
+class, a side road meets the through road flat, a short link of a lower class does not move its roads, a
 ford lies under the water, a low short bridge is a culvert and a bridge past unknown terrain has no height."""
 
 import math
@@ -95,15 +95,18 @@ class RoadSolverTest(unittest.TestCase):
         before, after = (z_w[-1] - z_w[-2]) / (along_w[-1] - along_w[-2]), (z_e[1] - z_e[0]) / along_e[1]
         self.assertLess(abs(after - before), 0.025)
 
-    def test_the_two_ends_of_a_short_link_keep_their_roads_apart(self):
-        # Two primary roads 8 m apart on the two levels of a terrace step of 2.4 m, and a track between them.
-        terrain = Terrain(lambda east, north: 1000 + 2.4 * (north > 4))
-        lower = road("main-road", "primary", line((-100, 0), (0, 0), (100, 0), step=20))
-        upper = road("main-road", "primary", line((-100, 8), (0, 8), (100, 8), step=20))
-        link = road("road", "track", line((0, 0), (0, 8)))
-        (lo, up, _), _, _ = roads.solve([lower, upper, link], terrain)
-        self.assertLess(abs(dict(zip(lo[0][1], lo[0][2]))[at(0, 0)] - 1000), 0.2)
-        self.assertLess(abs(dict(zip(up[0][1], up[0][2]))[at(0, 8)] - 1002.4), 0.2)
+    def test_a_short_link_of_a_lower_class_does_not_move_its_roads(self):
+        # Two primary roads on the two levels of a terrace step of 2.4 m, and a residential link between
+        # them, steeper than its class: its grade, its smoothness and its two ends give way.
+        for gap in (4.5, 8, 9.5):
+            with self.subTest(gap=gap):
+                terrain = Terrain(lambda east, north: 1000 + 2.4 * (north > gap / 2))
+                lower = road("main-road", "primary", line((-100, 0), (0, 0), (100, 0), step=20))
+                upper = road("main-road", "primary", line((-100, gap), (0, gap), (100, gap), step=20))
+                link = road("road", "residential", line((0, 0), (0, gap)))
+                (lo, up, _), _, _ = roads.solve([lower, upper, link], terrain)
+                self.assertLess(abs(dict(zip(lo[0][1], lo[0][2]))[at(0, 0)] - 1000), 0.2)
+                self.assertLess(abs(dict(zip(up[0][1], up[0][2]))[at(0, gap)] - 1002.4), 0.2)
 
     def test_a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert(self):
         def height(east, north):

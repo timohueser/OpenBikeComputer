@@ -110,7 +110,8 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
-- holds each segment within the grade of its class,
+- holds each segment within the grade of its class, but not the approach of a side road, so that a
+  side road does not move the through road,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
