@@ -234,6 +234,15 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(value["proof"]["canonical"]["language"], "en")
             self.assertEqual(value["sitelinks"], {"en": {"title": "Hill"}})
 
+    def test_malformed_wiki_link_is_missing_without_a_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            operation = self.operation(Path(temporary))
+            link = "wikipedia:https://it.wikipedia.org/wiki/Monte"
+            self.assertEqual(operation.links([link]), [])
+            self.assertEqual(operation.value("link", link)["status"], "missing")
+            self.assertTrue(operation.finish()["complete"])
+            operation.transport.json.assert_not_called()
+
     def test_incomplete_language_links_and_pressure_are_not_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
             raw = {"query": {"pages": [page(qid=None)]}, "continue": {"llcontinue": "next", "continue": "||"}}

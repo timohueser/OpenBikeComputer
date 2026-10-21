@@ -304,8 +304,10 @@ class Acquisition:
                 qids.append(value)
             elif kind == "wikipedia":
                 language, _, title = value.partition(":")
-                if not re.fullmatch(r"[a-z][a-z-]{1,11}", language) or not title or "|" in title:
-                    raise ValueError("invalid exact Wikipedia link")
+                # An OSM tag that is not `language:Title`, such as a URL, names no article.
+                if not re.fullmatch(r"[a-z][a-z-]{1,11}", language) or not title.strip() or title.startswith("//") or "|" in title:
+                    self.keep(self.base("link", link, "missing", proof=dict(malformed=value)))
+                    continue
                 groups.setdefault(language, []).append(title)
             else:
                 raise ValueError("invalid explicit content link")
