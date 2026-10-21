@@ -139,7 +139,7 @@ export class Ground {
         const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
         const compute = await device.createComputePipelineAsync({
             label: 'ground', layout: device.createPipelineLayout({ bindGroupLayouts: [layout.compute[0], surface.layout, layout.compute[1]] }),
-            compute: { module, entryPoint: 'ground_main', constants: surfaceConstants(this.labs) },
+            compute: { module, entryPoint: 'ground_main' },
         });
         this.resources = {
             ...r, compute,
@@ -218,9 +218,6 @@ export class Ground {
         }
     }
 }
-
-/** The overrides of drawn-height.wgsl, as the terrain sets them. */
-export const surfaceConstants = (labs: Labs) => ({ RINGS: labs.terrain === 'rings' ? 1 : 0, R16: labs.pages === 'r16' ? 1 : 0 });
 
 /** Where a ground page lies: one of SIDE × SIDE tiles of a layer, as `in_page` in look.wgsl. */
 const origin = (slot: number): [number, number, number] => [PAGE * (slot % SIDE), PAGE * (Math.floor(slot / SIDE) % SIDE), Math.floor(slot / LAYER_PAGES)];

@@ -79,7 +79,7 @@ export class TrailView {
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, config.bounds, labs, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, config.bounds, () => this.request());
         this.groundLook = new Ground(ground, labs, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,

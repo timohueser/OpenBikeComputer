@@ -1,27 +1,17 @@
 /**
- * The variant registry. Each lab lists its variants, the default first. `?lab=terrain:rings` selects
- * a variant; `?lab=terrain:rings,pages:r16` or a repeated `lab` selects several.
+ * The variant registry. Each lab lists its variants, the default first. `?lab=name:variant` selects
+ * a variant; `?lab=a:x,b:y` or a repeated `lab` selects several.
  */
-export const LABS = {
-    /**
-     * The LOD rule of the one quadtree: CDLOD by distance, or square rings about the eye as geometry
-     * clipmaps select them. Both draw nodes with the same mesh and pages; a geometry clipmap with ring
-     * textures and a toroidal update is not built.
-     */
-    terrain: ['cdlod', 'rings'],
-    /** The micro-relief of the synthesized levels: none beyond the bicubic, or erosion gullies. */
-    relief: ['bicubic', 'erosion'],
-    /** The page heights: float32, or 16 bits with an offset and a scale per page. */
-    pages: ['r32float', 'r16'],
+export const LABS: Record<string, readonly string[]> = {
     /**
      * The ground look: each pixel reads its texels through the region rules, or a per-page cache of the
      * ground parameters of each texel, made when the page arrives, which the pixel reads filtered.
      * Lighting, wetness and near detail stay per pixel in both.
      */
     ground: ['pixel', 'cache'],
-} as const satisfies Record<string, readonly string[]>;
+};
 
-export type Labs = { -readonly [K in keyof typeof LABS]: (typeof LABS)[K][number] };
+export type Labs = Record<string, string>;
 
 /** The variants of a query string. An unknown lab or variant throws, so a typo never shows the default. */
 export function labsOf(search: string): Labs {

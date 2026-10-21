@@ -58,13 +58,11 @@ zooms. H hides the HUD.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view.
+at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+pages with an offset and a scale per page.
 
 | Lab | Variants |
 | --- | --- |
-| `terrain` | `cdlod`, `rings`: the LOD rule of the one quadtree; no geometry clipmap is built |
-| `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
-| `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 | `ground` | `pixel`, `cache`: the ground parameters per pixel, or per texel when a page arrives |
 
 ## Shots and flights
@@ -76,7 +74,7 @@ npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--hud] [--gpu]
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--cracks N]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
-npm run test:trailview                     # the smoke
+npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
@@ -84,7 +82,7 @@ bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the no
 pages over the flights of `flights.json`. The `ground` pass is the compute of the ground pages that
 arrive; set its `amortized` time, not its median, against a per-frame budget. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:rings`
+of the fixture; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
@@ -125,6 +123,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - macOS lowers the GPU clock while a frame leaves the GPU time to spare, and a pass then measures
   much longer than its work. `flight.mjs --gpu` keeps the clock high with a compute load before each
   frame; a measurement without it is not comparable.
+- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`. Pull requests skip
+  it, and `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Without it, the device is lost with
   "A valid external Instance reference no longer exists".
