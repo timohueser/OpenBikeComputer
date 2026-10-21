@@ -217,7 +217,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
     let size = CELL_TEXELS << shift;
     let origin = (first << vec2u(shift)) - vec2i(size);
     let cell = clamp((p - origin) / size, vec2i(0), vec2i(GRID - 1));
-    let centre = origin + cell * size + vec2i(size / 2);
+    // The cell's origin of the lake crossings: its centre, held inside the node, where the feature tile is valid.
+    let centre = clamp(origin + cell * size + vec2i(size / 2), first << vec2u(shift), ((first + vec2i(255)) << vec2u(shift)) + vec2i((1 << shift) - 1));
     let c = cell.y * GRID + cell.x;
     let records = data + HEAD + OFFSETS + word(data + 1u);
     var lo: array<f32, BUCKETS>;
@@ -259,7 +260,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             let id = word(r + 5u);
             for (var l = 0u; l < lakes; l++) {
                 if (lake_id[l] == id) {
-                    // The crossing from the cell centre, relative to it; the distance relative to the edge,
+                    // The crossing from the cell's origin, relative to it; the distance relative to the edge,
                     // so that every node that holds the edge gets the same bits.
                     let a = point(r);
                     let b = point(r + 2u);

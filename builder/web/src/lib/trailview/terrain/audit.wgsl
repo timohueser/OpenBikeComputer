@@ -46,9 +46,9 @@ const CROSS_FALL: u32 = 1u;
 const ROAD_HEIGHT: u32 = 2u;
 const IN_LAKE: u32 = 3u;
 const ON_BANK: u32 = 4u;
-// counts: per kind 1 to 4 at 4 × kind the checked samples, the violations, the conflicts, the largest
-// error in micrometres; 20 water checked, 21 water wrong or missing; 22 apron texels compared, 23 apron
-// texels that differ; 24 the violations found.
+// counts: 0 water samples on a page without a water layer; per kind 1 to 4 at 4 × kind the checked
+// samples, the violations, the conflicts, the largest error in micrometres; 20 water checked, 21 water
+// wrong; 22 apron texels compared, 23 apron texels that differ; 24 the violations found.
 const WATER_CHECKS: u32 = 20u;
 const APRON_CHECKS: u32 = 22u;
 const FOUND: u32 = 24u;
@@ -177,6 +177,11 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
             violate(IN_LAKE, s, drawn, q.expected, level, q.shore);
         }
         error(IN_LAKE, drawn - q.expected + LAKE_DEPTH);
+        // A page that found no water layer in its pool cannot hold the level.
+        if (extras_of(level, texel_of(s, level).whole).y == 0u) {
+            atomicAdd(&counts[0], 1u);
+            return;
+        }
         atomicAdd(&counts[WATER_CHECKS], 1u);
         let water = water_at(s, level);
         if (water != q.expected) {

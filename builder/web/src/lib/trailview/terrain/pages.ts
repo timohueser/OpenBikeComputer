@@ -289,18 +289,22 @@ export class Pages {
         return true;
     }
 
-    /** A mask or water layer for a page: a free one, or the one of the page that the frames wanted longest ago. */
+    /**
+     * A mask or water layer for a page: a free one, or the one of the page that the frames wanted
+     * longest ago, or else that of a coarser page of this frame: the finest pages, near the eye, keep theirs.
+     */
     private extra(page: Page, kind: 'mask' | 'water'): boolean {
         let slot = this.extraFree[kind].pop();
         if (slot === undefined) {
-            let oldest: Page | undefined;
-            for (const other of this.pages.values()) if (other[kind] !== undefined && other.used < this.frame && (!oldest || other.used < oldest.used)) oldest = other;
-            if (!oldest) {
+            const rank = (other: Page) => (other.used < this.frame ? other.used - this.frame - FINEST : other.node.level - page.node.level);
+            let donor: Page | undefined;
+            for (const other of this.pages.values()) if (other[kind] !== undefined && rank(other) < 0 && (!donor || rank(other) < rank(donor))) donor = other;
+            if (!donor) {
                 this.extraShortage++;
                 return false;
             }
-            slot = oldest[kind];
-            oldest[kind] = undefined;
+            slot = donor[kind];
+            donor[kind] = undefined;
         }
         page[kind] = slot;
         this.dirty = true;

@@ -77,7 +77,8 @@ export interface TerrainStats {
 export interface Audit {
     /** Per check: samples checked, violations, samples in a conflict, the largest error in metres. */
     checks: Record<'crossFall' | 'roadHeight' | 'inLake' | 'onBank', { checked: number; violations: number; conflicts: number; largest: number }>;
-    water: { checked: number; wrong: number };
+    /** Water heights checked, wrong, and missing where a page found no water layer in its pool. */
+    water: { checked: number; wrong: number; missing: number };
     apron: { checked: number; differ: number };
     /** The first violations: kind, level, the point in LOD space, drawnHeight and the expected height. */
     found: { kind: number; level: number; s: [number, number]; drawn: number; expected: number; detail: number }[];
@@ -561,7 +562,7 @@ export class Terrain {
         const check = (kind: number) => ({ checked: c[4 * kind], violations: c[4 * kind + 1], conflicts: c[4 * kind + 2], largest: c[4 * kind + 3] / 1e6 });
         return {
             checks: { crossFall: check(1), roadHeight: check(2), inLake: check(3), onBank: check(4) },
-            water: { checked: c[20], wrong: c[21] }, apron: { checked: c[22], differ: c[23] },
+            water: { checked: c[20], wrong: c[21], missing: c[0] }, apron: { checked: c[22], differ: c[23] },
             found: Array.from({ length: Math.min(c[24], FOUND) }, (_, i) => ({
                 kind: f[8 * i + 4], level: f[8 * i + 5], s: [f[8 * i], f[8 * i + 1]] as [number, number], drawn: f[8 * i + 2], expected: f[8 * i + 3], detail: f[8 * i + 6],
             })),

@@ -53,7 +53,7 @@ try {
         await page.evaluate(() => window.trailView.waitForIdle());
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });
         const start = await page.evaluate(() => ({ ...window.trailView.view }));
-        const frames = [], red = [], audit = { checks: {}, water: { checked: 0, wrong: 0 }, apron: { checked: 0, differ: 0 }, found: [] };
+        const frames = [], red = [], audit = { checks: {}, water: { checked: 0, wrong: 0, missing: 0 }, apron: { checked: 0, differ: 0 }, found: [] };
         for (let i = 0; i <= flight.frames; i++) {
             const frame = await page.evaluate(async ({ start, to, frames, i }) => {
                 const tv = window.trailView, end = { ...start, ...to }, t = i / frames, mix = (a, b) => a + (b - a) * t;

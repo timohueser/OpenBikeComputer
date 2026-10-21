@@ -248,10 +248,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
                 for (const c of touched) near.add(c);
             }
         }
-        // A cell lists the lake where an edge is near, or where its centre lies inside the lake.
+        // A cell lists the lake where an edge is near, or where its origin lies inside the lake: its
+        // centre, held inside the node, as stamp-core.wgsl has it.
         const marked: number[] = [];
+        const held = (v: number, base: number) => Math.min(Math.max(v, base + cell), base + cell + PAGE * 2 ** shift - 1);
         for (let c = 0; c < GRID * GRID; c++) {
-            const inside = insideRings(lake.rings, x0 + (c % GRID + 0.5) * cell, y0 + (Math.floor(c / GRID) + 0.5) * cell);
+            const inside = insideRings(lake.rings, held(x0 + (c % GRID + 0.5) * cell, x0), held(y0 + (Math.floor(c / GRID) + 0.5) * cell, y0));
             if (inside || near.has(c)) marked.push(c | (inside ? INSIDE : 0));
         }
         if (!marked.length) return;
