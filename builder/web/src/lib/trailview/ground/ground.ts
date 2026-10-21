@@ -2,7 +2,6 @@ import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import { LOOK_CODES } from '../light/look';
-import type { Labs } from '../labs';
 import type { Region, Rules } from '../rules/regions';
 import type { GroundSource } from '../stream/ground';
 import type { GroundPage } from '../stream/ground-pages';
@@ -33,14 +32,13 @@ export interface GroundStats { resident: number; capacity: number; wanted: numbe
 interface Resources {
     gpu: Gpu;
     cells: GPUTexture;
+    cache: GPUTexture;
+    /** The colour and the snow of the pages that a frame's jobs make, one layer per job. */
     colour: GPUTexture;
     snow: GPUTexture;
-    openness: GPUTexture;
-    cache: GPUTexture;
     rules: GPUTexture;
     map: GPUBuffer;
     jobs: GPUBuffer;
-    open: GPUBuffer;
     group: GPUBindGroup;
     computeGroups: [GPUBindGroup, GPUBindGroup];
     compute: GPUComputePipeline;
@@ -48,8 +46,8 @@ interface Resources {
 
 /**
  * The ground pages on the GPU: the textures of the pool of `GroundPages`, the ground map, the rules of
- * the date and the compute of the openness and the cache. A new date builds the pages again; they draw
- * the old date until then.
+ * the date, and the compute that makes the ground parameters and the relief of a page. A new date
+ * builds the pages again; they draw the old date until then.
  */
 export class Ground {
     readonly rules: Rules;
@@ -60,9 +58,9 @@ export class Ground {
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
     private readonly pages: GroundPages;
-    private jobs: { page: Slot; work: number }[] = [];
+    private jobs: { page: Slot; data?: GroundPage }[] = [];
 
-    constructor(private readonly source: GroundSource | undefined, private readonly labs: Labs, changed: () => void) {
+    constructor(private readonly source: GroundSource | undefined, changed: () => void) {
         this.rules = source?.rules ?? NEUTRAL;
         this.finest = source?.finest ?? COARSEST;
         const { materials, lithologies } = this.rules.vocabulary;
@@ -86,55 +84,56 @@ export class Ground {
 
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        const stages = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
+        const stages = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
+        const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
             { binding: 0, visibility: stages, buffer: { type: 'uniform' } },
             { binding: 1, visibility: stages, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: stages, texture: { sampleType: 'uint', viewDimension: '2d-array' } },
-            ...[3, 4, 5].map(binding => ({ binding, visibility: stages, texture: { sampleType: 'float', viewDimension: '2d-array' } }) as GPUBindGroupLayoutEntry),
-            { binding: 6, visibility: stages, texture: { sampleType: 'unfilterable-float' } },
-            { binding: 7, visibility: stages, sampler: {} },
+            { binding: 2, visibility: stages, ...array('uint') },
+            { binding: 3, visibility: stages, texture: { sampleType: 'unfilterable-float' } },
+            { binding: 4, visibility: stages, sampler: {} },
         ];
-        const render = device.createBindGroupLayout({ entries: [...entries, { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } }] });
         // The compute writes the cache: its bind group does not hold it for sampling.
-        const compute = [
-            device.createBindGroupLayout({ entries: [
-                { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
-            ] }),
-            device.createBindGroupLayout({ entries }),
-        ];
-        this.layout = { render, compute };
+        this.layout = {
+            render: device.createBindGroupLayout({ entries: [...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }] }),
+            compute: [
+                device.createBindGroupLayout({ entries: [
+                    { binding: 0, visibility: compute, buffer: { type: 'read-only-storage' } },
+                    { binding: 1, visibility: compute, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
+                    { binding: 2, visibility: compute, ...array('float') },
+                    { binding: 3, visibility: compute, ...array('float') },
+                ] }),
+                device.createBindGroupLayout({ entries }),
+            ],
+        };
         return this.layout;
     }
 
     /** The pools and the compute for a device, after `layouts`. A new device builds every page again. */
     async attach(gpu: Gpu, look: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }): Promise<void> {
-        const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE, cache = this.labs.ground === 'cache';
+        const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE;
         this.resources = undefined;
         this.lost();
-        // The compute of the cache reads the codes, and a page can arrive before the first frame with an eye writes the look.
+        // The compute reads the codes, and a page can arrive before the first frame with an eye writes the look.
         device.queue.writeBuffer(look, LOOK_CODES, Uint32Array.from(this.codes));
         const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
-        const texture = (format: GPUTextureFormat, bytes: number, depth = layers, size = side, extra = 0) =>
-            gpu.texture('ground', { size: [size, size, depth], format, usage: usage | extra }, size * size * depth * bytes);
+        const texture = (pool: string, format: GPUTextureFormat, size: number, depth: number, usage: number) =>
+            gpu.texture(pool, { size: [size, size, depth], format, usage }, size * size * depth * 4);
         const SLOT = slots(this.rules.vocabulary);
         const r = {
             gpu,
-            cells: texture('rgba8uint', 4), colour: texture('rgba8unorm', 4), snow: texture('rgba8unorm', 4), openness: texture('r8unorm', 1),
-            cache: cache ? texture('rgba8unorm', 4, 4 * layers, side, GPUTextureUsage.STORAGE_BINDING) : texture('rgba8unorm', 4, 4, 1, GPUTextureUsage.STORAGE_BINDING),
+            cells: texture('ground', 'rgba8uint', side, layers, usage),
+            cache: texture('ground', 'rgba8unorm', side, 4 * layers, GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING),
+            colour: texture('compute', 'rgba8unorm', PAGE, JOBS, usage), snow: texture('compute', 'rgba8unorm', PAGE, JOBS, usage),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
             map: gpu.buffer('ground', (this.finest + 1) * MAP * MAP * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
             jobs: gpu.buffer('compute', JOBS * JOB_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
-            open: gpu.buffer('compute', JOBS * PAGE * PAGE, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
         };
         const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
         const view = (t: GPUTexture) => t.createView({ dimension: '2d-array' });
         const inputs: GPUBindGroupEntry[] = [
             { binding: 0, resource: { buffer: look } }, { binding: 1, resource: { buffer: r.map } }, { binding: 2, resource: view(r.cells) },
-            { binding: 3, resource: view(r.colour) }, { binding: 4, resource: view(r.snow) }, { binding: 5, resource: view(r.openness) },
-            { binding: 6, resource: r.rules.createView() }, { binding: 7, resource: sampler },
+            { binding: 3, resource: r.rules.createView() }, { binding: 4, resource: sampler },
         ];
         const module = device.createShaderModule({ label: 'ground', code: wgsl('ground/ground.wgsl') });
         const compute = await device.createComputePipelineAsync({
@@ -143,10 +142,10 @@ export class Ground {
         });
         this.resources = {
             ...r, compute,
-            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 8, resource: view(r.cache) }] }),
+            group: device.createBindGroup({ layout: layout.render, entries: [...inputs, { binding: 5, resource: view(r.cache) }] }),
             computeGroups: [
                 device.createBindGroup({ layout: layout.compute[0], entries: [
-                    { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: { buffer: r.open } }, { binding: 2, resource: view(r.cache) },
+                    { binding: 0, resource: { buffer: r.jobs } }, { binding: 1, resource: view(r.cache) }, { binding: 2, resource: view(r.colour) }, { binding: 3, resource: view(r.snow) },
                 ] }),
                 device.createBindGroup({ layout: layout.compute[1], entries: inputs }),
             ],
@@ -161,7 +160,7 @@ export class Ground {
 
     /**
      * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), on the date
-     * of the view. `refreshed` are the nodes whose heights changed, so their openness follows.
+     * of the view. `refreshed` are the nodes whose heights changed, so their relief follows.
      */
     update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
         const r = this.resources;
@@ -171,23 +170,24 @@ export class Ground {
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
         const work = this.pages.update(drawn, wanted, refreshed, origins, eye);
-        for (const { page, data } of work.uploads) {
-            this.upload(r, page, data);
-            this.jobs.push({ page, work: this.labs.ground === 'cache' ? 3 : 1 });
-        }
-        for (const page of work.refreshes) this.jobs.push({ page, work: 1 });
+        for (const { page, data } of work.uploads) this.jobs.push({ page, data });
+        for (const page of work.refreshes) this.jobs.push({ page });
         if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);
     }
 
-    /** Encodes the openness and the cache of the pages that arrived or whose heights changed, timed by `timing` when it runs. */
+    /**
+     * Encodes the ground parameters and the relief of the pages that arrived, and the relief of the
+     * pages whose heights changed, timed by `timing` when it runs.
+     */
     encode(encoder: GPUCommandEncoder, timing?: () => GPUComputePassTimestampWrites | undefined): void {
         const r = this.resources, jobs = this.jobs.splice(0, JOBS);
         if (!r || !jobs.length || !this.surfaceGroup) return;
         const data = new ArrayBuffer(jobs.length * JOB_BYTES), ints = new Int32Array(data), floats = new Float32Array(data);
-        jobs.forEach(({ page: { node: { level, x, y }, slot }, work }, k) => {
+        jobs.forEach(({ page: { node: { level, x, y }, slot }, data }, k) => {
             ints.set([x * PAGE, y * PAGE, level, slot], 8 * k);
             floats[8 * k + 4] = 2 * Math.PI * EARTH_RADIUS * Math.cos(tileLonLat(x + 0.5, y + 0.5, level)[1] * RAD) / 2 ** (level + 8);
-            ints[8 * k + 5] = work;
+            ints[8 * k + 5] = data ? 3 : 1;
+            if (data) this.upload(r, slot, k, data);
         });
         r.gpu.device.queue.writeBuffer(r.jobs, 0, data);
         const pass = encoder.beginComputePass({ label: 'ground', timestampWrites: timing?.() });
@@ -195,9 +195,8 @@ export class Ground {
         pass.setBindGroup(0, r.computeGroups[0]);
         pass.setBindGroup(1, this.surfaceGroup);
         pass.setBindGroup(2, r.computeGroups[1]);
-        pass.dispatchWorkgroups(PAGE / 4 / 16, PAGE / 16, jobs.length);
+        pass.dispatchWorkgroups(PAGE / 16, PAGE / 16, jobs.length);
         pass.end();
-        jobs.forEach(({ page }, k) => encoder.copyBufferToTexture({ buffer: r.open, offset: k * PAGE * PAGE, bytesPerRow: PAGE }, { texture: r.openness, origin: origin(page.slot) }, [PAGE, PAGE, 1]));
     }
 
     /** A lost device keeps the tile bodies; every page comes again. */
@@ -211,11 +210,13 @@ export class Ground {
         return this.pages.regionsAt(lon, lat);
     }
 
-    private upload(r: Resources, page: Slot, data: GroundPage): void {
-        const { device } = r.gpu;
-        for (const [texture, texels] of [[r.cells, data.cells], [r.colour, data.colour], [r.snow, data.snow]] as const) {
-            device.queue.writeTexture({ texture, origin: origin(page.slot) }, texels, { bytesPerRow: 4 * PAGE }, [PAGE, PAGE, 1]);
-        }
+    /** The cells of a page into its slot, and its colour and snow into layer `job` of the inputs of the compute. */
+    private upload(r: Resources, slot: number, job: number, data: GroundPage): void {
+        const write = (texture: GPUTexture, at: [number, number, number], texels: Uint8Array<ArrayBuffer>) =>
+            r.gpu.device.queue.writeTexture({ texture, origin: at }, texels, { bytesPerRow: 4 * PAGE }, [PAGE, PAGE, 1]);
+        write(r.cells, origin(slot), data.cells);
+        write(r.colour, [0, 0, job], data.colour);
+        write(r.snow, [0, 0, job], data.snow);
     }
 }
 

@@ -1,7 +1,7 @@
 // The ground look: a port of the ground shading of the prototype (`groundOn`, `groundAt` and
 // `terrainFragment` of src/shaders.ts) over the ground pages. A node draws the ground of its level.
-// What the prototype measured from its fixed spot, this measures from the eye. Terrain shadows, clouds, roads
-// and water are not here yet.
+// The rules run once per texel when a page arrives (ground.wgsl); a pixel reads their result
+// filtered. What the prototype measured from its fixed spot, this measures from the eye.
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shade.wgsl
 
@@ -9,17 +9,12 @@
 @group(2) @binding(1) var<storage, read> ground_map: array<u32>;
 // Per texel: the material, the lithology, the region and barren × 255.
 @group(2) @binding(2) var cells: texture_2d_array<u32>;
-// Per texel: the satellite on the date, and its NDVI code (0 where no quarter looked).
-@group(2) @binding(3) var colour: texture_2d_array<f32>;
-// Per texel: snow by the region's snow_share, snow data known, the satellite's snow mark, the share of seasons with snow.
-@group(2) @binding(4) var snow_state: texture_2d_array<f32>;
-// Per texel: how open the ground is, (open − 0.6) / 0.55.
-@group(2) @binding(5) var openness: texture_2d_array<f32>;
 // Per region a row of slots: ground/rules.ts.
-@group(2) @binding(6) var rules: texture_2d<f32>;
-@group(2) @binding(7) var filtered: sampler;
-// The ground lab `cache`: per texel four layers of ground parameters, ground.wgsl.
-@group(2) @binding(8) var cache: texture_2d_array<f32>;
+@group(2) @binding(3) var rules: texture_2d<f32>;
+@group(2) @binding(4) var filtered: sampler;
+// Per page four layers, ground.wgsl: the albedo (square root) and the snow before its edge; tree,
+// rough, moor and green; bare_from, barren, blades and banded; the relief.
+@group(2) @binding(5) var cache: texture_2d_array<f32>;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -36,26 +31,21 @@ const GROUND_SIDE: i32 = 4;
 
 struct Ground {
     albedo: vec3f,
-    water: f32,
-    tree: f32,
-    // The satellite's snow mark, then the snow on the date.
     snow: f32,
-    // Snow data: snow by the share rule, known, and the share × known.
-    data: vec3f,
-    // Open, unfarmed ground; how lush it is, 0 where no satellite pixel says; heath and bog; exposed rock and scree.
+    tree: f32,
+    // Open, unfarmed ground; heath and bog; where the satellite sees green on ground that is not bare rock.
     rough: f32,
-    lush: f32,
     moor: f32,
-    bare: f32,
-    // Land that no quarter sees green; ground that grows a sward.
+    green: f32,
+    // The slope (normal z) below which the ground is bare rock; land that no quarter sees green; the
+    // sward's share where it grows blades; the rock's banded share.
+    bare_from: f32,
     barren: f32,
-    sward: f32,
-    // The rock: its colour, its banded share and how hard it stands.
-    stone: vec3f,
+    blades: f32,
     banded: f32,
-    hardness: f32,
     open: f32,
     region: u32,
+    lithology: u32,
 }
 
 fn luma(c: vec3f) -> f32 {
@@ -94,11 +84,10 @@ fn ramp(region: u32, cover: u32, t: f32) -> vec3f {
     return mix(rule(region, slot).rgb, rule(region, slot + 1).rgb, select(2.0 * t - 1.0, 2.0 * t, t < 0.5));
 }
 
-// What one texel adds to the ground, through its region's rules, with weight w.
+// What one texel is through its region's rules.
 struct Parts {
     palette: vec3f,
     paint: vec4f,
-    stone: vec3f,
     water: f32,
     tree: f32,
     rough: f32,
@@ -109,7 +98,7 @@ struct Parts {
     hardness: f32,
 }
 
-fn add_texel(sum: ptr<function, Parts>, cell: vec4u, w: f32, t: f32, ledge: f32, barren: f32, decided: bool) {
+fn texel_parts(cell: vec4u, t: f32, ledge: f32, barren: f32, decided: bool) -> Parts {
     let own = cell.b;
     let kinds = rule(own, slot_kinds() + i32(cell.r));
     var cover = u32(kinds.x + 0.5);
@@ -129,26 +118,26 @@ fn add_texel(sum: ptr<function, Parts>, cell: vec4u, w: f32, t: f32, ledge: f32,
         c = mix(c, ramp(own, COVER_GRASS, t), turf);
     }
     let named = rule(own, slot_materials() + i32(cell.r));
-    let rock = rule(own, slot_lithologies() + i32(cell.g));
-    (*sum).palette += w * c;
-    (*sum).paint += w * named.a * (1.0 - turf) * vec4f(named.rgb, 1.0);
+    var parts: Parts;
+    parts.palette = c;
+    parts.paint = named.a * (1.0 - turf) * vec4f(named.rgb, 1.0);
     if (turf > 0.0) {
         let heath = rule(own, slot_materials() + i32(look.codes.x));
-        (*sum).paint += w * heath.a * turf * vec4f(heath.rgb, 1.0);
+        parts.paint += heath.a * turf * vec4f(heath.rgb, 1.0);
     }
-    (*sum).water += select(0.0, w, cover == COVER_WATER);
-    (*sum).tree += select(0.0, w, cover == COVER_TREE);
-    (*sum).rough += w * kinds.a;
-    (*sum).moor += w * kinds.y;
-    (*sum).sward += select(w, 0.0, cover == COVER_BARE || cover == COVER_BUILT || cover == COVER_SNOW || cover == COVER_WATER || cover == COVER_MOSS);
-    (*sum).bare += w * kinds.z;
-    (*sum).stone += w * rock.rgb;
-    (*sum).banded += w * rock.a;
-    (*sum).hardness += w * rule(own, slot_hardness() + i32(cell.g)).x;
+    parts.water = select(0.0, 1.0, cover == COVER_WATER);
+    parts.tree = select(0.0, 1.0, cover == COVER_TREE);
+    parts.rough = kinds.a;
+    parts.moor = kinds.y;
+    parts.sward = select(1.0, 0.0, cover == COVER_BARE || cover == COVER_BUILT || cover == COVER_SNOW || cover == COVER_WATER || cover == COVER_MOSS);
+    parts.bare = kinds.z;
+    parts.banded = rule(own, slot_lithologies() + i32(cell.g)).a;
+    parts.hardness = rule(own, slot_hardness() + i32(cell.g)).x;
+    return parts;
 }
 
 // The albedo of the parts, with the satellite's chroma rescaled to the palette's luma, bare_luma,
-// and the paint of the nearest material.
+// and the paint of the material.
 fn albedo_of(parts: Parts, region: u32, material: u32, sat: vec4f, barren: f32) -> vec3f {
     var albedo = parts.palette;
     var painted = parts.paint.rgb / max(parts.paint.a, 1e-4);
@@ -163,7 +152,7 @@ fn albedo_of(parts: Parts, region: u32, material: u32, sat: vec4f, barren: f32) 
         if (bare_luma > 0.0) {
             albedo *= mix(1.0, clamp(luma(pow(sat.rgb, vec3f(2.2))) / bare_luma, 0.6, 1.6), barren);
         }
-        // The paint keeps its nearest material's share of the satellite's hue, at its own brightness.
+        // The paint keeps its material's share of the satellite's hue, at its own brightness.
         let keep = select(0.0, rule(region, slot_satellite() + i32(material)).x, parts.paint.a > 0.0);
         if (keep > 0.0) {
             painted = mix(painted, shown * (luma(painted) / max(luma(shown), 1e-4)), keep);
@@ -219,28 +208,37 @@ fn texel_at(level: u32, home: i32, base: vec2i, local: vec2i) -> vec3i {
     return vec3i(in_page(page, at), page_layer(page));
 }
 
-// A bilinear read of a page texture at point p of a level, in texels from the corner `base` of page
-// `home` (texel centres are whole numbers), across the page borders: the sampler inside the page,
-// four loads where the footprint crosses a border. A page has `planes` layers; this reads `plane`.
-fn page_read(tex: texture_2d_array<f32>, level: u32, home: i32, base: vec2i, p: vec2f, planes: i32, plane: i32) -> vec4f {
+// The four planes of the cache at point p of a level, in texels from the corner `base` of page `home`
+// (texel centres are whole numbers), bilinear across the page borders: the sampler inside the page,
+// four loads where the footprint crosses a border.
+fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
+    var out: array<vec4f, 4>;
     let c = vec2i(floor(p));
     if (all(c >= vec2i(0)) && all(c < vec2i(255))) {
-        return textureSampleLevel(tex, filtered, page_uv(home, p + 0.5), page_layer(home) * planes + plane, 0.0);
+        let uv = page_uv(home, p + 0.5);
+        for (var plane = 0; plane < 4; plane++) {
+            out[plane] = textureSampleLevel(cache, filtered, uv, page_layer(home) * 4 + plane, 0.0);
+        }
+        return out;
     }
     let f = p - floor(p);
-    var out = vec4f(0.0);
     for (var j = 0; j < 4; j++) {
         let o = vec2i(j & 1, j >> 1);
         let at = texel_at(level, home, base, c + o);
-        out += select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * textureLoad(tex, at.xy, at.z * planes + plane, 0);
+        let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        for (var plane = 0; plane < 4; plane++) {
+            out[plane] += w * textureLoad(cache, at.xy, at.z * 4 + plane, 0);
+        }
     }
     return out;
 }
 
-// The ground at a point of LOD space on a level, from the page of that level or the next coarser one
-// that is resident. `world` is the point in the frame, for the brush of the texel edges.
-fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
-    var k = level;
+// The ground under a point of a node of `level`, from the page of its level or the next coarser one
+// that is resident. `world` is the point in the frame, for the brush of the texel edges. The
+// satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
+// blend across it.
+fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
+    var k = min(level, look.codes.y);
     var t = texel_of(s, k);
     var page = -1;
     loop {
@@ -256,83 +254,34 @@ fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
         // No level has ground here yet: the palette's grass of the first region.
         g.albedo = ramp(0u, COVER_GRASS, 0.5);
         g.open = 1.0;
+        g.bare_from = 0.62;
         return g;
     }
     // Texel coordinates from the page's corner: texel centres are whole numbers.
     let base = (t.whole + vec2i(t.part >= vec2f(0.5))) & vec2i(~255);
     let texel = vec2f(t.whole - base) + t.part;
-    let sky_seen = page_read(colour, k, page, base, texel, 1, 0);
-    let data = page_read(snow_state, k, page, base, texel, 1, 0);
-    g.open = 0.6 + 0.55 * page_read(openness, k, page, base, texel, 1, 0).r;
-    g.snow = data.b;
-    g.data = vec3f(data.r, data.g, data.a);
-    let sat = satellite(sky_seen);
-    let ndvi = ndvi_of(sky_seen);
-    let t_ndvi = clamp((ndvi - 0.15) / 0.6, 0.0, 1.0);
-    g.lush = select(0.0, t_ndvi, sat.a > 0.0);
-    // A wobble of up to half a texel turns the texel stairs into brush edges.
-    let q = world / (surface.unit * f32(1 << (22u - k))) * 0.7;
-    let brushed = texel + 0.45 * (vec2f(noise(q), noise(q + 31.0)) * 2.0 - 1.0);
-    if (look.modes.y == 1u) {
-        // The parameter cache: the same fields per texel, filtered, at the brushed point.
-        let p0 = page_read(cache, k, page, base, brushed, 4, 0);
-        let p1 = page_read(cache, k, page, base, brushed, 4, 1);
-        let p2 = page_read(cache, k, page, base, brushed, 4, 2);
-        let p3 = page_read(cache, k, page, base, brushed, 4, 3);
-        g.albedo = p0.rgb * p0.rgb;
-        g.water = p0.a;
-        g.stone = p1.rgb * p1.rgb;
-        g.banded = p1.a;
-        g.tree = p2.r;
-        g.rough = p2.g;
-        g.moor = p2.b;
-        g.bare = p2.a;
-        g.barren = p3.r;
-        g.sward = p3.g;
-        g.hardness = p3.a;
-        g.region = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0).b;
-        return g;
+    var p = texel;
+    // A wobble of up to half a texel turns the texel stairs into brush edges, where a texel spans pixels.
+    let metres = surface.unit * f32(1 << (22u - k));
+    if (footprint < metres) {
+        let q = world / metres * 0.7;
+        p += 0.45 * (vec2f(noise(q), noise(q + 31.0)) * 2.0 - 1.0);
     }
-    // The four texels around the brushed point, each its material through its region's rules,
-    // blended as a bilinear sample would be.
-    let corner = vec2i(floor(brushed));
-    let f = brushed - floor(brushed);
-    var taps: array<vec4u, 4>;
-    var barren = 0.0;
-    for (var j = 0; j < 4; j++) {
-        let o = vec2i(j & 1, j >> 1);
-        let at = texel_at(k, page, base, corner + o);
-        taps[j] = textureLoad(cells, at.xy, at.z, 0);
-        barren += select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * f32(taps[j].a) / 255.0;
-    }
-    // Most texels lie among their like: then one corner holds them all.
-    let alike = all(taps[1].rgb == taps[0].rgb) && all(taps[2].rgb == taps[0].rgb) && all(taps[3].rgb == taps[0].rgb);
-    let ledge = smoothstep(0.35, 0.6, ndvi);
-    let decided = data.g > 0.5 || sat.a > 0.0;
-    var parts: Parts;
-    var nearest = 0.0;
-    var material = 0u;
-    for (var j = 0; j < select(4, 1, alike); j++) {
-        let o = vec2i(j & 1, j >> 1);
-        let w = select(select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1), 1.0, alike);
-        add_texel(&parts, taps[j], w, t_ndvi, ledge, barren, decided);
-        if (w > nearest) {
-            nearest = w;
-            g.region = taps[j].b;
-            material = taps[j].r;
-        }
-    }
-    g.albedo = albedo_of(parts, g.region, material, sat, barren);
-    g.water = parts.water;
-    g.tree = parts.tree;
-    g.rough = parts.rough;
-    g.moor = parts.moor;
-    g.bare = parts.bare;
-    g.barren = barren * (1.0 - parts.water);
-    g.sward = parts.sward;
-    g.stone = parts.stone;
-    g.banded = parts.banded;
-    g.hardness = parts.hardness;
+    let planes = cache_read(k, page, base, p);
+    g.albedo = planes[0].rgb * planes[0].rgb;
+    g.snow = smoothstep(0.25, 0.75, planes[0].a);
+    g.tree = planes[1].r;
+    g.rough = planes[1].g;
+    g.moor = planes[1].b;
+    g.green = planes[1].a;
+    g.bare_from = planes[2].r;
+    g.barren = planes[2].g;
+    g.blades = planes[2].b;
+    g.banded = planes[2].a;
+    g.open = 0.6 + 0.55 * planes[3].a;
+    let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
+    g.region = cell.b;
+    g.lithology = cell.g;
     return g;
 }
 
@@ -344,18 +293,10 @@ fn open_on(level: u32, s: vec2f) -> f32 {
         let page = ground_page(k, holder);
         if (page >= 0) {
             let base = holder & vec2i(~255);
-            return 0.6 + 0.55 * page_read(openness, k, page, base, vec2f(t.whole - base) + t.part, 1, 0).r;
+            return 0.6 + 0.55 * cache_read(k, page, base, vec2f(t.whole - base) + t.part)[3].a;
         }
     }
     return 1.0;
-}
-
-// The ground under a point of a node of `level`, from its level's page. The satellite decides snow
-// only where the data has none, and a snow edge is crisper than the texels' blend across it.
-fn ground_at(level: u32, s: vec2f, world: vec2f) -> Ground {
-    var g = ground_on(min(level, look.codes.y), s, world);
-    g.snow = smoothstep(0.25, 0.75, g.data.x + (1.0 - g.data.y) * g.snow) * (1.0 - g.water);
-    return g;
 }
 
 // Voronoi cells about `size` metres across: the nearest cell's hash, the gap to the next cell's edge in
@@ -437,8 +378,7 @@ fn key(code: u32) -> vec3f {
     return 0.15 + 0.75 * clamp(abs((h * 6.0 + vec3f(0.0, 4.0, 2.0)) % 6.0 - 3.0) - 1.0, vec3f(0.0), vec3f(1.0));
 }
 
-// The debug views of the ground, in sRGB: 5 material, 6 lithology, 7 region, 8 snow (white, the
-// share of past seasons with snow on the date red, no snow data blue-grey).
+// The debug views of the ground, in sRGB: 5 material, 6 lithology, 7 region, 8 snow (white over blue-grey).
 fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
     let k = min(level, look.codes.y);
     let t = texel_of(s, k);
@@ -457,8 +397,7 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
     if (view == 7u) {
         return key(cell.b);
     }
-    let share = select(-1.0, g.data.z / g.data.y, g.data.y > 0.0);
-    return mix(select(vec3f(0.15 + 0.85 * share, 0.15, 0.15), vec3f(0.45, 0.45, 0.6), share < 0.0), vec3f(1.0), g.snow);
+    return mix(vec3f(0.45, 0.45, 0.6), vec3f(1.0), g.snow);
 }
 
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
@@ -472,12 +411,11 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var facet = normalize(cross(dpdx(relative), dpdy(relative)));
     facet *= sign(facet.z);
     var n = render_normal(drawn_normal(s));
-    var g = ground_at(level, s, world);
+    let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
     // outcrops, cos turf_deg, snow_share, speckle size
-    let terrain = rule(region, slot_cliff() + 3);
-    let bedding = rule(region, slot_cliff() + 4).xyz;
+    let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     let skirt = smoothstep(0.25, 0.5, n.z - facet.z);
@@ -495,19 +433,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         n = normalize(mix(n, coarse, towards));
         open = mix(open, coarse_open, towards);
     }
-    // Steep open ground is rock; trees hold on to it. Variegated clays erode into badlands, so their
-    // beds show on gentler slopes: red, white and green-grey, streaked by gullies.
-    var stone = g.stone;
     let banded = g.banded;
-    let hardness = g.hardness;
-    if (banded > 0.0) {
-        let across = (world.x - world.y) * 0.7071;
-        let layer = 0.7 * noise(vec2f(altitude / 4.0, across / 400.0)) + 0.3 * noise(vec2f(across / 2.5, altitude / 30.0));
-        let beds = mix(mix(look.variegated[0].rgb, look.variegated[1].rgb, smoothstep(0.48, 0.53, layer)), look.variegated[2].rgb, smoothstep(0.58, 0.63, layer));
-        stone = mix(stone, beds, banded);
-    }
-    // Where the satellite sees green, a steep slope is turf and scrub on the rock up to the region's turf angle at least.
-    let green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
     let slope = n.z;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks
     // and bare patches, and near the eye the sward's blades. Each scale fades to its mean once a pixel spans it.
@@ -525,7 +451,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let r = max(length(relative.xy), 0.5);
     if (r < 45.0) {
         let blades = (1.0 - smoothstep(0.25, 0.6, footprint / (0.08 * r))) * (1.0 - smoothstep(25.0, 45.0, r))
-            * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.sward * (1.0 - g.barren);
+            * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
         if (blades > 0.0) {
             let angle = (atan2(relative.y, relative.x) / 6.2831853 + 0.5) * 1600.0;
             let along = log(r) / 0.08 + hash(vec2f(floor(angle), 3.0));
@@ -539,9 +465,13 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (speckle.a > 0.0) {
         // Slopes facing north stay moister and carry more scrub than slopes facing the sun.
         let cover = speckle.a * g.rough * (0.6 + 0.8 * noise(world / 90.0)) * (1.0 + clamp(3.0 * n.y, -0.3, 0.6)) * smoothstep(40.0, 70.0, length(relative.xy));
-        let bush = voronoi(world, terrain.w);
-        let dots = step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y);
-        albedo = mix(albedo, speckle.rgb, 0.85 * mix(cover, dots, 1.0 - smoothstep(0.03 * terrain.w, 0.1 * terrain.w, surface_size)));
+        let near = 1.0 - smoothstep(0.03 * speckle_size, 0.1 * speckle_size, surface_size);
+        var dots = cover;
+        if (near > 0.0) {
+            let bush = voronoi(world, speckle_size);
+            dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), near);
+        }
+        albedo = mix(albedo, speckle.rgb, 0.85 * dots);
     }
     // Heather in patches over the moor.
     if (g.moor > 0.0) {
@@ -549,11 +479,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
-    // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°; walls
-    // past about 47° are rock, in the region's cliff colour where it names one. Hard rock stands bare
-    // from about 37°; soft marl and clay hold scrub on their slopes.
-    var bare_from = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
-    bare_from = mix(bare_from, min(bare_from, terrain.y), green);
+    let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
     let rock = skirt > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
@@ -561,7 +487,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
     // Gullies and buttresses tens of metres wide and a hundred tall bend the crags.
     var buttress = vec3f(0.5, 0.0, 0.0);
-    if (rock) {
+    if (rock && surface_size < 25.0) {
         buttress = noised(on_face / vec2f(60.0, 150.0));
     }
     let bent = on_face + 10.0 * buttress.yz;
@@ -582,6 +508,15 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     }
     let walled = steep * (1.0 - g.tree);
     if (walled > 0.0) {
+        // Variegated clays erode into badlands, so their beds show on gentler slopes: red, white and
+        // green-grey, streaked by gullies.
+        var stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
+        if (banded > 0.0) {
+            let across = (world.x - world.y) * 0.7071;
+            let layer = 0.7 * noise(vec2f(altitude / 4.0, across / 400.0)) + 0.3 * noise(vec2f(across / 2.5, altitude / 30.0));
+            let beds = mix(mix(look.variegated[0].rgb, look.variegated[1].rgb, smoothstep(0.48, 0.53, layer)), look.variegated[2].rgb, smoothstep(0.58, 0.63, layer));
+            stone = mix(stone, beds, banded);
+        }
         let wall = rule(region, slot_cliff());
         var face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z));
         // Lit and weathered stretches of the wall, tens of metres across.
@@ -614,10 +549,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big * contrast);
         var tone = 1.0 + 0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big * contrast;
         // The bedding shows only as a faint tone that comes and goes.
-        let bed = hash(vec2f(floor(dot(vec3f(world, altitude), bedding) / 11.0), 3.0));
+        let bed = hash(vec2f(floor(dot(vec3f(world, altitude), rule(region, slot_cliff() + 4).xyz) / 11.0), 3.0));
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
         face *= tone * bulge * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
-        face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * smoothstep(0.3, 0.6, g.lush) * (1.0 - g.bare));
+        face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * g.green);
         face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
         face = mix(face, vec3f(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
             * smoothstep(0.45, 0.7, noise(world / 3.0 + altitude / 2.0)));

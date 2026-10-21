@@ -32,7 +32,7 @@ struct Look {
     // x: the material code of heath. y: the finest ground level. z, w: the materials and the
     // lithologies of the vocabulary.
     codes: vec4u,
-    // x: the debug view of terrain.wgsl. y: the ground lab, 1 for the parameter cache. z, w: unused.
+    // x: the debug view of terrain.wgsl. y, z, w: unused.
     modes: vec4u,
 }
 

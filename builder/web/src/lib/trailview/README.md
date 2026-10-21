@@ -47,7 +47,7 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white; red the share of seasons with snow on the date; blue-grey no data), or `albedo` (the ground colour without light) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), or `albedo` (the ground colour without light) |
 | `lab` | `name:variant`, a list with commas |
 
 Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows
@@ -60,10 +60,6 @@ A lab is an entry in `LABS` of `labs.ts`, with its variants and the default firs
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
 at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
 pages with an offset and a scale per page.
-
-| Lab | Variants |
-| --- | --- |
-| `ground` | `pixel`, `cache`: the ground parameters per pixel, or per texel when a page arrives |
 
 ## Shots and flights
 
