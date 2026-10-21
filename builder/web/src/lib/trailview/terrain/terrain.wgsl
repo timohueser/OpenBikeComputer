@@ -8,13 +8,11 @@ struct Frame {
     view_proj: mat4x4f,
     // xyz: the direction to the sun. w: the sunlight.
     sun: vec4f,
-    // rgb: the horizon. w: the visibility at sea level in metres.
-    sky: vec4f,
     // The eye's height above sea level.
     eye: f32,
     // Metres of drop per square metre of distance: Earth curvature with refraction.
     curvature: f32,
-    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface.
+    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface; look.wgsl draws the others.
     debug: u32,
 }
 

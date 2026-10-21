@@ -5,6 +5,9 @@
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
 //   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--cracks N]
 //
+// A pass prints its median, p95 and max over the frames that ran it, their number, and `amortized`,
+// its time summed over the flight per frame: the `ground` compute runs only on frames with arriving pages.
+//
 // --flights is a JSON list of {name, from, to, frames, viewport?}: a view as a query string, the
 // lat, lon, heading, pitch and height where the flight ends, the frames between (default:
 // flights.json), and the CSS pixels of the page (default 1280 × 800). --tiles serves a
@@ -40,6 +43,8 @@ const summary = (list) => {
     const sorted = [...list].sort((a, b) => a - b), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     return sorted.length ? { median: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +sorted.at(-1).toFixed(2) } : null;
 };
+/** A pass that not every frame runs: its times on the frames that ran it, how many, and their sum per frame of the flight. */
+const timed = (list, frames) => list.length ? { ...summary(list), frames: list.length, amortized: +(list.reduce((a, b) => a + b, 0) / frames).toFixed(3) } : null;
 try {
     for (const flight of flights) {
         const [width, height] = flight.viewport ?? [1280, 800];
@@ -70,7 +75,7 @@ try {
         const of = key => frames.map(frame => frame.terrain[key]);
         console.log(JSON.stringify({
             flight: flight.name, adapter: stats.adapter, frames: frames.length,
-            gpu: Object.fromEntries(passes.map(pass => [pass, summary(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined))])),
+            gpu: Object.fromEntries(passes.map(pass => [pass, timed(frames.map(frame => frame.gpu[pass]).filter(ms => ms !== undefined), frames.length)])),
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },

@@ -6,7 +6,7 @@ export const WEATHERS = ['sunny', 'cloudy', 'rainy'] as const;
  * red; `surface` paints red where drawnHeight leaves the mesh. The ground views key the material,
  * lithology and region codes, and show the snow on the date.
  */
-export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks', 'surface', 'material', 'lithology', 'region', 'snow'] as const;
+export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks', 'surface', 'material', 'lithology', 'region', 'snow', 'albedo'] as const;
 /** The clock of a view is the wall clock of the Alps, the only region that TrailView covers. */
 export const TIME_ZONE = 'Europe/Zurich';
 

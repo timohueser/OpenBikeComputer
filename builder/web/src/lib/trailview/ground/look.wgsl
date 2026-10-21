@@ -205,6 +205,39 @@ fn page_uv(page: i32, local: vec2f) -> vec2f {
     return (vec2f(256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE)) + clamp(local, vec2f(0.5), vec2f(255.5))) / f32(256 * GROUND_SIDE);
 }
 
+// Texel `local` of a level, counted from the corner `base` of page `home`: in its own page when that
+// page is resident, else clamped into `home`. The texel in the layer, and the layer.
+fn texel_at(level: u32, home: i32, base: vec2i, local: vec2i) -> vec3i {
+    var page = home;
+    var at = local;
+    if (any(local < vec2i(0)) || any(local > vec2i(255))) {
+        let other = ground_page(level, base + local);
+        if (other >= 0) {
+            page = other;
+            at = local & vec2i(255);
+        }
+    }
+    return vec3i(in_page(page, at), page_layer(page));
+}
+
+// A bilinear read of a page texture at point p of a level, in texels from the corner `base` of page
+// `home` (texel centres are whole numbers), across the page borders: the sampler inside the page,
+// four loads where the footprint crosses a border. A page has `planes` layers; this reads `plane`.
+fn page_read(tex: texture_2d_array<f32>, level: u32, home: i32, base: vec2i, p: vec2f, planes: i32, plane: i32) -> vec4f {
+    let c = vec2i(floor(p));
+    if (all(c >= vec2i(0)) && all(c < vec2i(255))) {
+        return textureSampleLevel(tex, filtered, page_uv(home, p + 0.5), page_layer(home) * planes + plane, 0.0);
+    }
+    let f = p - floor(p);
+    var out = vec4f(0.0);
+    for (var j = 0; j < 4; j++) {
+        let o = vec2i(j & 1, j >> 1);
+        let at = texel_at(level, home, base, c + o);
+        out += select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * textureLoad(tex, at.xy, at.z * planes + plane, 0);
+    }
+    return out;
+}
+
 // The ground at a point of LOD space on a level, from the page of that level or the next coarser one
 // that is resident. `world` is the point in the frame, for the brush of the texel edges.
 fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
@@ -229,11 +262,9 @@ fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
     // Texel coordinates from the page's corner: texel centres are whole numbers.
     let base = (t.whole + vec2i(t.part >= vec2f(0.5))) & vec2i(~255);
     let texel = vec2f(t.whole - base) + t.part;
-    let layer = page_layer(page);
-    let uv = page_uv(page, texel + 0.5);
-    let sky_seen = textureSampleLevel(colour, filtered, uv, layer, 0.0);
-    let data = textureSampleLevel(snow_state, filtered, uv, layer, 0.0);
-    g.open = 0.6 + 0.55 * textureSampleLevel(openness, filtered, uv, layer, 0.0).r;
+    let sky_seen = page_read(colour, k, page, base, texel, 1, 0);
+    let data = page_read(snow_state, k, page, base, texel, 1, 0);
+    g.open = 0.6 + 0.55 * page_read(openness, k, page, base, texel, 1, 0).r;
     g.snow = data.b;
     g.data = vec3f(data.r, data.g, data.a);
     let sat = satellite(sky_seen);
@@ -245,11 +276,10 @@ fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
     let brushed = texel + 0.45 * (vec2f(noise(q), noise(q + 31.0)) * 2.0 - 1.0);
     if (look.modes.y == 1u) {
         // The parameter cache: the same fields per texel, filtered, at the brushed point.
-        let at = page_uv(page, brushed + 0.5);
-        let p0 = textureSampleLevel(cache, filtered, at, 4 * layer, 0.0);
-        let p1 = textureSampleLevel(cache, filtered, at, 4 * layer + 1, 0.0);
-        let p2 = textureSampleLevel(cache, filtered, at, 4 * layer + 2, 0.0);
-        let p3 = textureSampleLevel(cache, filtered, at, 4 * layer + 3, 0.0);
+        let p0 = page_read(cache, k, page, base, brushed, 4, 0);
+        let p1 = page_read(cache, k, page, base, brushed, 4, 1);
+        let p2 = page_read(cache, k, page, base, brushed, 4, 2);
+        let p3 = page_read(cache, k, page, base, brushed, 4, 3);
         g.albedo = p0.rgb * p0.rgb;
         g.water = p0.a;
         g.stone = p1.rgb * p1.rgb;
@@ -261,7 +291,7 @@ fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
         g.barren = p3.r;
         g.sward = p3.g;
         g.hardness = p3.a;
-        g.region = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), layer, 0).b;
+        g.region = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0).b;
         return g;
     }
     // The four texels around the brushed point, each its material through its region's rules,
@@ -272,7 +302,8 @@ fn ground_on(level: u32, s: vec2f, world: vec2f) -> Ground {
     var barren = 0.0;
     for (var j = 0; j < 4; j++) {
         let o = vec2i(j & 1, j >> 1);
-        taps[j] = textureLoad(cells, in_page(page, corner + o), layer, 0);
+        let at = texel_at(k, page, base, corner + o);
+        taps[j] = textureLoad(cells, at.xy, at.z, 0);
         barren += select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * f32(taps[j].a) / 255.0;
     }
     // Most texels lie among their like: then one corner holds them all.
@@ -313,8 +344,8 @@ fn open_on(level: u32, s: vec2f) -> f32 {
         let holder = t.whole + vec2i(t.part >= vec2f(0.5));
         let page = ground_page(k, holder);
         if (page >= 0) {
-            let uv = page_uv(page, vec2f(t.whole - (holder & vec2i(~255))) + t.part + 0.5);
-            return 0.6 + 0.55 * textureSampleLevel(openness, filtered, uv, page_layer(page), 0.0).r;
+            let base = holder & vec2i(~255);
+            return 0.6 + 0.55 * page_read(openness, k, page, base, vec2f(t.whole - base) + t.part, 1, 0).r;
         }
     }
     return 1.0;
@@ -566,6 +597,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (rocky > 0.0 && footprint >= 4.0) {
         albedo = mix(albedo, stone * 0.92, 0.45 * rocky);
     }
+    var slabbed = 0.0;
     if (rocky > 0.0 && footprint < 4.0) {
         // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
         let striking = length(bedding.xy) > 0.01;
@@ -586,6 +618,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         }
         let near = 1.0 - smoothstep(1.5, 4.0, footprint);
         albedo = mix(mix(albedo, stone * 0.92, 0.45 * rocky), mix(albedo, face, slab), near);
+        slabbed = slab * near;
         // Each slab is a facet of its own tilt, so outcrops catch the light and throw their own shade.
         let tilt = vec2f(cell.z, fract(cell.x * 7.13)) - 0.5;
         n = normalize(n + vec3f(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
@@ -614,6 +647,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let stepped = slope + 0.07 * (top - 0.25 * big);
     let steep = max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt);
     let view = look.modes.x;
+    if (view == 9u) {
+        // The albedo without light: a seam in it is a seam of the ground pages.
+        return pow(min(g.albedo * 3.0, vec3f(1.0)), vec3f(1.0 / 2.2));
+    }
     if (view >= 5u) {
         return ground_debug(view, level, s, g) * (0.45 + 0.55 * max(dot(n, vec3f(-0.4, 0.4, 0.82)), 0.0));
     }
@@ -655,7 +692,14 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         tilt *= 1.0 - 0.35 * calm;
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
-        face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
+        if (look.modes.z == 1u) {
+            // Slope light: the facets turn the normal, so the light and the shade follow them, and a
+            // steep face sees less sky than a ledge.
+            n = normalize(n + 0.9 * turned * walled);
+            open *= mix(1.0, 0.65 + 0.5 * max(n.z, 0.0), walled);
+        } else {
+            face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
+        }
         open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(look.sun.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
         // Cracks run along some sides of some crags and blocks only, so they never close into a net.
         let crack = max((1.0 - smoothstep(0.02, 0.05, crags.z)) * (1.0 - smoothstep(1.0, 3.0, surface_size)) * step(0.55 + 0.25 * calm, fract((crags.x + crags.y) * 7.1)),
@@ -680,6 +724,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
-    let c = light_up(albedo, n, 1.0, open, mix(look.horizon.w, 0.5, walled));
+    // Slope light lights rock by its normal alone.
+    let relief = select(mix(look.horizon.w, 0.5, walled), mix(look.horizon.w, 1.0, max(walled, slabbed)), look.modes.z == 1u);
+    let c = light_up(albedo, n, 1.0, open, relief);
     return finish(atmosphere(c, relative, altitude));
 }

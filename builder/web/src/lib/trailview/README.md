@@ -47,7 +47,7 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), or the ground codes `material`, `lithology`, `region`, and `snow` (white; red the share of seasons with snow on the date; blue-grey no data) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white; red the share of seasons with snow on the date; blue-grey no data), or `albedo` (the ground colour without light) |
 | `lab` | `name:variant`, a list with commas |
 
 Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows
@@ -65,6 +65,7 @@ builds the variant that `?lab=` selects.
 | `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
 | `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
 | `ground` | `pixel`, `cache`: the ground parameters per pixel, or per texel when a page arrives |
+| `rock` | `toon`, `slope`: rock in the toon bands, or in smooth light on the normals of its facets |
 
 ## Shots and flights
 
@@ -74,13 +75,14 @@ From `builder/web/tests/browser`:
 npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--hud] [--gpu]
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--cracks N]
+node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
 npm run test:trailview                     # the smoke
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
 pages over the flights of `flights.json`. The `ground` pass is the compute of the ground pages that
-arrive; its times are of the frames that have it. Run it on the M1 Pro with `--gpu`: Chrome then draws
+arrive; set its `amortized` time, not its median, against a per-frame budget. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:rings`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
@@ -91,6 +93,10 @@ does: `DIR/rules.json`, `DIR/{material,lithology,region,snow}.pmtiles` and
 `DIR/colour/<variant>/{q1,q2,q3,q4,ndvimax}.pmtiles`; `--colour` picks the variant (`webp-12`). Build
 the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
 `trailview_rules` is `https://tiles.test/trailview/rules.json`.
+
+`skyline.mjs` draws each photograph of `peak-view-photos` from 1.6 m above its `ground_m` and
+prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
+when one is past its `rms_limit_deg`.
 
 ## Checks
 
@@ -128,8 +134,9 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
   them from a coarser page; the HUD counts them as short.
-- A new date builds every ground page again from the kept tiles: the rules, the two Sentinel-2
-  quarters about the date and the snow are part of a page.
+- A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date
+  and the snow are part of a page. The tile bodies of a view are more than the 96 MiB that the
+  ground keeps, so most of them come again.
 - The noise of the ground is in frame metres about the first view. Far from it, float32 coarsens
-  the finest grains. A page that starts at another place draws another grain pattern at a spot, so
+  the finest grains. A view that starts at another place draws another grain pattern at a spot, so
   compare screenshots of one first view.

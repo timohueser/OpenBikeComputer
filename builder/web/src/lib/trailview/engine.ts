@@ -22,10 +22,8 @@ const NEW_PLACE = 1000;
 const RED = { r: 1, g: 0, b: 0, a: 1 };
 const DEPTH: GPUTextureFormat = 'depth32float';
 /** `Frame` in terrain.wgsl. */
-const FRAME_BYTES = 112;
+const FRAME_BYTES = 96;
 const MAX_PIXEL_RATIO = 2;
-/** The visibility at sea level in clear weather. */
-const HAZE_M = 35_000;
 const RAD = Math.PI / 180;
 
 export interface Stats {
@@ -251,7 +249,8 @@ export class TrailView {
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store',
-                clearValue: this.extras.debug === 'cracks' ? RED : { r: 0, g: 0, b: 0, a: 1 },
+                // Until the eye has ground the sky does not draw: the horizon of the weather fills the frame.
+                clearValue: this.extras.debug === 'cracks' ? RED : horizon(WEATHERS[this.extras.weather].horizon),
             }],
             depthStencilAttachment: { view: target.createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
             timestampWrites: times.writes('terrain'),
@@ -291,11 +290,10 @@ export class TrailView {
 
     private uniforms(eye: Eye, viewProj: Float32Array): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
-        const weather = WEATHERS[this.extras.weather];
         floats.set(viewProj, 0);
         floats.set(this.sun(), 16);
-        floats.set([0, 0, 0, HAZE_M * weather.haze, eye.z, CURVATURE], 20);
-        new Uint32Array(data)[26] = DEBUG_VIEWS.indexOf(this.extras.debug);
+        floats.set([eye.z, CURVATURE], 20);
+        new Uint32Array(data)[22] = DEBUG_VIEWS.indexOf(this.extras.debug);
         return data;
     }
 
@@ -314,7 +312,7 @@ export class TrailView {
             sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: [Math.max(0, materials.findIndex(material => material.id === 'heath')), this.groundLook.finest, materials.length, lithologies.length],
-            debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache',
+            debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache', slope: this.labs.rock === 'slope',
         });
     }
 
@@ -335,3 +333,9 @@ export class TrailView {
         return [Math.sin(b) * Math.cos(altitude), Math.cos(b) * Math.cos(altitude), Math.sin(altitude), light];
     }
 }
+
+/** The clear colour of a `#rrggbb` horizon. */
+const horizon = (hex: string): GPUColor => {
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+    return { r, g, b, a: 1 };
+};

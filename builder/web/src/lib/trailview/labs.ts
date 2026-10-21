@@ -19,6 +19,12 @@ export const LABS = {
      * Lighting, wetness and near detail stay per pixel in both.
      */
     ground: ['pixel', 'cache'],
+    /**
+     * The light on rock (walls, crags, slabs): the prototype's toon bands with the facets in the
+     * albedo, or smooth light on normals that the facets turn, with less sky on steep faces, so ledges
+     * and bands read. Every other ground keeps the toon bands.
+     */
+    rock: ['toon', 'slope'],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Labs = { -readonly [K in keyof typeof LABS]: (typeof LABS)[K][number] };
