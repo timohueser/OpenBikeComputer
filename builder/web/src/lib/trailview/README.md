@@ -126,19 +126,16 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   "A valid external Instance reference no longer exists".
 - Chrome rounds timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
-- A `--gpu` run opens a browser window. `OBC_BROWSER_WS` names the endpoint of a Playwright browser
-  server that the scripts connect to instead, so many runs share one window.
+- `OBC_BROWSER_WS` names a Playwright browser server for the scripts, so `--gpu` runs share one window.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
   `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
-  them from their cover, two levels coarser and never without the satellite colour; the HUD counts
-  them as short.
+  them from their cover, two levels coarser; the HUD counts them as short.
 - A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date
-  and the snow are part of a page. The tile bodies of a view are more than the 96 MiB that the
-  ground keeps, so most of them come again.
-- The noise of the ground is in frame metres about the first view. Far from it, float32 coarsens
-  the finest grains. A view that starts at another place draws another grain pattern at a spot, so
-  compare screenshots of one first view.
+  and the snow are part of a page. A view's tile bodies exceed the 96 MiB that the ground
+  keeps, so most come again.
+- The ground noise is in frame metres about the first view: far from it, float32 coarsens its
+  finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.
