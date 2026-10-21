@@ -1,6 +1,6 @@
 //! Stable Wikimedia facts admitted through the source snapshots of the Store.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path};
 
@@ -57,6 +57,7 @@ pub fn inputs(store: &Store) -> Result<Vec<Value>, String> {
     let mut latest: BTreeMap<(String, String), Value> = BTreeMap::new();
     for source in SOURCES {
         for snapshot in store.snapshots(source)? {
+            let digests: HashSet<&str> = snapshot.files.iter().map(|file| file.sha256.as_str()).collect();
             for file in snapshot.files.iter().filter(|file| file.name.starts_with("#content/manifest/")) {
                 if !store.object(&file.sha256).is_file() {
                     continue;
@@ -64,19 +65,16 @@ pub fn inputs(store: &Store) -> Result<Vec<Value>, String> {
                 let manifest = read(&store.object(&file.sha256))?;
                 for pin in manifest["records"].as_array().ok_or("invalid Wikimedia snapshot manifest")? {
                     let digest = text(pin, "sha256")?;
-                    if !snapshot.files.iter().any(|file| file.sha256 == digest) || !store.object(digest).is_file() {
+                    if !digests.contains(digest) || !store.object(digest).is_file() {
                         continue;
                     }
-                    verified(store, pin)?;
+                    let value = verified(store, pin)?;
                     let key = (text(pin, "kind")?.to_owned(), text(pin, "key")?.to_owned());
                     if latest.get(&key).is_none_or(|old| old["checked_at"].as_str() < pin["checked_at"].as_str()) {
                         let mut pin = pin.clone();
-                        let value = verified(store, &pin)?;
                         if value["kind"] == "file" {
                             let asset_digest = text(&value["asset"], "sha256")?;
-                            if !snapshot.files.iter().any(|file| file.sha256 == asset_digest)
-                                || !store.object(asset_digest).is_file()
-                            {
+                            if !digests.contains(asset_digest) || !store.object(asset_digest).is_file() {
                                 continue;
                             }
                             if store::hash_file(&store.object(asset_digest))?.0 != asset_digest {
@@ -182,13 +180,18 @@ pub(super) fn run(
                 staging.display()
             ));
         }
-        let mut refreshed_inputs = admitted;
+        let mut pins = Vec::new();
         for pin in refreshed["records"].as_array().ok_or("refresh lacks records")? {
             let mut pin = pin.clone();
             pin["path"] = json!(out.join(text(&pin, "path")?));
-            refreshed_inputs.retain(|old| old["kind"] != pin["kind"] || old["key"] != pin["key"]);
-            refreshed_inputs.push(pin);
+            pins.push(pin);
         }
+        let replaced: HashSet<_> = pins.iter().map(|pin| (pin["kind"].as_str(), pin["key"].as_str())).collect();
+        let mut refreshed_inputs: Vec<_> = admitted
+            .into_iter()
+            .filter(|old| !replaced.contains(&(old["kind"].as_str(), old["key"].as_str())))
+            .collect();
+        refreshed_inputs.extend(pins);
         fs::write(&inputs_path, serde_json::to_vec(&refreshed_inputs).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     }
@@ -281,6 +284,7 @@ fn stale_requests(
     registry: &crate::sources::Registry,
     include_missing: bool,
 ) -> Value {
+    let pins: HashMap<_, _> = pins.iter().map(|pin| ((pin["kind"].as_str(), pin["key"].as_str()), pin)).collect();
     let mut stale = json!({});
     for (field, kind) in [
         ("entities", "entity"),
@@ -309,22 +313,18 @@ fn stale_requests(
                         value.to_owned()
                     }
                 };
-                if include_missing && !pins.iter().any(|pin| pin["kind"] == kind && pin["key"] == key) {
-                    return true;
+                let Some(pin) = pins.get(&(Some(kind), Some(key.as_str()))) else {
+                    return include_missing;
+                };
+                let source = &registry.sources.iter().find(|s| s.id == SOURCES[owner(kind).unwrap()]).unwrap();
+                match source.refresh {
+                    crate::sources::Refresh::Manual => false,
+                    crate::sources::Refresh::Days(_) if kind == "file" => false,
+                    crate::sources::Refresh::Days(days) => pin["checked_at"]
+                        .as_str()
+                        .and_then(date::seconds)
+                        .is_none_or(|checked| date::now().saturating_sub(checked) >= u64::from(days) * 86_400),
                 }
-                pins.iter().any(|pin| {
-                    pin["kind"] == kind && pin["key"] == key && {
-                        let source = &registry.sources.iter().find(|s| s.id == SOURCES[owner(kind).unwrap()]).unwrap();
-                        match source.refresh {
-                            crate::sources::Refresh::Manual => false,
-                            crate::sources::Refresh::Days(_) if kind == "file" => false,
-                            crate::sources::Refresh::Days(days) => pin["checked_at"]
-                                .as_str()
-                                .and_then(date::seconds)
-                                .is_none_or(|checked| date::now().saturating_sub(checked) >= u64::from(days) * 86_400),
-                        }
-                    }
-                })
             })
             .cloned()
             .collect::<Vec<_>>();
