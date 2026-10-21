@@ -237,9 +237,10 @@ export class TrailView {
         const { gpu, uniform, times } = this.gpuState;
         const target = this.target(gpu), aspect = target.width / target.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
-        this.terrain.update({ lonLat: this.frame.lonLat(place.east, place.north), above: place.above, z: eye?.z, viewProj, pixels: target.height });
+        const lonLat = this.frame.lonLat(place.east, place.north);
+        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: target.height });
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
-        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date);
+        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         if (eye) {
             gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj));
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect));

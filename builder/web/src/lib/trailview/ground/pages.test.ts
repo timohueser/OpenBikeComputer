@@ -1,0 +1,66 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { GroundPage } from '../stream/ground-pages';
+import { PAGE } from '../stream/heights';
+import type { Node } from '../terrain/lod';
+import { GroundPages, type GroundTiles } from './pages';
+
+const page = (): GroundPage => ({ cells: new Uint8Array(4 * PAGE * PAGE), colour: new Uint8Array(4 * PAGE * PAGE), snow: new Uint8Array(4 * PAGE * PAGE) });
+/** The eye at the north-west corner of level-14 node (8580, 5770), near Engelberg. */
+const EYE: [number, number] = [8.525390625, 46.890231573593994];
+const row = (x0: number, n: number): Node[] => Array.from({ length: n }, (_, i) => ({ level: 14, x: x0 + i, y: 5770 }));
+
+/** Material tiles that answer with four pages, except `failing`; the tiles asked for. */
+function tiles(failing?: string): GroundTiles & { asked: string[] } {
+    const asked: string[] = [];
+    return {
+        asked,
+        async pages(z, x, y) {
+            asked.push(`${z}/${x}/${y}`);
+            if (`${z}/${x}/${y}` === failing) throw new Error('Tile answered 500.');
+            return [page(), page(), page(), page()];
+        },
+    };
+}
+
+/** Frames of one view until the pages are idle. */
+async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, frames = 50): Promise<void> {
+    for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
+        pages.update(drawn, wanted, [], [], EYE);
+        await new Promise(resolve => setTimeout(resolve));
+    }
+}
+
+const resident = (pages: GroundPages) => [...pages.pages.values()].filter(slot => slot.date >= 0).map(slot => slot.node.x).sort((a, b) => a - b);
+
+describe('the ground pages', () => {
+    it('keep a failed material tile out, as an absent one, and ask for it once', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const source = tiles('13/4290/2885'), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        await settle(pages, row(8580, 4));
+        expect(pages.idle).toBe(true);
+        expect(source.asked.filter(tile => tile === '13/4290/2885')).toHaveLength(1);
+        expect(resident(pages)).toEqual([8582, 8583]);
+    });
+
+    it('give a full pool to the nearest drawn pages, and take slots from wanted pages that are farther', async () => {
+        const pages = new GroundPages(tiles(), 4, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        await settle(pages, row(8600, 4));
+        expect(resident(pages)).toEqual([8600, 8601, 8602, 8603]);
+        // The view moves to the eye: the old pages are still wanted, as cover, but the drawn ones near the eye are first.
+        await settle(pages, row(8578, 6), [...row(8578, 6), ...row(8600, 4)]);
+        expect(resident(pages)).toEqual([8578, 8579, 8580, 8581]);
+        expect(pages.shortage).toBe(6);
+    });
+
+    it('keep the openness refreshes that a frame has no room for', async () => {
+        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        const drawn = row(8570, 20);
+        await settle(pages, drawn);
+        const counts = [pages.update(drawn, drawn, drawn, [], EYE), pages.update(drawn, drawn, [], [], EYE), pages.update(drawn, drawn, [], [], EYE)].map(work => work.refreshes.length);
+        expect(counts).toEqual([8, 8, 4]);
+        expect(pages.idle).toBe(true);
+    });
+});

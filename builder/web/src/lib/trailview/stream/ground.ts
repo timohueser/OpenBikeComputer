@@ -75,14 +75,20 @@ export class GroundSource {
         return String(this.sources.q1?.metadata.variant ?? 'none');
     }
 
-    /** The four pages of material tile z/x/y on a date, with the two quarters around it; null where it has no ground. */
+    /**
+     * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
+     * has no ground. A failed material tile fails them; a failed tile of another layer leaves that layer out.
+     */
     async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<(GroundPage | null)[]> {
-        const at = (layer: Layer, zoom: number, planar = false) => this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar);
+        const at = (layer: Layer, zoom: number, planar = false) => {
+            const body = this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar);
+            return layer === 'material' ? body : body.catch(() => undefined);
+        };
         const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
         const snow = this.sources.snow, zs = Math.min(z + 1, snow?.maxZoom ?? -1);
         const snowBodies = !snow ? [] : zs === z + 1
-            ? [0, 1, 2, 3].map(q => this.body('snow', zs, 2 * x + (q & 1), 2 * y + (q >> 1), zs, true))
+            ? [0, 1, 2, 3].map(q => this.body('snow', zs, 2 * x + (q & 1), 2 * y + (q >> 1), zs, true).catch(() => undefined))
             : [at('snow', zs, true)];
         const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),

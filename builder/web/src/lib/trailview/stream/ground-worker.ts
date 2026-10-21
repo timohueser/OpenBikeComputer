@@ -40,8 +40,10 @@ async function raster(body: Body | undefined): Promise<Raster | undefined> {
 
 self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job: GroundJob }>) => {
     try {
+        // A tile of a layer other than the material that does not decode leaves that layer out.
         const [material, lithology, region, a, b, ndvimax, ...snow] = await Promise.all(
-            [job.material, job.lithology, job.region, ...(job.quarters ?? [undefined, undefined]), job.ndvimax, ...(job.snow ?? [])].map(raster));
+            [job.material, job.lithology, job.region, ...(job.quarters ?? [undefined, undefined]), job.ndvimax, ...(job.snow ?? [])]
+                .map((body, i) => i === 0 ? raster(body) : raster(body).catch(() => undefined)));
         const pages = groundPages({
             ...job, material, lithology, region, quarters: a || b ? [a, b] : undefined, ndvimax,
             snow: snow.some(Boolean) ? snow : undefined,

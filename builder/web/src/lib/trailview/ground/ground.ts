@@ -1,7 +1,4 @@
-import { worldPixel } from '../../planner/layers/mercator';
-import { seasonDay } from '../../planner/layers/snow';
 import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
-import { UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import type { Labs } from '../labs';
@@ -9,16 +6,14 @@ import type { Region, Rules } from '../rules/regions';
 import type { GroundSource } from '../stream/ground';
 import type { GroundPage } from '../stream/ground-pages';
 import { PAGE } from '../stream/heights';
-import { COARSEST, key, MAP, type Node } from '../terrain/lod';
-import { dayOfYear, mosaicsAt, packRulesOn, slots } from './rules';
+import { COARSEST, MAP, type Node } from '../terrain/lod';
+import { GroundPages, type Slot } from './pages';
+import { packRulesOn, slots } from './rules';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
 const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 128;
-/** Pages uploaded per frame at most, material tiles in flight, and pages whose openness follows new heights per frame. */
-const ARRIVALS = 8, LOADS = 4, REFRESHES = 8;
-const JOB_BYTES = 32;
-/** The look at the eye blends the regions of points this far apart about it, with a tent weight. */
-const LOOK_STEP_M = 1000, LOOK_REACH = 2;
+/** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
+const JOBS = 16, JOB_BYTES = 32;
 const RAD = Math.PI / 180;
 
 /** Without a ruleset, the ground is the palette under the light and haze of the prototype's `world` region. */
@@ -31,16 +26,6 @@ const NEUTRAL: Rules = {
         },
     }],
 };
-
-interface Slot {
-    node: Node;
-    slot: number;
-    used: number;
-    /** The date of the content, or -1 before the first upload. */
-    date: number;
-    /** The region of each texel, for the look at the eye. */
-    regions?: Uint8Array;
-}
 
 export interface GroundStats { resident: number; capacity: number; wanted: number; shortage: number; colour: string; requests: number; bytes: number; failed: number }
 
@@ -61,9 +46,9 @@ interface Resources {
 }
 
 /**
- * The ground pages: per node of the levels with ground tiles, the ground on the date in a fixed pool,
- * found by the ground map in the windows of the LOD map. A node finer than the ground draws the ground
- * of its ancestor. A new date builds the pages again; they draw the old date until then.
+ * The ground pages on the GPU: the textures of the pool of `GroundPages`, the ground map, the rules of
+ * the date and the compute of the openness and the cache. A new date builds the pages again; they draw
+ * the old date until then.
  */
 export class Ground {
     readonly rules: Rules;
@@ -71,42 +56,23 @@ export class Ground {
     private layout?: { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] };
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
-    /** Nodes whose material tile has no data there: a coarser page draws. */
-    private readonly absent = new Set<string>();
-    private readonly pages = new Map<string, Slot>();
-    private free = range(POOL);
-    private frame = 0;
-    private date = -1;
-    private dateKey = '';
-    private loads = 0;
-    /** Material tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
-    private readonly loading = new Map<string, number>();
-    private arrivals: { node: Node; page: GroundPage; date: number }[] = [];
+    private readonly pages: GroundPages;
     private jobs: { page: Slot; work: number }[] = [];
-    private dirty = true;
-    private origins: [number, number][] = [];
-    private wanted = 0;
-    private shortage = 0;
-    /** Wanted pages without the content of the date. */
-    private missing = 0;
-    private readonly world: number;
-    private today = { quarters: [0, 1] as [number, number], weight: 0, snowIndex: 0 };
 
-    constructor(private readonly source: GroundSource | undefined, private readonly labs: Labs, private readonly changed: () => void) {
+    constructor(private readonly source: GroundSource | undefined, private readonly labs: Labs, changed: () => void) {
         this.rules = source?.rules ?? NEUTRAL;
-        this.world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
         this.finest = source?.finest ?? COARSEST;
+        const world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
+        this.pages = new GroundPages(source, POOL, this.finest, this.rules.regions.map((region: Region) => region.look.snow_share), world, changed);
     }
 
     get idle(): boolean {
-        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.jobs.length === 0;
+        return this.pages.idle && this.jobs.length === 0;
     }
 
     get stats(): GroundStats {
-        let resident = 0;
-        for (const page of this.pages.values()) if (page.date >= 0) resident++;
-        const { requests = 0, bytes = 0, failed = 0 } = this.source ?? {};
-        return { resident, capacity: POOL, wanted: this.wanted, shortage: this.shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
+        const { requests = 0, bytes = 0, failed = 0 } = this.source ?? {}, { wanted, shortage } = this.pages;
+        return { resident: this.pages.resident, capacity: POOL, wanted, shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
     }
 
     get attribution(): string[] {
@@ -153,8 +119,8 @@ export class Ground {
             cache: cache ? texture('rgba8unorm', 4, 4 * layers, side, GPUTextureUsage.STORAGE_BINDING) : texture('rgba8unorm', 4, 4, 1, GPUTextureUsage.STORAGE_BINDING),
             rules: gpu.texture('ground', { size: [SLOT.count, this.rules.regions.length], format: 'rgba32float', usage }, SLOT.count * this.rules.regions.length * 16),
             map: gpu.buffer('ground', (this.finest + 1) * MAP * MAP * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
-            jobs: gpu.buffer('compute', (ARRIVALS + REFRESHES) * JOB_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
-            open: gpu.buffer('compute', (ARRIVALS + REFRESHES) * PAGE * PAGE, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
+            jobs: gpu.buffer('compute', JOBS * JOB_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
+            open: gpu.buffer('compute', JOBS * PAGE * PAGE, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
         };
         const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
         const view = (t: GPUTexture) => t.createView({ dimension: '2d-array' });
@@ -179,7 +145,6 @@ export class Ground {
             ],
         };
         this.surfaceGroup = surface.group;
-        this.dateKey = '';
     }
 
     /** Group 2 of the terrain and the sky. */
@@ -188,73 +153,28 @@ export class Ground {
     }
 
     /**
-     * Takes the pages that the drawn nodes and the selection want, near and drawn first, on the date of
-     * the view. `refreshed` are the nodes whose heights changed, so their openness follows.
+     * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), on the date
+     * of the view. `refreshed` are the nodes whose heights changed, so their openness follows.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string): void {
+    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
         const r = this.resources;
         if (!r) return;
-        this.frame++;
-        this.setDate(r, date);
-        if (!this.source) return;
-        const ground = (node: Node): Node => {
-            const level = Math.min(node.level, this.finest), shift = node.level - level;
-            return { level, x: node.x >> shift, y: node.y >> shift };
-        };
-        const order = new Map<string, Node>();
-        for (const node of [...wanted.filter(n => n.level <= 8), ...drawn, ...wanted].map(ground)) {
-            if (!order.has(key(node)) && !this.absent.has(key(node))) order.set(key(node), node);
+        if (this.pages.setDate(date)) {
+            const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
+            r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
-        this.wanted = order.size;
-        this.shortage = 0;
-        this.missing = 0;
-        for (const node of order.values()) {
-            const page = this.pages.get(key(node));
-            if (page) page.used = this.frame;
-        }
-        for (const node of order.values()) {
-            let page = this.pages.get(key(node));
-            if (!page) {
-                page = this.allocate(node);
-                if (!page) {
-                    this.shortage++;
-                    continue;
-                }
-            }
-            if (page.date !== this.date) {
-                this.missing++;
-                this.load(node);
-            }
-        }
-        let uploads = 0;
-        while (uploads < ARRIVALS && this.arrivals.length) {
-            const { node, page: data, date } = this.arrivals.shift()!;
-            this.settle(tileOf(node, date));
-            const page = this.pages.get(key(node));
-            if (!page || date !== this.date) continue;
+        const work = this.pages.update(drawn, wanted, refreshed, origins, eye);
+        for (const { page, data } of work.uploads) {
             this.upload(r, page, data);
-            page.date = date;
-            page.regions = Uint8Array.from({ length: PAGE * PAGE }, (_, i) => data.cells[4 * i + 2]);
             this.jobs.push({ page, work: this.labs.ground === 'cache' ? 3 : 1 });
-            this.dirty = true;
-            uploads++;
         }
-        let refreshes = 0;
-        for (const node of refreshed) {
-            const page = this.pages.get(key(node));
-            if (refreshes >= REFRESHES || !page || page.date < 0 || this.jobs.some(job => job.page === page)) continue;
-            this.jobs.push({ page, work: 1 });
-            refreshes++;
-        }
-        if (origins.some((origin, level) => origin[0] !== this.origins[level]?.[0] || origin[1] !== this.origins[level]?.[1])) this.dirty = true;
-        this.origins = origins;
-        if (this.dirty) r.gpu.device.queue.writeBuffer(r.map, 0, this.map());
-        this.dirty = false;
+        for (const page of work.refreshes) this.jobs.push({ page, work: 1 });
+        if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);
     }
 
     /** Encodes the openness and the cache of the pages that arrived or whose heights changed, timed by `timing` when it runs. */
     encode(encoder: GPUCommandEncoder, timing?: () => GPUComputePassTimestampWrites | undefined): void {
-        const r = this.resources, jobs = this.jobs.splice(0);
+        const r = this.resources, jobs = this.jobs.splice(0, JOBS);
         if (!r || !jobs.length || !this.surfaceGroup) return;
         const data = new ArrayBuffer(jobs.length * JOB_BYTES), ints = new Int32Array(data), floats = new Float32Array(data);
         jobs.forEach(({ page: { node: { level, x, y }, slot }, work }, k) => {
@@ -275,98 +195,13 @@ export class Ground {
 
     /** A lost device keeps the tile bodies; every page comes again. */
     lost(): void {
-        this.pages.clear();
-        this.free = range(POOL);
-        this.arrivals = [];
-        this.loading.clear();
+        this.pages.lost();
         this.jobs = [];
-        this.dirty = true;
     }
 
-    /**
-     * The regions about a point and their weights, which sum to 1, from the finest resident page at each
-     * of the points LOOK_STEP_M apart about it, with a tent weight.
-     */
+    /** The regions about a point and their weights, which sum to 1. */
     regionsAt(lon: number, lat: number): Map<number, number> {
-        const out = new Map<number, number>(), dlat = LOOK_STEP_M / (EARTH_RADIUS * RAD), dlon = dlat / Math.cos(lat * RAD);
-        let total = 0;
-        for (let j = -LOOK_REACH; j <= LOOK_REACH; j++) for (let i = -LOOK_REACH; i <= LOOK_REACH; i++) {
-            const region = this.regionAt(lon + i * dlon, lat + j * dlat);
-            if (region === undefined) continue;
-            const w = (LOOK_REACH + 1 - Math.abs(i)) * (LOOK_REACH + 1 - Math.abs(j));
-            out.set(region, (out.get(region) ?? 0) + w);
-            total += w;
-        }
-        if (!total) return new Map([[this.world, 1]]);
-        for (const [region, w] of out) out.set(region, w / total);
-        return out;
-    }
-
-    private regionAt(lon: number, lat: number): number | undefined {
-        const [ux, uy] = worldPixel([lon, lat], UNITS);
-        for (let level = this.finest; level >= COARSEST; level--) {
-            const tx = Math.floor(ux / 2 ** (22 - level)), ty = Math.floor(uy / 2 ** (22 - level));
-            const page = this.pages.get(`${level}/${tx >> 8}/${ty >> 8}`);
-            if (page?.regions) return page.regions[(ty & 255) * PAGE + (tx & 255)];
-        }
-        return undefined;
-    }
-
-    /** A new date: the rules of the date at once, and the pages again from the kept tiles. */
-    private setDate(r: Resources, date: string): void {
-        const day = dayOfYear(date), { quarters, weight } = mosaicsAt(day), snowIndex = seasonDay(date).index;
-        const dateKey = `${quarters}/${weight.toFixed(3)}/${snowIndex}`;
-        if (dateKey === this.dateKey) return;
-        this.dateKey = dateKey;
-        this.date++;
-        this.today = { quarters, weight, snowIndex };
-        const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
-        r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
-    }
-
-    /** Requests the four pages of the material tile of a node, on the current date. */
-    private load(node: Node): void {
-        const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
-        if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
-        const date = this.date, { quarters, weight, snowIndex } = this.today;
-        const shares = this.rules.regions.map((region: Region) => region.look.snow_share);
-        this.loads++;
-        this.loading.set(name, 1);
-        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares }, this.world).then(pages => {
-            pages.forEach((page, q) => {
-                const node = { level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) };
-                if (!page) return this.absent.add(key(node));
-                this.arrivals.push({ node, page, date });
-                this.loading.set(name, this.loading.get(name)! + 1);
-            });
-        }).catch(error => console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`)).finally(() => {
-            this.loads--;
-            this.settle(name);
-            this.changed();
-        });
-    }
-
-    /** One page of a material tile in flight or waiting is done; the last frees the tile for a new load. */
-    private settle(name: string): void {
-        const left = (this.loading.get(name) ?? 1) - 1;
-        if (left > 0) this.loading.set(name, left);
-        else this.loading.delete(name);
-    }
-
-    /** A free slot, or the one that the frames wanted longest ago; none when this frame wants them all. */
-    private allocate(node: Node): Slot | undefined {
-        let slot = this.free.pop();
-        if (slot === undefined) {
-            let oldest: Slot | undefined;
-            for (const page of this.pages.values()) if (page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
-            if (!oldest) return undefined;
-            this.pages.delete(key(oldest.node));
-            if (oldest.date >= 0) this.dirty = true;
-            slot = oldest.slot;
-        }
-        const page: Slot = { node, slot, used: this.frame, date: -1 };
-        this.pages.set(key(node), page);
-        return page;
+        return this.pages.regionsAt(lon, lat);
     }
 
     private upload(r: Resources, page: Slot, data: GroundPage): void {
@@ -375,18 +210,6 @@ export class Ground {
             device.queue.writeTexture({ texture, origin: origin(page.slot) }, texels, { bytesPerRow: 4 * PAGE }, [PAGE, PAGE, 1]);
         }
     }
-
-    /** The ground map: MAP × MAP entries per level, in the windows of the LOD map. */
-    private map(): Uint32Array<ArrayBuffer> {
-        const map = new Uint32Array((this.finest + 1) * MAP * MAP);
-        for (const page of this.pages.values()) {
-            const { level, x, y } = page.node, window = this.origins[level];
-            if (page.date < 0 || !window) continue;
-            const i = x - window[0], j = y - window[1];
-            if (i >= 0 && j >= 0 && i < MAP && j < MAP) map[(level * MAP + j) * MAP + i] = page.slot + 1;
-        }
-        return map;
-    }
 }
 
 /** The overrides of drawn-height.wgsl, as the terrain sets them. */
@@ -394,8 +217,3 @@ export const surfaceConstants = (labs: Labs) => ({ RINGS: labs.terrain === 'ring
 
 /** Where a ground page lies: one of SIDE × SIDE tiles of a layer, as `in_page` in look.wgsl. */
 const origin = (slot: number): [number, number, number] => [PAGE * (slot % SIDE), PAGE * (Math.floor(slot / SIDE) % SIDE), Math.floor(slot / LAYER_PAGES)];
-
-const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);
-
-/** The material tile of a node, on a date. */
-const tileOf = ({ level, x, y }: Node, date: number) => `${level - 1}/${x >> 1}/${y >> 1}/${date}`;
