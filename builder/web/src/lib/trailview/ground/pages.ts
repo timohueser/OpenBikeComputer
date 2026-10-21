@@ -98,6 +98,11 @@ export class GroundPages {
         return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.refresh.size === 0;
     }
 
+    /** Whether the next frame has work that no load in flight wakes. */
+    get working(): boolean {
+        return this.arrivals.length > 0 || this.refresh.size > 0 || (this.missing > 0 && this.loads === 0);
+    }
+
     get resident(): number {
         let n = 0;
         for (const page of this.pages.values()) if (page.date >= 0) n++;
@@ -164,7 +169,8 @@ export class GroundPages {
             if (!page) continue;
             page.date = date;
             page.partial = partial;
-            page.regions = Uint8Array.from({ length: PAGE * PAGE }, (_, i) => data.cells[4 * i + 2]);
+            page.regions ??= new Uint8Array(PAGE * PAGE);
+            for (let i = 0; i < PAGE * PAGE; i++) page.regions[i] = data.cells[4 * i + 2];
             this.refresh.delete(page);
             work.uploads.push({ page, data });
             this.dirty = true;

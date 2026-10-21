@@ -76,6 +76,11 @@ export class Ground {
         return this.pages.idle && this.jobs.length === 0;
     }
 
+    /** Whether the next frame has work that no load in flight wakes. */
+    get working(): boolean {
+        return this.pages.working || this.jobs.length > 0;
+    }
+
     get stats(): GroundStats {
         const { requests = 0, bytes = 0, failed = 0 } = this.source ?? {}, { wanted, shortage } = this.pages;
         return { resident: this.pages.resident, capacity: POOL, wanted, shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
