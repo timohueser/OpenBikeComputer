@@ -98,22 +98,15 @@ export function eyeLook(regions: Region[], weights: Map<number, number>, preset:
             shadow: look.grade.shadow, light: look.grade.light, saturation: look.grade.saturation,
             weather: { ...keys, towers: keys.towers ?? 0, zenith: linear(keys.zenith), horizon: linear(keys.horizon) },
         };
-        out = out ? blend(out, own, w) : scaled(own, w);
+        out = added(out, own, w);
     }
     if (!out) throw new Error('The look at the eye needs the weight of a region.');
     return out;
 }
 
-/** Each number of a nested record times w. */
-function scaled<T>(value: T, w: number): T {
-    if (typeof value === 'number') return (value * w) as T;
-    if (Array.isArray(value)) return value.map(v => v * w) as T;
-    return Object.fromEntries(Object.entries(value as object).map(([key, v]) => [key, scaled(v, w)])) as T;
-}
-
-/** `sum` plus w × `value`, number by number. */
-function blend<T>(sum: T, value: T, w: number): T {
-    if (typeof sum === 'number') return (sum + (value as number) * w) as T;
-    if (Array.isArray(sum)) return sum.map((v, i) => v + (value as number[])[i] * w) as T;
-    return Object.fromEntries(Object.entries(sum as object).map(([key, v]) => [key, blend(v, (value as Record<string, unknown>)[key], w)])) as T;
+/** `sum` plus w × `value`, number by number; no sum is 0. */
+function added<T>(sum: T | undefined, value: T, w: number): T {
+    if (typeof value === 'number') return (((sum as number | undefined) ?? 0) + value * w) as T;
+    if (Array.isArray(value)) return value.map((v, i) => ((sum as number[] | undefined)?.[i] ?? 0) + v * w) as T;
+    return Object.fromEntries(Object.entries(value as object).map(([key, v]) => [key, added((sum as Record<string, unknown> | undefined)?.[key], v, w)])) as T;
 }
