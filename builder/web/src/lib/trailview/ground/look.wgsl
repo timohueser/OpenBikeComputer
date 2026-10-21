@@ -413,8 +413,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     // The road paint first, so that only its colour and cover stay live through the rest.
     let road = road_at(s, world, footprint, length(relative.xy), region);
     // A cut or a fill face of a paved road steeper than about 55° is a retaining wall, but for a cut in
-    // bare rock. The ground's normals, not the mesh's facets, so that its edge does not follow the triangles.
-    let masoned = road.wall * (1.0 - smoothstep(0.5, 0.65, n.z)) * (1.0 - road.cover) * (1.0 - g.barren);
+    // bare rock, and in woodland, as rock walls. The ground's normals, not the mesh's facets, so that
+    // its edge does not follow the triangles.
+    let masoned = road.wall * (1.0 - smoothstep(0.5, 0.65, n.z)) * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
