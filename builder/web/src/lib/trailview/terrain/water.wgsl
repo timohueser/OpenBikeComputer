@@ -64,7 +64,8 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
         return out;
     }
     // A skirt and a river's edge reach under the banks of the level, past its shore or its bed.
-    let out_by = select(v.base + v.reach * water_reach(texel), river_half(v.half, texel) + water_reach(texel), v.half > 0.0);
+    let reach = water_reach(node.level, texel);
+    let out_by = select(v.base + v.reach * reach, river_half(v.half, texel) + reach, v.half > 0.0);
     let u = vec2f(v.at - surface.anchor) + v.normal * out_by / metres;
     var p = vec3f(to_render(lod_space(u)), v.level - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);

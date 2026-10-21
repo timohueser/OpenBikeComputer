@@ -61,8 +61,8 @@ fn relief_of(job: Job, t: vec2i) -> vec4f {
 }
 
 // The water meshes draw the water. So a texel that the ground layers call water, or where the satellite
-// saw water, takes the ground of the nearest dry texel of its page within 16 texels, and no blue of the
-// layers climbs a shore. The satellite's snow mark is not water: snow has a low NDVI too.
+// saw water, takes the ground of a dry texel on one of 8 rays within 16 texels of its page, and no blue
+// of the layers climbs a shore. The satellite's snow mark is not water: snow has a low NDVI too.
 const DRY_STEPS = array<i32, 5>(1, 2, 4, 8, 16);
 const DRY_WAYS = array<vec2i, 8>(vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1), vec2i(1, 1), vec2i(-1, 1), vec2i(1, -1), vec2i(-1, -1));
 
@@ -71,7 +71,7 @@ fn wet(cell: vec4u, sat_texel: vec4f, snow: vec4f) -> bool {
     return cover == COVER_WATER || (satellite(sat_texel).a > 0.0 && ndvi_of(sat_texel) < 0.0 && snow.b < 0.5);
 }
 
-// The texel of a page whose ground a texel takes: its own, or the nearest dry one.
+// The texel of a page whose ground a texel takes: its own, or the first dry one on the rays.
 fn dry_texel(page: i32, layer: i32, job: u32, c: vec2i) -> vec2i {
     if (!wet(textureLoad(cells, in_page(page, c), layer, 0), textureLoad(colour_in, c, i32(job), 0), textureLoad(snow_in, c, i32(job), 0))) {
         return c;
