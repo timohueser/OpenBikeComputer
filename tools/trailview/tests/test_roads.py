@@ -1,6 +1,6 @@
 """The road solver: a road follows a noisy slope without its noise, a hairpin climbs within the grade of its
-class, a side road meets the through road flat, a ford lies under the water and a low short bridge is a
-culvert."""
+class, a side road meets the through road flat, the two ends of a short link keep their roads apart, a
+ford lies under the water, a low short bridge is a culvert and a bridge past unknown terrain has no height."""
 
 import math
 import unittest
@@ -95,22 +95,41 @@ class RoadSolverTest(unittest.TestCase):
         before, after = (z_w[-1] - z_w[-2]) / (along_w[-1] - along_w[-2]), (z_e[1] - z_e[0]) / along_e[1]
         self.assertLess(abs(after - before), 0.025)
 
+    def test_the_two_ends_of_a_short_link_keep_their_roads_apart(self):
+        # Two primary roads 8 m apart on the two levels of a terrace step of 2.4 m, and a track between them.
+        terrain = Terrain(lambda east, north: 1000 + 2.4 * (north > 4))
+        lower = road("main-road", "primary", line((-100, 0), (0, 0), (100, 0), step=20))
+        upper = road("main-road", "primary", line((-100, 8), (0, 8), (100, 8), step=20))
+        link = road("road", "track", line((0, 0), (0, 8)))
+        (lo, up, _), _, _ = roads.solve([lower, upper, link], terrain)
+        self.assertLess(abs(dict(zip(lo[0][1], lo[0][2]))[at(0, 0)] - 1000), 0.2)
+        self.assertLess(abs(dict(zip(up[0][1], up[0][2]))[at(0, 8)] - 1002.4), 0.2)
+
     def test_a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert(self):
         def height(east, north):
             gully = np.where(np.abs(east - 115) < 10, 8.0, 0.0)
-            return 1000 - gully + 0 * north
+            return np.where((east > 251) & (north > 60), np.nan, 1000 - gully + 0 * north)
 
         crossing = at(50, 0)
         ford = road("road", "track", line((0, 0), (50, 0), (100, 0)))
         culvert = road("road", "track", line((30, 50), (36, 50)), bridge="yes")
         bridge = road("road", "track", line((100, 0), (130, 0)), bridge="yes")
-        stream = ([at(50, -10), crossing, at(50, 10)], [999.1, 999.0, 998.9])
-        solved, culverts, _ = roads.solve([ford, culvert, bridge], Terrain(height), [stream])
+        # A way tagged as a ford that crosses a stream between two of its vertices, 10 m along it.
+        tagged = road("road", "track", line((60, 30), (66, 30), (74, 30), (84, 30)), ford="yes")
+        # A bridge that only roads in unknown terrain join to the known terrain.
+        known = road("road", "track", line((200, 80), (250, 80)))
+        dark = [road("road", "track", line((250, 80), (300, 80))), road("road", "track", line((320, 80), (350, 80)))]
+        unknown = road("road", "track", line((300, 80), (320, 80)), bridge="yes")
+        streams = [([at(50, -10), crossing, at(50, 10)], [999.1, 999.0, 998.9]), ([at(70, 20), at(70, 40)], [998.6, 998.4])]
+        solved, culverts, _ = roads.solve([ford, culvert, bridge, tagged, known, *dark, unknown], Terrain(height), streams)
         self.assertAlmostEqual(dict(zip(solved[0][0][1], solved[0][0][2]))[crossing], 999.0 - roads.FORD_M, delta=0.01)
+        along, z = profile(solved[3][0])
+        self.assertAlmostEqual(np.interp(10, along, z), 998.5 - roads.FORD_M, delta=0.01)
         self.assertEqual(culverts, {1})
         along, z = profile(solved[2][0])
         # The bridge runs straight over the gully between its ends.
         self.assertLess(np.max(np.abs(z - np.interp(along, [along[0], along[-1]], [z[0], z[-1]]))), 0.05)
+        self.assertEqual(solved[7][0][2], [None] * len(solved[7][0][1]))
 
 
 if __name__ == "__main__":

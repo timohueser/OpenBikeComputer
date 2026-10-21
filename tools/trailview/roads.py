@@ -99,6 +99,8 @@ class Network:
                 xy = xy[np.concatenate([[True], np.any(np.diff(xy, axis=0) != 0, axis=1)])] if len(xy) else xy
                 if len(xy) >= 2:
                     self.ways.append((f, p, xy, rule, free, tags.get("ford", "no") != "no"))
+        if not self.ways:
+            return
         counts = np.array([len(way[2]) for way in self.ways])
         self.rule = np.array([way[3] for way in self.ways])
         self.free = np.array([way[4] for way in self.ways], bool)
@@ -115,7 +117,8 @@ class Network:
         lengths = np.hypot(*d.T) * metres(self.osm_xy[sa, 1] + d[:, 1] / 2)
         segment_of = np.full(len(self.osm_xy), -1)
         segment_of[sa] = np.arange(len(sa))
-        self.sides, self.pairs = self.junction_sides(np.bincount(self.osm_var) >= 2, last, names)
+        self.junction = np.bincount(self.osm_var) >= 2
+        self.sides, self.pairs = self.junction_sides(self.junction, last, names)
         # The cuts of each OSM segment: evenly spaced, and at the approach distance of a side road.
         regular = np.maximum(1, np.ceil(lengths / VERTEX_M)).astype(np.int64)
         cut_segment = np.repeat(np.arange(len(sa)), regular - 1)
@@ -125,6 +128,12 @@ class Network:
         long = lengths[s] > distance + 1
         approach = np.where(step == 1, distance / lengths[s], 1 - distance / lengths[s])[long]
         s = s[long]
+        # The approach cuts of the two ends of a short segment closer than a metre are one.
+        order = np.lexsort((approach, s))
+        s, approach = s[order], approach[order]
+        twin = np.zeros(len(s), bool)
+        twin[1:] = (s[1:] == s[:-1]) & ((approach[1:] - approach[:-1]) * lengths[s[1:]] < 1)
+        s, approach = s[~twin], approach[~twin]
         # A regular cut within a metre of an approach cut goes.
         near = np.zeros(len(cut_segment), bool)
         order = np.argsort(s, kind="stable")
@@ -154,6 +163,8 @@ class Network:
         self.vertex_var[cut_position] = self.osm_count + np.arange(len(cut_segment))
         self.vertex_osm = np.zeros(total, bool)
         self.vertex_osm[self.osm_position] = True
+        self.vertex_junction = np.zeros(total, bool)
+        self.vertex_junction[self.osm_position] = self.junction[self.osm_var]
         # The tiles keep the vertices of OSM and those at an approach distance.
         self.vertex_fixed = self.vertex_osm.copy()
         self.vertex_fixed[cut_position[cut_approach]] = True
@@ -223,7 +234,10 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
     features that are culverts; and the metrics of the solve. `rivers` lists (points, levels) of the
     solved waterways, for the fords."""
+    out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     net = Network(features, classes)
+    if not net.ways:
+        return out, set(), {}
     n, a, b, length = net.count, net.a, net.b, net.length
     rows = [classes[name] for name in classes]
     # Samples: k per segment from its start, and the last vertex of each way. Ordered by terrain tile, so
@@ -248,7 +262,13 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     weight[~finite] = 0
     m = len(a)
     touched = lambda w: np.bincount(a, np.bincount(seg, w * (1 - t), m), n) + np.bincount(b, np.bincount(seg, w * t, m), n)
-    _, component = connected_components(sparse.csr_matrix((np.ones(m), (a, b)), shape=(n, n)), directed=False)
+    on_free = np.zeros(n, bool)
+    on_free[a[free]] = on_free[b[free]] = True
+    # A bridge or a tunnel takes its height from the terrain that it meets, not through a road in
+    # unknown terrain: the networks join only vertices with terrain samples or on a bridge or tunnel.
+    linked = (touched(weight) > 0) | on_free
+    joined = linked[a] & linked[b]
+    _, component = connected_components(sparse.csr_matrix((np.ones(np.count_nonzero(joined)), (a[joined], b[joined])), shape=(n, n)), directed=False)
     seen = np.bincount(component, touched(weight)) > 0
     alone = free[seg] & ~seen[component[a[seg]]] & finite
     weight[alone] = (length / k)[seg[alone]] * FREE
@@ -256,8 +276,6 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     # A vertex has a height where terrain samples act on it, or where it lies on a bridge or tunnel of a
     # network that has some.
     support = touched(weight)
-    on_free = np.zeros(n, bool)
-    on_free[a[free]] = on_free[b[free]] = True
     known = (support > 0) | (on_free & (np.bincount(component, support) > 0)[component])
 
     # Rows that pin a combination of variables to a value: the approaches of side roads, and the fords.
@@ -347,7 +365,6 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         before, held = held, update(held, G @ z, rounds < ROUNDS // 2)
 
     keep = kept(net, z, known)
-    out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     for w_, (f, p, *_) in enumerate(net.ways):
         span = slice(net.way_first[w_], net.way_last[w_] + 1)
         mask = keep[span]
@@ -378,7 +395,9 @@ def world_degrees(point):
 def approach_pins(net):
     """Per side direction of a junction, the rows that put its vertices within its approach distance on
     the surface of the through road: z_P − (1 − τ)·z_J − τ·z_Q = 0, with Q the next vertex of the through
-    road and τ the place of P along J-Q, from the through direction that P lies farthest along."""
+    direction that the side leans along most and τ ≥ 0 the place of P along J-Q. A side pins only the
+    vertices at least a metre nearer to its junction than to the next junction along its way, so that
+    the two ends of a short link do not pin one vertex."""
     occurrence, step, distance, t1, s1, t2, s2 = net.sides
     if not len(occurrence):
         return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0)
@@ -386,30 +405,38 @@ def approach_pins(net):
     way = net.osm_way[occurrence]
     origin = net.vertex_xy[j]
     unit = metres(origin[:, 1])
-    rows = []
-    alive = np.ones(len(j), bool)
-    for hop in range(1, 8):
-        p = j + hop * step
-        alive &= (p >= net.way_first[way]) & (p <= net.way_last[way])
-        p = np.where(alive, p, j)
-        alive &= np.hypot(*(net.vertex_xy[p] - origin).T) * unit <= distance + 1.01
-        if not alive.any():
-            break
-        best_tau, best_q = np.full(len(j), -np.inf), np.zeros(len(j), np.int64)
-        for occ, st in ((t1, s1), (t2, s2)):
-            valid = occ >= 0
-            tj = net.osm_position[np.where(valid, occ, 0)]
-            q = tj + st
-            axis = net.vertex_xy[q] - net.vertex_xy[tj]
-            tau = np.einsum("ij,ij->i", net.vertex_xy[p] - origin, axis) / np.maximum(np.einsum("ij,ij->i", axis, axis), 1e-300)
-            better = valid & (tau > best_tau)
-            best_tau, best_q = np.where(better, tau, best_tau), np.where(better, q, best_q)
-        tau = np.clip(best_tau, 0, 1)
-        sel = np.flatnonzero(alive)
-        rows.append((np.column_stack([net.vertex_var[p[sel]], net.vertex_var[j[sel]], net.vertex_var[best_q[sel]]]),
-                     np.column_stack([np.ones(len(sel)), -(1 - tau[sel]), -tau[sel]])))
-    variables = np.concatenate([r[0] for r in rows]) if rows else np.zeros((0, 3), np.int64)
-    coefficients = np.concatenate([r[1] for r in rows]) if rows else np.zeros((0, 3))
+    reach = distance + 1.01
+    side = net.osm_xy[occurrence + step] - net.osm_xy[occurrence]
+    lean, q = np.full(len(j), -np.inf), np.zeros(len(j), np.int64)
+    for occ, st in ((t1, s1), (t2, s2)):
+        valid = occ >= 0
+        o = np.where(valid, occ, 0)
+        d = net.osm_xy[o + st] - net.osm_xy[o]
+        dot = np.einsum("ij,ij->i", side, d) / np.maximum(np.hypot(*d.T), 1e-300)
+        better = valid & (dot > lean)
+        lean, q = np.where(better, dot, lean), np.where(better, net.osm_position[o] + st, q)
+    # Walk each side to the next junction, or as far as it can decide a pin.
+    p, along, run = j.copy(), np.zeros(len(j)), np.full(len(j), np.inf)
+    walking, inside, found = np.ones(len(j), bool), np.ones(len(j), bool), []
+    while walking.any():
+        ahead = p + step
+        walking &= (ahead >= net.way_first[way]) & (ahead <= net.way_last[way])
+        ahead = np.where(walking, ahead, p)
+        along += np.hypot(*(net.vertex_xy[ahead] - net.vertex_xy[p]).T) * unit
+        p = ahead
+        meets = walking & net.vertex_junction[p]
+        run[meets] = along[meets]
+        inside &= walking & ~meets & (along <= reach)
+        sel = np.flatnonzero(inside)
+        found.append((sel, p[sel], along[sel]))
+        walking &= ~meets & (along <= 2 * reach + 1)
+    i, p, along = (np.concatenate(column) for column in zip(*found))
+    near = 2 * along + 1 <= run[i]
+    i, p = i[near], p[near]
+    axis = net.vertex_xy[q[i]] - net.vertex_xy[j[i]]
+    tau = np.maximum(0, np.einsum("ij,ij->i", net.vertex_xy[p] - origin[i], axis) / np.maximum(np.einsum("ij,ij->i", axis, axis), 1e-300))
+    variables = np.column_stack([net.vertex_var[p], net.vertex_var[j[i]], net.vertex_var[q[i]]])
+    coefficients = np.column_stack([np.ones(len(i)), -(1 - tau), -tau])
     return variables, coefficients, np.zeros(len(variables))
 
 
