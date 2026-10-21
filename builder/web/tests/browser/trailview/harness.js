@@ -1,33 +1,82 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
+import { chromium } from 'playwright';
+import { PMTiles } from 'pmtiles';
 
 /** WebGPU on the CPU: SwiftShader draws the same picture as a GPU, slowly. Its times say nothing about a GPU. */
 export const SWIFTSHADER = ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'];
 /** A Chromium other than the one Playwright installed, such as /opt/pw-browsers/chromium. */
 export const EXECUTABLE = process.env.OBC_CHROMIUM || undefined;
+/**
+ * The browser of a script: with `gpu`, the machine's GPU in a window, else SwiftShader headless. With
+ * OBC_BROWSER_WS set, it connects to that Playwright browser server instead, so GPU runs reuse one
+ * window; closing it then only disconnects.
+ */
+export function launch(gpu) {
+    if (process.env.OBC_BROWSER_WS) return chromium.connect(process.env.OBC_BROWSER_WS);
+    return chromium.launch({ executablePath: EXECUTABLE, headless: !gpu, args: gpu ? ['--enable-webgpu-developer-features'] : SWIFTSHADER });
+}
 export const DIST = new URL('../../../dist/trailview/', import.meta.url).pathname;
 const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
 
 /**
  * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
- * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. Every
- * other public host is refused.
+ * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. With
+ * `ground`, a folder of the TrailView bakes, it serves their TileJSON and tiles as the tile service
+ * does, and `trailview/rules.json`; `colour` names the folder of the colour variant in it. Every other
+ * public host is refused.
  */
-export async function routeFixture(page, tiles) {
+export async function routeFixture(page, tiles, ground, colour = 'webp-12') {
     const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
         const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
         return existsSync(path) ? readFileSync(path) : undefined;
     };
-    await page.route(url => url.hostname !== '127.0.0.1', route => {
+    const layers = ground ? groundLayers(ground, colour) : {};
+    const cors = { 'access-control-allow-origin': '*' };
+    await page.route(url => url.hostname !== '127.0.0.1', async route => {
         const url = new URL(route.request().url());
+        if (url.hostname !== 'tiles.test') return route.abort();
         const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
-        if (url.hostname !== 'tiles.test' || !tile) return route.abort();
-        const body = read(...tile.slice(1).map(Number));
-        if (!body) return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } });
-        return route.fulfill({ body, contentType: 'image/webp', headers: { 'access-control-allow-origin': '*' } });
+        if (tile) {
+            const body = read(...tile.slice(1).map(Number));
+            if (!body) return route.fulfill({ status: 204, headers: cors });
+            return route.fulfill({ body, contentType: 'image/webp', headers: cors });
+        }
+        if (ground && url.pathname === '/trailview/rules.json') return route.fulfill({ body: readFileSync(join(ground, 'rules.json')), contentType: 'application/json', headers: cors });
+        const [, name, z, x, y] = /^\/([a-z0-9-]+)(?:\.json|\/(\d+)\/(\d+)\/(\d+))$/.exec(url.pathname) ?? [];
+        const archive = layers[name];
+        if (!archive) return route.abort();
+        if (z === undefined) {
+            const [header, metadata] = await Promise.all([archive.getHeader(), archive.getMetadata()]);
+            const json = { ...metadata, minzoom: header.minZoom, maxzoom: header.maxZoom, bounds: [header.minLon, header.minLat, header.maxLon, header.maxLat], tiles: [`https://tiles.test/${name}/{z}/{x}/{y}`] };
+            return route.fulfill({ body: JSON.stringify(json), contentType: 'application/json', headers: cors });
+        }
+        const found = await archive.getZxy(Number(z), Number(x), Number(y));
+        if (!found) return route.fulfill({ status: 204, headers: cors });
+        return route.fulfill({ body: Buffer.from(found.data), contentType: 'application/octet-stream', headers: cors });
     });
+}
+
+/** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
+function groundLayers(dir, colour) {
+    const files = {
+        'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles', snow: 'snow.pmtiles',
+        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'ndvimax'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+    };
+    return Object.fromEntries(Object.entries(files).filter(([, file]) => existsSync(join(dir, file))).map(([name, file]) => [name, new PMTiles(new FileSource(join(dir, file)))]));
+}
+
+/** A PMTiles source over a local file. */
+class FileSource {
+    constructor(path) { this.path = path; this.fd = openSync(path, 'r'); }
+    getKey() { return this.path; }
+    async getBytes(offset, length) {
+        const data = Buffer.alloc(length);
+        const read = readSync(this.fd, data, 0, length, offset);
+        return { data: data.buffer.slice(data.byteOffset, data.byteOffset + read) };
+    }
 }
 
 /** The tiles of an MBTiles file, which numbers rows from the south. */

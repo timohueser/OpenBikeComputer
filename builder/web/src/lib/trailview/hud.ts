@@ -46,6 +46,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
             `net   ${stats.requests} requests · ${(stats.bytes / MIB).toFixed(2)} MiB${stats.failed ? ` · ${stats.failed} failed` : ''}`,
             `nodes ${stats.drawn} · ${(stats.terrain.triangles / 1e6).toFixed(2)} M triangles · selection ${stats.terrain.selection.toFixed(2)} ms · quality ${stats.terrain.quality}`,
             `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}`,
+            `ground ${stats.ground.resident} of ${stats.ground.capacity} pages · ${stats.ground.wanted} wanted${stats.ground.shortage ? ` · ${stats.ground.shortage} short` : ''} · colour ${stats.ground.colour}`,
             `lab   ${lab}`,
             `view  ${view.mode} · ${view.lat.toFixed(5)}, ${view.lon.toFixed(5)} · heading ${view.heading.toFixed(0)}° · pitch ${view.pitch.toFixed(0)}° · ${height}`,
             `light ${view.date} ${view.time} · ${view.weather}`,

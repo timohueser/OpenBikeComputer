@@ -128,7 +128,8 @@ The tile API serves `/releases/ID/basemap.json`, vector tiles at
 `/releases/ID/overlays/Z/X/Y.mvt`, Terrarium tiles at
 `/releases/ID/terrain/Z/X/Y.webp`, and, for each data layer of the release,
 `/releases/ID/LAYER.json` and its tiles at `/releases/ID/LAYER/Z/X/Y`. It serves
-route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`. Each
+route catalog cells at `/releases/ID/routes/tiles/9-X-Y.json`, and TrailView's ruleset at
+`/releases/ID/trailview/rules.json`. Each
 TileJSON holds its archive metadata. Data layer tiles that are not MVT or WebP keep their
 gzip encoding. An absent tile returns 204. The raw archives
 remain downloadable from R2.
@@ -218,6 +219,7 @@ table of `data/planner-runtime.toml`.
 land cover attribution when the release has one, terrain attribution, device catalogue URL, map asset URLs, tile URLs, and routing,
 search and downloads API prefixes. `name` is the name of the recipe's region in `data/regions/`. `layers` maps
 the name of each data layer of the release to its TileJSON URL.
+`trailview_rules` is the URL of TrailView's ruleset when the release has it.
 `routes` is the route catalog cell URL template on the tile API origin,
 `/releases/ID/routes/tiles/{cell}.json`, where `{cell}` is a cell ID `9-X-Y`.
 

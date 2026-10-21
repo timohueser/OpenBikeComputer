@@ -26,7 +26,8 @@ TileJSON `maps/<kind>.json`. The kind is `trailview-material`, `trailview-lithol
 `trailview-region` for the ground, and `trailview-colour-<archive>` for the colour.
 
 Decode a tile without colour conversion and without premultiplied alpha (`createImageBitmap`
-with `colorSpaceConversion: 'none'` and `premultiplyAlpha: 'none'`): the bytes are data.
+with `colorSpaceConversion: 'none'` and `premultiplyAlpha: 'none'`): the bytes are data. A 2D canvas
+premultiplies alpha, so read the pixels through a WebGL texture, not `getImageData`.
 
 The archive metadata is a JSON object:
 

@@ -9,9 +9,10 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/snow/13/4290/2911`).tile, [13, 4290, 2911]);
   assert.deepEqual(tileRoute(`${base}/climate/9/218/37`).tile, [9, 218, 37]);
   assert.deepEqual(tileRoute(`${base}/sun/10/535/356.webp`).tile, [10, 535, 356]);
+  assert.deepEqual(tileRoute(`${base}/trailview-colour-q1/12/2143/1442.webp`).tile, [12, 2143, 1442]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
   for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
-    `${base}/Other.json`, `${base}/${'a'.repeat(33)}.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
+    `${base}/Other.json`, `${base}/${'a'.repeat(33)}.json`, `${base}/-snow.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
 });
@@ -120,6 +121,7 @@ test('grid archives share download objects and assets stream from their pointers
     [`${prefix}/public/routes/tiles/9-268-178.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
     [`objects/${'b'.repeat(64)}`, packedRoutes],
     [`${prefix}/public/device/catalog.json.json`, pointer('e'.repeat(64), asset)],
+    [`${prefix}/public/trailview/rules.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
     [`${prefix}/public/maps/assets/sprites/v4/light@2x.json.json`, pointer('e'.repeat(64), asset)],
     [`objects/${'e'.repeat(64)}`, asset],
   ]);
@@ -134,6 +136,8 @@ test('grid archives share download objects and assets stream from their pointers
   assert.equal((await worker.fetch(new Request(`https://tiles.example/releases/${id}/places/11/5/5.mvt`),env,ctx)).status,204);
   const catalog=await worker.fetch(new Request(`https://tiles.example/releases/${id}/device/catalog.json`),env,ctx);
   assert.deepEqual(await catalog.json(),{hello:'map'});
+  const rules=await worker.fetch(new Request(`https://tiles.example/releases/${id}/trailview/rules.json`),env,ctx);
+  assert.deepEqual(await rules.json(),{format:1,routes:[]});
   const sprite=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/sprites/v4/light@2x.json`),env,ctx);
   assert.equal(sprite.status,200);assert.deepEqual(await sprite.json(),{hello:'map'});
   const font=await worker.fetch(new Request(`https://tiles.example/releases/${id}/maps/assets/fonts/Noto%20Sans%20Regular/0-255.pbf`),env,ctx);
