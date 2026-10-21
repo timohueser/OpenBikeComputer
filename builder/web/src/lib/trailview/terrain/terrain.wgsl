@@ -55,6 +55,9 @@ fn hue(level: f32) -> vec3f {
 @fragment
 fn fragment_main(in: Fragment) -> @location(0) vec4f {
     drop_unknown(in);
+    if (frame.debug == 0u || frame.debug > 4u) {
+        return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
+    }
     let m = drawn_normal(in.s);
     // LOD space axes turn into render space axes with the linear part of the cubic.
     let n = normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
@@ -71,11 +74,8 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         // Grey only: the red clear colour shows through a crack and nowhere else.
         return vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0);
     }
-    if (frame.debug == 4u) {
-        // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere. The rounding of the float32
-        // position about the eye grows with the distance, so a far pixel on a steep slope can show red.
-        let error = abs(drawn_height(in.s) - in.h);
-        return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
-    }
-    return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
+    // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere. The rounding of the float32
+    // position about the eye grows with the distance, so a far pixel on a steep slope can show red.
+    let error = abs(drawn_height(in.s) - in.h);
+    return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
 }
