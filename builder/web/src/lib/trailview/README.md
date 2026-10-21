@@ -51,13 +51,8 @@ zooms. H hides the HUD.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view.
-
-| Lab | Variants |
-| --- | --- |
-| `terrain` | `cdlod`, `rings`: the LOD rule of the one quadtree; no geometry clipmap is built |
-| `relief` | `bicubic`, `erosion`: the micro-relief of the synthesized levels |
-| `pages` | `r32float`, `r16`: 16 bits with an offset and a scale per page |
+at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+pages with an offset and a scale per page.
 
 ## Shots and flights
 
@@ -74,7 +69,7 @@ npm run test:trailview                     # every browser test; CI adds -- --gr
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
 pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture; build the page with a config whose `bounds` are its box. `--lab terrain:rings`
+of the fixture; build the page with a config whose `bounds` are its box. `--lab NAME:VARIANT`
 adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 

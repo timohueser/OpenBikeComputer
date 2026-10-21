@@ -27,7 +27,7 @@ async function main(): Promise<void> {
     const release = await config;
     pageRelease(release.id);
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, labs);
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view);
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;

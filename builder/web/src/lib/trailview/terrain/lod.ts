@@ -17,10 +17,6 @@ const MARGIN = 1e-3;
  * level, and neighbours would not meet; above the most, a level leaves its LOD map window.
  */
 export const RANGE = { least: 4.6, most: 8 } as const;
-/** Ring half-widths in nodes: even, so a ring aligns with the nodes of the next coarser level. */
-export const RINGS = [6, 4] as const;
-/** A ring level is active while its ring reaches this many times the eye's height above the ground. */
-const RING_REACH = 2.5;
 /** The coarse cover lies this many levels above the drawn level: few pages, so a turn never finds a hole. */
 const COVER = 3;
 
@@ -42,15 +38,13 @@ export const key = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 export interface Rule {
     /** The finest level that draws. */
     readonly finest: number;
-    /** CDLOD: the distance in metres where the LOD is 0. Rings: the ring half-width in nodes. */
+    /** The distance in metres where the LOD is 0. */
     readonly range: number;
     /** Whether some point of the node wants a level finer than its own + `coarser`. */
     split(node: Node, coarser?: number): boolean;
     /** Whether some point of a drawn node morphs toward its parent's level, so the node reads its parent's page. */
     morphs(node: Node): boolean;
     lod(s: [number, number]): number;
-    /** Rings: the ring centre of a level in whole units. */
-    centre(level: number): [number, number];
 }
 
 /** The eye in units. */
@@ -81,46 +75,6 @@ export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
         split: (node, coarser = 0) => node.level + coarser < finest && Math.log2(range / distances(eye, node)[0]) > node.level + 1 + coarser - MARGIN,
         morphs: node => Math.log2(range / distances(eye, node)[1]) < node.level + MORPH + MARGIN,
         lod: ([sx, sy]) => plateau(Math.log2(range / Math.hypot(sx, sy, eye.above))),
-        centre: () => [0, 0],
-    };
-}
-
-/**
- * The rings of geometry clipmaps (Losasso and Hoppe 2004) as a LOD rule of the same quadtree: each
- * level is a square ring of `half` nodes about the eye, snapped to the next coarser level's nodes,
- * that blends to that level over a band of its outer nodes. A level is active while its ring reaches
- * far enough below a high eye. It is not a geometry clipmap: it has no ring textures and no
- * toroidal update.
- */
-export function rings(eye: Eye, half: number, finest = FINEST): Rule {
-    const [ex, ey] = eyeUnits(eye.anchor), unit = eye.anchor.unit;
-    let top = finest;
-    while (top > COARSEST + 1 && half * size(top) * unit < RING_REACH * eye.above) top--;
-    const centre = (level: number): [number, number] => {
-        const step = size(level - 1);
-        return [Math.round(ex / step) * step, Math.round(ey / step) * step];
-    };
-    return {
-        finest: top, range: half, centre,
-        // A node of level k lies inside ring k + 1 or outside it, because the rings align with the nodes.
-        split: ({ level, x, y }, coarser = 0) => {
-            if (level + coarser >= top) return false;
-            const [cx, cy] = centre(level + 1 + coarser), reach = half * size(level + 1 + coarser), s = size(level);
-            return x * s < cx + reach && (x + 1) * s > cx - reach && y * s < cy + reach && (y + 1) * s > cy - reach;
-        },
-        morphs: ({ level, x, y }) => {
-            const s = size(level), far = Math.max(Math.abs(x * s - ex), Math.abs((x + 1) * s - ex), Math.abs(y * s - ey), Math.abs((y + 1) * s - ey));
-            return far > (half / 2 + 0.55 - MARGIN) * s;
-        },
-        lod: ([sx, sy]) => {
-            const u = [sx / unit + ex, -sy / unit + ey], e = Math.max(Math.abs(sx), Math.abs(sy)) / unit;
-            for (let level = top; level > COARSEST; level--) {
-                const [cx, cy] = centre(level), s = size(level);
-                if (Math.max(Math.abs(u[0] - cx), Math.abs(u[1] - cy)) > half * s) continue;
-                return level - Math.min(1, Math.max(0, (e / s - (half / 2 + 0.55)) / (half / 2 - 1.6)));
-            }
-            return COARSEST;
-        },
     };
 }
 

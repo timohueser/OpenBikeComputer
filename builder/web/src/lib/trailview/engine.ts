@@ -5,7 +5,6 @@ import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
-import type { Labs } from './labs';
 import { pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type TerrainStats } from './terrain/terrain';
 import { DEBUG_VIEWS, TIME_ZONE, type View, type Weather } from './view';
@@ -74,12 +73,12 @@ export class TrailView {
     private drawn = 0;
     private rendered: (() => void)[] = [];
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, labs: Labs) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, config.bounds, labs, () => this.request());
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, config.bounds, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -89,8 +88,8 @@ export class TrailView {
     }
 
     /** Compiles the pipelines, then starts the tile loads. */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, labs: Labs): Promise<TrailView> {
-        const engine = new TrailView(canvas, config, view, labs);
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View): Promise<TrailView> {
+        const engine = new TrailView(canvas, config, view);
         await engine.attach(gpu);
         engine.request();
         return engine;

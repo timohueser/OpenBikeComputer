@@ -10,7 +10,7 @@ const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
 const BOUNDS: [number, number, number, number] = [west, north, east, south];
 const anchor = anchorAt(8.415, 46.7975);
-const flat = () => pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true, 'r32float');
+const flat = () => pageData(new Float32Array(PAGE * PAGE).fill(1000), 1000, 1000, true);
 
 /** Tiles of zooms 0 to 12; zoom 13 is absent. */
 function source(): TerrainSource & { fetched: string[]; decoded: number } {

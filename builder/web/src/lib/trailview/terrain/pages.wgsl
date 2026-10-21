@@ -14,36 +14,24 @@ struct Job {
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;
-// Per job, one page: float32 bits of the heights, or the normals of two texels per word.
+// Per job, one page: float32 bits of the heights before their 16-bit codes, or the normals of two texels per word.
 @group(0) @binding(1) var<storage, read_write> out: array<u32>;
-// Per job, the least and the greatest height as ordered bits, for r16 pages.
+// Per job, the least and the greatest height as ordered bits, for the offset and the scale of its page.
 @group(0) @binding(2) var<storage, read_write> extent: array<atomic<u32>>;
-
-override EROSION: bool = false;
-
-// The amplitude of a micro-relief octave at slope 1, as a share of its cell.
-const RELIEF: f32 = 0.08;
-const TAU: f32 = 6.2831853;
 
 // Catmull-Rom weights of the four texels about a part t, and their slopes.
 fn spline(t: f32) -> vec4f {
     return 0.5 * vec4f(-t + 2.0 * t * t - t * t * t, 2.0 - 5.0 * t * t + 3.0 * t * t * t, t + 4.0 * t * t - 3.0 * t * t * t, -t * t + t * t * t);
 }
 
-fn spline_slope(t: f32) -> vec4f {
-    return 0.5 * vec4f(-1.0 + 4.0 * t - 3.0 * t * t, -10.0 * t + 9.0 * t * t, 1.0 + 8.0 * t - 9.0 * t * t, -2.0 * t + 3.0 * t * t);
-}
 
-// The bicubic height of the finest stored level up to `top` that knows all 16 texels about a point,
-// with its slope east and south per texel of that level, and the level.
-fn stored_base(u: vec2i, top: u32) -> vec4f {
+// The bicubic height of the finest stored level up to `top` that knows all 16 texels about a point.
+fn stored_base(u: vec2i, top: u32) -> f32 {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of_units(u, level);
         let wx = spline(t.part.x);
         let wy = spline(t.part.y);
-        let sx = spline_slope(t.part.x);
-        let sy = spline_slope(t.part.y);
-        var sum = vec3f(0.0);
+        var sum = 0.0;
         var complete = true;
         for (var j = 0; j < 4 && complete; j++) {
             for (var i = 0; i < 4; i++) {
@@ -52,39 +40,14 @@ fn stored_base(u: vec2i, top: u32) -> vec4f {
                     complete = false;
                     break;
                 }
-                sum += h * vec3f(wx[i] * wy[j], sx[i] * wy[j], wx[i] * sy[j]);
+                sum += h * wx[i] * wy[j];
             }
         }
         if (complete) {
-            return vec4f(sum, f32(level));
+            return sum;
         }
     }
-    return vec4f(NONE, 0.0, 0.0, 0.0);
-}
-
-fn hash(c: vec2i) -> vec2f {
-    var v = vec2u(c) * vec2u(1597334673u, 3812015801u);
-    v = (v.x ^ v.y) * vec2u(1597334673u, 3812015801u);
-    return vec2f(v >> vec2u(8u)) / 16777216.0;
-}
-
-// One octave of gullies after Johansen's erosion filter: from each jittered cell point about a
-// position, a wave that runs down the slope, so its crests are gullies. `along` is the unit contour
-// direction. The value is in [−1, 1]; its slope is per cell.
-fn gullies(cell: vec2i, part: vec2f, along: vec2f) -> vec3f {
-    var sum = vec3f(0.0);
-    var weight = 0.0;
-    for (var j = -1; j <= 2; j++) {
-        for (var i = -1; i <= 2; i++) {
-            let o = vec2i(i, j);
-            let p = part - vec2f(o) - 0.5 * hash(cell + o);
-            let w = exp(-2.0 * dot(p, p));
-            let phase = TAU * dot(p, along);
-            sum += w * vec3f(cos(phase), -sin(phase) * TAU * along);
-            weight += w;
-        }
-    }
-    return sum / weight;
+    return NONE;
 }
 
 // The ordered bits of a height, so that unsigned atomics take the least and the greatest.
@@ -93,41 +56,21 @@ fn ordered(h: f32) -> u32 {
     return select(b | 0x80000000u, ~b, (b & 0x80000000u) != 0u);
 }
 
-// A synthesized page: bicubic from the stored ancestor, never from a synthesized level, then the
-// micro-relief of each level below the stored one.
+// A synthesized page: bicubic from the stored ancestor, never from a synthesized level.
 @compute @workgroup_size(8, 8)
 fn synthesize(@builtin(global_invocation_id) id: vec3u) {
     let job = jobs[id.z];
     let shift = 22u - job.level;
     let u = ((job.texel + vec2i(id.xy)) << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let base = stored_base(u, job.stored);
+    let h = stored_base(u, job.stored);
     let at = id.z * 65536u + id.y * 256u + id.x;
-    if (!known(base.x)) {
+    if (!known(h)) {
         out[at] = UNKNOWN32;
         return;
     }
-    var h = base.x;
-    var slope = base.yz / (job.metres * exp2(f32(job.level) - base.w));
-    if (EROSION) {
-        for (var level = u32(base.w) + 1u; level <= job.level; level++) {
-            // Cells of 16 texels of this level.
-            let cell_shift = 26u - level;
-            let cell = u >> vec2u(cell_shift);
-            let part = vec2f(u & vec2i((1 << cell_shift) - 1)) / f32(1 << cell_shift);
-            let size = 16.0 * job.metres * exp2(f32(job.level - level));
-            let steep = length(slope);
-            let along = select(vec2f(0.0), vec2f(-slope.y, slope.x) / steep, steep > 1e-4);
-            let g = gullies(cell, part, along);
-            let amplitude = RELIEF * size * min(steep, 1.0);
-            h += amplitude * g.x;
-            slope += amplitude * g.yz / size;
-        }
-    }
     out[at] = bitcast<u32>(h);
-    if (R16) {
-        atomicMin(&extent[2u * id.z], ordered(h));
-        atomicMax(&extent[2u * id.z + 1u], ordered(h));
-    }
+    atomicMin(&extent[2u * id.z], ordered(h));
+    atomicMax(&extent[2u * id.z + 1u], ordered(h));
 }
 
 // The height of a neighbour texel, or of the coarser levels at its centre, or else of the centre texel.
