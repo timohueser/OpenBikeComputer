@@ -71,7 +71,7 @@ export function waterMesh(list: Feature[], tile: Node): WaterMesh | null {
         }
         xy.push(...line.xy.slice(-2));
         z.push(line.z[line.z.length - 1]);
-        const sub = { ...line, xy, z }, first = words.length / WATER_VERTEX;
+        const sub = { ...line, xy, z, anchors: undefined }, first = words.length / WATER_VERTEX;
         for (let v = 0; v < z.length; v++) {
             const [tx, ty] = mitre(sub, v), w = Math.min(v, z.length - 2);
             const [ax, ay] = edgeNormal(xy, w, w + 1, -1), scale = 1 / Math.max(-ty * ax + tx * ay, 1 / MITRE);

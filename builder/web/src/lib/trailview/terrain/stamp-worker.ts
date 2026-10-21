@@ -26,7 +26,7 @@ async function decoded(name: string, body: ArrayBuffer): Promise<Feature[]> {
 
 export type Request = 'stamps' | 'samples' | 'water';
 
-self.onmessage = async ({ data: { id, tile, node, body, baked, what } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; baked: boolean; what: Request }>) => {
+self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request }>) => {
     try {
         const features = await decoded(`${tile.level}/${tile.x}/${tile.y}`, body);
         if (what === 'samples') {
@@ -36,7 +36,7 @@ self.onmessage = async ({ data: { id, tile, node, body, baked, what } }: Message
             const result = waterMesh(features, tile);
             self.postMessage({ id, result }, { transfer: result ? [result.vertices, result.indices.buffer] : [] });
         } else {
-            const result = nodeStamps(features, tile, node, baked);
+            const result = nodeStamps(features, tile, node);
             self.postMessage({ id, result }, { transfer: result.data ? [result.data.buffer] : [] });
         }
     } catch (error) {

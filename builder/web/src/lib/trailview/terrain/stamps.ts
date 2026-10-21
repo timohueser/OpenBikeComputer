@@ -113,7 +113,7 @@ export class Stamps implements StampSource {
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, baked: this.baked, what });
+            this.worker!.postMessage({ id, tile, node, body, what });
         });
     }
 

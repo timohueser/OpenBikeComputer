@@ -12,7 +12,7 @@ struct Sample {
     expected: f32,
     // The half-width of the road or river, 0 for a lake.
     half: f32,
-    // Metres from the shore.
+    // Metres from the shore; for a river, from its middle.
     shore: f32,
     // Metres to the nearest junction, and its widest half-width.
     junction: f32,
@@ -175,10 +175,10 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     if (kind == CROSS_FALL || kind == ROAD_HEIGHT) {
         // Baked conditioning stamps the stored levels only.
         let rule = profiles[q.kind >> 8u];
-        if (!road_shows(q.half, rule, level, BAKED) || !road_shows(q.half, rule, coarse, BAKED) || (BAKED && level > STORED_FINEST)) {
+        if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || (BAKED && level > STORED_FINEST)) {
             return;
         }
-        let junction = q.junction < 2.0 * junction_reach(q.junction_half, fine, reach) + q.half;
+        let junction = q.junction < 2.0 * junction_reach(q.junction_half, fine) + q.half;
         if (kind == CROSS_FALL) {
             let t = lod_space(vec2f(q.other - surface.anchor));
             let other = drawn_height(t);
@@ -195,12 +195,24 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     if (q.half > 0.0 && (!river_shows(q.half, level) || !river_shows(q.half, coarse))) {
         return;
     }
-    let along = select(0.0, max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide, q.half > 0.0);
+    if (q.half > 0.0) {
+        // A river sample carries its metres from the middle; the bed and the banks of each level begin past river_half.
+        let along = max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide;
+        let past = vec2f(q.shore - river_half(q.half, fine), q.shore - river_half(q.half, wide));
+        let cells = vec2f(MESH_TEXELS * fine, MESH_TEXELS * wide);
+        if (kind == IN_WATER && all(past <= vec2f(0.0))) {
+            check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
+        }
+        if (kind == ON_BANK && all(past >= cells) && all(past <= cells + BANK_M)) {
+            check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
+        }
+        return;
+    }
     if (kind == IN_WATER && q.shore >= reach) {
-        check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
+        check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
     if (kind == ON_BANK && banks_show(level, BAKED) && banks_show(coarse, BAKED) && q.shore >= reach && q.shore <= reach + BANK_M) {
-        check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
+        check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
 }
 

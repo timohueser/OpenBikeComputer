@@ -2,7 +2,7 @@
 // in each lake and river and on their banks; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, type Line, type Node } from './bins';
+import { features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -156,11 +156,12 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
             for (let i = 0; i < count; i++) {
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
                 if (!inNode(cx, cy) || Number.isNaN(z)) continue;
-                push(cx, cy, IN_WATER, z, line.h, line.h, Infinity, 0, [0, 0], steepest);
+                push(cx, cy, IN_WATER, z, line.h, 0, Infinity, 0, [0, 0], steepest);
+                // Past the bed of the node's level and a mesh cell, as river_half and river_bank of stamp-core.wgsl.
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
-                    const d = line.h + BANK_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
+                    const d = Math.max(line.h, RULES.MESH_TEXELS * texel) + RULES.MESH_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
                     const level = roadHeight(line, [x, y], 1.5 * d / unit);
-                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d - line.h, Infinity, 0, [0, 0], steepest);
+                    if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d, Infinity, 0, [0, 0], steepest);
                 }
             }
         }

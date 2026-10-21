@@ -98,7 +98,8 @@ export function halfWidth(tags: Record<string, string>, surface: Surface): numbe
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
-export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; closed: boolean; profile: number }
+/** A line; `anchors` marks its OSM vertices among the points of its rounded bends. */
+export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; closed: boolean; profile: number; anchors?: boolean[] }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
@@ -106,19 +107,18 @@ export interface Lake { level: number; rings: number[][]; outer: boolean[] }
  * As road_shows, path_shows and river_shows of stamp-core.wgsl: whether a level with texels of this
  * size can stamp a line. bins.test.ts holds these numbers equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, SHOW_CELLS: 1, MESH_TEXELS: 4, MARGIN_TEXELS: 13, GATE_COS: 0.70710678 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
 /** As gate_texel of stamp-core.wgsl: the texel of a level at 45° N, for the gates that decide what a level stamps. */
 export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.GATE_COS / 2 ** (level + 8);
 
-export function shows({ kind, h, profile }: Line, texel: number, baked: boolean): boolean {
+export function shows({ kind, h, profile }: Line, texel: number): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
     if (kind === RIVER) return 2 * h >= RULES.MESH_TEXELS * texel && h <= limit;
-    const margin = baked ? 0 : RULES.MARGIN_TEXELS * texel;
-    return (baked || 2 * h >= RULES.SHOW_CELLS * RULES.MESH_TEXELS * texel) && h + margin + least <= limit;
+    return 2 * h >= texel && h + least <= limit;
 }
 
 /** The roads, paths, rivers and lakes of a tile that have heights, in world units. */
@@ -145,7 +145,7 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
             const flush = () => {
                 if (heights.length >= 2) {
                     const n = heights.length, closed = n >= 3 && run[0] === run[2 * n - 2] && run[1] === run[2 * n - 1];
-                    lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, xy: run, z: heights, h, code, ford: !!tags.ford && tags.ford !== 'no', closed, profile });
+                    lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, ...smoothed(run, heights, closed), h, code, ford: !!tags.ford && tags.ford !== 'no', closed, profile });
                 }
                 run = [];
                 heights = [];
@@ -161,6 +161,58 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
         }
     }
     return { lines, lakes };
+}
+
+/** The most that a chord of a rounded bend leaves the curve, in world units (about 10 cm), and the most chords per segment. */
+const SAGITTA = 4, CHORDS = 16;
+
+/**
+ * A line through its vertices with its bends rounded: each segment between two other segments follows
+ * the centripetal Catmull-Rom curve through the four vertices about it, in chords of whole world
+ * units, with the height linear along it. The first and last segments stay straight. The feature
+ * tiles cut a line one vertex past the segments that meet a tile's buffer, so every segment that a
+ * tile's nodes stamp gets the same curve in each tile that holds it; and every vertex stays, so
+ * junctions stay where they are.
+ */
+export function smoothed(xy: number[], z: number[], closed: boolean): { xy: number[]; z: number[]; anchors: boolean[] } {
+    const n = z.length, segments = n - 1;
+    if (n < 3) return { xy, z, anchors: z.map(() => true) };
+    const point = (i: number): [number, number] => {
+        const k = closed ? (i + segments) % segments : i;
+        return [xy[2 * k], xy[2 * k + 1]];
+    };
+    const outXy = [xy[0], xy[1]], outZ = [z[0]], anchors = [true];
+    for (let i = 0; i < segments; i++) {
+        const [b, c] = [point(i), point(i + 1)];
+        if (closed || (i > 0 && i < segments - 1)) {
+            const [a, d] = [point(i - 1), point(i + 2)], curve = catmullRom(a, b, c, d), middle = curve(0.5);
+            const sagitta = Math.hypot(middle[0] - (b[0] + c[0]) / 2, middle[1] - (b[1] + c[1]) / 2);
+            const chords = Math.min(CHORDS, Math.max(1, Math.ceil(Math.sqrt(sagitta / SAGITTA))));
+            for (let k = 1; k < chords; k++) {
+                const [x, y] = curve(k / chords).map(Math.round);
+                if (x === outXy[outXy.length - 2] && y === outXy[outXy.length - 1]) continue;
+                outXy.push(x, y);
+                outZ.push(z[i] + (z[i + 1] - z[i]) * k / chords);
+                anchors.push(false);
+            }
+        }
+        outXy.push(xy[2 * (i + 1)], xy[2 * (i + 1) + 1]);
+        outZ.push(z[i + 1]);
+        anchors.push(true);
+    }
+    return { xy: outXy, z: outZ, anchors };
+}
+
+/** The centripetal Catmull-Rom curve from b to c (Barry and Goldman), as a function of 0..1. */
+function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: number) => number[] {
+    const knot = (p: number[], q: number[]) => Math.max(Math.sqrt(Math.hypot(q[0] - p[0], q[1] - p[1])), 1e-6);
+    const t1 = knot(a, b), t2 = t1 + knot(b, c), t3 = t2 + knot(c, d);
+    const lerp = (p: number[], q: number[], from: number, to: number, t: number) => p.map((v, i) => v + (q[i] - v) * (t - from) / (to - from));
+    return u => {
+        const t = t1 + (t2 - t1) * u;
+        const a1 = lerp(a, b, 0, t1, t), a2 = lerp(b, c, t1, t2, t), a3 = lerp(c, d, t2, t3, t);
+        return lerp(lerp(a1, a2, 0, t2, t), lerp(a2, a3, t1, t3, t), t1, t2, t);
+    };
 }
 
 /** Junctions: vertices that two road lines meet at, or that one line passes twice, with the widest half-width there. */
@@ -179,14 +231,28 @@ export function junctions(lines: Line[]): Map<string, { x: number; y: number; h:
     return new Map([...seen].filter(([, { count }]) => count > 1));
 }
 
-/** The unit mitre normal at vertex v of a line: along the line at an end, the bisector of the two segments inside. */
+/**
+ * The unit mitre normal at vertex v of a line: along the line at an end, the bisector of the two segments
+ * inside. At an OSM vertex the segments run to the OSM vertices about it, not to the points of a rounded
+ * bend: a tile rounds only the segments with a vertex on both sides, so this is the same in every tile.
+ */
 export function mitre(line: Line, v: number): [number, number] {
-    const n = line.z.length, dir = (a: number, b: number) => {
+    const n = line.z.length, anchored = line.anchors?.[v], dir = (a: number, b: number) => {
         const dx = line.xy[2 * b] - line.xy[2 * a], dy = line.xy[2 * b + 1] - line.xy[2 * a + 1], l = Math.hypot(dx, dy) || 1;
         return [dx / l, dy / l];
     };
-    const before = v > 0 ? dir(v - 1, v) : line.closed ? dir(n - 2, n - 1) : undefined;
-    const after = v < n - 1 ? dir(v, v + 1) : line.closed ? dir(0, 1) : undefined;
+    const back = (from: number) => {
+        let w = from - 1;
+        while (anchored && w > 0 && !line.anchors![w]) w--;
+        return w;
+    };
+    const ahead = (from: number) => {
+        let w = from + 1;
+        while (anchored && w < n - 1 && !line.anchors![w]) w++;
+        return w;
+    };
+    const before = v > 0 ? dir(back(v), v) : line.closed ? dir(back(n - 1), n - 1) : undefined;
+    const after = v < n - 1 ? dir(v, ahead(v)) : line.closed ? dir(0, ahead(0)) : undefined;
     const [x, y] = before && after ? [before[0] + after[0], before[1] + after[1]] : (before ?? after)!;
     const l = Math.hypot(x, y);
     return l > 1e-9 ? [x / l, y / l] : (after ?? before)! as [number, number];
@@ -217,7 +283,7 @@ export interface NodeStamps {
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = false): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
     const { lines, lakes } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
@@ -246,7 +312,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
     }
     let heights = false;
     lines.forEach((line, id) => {
-        const stamps = shows(line, gateTexel(node.level), baked);
+        const stamps = shows(line, gateTexel(node.level));
         if (!stamps && node.level < NEAR) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
