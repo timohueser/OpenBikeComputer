@@ -59,7 +59,7 @@ From `builder/web/tests/browser`:
 npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--hud] [--gpu]
 node trailview/flight.mjs --gpu [--flights FILE]
-npm run test:trailview                     # the smoke
+npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
@@ -88,6 +88,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 ## What bites
 
 - SwiftShader times are not GPU times. Measure on a GPU.
+- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`. Pull requests skip
+  it, and `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Without it, the device is lost with
   "A valid external Instance reference no longer exists".
