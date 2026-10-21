@@ -1,7 +1,7 @@
-"""Simple heights for the TrailView feature tiles, from the master terrain: a road lies at the terrain
-smoothed along it, a river at that terrain held from rising downstream, and a lake at the median of the
-terrain inside it. The road and water solvers replace them; until then the stamps of the engine have
-heights to shape the terrain to."""
+"""The master terrain for the solvers of the TrailView feature tiles, and simple water levels from it: a
+river lies at the terrain smoothed along it and held from rising downstream, and a lake at the median of
+the terrain inside it. The water solver replaces them; until then the stamps of the engine have levels to
+shape the terrain to. `roads.py` solves the roads."""
 
 from collections import OrderedDict
 import io
@@ -13,10 +13,9 @@ import sqlite3
 
 import numpy as np
 
-ROADS = {"main-road", "road", "path"}
 RIVERS = {"river", "stream"}
 LAKES = {"lake"}
-# As GRADE_SMOOTH_M of the prototype's grading: a road follows the terrain averaged over ±12 m.
+# As GRADE_SMOOTH_M of the prototype's grading: a river follows the terrain averaged over ±12 m.
 SMOOTH_M = 12.0
 STEP_M = 2.0
 # A lake reads the terrain at no more than this many points.
@@ -27,10 +26,7 @@ CACHED = 256
 
 
 def solves(kind, tags):
-    """Whether this module sets the heights of a feature: a road that is not a bridge, a river that is not
-    in a tunnel, or a lake."""
-    if kind in ROADS:
-        return tags.get("bridge", "no") == "no"
+    """Whether this module sets the heights of a feature: a river that is not in a tunnel, or a lake."""
     return kind in LAKES or (kind in RIVERS and tags.get("tunnel", "no") == "no")
 
 
@@ -129,7 +125,7 @@ def metres(y):
     return EQUATOR_M * np.cos(np.arctan(np.sinh(np.pi * (1 - 2 * y))))
 
 
-def road(points, terrain):
+def along(points, terrain):
     """The heights at the vertices of a line: the terrain sampled every STEP_M, and a straight line fitted
     to it over ±SMOOTH_M of length along the line. Toward the ends the window narrows to one side, and the
     line keeps a constant grade unbiased. NaN where the terrain is unknown over the whole window."""
@@ -160,7 +156,7 @@ def road(points, terrain):
 def river(points, terrain):
     """The water level at the vertices of a river, which OSM draws in the direction of its flow: the
     terrain smoothed as for a road, never rising downstream."""
-    return np.fmin.accumulate(road(points, terrain))
+    return np.fmin.accumulate(along(points, terrain))
 
 
 def inside(rings, xs, ys):
@@ -194,29 +190,12 @@ def lake(parts, terrain):
 
 
 def solve(features, terrain):
-    """Per feature (kind, tags, parts), the heights of each part, None where unknown. Roads that share a
-    vertex take the mean of their heights there, so a junction has one height."""
-    out, shared = [], {}
+    """Per feature (kind, tags, parts), the levels of each part, None where unknown."""
+    out = []
     for kind, _, parts in features:
         if kind in LAKES:
             level = lake(parts, terrain)
             out.append([[level] * len(points) for _, points, *_ in parts])
-            continue
-        if kind in RIVERS:
+        else:
             out.append([river(points, terrain).tolist() for _, points, *_ in parts])
-            continue
-        heights = [road(points, terrain).tolist() for _, points, *_ in parts]
-        for (_, points, *_), z in zip(parts, heights):
-            for point, h in zip(points, z):
-                if math.isfinite(h):
-                    entry = shared.setdefault(point, [0.0, 0])
-                    entry[0] += h
-                    entry[1] += 1
-        out.append(heights)
-    for (kind, _, parts), heights in zip(features, out):
-        if kind in ROADS:
-            for (_, points, *_), z in zip(parts, heights):
-                for n, point in enumerate(points):
-                    if point in shared:
-                        z[n] = shared[point][0] / shared[point][1]
     return [[[h if math.isfinite(h) else None for h in z] for z in heights] for heights in out]
