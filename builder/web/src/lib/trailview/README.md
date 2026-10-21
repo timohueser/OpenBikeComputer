@@ -118,7 +118,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` and the ring
   band of `lod.ts`; `lod.test.ts` holds both.
-- The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
+- The page pools and the water layers have a fixed size. A view that wants more of them lowers
+  `quality` in the HUD.
 - A stored page with stamps takes two layers: its raw heights for the syntheses below it, and a
   stamped copy that draws. Never let a synthesis read a stamped page.
 - `bins.ts` mirrors the gates of `stamp-core.wgsl`; `bins.test.ts` holds their numbers equal.

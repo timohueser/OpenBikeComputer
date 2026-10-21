@@ -335,7 +335,7 @@ export class Terrain {
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.nodes = nodes.slice(0, MAX_NODES);
-        const work = this.pages.update(wanted, anchor);
+        const work = this.pages.update(wanted, anchor, this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
