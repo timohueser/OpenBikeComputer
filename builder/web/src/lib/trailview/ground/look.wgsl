@@ -410,6 +410,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
+    // The road paint first, so that only its colour and cover stay live through the rest.
+    let road = road_at(s, world, footprint, length(relative.xy), g.albedo, region);
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
@@ -480,7 +482,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
-    let road = road_at(s, world, footprint, length(relative.xy), albedo, region);
     albedo = mix(albedo, road.colour, road.cover);
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.

@@ -5,6 +5,10 @@
 // #include ../terrain/features.wgsl
 // #include look.wgsl
 
+// The terrain draws the nodes of the levels with masks with the paint, the others without it: the
+// compiler drops the paint there, and with it the registers that it takes from every pixel.
+override PAINT: bool = true;
+
 struct Road {
     colour: vec3f,
     // The share of the pixel that the road covers.
@@ -51,7 +55,15 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, ground: vec3f, region: u32) -> Road {
-    let mask = mask_at(s, u32(ceil(lod(s))));
+    if (!PAINT) {
+        return Road(ground, 0.0);
+    }
+    let level = lod(s);
+    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
+    if (reach <= 0.0) {
+        return Road(ground, 0.0);
+    }
+    let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
         return Road(ground, 0.0);
     }
@@ -68,7 +80,6 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, ground: vec3f, region: u32
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * w - half);
-    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, lod(s));
     let cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35) * reach;
     return Road(colour, cover);
 }

@@ -57,7 +57,7 @@ const SURFACE_COLOURS = array<vec3f, 6>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35,
 
 // The decoded features, flat on grey terrain: water blue, roads by surface, conflicts red, fords cyan.
 fn mask_view(s: vec2f, grey: vec3f) -> vec3f {
-    let mask = mask_at(s, u32(ceil(lod(s))));
+    let mask = mask_at(s, u32(ceil(lod(s))), false);
     var colour = grey;
     if (mask.level == 0u) {
         return colour;

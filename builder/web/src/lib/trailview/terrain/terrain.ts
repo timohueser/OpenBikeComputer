@@ -127,6 +127,7 @@ interface Resources {
     stampGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
     mesh: GPURenderPipeline;
+    plainMesh: GPURenderPipeline;
     synthesize: GPUComputePipeline;
     normalsOf: GPUComputePipeline;
     quantize: GPUComputePipeline;
@@ -247,7 +248,7 @@ export class Terrain {
         }, MASK_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize'
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
             mask,
@@ -306,14 +307,15 @@ export class Terrain {
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
         const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
-        const [mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
-            device.createRenderPipelineAsync({
-                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-                vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
-                fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }] },
-                primitive: { topology: 'triangle-list' },
-                depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
-            }),
+        const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
+            label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
+            vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
+            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
+            primitive: { topology: 'triangle-list' },
+            depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
+        });
+        const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
+            terrainPipeline(true), terrainPipeline(false),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
             compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
@@ -333,7 +335,7 @@ export class Terrain {
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
         this.resources = {
-            ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
+            ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
@@ -364,8 +366,9 @@ export class Terrain {
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
-        // After the update, so that a page draws in the frame that it arrives in.
-        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
+        // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
+        // with masks come first: they draw with the road paint.
+        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
         this.water.update(this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
@@ -461,13 +464,16 @@ export class Terrain {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
-        pass.setPipeline(r.mesh);
+        const painted = this.nodes.filter(node => node.level >= NEAR).length;
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
-        pass.drawIndexed(GRID_INDICES.length, this.nodes.length);
+        pass.setPipeline(r.mesh);
+        if (painted) pass.drawIndexed(GRID_INDICES.length, painted);
+        pass.setPipeline(r.plainMesh);
+        if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
         this.water.draw(pass, r.surfaceGroup, ground);
     }
 

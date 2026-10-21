@@ -59,19 +59,23 @@ struct Mask {
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes filtered
 // between the four texels around the point, held in that page, so that an edge is smooth below a
 // texel; the kinds of the nearest texel.
-fn mask_at(s: vec2f, top: u32) -> Mask {
+// With `roads`, none where the nearest texel holds no road within MASK_M: one texel read decides.
+fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     for (var level = top; level >= MASK_LEVEL; level--) {
         let t = texel_of(s, level);
         let whole = t.whole + vec2i(round(t.part));
         let slot = mask_of(level, whole);
         if (slot != 0u) {
             let page = slot - 1u;
+            let byte = mask_byte(page, whole);
+            if (roads && (byte & 7u) == 0u) {
+                break;
+            }
             let first = (whole >> vec2u(8u)) << vec2u(8u);
             let a = clamp(t.whole, first, first + vec2i(255));
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
             let shape = mix(mix(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), t.part.x),
                 mix(shape_at(page, vec2i(a.x, b.y)), shape_at(page, b), t.part.x), t.part.y);
-            let byte = mask_byte(page, whole);
             return Mask(vec4f(shape.xyz, 0.0), vec4u(byte & 7u, select(0u, 1u, shape.y < 0.5), byte >> 3u, 0u), level);
         }
     }
