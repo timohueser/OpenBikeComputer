@@ -18,8 +18,6 @@ export interface LookInput {
     codes: [number, number, number, number];
     debug: number;
     cache: boolean;
-    /** The rock lab `slope`. */
-    slope: boolean;
 }
 
 /** `Look` of shade.wgsl. */
@@ -38,6 +36,6 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     VARIEGATED.forEach((hex, i) => floats.set([...linear(hex), 0], 36 + 4 * i));
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
     words.set(input.codes, LOOK_CODES / 4);
-    words.set([input.debug, +input.cache, +input.slope, 0], 64);
+    words.set([input.debug, +input.cache, 0, 0], 64);
     return data;
 }

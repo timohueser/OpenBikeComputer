@@ -311,7 +311,7 @@ export class TrailView {
             sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
-            debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache', slope: this.labs.rock === 'slope',
+            debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache',
         });
     }
 

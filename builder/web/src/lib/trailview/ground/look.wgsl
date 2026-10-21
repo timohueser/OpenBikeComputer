@@ -1,7 +1,6 @@
 // The ground look: a port of the ground shading of the prototype (`groundOn`, `groundAt` and
-// `terrainFragment` of src/shaders.ts) over the ground pages. A node draws the ground of its level,
-// mixed with its parent's level by the morph, so no colour seam shows at a LOD border. What the
-// prototype measured from its fixed spot, this measures from the eye. Terrain shadows, clouds, roads
+// `terrainFragment` of src/shaders.ts) over the ground pages. A node draws the ground of its level.
+// What the prototype measured from its fixed spot, this measures from the eye. Terrain shadows, clouds, roads
 // and water are not here yet.
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shade.wgsl
@@ -351,38 +350,10 @@ fn open_on(level: u32, s: vec2f) -> f32 {
     return 1.0;
 }
 
-fn mix_ground(a: Ground, b: Ground, w: f32) -> Ground {
-    var g: Ground;
-    g.albedo = mix(a.albedo, b.albedo, w);
-    g.water = mix(a.water, b.water, w);
-    g.tree = mix(a.tree, b.tree, w);
-    g.snow = mix(a.snow, b.snow, w);
-    g.data = mix(a.data, b.data, w);
-    g.rough = mix(a.rough, b.rough, w);
-    g.lush = mix(a.lush, b.lush, w);
-    g.moor = mix(a.moor, b.moor, w);
-    g.bare = mix(a.bare, b.bare, w);
-    g.barren = mix(a.barren, b.barren, w);
-    g.sward = mix(a.sward, b.sward, w);
-    g.stone = mix(a.stone, b.stone, w);
-    g.banded = mix(a.banded, b.banded, w);
-    g.hardness = mix(a.hardness, b.hardness, w);
-    g.open = mix(a.open, b.open, w);
-    g.region = select(a.region, b.region, w >= 0.5);
-    return g;
-}
-
-// The ground under a point of a node of `level`: its level's ground mixed with the parent's by the
-// morph, as the mesh morphs. The satellite decides snow only where the data has none, and a snow
-// edge is crisper than the texels' blend across it.
+// The ground under a point of a node of `level`, from its level's page. The satellite decides snow
+// only where the data has none, and a snow edge is crisper than the texels' blend across it.
 fn ground_at(level: u32, s: vec2f, world: vec2f) -> Ground {
-    let finest = look.codes.y;
-    let k = min(level, finest);
-    var g = ground_on(k, s, world);
-    let morph = clamp(f32(level) - lod(s), 0.0, 1.0);
-    if (level <= finest && k > COARSEST && morph > 0.0) {
-        g = mix_ground(g, ground_on(k - 1u, s, world), morph);
-    }
+    var g = ground_on(min(level, look.codes.y), s, world);
     g.snow = smoothstep(0.25, 0.75, g.data.x + (1.0 - g.data.y) * g.snow) * (1.0 - g.water);
     return g;
 }
@@ -537,7 +508,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     }
     // Where the satellite sees green, a steep slope is turf and scrub on the rock up to the region's turf angle at least.
     let green = smoothstep(0.4, 0.7, g.lush) * (1.0 - g.bare);
-    // The ground's own slope, before slabs tilt the normal.
     let slope = n.z;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks
     // and bare patches, and near the eye the sward's blades. Each scale fades to its mean once a pixel spans it.
@@ -564,14 +534,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
             albedo *= 1.0 + 0.3 * blade * blades;
         }
     }
-    // Woodland seen from afar is crowns and the shade between them, darker than its leaves: soft clumps
-    // of two sizes, fading to their mean once a pixel on the surface is larger than a crown.
-    if (g.tree > 0.0) {
-        let detail = 1.0 - smoothstep(0.6, 2.5, surface_size);
-        let clumps = 0.65 * noise(world / 3.5) + 0.35 * noise(world / 11.0 + 7.0);
-        let crowns = mix(0.55, smoothstep(0.3, 0.62, clumps), detail);
-        albedo *= mix(1.0, 0.42 + 0.48 * crowns, g.tree);
-    }
     // Scattered bushes on open ground: dots where a pixel can show them, their share of colour beyond.
     let speckle = rule(region, slot_cliff() + 2);
     if (speckle.a > 0.0) {
@@ -587,48 +549,12 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
-    // Rock slabs break through open ground on slopes, ridges and poor grass: cells about 9 m across,
-    // each rock or turf. Too small to see past a few metres a pixel, they become their share of rock colour.
-    var rocky = terrain.x * g.rough * clamp(1.1 * (1.0 - smoothstep(0.78, 0.95, n.z)) + 0.9 * smoothstep(1.0, 1.08, open) + 0.5 * g.moor + 0.8 * (hardness - 0.5) - 0.3, 0.0, 1.0)
-        * 1.6 * smoothstep(0.3, 0.65, noise(world / 70.0)) * mix(0.3, 1.7, hardness) * (1.0 - 0.7 * green);
-    // Exposed rock shows as slabs and gravel as far as the region's outcrops are strong.
-    let exposed = g.bare * smoothstep(0.0, 0.6, terrain.x) * smoothstep(0.2, 0.6, hardness);
-    rocky = max(rocky, 0.35 * exposed);
-    if (rocky > 0.0 && footprint >= 4.0) {
-        albedo = mix(albedo, stone * 0.92, 0.45 * rocky);
-    }
-    var slabbed = 0.0;
-    if (rocky > 0.0 && footprint < 4.0) {
-        // Where the rock has a strike, slabs run along it in ribs, three times as long as wide.
-        let striking = length(bedding.xy) > 0.01;
-        let along = select(vec2f(1.0, 0.0), normalize(vec2f(-bedding.y, bedding.x)), striking);
-        let ribs = select(1.0, 3.0, striking);
-        let wobble = 2.2 * (vec2f(noise(world / 4.0), noise(world / 4.0 + 19.0)) - 0.5);
-        let q = world + wobble;
-        let cell = voronoi(vec2f(dot(q, along) / ribs, dot(q, vec2f(-along.y, along.x))), 7.0);
-        // A painted slab reads flat close by, where rock models will stand.
-        var slab = step(cell.x, rocky) * smoothstep(0.16, 0.24, cell.y) * smoothstep(30.0, 80.0, length(relative.xy));
-        var face = stone * (0.82 + 0.3 * cell.z) * mix(0.8, 1.0, smoothstep(0.24, 0.34, cell.y));
-        // Close by, exposed rock is gravel between the slabs.
-        if (exposed > 0.0 && footprint < 0.5) {
-            let grit = 0.78 + 0.3 * noise(world / 0.35) + 0.12 * noise(world / 2.5);
-            let close = exposed * (1.0 - slab) * (1.0 - smoothstep(0.2, 0.5, footprint));
-            face = mix(face, stone * vec3f(1.02, 1.0, 0.95) * grit, close);
-            slab = max(slab, close);
-        }
-        let near = 1.0 - smoothstep(1.5, 4.0, footprint);
-        albedo = mix(mix(albedo, stone * 0.92, 0.45 * rocky), mix(albedo, face, slab), near);
-        slabbed = slab * near;
-        // Each slab is a facet of its own tilt, so outcrops catch the light and throw their own shade.
-        let tilt = vec2f(cell.z, fract(cell.x * 7.13)) - 0.5;
-        n = normalize(n + vec3f(0.5 * tilt, 0.0) * slab * (1.0 - smoothstep(4.0, 12.0, footprint)));
-    }
     // Barren ground keeps its own colour on slopes loose cinder and scree hold, up to about 37°; walls
     // past about 47° are rock, in the region's cliff colour where it names one. Hard rock stands bare
     // from about 37°; soft marl and clay hold scrub on their slopes.
     var bare_from = mix(0.62, 0.766, smoothstep(0.2, 0.6, hardness));
     bare_from = mix(bare_from, min(bare_from, terrain.y), green);
-    // Rock breaks into crags about 26 m across and blocks about 7 m across, in the plane of the face.
+    // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
     let rock = skirt > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
@@ -660,55 +586,37 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         var face = mix(mix(stone, wall.rgb, wall.a), g.albedo, g.barren * smoothstep(0.68, 0.8, n.z));
         // Lit and weathered stretches of the wall, tens of metres across.
         let stain = noise(world / 70.0 + altitude / 50.0);
-        let small = 1.0 - smoothstep(1.5, 5.0, surface_size);
-        var blocks = vec3f(0.5, 0.5, 1.0);
-        if (small > 0.0) {
-            blocks = crag(mat2x2f(0.94, -0.34, 0.34, 0.94) * bent + 41.0, 7.0);
-        }
-        // Each crag and block faces a little across the face and up or down it; the gullies and
-        // buttresses tilt the face itself. Water streaks run down the face here and there.
+        // Each crag faces a little across the face and up or down it; the gullies and buttresses tilt
+        // the face itself.
         let sheer = 1.0 - smoothstep(0.3, 0.55, n.z);
         let across = normalize(vec3f(-n.y, n.x, 0.0) + 1e-6);
         let up = cross(n, across);
-        var tilt = (crags.xy - 0.5) * 1.1 * big + (blocks.xy - 0.5) * 0.7 * small;
+        var tilt = (crags.xy - 0.5) * 1.1 * big;
         var gully = 0.5;
         var gully_tilt = 0.0;
-        var streak = 0.08 * sheer;
         if (sheer > 0.0 && surface_size < 25.0) {
             let wide = 1.0 - smoothstep(8.0, 25.0, surface_size);
             gully = mix(0.5, buttress.x, wide);
             gully_tilt = -0.8 * buttress.y * wide * sheer;
-            if (surface_size < 12.0) {
-                streak = mix(smoothstep(0.62, 0.74, noise(on_face / vec2f(5.0, 70.0))) * smoothstep(0.55, 0.7, noise(on_face / vec2f(45.0, 200.0) + 9.0)),
-                    0.08, smoothstep(3.0, 12.0, surface_size)) * sheer;
-            }
         }
         let plain = n;
         n = normalize(n + across * gully_tilt * walled);
         // A facet's light rises and falls as far as it turns toward the sun, and in shade toward the
-        // sun's side of the sky and up; a gully sees less of the sky. Close by, the crags and blocks
-        // differ less, so a near wall reads as one rough surface.
+        // sun's side of the sky and up; a gully sees less of the sky. Close by, the crags differ less,
+        // so a near wall reads as one rough surface.
         let calm = 1.0 - smoothstep(1.0, 3.0, surface_size);
         tilt *= 1.0 - 0.35 * calm;
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
         face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * walled;
-        if (look.modes.z == 1u) {
-            // Slope light: a steep face sees less sky than a ledge.
-            open *= mix(1.0, 0.65 + 0.5 * max(n.z, 0.0), walled);
-        }
         open *= mix(1.0, (1.0 + 0.6 * tilt.x * dot(across.xy, normalize(look.sun.xy + 1e-6)) + 0.3 * tilt.y) * mix(0.75, 1.25, gully), walled);
-        // Cracks run along some sides of some crags and blocks only, so they never close into a net.
-        let crack = max((1.0 - smoothstep(0.02, 0.05, crags.z)) * (1.0 - smoothstep(1.0, 3.0, surface_size)) * step(0.55 + 0.25 * calm, fract((crags.x + crags.y) * 7.1)),
-            (1.0 - smoothstep(0.04, 0.1, blocks.z)) * (1.0 - smoothstep(0.3, 1.0, surface_size)) * step(0.6 + 0.25 * calm, fract((blocks.x + blocks.y) * 7.1)));
         let contrast = 1.0 - 0.5 * calm;
-        let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big * contrast) * mix(1.0, mix(0.87, 1.03, smoothstep(0.0, 0.3, blocks.z)), small * contrast);
-        var tone = 1.0 + (0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big + 0.2 * (fract((blocks.x + blocks.y) * 13.7) - 0.5) * small) * contrast;
+        let bulge = mix(1.0, mix(0.81, 1.05, smoothstep(0.0, 0.35, crags.z)), big * contrast);
+        var tone = 1.0 + 0.25 * (fract((crags.x + crags.y) * 13.7) - 0.5) * big * contrast;
         // The bedding shows only as a faint tone that comes and goes.
         let bed = hash(vec2f(floor(dot(vec3f(world, altitude), bedding) / 11.0), 3.0));
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
-        // The cracks and streaks darken a wall by about 4 %; it keeps its rock's mean.
-        face *= tone * bulge * (1.0 - (0.4 - 0.2 * calm) * crack) * (1.0 - 0.5 * streak) * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
+        face *= tone * bulge * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
         face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * smoothstep(0.3, 0.6, g.lush) * (1.0 - g.bare));
         face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
         face = mix(face, vec3f(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
@@ -721,8 +629,6 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
-    // Slope light lights rock by its normal alone.
-    let relief = select(mix(look.horizon.w, 0.5, walled), mix(look.horizon.w, 1.0, max(walled, slabbed)), look.modes.z == 1u);
-    let c = light_up(albedo, n, 1.0, open, relief);
+    let c = light_up(albedo, n, 1.0, open, mix(look.horizon.w, 0.5, walled));
     return finish(atmosphere(c, relative, altitude));
 }
