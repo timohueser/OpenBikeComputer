@@ -1555,6 +1555,10 @@ trailview = [
     { name = "scipy" },
     { name = "shapely" },
 ]
+trailview-roads = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
 
 [package.metadata]
 
@@ -1687,6 +1691,10 @@ trailview = [
     { name = "rasterio", specifier = "==1.5.2" },
     { name = "scipy", specifier = "==1.18.1" },
     { name = "shapely", specifier = "==2.1.2" },
+]
+trailview-roads = [
+    { name = "numpy", specifier = "==2.5.3" },
+    { name = "scipy", specifier = "==1.18.1" },
 ]
 
 [[package]]
