@@ -3,12 +3,13 @@
 // requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--lab LAB] [--cracks N]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--lab LAB] [--cracks N]
 //
 // --flights is a JSON list of {name, from, to, frames, viewport?}: a view as a query string, the
 // lat, lon, heading, pitch and height where the flight ends, the frames between (default:
 // flights.json), and the CSS pixels of the page (default 1280 × 800). --tiles serves a
-// `planner-dem` MBTiles instead of the fixture. --lab adds `lab=LAB` to each view. --cracks N
+// `planner-dem` MBTiles instead of the fixture, --ground the TrailView bakes of a folder and --colour
+// its colour variant. --lab adds `lab=LAB` to each view. --cracks N
 // draws with the red clear colour and counts the red pixels of every Nth frame as it is, pages in
 // flight too: the flight must look down on known terrain. --gpu draws 2560 × 1600 pixels on the machine's GPU in a browser window,
 // with exact timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
@@ -22,6 +23,8 @@ const { values } = parseArgs({
     options: {
         flights: { type: 'string', default: new URL('./flights.json', import.meta.url).pathname },
         tiles: { type: 'string' },
+        ground: { type: 'string' },
+        colour: { type: 'string' },
         lab: { type: 'string' },
         cracks: { type: 'string' },
         gpu: { type: 'boolean' },
@@ -41,7 +44,7 @@ try {
     for (const flight of flights) {
         const [width, height] = flight.viewport ?? [1280, 800];
         const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
-        await routeFixture(page, values.tiles);
+        await routeFixture(page, values.tiles, values.ground, values.colour);
         const from = values.lab ? `${flight.from}&lab=${values.lab}` : flight.from;
         await page.goto(`${origin}/trailview.html${values.cracks ? `${from}&debug=cracks` : from}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
@@ -56,8 +59,8 @@ try {
                 const height = start.mode === 'fly' ? start.height * (end.height / start.height) ** t : mix(start.height, end.height);
                 tv.view = { ...start, lat: mix(start.lat, end.lat), lon: mix(start.lon, end.lon), heading: mix(start.heading, end.heading), pitch: mix(start.pitch, end.pitch), height };
                 await tv.nextFrame();
-                const { gpu, cpu, drawn, requests, bytes, terrain } = tv.stats();
-                return { gpu, cpu, drawn, requests, bytes, terrain };
+                const { gpu, cpu, drawn, requests, bytes, terrain, ground } = tv.stats();
+                return { gpu, cpu, drawn, requests, bytes, terrain, ground };
             }, { ...flight, start, i });
             frames.push(frame);
             if (values.cracks && i % Number(values.cracks) === 0) red.push(await redPixels(page));
@@ -71,6 +74,7 @@ try {
             cpu: summary(frames.map(frame => frame.cpu)), selection: summary(of('selection')),
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },
+            ground: { wanted: summary(frames.map(frame => frame.ground.wanted)), short: summary(frames.map(frame => frame.ground.shortage)), capacity: last.ground.capacity, colour: last.ground.colour },
             poolMegabytes: Object.fromEntries(stats.pools.map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
             requests: last.requests, megabytes: +(last.bytes / 2 ** 20).toFixed(2),
             ...(values.cracks ? { redPixels: red } : {}),

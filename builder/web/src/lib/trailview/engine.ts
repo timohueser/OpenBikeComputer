@@ -1,14 +1,19 @@
 import type { PlannerConfig } from '../planner/config';
 import { instantAt, solarPosition, solarTerms } from '../planner/layers/sun';
-import { eyeAltitude, follow, groundOf, move, viewProjection, type Footing, type Pose } from './frame/camera';
+import { eyeAltitude, follow, groundOf, move, VFOV, viewProjection, type Footing, type Pose } from './frame/camera';
 import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
+import { Ground, type GroundStats } from './ground/ground';
 import type { Labs } from './labs';
+import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
+import { LOOK_BYTES, lookUniform } from './light/look';
+import { Sky } from './light/sky';
+import { GroundSource } from './stream/ground';
 import { pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type TerrainStats } from './terrain/terrain';
-import { DEBUG_VIEWS, TIME_ZONE, type View, type Weather } from './view';
+import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain'];
 /** Metres to a view that is at another place. */
@@ -21,12 +26,6 @@ const FRAME_BYTES = 112;
 const MAX_PIXEL_RATIO = 2;
 /** The visibility at sea level in clear weather. */
 const HAZE_M = 35_000;
-/** From the prototype's weather presets: the sunlight, the visibility as a share of HAZE_M, and the horizon. */
-const WEATHER: Record<Weather, { sun: number; haze: number; horizon: [number, number, number] }> = {
-    sunny: { sun: 1, haze: 1, horizon: [0xb4, 0xbc, 0xc4] },
-    cloudy: { sun: 0.95, haze: 0.7, horizon: [0xb4, 0xbc, 0xc4] },
-    rainy: { sun: 0.6, haze: 0.3, horizon: [0x87, 0x8e, 0x95] },
-};
 const RAD = Math.PI / 180;
 
 export interface Stats {
@@ -45,6 +44,7 @@ export interface Stats {
     resident: number;
     recoveries: number;
     terrain: TerrainStats;
+    ground: GroundStats;
 }
 
 /** Where the selection looks from: `above` is the eye's height above the ground, or the pose's height over an unknown ground. */
@@ -60,10 +60,12 @@ export class TrailView {
     private readonly context: GPUCanvasContext;
     private readonly frame: Frame;
     private readonly terrain: Terrain;
+    private readonly groundLook: Ground;
+    private readonly sky = new Sky();
     private readonly controls: Controls;
     private pose: Pose;
     private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
-    private gpuState!: { gpu: Gpu; uniform: GPUBuffer; times: PassTimes; depth?: GPUTexture };
+    private gpuState!: { gpu: Gpu; uniform: GPUBuffer; look: GPUBuffer; times: PassTimes; depth?: GPUTexture };
     /** The ground under the eye, on the plane of the last probe; a new view forgets it. */
     private footing?: Footing;
     private ready = false;
@@ -74,12 +76,13 @@ export class TrailView {
     private drawn = 0;
     private rendered: (() => void)[] = [];
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, labs: Labs) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, private readonly labs: Labs, ground: GroundSource | undefined) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder(labs.pages) }, config.bounds, labs, () => this.request());
+        this.groundLook = new Ground(ground, labs, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -88,9 +91,10 @@ export class TrailView {
         new ResizeObserver(() => this.request()).observe(canvas);
     }
 
-    /** Compiles the pipelines, then starts the tile loads. */
+    /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, labs: Labs): Promise<TrailView> {
-        const engine = new TrailView(canvas, config, view, labs);
+        const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const engine = new TrailView(canvas, config, view, labs, ground ?? undefined);
         await engine.attach(gpu);
         engine.request();
         return engine;
@@ -120,11 +124,17 @@ export class TrailView {
     }
 
     stats(): Stats {
-        const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats;
+        const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats;
         return {
-            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools), requests: pages.requests, bytes: pages.bytes, failed: pages.failed,
-            drawn: this.drawn, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain,
+            adapter: gpu.adapter, gpu: { ...times.ms }, cpu: this.cpu, pools: new Map(gpu.pools),
+            requests: pages.requests + ground.requests, bytes: pages.bytes + ground.bytes, failed: pages.failed + ground.failed,
+            drawn: this.drawn, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground,
         };
+    }
+
+    /** The credits of the ground layers. */
+    get attribution(): string[] {
+        return this.groundLook.attribution;
     }
 
     /** drawnHeight at points from the probe and from an instance shader, with the state of the last frame. */
@@ -145,15 +155,18 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.settled()) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.settled()) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
     private async attach(gpu: Gpu): Promise<void> {
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        this.gpuState = { gpu, uniform, times: new PassTimes(gpu, PASSES) };
-        await this.terrain.attach(gpu, uniform, DEPTH);
+        const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES) };
+        const layouts = this.groundLook.layouts(gpu.device);
+        await this.terrain.attach(gpu, uniform, DEPTH, layouts.render);
+        await Promise.all([this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, DEPTH)]);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -225,19 +238,28 @@ export class TrailView {
         const target = this.target(gpu), aspect = target.width / target.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         this.terrain.update({ lonLat: this.frame.lonLat(place.east, place.north), above: place.above, z: eye?.z, viewProj, pixels: target.height });
-        if (eye) gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj));
+        const { drawn, wanted, refreshed, origins } = this.terrain.selected;
+        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date);
+        if (eye) {
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj));
+            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect));
+        }
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder);
-        const weather = WEATHER[this.extras.weather];
+        this.groundLook.encode(encoder);
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store',
-                clearValue: this.extras.debug === 'cracks' ? RED : { r: weather.horizon[0] / 255, g: weather.horizon[1] / 255, b: weather.horizon[2] / 255, a: 1 },
+                clearValue: this.extras.debug === 'cracks' ? RED : { r: 0, g: 0, b: 0, a: 1 },
             }],
             depthStencilAttachment: { view: target.createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
             timestampWrites: times.writes('terrain'),
         });
-        if (eye) this.terrain.draw(pass);
+        const group = this.groundLook.group;
+        if (eye && group) {
+            this.terrain.draw(pass, group);
+            if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
+        }
         pass.end();
         const read = times.resolve(encoder);
         gpu.device.queue.submit([encoder.finish()]);
@@ -246,7 +268,7 @@ export class TrailView {
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
         // Frames go on while the eye moves or settles on the ground, and while the terrain has work that no load waits for.
-        if (steer || !settled || this.terrain.working) this.request();
+        if (steer || !settled || this.terrain.working || !this.groundLook.idle) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
         for (const resolve of this.rendered.splice(0)) resolve();
@@ -268,12 +290,31 @@ export class TrailView {
 
     private uniforms(eye: Eye, viewProj: Float32Array): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
-        const weather = WEATHER[this.extras.weather];
+        const weather = WEATHERS[this.extras.weather];
         floats.set(viewProj, 0);
         floats.set(this.sun(), 16);
-        floats.set([...weather.horizon.map(c => c / 255), HAZE_M * weather.haze, eye.z, CURVATURE], 20);
+        floats.set([0, 0, 0, HAZE_M * weather.haze, eye.z, CURVATURE], 20);
         new Uint32Array(data)[26] = DEBUG_VIEWS.indexOf(this.extras.debug);
         return data;
+    }
+
+    /**
+     * The look of shade.wgsl: the light keys at the sun's altitude under the weather, and the haze,
+     * light and grade of the regions about the eye.
+     */
+    private look(eye: Eye, aspect: number): ArrayBuffer {
+        const [x, y, z] = this.sun(), [lon, lat] = this.frame.lonLat(eye.east, eye.north), { rules } = this.groundLook;
+        const near = eyeLook(rules.regions, this.groundLook.regionsAt(lon, lat), this.extras.weather);
+        const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
+        const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
+        const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
+        const { materials, lithologies } = rules.vocabulary;
+        return lookUniform({
+            sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
+            camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
+            codes: [Math.max(0, materials.findIndex(material => material.id === 'heath')), this.groundLook.finest, materials.length, lithologies.length],
+            debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache',
+        });
     }
 
     /** The direction to the sun in the frame, and the sunlight, at the view's place, date and time. */
@@ -289,7 +330,7 @@ export class TrailView {
         }
         const { bearing, altitude } = solarPosition([lon, lat], solarTerms(instant));
         const b = bearing + this.convergence(east, north) * RAD;
-        const light = WEATHER[this.extras.weather].sun * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15));
+        const light = WEATHERS[this.extras.weather].sun * Math.min(1, Math.max(0, (altitude + 0.05) / 0.15));
         return [Math.sin(b) * Math.cos(altitude), Math.cos(b) * Math.cos(altitude), Math.sin(altitude), light];
     }
 }

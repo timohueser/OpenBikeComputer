@@ -1,6 +1,7 @@
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
 // coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
 // #include drawn-height.wgsl
+// #include ../ground/look.wgsl
 
 struct Frame {
     // Camera-relative world (x east, y north, z up) to clip space; reversed Z, infinite far plane.
@@ -33,10 +34,9 @@ struct Varyings {
     @location(1) relative: vec3f,
     @location(2) known: f32,
     @location(3) h: f32,
+    @location(4) @interpolate(flat) level: u32,
 }
 
-// The height of the haze layer: its density falls by e every 2.5 km.
-const HAZE_HEIGHT = 2500.0;
 const CELLS = 64u;
 
 @vertex
@@ -53,17 +53,8 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.relative = p;
     out.known = select(-1e6, 1.0, known(v.h));
     out.h = v.h;
+    out.level = node.level;
     return out;
-}
-
-// The share of the colour that the haze hides between the eye and a point, for haze that thins with height.
-fn haze(relative: vec3f) -> f32 {
-    let distance = length(relative);
-    let low = frame.eye / HAZE_HEIGHT;
-    let rise = relative.z / HAZE_HEIGHT;
-    // The mean density along the ray; a level ray has the density of its height.
-    let mean = select((exp(-low) - exp(-low - rise)) / rise, exp(-low), abs(rise) < 1e-3);
-    return 1.0 - exp(-distance / frame.sky.w * mean);
 }
 
 fn hue(level: f32) -> vec3f {
@@ -98,7 +89,5 @@ fn fragment_main(in: Varyings) -> @location(0) vec4f {
         let error = abs(drawn_height(in.s) - in.h);
         return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
     }
-    let rock = smoothstep(0.75, 0.55, n.z);
-    let albedo = mix(vec3f(0.36, 0.42, 0.27), vec3f(0.52, 0.5, 0.47), rock);
-    return vec4f(mix(albedo * light, frame.sky.rgb, haze(in.relative)), 1.0);
+    return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
 }

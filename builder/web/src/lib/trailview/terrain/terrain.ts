@@ -89,6 +89,7 @@ interface Resources {
     check: GPURenderPipeline;
     probeLayout: GPUBindGroupLayout;
     checkLayout: GPUBindGroupLayout;
+    surfaceLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -105,6 +106,7 @@ export class Terrain {
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
+    private wantedNodes: Node[] = [];
     private work?: Work;
     private anchor?: Anchor;
     private quality = 0;
@@ -154,8 +156,18 @@ export class Terrain {
         return { nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality };
     }
 
-    /** Compiles the pipelines for a device. A new device gets every page again, from the kept tile bodies. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat): Promise<void> {
+    /** The nodes that the last frame drew and wanted, the nodes whose normals it computed, and the LOD map windows. */
+    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; origins: [number, number][] } {
+        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
+    }
+
+    /** drawnHeight for other passes: group 1 of the terrain. */
+    get surface(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
+        return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
+    }
+
+    /** Compiles the pipelines for a device, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, labs = this.labs, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -167,7 +179,7 @@ export class Terrain {
         const normals = gpu.texture('pages', { size: [side, side, layers], format: 'rg8snorm', usage }, layers * side * side * 2);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize' | 'probe' | 'check' | 'probeLayout' | 'checkLayout'> = {
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize' | 'probe' | 'check' | 'probeLayout' | 'checkLayout' | 'surfaceLayout'> = {
             gpu, heights, normals,
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
@@ -209,7 +221,7 @@ export class Terrain {
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint, constants } });
         const [mesh, synthesize, normalsOf, quantize, probe, check] = await Promise.all([
             device.createRenderPipelineAsync({
-                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout),
+                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout),
                 vertex: { module: modules.terrain, entryPoint: 'vertex_main', constants },
                 fragment: { module: modules.terrain, entryPoint: 'fragment_main', constants, targets: [{ format: gpu.format }] },
                 primitive: { topology: 'triangle-list' },
@@ -227,7 +239,7 @@ export class Terrain {
             }),
         ]);
         this.resources = {
-            ...r, mesh, synthesize, normalsOf, quantize, probe, check, probeLayout, checkLayout,
+            ...r, mesh, synthesize, normalsOf, quantize, probe, check, probeLayout, checkLayout, surfaceLayout,
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' })]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
@@ -255,6 +267,7 @@ export class Terrain {
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.nodes = nodes.slice(0, MAX_NODES);
+        this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
@@ -334,12 +347,13 @@ export class Terrain {
         });
     }
 
-    draw(pass: GPURenderPassEncoder): void {
+    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
         pass.setPipeline(r.mesh);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
+        pass.setBindGroup(2, ground);
         pass.setIndexBuffer(r.indices, 'uint16');
         pass.drawIndexed(GRID_INDICES.length, this.nodes.length);
     }
