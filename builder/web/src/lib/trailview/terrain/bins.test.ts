@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { CELL, EDGE, features, GRID, INSIDE, insideRings, LAKE, metresPerUnit, nodeStamps, RECORD, ROAD, RULES, type Line } from './bins';
+import { CELL, EDGE, features, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, nodeStamps, PATH, RECORD, ROAD, RULES, type Line } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -22,7 +22,7 @@ describe('the stamp data of a node', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
     });
 
-    it('lists in each cell every segment and edge within the buffer of the feature tiles, and the lakes over its centre', () => {
+    it('lists in each cell every segment and edge within the buffer of the feature tiles, and the lakes over its centre, in the order of the shader', () => {
         const NODE = lakeNode(), list = fixture(TILE.level, TILE.x, TILE.y), { data } = nodeStamps(list, TILE, NODE);
         const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
         const shift = 22 - NODE.level, cell = CELL * 2 ** shift, x0 = NODE.x * PAGE * 2 ** shift - cell, y0 = NODE.y * PAGE * 2 ** shift - cell;
@@ -39,6 +39,11 @@ describe('the stamp data of a node', () => {
                 const near = Math.max(ax, bx) > cx0 - reach && Math.min(ax, bx) < cx0 + cell + reach && Math.max(ay, by) > cy0 - reach && Math.min(ay, by) < cy0 + cell + reach;
                 if (near) expect(listed.has(r)).toBe(true);
             }
+            // Junctions, then each lake's edges and its marker, then the segments, each line's together.
+            const kinds = Array.from(entries, entry => word(entry & ~INSIDE, 4)).join('');
+            expect(kinds).toMatch(new RegExp(`^${JUNCTION}*(${EDGE}*${LAKE})*[${ROAD}${PATH}]*$`));
+            const lines = Array.from(entries, entry => entry & ~INSIDE).filter(r => [ROAD, PATH].includes(word(r, 4))).map(r => word(r, 13));
+            expect(lines.filter((id, i) => id !== lines[i - 1]).length).toBe(new Set(lines).size);
             const marker = Array.from(entries).find(entry => word(entry & ~INSIDE, 4) === LAKE);
             if (insideRings(lake.rings, cx0 + cell / 2, cy0 + cell / 2)) {
                 inside++;

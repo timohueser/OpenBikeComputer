@@ -5,7 +5,8 @@
 // `// #include stamp-core.wgsl`; bins.ts packs the data and mirrors the gates of `road_shows` and `path_shows`.
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets, the cell entries, then RECORD
-// words per primitive. A cell lists its junctions, then its lake markers, then the rest.
+// words per primitive. A cell lists its junctions, then per lake its edges and its marker, then the
+// segments of the roads and paths, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 const GRID: i32 = 18;
@@ -25,9 +26,6 @@ const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
 const CONE_A: u32 = 8u;
 const CONE_B: u32 = 16u;
-// Lakes per cell that a texel tells apart, and lines near a texel.
-const LAKES: u32 = 4u;
-const LINES: u32 = 8u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
@@ -228,16 +226,16 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
         hi[b] = INF;
     }
     var relax = 0.0;
-    var lake_id: array<u32, LAKES>;
-    var lake_level: array<f32, LAKES>;
-    var lake_in: array<bool, LAKES>;
-    var lake_shore: array<f32, LAKES>;
-    var lakes = 0u;
-    // Per road line near the texel: whether a segment of it holds the texel in its core. Inside a bend
-    // tighter than the core, no segment does: a conflict, where the shader draws a wall.
-    var line_id: array<u32, LINES>;
-    var line_held: array<bool, LINES>;
-    var lines = 0u;
+    // The lake of the edges so far: whether they cross the way from the cell's origin to p, and the shore distance.
+    var crossed = false;
+    var shore = INF;
+    var water_in = -1e30;
+    var water_near = -1e30;
+    // The road line of the segments so far: whether p lies in its core band, and whether a segment
+    // holds it there. Inside a bend tighter than the core, none does: a conflict, where the shader draws a wall.
+    var line = NO_DATA;
+    var line_near = false;
+    var line_held = false;
     let first_entry = word(data + HEAD + u32(c));
     let last_entry = word(data + HEAD + u32(c) + 1u);
     for (var e = first_entry; e < last_entry; e++) {
@@ -248,42 +246,42 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             let reach = min(min(JUNCTION_CAP, 2.0 * (real(r + 6u) + m)), reach_limit(texel) * 0.5);
             let d = length(vec2f(p - point(r))) * unit;
             relax = max(relax, (JUNCTION_TOL - CORE_TOL + 2.0 * real(r + 7u) * reach) * max(0.0, 1.0 - d / (2.0 * reach)));
-        } else if (kind == LAKE) {
-            if (lakes < LAKES) {
-                lake_id[lakes] = word(r + 5u);
-                lake_level[lakes] = real(r + 6u);
-                lake_in[lakes] = (entry & INSIDE) != 0u;
-                lake_shore[lakes] = INF;
-                lakes++;
-            }
         } else if (kind == EDGE) {
-            let id = word(r + 5u);
-            for (var l = 0u; l < lakes; l++) {
-                if (lake_id[l] == id) {
-                    // The crossing from the cell's origin, relative to it; the distance relative to the edge,
-                    // so that every node that holds the edge gets the same bits.
-                    let a = point(r);
-                    let b = point(r + 2u);
-                    lake_in[l] = lake_in[l] != crosses(vec2f(0.0), vec2f(p - centre), vec2f(a - centre), vec2f(b - centre));
-                    lake_shore[l] = min(lake_shore[l], segment_distance(vec2f(p - a), vec2f(0.0), vec2f(b - a)) * unit);
+            // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
+            let a = point(r);
+            let b = point(r + 2u);
+            crossed = crossed != crosses(vec2f(0.0), vec2f(p - centre), vec2f(a - centre), vec2f(b - centre));
+            shore = min(shore, segment_distance(vec2f(p - a), vec2f(0.0), vec2f(b - a)) * unit);
+        } else if (kind == LAKE) {
+            let level = real(r + 6u);
+            if (((entry & INSIDE) != 0u) != crossed) {
+                hi[WATER_CORE] = min(hi[WATER_CORE], level - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * shore));
+                water_in = max(water_in, level);
+                out.shore = min(out.shore, -shore);
+            } else {
+                if (banks_show(texel, baked)) {
+                    let x = max(0.0, shore - bank_width(texel, baked));
+                    lo[BANKS] = max(lo[BANKS], level + FREEBOARD - widen(x, BANK_RAMP, 1.0));
                 }
+                if (shore <= water_reach(texel, baked)) {
+                    water_near = max(water_near, level);
+                }
+                out.shore = min(out.shore, shore);
             }
+            crossed = false;
+            shore = INF;
         } else {
+            if (word(r + 13u) != line) {
+                out.conflict = out.conflict || (line_near && !line_held);
+                line = word(r + 13u);
+                line_near = false;
+                line_held = false;
+            }
             let h = real(r + 8u);
             let g = along(r, p, unit);
-            if (word(r + 4u) == ROAD && road_shows(h, texel, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
-                var l = 0u;
-                while (l < lines && line_id[l] != word(r + 13u)) {
-                    l++;
-                }
-                if (l == lines && lines < LINES) {
-                    line_id[l] = word(r + 13u);
-                    line_held[l] = false;
-                    lines++;
-                }
-                if (l < LINES) {
-                    line_held[l] = line_held[l] || (g.core && g.lateral <= h + m);
-                }
+            if (kind == ROAD && road_shows(h, texel, baked) && (g.beside <= h + m || (g.core && g.lateral <= h + m))) {
+                line_near = true;
+                line_held = line_held || (g.core && g.lateral <= h + m);
             }
             if (g.lateral >= INF) {
                 continue;
@@ -316,27 +314,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
             }
         }
     }
-    for (var l = 0u; l < lakes; l++) {
-        let level = lake_level[l];
-        let d = lake_shore[l];
-        if (lake_in[l]) {
-            hi[WATER_CORE] = min(hi[WATER_CORE], level - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * d));
-            out.water = level;
-            out.shore = min(out.shore, -d);
-        } else {
-            if (banks_show(texel, baked)) {
-                let x = max(0.0, d - bank_width(texel, baked));
-                lo[BANKS] = max(lo[BANKS], level + FREEBOARD - widen(x, BANK_RAMP, 1.0));
-            }
-            if (d <= water_reach(texel, baked) && out.water < -1e29) {
-                out.water = level;
-            }
-            out.shore = min(out.shore, d);
-        }
-    }
-    for (var l = 0u; l < lines; l++) {
-        out.conflict = out.conflict || !line_held[l];
-    }
+    out.conflict = out.conflict || (line_near && !line_held);
+    out.water = select(water_near, water_in, water_in > -1e29);
     // A bucket that is empty, or that would make the interval empty, does not apply: a conflict.
     for (var b = 0u; b < BUCKETS; b++) {
         if (lo[b] <= -INF && hi[b] >= INF) {

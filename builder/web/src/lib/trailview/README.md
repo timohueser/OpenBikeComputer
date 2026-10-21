@@ -68,7 +68,7 @@ From `builder/web/tests/browser`:
 ```sh
 npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
-node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--features DIR] [--lab LAB] [--cracks N]
+node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
 npm run test:trailview                     # the smoke
 ```
 
@@ -77,8 +77,9 @@ bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the no
 pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture, and `--features` a folder of feature tiles `z/x/y.bin`; build the page with a config
-whose `bounds` are its box. `--audit` prints `trailView.audit()` of each view. `--lab terrain:rings`
-adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+whose `bounds` are its box. `--audit` prints `trailView.audit()` of each view; `--audit 10` adds
+up the audit of every tenth frame of a flight, as over `audits.json`. `--lab terrain:rings` adds
+the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 ## Checks

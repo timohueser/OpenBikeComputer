@@ -181,7 +181,8 @@ export interface NodeStamps {
 
 /**
  * The stamp data of a node from the features of its feature tile. Every primitive goes to each cell
- * that it comes within REACH_M of, so the shader sees every primitive that can reach a texel.
+ * that it comes within REACH_M of, so the shader sees every primitive that can reach a texel. A cell
+ * keeps the order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
  */
 export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = false): NodeStamps {
     const { lines, lakes } = features(list, tile);
@@ -229,7 +230,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
         }
     });
     let water = false;
-    lakes.forEach((lake, id) => {
+    lakes.forEach(lake => {
         const box = [Infinity, Infinity, -Infinity, -Infinity];
         for (const ring of lake.rings) for (let i = 0; i < ring.length; i += 2) {
             box[0] = Math.min(box[0], ring[i]);
@@ -242,14 +243,14 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
         for (const ring of lake.rings) {
             for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
                 const [ax, ay, bx, by] = [ring[j], ring[j + 1], ring[i], ring[i + 1]];
-                const touched = bin(2, records.length, [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
+                const touched = bin(1, records.length, [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]);
                 if (!touched.length) continue;
-                record([ax, ay, bx, by, EDGE, id, f(lake.level)]);
+                record([ax, ay, bx, by, EDGE]);
                 for (const c of touched) near.add(c);
             }
         }
-        // A cell lists the lake where an edge is near, or where its origin lies inside the lake: its
-        // centre, held inside the node, as stamp-core.wgsl has it.
+        // A cell lists the lake after its edges, where an edge is near or where its origin lies inside
+        // the lake: its centre, held inside the node, as stamp-core.wgsl has it.
         const marked: number[] = [];
         const held = (v: number, base: number) => Math.min(Math.max(v, base + cell), base + cell + PAGE * 2 ** shift - 1);
         for (let c = 0; c < GRID * GRID; c++) {
@@ -257,7 +258,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, baked = fals
             if (inside || near.has(c)) marked.push(c | (inside ? INSIDE : 0));
         }
         if (!marked.length) return;
-        const marker = record([0, 0, 0, 0, LAKE, id, f(lake.level)]);
+        const marker = record([0, 0, 0, 0, LAKE, 0, f(lake.level)]);
         for (const entry of marked) cells[1][entry & ~INSIDE].push(marker | (entry & INSIDE));
         water = heights = true;
     });
