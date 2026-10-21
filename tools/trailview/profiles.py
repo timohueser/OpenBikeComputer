@@ -1,7 +1,6 @@
-"""Simple heights for the TrailView feature tiles, from the master terrain: a road lies at the terrain
-smoothed along it, a river at that terrain held from rising downstream, and a lake at the median of the
-terrain inside it. The road and water solvers replace them; until then the stamps of the engine have
-heights to shape the terrain to."""
+"""The master terrain for the solvers of the TrailView feature tiles, and simple road heights from it: a
+road lies at the terrain smoothed along it. The road solver replaces them; `water.py` solves the rivers
+and lakes."""
 
 from collections import OrderedDict
 import io
@@ -13,25 +12,23 @@ import sqlite3
 
 import numpy as np
 
+from . import water
+
 ROADS = {"main-road", "road", "path"}
-RIVERS = {"river", "stream"}
-LAKES = {"lake"}
 # As GRADE_SMOOTH_M of the prototype's grading: a road follows the terrain averaged over ±12 m.
 SMOOTH_M = 12.0
 STEP_M = 2.0
-# A lake reads the terrain at no more than this many points.
-LAKE_POINTS = 250_000
 EQUATOR_M = 40075016.686
 TILE = 512
 CACHED = 256
 
 
 def solves(kind, tags):
-    """Whether this module sets the heights of a feature: a road that is not a bridge, a river that is not
-    in a tunnel, or a lake."""
+    """Whether the solvers read or set the heights of a feature: a road that is not a bridge, or what the
+    water solver reads, but a river in a tunnel."""
     if kind in ROADS:
         return tags.get("bridge", "no") == "no"
-    return kind in LAKES or (kind in RIVERS and tags.get("tunnel", "no") == "no")
+    return water.reads(kind) and not (kind in water.RIVERS and tags.get("tunnel", "no") != "no")
 
 
 class Terrain:
@@ -157,53 +154,14 @@ def road(points, terrain):
     return fit[vertices]
 
 
-def river(points, terrain):
-    """The water level at the vertices of a river, which OSM draws in the direction of its flow: the
-    terrain smoothed as for a road, never rising downstream."""
-    return np.fmin.accumulate(road(points, terrain))
-
-
-def inside(rings, xs, ys):
-    """Per point of the grid xs × ys, whether it lies inside the rings, even-odd: a hole is a ring too."""
-    edges = np.array([(*a, *b) for ring in rings for a, b in zip(ring, ring[1:] + ring[:1])], np.float64)
-    ax, ay, bx, by = edges.T
-    y = ys[:, None]
-    crosses = (ay <= y) != (by <= y)
-    x = np.where(crosses, ax + (y - ay) * (bx - ax) / np.where(by == ay, 1, by - ay), np.inf)
-    x.sort(axis=1)
-    counts = np.array([np.searchsorted(row, xs) for row in x])
-    return counts % 2 == 1
-
-
-def lake(parts, terrain):
-    """The median of the terrain inside an area, NaN where it knows none. A lake smaller than the grid
-    reads the mean of its vertices."""
-    rings = [points for _, points, *_ in parts]
-    xy = np.concatenate([np.asarray(ring, np.float64) for ring in rings])
-    (x0, y0), (x1, y1) = xy.min(0), xy.max(0)
-    area = sum(abs(sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]))) / 2 for ring in rings)
-    step = max(1 / ((1 << terrain.top) * TILE), math.sqrt(area / LAKE_POINTS))
-    xs, ys = np.arange(x0 + step / 2, x1, step), np.arange(y0 + step / 2, y1, step)
-    mask = inside(rings, xs, ys) if xs.size and ys.size else np.zeros((0, 0), bool)
-    if mask.any():
-        rows, columns = np.nonzero(mask)
-        h = terrain.heights(xs[columns], ys[rows])
-    else:
-        h = terrain.heights(*np.asarray(rings[0], np.float64).mean(0, keepdims=True).T)
-    return float(np.nanmedian(h)) if np.isfinite(h).any() else math.nan
-
-
 def solve(features, terrain):
-    """Per feature (kind, tags, parts), the heights of each part, None where unknown. Roads that share a
-    vertex take the mean of their heights there, so a junction has one height."""
-    out, shared = [], {}
+    """Per feature (kind, tags, parts), the heights of each part, None where unknown, and the metrics of
+    the water. Roads that share a vertex take the mean of their heights there, so a junction has one height."""
+    water_heights, metrics = water.solve([feature for feature in features if feature[0] not in ROADS], terrain)
+    levels, out, shared = iter(water_heights), [], {}
     for kind, _, parts in features:
-        if kind in LAKES:
-            level = lake(parts, terrain)
-            out.append([[level] * len(points) for _, points, *_ in parts])
-            continue
-        if kind in RIVERS:
-            out.append([river(points, terrain).tolist() for _, points, *_ in parts])
+        if kind not in ROADS:
+            out.append(next(levels))
             continue
         heights = [road(points, terrain).tolist() for _, points, *_ in parts]
         for (_, points, *_), z in zip(parts, heights):
@@ -219,4 +177,4 @@ def solve(features, terrain):
                 for n, point in enumerate(points):
                     if point in shared:
                         z[n] = shared[point][0] / shared[point][1]
-    return [[[h if math.isfinite(h) else None for h in z] for z in heights] for heights in out]
+    return [[z and [h if h is not None and math.isfinite(h) else None for h in z] for z in heights] for heights in out], metrics

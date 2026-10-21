@@ -3,7 +3,8 @@
 
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
-objects and assembles the areas; `trailview/profiles.py` sets the heights of roads and lakes."""
+objects and assembles the areas; `trailview/profiles.py` sets the heights of roads, `trailview/water.py`
+the levels of rivers and lakes."""
 
 import argparse
 from functools import lru_cache
@@ -504,13 +505,13 @@ def area_km2(bounds):
 
 
 def bake(kinds, pbf, bounds, output, attribution, terrain=None):
-    """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads and lakes
-    from the `profiles.Terrain` when there is one; return the metrics."""
+    """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads, rivers and
+    lakes from the `profiles.Terrain` when there is one; return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
     binary, version = region_osm.probe()
-    tiles, low, shared, counts, held = Tiles(bounds), [], {}, {}, []
+    tiles, low, shared, counts, held, water = Tiles(bounds), [], {}, {}, [], {}
 
     def place(entry, tags, parts):
         if tiles.add(MAX_ZOOM, entry, tags, parts):
@@ -527,9 +528,9 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None):
             held.append((entry, tags, parts))
         else:
             place(entry, tags, parts)
-    # The heights of a junction need every road that meets there.
+    # The heights of a junction need every road that meets there, a river level its whole network.
     if held:
-        solved = profiles.solve([(entry["kind"], tags, parts) for entry, tags, parts in held], terrain)
+        solved, water = profiles.solve([(entry["kind"], tags, parts) for entry, tags, parts in held], terrain)
         for (entry, tags, parts), heights in zip(held, solved):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
     for entry, tags, parts in low:
@@ -552,7 +553,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None):
             "bounds": bounds})
     size = output.stat().st_size
     return {"osmium": version.splitlines()[0], "kinds": counts, "tiles": len(tiles.tiles), "bytes": size,
-            "bytes_per_km2": round(size / area_km2(bounds))}
+            "bytes_per_km2": round(size / area_km2(bounds)), **({"water": water} if water else {})}
 
 
 def step(request):

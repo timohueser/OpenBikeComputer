@@ -87,7 +87,7 @@
     "kind": "lake",
     "geometry": "area",
     "match": [{"natural": ["water"]}, {"landuse": ["reservoir"]}],
-    "keep": ["water", "landuse", "intermittent", "seasonal"],
+    "keep": ["water", "landuse", "ele", "intermittent", "seasonal"],
     "height": "pad",
     "min_zoom": 8
   },
