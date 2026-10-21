@@ -29,6 +29,8 @@ export interface PlannerConfig {
     routes?: string;
     /** The data layer archives of the region, by name. */
     layers: Partial<Record<Archive, string>>;
+    /** TrailView's ruleset `rules.json` (specs/trailview-tiles.md#rules); older releases have none. */
+    trailview_rules?: string;
 }
 
 const URLS = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites', 'routing', 'search'] as const;
@@ -45,10 +47,12 @@ export function plannerConfig(value: unknown): PlannerConfig {
     const bounds = config.bounds;
     const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key])]));
     const routes = config.routes === undefined ? undefined : configUrl(config.routes);
+    const rules = config.trailview_rules === undefined ? undefined : configUrl(config.trailview_rules);
     const layers = Object.fromEntries(Object.entries(config.layers ?? {}).map(([name, value]) => [name, configUrl(value)]));
     const invalid = [
         ...URLS.filter((key) => !urls[key]),
         ...(config.routes === undefined || routes ? [] : ['routes']),
+        ...(config.trailview_rules === undefined || rules ? [] : ['trailview_rules']),
         ...(typeof config.name === 'string' && config.name ? [] : ['name']),
         ...(typeof config.attribution === 'string' && config.attribution ? [] : ['attribution']),
         ...(config.landcover_attribution === undefined || typeof config.landcover_attribution === 'string' ? [] : ['landcover_attribution']),
@@ -58,5 +62,5 @@ export function plannerConfig(value: unknown): PlannerConfig {
             && bounds[1] >= -85 && bounds[3] <= 85 && bounds[0] < bounds[2] && bounds[1] < bounds[3] ? [] : ['bounds']),
     ];
     if (invalid.length) throw new Error(`The planner config has invalid fields: ${invalid.join(', ')}.`);
-    return { ...config, ...urls, routes, layers };
+    return { ...config, ...urls, routes, trailview_rules: rules, layers };
 }

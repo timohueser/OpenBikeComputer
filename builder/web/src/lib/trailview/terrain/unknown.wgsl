@@ -7,6 +7,7 @@ struct Varyings {
     @location(1) relative: vec3f,
     @location(2) known: f32,
     @location(3) h: f32,
+    @location(4) @interpolate(flat) level: u32,
 }
 
 // The fragment shader reads what the vertex shader writes.

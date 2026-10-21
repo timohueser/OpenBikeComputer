@@ -4,11 +4,11 @@ import type { Gpu } from './device';
 const READBACKS = 3;
 
 /**
- * GPU time per render pass from timestamp queries, when the device has them. Chrome rounds
+ * GPU time per pass from timestamp queries, when the device has them. Chrome rounds
  * timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
  */
 export class PassTimes {
-    /** Milliseconds of each pass in the last frame that was read; a pass that the frame did not run is absent. */
+    /** Milliseconds of each pass in the last frame that was read; a pass that this frame did not run has none. */
     readonly ms: Record<string, number> = {};
     /** What the caller told `resolve()` of the frame that `ms` holds: the readback ends frames after the submit. */
     tag?: Record<string, number>;
@@ -41,7 +41,7 @@ export class PassTimes {
         encoder.copyBufferToBuffer(this.resolved, 0, target, 0, target.size);
         return () => target.mapAsync(GPUMapMode.READ).then(() => {
             const times = new BigInt64Array(target.getMappedRange());
-            for (const pass of this.passes) if (!passes.includes(pass)) delete this.ms[pass];
+            for (const pass of this.passes) delete this.ms[pass];
             for (const pass of passes) {
                 const index = this.passes.indexOf(pass);
                 this.ms[pass] = Number(times[2 * index + 1] - times[2 * index]) / 1e6;

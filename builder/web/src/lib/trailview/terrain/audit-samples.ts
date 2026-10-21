@@ -38,6 +38,17 @@ export function roadHeight(line: Line, p: [number, number], reach: number): numb
 }
 
 /** The distance from a point to the nearest edge of rings, in the units of the points. */
+/** World units from a point to a line, its ends included: the stamps hold a round cap there. */
+function lineDistance({ xy }: Line, x: number, y: number): number {
+    let best = Infinity;
+    for (let i = 0; i + 3 < xy.length; i += 2) {
+        const ax = xy[i], ay = xy[i + 1], dx = xy[i + 2] - ax, dy = xy[i + 3] - ay;
+        const t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+        best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy));
+    }
+    return best;
+}
+
 function shoreDistance(rings: number[][], x: number, y: number): number {
     let best = Infinity;
     for (const ring of rings) {
@@ -109,11 +120,13 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
         }
     }
     // A point under water has no bank, and the mesh at a bank reads texels a mesh reach away: so no
-    // other water may lie that near (a river's mouth in a lake, the channels of a braided river).
+    // other water may lie that near (a river's mouth in a lake, the channels of a braided river), and
+    // no other part of its own river within its bed and the reach of the mesh (a tight bend).
     const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel;
+    const bed = (line: Line) => Math.max(line.h, RULES.MESH_TEXELS * texel);
     const wet = (x: number, y: number, self: unknown) =>
         lakes.some(lake => insideRings(lake.rings, x, y) || (lake !== self && shoreDistance(lake.rings, x, y) * unit < near)) ||
-        rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], (line === self ? line.h : line.h + near) / unit)));
+        rivers.some(line => lineDistance(line, x, y) * unit < bed(line) + (line === self ? READ_TEXELS * texel : near));
     for (const lake of lakes) {
         const { level, rings } = lake;
         // Inside: a grid over the node, every point at its distance from the shore.
@@ -163,7 +176,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 push(cx, cy, IN_WATER, z, line.h, 0, Infinity, 0, [0, 0], steepest);
                 // Past the bed of the node's level, as river_half of stamp-core.wgsl, and the reach of the mesh.
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
-                    const d = Math.max(line.h, RULES.MESH_TEXELS * texel) + READ_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
+                    const d = bed(line) + READ_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
                     const level = roadHeight(line, [x, y], 1.5 * d / unit);
                     if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d, Infinity, 0, [0, 0], steepest);
                 }

@@ -3,7 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
-import { cdlod, COARSEST, key, MAP, RANGE, select, size, type Node } from './lod';
+import { cdlod, key, MAP, RANGE, select, size, type Node } from './lod';
 import { MODE, Pages, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
@@ -66,6 +66,15 @@ describe('the page pools', () => {
         expect(new Set(resident.map(page => page.slot)).size).toBe(resident.length);
         expect(pages.shortage).toBeGreaterThan(0);
         expect(pages.wanted.synth).toBeGreaterThan(20);
+    });
+
+    it('cover a node where a ready page of its level or a coarser one holds it, and nowhere else', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
+        const finest = wanted.at(-1)!, shift = finest.level - 13;
+        expect(pages.covers(finest)).toBe(false);
+        await settle(pages, [{ level: 13, x: finest.x >> shift, y: finest.y >> shift }]);
+        expect(pages.covers(finest)).toBe(true);
+        expect(pages.covers({ ...finest, x: finest.x + (2 << shift) })).toBe(false);
     });
 
     it('get every page again for a new device, without a request', async () => {
@@ -155,10 +164,6 @@ describe('a turn', () => {
     const rule = cdlod({ anchor, above: 1000 }, RANGE.least);
     const ex = anchor.whole[0] + anchor.part[0];
     const side = (east: boolean) => select(rule, box, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex));
-    const ready = (pages: Pages, node: Node) => {
-        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (pages.pages.get(`${level}/${x}/${y}`)?.ready) return true;
-        return false;
-    };
 
     it('finds a ready page under every node of the new view before a tile of it arrives', async () => {
         const pages = new Pages(source(), { stored: 600, synth: 600 }, box, () => {});
@@ -166,6 +171,6 @@ describe('a turn', () => {
         await settle(pages, east);
         expect(pages.idle).toBe(true);
         const west = side(false).nodes;
-        expect(west.filter(node => !ready(pages, node))).toEqual([]);
+        expect(west.filter(node => !pages.covers(node))).toEqual([]);
     });
 });

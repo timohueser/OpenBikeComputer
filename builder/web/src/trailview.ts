@@ -51,8 +51,8 @@ async function main(): Promise<void> {
         event.preventDefault();
     });
     const credits = document.querySelector<HTMLElement>('#credits')!;
-    credits.textContent = release.terrain_attribution;
-    credits.hidden = !release.terrain_attribution;
+    credits.textContent = [release.terrain_attribution, ...engine.attribution].filter(Boolean).join(' · ');
+    credits.hidden = !credits.textContent;
     hud(document.querySelector<HTMLElement>('#hud')!, engine, labs);
     Object.assign(window, { trailView: engine });
 }

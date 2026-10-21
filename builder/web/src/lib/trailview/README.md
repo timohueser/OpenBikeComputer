@@ -2,9 +2,9 @@
 
 TrailView is the 3D view of the planner. The engine is TypeScript with raw WebGPU and WGSL, and
 it uses no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
-the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The feature
-tiles of `trailview-features` (specs/trailview-features.md) stamp the roads, paths, rivers and lakes
-into each page as it loads, and give the water its meshes.
+the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The ground
+look comes from the TrailView layers of the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md))
+and the planner's snow tiles.
 
 ## Build and run
 
@@ -17,7 +17,9 @@ npm run build:trailview                                 # dist/trailview
 ```
 
 The page reads the `active` entry of the planner catalogue, as the planner does.
-`VITE_PLANNER_CONFIG` replaces the entry. A browser without WebGPU shows a notice.
+`VITE_PLANNER_CONFIG` replaces the entry. A browser without WebGPU shows a notice. The ground needs
+`trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them the ground
+is the palette of the `world` region.
 
 ## Layout
 
@@ -26,8 +28,11 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `engine.ts` | The frame loop, the view, `waitForIdle()`, the recovery from a lost device |
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
-| `stream/` | The stored terrain and its decode worker, the feature codec |
+| `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
+| `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the rules packing and the per-page compute |
+| `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
+| `rules/` | The regions of `rules.json`, resolved |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
 | `hud.ts` | The lab HUD |
@@ -42,12 +47,10 @@ The page reads the `active` entry of the planner catalogue, as the planner does.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), or `mask` (the features of the mask flat: roads by surface, water blue, conflicts red, fords cyan) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, conflicts red, fords cyan) |
 | `lab` | `name:variant`, a list with commas |
 
-Ctrl+C copies the view as an address, and Ctrl+V shows a pasted address. W A S D or the arrows
-move, Q and E sink and rise in flight, Shift runs, F walks or flies, a drag looks and the wheel
-zooms. H hides the HUD.
+The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 ## Labs
 
@@ -66,20 +69,30 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
-node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
+node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
+node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
-pages over the flights of `flights.json`. Run it on the M1 Pro with `--gpu`: Chrome then draws
+pages over the flights of `flights.json`. The `ground` pass runs only when ground pages arrive:
+read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
-of the fixture, and `--features` a folder of feature tiles `z/x/y.bin`; build the page with a config
-whose `bounds` are its box. `--audit` prints `trailView.audit()` of each view; `--audit 10` adds
-up the audit of every tenth frame of a flight, as over `audits.json`. `--lab NAME:VARIANT` adds
-the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
+of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
+whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
+
+`--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
+does: `DIR/rules.json`, `DIR/{material,lithology,region,snow}.pmtiles` and
+`DIR/colour/<variant>/{q1,q2,q3,q4,ndvimax}.pmtiles`; `--colour` picks the variant (`webp-12`). Build
+the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
+`trailview_rules` is `https://tiles.test/trailview/rules.json`.
+
+`skyline.mjs` draws each photograph of `peak-view-photos` from 1.6 m above its `ground_m` and
+prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
+when one is past its `rms_limit_deg`.
 
 ## Checks
 
@@ -94,8 +107,7 @@ npm run check:wgsl          # cargo install naga-cli --version 30.0.1 --locked
 ## The fixture
 
 `tests/browser/trailview/fixture/` holds the planner terrain of a box at Engelberg, from
-Copernicus GLO-30 square N46 E008, its feature tiles with heights from that terrain, and its config.
-To make it again, with OSM.pbf an extract that covers the box:
+Copernicus GLO-30 square N46 E008, its feature tiles and its config. To make it again from OSM.pbf:
 
 ```sh
 cargo run --release --locked -p obc-dem --features terrarium --bin planner-dem -- \
@@ -118,13 +130,17 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   "A valid external Instance reference no longer exists".
 - Chrome rounds timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
+- `OBC_BROWSER_WS` names a Playwright browser server for the scripts, so `--gpu` runs share one window.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
   `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
-- A stored page with stamps takes two layers: its raw heights for the syntheses below it, and a
-  stamped copy that draws. Never let a synthesis read a stamped page.
-- `bins.ts` mirrors the gates of `stamp-core.wgsl`; `bins.test.ts` holds their numbers equal.
-- WebGPU allows 8 storage buffers per shader stage: the audit packs its node table into the stamp data.
-- The audit counts only what the frame shows: a node at the frame edge can border culled nodes without pages.
+- Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
+- The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
+  them from their cover, two levels coarser; the HUD counts them as short.
+- A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date
+  and the snow are part of a page. A view's tile bodies exceed the 96 MiB that the ground
+  keeps, so most come again.
+- The ground noise is in frame metres about the first view: far from it, float32 coarsens its
+  finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.

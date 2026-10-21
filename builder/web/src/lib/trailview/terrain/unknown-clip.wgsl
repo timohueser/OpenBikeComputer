@@ -10,6 +10,7 @@ struct Varyings {
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
     @location(3) h: f32,
+    @location(4) @interpolate(flat) level: u32,
 }
 
 // A fragment shader cannot read a clip distance.
@@ -18,6 +19,7 @@ struct Fragment {
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
     @location(3) h: f32,
+    @location(4) @interpolate(flat) level: u32,
 }
 
 fn mark_known(out: ptr<function, Varyings>, known: bool) {

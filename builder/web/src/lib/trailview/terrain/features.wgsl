@@ -1,14 +1,14 @@
-// The feature mask of near pages, by the page that draws a texel. Include it after
+// The feature mask of near pages, by the page that draws a texel, in group 3. Include it after
 // drawn-height.wgsl with `// #include features.wgsl`.
 // #include drawn-height.wgsl
 
 // Per page layer: the mask layer + 1, 0 for none.
-@group(2) @binding(0) var<storage, read> masks: array<u32>;
+@group(3) @binding(0) var<storage, read> masks: array<u32>;
 // Per texel, filtered: the distance to the nearest road edge and to the waterline (negative inside),
 // the across coordinate of that road, the cut or fill depth; ±MASK_RANGE metres as 0..1.
-@group(2) @binding(1) var mask_shapes: texture_2d_array<f32>;
+@group(3) @binding(1) var mask_shapes: texture_2d_array<f32>;
 // Per texel: the road surface code (0 none), the water kind (0 none, 1 water), the flags.
-@group(2) @binding(2) var mask_kinds: texture_2d_array<u32>;
+@group(3) @binding(2) var mask_kinds: texture_2d_array<u32>;
 
 const BUILDING: u32 = 1u;
 const WALL: u32 = 2u;

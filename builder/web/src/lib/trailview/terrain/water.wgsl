@@ -1,15 +1,16 @@
 // The water: the meshes of water-mesh.ts at their levels, one flat colour, drawn after the terrain
 // and hidden where the terrain stands above them. Each drawn node draws the mesh of its feature tile
 // and keeps the part over its own square, as its stamps read that tile. A skirt and a river edge
-// move out by the reach of the node's level, under the banks that the stamps raise there.
+// move out by the reach of the node's level, under the banks that the stamps raise there. The haze
+// and `finish()` are those of the ground, from the look in group 2.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
+// #include ../light/shade.wgsl
 
 // As Frame and Node of terrain.wgsl, which share their buffers.
 struct Frame {
     view_proj: mat4x4f,
     sun: vec4f,
-    sky: vec4f,
     eye: f32,
     curvature: f32,
     debug: u32,
@@ -45,19 +46,11 @@ struct WaterOut {
     @location(1) @interpolate(flat) low: vec2f,
     @location(2) @interpolate(flat) high: vec2f,
     @location(3) relative: vec3f,
+    @location(4) altitude: f32,
 }
 
-const WATER: vec3f = vec3f(0.16, 0.3, 0.38);
-// As HAZE_HEIGHT and haze() of terrain.wgsl.
-const HAZE_HEIGHT = 2500.0;
-
-fn haze(relative: vec3f) -> f32 {
-    let distance = length(relative);
-    let low = frame.eye / HAZE_HEIGHT;
-    let rise = relative.z / HAZE_HEIGHT;
-    let mean = select((exp(-low) - exp(-low - rise)) / rise, exp(-low), abs(rise) < 1e-3);
-    return 1.0 - exp(-distance / frame.sky.w * mean);
-}
+// The one colour of the water, in linear light.
+const WATER: vec3f = vec3f(0.018, 0.071, 0.119);
 
 @vertex
 fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut {
@@ -80,6 +73,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     out.low = vec2f(node.origin);
     out.high = out.low + f32(1 << (30u - node.level));
     out.relative = p;
+    out.altitude = v.level;
     return out;
 }
 
@@ -89,5 +83,5 @@ fn water_fragment(in: WaterOut) -> @location(0) vec4f {
     if (any(in.u < in.low) || any(in.u >= in.high) || frame.debug == 3u || frame.debug == 4u) {
         discard;
     }
-    return vec4f(mix(WATER, frame.sky.rgb, haze(in.relative)), 1.0);
+    return vec4f(finish(atmosphere(WATER, in.relative, in.altitude)), 1.0);
 }

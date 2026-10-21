@@ -3,19 +3,18 @@
 // coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
 // #include drawn-height.wgsl
 // #include features.wgsl
+// #include ../ground/look.wgsl
 
 struct Frame {
     // Camera-relative world (x east, y north, z up) to clip space; reversed Z, infinite far plane.
     view_proj: mat4x4f,
     // xyz: the direction to the sun. w: the sunlight.
     sun: vec4f,
-    // rgb: the horizon. w: the visibility at sea level in metres.
-    sky: vec4f,
     // The eye's height above sea level.
     eye: f32,
     // Metres of drop per square metre of distance: Earth curvature with refraction.
     curvature: f32,
-    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface, 5 mask.
+    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface, MASK_VIEW mask; look.wgsl draws the others.
     debug: u32,
 }
 
@@ -29,8 +28,6 @@ struct Node {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
 
-// The height of the haze layer: its density falls by e every 2.5 km.
-const HAZE_HEIGHT = 2500.0;
 const CELLS = 64u;
 
 @vertex
@@ -47,18 +44,12 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.relative = p;
     mark_known(&out, known(v.h));
     out.h = v.h;
+    out.level = node.level;
     return out;
 }
 
-// The share of the colour that the haze hides between the eye and a point, for haze that thins with height.
-fn haze(relative: vec3f) -> f32 {
-    let distance = length(relative);
-    let low = frame.eye / HAZE_HEIGHT;
-    let rise = relative.z / HAZE_HEIGHT;
-    // The mean density along the ray; a level ray has the density of its height.
-    let mean = select((exp(-low) - exp(-low - rise)) / rise, exp(-low), abs(rise) < 1e-3);
-    return 1.0 - exp(-distance / frame.sky.w * mean);
-}
+// The debug view of the mask, as `mask` in DEBUG_VIEWS of view.ts.
+const MASK_VIEW: u32 = 10u;
 
 // The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path.
 const SURFACE_COLOURS = array<vec3f, 6>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
@@ -91,6 +82,9 @@ fn hue(level: f32) -> vec3f {
 @fragment
 fn fragment_main(in: Fragment) -> @location(0) vec4f {
     drop_unknown(in);
+    if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
+        return vec4f(ground_colour(in.s, in.relative, in.h, in.level), 1.0);
+    }
     let m = drawn_normal(in.s);
     // LOD space axes turn into render space axes with the linear part of the cubic.
     let n = normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
@@ -113,10 +107,5 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         let error = abs(drawn_height(in.s) - in.h);
         return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
     }
-    if (frame.debug == 5u) {
-        return vec4f(mask_view(in.s, vec3f(0.25 + 0.5 * light / 1.3)), 1.0);
-    }
-    let rock = smoothstep(0.75, 0.55, n.z);
-    let albedo = mix(vec3f(0.36, 0.42, 0.27), vec3f(0.52, 0.5, 0.47), rock);
-    return vec4f(mix(albedo * light, frame.sky.rgb, haze(in.relative)), 1.0);
+    return vec4f(mask_view(in.s, vec3f(0.25 + 0.5 * light / 1.3)), 1.0);
 }

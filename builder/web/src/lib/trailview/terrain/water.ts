@@ -32,7 +32,7 @@ export class Water {
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, V = GPUShaderStage.VERTEX;
         const layout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -42,7 +42,7 @@ export class Water {
         const instances = gpu.buffer('water', nodes.size / 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl') });
         const pipeline = await device.createRenderPipelineAsync({
-            label: 'water', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout] }),
+            label: 'water', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout] }),
             vertex: {
                 module, entryPoint: 'water_vertex', buffers: [{
                     arrayStride: WATER_VERTEX * 4, attributes: [
@@ -102,12 +102,13 @@ export class Water {
         if (instances.length) r.device.queue.writeBuffer(r.instances, 0, new Uint32Array(instances));
     }
 
-    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup): void {
+    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.draws.length) return;
         pass.setPipeline(r.pipeline);
         pass.setBindGroup(0, r.group);
         pass.setBindGroup(1, surfaceGroup);
+        pass.setBindGroup(2, ground);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
         let instance = 0;

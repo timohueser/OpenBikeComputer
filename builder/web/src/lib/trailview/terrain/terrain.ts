@@ -136,6 +136,8 @@ interface Resources {
     probeLayout: GPUBindGroupLayout;
     checkLayout: GPUBindGroupLayout;
     auditLayout: GPUBindGroupLayout;
+    surfaceLayout: GPUBindGroupLayout;
+    emptyLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -154,6 +156,7 @@ export class Terrain {
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
+    private wantedNodes: Node[] = [];
     private work?: Work;
     private jobs = { near: 0, coarse: 0, masks: 0 };
     private anchor?: Anchor;
@@ -216,8 +219,18 @@ export class Terrain {
         };
     }
 
-    /** Compiles the pipelines for a device. A new device gets every page again, from the kept tile bodies. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat): Promise<void> {
+    /** The nodes that the last frame drew and wanted, the nodes whose normals it computed, and the LOD map windows. */
+    get selected(): { drawn: Node[]; wanted: Node[]; refreshed: Node[]; origins: [number, number][] } {
+        return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
+    }
+
+    /** drawnHeight for other passes: group 1 of the terrain. */
+    get surface(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
+        return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
+    }
+
+    /** Compiles the pipelines for a device, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -233,7 +246,7 @@ export class Terrain {
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'mesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout'> = {
+            | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
             maskShapes: mask('rgba8unorm'),
             maskKinds: mask('rgba8uint'),
@@ -282,6 +295,8 @@ export class Terrain {
         const featureLayout = layout([
             [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [F, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
         ]);
+        // The audit reads the feature mask in group 3, where the terrain draw has it after the ground.
+        const emptyLayout = layout([]);
         const auditLayout = layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }], [C, { buffer: read }]]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
@@ -292,7 +307,7 @@ export class Terrain {
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
         const [mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
             device.createRenderPipelineAsync({
-                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, featureLayout),
+                label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
                 vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
                 fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }] },
                 primitive: { topology: 'triangle-list' },
@@ -309,14 +324,14 @@ export class Terrain {
                 primitive: { topology: 'point-list' },
             }),
             compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
-            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, featureLayout)),
-            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, featureLayout)),
+            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
+            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         device.queue.writeBuffer(r.masks, 0, new Uint32Array(pages));
-        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, depthFormat);
+        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
         this.resources = {
-            ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout,
+            ...r, mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.maskShapes), view(r.maskKinds)]),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.maskShapes), view(r.maskKinds)]),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
@@ -345,9 +360,11 @@ export class Terrain {
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
-        this.nodes = nodes.slice(0, MAX_NODES);
-        this.water.update(this.nodes);
+        this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
+        // After the update, so that a page draws in the frame that it arrives in.
+        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
+        this.water.update(this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -439,16 +456,17 @@ export class Terrain {
         });
     }
 
-    draw(pass: GPURenderPassEncoder): void {
+    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
         pass.setPipeline(r.mesh);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
-        pass.setBindGroup(2, r.featureGroup);
+        pass.setBindGroup(2, ground);
+        pass.setBindGroup(3, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
         pass.drawIndexed(GRID_INDICES.length, this.nodes.length);
-        this.water.draw(pass, r.surfaceGroup);
+        this.water.draw(pass, r.surfaceGroup, ground);
     }
 
     /**
@@ -556,7 +574,8 @@ export class Terrain {
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
-        pass.setBindGroup(2, r.featureGroup);
+        pass.setBindGroup(2, device.createBindGroup({ layout: r.emptyLayout, entries: [] }));
+        pass.setBindGroup(3, r.featureGroup);
         if (n) {
             pass.setPipeline(r.audit);
             pass.dispatchWorkgroups(Math.ceil(n / 64));
