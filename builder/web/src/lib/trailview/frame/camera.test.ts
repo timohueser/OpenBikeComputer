@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eyeAltitude, MAX_ALTITUDE, move, NEAR, toggle, viewProjection, WALK_EYE, zoom, type Pose } from './camera';
+import { eyeAltitude, follow, groundOf, MAX_ALTITUDE, move, NEAR, toggle, viewProjection, WALK_EYE, zoom, type Footing, type Pose, type Probe } from './camera';
 
 const walk: Pose = { east: 0, north: 0, heading: 90, pitch: 0, mode: 'walk', height: WALK_EYE };
 
@@ -30,5 +30,31 @@ describe('the camera', () => {
         expect(pose.height).toBe(MAX_ALTITUDE);
         expect(MAX_ALTITUDE).toBeGreaterThanOrEqual(60_000);
         expect(toggle(pose, 1000)).toEqual({ ...walk, height: WALK_EYE });
+    });
+
+    it('keeps the eye on a slope at walking and running speed, with a probe two frames late', () => {
+        for (const [speed, degrees] of [[6, 30], [12, 40]]) {
+            const rise = Math.tan(degrees * Math.PI / 180), ground = (east: number) => 1200 + rise * east;
+            const probe = (frame: number): Probe => ({ east: speed * frame / 60, north: 0, height: ground(speed * frame / 60), slope: [rise, 0], frame });
+            let footing: Footing | undefined, worst = 0;
+            for (let frame = 2; frame < 120; frame++) {
+                const east = speed * frame / 60;
+                footing = follow(footing, probe(frame - 2), east, 0, 1 / 60);
+                worst = Math.max(worst, Math.abs(groundOf(footing, east, 0) - ground(east)));
+            }
+            expect(worst).toBeLessThan(1e-3);
+        }
+    });
+
+    it('fades a step between two probes out where the eye stands, and takes a new place at once', () => {
+        const at = (height: number, frame: number): Probe => ({ east: 0, north: 0, height, slope: [0, 0], frame });
+        let footing = follow(undefined, at(1200, 1), 0, 0, 0.016);
+        expect(groundOf(footing, 0, 0)).toBe(1200);
+        for (let frame = 2; frame < 5; frame++) footing = follow(footing, at(1201, 2), 0, 0, 0.016);
+        expect(groundOf(footing, 0, 0)).toBeGreaterThan(1200.2);
+        expect(groundOf(footing, 0, 0)).toBeLessThan(1201);
+        for (let frame = 5; frame < 65; frame++) footing = follow(footing, at(1201, 2), 0, 0, 0.016);
+        expect(footing.step).toBe(0);
+        expect(groundOf(follow(footing, at(2400, 3), 0, 0, 0.016), 0, 0)).toBe(2400);
     });
 });

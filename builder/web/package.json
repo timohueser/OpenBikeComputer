@@ -15,7 +15,7 @@
         "build:wasm": "bash ../build-wasm-bridges.sh",
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
-        "check:wgsl": "naga --bulk-validate $(find src/lib/trailview -name '*.wgsl')",
+        "check:wgsl": "node scripts/check-wgsl.mjs",
         "test": "vitest run",
         "test:components": "vitest run"
     },

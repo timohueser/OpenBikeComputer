@@ -11,18 +11,47 @@ const FIXTURE = new URL('./fixture/terrain/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
 
 /**
- * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the
- * fixture, 204 for an absent tile like the tile service. Every other public host is refused.
+ * Answers the planner hosts of `fixture/config.json` in the page: the terrain tiles from the fixture,
+ * or from `tiles`, a `planner-dem` MBTiles, and 204 for an absent tile like the tile service. Every
+ * other public host is refused.
  */
-export async function routeFixture(page) {
+export async function routeFixture(page, tiles) {
+    const read = tiles?.endsWith('.mbtiles') ? await mbtiles(tiles) : (z, x, y) => {
+        const path = join(tiles ?? FIXTURE, `${z}/${x}/${y}.webp`);
+        return existsSync(path) ? readFileSync(path) : undefined;
+    };
     await page.route(url => url.hostname !== '127.0.0.1', route => {
         const url = new URL(route.request().url());
-        const tile = /^\/terrain\/(\d+\/\d+\/\d+\.webp)$/.exec(url.pathname);
+        const tile = /^\/terrain\/(\d+)\/(\d+)\/(\d+)\.webp$/.exec(url.pathname);
         if (url.hostname !== 'tiles.test' || !tile) return route.abort();
-        const path = join(FIXTURE, tile[1]);
-        if (!existsSync(path)) return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } });
-        return route.fulfill({ body: readFileSync(path), contentType: 'image/webp', headers: { 'access-control-allow-origin': '*' } });
+        const body = read(...tile.slice(1).map(Number));
+        if (!body) return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } });
+        return route.fulfill({ body, contentType: 'image/webp', headers: { 'access-control-allow-origin': '*' } });
     });
+}
+
+/** The tiles of an MBTiles file, which numbers rows from the south. */
+async function mbtiles(file) {
+    const { DatabaseSync } = await import('node:sqlite');
+    const query = new DatabaseSync(file, { readOnly: true }).prepare('SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?');
+    return (z, x, y) => {
+        const row = query.get(z, x, 2 ** z - 1 - y);
+        return row && Buffer.from(row.tile_data);
+    };
+}
+
+/** The pixels of a screenshot of the page that show the red clear colour of `debug=cracks`. */
+export async function redPixels(page) {
+    const png = (await page.screenshot()).toString('base64');
+    return page.evaluate(async png => {
+        const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
+        const context = new OffscreenCanvas(image.width, image.height).getContext('2d');
+        context.drawImage(image, 0, 0);
+        const rgba = context.getImageData(0, 0, image.width, image.height).data;
+        let red = 0;
+        for (let i = 0; i < rgba.length; i += 4) if (rgba[i] === 255 && rgba[i + 1] === 0 && rgba[i + 2] === 0) red++;
+        return red;
+    }, png);
 }
 
 /** Serves the built page on a free loopback port; resolves to its origin and a close function. */

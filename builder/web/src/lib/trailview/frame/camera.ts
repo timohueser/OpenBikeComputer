@@ -13,6 +13,8 @@ export const VFOV = 60;
 export const NEAR = 0.1;
 const WALK_M_S = 6, RUN = 12;
 const RAD = Math.PI / 180;
+/** The time constant in seconds with which a step between two probes fades out; a larger step than JUMP is a new place. */
+const FOLLOW_S = 0.12, JUMP = 30;
 
 /** The keys held: each axis is -1, 0 or 1. */
 export interface Steer { ahead: number; right: number; up: number; run: boolean }
@@ -21,6 +23,28 @@ export interface Steer { ahead: number; right: number; up: number; run: boolean 
 export function eyeAltitude(pose: Pose, ground: number | undefined): number | undefined {
     if (pose.mode === 'fly') return altitude(pose.height, ground);
     return ground === undefined ? undefined : ground + pose.height;
+}
+
+/** The GPU probe of the ground at a point of the frame: its height, its slope (metres per metre east and north) and its frame. */
+export interface Probe { east: number; north: number; height: number; slope: [number, number]; frame: number }
+
+/** The ground that the eye stands on: the plane of a probe, and a step that fades out. */
+export interface Footing { probe: Probe; step: number }
+
+export function groundOf({ probe, step }: Footing, east: number, north: number): number {
+    return probe.height + probe.slope[0] * (east - probe.east) + probe.slope[1] * (north - probe.north) + step;
+}
+
+/**
+ * The footing on the last probe, which comes one to three frames late. The eye moves on the probe's
+ * plane, so a slope gives no lag. Where a new probe disagrees with the one before, at a finer page or
+ * a bend of the ground, the step between them fades out; a step larger than JUMP is a new place.
+ */
+export function follow(footing: Footing | undefined, probe: Probe, east: number, north: number, dt: number): Footing {
+    if (!footing) return { probe, step: 0 };
+    let step = footing.step * Math.exp(-dt / FOLLOW_S);
+    if (probe.frame !== footing.probe.frame) step += groundOf({ probe: footing.probe, step: 0 }, east, north) - groundOf({ probe, step: 0 }, east, north);
+    return { probe, step: Math.abs(step) > JUMP || Math.abs(step) < 1e-3 ? 0 : step };
 }
 
 /** One step of free movement. A flying eye moves faster the higher it is above the ground. */
