@@ -13,7 +13,8 @@
 @group(2) @binding(3) var rules: texture_2d<f32>;
 @group(2) @binding(4) var filtered: sampler;
 // Per page four layers, ground.wgsl: the albedo (square root) and the snow before its edge; tree,
-// rough, moor and green; bare_from, barren, blades and banded; the relief.
+// rough, moor and green; bare_from, barren, blades and banded; the relief (the normal two levels
+// coarser, xy as 0.5 + 0.5 n, its openness, and the texel's own openness).
 @group(2) @binding(5) var cache: texture_2d_array<f32>;
 
 const COVER_TREE: u32 = 0u;
@@ -44,6 +45,9 @@ struct Ground {
     blades: f32,
     banded: f32,
     open: f32,
+    // The normal in render space and the openness two levels coarser, for cliffs.
+    coarse: vec3f,
+    coarse_open: f32,
     region: u32,
     lithology: u32,
 }
@@ -254,6 +258,8 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
         // No level has ground here yet: the palette's grass of the first region.
         g.albedo = ramp(0u, COVER_GRASS, 0.5);
         g.open = 1.0;
+        g.coarse = vec3f(0.0, 0.0, 1.0);
+        g.coarse_open = 1.0;
         g.bare_from = 0.62;
         return g;
     }
@@ -279,24 +285,13 @@ fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
     g.blades = planes[2].b;
     g.banded = planes[2].a;
     g.open = 0.6 + 0.55 * planes[3].a;
+    let m = planes[3].xy * 2.0 - 1.0;
+    g.coarse = render_normal(vec3f(m, sqrt(max(1.0 - dot(m, m), 1e-4))));
+    g.coarse_open = 0.6 + 0.55 * planes[3].z;
     let cell = textureLoad(cells, in_page(page, vec2i(floor(texel + 0.5))), page_layer(page), 0);
     g.region = cell.b;
     g.lithology = cell.g;
     return g;
-}
-
-// How open the ground is at a point on a level, or on the next coarser level that is resident.
-fn open_on(level: u32, s: vec2f) -> f32 {
-    for (var k = level; k >= COARSEST; k--) {
-        let t = texel_of(s, k);
-        let holder = t.whole + vec2i(t.part >= vec2f(0.5));
-        let page = ground_page(k, holder);
-        if (page >= 0) {
-            let base = holder & vec2i(~255);
-            return 0.6 + 0.55 * cache_read(k, page, base, vec2f(t.whole - base) + t.part)[3].a;
-        }
-    }
-    return 1.0;
 }
 
 // Voronoi cells about `size` metres across: the nearest cell's hash, the gap to the next cell's edge in
@@ -379,13 +374,6 @@ fn render_normal(m: vec3f) -> vec3f {
     return normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
 }
 
-// The normal `up` levels coarser than the LOD, for cliffs: their fine slopes would streak down a face.
-fn coarse_normal(s: vec2f, up: f32) -> vec3f {
-    let level = u32(max(ceil(lod(s) - up), f32(COARSEST)));
-    let n = level_normal(s, level);
-    return render_normal(vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4))));
-}
-
 // A distinct colour for each code, by the golden angle round the hue circle.
 fn key(code: u32) -> vec3f {
     let h = fract(f32(code) * 0.618034);
@@ -441,12 +429,10 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     // level, and stays vegetated.
     var broad = 0.0;
     if (n.z < 0.95 || skirt > 0.0) {
-        let coarse = coarse_normal(s, 2.0);
-        let coarse_open = open_on(u32(max(f32(min(level, look.codes.y)) - 2.0, f32(COARSEST))), s);
-        broad = max(1.0 - smoothstep(0.85, 0.95, coarse.z), skirt);
+        broad = max(1.0 - smoothstep(0.85, 0.95, g.coarse.z), skirt);
         let towards = max(cliff, skirt);
-        n = normalize(mix(n, coarse, towards));
-        open = mix(open, coarse_open, towards);
+        n = normalize(mix(n, g.coarse, towards));
+        open = mix(open, g.coarse_open, towards);
     }
     let banded = g.banded;
     let slope = n.z;

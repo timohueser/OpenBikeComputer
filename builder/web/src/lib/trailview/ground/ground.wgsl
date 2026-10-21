@@ -1,5 +1,5 @@
 // Per ground page compute: when a page arrives, the ground parameters of each texel through its
-// region's rules; when it arrives and when its heights change, the openness of each texel. look.wgsl
+// region's rules; when it arrives and when its heights change, the relief of each texel. look.wgsl
 // reads both filtered, so a pixel never runs the rules.
 // #include look.wgsl
 
@@ -43,12 +43,21 @@ fn openness(centre: f32, around: vec4f, reach: f32) -> f32 {
     return (clamp(1.0 - 1.5 * (0.25 * dot(around, vec4f(1.0)) - centre) / reach, 0.6, 1.15) - 0.6) / 0.55;
 }
 
-// The relief of a texel: its openness three texels across, in w.
+// The relief of a texel: the normal and the openness two levels coarser, for cliffs, whose fine
+// slopes would streak down a face, and the texel's own openness three texels across.
 fn relief_of(job: Job, t: vec2i) -> vec4f {
     let wide = 3;
     let open = openness(height_at(job.level, t), vec4f(height_at(job.level, t + vec2i(wide, 0)), height_at(job.level, t - vec2i(wide, 0)),
         height_at(job.level, t + vec2i(0, wide)), height_at(job.level, t - vec2i(0, wide))), f32(wide) * job.metres);
-    return vec4f(0.0, 0.0, 0.0, open);
+    // The finest ground pages also draw the nodes finer than them, near the eye, whose LOD is higher.
+    let coarse = max(job.level, COARSEST + 2u) - select(2u, 1u, job.level == look.codes.y);
+    let shift = 22u - job.level;
+    let u = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
+    let n = level_normal(lod_space(vec2f(u - surface.anchor)), coarse);
+    let step = wide << (22u - coarse);
+    let coarse_open = openness(units_height(u, coarse), vec4f(units_height(u + vec2i(step, 0), coarse), units_height(u - vec2i(step, 0), coarse),
+        units_height(u + vec2i(0, step), coarse), units_height(u - vec2i(0, step), coarse)), f32(wide << (job.level - coarse)) * job.metres);
+    return vec4f(n * 0.5 + 0.5, coarse_open, open);
 }
 
 @compute @workgroup_size(16, 16)
