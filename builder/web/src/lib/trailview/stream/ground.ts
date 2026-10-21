@@ -2,8 +2,9 @@ import type { PlannerConfig } from '../../planner/config';
 import { openSource, requestSignal, type Source } from '../../planner/layers/archive';
 import { snowMeta } from '../../planner/layers/snow';
 import { releaseFetch } from '../../planner/release';
+import type { GroundResult } from '../ground/pages';
 import { rulesOf, type Rules } from '../rules/regions';
-import type { GroundDate, GroundPage } from './ground-pages';
+import type { GroundDate } from './ground-pages';
 import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
@@ -30,7 +31,7 @@ export class GroundSource {
     private readonly sizes = new Map<string, number>();
     private held = 0;
     private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
-    private readonly waiting = new Map<number, { resolve: (pages: (GroundPage | null)[]) => void; reject: (error: Error) => void }>();
+    private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
     private constructor(readonly rules: Rules, private readonly sources: Partial<Record<Layer, Source>>, readonly seasons: number) {
@@ -39,25 +40,40 @@ export class GroundSource {
                 const wait = this.waiting.get(data.id);
                 this.waiting.delete(data.id);
                 if (data.error) wait?.reject(new Error(data.error));
-                else wait?.resolve(data.pages);
+                else wait?.resolve(data);
+            };
+            // A worker that fails or sends what does not arrive fails the jobs it holds.
+            worker.onerror = worker.onmessageerror = () => {
+                for (const [id, wait] of this.waiting) {
+                    if (wait.worker !== worker) continue;
+                    this.waiting.delete(id);
+                    wait.reject(new Error('The ground worker failed.'));
+                }
             };
         }
     }
 
-    /** The ground of a config; undefined when it has no ruleset or no material archive. */
+    /**
+     * The ground of a config; undefined when it has no ruleset or no material archive. Only the rules
+     * and the material fail it: another archive that does not open is left out.
+     */
     static async open(config: PlannerConfig): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
         if (!config.trailview_rules || !urls[NAMES.material]) return undefined;
         const response = await releaseFetch(config.trailview_rules, { signal: requestSignal() });
         if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
         const rules = rulesOf(await response.json());
+        let seasons = 0;
         const entries = await Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
             const url = urls[name];
-            return [layer, url ? await openSource(url) : undefined] as const;
+            if (!url) return [layer, undefined] as const;
+            const opened = openSource(url).then(source => {
+                if (layer === 'snow') seasons = snowMeta(source.metadata).seasons;
+                return source;
+            });
+            return [layer, await (layer === 'material' ? opened : opened.catch(error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`)))] as const;
         }));
-        const sources = Object.fromEntries(entries.filter(([, source]) => source));
-        const seasons = sources.snow ? snowMeta(sources.snow.metadata).seasons : 0;
-        return new GroundSource(rules, sources, seasons);
+        return new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), seasons);
     }
 
     /** The finest level with ground pages: one finer than the material's last zoom. */
@@ -82,18 +98,21 @@ export class GroundSource {
 
     /**
      * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
-     * has no ground. A failed material tile fails them; a failed tile of another layer leaves that layer out.
+     * has no ground. A failed material tile fails them; a failed tile of another layer leaves that
+     * layer out, and the pages are not complete.
      */
-    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<(GroundPage | null)[]> {
+    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<GroundResult> {
+        let complete = true;
+        const optional = (body: Promise<Body | undefined>) => body.catch(() => void (complete = false));
         const at = (layer: Layer, zoom: number, planar = false) => {
             const body = this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar);
-            return layer === 'material' ? body : body.catch(() => undefined);
+            return layer === 'material' ? body : optional(body);
         };
         const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
         const snow = this.sources.snow, zs = Math.min(z + 1, snow?.maxZoom ?? -1);
         const snowBodies = !snow ? [] : zs === z + 1
-            ? [0, 1, 2, 3].map(q => this.body('snow', zs, 2 * x + (q & 1), 2 * y + (q >> 1), zs, true).catch(() => undefined))
+            ? [0, 1, 2, 3].map(q => optional(this.body('snow', zs, 2 * x + (q & 1), 2 * y + (q >> 1), zs, true)))
             : [at('snow', zs, true)];
         const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
@@ -103,11 +122,13 @@ export class GroundSource {
         const job: GroundJob = {
             z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, ndvimax, snow: snowTiles, seasons: this.seasons, date, world,
         };
-        const id = this.next++;
-        return new Promise((resolve, reject) => {
-            this.waiting.set(id, { resolve, reject });
-            this.workers[id % WORKERS].postMessage({ id, job });
+        const id = this.next++, worker = this.workers[id % WORKERS];
+        const bodies = [material, lithology, region, a, b, ndvimax, ...snowTiles].flatMap(body => (body ? [body.body] : []));
+        const built = await new Promise<GroundResult>((resolve, reject) => {
+            this.waiting.set(id, { worker, resolve, reject });
+            worker.postMessage({ id, job }, bodies);
         });
+        return { pages: built.pages, complete: complete && built.complete };
     }
 
     /** The body of the tile of a layer at a zoom that holds tile z/x/y of zoom `of`; undefined where the layer has none. */
@@ -133,7 +154,7 @@ export class GroundSource {
             });
         }
         const body = await entry;
-        // A copy: the workers keep what they decode, and the bodies stay here for the next date.
+        // A copy for the worker to take: the bodies stay here for the next date.
         return body && { key, z: zoom, x: tx, y: ty, body: body.slice(0), planar };
     }
 

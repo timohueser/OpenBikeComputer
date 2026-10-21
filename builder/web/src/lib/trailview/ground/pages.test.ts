@@ -9,15 +9,19 @@ const page = (): GroundPage => ({ cells: new Uint8Array(4 * PAGE * PAGE), colour
 const EYE: [number, number] = [8.525390625, 46.890231573593994];
 const row = (x0: number, n: number): Node[] => Array.from({ length: n }, (_, i) => ({ level: 14, x: x0 + i, y: 5770 }));
 
-/** Material tiles that answer with four pages, except `failing`, coloured from level `coloured`; the tiles asked for. */
-function tiles(failing?: string, coloured = 14): GroundTiles & { asked: string[] } {
+/**
+ * Material tiles that answer with four pages, coloured from level `coloured`, except `failing`, which
+ * fails its first load, and `absent`, which has no ground; the tiles asked for.
+ */
+function tiles(failing?: string, coloured = 14, absent?: string): GroundTiles & { asked: string[] } {
     const asked: string[] = [];
     return {
         asked, coloured,
         async pages(z, x, y) {
-            asked.push(`${z}/${x}/${y}`);
-            if (`${z}/${x}/${y}` === failing) throw new Error('Tile answered 500.');
-            return [page(), page(), page(), page()];
+            const name = `${z}/${x}/${y}`;
+            asked.push(name);
+            if (name === failing && asked.filter(tile => tile === name).length === 1) throw new Error('Tile answered 500.');
+            return { pages: name === absent ? [null, null, null, null] : [page(), page(), page(), page()], complete: true };
         },
     };
 }
@@ -33,14 +37,20 @@ async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, frames 
 const resident = (pages: GroundPages) => [...pages.pages.values()].filter(slot => slot.date >= 0).map(slot => slot.node.x).sort((a, b) => a - b);
 
 describe('the ground pages', () => {
-    it('keep a failed material tile out, as an absent one, and ask for it once', async () => {
+    it('load a failed material tile again after a wait, and keep an absent one out', async () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const source = tiles('13/4290/2885'), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+        const source = tiles('13/4290/2885', 14, '13/4291/2885'), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
         pages.setDate('2026-08-15');
         await settle(pages, row(8580, 4));
         expect(pages.idle).toBe(true);
-        expect(source.asked.filter(tile => tile === '13/4290/2885')).toHaveLength(1);
-        expect(resident(pages)).toEqual([8582, 8583]);
+        expect(resident(pages)).toEqual([]);
+        now.mockReturnValue(2000);
+        await settle(pages, row(8580, 4));
+        expect(resident(pages)).toEqual([8580, 8581]);
+        expect(source.asked.filter(tile => tile === '13/4290/2885')).toHaveLength(2);
+        expect(source.asked.filter(tile => tile === '13/4291/2885')).toHaveLength(1);
+        now.mockRestore();
     });
 
     it('give a full pool to the nearest drawn pages, and take slots from wanted pages that are farther', async () => {
