@@ -58,7 +58,7 @@ pages with an offset and a scale per page.
 
 | Lab | Variants |
 | --- | --- |
-| `stamps` | `runtime`, `baked`, `none`: the stamps on every page as it loads, or conditioning baked into the stored levels, which the synthesized levels upsample; `none` draws neither stamps nor water |
+| `stamps` | `runtime`, `none`: the stamps on every page as it loads; `none` draws neither stamps nor water |
 
 ## Shots and flights
 

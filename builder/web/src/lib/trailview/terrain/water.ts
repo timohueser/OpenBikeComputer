@@ -66,10 +66,10 @@ export class Water {
     }
 
     /** The draws of a frame: per feature tile with water, the drawn nodes that read it. */
-    update(nodes: Node[], baked: boolean): void {
+    update(nodes: Node[]): void {
         const tiles = new Map<string, Draw | null>();
         nodes.forEach((node, i) => {
-            const tile = featureTile(node, baked), name = tile && key(tile);
+            const tile = featureTile(node), name = tile && key(tile);
             if (!tile || !name) return;
             if (!tiles.has(name)) {
                 const mesh = this.stamps.mesh(tile);

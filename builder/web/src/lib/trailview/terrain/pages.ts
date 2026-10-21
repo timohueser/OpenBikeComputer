@@ -16,7 +16,7 @@ const REFRESHES = 8;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
-export const MODE = { HEIGHTS: 1, BAKED: 2, MASK: 4 } as const;
+export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
@@ -47,11 +47,9 @@ export interface Page {
 /** What stamps a node: the binned features, while they are known. */
 export interface StampSource {
     get(node: Node): NodeStamps | undefined;
-    /** The conditioning is baked into the stored levels: they are stamped in place, the synthesized levels only get a mask. */
-    readonly baked: boolean;
 }
 
-const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }), baked: false };
+const NO_STAMPS: StampSource = { get: () => ({ data: null, heights: false }) };
 
 /**
  * A stamp job: its page's heights are in `out` (the synthesized base, or none for a stored page,
@@ -237,9 +235,8 @@ export class Pages {
             if (page) page.used = this.frame;
             return { near, page };
         });
-        // With baked conditioning, a synthesis reads the conditioned stored pages.
         const ready = inputs.every(({ near, page }) => {
-            if ((this.stamps.baked ? page?.drawn !== undefined : page?.ready) || this.stored(near) === 'no') return true;
+            if (page?.ready || this.stored(near) === 'no') return true;
             if (!page) this.load(near.level - 1, near.x >> 1, near.y >> 1);
             return false;
         });
@@ -250,8 +247,8 @@ export class Pages {
         if (!synth) return;
         synth.drawn = synth.slot;
         if (stamps.data) {
-            const mode = (stamps.heights && !this.stamps.baked ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.mask(synth) ? MODE.MASK : 0);
-            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode: mode | (this.stamps.baked ? MODE.BAKED : 0) });
+            const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (node.level >= NEAR && this.mask(synth) ? MODE.MASK : 0);
+            if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
@@ -263,8 +260,8 @@ export class Pages {
     }
 
     /**
-     * Puts the stamps on a ready stored page once its features are known: none, a stamped copy that
-     * draws while the raw page stays for the syntheses, or, with baked conditioning, the page itself.
+     * Puts the stamps on a ready stored page once its features are known: none, or a stamped copy that
+     * draws while the raw page stays for the syntheses.
      */
     private resolve(page: Page, work: Work): boolean {
         const stamps = this.stamps.get(page.node);
@@ -274,17 +271,13 @@ export class Pages {
             return true;
         }
         if (this.busy(work, stamps.data.length)) return false;
-        let target = page.slot;
-        if (!this.stamps.baked) {
-            const copy = this.slot('stored');
-            if (copy === undefined) {
-                this.shortage++;
-                return false;
-            }
-            page.copy = target = copy;
+        const copy = this.slot('stored');
+        if (copy === undefined) {
+            this.shortage++;
+            return false;
         }
-        page.drawn = target;
-        work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target, data: stamps.data, mode: MODE.HEIGHTS | (this.stamps.baked ? MODE.BAKED : 0) });
+        page.copy = page.drawn = copy;
+        work.stamps.push({ page, out: work.syntheses.length + copies(work).length, target: copy, data: stamps.data, mode: MODE.HEIGHTS });
         return true;
     }
 

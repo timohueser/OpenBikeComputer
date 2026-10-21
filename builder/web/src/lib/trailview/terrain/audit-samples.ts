@@ -9,8 +9,12 @@ export const SAMPLE = 12;
 export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4, SHORE_SIDE = 5;
 /** Samples per node at most. */
 const MOST = 8192;
-/** Distances outside a shore at which banks are checked, in texels of the node and metres beyond. */
-const BANK_TEXELS = 13, BANK_STEPS = [0.3, 1, 1.7];
+/**
+ * Distances outside a shore at which banks are checked: the reach of the mesh about a point (a mesh cell
+ * and a texel, as `read` in audit.wgsl) and metres beyond. No other water may lie within 13 texels, which
+ * the mesh at a bank may read.
+ */
+const READ_TEXELS = RULES.MESH_TEXELS + 1, BANK_STEPS = [0.3, 1, 1.7], DRY_TEXELS = 13;
 /** The side of a shore is checked on a grid of this many points across a node, this many texels from a shore at most. */
 const SIDE_GRID = 64, SIDE_TEXELS = 20;
 
@@ -106,7 +110,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     }
     // A point under water has no bank, and the mesh at a bank reads texels a mesh reach away: so no
     // other water may lie that near (a river's mouth in a lake, the channels of a braided river).
-    const rivers = lines.filter(line => line.kind === RIVER), near = BANK_TEXELS * texel;
+    const rivers = lines.filter(line => line.kind === RIVER), near = DRY_TEXELS * texel;
     const wet = (x: number, y: number, self: unknown) =>
         lakes.some(lake => insideRings(lake.rings, x, y) || (lake !== self && shoreDistance(lake.rings, x, y) * unit < near)) ||
         rivers.some(line => !Number.isNaN(roadHeight(line, [x, y], (line === self ? line.h : line.h + near) / unit)));
@@ -124,7 +128,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 if (!length || !inNode(mx, my)) continue;
                 const normal = [-(ring[i + 1] - ring[j + 1]) / length, (ring[i] - ring[j]) / length];
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
-                    const d = (BANK_TEXELS * texel + extra) / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
+                    const d = (READ_TEXELS * texel + extra) / unit, x = Math.round(mx + sign * normal[0] * d), y = Math.round(my + sign * normal[1] * d);
                     if (inNode(x, y) && !wet(x, y, lake)) push(x, y, ON_BANK, level, 0, shoreDistance(rings, x, y) * unit);
                 }
             }
@@ -157,9 +161,9 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 const t = (i + 0.5) / count, cx = Math.round(ax + t * (bx - ax)), cy = Math.round(ay + t * (by - ay)), z = roadHeight(line, [cx, cy], line.h / unit);
                 if (!inNode(cx, cy) || Number.isNaN(z)) continue;
                 push(cx, cy, IN_WATER, z, line.h, 0, Infinity, 0, [0, 0], steepest);
-                // Past the bed of the node's level and a mesh cell, as river_half and river_bank of stamp-core.wgsl.
+                // Past the bed of the node's level, as river_half of stamp-core.wgsl, and the reach of the mesh.
                 for (const sign of [-1, 1]) for (const extra of BANK_STEPS) {
-                    const d = Math.max(line.h, RULES.MESH_TEXELS * texel) + RULES.MESH_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
+                    const d = Math.max(line.h, RULES.MESH_TEXELS * texel) + READ_TEXELS * texel + extra, x = Math.round(cx + sign * across[0] * d / unit), y = Math.round(cy + sign * across[1] * d / unit);
                     const level = roadHeight(line, [x, y], 1.5 * d / unit);
                     if (inNode(x, y) && !Number.isNaN(level) && !wet(x, y, line)) push(x, y, ON_BANK, level, line.h, d, Infinity, 0, [0, 0], steepest);
                 }

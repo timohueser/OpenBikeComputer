@@ -68,11 +68,11 @@ export interface Node { level: number; x: number; y: number }
 
 /**
  * The feature tile that a node reads: the zoom above its own level, as a terrain tile holds four
- * nodes; none above zoom 8. Conditioning baked into a stored level reads the tile of its own zoom,
+ * nodes; none above zoom 8.
  * which holds every kind at the deepest stored level.
  */
-export function featureTile({ level, x, y }: Node, baked = false): Node | undefined {
-    const z = Math.min(baked ? level : level - 1, DEEP);
+export function featureTile({ level, x, y }: Node): Node | undefined {
+    const z = Math.min(level - 1, DEEP);
     return z < LOW ? undefined : { level: z, x: x >> (level - z), y: y >> (level - z) };
 }
 

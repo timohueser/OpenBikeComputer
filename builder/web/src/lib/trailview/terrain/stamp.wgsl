@@ -30,9 +30,8 @@ struct StampJob {
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
 const UNKNOWN32: u32 = 0xffffffffu;
-// Modes: stamp the heights, as the bake would (every feature, nominal margins), write the mask.
+// Modes: stamp the heights, write the mask.
 const HEIGHTS: u32 = 1u;
-const BAKED: u32 = 2u;
 const MASK: u32 = 4u;
 // The mask holds distances of ±MASK_RANGE metres in 0.1 m steps.
 const MASK_RANGE: f32 = 12.75;
@@ -64,7 +63,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     } else {
         base = slot_height(job.base, t);
     }
-    let s = stamp_at(job.level, job.first, job.data, p, (job.mode & BAKED) != 0u);
+    let s = stamp_at(job.level, job.first, job.data, p);
     let h = select(NONE, clamp(base, s.lo, s.hi), known(base));
     if ((job.mode & HEIGHTS) != 0u) {
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));

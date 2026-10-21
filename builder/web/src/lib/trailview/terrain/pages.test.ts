@@ -125,13 +125,13 @@ describe('the stamps', () => {
     const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
-    const stamps = (baked: boolean): StampSource => {
+    const stamps = (): StampSource => {
         const asked = new Set<string>();
-        return { baked, get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : void asked.add(key(node))) };
+        return { get: node => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : void asked.add(key(node))) };
     };
 
     it('draw a stored page as a stamped copy, keep its raw layer for the syntheses, and stamp a synthesized page as it is made', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(false));
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps());
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
         const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined);
@@ -144,21 +144,6 @@ describe('the stamps', () => {
         }
         for (const work of works) {
             work.syntheses.forEach(({ page }, k) => expect(work.stamps.find(stamp => stamp.page === page)).toMatchObject({ out: k, target: page.slot, mode: MODE.HEIGHTS }));
-        }
-    });
-
-    it('with baked conditioning, stamp the stored pages in place before a synthesis reads them, and stamp no synthesized height', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(true));
-        const works = await settle(pages, wanted);
-        expect(pages.idle).toBe(true);
-        const stamped = new Map<string, number>(), frame = (work: Work) => works.indexOf(work);
-        for (const work of works) for (const { page, target, mode } of work.stamps) {
-            expect(page.kind === 'stored' ? [target, mode] : [mode & MODE.HEIGHTS]).toEqual(page.kind === 'stored' ? [page.slot, MODE.HEIGHTS | MODE.BAKED] : [0]);
-            if (page.kind === 'stored') stamped.set(key(page.node), frame(work));
-        }
-        for (const work of works) for (const { page } of work.syntheses) {
-            const ancestor = { level: 13, x: page.node.x >> (page.node.level - 13), y: page.node.y >> (page.node.level - 13) };
-            expect(stamped.get(key(ancestor))).toBeLessThan(frame(work));
         }
     });
 });

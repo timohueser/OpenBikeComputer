@@ -178,7 +178,7 @@ export class Terrain {
         const bytes = PAGE * PAGE * 4;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
-        this.stamps = new Stamps(labs.stamps === 'none' ? undefined : features, labs.stamps === 'baked', changed);
+        this.stamps = new Stamps(labs.stamps === 'none' ? undefined : features, changed);
         this.water = new Water(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
@@ -288,9 +288,8 @@ export class Terrain {
 
         const swap = device.features.has('clip-distances') ? CLIP_DISTANCES : {};
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
-        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout, constants?: Record<string, number>) =>
-            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint, constants } });
-        const baked = { BAKED: this.stamps.baked ? 1 : 0 };
+        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
+            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
         const [mesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
             device.createRenderPipelineAsync({
                 label: 'terrain', layout: pipelineLayout(meshLayout, surfaceLayout, featureLayout),
@@ -310,8 +309,8 @@ export class Terrain {
                 primitive: { topology: 'point-list' },
             }),
             compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
-            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, featureLayout), baked),
-            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, featureLayout), baked),
+            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, featureLayout)),
+            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         device.queue.writeBuffer(r.masks, 0, new Uint32Array(pages));
@@ -347,7 +346,7 @@ export class Terrain {
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
         this.nodes = nodes.slice(0, MAX_NODES);
-        this.water.update(this.nodes, this.stamps.baked);
+        this.water.update(this.nodes);
         const work = this.pages.update(wanted, anchor);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
@@ -501,7 +500,7 @@ export class Terrain {
         const { device } = r.gpu, nodes = this.nodes;
         const results = await Promise.all(nodes.map(node => this.stamps.samples(node))), lists = results.map(({ samples }) => samples);
         // The water levels of each feature tile that a drawn node reads, once.
-        const tiles = new Map(nodes.map((node, i) => [key(featureTile(node, this.stamps.baked) ?? node), results[i]]));
+        const tiles = new Map(nodes.map((node, i) => [key(featureTile(node) ?? node), results[i]]));
         const sum = (name: 'lakes' | 'mixed' | 'rivers' | 'rising') => [...tiles.values()].reduce((total, result) => total + result[name], 0);
         // A drawn node at the edge of the frame borders culled nodes, whose pages may be absent: only what the frame shows counts.
         const visible = lists.map(list => Array.from({ length: list.length / SAMPLE_WORDS }, (_, k) => this.shows(list, k * SAMPLE_WORDS)));
@@ -536,7 +535,7 @@ export class Terrain {
         }
         const pairs: number[] = [];
         for (const a of nodes) {
-            if (a.level < 11 || !featureTile(a, this.stamps.baked)) continue;
+            if (a.level < 11 || !featureTile(a)) continue;
             for (const axis of [0, 1]) {
                 const b = drawn.get(key({ level: a.level, x: a.x + 1 - axis, y: a.y + axis }));
                 if (!b) continue;

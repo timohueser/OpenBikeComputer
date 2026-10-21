@@ -42,8 +42,6 @@ struct Pair {
 // `stamp_data` starts with a table: per level, MAP × MAP nodes about the eye as the LOD map has
 // them, the offset + 1 of each node's stamp data, 0 for none.
 
-override BAKED: bool = false;
-
 const CROSS_FALL: u32 = 1u;
 const ROAD_HEIGHT: u32 = 2u;
 const IN_WATER: u32 = 3u;
@@ -64,8 +62,9 @@ const CROSS_FALL_MAX: f32 = 0.05;
 const ROAD_KINK: f32 = 0.03;
 // The float32 rounding of a height of some 1000 m, and of the mesh position about the eye.
 const ROUNDING: f32 = 0.002;
-// As TILE_ZOOM + 1 of pages.ts: baked conditioning stamps the stored levels up to it, and the finer levels upsample them.
-const STORED_FINEST: u32 = 14u;
+// A point of the mesh reads the texels within 13 texels of it, through its triangle, the four texels of
+// each vertex and the slide of a morphing vertex: a conflict there may move it.
+const CONFLICT_TEXELS: i32 = 13;
 
 // Counts a checked sample with its error and what it may leave: a miss near a junction, where the
 // simple profiles of its roads meet, a conflict, or a violation.
@@ -106,7 +105,7 @@ fn node_data(at: vec2i, level: u32) -> u32 {
 // the higher bucket won, and the mask flags it. A page with a mask holds the flag; another page stamps the texel again.
 fn conflict_near(s: vec2f, level: u32) -> bool {
     let t = texel_of(s, level).whole;
-    let reach = i32(MARGIN_TEXELS);
+    let reach = CONFLICT_TEXELS;
     let shift = 22u - level;
     for (var j = -reach; j <= reach + 1; j++) {
         for (var i = -reach; i <= reach + 1; i++) {
@@ -120,7 +119,7 @@ fn conflict_near(s: vec2f, level: u32) -> bool {
             }
             let p = (whole << vec2u(shift)) + vec2i(1 << (shift - 1u));
             let data = node_data(p, level);
-            if (data != NO_DATA && stamp_at(level, (whole >> vec2u(8u)) << vec2u(8u), data, p, BAKED).conflict) {
+            if (data != NO_DATA && stamp_at(level, (whole >> vec2u(8u)) << vec2u(8u), data, p).conflict) {
                 return true;
             }
         }
@@ -156,7 +155,9 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     let coarse = select(level, level - 1u, morphs_near(s, level));
     let fine = texel_m(q.at, level);
     let wide = texel_m(q.at, coarse);
-    let reach = MARGIN_TEXELS * fine;
+    // The mesh shows what the stamps hold this far about a point: its triangle's vertices within a
+    // mesh cell, and their texels, of the coarser level in a morph band.
+    let read = (MESH_TEXELS + 1.0) * wide;
     let kink = ROAD_KINK * MESH_TEXELS * wide;
     if (kind == SHORE_SIDE) {
         // The stamps of the sample's own node put a point more than a texel from a lake shore on its side.
@@ -164,7 +165,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         if (abs(q.shore) < texel_m(q.at, q.level) || data == NO_DATA) {
             return;
         }
-        let stamp = stamp_at(q.level, (q.at >> vec2u(30u - q.level)) << vec2u(8u), data, q.at, BAKED);
+        let stamp = stamp_at(q.level, (q.at >> vec2u(30u - q.level)) << vec2u(8u), data, q.at);
         check(SHORE_SIDE, select(0.0, abs(q.shore), (stamp.lake < 0.0) != (q.shore < 0.0)), 0.0, false, s, q.level, stamp.lake, q.shore, q.shore);
         return;
     }
@@ -173,19 +174,28 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     if (kind == CROSS_FALL || kind == ROAD_HEIGHT) {
-        // Baked conditioning stamps the stored levels only.
+        // The mesh shows a carriageway over its middle only, a read inside its edges.
         let rule = profiles[q.kind >> 8u];
-        if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || (BAKED && level > STORED_FINEST)) {
+        let inner = q.half - read;
+        if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || inner <= 0.0) {
             return;
         }
         let junction = q.junction < 2.0 * junction_reach(q.junction_half, fine) + q.half;
         if (kind == CROSS_FALL) {
-            let t = lod_space(vec2f(q.other - surface.anchor));
-            let other = drawn_height(t);
-            if (!known(other) || drawn_level(t) != level) {
+            // The pair lies at 0.98 of the half-width: move both ends inward to `inner`.
+            let a = vec2f(q.at - surface.anchor);
+            let b = vec2f(q.other - surface.anchor);
+            let f = inner / (0.98 * q.half);
+            let middle = 0.5 * (a + b);
+            let sa = lod_space(middle + (a - middle) * f);
+            let sb = lod_space(middle + (b - middle) * f);
+            let ha = drawn_height(sa);
+            let hb = drawn_height(sb);
+            if (!known(ha) || !known(hb) || drawn_level(sa) != level || drawn_level(sb) != level) {
                 return;
             }
-            check(CROSS_FALL, abs((other - drawn) - (q.other_expected - q.expected)), CROSS_FALL_MAX + kink, junction, 0.5 * (s + t), level, other - drawn, q.other_expected - q.expected, q.junction);
+            let expected = (q.other_expected - q.expected) * f;
+            check(CROSS_FALL, abs((hb - ha) - expected), CROSS_FALL_MAX + kink, junction, 0.5 * (sa + sb), level, hb - ha, expected, q.junction);
         } else {
             check(ROAD_HEIGHT, abs(drawn - q.expected), rule.tol + kink + ROUNDING, junction, s, level, drawn, q.expected, q.junction);
         }
@@ -199,19 +209,18 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         // A river sample carries its metres from the middle; the bed and the banks of each level begin past river_half.
         let along = max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide;
         let past = vec2f(q.shore - river_half(q.half, fine), q.shore - river_half(q.half, wide));
-        let cells = vec2f(MESH_TEXELS * fine, MESH_TEXELS * wide);
-        if (kind == IN_WATER && all(past <= vec2f(0.0))) {
+        if (kind == IN_WATER && all(past <= vec2f(-read))) {
             check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
         }
-        if (kind == ON_BANK && all(past >= cells) && all(past <= cells + BANK_M)) {
+        if (kind == ON_BANK && all(past >= vec2f(read)) && all(past + read <= vec2f(water_bank(fine), water_bank(wide)))) {
             check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING + along, false, s, level, drawn, q.expected, q.shore);
         }
         return;
     }
-    if (kind == IN_WATER && q.shore >= reach) {
+    if (kind == IN_WATER && q.shore >= read) {
         check(IN_WATER, drawn - (q.expected - LAKE_DEPTH), ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
-    if (kind == ON_BANK && banks_show(level, BAKED) && banks_show(coarse, BAKED) && q.shore >= reach && q.shore <= reach + BANK_M) {
+    if (kind == ON_BANK && banks_show(level) && banks_show(coarse) && q.shore >= read && q.shore + read <= min(water_bank(fine), water_bank(wide))) {
         check(ON_BANK, q.expected + FREEBOARD - drawn, ROUNDING, false, s, level, drawn, q.expected, q.shore);
     }
 }
@@ -227,8 +236,8 @@ fn apron(@builtin(global_invocation_id) id: vec3u) {
     // The last texel column (row) of A, then the first of B.
     var t = pair.first_b + select(vec2i(side - 1, along), vec2i(along, side - 1), pair.axis == 1u);
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let a = stamp_at(pair.level, pair.first_a, pair.data_a, p, BAKED);
-    let b = stamp_at(pair.level, pair.first_b, pair.data_b, p, BAKED);
+    let a = stamp_at(pair.level, pair.first_a, pair.data_a, p);
+    let b = stamp_at(pair.level, pair.first_b, pair.data_b, p);
     atomicAdd(&counts[APRON_CHECKS], 1u);
     if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water)) {
         atomicAdd(&counts[APRON_CHECKS + 1u], 1u);

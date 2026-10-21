@@ -40,7 +40,7 @@ export class Stamps implements StampSource {
     private next = 0;
     failed = 0;
 
-    constructor(private readonly tiles: FeatureTiles | undefined, readonly baked: boolean, private readonly changed: () => void) {
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void) {
         if (!tiles) return;
         this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
         this.worker.onmessage = ({ data }) => {
@@ -53,7 +53,7 @@ export class Stamps implements StampSource {
 
     /** The node's stamps, undefined while they are on their way. */
     get(node: Node): NodeStamps | undefined {
-        const tile = featureTile(node, this.baked);
+        const tile = featureTile(node);
         if (!this.tiles || !tile) return NOTHING;
         const name = key(node), known = this.nodes.get(name);
         if (known) {
@@ -78,7 +78,7 @@ export class Stamps implements StampSource {
 
     /** The audit samples of a node. */
     async samples(node: Node): Promise<NodeSamples> {
-        const tile = featureTile(node, this.baked);
+        const tile = featureTile(node);
         return this.tiles && tile ? this.ask<NodeSamples>(tile, node, 'samples') : NO_SAMPLES;
     }
 

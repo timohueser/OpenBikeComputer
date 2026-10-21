@@ -4,11 +4,10 @@
  */
 export const LABS: Record<string, readonly string[]> = {
     /**
-     * The feature stamps and the water: stamps on every page at every level as it loads, or conditioning
-     * baked into the stored levels, which the synthesized levels upsample, with no stamp of their own;
-     * or neither stamps nor water, as L1 draws the terrain.
+     * The feature stamps and the water: stamps on every page at every level as it loads, or neither
+     * stamps nor water, as L1 draws the terrain.
      */
-    stamps: ['runtime', 'baked', 'none'],
+    stamps: ['runtime', 'none'],
 };
 
 export type Labs = Record<string, string>;

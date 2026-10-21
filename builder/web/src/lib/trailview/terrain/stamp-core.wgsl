@@ -59,13 +59,10 @@ const RADIUS: f32 = 6371000.0;
 // The buffer of the feature tiles: no stamp reaches further, less two texels and a metre.
 const BUFFER_M: f32 = 40.0;
 // A level shows a road at least one texel wide, with the same width and shape on every level, so the
-// mesh draws its edges soft by up to a mesh cell (MESH_TEXELS). Water holds MARGIN_TEXELS past the
-// shore: a point of the mesh reads texels within 13 texels of it, through its triangle, the four texels
-// of each vertex and the slide of a morphing vertex toward the coarser grid. The gates of a level use
-// its texel at 45° N, so that a feature shows on all of a level or on none of it.
+// mesh draws its edges soft by up to a mesh cell (MESH_TEXELS). Water reaches a mesh cell under its
+// banks. The gates of a level use its texel at 45° N, so that a feature shows on all of a level or on none of it.
 const GATE_COS: f32 = 0.70710678;
 const MESH_TEXELS: f32 = 4.0;
-const MARGIN_TEXELS: f32 = 13.0;
 // Near a junction, where the cores of its roads overlap, they hold the middle of their heights where
 // these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
@@ -73,7 +70,7 @@ const JUNCTION_CAP: f32 = 15.0;
 const LAKE_DEPTH: f32 = 0.1;
 const BED_SLOPE: f32 = 0.2;
 const BED_DEPTH: f32 = 2.0;
-// Banks: at least FREEBOARD above the level over BANK_M, plus the margins, from the shore.
+// Banks: at least FREEBOARD above the level over BANK_M and two mesh cells from the shore, then a ramp.
 const BANK_M: f32 = 2.0;
 const FREEBOARD: f32 = 0.3;
 const BANK_RAMP: f32 = 8.0;
@@ -82,10 +79,6 @@ const INF: f32 = 1e30;
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
     return 2.0 * PI * RADIUS / 1073741824.0 / cosh(PI * (1.0 - f32(y) / 536870912.0));
-}
-
-fn margin(texel: f32, baked: bool) -> f32 {
-    return select(MARGIN_TEXELS * texel, 0.0, baked);
 }
 
 fn reach_limit(texel: f32) -> f32 {
@@ -116,7 +109,7 @@ fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
 // Whether a level shows a river of half-width h: at least one texel wide, its bed, banks and their ramp inside the buffer.
 fn river_shows(h: f32, level: u32) -> bool {
     let texel = gate_texel(level);
-    return 2.0 * h >= texel && river_half(h, texel) + river_bank(texel) + BANK_RAMP <= reach_limit(texel);
+    return 2.0 * h >= texel && river_half(h, texel) + water_bank(texel) + BANK_RAMP <= reach_limit(texel);
 }
 
 // The half-width of a river's bed on a level: a mesh cell at least, so that the mesh always has a
@@ -125,23 +118,20 @@ fn river_half(h: f32, texel: f32) -> f32 {
     return max(h, MESH_TEXELS * texel);
 }
 
-// A river's banks hold the freeboard over BANK_M past a mesh cell from its bed, which its water reaches under.
-fn river_bank(texel: f32) -> f32 {
-    return BANK_M + MESH_TEXELS * texel;
+// The width of the banks from a shore or a river's bed. The water reaches a mesh cell under them, and
+// the mesh points about its edge lie within two cells, so the banks hold them all above the water.
+fn water_bank(texel: f32) -> f32 {
+    return BANK_M + 2.0 * MESH_TEXELS * texel;
 }
 
-fn bank_width(texel: f32, baked: bool) -> f32 {
-    return BANK_M + 2.0 * margin(texel, baked);
-}
-
-fn banks_show(level: u32, baked: bool) -> bool {
+fn banks_show(level: u32) -> bool {
     let texel = gate_texel(level);
-    return bank_width(texel, baked) + BANK_RAMP <= reach_limit(texel);
+    return water_bank(texel) + BANK_RAMP <= reach_limit(texel);
 }
 
-// How far past the shore the water height goes, under the bank, so the water meets the terrain.
-fn water_reach(texel: f32, baked: bool) -> f32 {
-    return max(0.0, min(margin(texel, baked) + texel, reach_limit(texel)));
+// How far past the shore the water goes, under the banks, so that it meets the terrain.
+fn water_reach(texel: f32) -> f32 {
+    return max(0.0, min(MESH_TEXELS * texel, reach_limit(texel)));
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -252,7 +242,7 @@ struct Stamp {
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
-fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp {
+fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF);
     if (data == NO_DATA) {
         return out;
@@ -310,11 +300,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 out.shore = min(out.shore, -shore);
                 out.lake = min(out.lake, -shore);
             } else {
-                if (banks_show(level, baked)) {
-                    let x = max(0.0, shore - bank_width(texel, baked));
-                    lo[BANKS] = max(lo[BANKS], water + FREEBOARD - widen(x, BANK_RAMP, 1.0));
+                if (banks_show(level)) {
+                    lo[BANKS] = max(lo[BANKS], water + FREEBOARD - widen(max(0.0, shore - water_bank(texel)), BANK_RAMP, 1.0));
                 }
-                if (shore <= water_reach(texel, baked)) {
+                if (shore <= water_reach(texel)) {
                     water_near = max(water_near, water);
                 }
                 out.shore = min(out.shore, shore);
@@ -334,8 +323,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, baked: bool) -> Stamp
                 hi[WATER_CORE] = min(hi[WATER_CORE], g.z - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * -d));
                 water_in = max(water_in, g.z);
             } else {
-                lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - river_bank(texel)), BANK_RAMP, 1.0));
-                if (d <= MESH_TEXELS * texel) {
+                lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - water_bank(texel)), BANK_RAMP, 1.0));
+                if (d <= water_reach(texel)) {
                     water_near = max(water_near, g.z);
                 }
             }
