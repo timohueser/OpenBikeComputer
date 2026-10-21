@@ -411,15 +411,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (hi[WATER_CORE] < INF) {
         lo[BANKS] = -INF;
     }
-    // Near a junction the cores of its roads, and their cones, hold the middle of their heights where
-    // they disagree, and a core outranks the cones: the simple profiles of the bake meet there.
+    // Near a junction the cores of its roads hold the middle of their heights where they disagree by
+    // the centimetres of the solver, and a core outranks the cones. Their cones step as anywhere else,
+    // so a wall between two roads grows from nothing at their junction.
     if (junction) {
-        for (var b = ROAD_CORE; b <= CONES; b += CONES - ROAD_CORE) {
-            if (lo[b] > hi[b]) {
-                let middle = 0.5 * (lo[b] + hi[b]);
-                lo[b] = middle;
-                hi[b] = middle;
-            }
+        if (lo[ROAD_CORE] > hi[ROAD_CORE]) {
+            let middle = 0.5 * (lo[ROAD_CORE] + hi[ROAD_CORE]);
+            lo[ROAD_CORE] = middle;
+            hi[ROAD_CORE] = middle;
         }
         if (hi[ROAD_CORE] < INF) {
             lo[CONES] = -INF;
