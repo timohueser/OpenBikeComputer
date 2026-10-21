@@ -1,8 +1,8 @@
 import { linear, VARIEGATED } from '../ground/rules';
 import type { EyeLook, Light } from './light';
 
-/** Bytes of `Look` in shade.wgsl. */
-export const LOOK_BYTES = 272;
+/** Bytes of `Look` in shade.wgsl, and the offset of its `codes`. */
+export const LOOK_BYTES = 272, LOOK_CODES = 240;
 
 export interface LookInput {
     /** Toward the sun in render space. */
@@ -37,7 +37,7 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     floats.set([...input.place, 0, 0], 32);
     VARIEGATED.forEach((hex, i) => floats.set([...linear(hex), 0], 36 + 4 * i));
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
-    words.set(input.codes, 60);
+    words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, +input.cache, +input.slope, 0], 64);
     return data;
 }

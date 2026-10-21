@@ -1,6 +1,7 @@
 import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
+import { LOOK_CODES } from '../light/look';
 import type { Labs } from '../labs';
 import type { Region, Rules } from '../rules/regions';
 import type { GroundSource } from '../stream/ground';
@@ -53,6 +54,8 @@ interface Resources {
 export class Ground {
     readonly rules: Rules;
     readonly finest: number;
+    /** `codes` of the look: the material code of heath, the finest level, and the sizes of the vocabulary. */
+    readonly codes: [number, number, number, number];
     private layout?: { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] };
     private resources?: Resources;
     private surfaceGroup?: GPUBindGroup;
@@ -62,6 +65,8 @@ export class Ground {
     constructor(private readonly source: GroundSource | undefined, private readonly labs: Labs, changed: () => void) {
         this.rules = source?.rules ?? NEUTRAL;
         this.finest = source?.finest ?? COARSEST;
+        const { materials, lithologies } = this.rules.vocabulary;
+        this.codes = [Math.max(0, materials.findIndex(material => material.id === 'heath')), this.finest, materials.length, lithologies.length];
         const world = Math.max(0, this.rules.regions.findIndex(region => region.id === 'world'));
         this.pages = new GroundPages(source, POOL, this.finest, this.rules.regions.map((region: Region) => region.look.snow_share), world, changed);
     }
@@ -109,6 +114,8 @@ export class Ground {
         const { device } = gpu, layout = this.layout!, layers = POOL / LAYER_PAGES, side = PAGE * SIDE, cache = this.labs.ground === 'cache';
         this.resources = undefined;
         this.lost();
+        // The compute of the cache reads the codes, and a page can arrive before the first frame with an eye writes the look.
+        device.queue.writeBuffer(look, LOOK_CODES, Uint32Array.from(this.codes));
         const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
         const texture = (format: GPUTextureFormat, bytes: number, depth = layers, size = side, extra = 0) =>
             gpu.texture('ground', { size: [size, size, depth], format, usage: usage | extra }, size * size * depth * bytes);

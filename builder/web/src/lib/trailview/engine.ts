@@ -307,11 +307,10 @@ export class TrailView {
         const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
         const forward = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)], right = [Math.cos(h), -Math.sin(h), 0];
         const up = [right[1] * forward[2] - right[2] * forward[1], right[2] * forward[0] - right[0] * forward[2], right[0] * forward[1] - right[1] * forward[0]];
-        const { materials, lithologies } = rules.vocabulary;
         return lookUniform({
             sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
-            codes: [Math.max(0, materials.findIndex(material => material.id === 'heath')), this.groundLook.finest, materials.length, lithologies.length],
+            codes: this.groundLook.codes,
             debug: DEBUG_VIEWS.indexOf(this.extras.debug), cache: this.labs.ground === 'cache', slope: this.labs.rock === 'slope',
         });
     }
