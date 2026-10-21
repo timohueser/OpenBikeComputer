@@ -131,4 +131,5 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - A new date builds every ground page again from the kept tiles: the rules, the two Sentinel-2
   quarters about the date and the snow are part of a page.
 - The noise of the ground is in frame metres about the first view. Far from it, float32 coarsens
-  the finest grains.
+  the finest grains. A page that starts at another place draws another grain pattern at a spot, so
+  compare screenshots of one first view.
