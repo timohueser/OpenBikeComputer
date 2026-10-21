@@ -1,18 +1,33 @@
 import type { TrailView } from './engine';
-import type { Labs } from './labs';
-import { DEBUG_VIEWS, type DebugView } from './view';
+import { LABS, type Labs } from './labs';
+import { DEBUG_VIEWS, formatView, type DebugView } from './view';
 
 const MIB = 2 ** 20;
 const REFRESH_MS = 250;
 
-/** The lab HUD: the GPU time per pass, the CPU time, the MiB per pool, the requests, the terrain, the view and the debug view. H hides it. */
+/** The lab HUD: the GPU time per pass, the CPU time, the MiB per pool, the requests, the terrain, the view, the debug view and the lab variants. H hides it. */
 export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
     const text = document.createElement('pre');
     const debug = document.createElement('select');
     debug.setAttribute('aria-label', 'Debug view');
     for (const view of DEBUG_VIEWS) debug.add(new Option(`debug: ${view}`, view));
     debug.addEventListener('change', () => (engine.view = { ...engine.view, debug: debug.value as DebugView }));
-    element.replaceChildren(text, debug);
+    // The engine builds its variants at start, so a change of variant loads the page again at the same view.
+    const variants = Object.entries(LABS).map(([name, names]) => {
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', `Lab ${name}`);
+        for (const variant of names) select.add(new Option(`${name}: ${variant}`, variant));
+        select.value = labs[name as keyof Labs];
+        select.addEventListener('change', () => {
+            const chosen = { ...labs, [name]: select.value };
+            const q = new URLSearchParams(location.search);
+            q.delete('lab');
+            q.set('lab', Object.entries(chosen).map(([lab, variant]) => `${lab}:${variant}`).join(','));
+            location.search = formatView(engine.view, `?${q}`);
+        });
+        return select;
+    });
+    element.replaceChildren(text, debug, ...variants);
     addEventListener('keydown', event => {
         if (event.key.toLowerCase() === 'h' && !event.ctrlKey && !event.metaKey) element.hidden = !element.hidden;
     });

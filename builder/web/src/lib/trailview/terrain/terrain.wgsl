@@ -1,3 +1,4 @@
+// #include unknown.wgsl
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
 // coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
 // #include drawn-height.wgsl
@@ -26,15 +27,6 @@ struct Node {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
 
-struct Varyings {
-    @builtin(position) clip: vec4f,
-    @location(0) s: vec2f,
-    @location(1) relative: vec3f,
-    @location(2) known: f32,
-    @location(3) h: f32,
-    @location(4) @interpolate(flat) level: u32,
-}
-
 const CELLS = 64u;
 
 @vertex
@@ -42,14 +34,14 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
     let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level);
-    // A vertex of unknown height stands on the ground under the eye; `known` drops each triangle that has one.
+    // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
     var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: Varyings;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.s = v.s;
     out.relative = p;
-    out.known = select(-1e6, 1.0, known(v.h));
+    mark_known(&out, known(v.h));
     out.h = v.h;
     out.level = node.level;
     return out;
@@ -61,10 +53,8 @@ fn hue(level: f32) -> vec3f {
 }
 
 @fragment
-fn fragment_main(in: Varyings) -> @location(0) vec4f {
-    if (in.known < 0.99) {
-        discard;
-    }
+fn fragment_main(in: Fragment) -> @location(0) vec4f {
+    drop_unknown(in);
     let m = drawn_normal(in.s);
     // LOD space axes turn into render space axes with the linear part of the cubic.
     let n = normalize(vec3f(m.x * vec2f(coefficient(1u), coefficient(11u)) + m.y * vec2f(coefficient(2u), coefficient(12u)), m.z));
