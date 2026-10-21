@@ -200,13 +200,19 @@ fn segment_distance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
     return length(p - a - t * ab);
 }
 
-// Whether segment c-p crosses edge a-b, half-open at the ends, so each crossing counts once.
+// Whether w + ε(1, ε) lies left of u. A point on a shore line takes the side of that tiny step,
+// so its side does not depend on the origin that counts the crossings. The products are compared,
+// not subtracted, so that no fused multiply-add makes a tie uneven.
+fn left(u: vec2f, w: vec2f) -> bool {
+    let l = u.x * w.y;
+    let r = u.y * w.x;
+    return l > r || (l == r && (u.y < 0.0 || (u.y == 0.0 && u.x > 0.0)));
+}
+
+// Whether segment c-p crosses edge a-b. The origin c lies off every edge.
 fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
-    let side = (p.x - c.x) * (a.y - c.y) - (p.y - c.y) * (a.x - c.x) > 0.0;
-    let other = (p.x - c.x) * (b.y - c.y) - (p.y - c.y) * (b.x - c.x) > 0.0;
     let one = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) > 0.0;
-    let two = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) > 0.0;
-    return side != other && one != two;
+    return left(a - c, p - c) != left(b - c, p - c) && one != left(b - a, p - a);
 }
 
 // The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the

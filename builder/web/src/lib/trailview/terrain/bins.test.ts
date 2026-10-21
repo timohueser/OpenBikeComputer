@@ -22,6 +22,13 @@ function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }
     return { entries, origin };
 }
 
+/** As crosses() of stamp-core.wgsl: whether the way from origin o to p crosses edge a-b, with p moved by ε(1, ε). */
+function crosses([ox, oy]: number[], [px, py]: number[], [ax, ay, bx, by]: number[]) {
+    const left = (ux: number, uy: number, wx: number, wy: number) => ux * wy > uy * wx || (ux * wy === uy * wx && (uy < 0 || (uy === 0 && ux > 0)));
+    const one = (bx - ax) * (oy - ay) - (by - ay) * (ox - ax) > 0;
+    return left(ax - ox, ay - oy, px - ox, py - oy) !== left(bx - ox, by - oy, px - ox, py - oy) && one !== left(bx - ax, by - ay, px - ax, py - ay);
+}
+
 const lakeNode = () => {
     const { rings } = features(fixture(TILE.level, TILE.x, TILE.y), TILE).lakes[0], xs = rings[0].filter((_, i) => i % 2 === 0), ys = rings[0].filter((_, i) => i % 2 === 1);
     const middle = (values: number[]) => (Math.min(...values) + Math.max(...values)) / 2;
@@ -75,22 +82,35 @@ describe('the stamp data of a node', () => {
             const { data } = nodeStamps([lake], TILE, node), { entries, origin } = cellOf(data!, node, c);
             const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
             const rings = features([lake], TILE).lakes[0].rings;
-            // As crosses() of stamp-core.wgsl: whether the way from the origin to p crosses an edge, half-open at the ends.
-            const crosses = ([px, py]: number[], [ax, ay, bx, by]: number[]) => {
-                const [ox, oy] = origin, side = (x: number, y: number) => (px - ox) * (y - oy) - (py - oy) * (x - ox) > 0;
-                const edge = (x: number, y: number) => (bx - ax) * (y - ay) - (by - ay) * (x - ax) > 0;
-                return side(ax, ay) !== side(bx, by) && edge(ox, oy) !== edge(px, py);
-            };
             for (let j = 0; j < CELL; j++) for (let i = 0; i < CELL; i++) {
                 const p = [(node.x * PAGE - CELL + 5 * CELL + i) * 16 + 8, (node.y * PAGE - CELL + 9 * CELL + j) * 16 + 8];
                 let inside = false;
                 for (const entry of entries) {
                     const r = entry & ~INSIDE;
-                    if (word(r, 4) === EDGE) inside = inside !== crosses(p, [0, 1, 2, 3].map(k => word(r, k)));
+                    if (word(r, 4) === EDGE) inside = inside !== crosses(origin, p, [0, 1, 2, 3].map(k => word(r, k)));
                     else if (word(r, 4) === LAKE) inside = inside !== ((entry & INSIDE) !== 0);
                 }
                 expect(inside, `turn ${turn}, texel ${i}, ${j}`).toBe(insideRings(rings, p[0], p[1]));
             }
+        }
+    });
+});
+
+describe('the side of a shore', () => {
+    it('is the same from every origin for a point on the shore', () => {
+        // A lake with a vertex, a straight edge and a slanted edge through the points.
+        const ring = [0, 0, 100, 0, 100, 60, 40, 100, 0, 100];
+        const edges = ring.map((_, i) => [ring[i], ring[i + 1], ring[(i + 2) % ring.length], ring[(i + 3) % ring.length]]).filter((_, i) => i % 2 === 0);
+        const off = (x: number, y: number) => edges.every(([ax, ay, bx, by]) => {
+            const t = Math.min(1, Math.max(0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2)));
+            return Math.hypot(x - ax - t * (bx - ax), y - ay - t * (by - ay)) >= 1;
+        });
+        for (const p of [[0, 0], [100, 60], [50, 0], [0, 37], [70, 80]]) {
+            const sides = new Set<boolean>();
+            for (let oy = -40; oy <= 140; oy += 9) for (let ox = -40; ox <= 140; ox += 9) {
+                if (off(ox, oy)) sides.add(edges.reduce((inside, edge) => inside !== crosses([ox, oy], p, edge), insideRings([ring], ox, oy)));
+            }
+            expect(sides.size, `point ${p}`).toBe(1);
         }
     });
 });
