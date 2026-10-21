@@ -102,6 +102,9 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 ## What bites
 
 - SwiftShader times are not GPU times. Measure on a GPU.
+- macOS lowers the GPU clock while a frame leaves the GPU time to spare, and a pass then measures
+  much longer than its work. `flight.mjs --gpu` keeps the clock high with a compute load before each
+  frame; a measurement without it is not comparable.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
   `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Without it, the device is lost with
   "A valid external Instance reference no longer exists".

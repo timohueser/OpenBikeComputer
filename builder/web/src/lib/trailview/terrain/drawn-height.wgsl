@@ -33,11 +33,15 @@ struct Surface {
 @group(1) @binding(3) var<storage, read> scales: array<vec2f>;
 // Per texel: x east and y north of the unit normal.
 @group(1) @binding(4) var normals: texture_2d_array<f32>;
+// For textureGather only: it reads the four texels of a 2 × 2 quad in one access, unfiltered.
+@group(1) @binding(5) var quad_sampler: sampler;
 
 override RINGS: bool = false;
 override R16: bool = false;
 
 const MAP: i32 = 32;
+// Texels across a layer: 8 pages of 256.
+const LAYER: f32 = 2048.0;
 const COARSEST: u32 = 1u;
 const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
@@ -122,7 +126,21 @@ fn texel_height(level: u32, t: vec2i, stored: bool) -> f32 {
         return NONE;
     }
     let page = (e & ~STORED) - 1u;
-    let raw = textureLoad(heights, in_layer(page, t), page >> 6u, 0).x;
+    return decode(page, textureLoad(heights, in_layer(page, t), page >> 6u, 0).x);
+}
+
+// Whether the 2 × 2 quad at a texel lies in one page, so one map entry and one gather read it.
+fn in_one_page(t: vec2i) -> bool {
+    return all((t & vec2i(255)) < vec2i(255));
+}
+
+// The texel coordinates where textureGather reads the quad at `t`: x (0, 1), y (1, 1), z (1, 0), w (0, 0).
+fn quad_at(page: u32, t: vec2i) -> vec2f {
+    return (vec2f(in_layer(page, t)) + 1.0) / LAYER;
+}
+
+// The height of a raw texel of a page; NONE for unknown.
+fn decode(page: u32, raw: u32) -> f32 {
     if (R16) {
         if (raw == UNKNOWN16) {
             return NONE;
@@ -138,10 +156,27 @@ fn texel_height(level: u32, t: vec2i, stored: bool) -> f32 {
 
 // The bilinear height between four texels, or NONE unless all four are known.
 fn bilinear(level: u32, t: Texel) -> f32 {
-    let a = texel_height(level, t.whole, false);
-    let b = texel_height(level, t.whole + vec2i(1, 0), false);
-    let c = texel_height(level, t.whole + vec2i(0, 1), false);
-    let d = texel_height(level, t.whole + vec2i(1, 1), false);
+    let e = entry(level, t.whole);
+    if (e == 0u) {
+        return NONE;
+    }
+    var a: f32;
+    var b: f32;
+    var c: f32;
+    var d: f32;
+    if (in_one_page(t.whole)) {
+        let page = (e & ~STORED) - 1u;
+        let q = textureGather(0, heights, quad_sampler, quad_at(page, t.whole), page >> 6u);
+        a = decode(page, q.w);
+        b = decode(page, q.z);
+        c = decode(page, q.x);
+        d = decode(page, q.y);
+    } else {
+        a = texel_height(level, t.whole, false);
+        b = texel_height(level, t.whole + vec2i(1, 0), false);
+        c = texel_height(level, t.whole + vec2i(0, 1), false);
+        d = texel_height(level, t.whole + vec2i(1, 1), false);
+    }
     if (!(known(a) && known(b) && known(c) && known(d))) {
         return NONE;
     }
@@ -287,17 +322,39 @@ fn texel_normal(level: u32, t: vec2i) -> vec3f {
         return vec3f(0.0, 0.0, -1.0);
     }
     let page = (e & ~STORED) - 1u;
-    let n = textureLoad(normals, in_layer(page, t), page >> 6u, 0).xy;
+    return marked(textureLoad(normals, in_layer(page, t), page >> 6u, 0).xy);
+}
+
+// A normal with z 1, or z −1 for the code of an unknown height.
+fn marked(n: vec2f) -> vec3f {
     return vec3f(n, select(1.0, -1.0, n.x < -0.99 && n.y < -0.99));
 }
 
 fn level_normal(s: vec2f, top: u32) -> vec2f {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
-        let a = texel_normal(level, t.whole);
-        let b = texel_normal(level, t.whole + vec2i(1, 0));
-        let c = texel_normal(level, t.whole + vec2i(0, 1));
-        let d = texel_normal(level, t.whole + vec2i(1, 1));
+        let e = entry(level, t.whole);
+        if (e == 0u) {
+            continue;
+        }
+        var a: vec3f;
+        var b: vec3f;
+        var c: vec3f;
+        var d: vec3f;
+        if (in_one_page(t.whole)) {
+            let page = (e & ~STORED) - 1u;
+            let x = textureGather(0, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
+            let y = textureGather(1, normals, quad_sampler, quad_at(page, t.whole), page >> 6u);
+            a = marked(vec2f(x.w, y.w));
+            b = marked(vec2f(x.z, y.z));
+            c = marked(vec2f(x.x, y.x));
+            d = marked(vec2f(x.y, y.y));
+        } else {
+            a = texel_normal(level, t.whole);
+            b = texel_normal(level, t.whole + vec2i(1, 0));
+            c = texel_normal(level, t.whole + vec2i(0, 1));
+            d = texel_normal(level, t.whole + vec2i(1, 1));
+        }
         if (min(min(a.z, b.z), min(c.z, d.z)) > 0.0) {
             return mix(mix(a.xy, b.xy, t.part.x), mix(c.xy, d.xy, t.part.x), t.part.y);
         }

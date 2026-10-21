@@ -194,7 +194,7 @@ export class Terrain {
         const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' };
         const surfaceLayout = layout([
             [all, { buffer: { type: 'uniform' } }], [all, { buffer: read }], [all, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
-            [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+            [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [all, { sampler: { type: 'non-filtering' } }],
         ]);
         const meshLayout = layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }]]);
         const jobLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
@@ -204,7 +204,8 @@ export class Terrain {
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const pipelineLayout = (...groups: GPUBindGroupLayout[]) => device.createPipelineLayout({ bindGroupLayouts: groups });
 
-        const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`) })]));
+        const swap: Record<string, string> = device.features.has('clip-distances') ? { 'terrain/unknown.wgsl': 'terrain/unknown-clip.wgsl' } : {};
+        const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
         const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout, constants: Record<string, number>) =>
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint, constants } });
         const [mesh, synthesize, normalsOf, quantize, probe, check] = await Promise.all([
@@ -228,7 +229,7 @@ export class Terrain {
         ]);
         this.resources = {
             ...r, mesh, synthesize, normalsOf, quantize, probe, check, probeLayout, checkLayout,
-            surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' })]),
+            surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             normalGroup: group(jobLayout, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
