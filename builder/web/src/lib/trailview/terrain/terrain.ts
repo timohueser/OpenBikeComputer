@@ -329,7 +329,9 @@ export class Terrain {
             label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
             vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
             fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
-            primitive: { topology: 'triangle-list' },
+            // From an eye above the ground, a ray meets a front face of the height field first. A triangle
+            // that the road snap turns over lies under front faces of its node, so culling leaves no hole.
+            primitive: { topology: 'triangle-list', cullMode: 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
         const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
@@ -390,8 +392,10 @@ export class Terrain {
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
-        // with masks come first: they draw with the road paint.
-        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
+        // with masks come first: they draw with the road paint. Each pipeline draws near to far, so that a
+        // GPU that shades before the depth test shades few hidden fragments.
+        const painted = (node: Node) => +(node.level >= NEAR), near = (node: Node) => distances(eye, node)[0];
+        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => painted(b) - painted(a) || near(a) - near(b));
         this.water.update(this.nodes.map(node => this.pages.drawing(node)!));
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
