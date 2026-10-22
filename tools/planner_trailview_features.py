@@ -3,7 +3,7 @@
 
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
-objects and assembles the areas; `trailview/profiles.py` sets the heights of roads, `trailview/water.py`
+objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/water.py`
 the levels of rivers and lakes."""
 
 import argparse
@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles
+from .trailview import profiles, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -504,14 +504,19 @@ def area_km2(bounds):
     return EARTH_RADIUS_KM ** 2 * math.radians(east - west) * (math.sin(math.radians(north)) - math.sin(math.radians(south)))
 
 
-def bake(kinds, pbf, bounds, output, attribution, terrain=None):
+def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     """Write the archive of the region `bounds` from the OSM `pbf`, with the heights of roads, rivers and
-    lakes from the `profiles.Terrain` when there is one; return the metrics."""
+    lakes from the `profiles.Terrain` when there is one, by the road `classes` (else those of
+    `roads.TABLE`); return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
+    # The road solver needs scipy, which the readers of the tiles do not have.
+    from .trailview import roads
+
+    classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
-    tiles, low, shared, counts, held, water = Tiles(bounds), [], {}, {}, [], {}
+    tiles, low, shared, counts, held, metrics = Tiles(bounds), [], {}, {}, [], {}
 
     def place(entry, tags, parts):
         if tiles.add(MAX_ZOOM, entry, tags, parts):
@@ -524,15 +529,26 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None):
 
     for entry, tags, parts in objects(kinds, pbf, binary):
         parts = [(outer, points, None) for outer, points in parts]
-        if terrain and profiles.solves(entry["kind"], tags) and tiles.meets(MAX_ZOOM, parts):
-            held.append((entry, tags, parts))
+        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads) if m.solves(entry["kind"], tags)), None)
+        if solver:
+            held.append((solver, entry, tags, parts))
         else:
             place(entry, tags, parts)
-    # The heights of a junction need every road that meets there, a river level its whole network.
+    # The heights of a junction need every road that meets there, a river level its whole network, and a
+    # ford the water it crosses.
     if held:
-        solved, water = profiles.solve([(entry["kind"], tags, parts) for entry, tags, parts in held], terrain)
-        for (entry, tags, parts), heights in zip(held, solved):
+        waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
+        ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
+        levels, metrics["water"] = water.solve([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
+        rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
+                  for (_, points, _), z in zip(parts, heights) if z]
+        for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
+        if ways:
+            heights, culverts, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights)):
+                # A culvert is a road: the stamps build it over the ground.
+                place(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts)
     for entry, tags, parts in low:
         anchors = [[index for index, point in enumerate(points) if shared[point] > 1] for _, points, _ in parts]
         for zoom in range(entry["min_zoom"], MAX_ZOOM):
@@ -553,7 +569,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None):
             "bounds": bounds})
     size = output.stat().st_size
     return {"osmium": version.splitlines()[0], "kinds": counts, "tiles": len(tiles.tiles), "bytes": size,
-            "bytes_per_km2": round(size / area_km2(bounds)), **({"water": water} if water else {})}
+            "bytes_per_km2": round(size / area_km2(bounds)), **{k: v for k, v in metrics.items() if v}}
 
 
 def step(request):
@@ -563,7 +579,7 @@ def step(request):
     # Osmium export reads the file twice and finds its format by the file name; a store object has none.
     osm = step_request.view({"osm.pbf": pbf}, output.with_name("planner-osm")) / "osm.pbf"
     archive = output / "trailview-features.pmtiles"
-    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain)
+    metrics = bake(validate(options["kinds"]), osm, options["bounds"], archive, options["attribution"], terrain, options["roads"])
     step_request.metrics(request, metrics)
 
 

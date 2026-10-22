@@ -48,9 +48,10 @@ TILE = 512
 EQUATOR_M = 40075016.686
 
 
-def reads(kind):
-    """Whether the solver reads a feature of this kind: it sets the levels of rivers and lakes."""
-    return kind in RIVERS | LAKES | AREAS | MARKS
+def solves(kind, tags):
+    """Whether the solver reads or sets the heights of a feature: a river, a lake or what the solver only
+    reads, but not a river in a tunnel."""
+    return kind in RIVERS | LAKES | AREAS | MARKS and not (kind in RIVERS and tags.get("tunnel", "no") != "no")
 
 
 def metres(y):

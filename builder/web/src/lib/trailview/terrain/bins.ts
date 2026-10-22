@@ -3,6 +3,7 @@
 import { EARTH_RADIUS } from '../frame/frame';
 import { EXTENT, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
+import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -16,8 +17,8 @@ const OFFSETS = GRID * GRID + 1;
 export const INSIDE = 1 << 30;
 /** Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. */
 export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7;
-/** Road flags: a ford, and the round caps of the core and the cone at the start and the end. */
-export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16;
+/** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
+export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
 const REACH_M = 40;
 /** The levels whose pages get the feature mask: they bin every road, also one that their level cannot show. */
@@ -26,8 +27,11 @@ export const NEAR = 16;
 const LOW = 8, DEEP = 14;
 const UNITS = 2 ** 30;
 
-/** The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype. */
-export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6 } as const;
+/**
+ * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype.
+ * `oneway` is a one-way main road: no line in its middle.
+ */
+export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, oneway: 4.5 } as const;
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
@@ -36,21 +40,15 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
  * The profile of a road or path class, as `Profile` in stamp-core.wgsl. The core holds the road height
  * ± `tol`. The cut and the fill (rise per metre) widen until they stop binding `reach` metres past the
  * core, or for a path past its edge: its bench. A level stamps a road only where
- * `least` metres of its cut and fill fit inside the buffer.
+ * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
+ * across it by `tilt` metres per metre.
  */
-export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number }
-const CARRIAGEWAY: Profile = { tol: 0.02, reach: 25, least: 5, cut: 0.85, fill: 0.85 };
-// Cut 65°, fill 35°.
-const BENCH: Profile = { tol: 0.02, reach: 3, least: 0, cut: 2.1445, fill: 0.7002 };
+export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number }
 /** A river's water lies flat on its core; banks of 27° near the water stay under its ribbon's edge. */
-const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5 };
-/** One row per `highway` class of the road and path kinds, and the rivers. L4's road solver sets them per class. */
+const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0 };
+/** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too, and the rivers. */
 export const PROFILES: Record<string, Profile> = {
-    motorway: CARRIAGEWAY, motorway_link: CARRIAGEWAY, trunk: CARRIAGEWAY, trunk_link: CARRIAGEWAY,
-    primary: CARRIAGEWAY, primary_link: CARRIAGEWAY, secondary: CARRIAGEWAY, secondary_link: CARRIAGEWAY,
-    tertiary: CARRIAGEWAY, tertiary_link: CARRIAGEWAY, unclassified: CARRIAGEWAY, residential: CARRIAGEWAY,
-    living_street: CARRIAGEWAY, service: CARRIAGEWAY, road: CARRIAGEWAY, track: CARRIAGEWAY,
-    path: BENCH, footway: BENCH, cycleway: BENCH, bridleway: BENCH, steps: BENCH, pedestrian: BENCH, via_ferrata: BENCH,
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt }])),
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
@@ -61,7 +59,7 @@ export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8;
 export function profileTable(): Float32Array<ArrayBuffer> {
     const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
-    rows.forEach(({ tol, reach, least, cut, fill }, i) => table.set([tol, reach, least, cut, fill], PROFILE_FLOATS * i));
+    rows.forEach(({ tol, reach, least, cut, fill, tilt }, i) => table.set([tol, reach, least, cut, fill, tilt], PROFILE_FLOATS * i));
     return table;
 }
 /** The half-width of a waterway without a `width` tag. */
@@ -81,28 +79,37 @@ export function featureTile({ level, x, y }: Node): Node | undefined {
 
 /** The prototype's road surface of a highway (`road_surface` in its bake). */
 export function surfaceOf(tags: Record<string, string>): Surface {
-    const { highway = '', surface = '', tracktype = '' } = tags;
-    if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? 'main' : 'road';
+    const { highway = '', surface = '', tracktype = '', oneway = '', junction = '' } = tags;
+    // A motorway and a roundabout are one-way unless OSM says otherwise. Traffic that takes turns, or
+    // changes its direction, keeps no line in the middle either.
+    const implied = ['motorway', 'motorway_link'].includes(highway) || junction === 'roundabout';
+    const main = (oneway ? ['yes', 'true', '1', '-1', 'reverse', 'reversible', 'alternating'].includes(oneway) : implied) ? 'oneway' : 'main';
+    if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
     if (['grass', 'grass_paver'].includes(surface)) return 'grass';
     if (PATHS.includes(highway)) return 'path';
     if (highway === 'track') return ({ grade1: 'road', grade2: 'gravel', grade3: 'dirt' } as const)[tracktype as 'grade1'] ?? 'grass';
-    return MAIN.includes(highway) ? 'main' : 'road';
+    return MAIN.includes(highway) ? main : 'road';
 }
 
 /** The half-width of a road: OSM's `width` where it has one (`road_width` in the prototype). */
 export function halfWidth(tags: Record<string, string>, surface: Surface): number {
     const width = parseFloat(tags.width ?? '');
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
-    return (surface === 'main' || surface === 'road') && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    return ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
 }
 
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
-/** A line; `anchors` marks its OSM vertices among the points of its rounded bends. */
-export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[] }
+/**
+ * A line; `anchors` marks its OSM vertices among the points of its rounded bends. `tilt` holds, per
+ * segment of a road, the slopes that its core takes across it from its start and from its end, as
+ * `packTilt` packs them: the through road's surface near a junction, zero elsewhere. `join` marks the
+ * first and the last vertex where the line runs on into the next line of the through road at a bend.
+ */
+export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean] }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 
@@ -170,7 +177,92 @@ function shapesOf(list: Feature[], tile: Node): { lines: Line[]; lakes: Lake[] }
             flush();
         }
     }
+    junctionPlanes(lines);
     return { lines, lakes };
+}
+
+/**
+ * As APPROACH_M of tools/trailview/roads.py: the solver puts the first metres of a side road on the
+ * through road's surface. Its cross-slope holds that far, or to the through road's edge, and fades out over WARP_M.
+ */
+const APPROACH_M = 4;
+export const WARP_M = 6;
+
+/**
+ * The slope across a segment from one of its ends, as `end_tilt` of stamp-core.wgsl reads it: the rise
+ * per metre to the segment's left in steps of 1e-4 (signed, low 16 bits) and in cm how far from the end
+ * it reaches (high 16 bits). It holds up to WARP_M before that and is zero past it, so a tile without the
+ * junction stamps the rest of the segment as the tile with it does.
+ */
+const packTilt = (slope: number, reach: number) => ((Math.max(-32768, Math.min(32767, Math.round(slope * 1e4))) & 0xffff) | (Math.min(65535, Math.round(reach * 100)) << 16)) >>> 0;
+const tiltAt = (word: number, metres: number) => ((word << 16) >> 16) * 1e-4 * Math.min(1, Math.max(0, ((word >>> 16) * 0.01 - metres) / WARP_M));
+
+/**
+ * The plane of the through road at each junction of roads, on the side roads. At a junction the
+ * through road is the first class of roads.json there, and of two ways of that class, the pair that
+ * runs most nearly straight on, as in the road solver of the bake; the solver puts each side road's
+ * first metres on the surface of the through direction that it leans along most. Its core takes the
+ * slope of that surface across it. Only the vertices and heights at a junction decide, so every tile
+ * that holds a junction gets the same planes.
+ */
+function junctionPlanes(lines: Line[]): void {
+    const at = new Map<string, { line: Line; v: number }[]>();
+    for (const line of lines) {
+        if (line.kind !== ROAD) continue;
+        line.tilt = new Array(2 * (line.z.length - 1)).fill(0);
+        line.z.forEach((_, v) => {
+            if (!(line.anchors?.[v] ?? true)) return;
+            const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+            at.set(name, [...(at.get(name) ?? []), { line, v }]);
+        });
+    }
+    const next = (line: Line, v: number, step: number) => {
+        let w = v + step;
+        while (w > 0 && w < line.z.length - 1 && !(line.anchors?.[w] ?? true)) w += step;
+        return w >= 0 && w < line.z.length ? w : -1;
+    };
+    const metres = (line: Line, a: number, b: number) => Math.hypot(line.xy[2 * b] - line.xy[2 * a], line.xy[2 * b + 1] - line.xy[2 * a + 1]) * metresPerUnit(line.xy[2 * a + 1]);
+    const dot = (p: number[], q: number[]) => p[0] * q[0] + p[1] * q[1];
+    for (const meeting of at.values()) {
+        if (meeting.length < 2) continue;
+        const ways = meeting.flatMap(({ line, v }) => [-1, 1].map(step => ({ line, v, step, w: next(line, v, step) })).filter(({ w }) => w >= 0)).map(way => {
+            const { line, v, w } = way, length = Math.hypot(line.xy[2 * w] - line.xy[2 * v], line.xy[2 * w + 1] - line.xy[2 * v + 1]) || 1;
+            return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
+        });
+        if (ways.length < 2) continue;
+        const best = Math.min(...ways.map(({ line }) => line.profile)), top = ways.filter(({ line }) => line.profile === best);
+        let through = [top[0]];
+        if (top.length >= 2) {
+            let least = Infinity;
+            for (let i = 0; i < top.length; i++) for (let k = i + 1; k < top.length; k++) {
+                if (dot(top[i].dir, top[k].dir) < least) [least, through] = [dot(top[i].dir, top[k].dir), [top[i], top[k]]];
+            }
+        }
+        if (through.length === 2 && through.every(({ line, v }) => v === 0 || v === line.z.length - 1)) {
+            // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge.
+            const [cap] = [...through].sort((p, q) => p.dir[0] - q.dir[0] || p.dir[1] - q.dir[1]);
+            (cap.line.join ??= [false, false])[cap.v === 0 ? 0 : 1] = true;
+        }
+        const reach = Math.max(APPROACH_M, ...through.map(({ line }) => line.h)) + WARP_M;
+        for (const side of ways) {
+            if (through.includes(side)) continue;
+            const lean = through.reduce((most, way) => (dot(way.dir, side.dir) > dot(most.dir, side.dir) ? way : most));
+            const plane = [lean.grade * lean.dir[0], lean.grade * lean.dir[1]], { line, step } = side, tilt = line.tilt!;
+            // Each segment within the reach takes the plane from its end nearer the junction.
+            for (let v = side.v, along = 0; along < reach && v + step >= 0 && v + step < line.z.length; v += step) {
+                const s = Math.min(v, v + step), end = 2 * s + (step === 1 ? 0 : 1);
+                const dx = line.xy[2 * s + 2] - line.xy[2 * s], dy = line.xy[2 * s + 3] - line.xy[2 * s + 1], length = Math.hypot(dx, dy) || 1;
+                const word = packTilt((plane[1] * dx - plane[0] * dy) / length, reach - along);
+                if (Math.abs((word << 16) >> 16) > Math.abs((tilt[end] << 16) >> 16)) tilt[end] = word;
+                along += metres(line, v, v + step);
+            }
+        }
+    }
+}
+
+/** The slope across segment v of a road, `sa` metres from its start and `sb` from its end, as `along` in stamp-core.wgsl reads it. */
+export function crossSlope(line: Line, v: number, sa: number, sb: number): number {
+    return line.tilt ? tiltAt(line.tilt[2 * v], sa) + tiltAt(line.tilt[2 * v + 1], sb) : 0;
 }
 
 /** The most that a chord of a rounded bend leaves the curve, in world units (about 10 cm), and the most chords per segment. */
@@ -326,10 +418,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         for (let v = 0; v + 1 < n; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
             const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
-            const flags = (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0);
+            const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
+            const flags = (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
+                | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id, line.profile]);
+            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
+                line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

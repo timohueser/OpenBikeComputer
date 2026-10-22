@@ -42,7 +42,7 @@ export class Water {
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, V = GPUShaderStage.VERTEX;
         const layout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -54,7 +54,7 @@ export class Water {
         const module = device.createShaderModule({ label: 'water', code: wgsl('terrain/water.wgsl') });
         const blend: GPUBlendComponent = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' };
         const pipeline = (ribbons: boolean) => device.createRenderPipelineAsync({
-            label: ribbons ? 'ribbons' : 'lakes', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout] }),
+            label: ribbons ? 'ribbons' : 'lakes', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surfaceLayout, groundLayout, featureLayout] }),
             vertex: {
                 module, entryPoint: 'water_vertex', buffers: [{
                     arrayStride: WATER_VERTEX * 4, attributes: [
@@ -126,12 +126,13 @@ export class Water {
         return true;
     }
 
-    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup): void {
+    draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.draws.length) return;
         pass.setBindGroup(0, r.group);
         pass.setBindGroup(1, surfaceGroup);
         pass.setBindGroup(2, ground);
+        pass.setBindGroup(3, features);
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
         for (const ribbons of [false, true]) {

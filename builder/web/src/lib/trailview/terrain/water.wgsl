@@ -3,7 +3,7 @@
 // keeps the part over its own square. A lake lies at its level; a river or a stream is a ribbon on the
 // drawn surface at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
 // haze and `finish()` are those of the ground, from the look in group 2.
-// #include drawn-height.wgsl
+// #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../light/shade.wgsl
 

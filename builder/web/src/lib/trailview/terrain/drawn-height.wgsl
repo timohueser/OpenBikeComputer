@@ -1,6 +1,6 @@
-// The drawn surface: drawnHeight(s), for every shader that stands on the terrain. The LOD map gives
-// the page of each level; the split rule, the LOD rule and the grid give the node, the morph and the
-// triangle as the mesh draws them. Include it with `// #include drawn-height.wgsl`.
+// The texels of the drawn surface: the LOD map gives the page of each level, and the pages give the
+// heights and the normals; drawn-mesh.wgsl builds the mesh and drawnHeight(s) from them. Include it
+// with `// #include drawn-height.wgsl`.
 //
 // LOD space s is metres east and north of the eye along the Mercator axes, at the scale of the eye's
 // latitude. World positions are whole units (2^30 across the world) about an anchor, so no float
@@ -197,55 +197,6 @@ fn lod(s: vec2f) -> f32 {
     return clamp(k - 1.0 + min(1.0, (q - k) / MORPH), f32(COARSEST), f32(surface.finest));
 }
 
-// Whether the selection splits the node of a level that holds a point at `u` units about the anchor,
-// as `Rule.split` in lod.ts.
-fn splits(level: u32, u: vec2f) -> bool {
-    if (level >= surface.finest) {
-        return false;
-    }
-    let shift = 30u - level;
-    let low = surface.anchor & vec2i((1 << shift) - 1);
-    let corner = vec2f(vec2i(floor((vec2f(low) + u) / f32(1 << shift))) * (1 << shift) - low);
-    let size = f32(1 << shift);
-    let near = max(max(corner - surface.part, vec2f(0.0)), surface.part - corner - size) * surface.unit;
-    return log2(surface.range / length(vec3f(near, surface.above))) > f32(level) + 1.0 - MARGIN;
-}
-
-// The level of the node that draws a point of LOD space.
-fn drawn_level(s: vec2f) -> u32 {
-    let u = units_of(s);
-    var level = COARSEST;
-    while (splits(level, u)) {
-        level++;
-    }
-    return level;
-}
-
-struct Vertex {
-    s: vec2f,
-    h: f32,
-}
-
-// The mesh vertex of a level at a grid point, `u` units about the anchor: an odd vertex slides onto the
-// even one before it by the morph, and its height goes from its own level's to the coarser level's at
-// the even vertex, so a fully morphed edge is the coarser node's edge.
-fn grid_vertex(u: vec2i, level: u32) -> Vertex {
-    let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
-    let at = lod_space(vec2f(u));
-    let base = lod_space(vec2f(even));
-    let morph = clamp(f32(level) - lod(at), 0.0, 1.0);
-    if (morph <= 0.0) {
-        return Vertex(at, units_height(surface.anchor + u, level));
-    }
-    let coarse = units_height(surface.anchor + even, level - 1u);
-    if (morph >= 1.0) {
-        return Vertex(base, coarse);
-    }
-    let fine = units_height(surface.anchor + u, level);
-    let h = select(select(fine, coarse, known(coarse)), mix(fine, coarse, morph), known(fine) && known(coarse));
-    return Vertex(mix(at, base, morph), h);
-}
-
 // The weights of a point in a triangle, all ≥ 0 inside it; none for a triangle without area.
 fn weights(s: vec2f, a: vec2f, b: vec2f, c: vec2f) -> vec3f {
     let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -255,38 +206,6 @@ fn weights(s: vec2f, a: vec2f, b: vec2f, c: vec2f) -> vec3f {
     let wb = ((s.x - a.x) * (c.y - a.y) - (s.y - a.y) * (c.x - a.x)) / area;
     let wc = ((b.x - a.x) * (s.y - a.y) - (b.y - a.y) * (s.x - a.x)) / area;
     return vec3f(1.0 - wb - wc, wb, wc);
-}
-
-// The drawn height at a point of LOD space: the mesh triangle that holds it, with the vertices, the
-// morph and the split of the mesh. NONE where a vertex of the triangle knows no height.
-fn drawn_height(s: vec2f) -> f32 {
-    let level = drawn_level(s);
-    // The 2 × 2 cells of a coarser cell: the odd vertices slide inside them.
-    let shift = 25u - level;
-    let cell = 1 << (24u - level);
-    let low = surface.anchor & vec2i((1 << shift) - 1);
-    let corner = vec2i(floor((vec2f(low) + units_of(s)) / f32(1 << shift))) * (1 << shift) - low;
-    var v: array<Vertex, 9>;
-    for (var i = 0; i < 9; i++) {
-        v[i] = grid_vertex(corner + vec2i(i % 3, i / 3) * cell, level);
-    }
-    var best = -1e30;
-    var h = NONE;
-    for (var i = 0; i < 4; i++) {
-        let a = i % 2 + 3 * (i / 2);
-        // The two triangles of a cell, as the index buffer splits it.
-        for (var t = 0; t < 2; t++) {
-            let p = select(vec3i(a, a + 3, a + 1), vec3i(a + 1, a + 3, a + 4), t == 1);
-            let w = weights(s, v[p.x].s, v[p.y].s, v[p.z].s);
-            let least = min(w.x, min(w.y, w.z));
-            if (least > best) {
-                best = least;
-                let known_all = known(v[p.x].h) && known(v[p.y].h) && known(v[p.z].h);
-                h = select(NONE, dot(w, vec3f(v[p.x].h, v[p.y].h, v[p.z].h)), known_all);
-            }
-        }
-    }
-    return h;
 }
 
 // The normal of a texel, with z 1; z −1 where no page holds the texel or its height is unknown.

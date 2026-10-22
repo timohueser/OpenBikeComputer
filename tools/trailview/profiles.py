@@ -1,34 +1,18 @@
-"""The master terrain for the solvers of the TrailView feature tiles, and simple road heights from it: a
-road lies at the terrain smoothed along it. The road solver replaces them; `water.py` solves the rivers
-and lakes."""
+"""The master terrain for the solvers of the TrailView feature tiles: `roads.py` sets the heights of roads,
+`water.py` the levels of rivers and lakes."""
 
 from collections import OrderedDict
 import io
 import json
-import math
 import os
 from pathlib import Path
 import sqlite3
 
 import numpy as np
 
-from . import water
-
-ROADS = {"main-road", "road", "path"}
-# As GRADE_SMOOTH_M of the prototype's grading: a road follows the terrain averaged over ±12 m.
-SMOOTH_M = 12.0
-STEP_M = 2.0
 EQUATOR_M = 40075016.686
 TILE = 512
 CACHED = 256
-
-
-def solves(kind, tags):
-    """Whether the solvers read or set the heights of a feature: a road that is not a bridge, or what the
-    water solver reads, but a river in a tunnel."""
-    if kind in ROADS:
-        return tags.get("bridge", "no") == "no"
-    return water.reads(kind) and not (kind in water.RIVERS and tags.get("tunnel", "no") != "no")
 
 
 class Terrain:
@@ -124,57 +108,3 @@ class Terrain:
 def metres(y):
     """Metres per world unit at world row y: the Mercator scale."""
     return EQUATOR_M * np.cos(np.arctan(np.sinh(np.pi * (1 - 2 * y))))
-
-
-def road(points, terrain):
-    """The heights at the vertices of a line: the terrain sampled every STEP_M, and a straight line fitted
-    to it over ±SMOOTH_M of length along the line. Toward the ends the window narrows to one side, and the
-    line keeps a constant grade unbiased. NaN where the terrain is unknown over the whole window."""
-    xy = np.asarray(points, np.float64)
-    if len(xy) < 2:
-        return np.full(len(xy), np.nan)
-    d = np.diff(xy, axis=0)
-    lengths = np.hypot(*d.T) * metres((xy[:-1, 1] + xy[1:, 1]) / 2)
-    steps = np.maximum(1, np.ceil(lengths / STEP_M)).astype(int)
-    t = np.concatenate([np.arange(n) / n for n in steps] + [[1.0]])
-    segment = np.concatenate([np.full(n, k) for k, n in enumerate(steps)] + [[len(d) - 1]])
-    samples = xy[segment] + t[:, None] * d[segment]
-    along = np.concatenate([[0], np.cumsum(lengths)])[segment] + t * lengths[segment]
-    h = terrain.heights(samples[:, 0], samples[:, 1]).astype(np.float64)
-    known = np.isfinite(h)
-    s0 = np.where(known, along - along[-1] / 2, 0)
-    sums = [np.concatenate([[0], np.cumsum(value)]) for value in (known, s0, s0 * s0, np.where(known, h, 0), s0 * np.where(known, h, 0))]
-    lo = np.searchsorted(along, along - SMOOTH_M)
-    hi = np.searchsorted(along, along + SMOOTH_M, side="right")
-    n, sx, sxx, sz, sxz = (total[hi] - total[lo] for total in sums)
-    spread = n * sxx - sx * sx
-    slope = np.where(spread > 1e-9 * np.maximum(n, 1) ** 2, (n * sxz - sx * sz) / np.where(spread > 0, spread, 1), 0)
-    fit = np.where(n > 0, (sz - slope * sx) / np.maximum(n, 1) + slope * (along - along[-1] / 2), np.nan)
-    vertices = np.concatenate([[0], np.cumsum(steps)])
-    return fit[vertices]
-
-
-def solve(features, terrain):
-    """Per feature (kind, tags, parts), the heights of each part, None where unknown, and the metrics of
-    the water. Roads that share a vertex take the mean of their heights there, so a junction has one height."""
-    water_heights, metrics = water.solve([feature for feature in features if feature[0] not in ROADS], terrain)
-    levels, out, shared = iter(water_heights), [], {}
-    for kind, _, parts in features:
-        if kind not in ROADS:
-            out.append(next(levels))
-            continue
-        heights = [road(points, terrain).tolist() for _, points, *_ in parts]
-        for (_, points, *_), z in zip(parts, heights):
-            for point, h in zip(points, z):
-                if math.isfinite(h):
-                    entry = shared.setdefault(point, [0.0, 0])
-                    entry[0] += h
-                    entry[1] += 1
-        out.append(heights)
-    for (kind, _, parts), heights in zip(features, out):
-        if kind in ROADS:
-            for (_, points, *_), z in zip(parts, heights):
-                for n, point in enumerate(points):
-                    if point in shared:
-                        z[n] = shared[point][0] / shared[point][1]
-    return [[z and [h if h is not None and math.isfinite(h) else None for h in z] for z in heights] for heights in out], metrics
