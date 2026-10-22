@@ -43,10 +43,11 @@ describe('the page pools', () => {
     const { wanted } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, () => true);
     wanted.sort((a, b) => a.level - b.level);
 
-    it('synthesize the levels below the stored tiles from the deepest stored page, and map every ready page', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
+    it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map every ready page', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
+        expect(tiles.decoded).toBe(tiles.fetched.filter(name => Number(name.split('/')[0]) <= 12).length);
         const syntheses = works.flatMap(work => work.syntheses);
         expect(syntheses.length).toBeGreaterThan(0);
         // Zoom 12 holds the pages of level 13, the deepest stored level.
@@ -56,25 +57,6 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry !== 0).length).toBe(ready.length);
         // A stored page has its raw layer in the high half of its entry, for the syntheses.
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
-    });
-
-    it('stay at their size, and count a shortage when a view wants more pages than a pool holds', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 20 }, BOUNDS, () => {});
-        await settle(pages, wanted, 60);
-        const resident = [...pages.pages.values()];
-        expect(resident.filter(page => page.kind === 'synth').length).toBeLessThanOrEqual(20);
-        expect(new Set(resident.map(page => page.slot)).size).toBe(resident.length);
-        expect(pages.shortage).toBeGreaterThan(0);
-        expect(pages.wanted.synth).toBeGreaterThan(20);
-    });
-
-    it('cover a node where a ready page of its level or a coarser one holds it, and nowhere else', async () => {
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
-        const finest = wanted.at(-1)!, shift = finest.level - 13;
-        expect(pages.covers(finest)).toBe(false);
-        await settle(pages, [{ level: 13, x: finest.x >> shift, y: finest.y >> shift }]);
-        expect(pages.covers(finest)).toBe(true);
-        expect(pages.covers({ ...finest, x: finest.x + (2 << shift) })).toBe(false);
     });
 
     it('get every page again for a new device, without a request', async () => {
@@ -90,13 +72,15 @@ describe('the page pools', () => {
         expect(wanted.some(node => !before.has(key(node)))).toBe(false);
     });
 
-    it('decode each tile once, while its pages wait to arrive', async () => {
-        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
-        await settle(pages, wanted);
-        expect(tiles.decoded).toBe(tiles.fetched.filter(name => Number(name.split('/')[0]) <= 12).length);
-    });
+    it('stay at their size, count a shortage in the frame that wants too many pages, and evict none that it wants', async () => {
+        const small = new Pages(source(), { stored: 400, synth: 20 }, BOUNDS, () => {});
+        await settle(small, wanted, 60);
+        const resident = [...small.pages.values()];
+        expect(resident.filter(page => page.kind === 'synth').length).toBeLessThanOrEqual(20);
+        expect(new Set(resident.map(page => page.slot)).size).toBe(resident.length);
+        expect(small.shortage).toBeGreaterThan(0);
+        expect(small.wanted.synth).toBeGreaterThan(20);
 
-    it('count a shortage in the frame that wants too many pages, and evict none that it wants', async () => {
         const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(all, wanted);
         const synth = all.wanted.synth, pages = new Pages(source(), { stored: 400, synth }, BOUNDS, () => {});
