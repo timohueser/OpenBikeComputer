@@ -1,7 +1,7 @@
 // The water: the meshes of water-mesh.ts, drawn after the terrain and hidden where the terrain stands
 // above them. Each drawn node draws the mesh of the node whose page it draws and keeps the part over
-// its own square. A lake lies at its level, a river area on the drawn surface. A
-// river or a stream is a ribbon on the drawn surface at its width, at least RIBBON_PIXELS wide, and fades
+// its own square. A lake lies at its level, a river area on the mesh without its snap (plain_height). A
+// river or a stream is a ribbon on it at its width, at least RIBBON_PIXELS wide, and fades
 // with its share of that width. The shading is the prototype's: a still body, dark from above and a
 // mirror of the sky toward the horizon, with a sun glint; white where a ribbon runs down a steep bed.
 // The haze and `finish()` are those of the ground, from the look in group 2.
@@ -89,7 +89,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     }
     var z = v.level;
     if (v.half != 0.0 || v.level <= DRAPED) {
-        z = drawn_height(lod_space(u));
+        z = plain_height(lod_space(u));
     }
     if (v.half != 0.0) {
         // At the middle of the ribbon, along the flow: across it, turned a right angle, in LOD space axes (y north).
