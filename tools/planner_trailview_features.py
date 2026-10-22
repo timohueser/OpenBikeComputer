@@ -3,8 +3,8 @@
 
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
-objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/profiles.py`
-those of rivers and lakes."""
+objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/water.py`
+the levels of rivers and lakes."""
 
 import argparse
 from functools import lru_cache
@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles
+from .trailview import profiles, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -516,7 +516,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
-    tiles, low, shared, counts, held, road_metrics = Tiles(bounds), [], {}, {}, [], {}
+    tiles, low, shared, counts, held, metrics = Tiles(bounds), [], {}, {}, [], {}
 
     def place(entry, tags, parts):
         if tiles.add(MAX_ZOOM, entry, tags, parts):
@@ -529,22 +529,23 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
 
     for entry, tags, parts in objects(kinds, pbf, binary):
         parts = [(outer, points, None) for outer, points in parts]
-        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (profiles, roads) if m.solves(entry["kind"], tags)), None)
+        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
         else:
             place(entry, tags, parts)
-    # The heights of a junction need every road that meets there, and a ford the water it crosses.
+    # The heights of a junction need every road that meets there, a river level its whole network, and a
+    # ford the water it crosses.
     if held:
-        water = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is profiles]
+        waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
-        levels = profiles.solve([(entry["kind"], tags, parts) for entry, tags, parts in water], terrain)
-        rivers = [(points, z) for (entry, _, parts), heights in zip(water, levels) if entry["kind"] in profiles.RIVERS
-                  for (_, points, _), z in zip(parts, heights)]
-        for (entry, tags, parts), heights in zip(water, levels):
+        levels, metrics["water"] = water.solve([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
+        rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
+                  for (_, points, _), z in zip(parts, heights) if z]
+        for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, road_metrics = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            heights, culverts, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
             for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights)):
                 # A culvert is a road: the stamps build it over the ground.
                 place(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts)
@@ -568,7 +569,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             "bounds": bounds})
     size = output.stat().st_size
     return {"osmium": version.splitlines()[0], "kinds": counts, "tiles": len(tiles.tiles), "bytes": size,
-            "bytes_per_km2": round(size / area_km2(bounds)), **({"roads": road_metrics} if road_metrics else {})}
+            "bytes_per_km2": round(size / area_km2(bounds)), **{k: v for k, v in metrics.items() if v}}
 
 
 def step(request):

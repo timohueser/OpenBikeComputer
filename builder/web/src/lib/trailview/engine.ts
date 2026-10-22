@@ -246,7 +246,7 @@ export class TrailView {
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         if (eye) {
-            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj));
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, viewProj, target.height));
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect));
         }
         const encoder = gpu.device.createCommandEncoder();
@@ -294,12 +294,13 @@ export class TrailView {
         return depth;
     }
 
-    private uniforms(eye: Eye, viewProj: Float32Array): ArrayBuffer {
+    private uniforms(eye: Eye, viewProj: Float32Array, pixels: number): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
         floats.set(viewProj, 0);
         floats.set(this.sun(), 16);
         floats.set([eye.z, CURVATURE], 20);
         new Uint32Array(data)[22] = DEBUG_VIEWS.indexOf(this.extras.debug);
+        floats[23] = 2 * Math.tan(VFOV * RAD / 2) / pixels;
         return data;
     }
 

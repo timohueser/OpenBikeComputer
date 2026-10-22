@@ -125,10 +125,24 @@ a vertex between two of them where the solved height leaves the straight line be
 than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
 
-Each vertex of a `river` or `stream` that is not in a tunnel has the height of a straight line fitted
-to the terrain, sampled every 2 m, over ±12 m of the line; near an end the window holds the part of
-it on the line. It is never higher than a vertex before it: OSM draws a waterway in the direction of
-its flow. Each vertex of a `lake` has the median of the terrain inside it. Other kinds have no height yet.
+Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
+vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
+bake turns a way whose terrain rises by more than 5 m from end to end. The level is the fit that never
+rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m) across the line, every
+5 m, with a fall of at least 0.05 % in a pool, smoothed over ±25 m. The smoothing does not cross a
+`waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a level never
+rises through a junction, and the waterways at a junction have one level there. In a loop of
+waterways, the waterways go from the highest start down, and one that flows back into a junction
+before it ends below that junction's level. A point in a lake, or
+within 2 m of its shore, holds the lake's level. A `river` without a `width` tag that lies inside
+`river-area` polygons for a third of its length or more gets the tag: twice the median distance from
+its line to their edges.
+
+Each vertex of a `lake` has one level. It is the median of the terrain inside the lake when 80 % of
+that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 m inside the shore.
+A pond (`water=pond`) takes the lowest terrain 2 m inside its shore, a reservoir (`water=reservoir`
+or `landuse=reservoir`) the median of the terrain on its outline: its full level. An `ele` tag
+within 1.5 m of the level wins. Other kinds have no height yet.
 With `has_z` 1, each vertex has a `z_code`. `z_code` 0 means not solved: the height is unknown,
 never 0 m. Otherwise `z_code − 1` is the zigzag difference in centimetres from the last solved
 height of the feature, which starts at 0. A height is in metres in the vertical datum of

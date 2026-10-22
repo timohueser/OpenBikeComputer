@@ -79,6 +79,8 @@ export interface TerrainStats {
     jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
     masks: number;
+    /** Water meshes of the last frame that did not fit in their pool. */
+    waterDropped: number;
 }
 
 /** What the audit counts, as audit.wgsl does. */
@@ -224,7 +226,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks,
+            jobs: this.jobs, masks, waterDropped: this.water.dropped,
         };
     }
 
@@ -350,7 +352,7 @@ export class Terrain {
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
-        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
+        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, depthFormat);
         this.resources = {
             ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
@@ -390,7 +392,7 @@ export class Terrain {
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint.
         this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
-        this.water.update(this.nodes);
+        this.water.update(this.nodes.map(node => this.pages.drawing(node)!));
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -501,7 +503,7 @@ export class Terrain {
         if (painted) pass.drawIndexed(GRID_INDICES.length, painted);
         pass.setPipeline(r.plainMesh);
         if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
-        this.water.draw(pass, r.surfaceGroup, ground);
+        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup);
     }
 
     /**

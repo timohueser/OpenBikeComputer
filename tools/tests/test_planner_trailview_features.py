@@ -174,11 +174,12 @@ class Bake(unittest.TestCase):
         lake = next(feature for feature in left if feature["kind"] == "lake")
         level = lake["parts"][0]["z"]
         self.assertEqual(len(set(level)), 1, "a lake has one height")
-        self.assertLess(abs(level[0] - height(2300)), 0.05, "the median of the terrain inside it")
-        # The river flows east, up the plane: its level holds at its source and never rises.
+        self.assertLess(height(2000), level[0], "a low quantile of its shore, inside it")
+        self.assertLess(level[0], height(2300))
+        # The river flows east, up the plane, into the lake: it holds near the lake's level and never rises.
         stream = next(feature for feature in left if feature["kind"] == "river")["parts"][0]["z"]
-        self.assertEqual(len(set(stream)), 1)
-        self.assertLess(stream[-1], height(2000))
+        self.assertEqual(stream, sorted(stream, reverse=True))
+        self.assertLess(abs(stream[-1] - level[0]), 0.05)
         ground = features.EQUATOR_M * math.cos(math.radians(north)) / (1 << 14) / features.EXTENT
         self.assertGreater(buffer * ground, features.BUFFER_M - 1e-9)
         building = next(feature for feature in left if feature["kind"] == "building")

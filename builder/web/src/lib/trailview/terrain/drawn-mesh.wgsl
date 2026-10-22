@@ -36,8 +36,8 @@ struct Vertex {
 // The move of the vertex of a level at `u` units about the anchor onto the nearest road edge, in whole
 // units, as the stamp pass found it for the vertex's mask: less toward the reach of the mask pool, as
 // the paint.
-fn snap(u: vec2i, level: u32) -> vec2i {
-    if (level < MASK_LEVEL) {
+fn snap(u: vec2i, level: u32, snapping: bool) -> vec2i {
+    if (!snapping || level < MASK_LEVEL) {
         return vec2i(0);
     }
     let t = (surface.anchor + u) >> vec2u(22u - level);
@@ -56,15 +56,15 @@ fn snap(u: vec2i, level: u32) -> vec2i {
 // even one before it by the morph, and its height goes from its own level's to the coarser level's at
 // the even vertex, so a fully morphed edge is the coarser node's edge. Each level snaps its own
 // vertices; the morph keeps to the grid point, so neighbouring nodes meet as without the snap.
-fn grid_vertex(u: vec2i, level: u32) -> Vertex {
+fn grid_vertex(u: vec2i, level: u32, snapping: bool) -> Vertex {
     let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
     let morph = clamp(f32(level) - lod(lod_space(vec2f(u))), 0.0, 1.0);
-    let moved = u + snap(u, level);
+    let moved = u + snap(u, level, snapping);
     let at = lod_space(vec2f(moved));
     if (morph <= 0.0) {
         return Vertex(at, units_height(surface.anchor + moved, level));
     }
-    let settled = even + snap(even, level - 1u);
+    let settled = even + snap(even, level - 1u, snapping);
     let base = lod_space(vec2f(settled));
     let coarse = units_height(surface.anchor + settled, level - 1u);
     if (morph >= 1.0) {
@@ -78,6 +78,16 @@ fn grid_vertex(u: vec2i, level: u32) -> Vertex {
 // The drawn height at a point of LOD space: the mesh triangle that holds it, with the vertices, the
 // morph and the split of the mesh. NONE where a vertex of the triangle knows no height.
 fn drawn_height(s: vec2f) -> f32 {
+    return mesh_height(s, true);
+}
+
+// The height of the mesh without the snap: within a few texels of a road edge it may lie a few cm
+// off the drawn mesh, and it reads a ninth of the vertices. The water drapes on it.
+fn plain_height(s: vec2f) -> f32 {
+    return mesh_height(s, false);
+}
+
+fn mesh_height(s: vec2f, snapping: bool) -> f32 {
     let level = drawn_level(s);
     let cell = 1 << (24u - level);
     let block = 2 * cell;
@@ -87,12 +97,12 @@ fn drawn_height(s: vec2f) -> f32 {
     // vertex moves up to 3/4 of a cell (SNAP_TEXELS of stamp.wgsl), and in the morph band up to 3/4 of
     // a coarser cell: less than one, so the coarser cell of the point and its eight neighbours hold
     // every triangle that can hold it.
-    let snapped = level >= MASK_LEVEL;
+    let snapped = snapping && level >= MASK_LEVEL;
     let n = select(3, 7, snapped);
     let corner = (vec2i(floor(at)) - select(vec2i(0), vec2i(1), snapped)) * block - low;
     var v: array<Vertex, 49>;
     for (var i = 0; i < n * n; i++) {
-        v[i] = grid_vertex(corner + vec2i(i % n, i / n) * cell, level);
+        v[i] = grid_vertex(corner + vec2i(i % n, i / n) * cell, level, snapping);
     }
     var best = -1e30;
     var h = NONE;

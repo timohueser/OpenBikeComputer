@@ -154,8 +154,13 @@ export class Pages {
      * nothing: each bilinear quad that it reads has a texel in its own page of that level.
      */
     covers(node: Node): boolean {
-        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined) return true;
-        return false;
+        return this.drawing(node) !== undefined;
+    }
+
+    /** The node of the finest page that draws and holds the node: the heights that it draws. */
+    drawing(node: Node): Node | undefined {
+        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined) return { level, x, y };
+        return undefined;
     }
 
     /** Takes the pages that a frame wants, coarse and near first, and returns its GPU work. */

@@ -1,53 +1,76 @@
-// The water meshes of a feature tile: each lake cut into triangles at its level, with a skirt past
-// its shore that goes under the banks, and each river a strip at its levels. A worker makes them;
-// water.wgsl draws them for each drawn node that reads the tile, and widens the skirts and strips
-// by the reach of the node's level.
+// The water mesh of a node: each lake that reaches the node's square cut to it and into triangles at
+// its level, and each river and stream a ribbon along its line. The stamp worker makes it with the
+// node's stamps; water.wgsl draws it on the node's square, a ribbon on the drawn surface.
 import earcut from 'earcut';
 import type { Feature } from '../stream/features';
-import { features, insideRings, metresPerUnit, mitre, RIVER, type Node } from './bins';
+import { PAGE } from '../stream/heights';
+import { features, metresPerUnit, mitre, RIVER, RULES, STREAM, type Line, type Node } from './bins';
 
-/** Words of a vertex, as `WaterIn` of water.wgsl: x, y (int32 world units), level, normal x and y, base metres, reach share, river half-width. */
-export const WATER_VERTEX = 8;
+/** Words of a vertex, as `WaterIn` of water.wgsl: x, y (int32 world units), level, across x and y, signed half-width. */
+export const WATER_VERTEX = 6;
 /** The longest edge: the linear drop between its ends leaves the curvature drop by at most 2 cm. */
 export const EDGE_M = 1000;
-/** A mitre normal grows at most this much in a sharp corner. */
+/** A mitre grows at most this much in a sharp bend. */
 const MITRE = 3;
 
 export interface WaterMesh {
     vertices: ArrayBuffer;
+    /** The ribbons' triangles, then the lakes'. */
     indices: Uint32Array<ArrayBuffer>;
+    /** The indices of the ribbons. */
+    ribbons: number;
 }
 
-/** The water meshes of a tile's lakes and rivers, null without water. */
-export function waterMesh(list: Feature[], tile: Node): WaterMesh | null {
+/** The water mesh of a node from the features of its feature tile, null without water. */
+export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | null {
     const { lines, lakes } = features(list, tile);
-    const words: number[] = [], indices: number[] = [];
-    const vertex = (x: number, y: number, z: number, [nx, ny] = [0, 0], base = 0, reach = 0, half = 0) => words.push(Math.round(x), Math.round(y), z, nx, ny, base, reach, half) / WATER_VERTEX - 1;
-    // Two triangles between the vertex pairs a, a + 1 and b, b + 1.
-    const quad = (a: number, b: number) => indices.push(a, a + 1, b, b, a + 1, b + 1);
-    const span = 2 ** (30 - tile.level), x0 = tile.x * span, y0 = tile.y * span, margin = span / 64;
-    const box: [number, number, number, number] = [x0 - margin, y0 - margin, x0 + span + margin, y0 + span + margin];
-    const longest = EDGE_M / metresPerUnit(y0 + span / 2);
+    const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [];
+    const vertex = (x: number, y: number, z: number, ax = 0, ay = 0, half = 0) => words.push(Math.round(x), Math.round(y), z, ax, ay, half) / WATER_VERTEX - 1;
+    const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
+    const box: [number, number, number, number] = [x0 - margin, y0 - margin, x0 + side + margin, y0 + side + margin];
+    // A ribbon has a pair of vertices at least every mesh cell, so that it follows the mesh that it lies on.
+    const longest = EDGE_M / metresPerUnit(y0 + side / 2), cell = RULES.MESH_TEXELS * 2 ** shift;
 
-    for (const { level, rings, outer } of lakes) {
-        // A little shorter than `longest`, so that the rounding of a vertex never makes `refined` split a shore edge.
-        const split = rings.map(ring => subdivided(ring, 0.95 * longest));
-        // The skirt: each shore edge goes on outward, under the bank, by the reach of the level that draws it.
-        for (const ring of split) {
-            const n = ring.length / 2, side = outwardSide(ring, split), first = words.length / WATER_VERTEX;
-            const normals = Array.from({ length: n }, (_, i) => edgeNormal(ring, i, (i + 1) % n, side));
-            for (let i = 0; i < n; i++) {
-                vertex(ring[2 * i], ring[2 * i + 1], level);
-                vertex(ring[2 * i], ring[2 * i + 1], level, cornerNormal(normals[(i + n - 1) % n], normals[i]), 0, 1);
+    const ribbon = (line: Line, run: number[]) => {
+        const first = words.length / WATER_VERTEX;
+        let pairs = 0;
+        for (const [k, v] of run.entries()) {
+            const last = k + 1 === run.length, [dx, dy] = direction(line.xy, last ? v - 1 : v), [tx, ty] = mitre(line, v);
+            const [x, y, z] = [line.xy[2 * v], line.xy[2 * v + 1], line.z[v]];
+            const [nx, ny, nz] = last ? [x, y, z] : [line.xy[2 * v + 2], line.xy[2 * v + 3], line.z[v + 1]];
+            const parts = Math.ceil(Math.hypot(nx - x, ny - y) / cell) || 1;
+            for (let p = 0; p < parts; p++, pairs++) {
+                // At a vertex the ribbon takes the mitre; inside a segment it runs straight across it.
+                const t = p / parts, [ux, uy] = p ? [dx, dy] : [tx, ty], scale = 1 / Math.max(ux * dx + uy * dy, 1 / MITRE);
+                for (const sign of [1, -1]) vertex(x + (nx - x) * t, y + (ny - y) * t, z + (nz - z) * t, -sign * uy * scale, sign * ux * scale, sign * line.h);
             }
-            for (let i = 0; i < n; i++) quad(first + 2 * i, first + 2 * ((i + 1) % n));
         }
-        // The surface: each outer ring with its holes, cut to the tile, in triangles no longer than an edge may be.
-        for (let r = 0; r < split.length; r++) {
-            const flat = outer[r] ? clipped(split[r], box) : [], holes: number[] = [];
+        for (let i = 0; i + 1 < pairs; i++) ribbons.push(first + 2 * i, first + 2 * i + 1, first + 2 * i + 2, first + 2 * i + 2, first + 2 * i + 1, first + 2 * i + 3);
+    };
+    for (const line of lines) {
+        if (line.kind !== RIVER && line.kind !== STREAM) continue;
+        // Each run of segments that comes near the square is a ribbon.
+        const reach = 2 * cell + line.h / metresPerUnit(y0 + side / 2);
+        let run: number[] = [];
+        for (let v = 0; v + 1 < line.z.length; v++) {
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
+            if (Math.max(ax, bx) + reach < box[0] || Math.min(ax, bx) - reach > box[2] || Math.max(ay, by) + reach < box[1] || Math.min(ay, by) - reach > box[3]) {
+                if (run.length) ribbon(line, run);
+                run = [];
+                continue;
+            }
+            if (!run.length) run.push(v);
+            run.push(v + 1);
+        }
+        if (run.length) ribbon(line, run);
+    }
+    for (const { level, rings, outer } of lakes) {
+        // Each outer ring with its holes, cut to the square, in triangles no longer than an edge may be.
+        for (let r = 0; r < rings.length; r++) {
+            const flat = outer[r] ? clipped(rings[r], box) : [], holes: number[] = [];
             if (flat.length < 6) continue;
-            for (let k = r + 1; k < split.length && !outer[k]; k++) {
-                const hole = clipped(split[k], box);
+            for (let k = r + 1; k < rings.length && !outer[k]; k++) {
+                const hole = clipped(rings[k], box);
                 if (hole.length < 6) continue;
                 holes.push(flat.length / 2);
                 flat.push(...hole);
@@ -55,68 +78,19 @@ export function waterMesh(list: Feature[], tile: Node): WaterMesh | null {
             const triangles = refined(flat, earcut(flat.map((v, i) => v - (i % 2 ? y0 : x0)), holes), longest);
             const first = words.length / WATER_VERTEX;
             for (let i = 0; i < flat.length; i += 2) vertex(flat[i], flat[i + 1], level);
-            indices.push(...triangles.map(i => first + i));
+            surfaces.push(...triangles.map(i => first + i));
         }
     }
-    // A river: two vertices across each vertex, at its half-width and the reach of the level that draws it.
-    for (const line of lines) {
-        if (line.kind !== RIVER) continue;
-        const xy: number[] = [], z: number[] = [];
-        for (let v = 0; v + 1 < line.z.length; v++) {
-            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), parts = Math.ceil(Math.hypot(bx - ax, by - ay) / longest);
-            for (let k = 0; k < parts; k++) {
-                xy.push(Math.round(ax + (bx - ax) * k / parts), Math.round(ay + (by - ay) * k / parts));
-                z.push(line.z[v] + (line.z[v + 1] - line.z[v]) * k / parts);
-            }
-        }
-        xy.push(...line.xy.slice(-2));
-        z.push(line.z[line.z.length - 1]);
-        const sub = { ...line, xy, z, anchors: undefined }, first = words.length / WATER_VERTEX;
-        for (let v = 0; v < z.length; v++) {
-            const [tx, ty] = mitre(sub, v), w = Math.min(v, z.length - 2);
-            const [ax, ay] = edgeNormal(xy, w, w + 1, -1), scale = 1 / Math.max(-ty * ax + tx * ay, 1 / MITRE);
-            for (const sign of [1, -1]) vertex(xy[2 * v], xy[2 * v + 1], z[v], [-sign * ty * scale, sign * tx * scale], line.h, 1, line.h);
-        }
-        for (let v = 0; v + 1 < z.length; v++) quad(first + 2 * v, first + 2 * v + 2);
-    }
-    if (!indices.length) return null;
+    if (!ribbons.length && !surfaces.length) return null;
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);
     words.forEach((word, i) => (i % WATER_VERTEX < 2 ? (ints[i] = word) : (floats[i] = word)));
-    return { vertices, indices: new Uint32Array(indices) };
+    return { vertices, indices: new Uint32Array([...ribbons, ...surfaces]), ribbons: ribbons.length };
 }
 
-/** A ring with each edge split into equal parts no longer than `longest`. */
-function subdivided(ring: number[], longest: number): number[] {
-    const n = ring.length / 2, out: number[] = [];
-    for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n, parts = Math.ceil(Math.hypot(ring[2 * j] - ring[2 * i], ring[2 * j + 1] - ring[2 * i + 1]) / longest);
-        for (let k = 0; k < parts; k++) out.push(Math.round(ring[2 * i] + (ring[2 * j] - ring[2 * i]) * k / parts), Math.round(ring[2 * i + 1] + (ring[2 * j + 1] - ring[2 * i + 1]) * k / parts));
-    }
-    return out;
-}
-
-/** 1 when the water lies to the right of the ring's edges (x east, y down), else −1: edgeNormal with it points out of the water. */
-function outwardSide(ring: number[], rings: number[][]): number {
-    const n = ring.length / 2;
-    for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n, [nx, ny] = edgeNormal(ring, i, j, 1), step = 0.01 * Math.hypot(ring[2 * j] - ring[2 * i], ring[2 * j + 1] - ring[2 * i + 1]);
-        if (step > 0.5) return insideRings(rings, (ring[2 * i] + ring[2 * j]) / 2 + nx * step, (ring[2 * i + 1] + ring[2 * j + 1]) / 2 + ny * step) ? -1 : 1;
-    }
-    return 1;
-}
-
-/** The unit normal of edge i–j: to its left (x east, y down) times `side`. */
-function edgeNormal(xy: number[], i: number, j: number, side: number): [number, number] {
-    const dx = xy[2 * j] - xy[2 * i], dy = xy[2 * j + 1] - xy[2 * i + 1], l = Math.hypot(dx, dy) || 1;
-    return [side * dy / l, -side * dx / l];
-}
-
-/** The normal at a corner between two edge normals, so that the offset edges stay parallel to the edges. */
-function cornerNormal([ax, ay]: [number, number], [bx, by]: [number, number]): [number, number] {
-    const x = ax + bx, y = ay + by, l = Math.hypot(x, y);
-    if (l < 1e-9) return [ax, ay];
-    const scale = 1 / Math.max((x * ax + y * ay) / l, 1 / MITRE);
-    return [x / l * scale, y / l * scale];
+/** The unit direction of segment v of a line. */
+function direction(xy: number[], v: number): [number, number] {
+    const dx = xy[2 * v + 2] - xy[2 * v], dy = xy[2 * v + 3] - xy[2 * v + 1], l = Math.hypot(dx, dy) || 1;
+    return [dx / l, dy / l];
 }
 
 /** A ring cut to a box, one side at a time (Sutherland–Hodgman). */
