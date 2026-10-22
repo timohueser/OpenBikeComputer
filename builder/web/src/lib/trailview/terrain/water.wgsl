@@ -3,8 +3,7 @@
 // keeps the part over its own square. A lake lies at its level, a river area on the drawn surface. A
 // river or a stream is a ribbon on the drawn surface at its width, at least RIBBON_PIXELS wide, and fades
 // with its share of that width. The shading is the prototype's: a still body, dark from above and a
-// mirror of the sky toward the horizon, with a sun glint; lighter beside a river's banks, white where
-// it runs down a steep bed. The haze and `finish()` are those of the ground, from the look in group 2.
+// mirror of the sky toward the horizon, with a sun glint; white where a ribbon runs down a steep bed. The haze and `finish()` are those of the ground, from the look in group 2.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
@@ -58,9 +57,8 @@ struct WaterOut {
     @location(9) fall: f32,
 }
 
-// The body of the water in linear light: deep, and shallow beside a river's banks.
-const DEEP: vec3f = vec3f(0.025, 0.098, 0.175);
-const SHALLOW: vec3f = vec3f(0.078, 0.216, 0.246);
+// The body of the water in linear light.
+const BODY: vec3f = vec3f(0.025, 0.098, 0.175);
 // A ribbon turns white where its bed falls more steeply than FOAM_LOW along its flow, up to FOAM_MOST at FOAM_HIGH.
 const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
@@ -134,7 +132,7 @@ fn water_colour(in: WaterOut) -> vec3f {
     // The reflection is held to 60 %: the far bank that it would show is darker than the sky.
     let fresnel = 0.6 * (0.02 + 0.98 * pow(1.0 - max(dot(-dir, up), 0.0), 5.0));
     let lit = look.ambient.rgb + 0.8 * look.sun_colour.rgb * max(look.sun.z, 0.0);
-    let body = mix(DEEP, SHALLOW, 0.7 * smoothstep(0.4, 1.0, abs(in.side))) * lit;
+    let body = BODY * lit;
     var c = mix(body * 0.55, sky(mirrored), clamp(1.6 * fresnel, 0.0, 0.9));
     // The sun's path glints in sparks rather than a sheen.
     let glint = max(dot(mirrored, look.sun.xyz), 0.0);
