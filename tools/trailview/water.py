@@ -234,11 +234,12 @@ def interior(parts, terrain):
         return np.zeros(0)
     # Per row, the crossings of the edges, sorted: a point inside has an odd count of them to its left.
     ax, ay, bx, by = edges(rings).T
-    y = ys[:, None]
-    with np.errstate(all="ignore"):
-        x = np.where((ay <= y) != (by <= y), ax + (y - ay) * (bx - ax) / (by - ay), np.inf)
-    x.sort(axis=1)
-    at = np.array([np.searchsorted(row, xs) for row in x]) % 2 == 1
+    at = np.zeros((len(ys), len(xs)), bool)
+    for rows, _, row_y in chunks(ys, ys, ax):
+        with np.errstate(all="ignore"):
+            cross = np.where((ay <= row_y) != (by <= row_y), ax + (row_y - ay) * (bx - ax) / (by - ay), np.inf)
+        cross.sort(axis=1)
+        at[rows] = np.array([np.searchsorted(row, xs) for row in cross]) % 2 == 1
     gx, gy = np.meshgrid(xs, ys)
     return terrain.heights(gx[at], gy[at]) if at.any() else np.zeros(0)
 

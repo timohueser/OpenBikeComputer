@@ -104,6 +104,14 @@ class Lakes(unittest.TestCase):
     def test_a_flat_lake_takes_the_median_of_its_interior(self):
         self.assertAlmostEqual(self.level(Terrain(lambda e, s: 700.0 + 0 * e)), 700.0, places=3)
 
+    def test_the_interior_of_a_lake_leaves_out_its_island(self):
+        # The island's ring is closed: its last vertex repeats the first.
+        island = [at(40, 40), at(360, 40), at(360, 360), at(40, 360), at(40, 40)]
+        terrain = Terrain(lambda e, s: np.where((e > 40) & (e < 360) & (s > 40) & (s < 360), 760.0, 700.0))
+        h = water.interior([(True, list(self.SQUARE), None), (False, island, None)], terrain)
+        self.assertTrue(h.size)
+        self.assertTrue(np.all(h == 700.0))
+
     def test_a_sloped_lake_takes_a_low_quantile_of_its_shore_and_an_ele_tag_near_it(self):
         # The terrain inside a lake that a DTM did not flatten: it falls 2 % to the south-east.
         sloped = Terrain(lambda e, s: 708.0 - 0.01 * (e + s))
