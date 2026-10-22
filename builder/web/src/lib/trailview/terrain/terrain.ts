@@ -169,7 +169,7 @@ export class Terrain {
     private selection = 0;
     private frameNumber = 0;
     private probing = 0;
-    /** The state that the last probe read, and a count of the frames that changed the pages. */
+    /** The state that the last probe read, and a count of the frames that changed the pages or the masks, which move the snapped mesh. */
     private probed = '';
     private changes = 0;
     private above = 0;
@@ -382,7 +382,7 @@ export class Terrain {
             this.quality--;
             this.calm = 0;
         }
-        if (work.map || work.uploads.length || work.syntheses.length) this.changes++;
+        if (work.map || work.masks || work.uploads.length || work.syntheses.length) this.changes++;
         this.work = work;
         this.jobs = { near: 0, coarse: 0, masks: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
