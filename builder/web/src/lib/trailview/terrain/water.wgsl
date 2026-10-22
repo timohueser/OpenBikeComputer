@@ -5,7 +5,7 @@
 // with its share of that width. The shading is the prototype's: a still body, dark from above and a
 // mirror of the sky toward the horizon, with a sun glint; white where a ribbon runs down a steep bed.
 // The haze and `finish()` are those of the ground, from the look in group 2.
-// #include drawn-height.wgsl
+// #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
 

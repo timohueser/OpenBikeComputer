@@ -327,7 +327,7 @@ triggers = ["builder/web/tests/browser/trailview/**"]
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun --group trailview-roads python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
   "planner/search/place-kinds.json",
@@ -340,8 +340,10 @@ triggers = [
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
-  # test_planner_trailview_features.py validates the kind table and reads the shared vectors.
+  # test_planner_trailview_features.py validates the kind table, reads the shared vectors and runs the
+  # road solver of its class table.
   "data/trailview/kinds.json",
+  "data/trailview/roads.json",
   "specs/vectors/trailview-features.*",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",

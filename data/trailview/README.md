@@ -11,6 +11,7 @@ The rules that the TrailView ground layers index and that the engine reads. The 
 | `ecoregions.json` | The RESOLVE ecoregions of Europe, simplified to about 1 km | snapshot |
 | `countries.json` | Natural Earth countries and first-level subdivisions | snapshot |
 | `kinds.json` | The feature kinds of `planner/trailview-features`: [specs/trailview-features.md](../../specs/trailview-features.md) | this repository |
+| `roads.json` | The rules per `highway` class, from the most important down: the grade and smoothing of the road solver, the stamp profile of the engine | this repository |
 | `overlays/<region>.json` | Look keys of the engine that the prototype does not have | this repository |
 
 ## Re-sync

@@ -4,6 +4,7 @@
 // filtered. What the prototype measured from its fixed spot, this measures from the eye.
 // #include ../terrain/drawn-height.wgsl
 // #include ../light/shade.wgsl
+// #include roads.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
 @group(2) @binding(1) var<storage, read> ground_map: array<u32>;
@@ -82,6 +83,8 @@ fn slot_materials() -> i32 { return 33; }
 fn slot_satellite() -> i32 { return 33 + i32(look.codes.z); }
 fn slot_lithologies() -> i32 { return 33 + 2 * i32(look.codes.z); }
 fn slot_cliff() -> i32 { return slot_lithologies() + i32(look.codes.w); }
+fn slot_roads() -> i32 { return slot_cliff() + 8; }
+fn slot_road_line() -> i32 { return slot_cliff() + 14; }
 fn slot_kinds() -> i32 { return slot_cliff() + 15; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.z); }
 
@@ -407,6 +410,13 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
+    // The road paint first, so that only the Road stays live through the rest.
+    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)), world, footprint, length(relative.xy), region);
+    // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
+    let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
+    // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
+    // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
+    let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
@@ -477,6 +487,20 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
+    albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
+    if (masoned > 0.0) {
+        let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
+        // A coordinate along the wall itself would turn with its normal: far from the frame's origin, a
+        // slight turn is a large step.
+        var blocks = vec3f(0.0);
+        if (east < 1.0) {
+            blocks = masonry(stone, world.y, altitude, surface_size);
+        }
+        if (east > 0.0) {
+            blocks = mix(blocks, masonry(stone, world.x, altitude, surface_size), east);
+        }
+        albedo = mix(albedo, blocks, masoned);
+    }
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
@@ -504,7 +528,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     if (view >= 5u) {
         return ground_debug(view, level, s, g) * (0.45 + 0.55 * max(dot(n, vec3f(-0.4, 0.4, 0.82)), 0.0));
     }
-    let walled = steep * (1.0 - g.tree);
+    let walled = steep * (1.0 - g.tree) * (1.0 - road.cover) * (1.0 - masoned);
     if (walled > 0.0) {
         // Variegated clays erode into badlands, so their beds show on gentler slopes: red, white and
         // green-grey, streaked by gullies.

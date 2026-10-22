@@ -16,7 +16,7 @@ VITE_PLANNER_CATALOG=URL npm run dev -- --mode trailview   # open /trailview.htm
 npm run build:trailview                                 # dist/trailview
 ```
 
-The page reads the `active` entry of the planner catalogue, as the planner does.
+The page reads the `active` entry of the planner catalogue.
 `VITE_PLANNER_CONFIG` replaces the entry. A browser without WebGPU shows a notice. The ground needs
 `trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them the ground
 is the palette of the `world` region.
@@ -29,8 +29,8 @@ is the palette of the `world` region.
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
-| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
-| `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the rules packing and the per-page compute |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
+| `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `rules/` | The regions of `rules.json`, resolved |
 | `labs.ts` | The variant registry |
@@ -47,7 +47,7 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, conflicts red, fords cyan) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, road faces orange, conflicts red, fords cyan) |
 | `lab` | `name:variant`, a list with commas |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
