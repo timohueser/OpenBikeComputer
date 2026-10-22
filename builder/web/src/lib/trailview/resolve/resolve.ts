@@ -30,6 +30,7 @@ interface Resources {
     layout: GPUBindGroupLayout;
     uniform: GPUBuffer;
     sampler: GPUSampler;
+    nearest: GPUSampler;
     empty: GPUBindGroup;
 }
 
@@ -51,6 +52,7 @@ export class Resolve {
             { binding: 3, visibility: F, texture: { sampleType: 'depth' } },
             { binding: 4, visibility: F, texture: { sampleType: 'float' } },
             { binding: 5, visibility: F, sampler: { type: 'filtering' } },
+            { binding: 6, visibility: F, sampler: { type: 'non-filtering' } },
         ] });
         const empty = device.createBindGroupLayout({ entries: [] });
         const module = device.createShaderModule({ label: 'resolve', code: wgsl('resolve/resolve.wgsl') });
@@ -63,6 +65,7 @@ export class Resolve {
             gpu, pipeline, layout, empty: device.createBindGroup({ layout: empty, entries: [] }),
             uniform: gpu.buffer('uniforms', UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             sampler: device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
+            nearest: device.createSampler(),
         };
         this.version = -1;
     }
@@ -76,7 +79,7 @@ export class Resolve {
             this.last = undefined;
             const { scene, depth, history } = targets;
             this.groups = [0, 1].map(p => r.gpu.device.createBindGroup({ layout: r.layout, entries: [
-                { buffer: r.uniform }, scene.createView(), depth[p].createView(), depth[1 - p].createView(), history[1 - p].createView(), r.sampler,
+                { buffer: r.uniform }, scene.createView(), depth[p].createView(), depth[1 - p].createView(), history[1 - p].createView(), r.sampler, r.nearest,
             ].map((resource, binding) => ({ binding, resource })) }));
         }
         const last = this.last ?? frame, data = new Float32Array(UNIFORM_BYTES / 4);

@@ -24,6 +24,7 @@ struct Resolve {
 @group(0) @binding(3) var last_depth: texture_depth_2d;
 @group(0) @binding(4) var history: texture_2d<f32>;
 @group(0) @binding(5) var bilinear: sampler;
+@group(0) @binding(6) var nearest_texel: sampler;
 
 struct Out {
     @location(0) canvas: vec4f,
@@ -35,6 +36,7 @@ struct Out {
 const HIDDEN: f32 = 1.1;
 // The neighbourhood that the history keeps to while the camera moves, in standard deviations.
 const SPREAD: f32 = 1.25;
+const CROSS = array<vec2i, 5>(vec2i(0, 0), vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1));
 
 @vertex
 fn resolve_vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -101,8 +103,9 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         return Out(vec4f(c, 1.0), vec4f(c, 1.0));
     }
     let output = vec2f(textureDimensions(history));
-    // Render pixel i holds the point at i + 0.5 - jitter: the 3 × 3 pixels about this pixel's point,
-    // weighed by their distance (a Gaussian a quarter of a pixel wide), give this frame's colour and its neighbourhood.
+    // Render pixel i holds the point at i + 0.5 - jitter: the pixel about this pixel's point and its
+    // four neighbours, weighed by their distance (a Gaussian a quarter of a pixel wide), give this
+    // frame's colour and its neighbourhood.
     let c = at.xy * size / output + resolve.jitter.xy;
     let base = vec2i(floor(c));
     var sum = vec3f(0.0);
@@ -110,8 +113,8 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     var m1 = vec3f(0.0);
     var m2 = vec3f(0.0);
     var nearest = 0.0;
-    for (var j = 0; j < 9; j++) {
-        let o = base + vec2i(j % 3 - 1, j / 3 - 1);
+    for (var j = 0; j < 5; j++) {
+        let o = base + CROSS[j];
         let p = clamp(o, vec2i(0), last);
         let s = compress(textureLoad(scene, p, 0).rgb);
         let d = vec2f(o) + 0.5 - c;
@@ -148,17 +151,12 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         if (resolve.blend.y > 0.5) {
             // Hidden in the last frame: every depth about the point there is nearer than the point.
             let expected = select(0.0, resolve.jitter.z / was.w, nearest > 0.0);
-            let t = vec2i(floor(uv * resolve.render.zw - 0.5));
-            let last_last = vec2i(resolve.render.zw) - 1;
-            var farthest = 1.0;
-            for (var j = 0; j < 4; j++) {
-                farthest = min(farthest, textureLoad(last_depth, clamp(t + vec2i(j & 1, j >> 1), vec2i(0), last_last), 0));
-            }
-            if (farthest > expected * HIDDEN) {
+            let around = textureGather(last_depth, nearest_texel, uv * resolve.render.zw / vec2f(textureDimensions(last_depth)));
+            if (min(min(around.x, around.y), min(around.z, around.w)) > expected * HIDDEN) {
                 weight = 1.0;
             }
-            let mean = m1 / 9.0;
-            let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3f(0.0)));
+            let mean = m1 / 5.0;
+            let sigma = sqrt(max(m2 / 5.0 - mean * mean, vec3f(0.0)));
             h = rgb(clip_box(ycocg(h), mean, SPREAD * sigma));
         }
     }

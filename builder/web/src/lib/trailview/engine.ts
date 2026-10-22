@@ -179,7 +179,7 @@ export class TrailView {
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const targets = new Targets(gpu, this.scale);
-        this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES), targets };
+        this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
         const layouts = this.groundLook.layouts(gpu.device);
         await this.terrain.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
