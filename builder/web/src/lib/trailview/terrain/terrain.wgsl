@@ -33,7 +33,7 @@ const CELLS = 64u;
 fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
-    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level);
+    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level, true);
     // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
     var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);

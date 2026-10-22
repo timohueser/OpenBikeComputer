@@ -1,7 +1,7 @@
 // The water: the meshes of water-mesh.ts, one flat colour, drawn after the terrain and hidden where
 // the terrain stands above them. Each drawn node draws the mesh of the node whose page it draws and
 // keeps the part over its own square. A lake lies at its level; a river or a stream is a ribbon on the
-// drawn surface at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
+// mesh without its snap (plain_height) at its width, at least RIBBON_PIXELS wide, and fades with its share of that width. The
 // haze and `finish()` are those of the ground, from the look in group 2.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
@@ -75,7 +75,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
         let pixel = frame.pixel * length(centre);
         let half = max(abs(v.half), 0.5 * RIBBON_PIXELS * pixel);
         u += v.across * half / metres;
-        let h = drawn_height(lod_space(u));
+        let h = plain_height(lod_space(u));
         z = select(v.level, h, known(h)) + lift;
         out.side = sign(v.half);
         out.share = abs(v.half) / half;
