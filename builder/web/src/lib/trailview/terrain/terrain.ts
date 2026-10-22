@@ -228,7 +228,7 @@ export class Terrain {
         return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
-    /** drawnHeight for other passes: group 1 of the terrain. */
+    /** The drawn surface's pages for other passes: group 1 of the terrain. drawn_height reads the feature mask of group 3 too. */
     get surface(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
         return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
     }
@@ -290,13 +290,13 @@ export class Terrain {
         const quantizeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const probeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const checkLayout = layout([[GPUShaderStage.VERTEX, { buffer: read }]]);
-        const C = GPUShaderStage.COMPUTE, F = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
+        const C = GPUShaderStage.COMPUTE;
         const stampLayout = layout([
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
             [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
         ]);
         const featureLayout = layout([
-            [F, { buffer: read }], [F, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+            [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
         ]);
         // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
         const emptyLayout = layout([]);
