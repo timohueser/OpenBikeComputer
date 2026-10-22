@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Feature } from '../stream/features';
 import { metresPerUnit } from './bins';
-import { EDGE_M, WATER_VERTEX, waterMesh } from './water-mesh';
+import { DRAPED, EDGE_M, WATER_VERTEX, waterMesh } from './water-mesh';
 
 /** A zoom-12 tile at Engelberg, 8192 tile units of about 0.8 m; world units per tile unit. */
 const TILE = { level: 12, x: 2143, y: 1444 }, SCALE = 2 ** (17 - TILE.level);
@@ -53,6 +53,22 @@ describe('the water mesh of a node', () => {
         const lakes = triangles.findIndex(t => t.every(v => v.half === 0));
         expect(lakes).toBeGreaterThan(0);
         expect(triangles.slice(lakes).every(t => t.every(v => v.half === 0))).toBe(true);
+    });
+
+    it('draws a river area after the ribbons and the lakes, on the drawn surface, in triangles of 4 mesh cells at most that cover it', () => {
+        const strip = { kind: 'river-area', tags: {}, parts: [{ outer: true, xy: new Int32Array([1000, 5500, 4000, 5500, 4000, 6500, 1000, 6500]) }] };
+        const withArea = waterMesh([lake, river, strip] as Feature[], TILE, NODE)!, words = new Float32Array(withArea.vertices), ints = new Int32Array(withArea.vertices);
+        expect(withArea.indices.slice(0, withArea.ribbons + withArea.lakes)).toEqual(mesh.indices);
+        const area = withArea.indices.slice(withArea.ribbons + withArea.lakes);
+        let covered = 0;
+        for (let t = 0; t < area.length; t += 3) {
+            const [a, b, c] = [0, 1, 2].map(k => area[t + k]);
+            for (const v of [a, b, c]) expect(words[WATER_VERTEX * v + 2]).toBe(Math.fround(DRAPED));
+            const [ax, ay, bx, by, cx, cy] = [a, b, c].flatMap(v => [ints[WATER_VERTEX * v], ints[WATER_VERTEX * v + 1]]);
+            for (const [px, py, qx, qy] of [[ax, ay, bx, by], [bx, by, cx, cy], [cx, cy, ax, ay]]) expect(Math.hypot(px - qx, py - qy)).toBeLessThanOrEqual(4 * CELL + 1);
+            covered += Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2;
+        }
+        expect(covered / (3000 * 1000 * SCALE * SCALE)).toBeCloseTo(1, 5);
     });
 
     it('has no water for a node that no water reaches', () => {

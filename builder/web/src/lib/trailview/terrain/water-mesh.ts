@@ -1,7 +1,7 @@
 // The water mesh of a node: each lake that reaches the node's square cut to it and into triangles at
-// its level, each river area cut the same way into triangles of a mesh cell, and each river and stream
-// a ribbon along its line. The stamp worker makes it with the node's stamps; water.wgsl draws it on
-// the node's square, a river area and a ribbon on the drawn surface.
+// its level, each river area cut the same way into triangles of AREA_CELLS mesh cells at most, and
+// each river and stream a ribbon along its line. The stamp worker makes it with the node's stamps;
+// water.wgsl draws it on the node's square, a river area and a ribbon on the drawn surface.
 import earcut from 'earcut';
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
