@@ -489,7 +489,18 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
-        albedo = mix(albedo, masonry(stone, dot(world, normalize(vec2f(-facet.y, facet.x) + 1e-6)), altitude, surface_size), masoned);
+        // The blocks run along the world axis nearer to the wall's direction, cross-faded about 45°. A
+        // coordinate along the wall itself turns with its normal: far from the frame's origin, a slight
+        // turn is a large step.
+        let east = smoothstep(-0.1, 0.1, abs(n.y) - abs(n.x));
+        var blocks = vec3f(0.0);
+        if (east < 1.0) {
+            blocks = masonry(stone, world.y, altitude, surface_size);
+        }
+        if (east > 0.0) {
+            blocks = mix(blocks, masonry(stone, world.x, altitude, surface_size), east);
+        }
+        albedo = mix(albedo, blocks, masoned);
     }
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
