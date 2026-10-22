@@ -50,6 +50,8 @@ const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
 const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 39, FOUND = 64;
+/** Cells per strip of the grid's index order. */
+const STRIP = 8;
 const GRID_INDICES = gridIndices();
 /** The road and path profiles, as stamp-core.wgsl reads them. */
 const PROFILE_TABLE = profileTable();
@@ -755,11 +757,15 @@ function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32
     return { jobs, data };
 }
 
-/** The triangles of the grid mesh, with vertex j × 65 + i at cell column i and row j. */
-function gridIndices(): Uint16Array<ArrayBuffer> {
+/**
+ * The triangles of the grid mesh, with vertex j × 65 + i at cell column i and row j, counter-clockwise
+ * from above. They go row by row in strips of STRIP columns: the vertex cache then still holds the
+ * strip's last row of vertices, and most vertices run once.
+ */
+export function gridIndices(): Uint16Array<ArrayBuffer> {
     const out = new Uint16Array(6 * GRID * GRID), n = GRID + 1;
     let k = 0;
-    for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) {
+    for (let strip = 0; strip < GRID; strip += STRIP) for (let j = 0; j < GRID; j++) for (let i = strip; i < strip + STRIP; i++) {
         const a = j * n + i;
         out.set([a, a + n, a + 1, a + 1, a + n, a + n + 1], k);
         k += 6;
