@@ -11,8 +11,10 @@ override PAINT: bool = true;
 
 struct Road {
     colour: vec3f,
-    // The share of the pixel that the road covers, less the ground that shows through it.
+    // The share of the pixel that the road covers.
     cover: f32,
+    // The share of the ground that shows through the road's paint.
+    share: f32,
     // On a cut or a fill face of a paved road, where a steep face is a retaining wall: faded as the paint.
     wall: f32,
 }
@@ -78,22 +80,22 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (!PAINT) {
-        return Road(vec3f(0.0), 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
     }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
-        return Road(vec3f(0.0), 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return Road(vec3f(0.0), 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
     }
     let code = min(mask.kind.x, 6u);
     let wall = select(0.0, reach * mask.shape.w, code <= 2u);
     var edge = mask_metres(mask.shape.x);
     if (edge > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, wall);
+        return Road(vec3f(0.0), 0.0, 0.0, wall);
     }
     let across = abs(mask_metres(mask.shape.z));
     let half = max(across - edge, 0.05);
@@ -104,5 +106,5 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     }
     let thin = max(0.0, 0.5 * w - half);
     let cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35) * reach;
-    return Road(surface.rgb, cover * (1.0 - surface.w), wall);
+    return Road(surface.rgb, cover, surface.w, wall);
 }

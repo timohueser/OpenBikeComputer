@@ -410,7 +410,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
-    // The road paint first, so that only its colour and cover stay live through the rest.
+    // The road paint first, so that only the Road stays live through the rest.
     let road = road_at(s, world, footprint, length(relative.xy), region);
     // A cut or a fill face of a paved road steeper than about 55° is a retaining wall, but for a cut in
     // bare rock, and in woodland, as rock walls. The ground's normals, not the mesh's facets, so that
@@ -486,7 +486,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         let heather = rule(region, slot_cliff() + 1);
         albedo = mix(albedo, heather.rgb, g.moor * smoothstep(1.0 - heather.a, 1.1 - heather.a, patches));
     }
-    albedo = mix(albedo, road.colour, road.cover);
+    albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
         albedo = mix(albedo, masonry(stone, dot(world, normalize(vec2f(-facet.y, facet.x) + 1e-6)), altitude, surface_size), masoned);
