@@ -73,7 +73,9 @@ fn snap(u: vec2i, level: u32) -> vec2i {
         return vec2i(0);
     }
     let fade = 1.0 - smoothstep(0.75 * masks.reach, masks.reach, length(lod_space(vec2f(u))));
-    let shift_m = -(mean + 0.25 * metres) * g / g2;
+    // A distance grows by a metre per metre, so the step takes only the direction of the quantized
+    // gradient: by its length, it overshoots or falls short, and the triangles fold on the edge.
+    let shift_m = -(mean + 0.25 * metres) * g / sqrt(g2);
     let snapped = vec2i(round(shift_m * min(1.0, SNAP_M / length(shift_m)) * fade / surface.unit));
     // A vertex on an edge of its node moves only along it: every border between two levels lies on
     // an edge of the coarser node, so each node draws exactly its own area, as drawn_level finds it.
