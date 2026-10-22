@@ -65,6 +65,17 @@ class Rivers(unittest.TestCase):
         self.assertEqual(a[-1], c[0])
         self.assertEqual(b[-1], c[0])
 
+    def test_a_branch_off_a_way_that_runs_on_does_not_rise(self):
+        # A river runs east through the origin and drops 3 m 15 m past it, so its smoothing lowers its
+        # level at the origin after the reach before it; a canal branches off north there on the flat.
+        terrain = Terrain(lambda e, s: 900 - 0.01 * e - 3.0 * (e > 15) - 0.002 * np.abs(s) * (e <= 15))
+        river = [at(-400, 0), at(-200, 0), at(0, 0), at(200, 0), at(400, 0)]
+        canal = [at(0, 0), at(0, -60), at(0, -120)]
+        features = [("river", {"waterway": "river"}, [(False, river, None)]), ("river", {"waterway": "canal"}, [(False, canal, None)])]
+        (r,), (c,) = water.solve(features, terrain)[0]
+        self.assertTrue(falls(r) and falls(c))
+        self.assertEqual(c[0], r[2])
+
     def test_a_loop_of_channels_keeps_its_fall_and_nothing_rises_through_it_in_any_order(self):
         # A loop P → Q → P around an island, with Q its low point: "back" is drawn up a slope too gentle
         # to turn, and so is an outflow from Q.

@@ -344,7 +344,9 @@ def network(ways, marks):
             junctions.setdefault(way.points[a], ([], []))[1].append(len(reaches) - 1)
             junctions.setdefault(way.points[b], ([], []))[0].append(len(reaches) - 1)
     levels = {id(way): np.full(len(way.xy), np.nan) for way in ways}
-    ends, rank = {}, {}
+    # The start and the end of each reach as it was solved: a reach that runs on along its way solves
+    # later and writes its own start over the end of the reach before it.
+    ends, rank, solved = {}, {}, {}
     after = [junctions[end][1] for *_, end in reaches]
     start = lambda r: reaches[r][0].low[reaches[r][1]]
     for loop in reversed(components(after)):
@@ -353,14 +355,15 @@ def network(ways, marks):
             z = reach_levels(way, a, b, min(ends.get(first, [math.inf])), marks)
             levels[id(way)][a:b + 1] = z
             rank[r] = len(rank)
+            solved[r] = (z[0], z[-1])
             if math.isfinite(z[-1]):
                 ends.setdefault(end, []).append(z[-1])
     # One level at a junction: the highest start that flows out of it, held under every level that
     # flows into it before them; where nothing flows out, the lowest level that flows in.
     for into, out in junctions.values():
         first = min((rank[r] for r in out), default=math.inf)
-        ins = [v for r in into if rank[r] < first and math.isfinite(v := levels[id(reaches[r][0])][reaches[r][2]])]
-        starts = [v for r in out if math.isfinite(v := levels[id(reaches[r][0])][reaches[r][1]])]
+        ins = [v for r in into if rank[r] < first and math.isfinite(v := solved[r][1])]
+        starts = [v for r in out if math.isfinite(v := solved[r][0])]
         if not ins and not starts:
             continue
         level = min([max(starts, default=math.inf), *ins])
