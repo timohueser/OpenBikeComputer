@@ -64,6 +64,8 @@ test('drawnHeight is the drawn mesh: no pixel leaves it by 5 cm', { tag: '@gpu' 
 });
 
 test('the probe gives the height that an instance shader evaluates, to 1 mm', async ({ page }) => {
+    // SwiftShader on the Linux runners loads this view in about the default timeout.
+    test.slow();
     await open(page, DOWN);
     const points = Array.from({ length: 16 }, (_, i) => [8.415 + 0.002 * Math.cos(i), 46.7975 + 0.0015 * Math.sin(2 * i)]);
     const { probe, instance } = await page.evaluate(points => window.trailView.check(points), points);
