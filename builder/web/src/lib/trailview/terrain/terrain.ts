@@ -25,6 +25,8 @@ const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 70 * 2 ** 2
  * page without one draws its roads unpainted.
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
+/** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
+const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -101,6 +103,7 @@ interface Resources {
     normals: GPUTexture;
     mask: GPUTexture;
     masks: GPUBuffer;
+    snaps: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -125,6 +128,7 @@ interface Resources {
     quantizeGroup: GPUBindGroup;
     probeGroup: GPUBindGroup;
     stampGroup: GPUBindGroup;
+    snapGroup: GPUBindGroup;
     featureGroup: GPUBindGroup;
     emptyGroup: GPUBindGroup;
     mesh: GPURenderPipeline;
@@ -135,6 +139,7 @@ interface Resources {
     probe: GPUComputePipeline;
     check: GPURenderPipeline;
     stamp: GPUComputePipeline;
+    snap: GPUComputePipeline;
     audit: GPUComputePipeline;
     apron: GPUComputePipeline;
     probeLayout: GPUBindGroupLayout;
@@ -178,7 +183,7 @@ export class Terrain {
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
     private floor = 0;
 
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, private readonly snap = false) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // 16-bit heights and rg8snorm normals.
@@ -247,12 +252,15 @@ export class Terrain {
         const mask = gpu.texture('features', {
             size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASK_BYTES);
+        const snaps = gpu.texture('features', {
+            size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
+            | 'probe' | 'check' | 'stamp' | 'snap' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
-            mask,
+            mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
@@ -295,8 +303,15 @@ export class Terrain {
             [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
             [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
         ]);
+        const snapLayout = device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: C, buffer: read }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+                { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
+            ],
+        });
         const featureLayout = layout([
             [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+            [all, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
         ]);
         // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
         const emptyLayout = layout([]);
@@ -306,41 +321,43 @@ export class Terrain {
 
         const swap = device.features.has('clip-distances') ? CLIP_DISTANCES : {};
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
-        // The mesh's snap onto the road edges, for every shader that draws or evaluates the mesh.
-        const constants = { SNAP: this.snap ? 1 : 0 };
-        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout, mesh = false) =>
-            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint, ...(mesh ? { constants } : {}) } });
+        const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
+            device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
         const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
             label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-            vertex: { module: modules.terrain, entryPoint: 'vertex_main', constants },
-            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { ...constants, PAINT: paint ? 1 : 0 } },
+            vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
+            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
             primitive: { topology: 'triangle-list' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
-        const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron] = await Promise.all([
+        const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
             terrainPipeline(true), terrainPipeline(false),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
             compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
-            compute('probe', 'probe', pipelineLayout(probeLayout, surfaceLayout, emptyLayout, featureLayout), true),
+            compute('probe', 'probe', pipelineLayout(probeLayout, surfaceLayout, emptyLayout, featureLayout)),
             device.createRenderPipelineAsync({
                 label: 'check', layout: pipelineLayout(checkLayout, surfaceLayout, emptyLayout, featureLayout),
-                vertex: { module: modules.probe, entryPoint: 'check_vertex', constants },
+                vertex: { module: modules.probe, entryPoint: 'check_vertex' },
                 fragment: { module: modules.probe, entryPoint: 'check_fragment', targets: [{ format: 'r32float' }] },
                 primitive: { topology: 'point-list' },
             }),
             compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
-            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout), true),
-            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout), true),
+            compute('stamp', 'snap', pipelineLayout(snapLayout)),
+            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
+            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
         this.resources = {
-            ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
+            ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask)]),
+            snapGroup: device.createBindGroup({
+                layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
+            }),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(emptyLayout, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
             meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
@@ -415,6 +432,10 @@ export class Terrain {
             pass.setBindGroup(0, r.stampGroup);
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
+            // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels.
+            pass.setPipeline(r.snap);
+            pass.setBindGroup(0, r.snapGroup);
+            pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
             pass.end();
         }
         // The heights of page k of `out` go to its layer: the syntheses, then the stamped copies of stored pages.

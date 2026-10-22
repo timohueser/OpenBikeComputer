@@ -12,6 +12,10 @@ struct Masks {
 // metres from the middle of that road (signed by side), ±MASK_M metres as 0..1, filtered; then the
 // road surface code (0 none) in the low 3 bits of a byte and the flags above them, read unfiltered.
 @group(3) @binding(1) var mask_texels: texture_2d_array<f32>;
+// Per mesh vertex of a mask's page (64 × 64, every fourth texel corner), in the mask's layer: the
+// vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
+// writes it.
+@group(3) @binding(2) var snaps: texture_2d_array<u32>;
 
 const BUILDING: u32 = 1u;
 const WALL: u32 = 2u;
@@ -59,6 +63,17 @@ struct Mask {
     kind: vec4u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
     level: u32,
+    // The direction in LOD space away from the nearest road edge, from the filtered distance; zero
+    // where the four texels do not tell it.
+    away: vec2f,
+    // The half-width of the nearest road, filtered from each texel's: the filtered distances miss it
+    // by up to half a texel on the road's middle, where the distance to the edge turns.
+    half: f32,
+}
+
+// The half-width of the road that a texel's distances belong to.
+fn half_width(texel: vec4f) -> f32 {
+    return abs(mask_metres(texel.z)) - mask_metres(texel.x);
 }
 
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the
@@ -82,8 +97,12 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
             let shape = mix(mix(ab[0], ab[1], t.part.x), mix(ab[2], ab[3], t.part.x), t.part.y);
             let face = mix(mix(faced(ab[0]), faced(ab[1]), t.part.x), mix(faced(ab[2]), faced(ab[3]), t.part.x), t.part.y);
-            return Mask(vec4f(shape.xyz, face), vec4u(byte & 7u, select(0u, 1u, shape.y < 0.5), byte >> 3u, 0u), level);
+            // Texel rows run along -y of LOD space.
+            let rise = vec2f(mix(ab[1].x - ab[0].x, ab[3].x - ab[2].x, t.part.y), -mix(ab[2].x - ab[0].x, ab[3].x - ab[1].x, t.part.x));
+            let away = select(vec2f(0.0), normalize(rise), dot(rise, rise) > 0.0);
+            let half = mix(mix(half_width(ab[0]), half_width(ab[1]), t.part.x), mix(half_width(ab[2]), half_width(ab[3]), t.part.x), t.part.y);
+            return Mask(vec4f(shape.xyz, face), vec4u(byte & 7u, select(0u, 1u, shape.y < 0.5), byte >> 3u, 0u), level, away, half);
         }
     }
-    return Mask(vec4f(0.5), vec4u(0u), 0u);
+    return Mask(vec4f(0.5), vec4u(0u), 0u, vec2f(0.0), 0.0);
 }

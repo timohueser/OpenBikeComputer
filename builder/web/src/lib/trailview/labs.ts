@@ -2,10 +2,7 @@
  * The variant registry. Each lab lists its variants, the default first. `?lab=name:variant` selects
  * a variant; `?lab=a:x,b:y` or a repeated `lab` selects several.
  */
-export const LABS: Record<string, readonly string[]> = {
-    // Whether the vertices of the near mesh move onto the road edges.
-    edges: ['plain', 'snap'],
-};
+export const LABS: Record<string, readonly string[]> = {};
 
 export type Labs = Record<string, string>;
 

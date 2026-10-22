@@ -1,7 +1,7 @@
 # TrailView
 
 TrailView is the 3D view of the planner. The engine is TypeScript with raw WebGPU and WGSL, and
-no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
+it uses no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
 the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The ground
 look comes from the TrailView layers of the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md))
 and the planner's snow tiles.
@@ -29,7 +29,7 @@ is the palette of the `world` region.
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
-| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, `drawn-mesh.wgsl`, the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -48,17 +48,16 @@ is the palette of the `world` region.
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, road faces orange, conflicts red, fords cyan) |
-| `lab` | `name:variant`, comma-separated |
+| `lab` | `name:variant`, a list with commas |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 ## Labs
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
-builds the variant that `?lab=` selects. The HUD has a menu per lab; a change reloads the page
-at the same view. `edges:snap` snaps the mesh to road edges. The terrain
-has no other lab: CDLOD by distance, bicubic synthesized levels, and 16-bit pages with an offset and
-a scale per page.
+builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
+at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+pages with an offset and a scale per page.
 
 ## Shots and flights
 

@@ -4,13 +4,6 @@
 // #include drawn-height.wgsl
 // #include features.wgsl
 
-// Whether the vertices of the levels with masks move onto the road edges, so that the mesh folds
-// where the paint ends: the lab `edges`.
-override SNAP: bool = false;
-// A vertex moves onto a road edge within this many units, at any latitude: 3/4 of a cell of level 18,
-// so that every triangle along an edge has a vertex on it there, and less than half a cell of level 17.
-const SNAP_UNITS: f32 = 48.0;
-
 // Whether the selection splits the node of a level that holds a point at `u` units about the anchor,
 // as `Rule.split` in lod.ts.
 fn splits(level: u32, u: vec2f) -> bool {
@@ -41,47 +34,22 @@ struct Vertex {
 }
 
 // The move of the vertex of a level at `u` units about the anchor onto the nearest road edge, in whole
-// units: from the distance to the edge that the mask holds at the four texels whose corner the vertex
-// is, a quarter texel inside the road, where the texels about it hold the road's height. None where a
-// texel has no mask or no road, and less toward the reach of the mask pool, as the paint.
+// units, as the stamp pass found it for the vertex's mask: less toward the reach of the mask pool, as
+// the paint.
 fn snap(u: vec2i, level: u32) -> vec2i {
-    if (!SNAP || level < MASK_LEVEL) {
+    if (level < MASK_LEVEL) {
         return vec2i(0);
     }
-    let shift = 22u - level;
-    let t = (surface.anchor + u) >> vec2u(shift);
-    var d: array<f32, 4>;
-    for (var i = 0; i < 4; i++) {
-        let at = t - vec2i(1 - i % 2, 1 - i / 2);
-        let slot = mask_of(level, at);
-        if (slot == 0u) {
-            return vec2i(0);
-        }
-        let texel = shape_at(slot - 1u, at);
-        if ((u32(round(texel.w * 255.0)) & 7u) == 0u) {
-            return vec2i(0);
-        }
-        d[i] = mask_metres(texel.x);
-    }
-    // Metres per texel, and the gradient of the distance per metre along the axes of the units.
-    let metres = surface.unit * f32(1 << shift);
-    let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
-    let mean = 0.25 * (d[0] + d[1] + d[2] + d[3]);
-    let g2 = dot(g, g);
-    let reach_m = SNAP_UNITS * surface.unit;
-    // Off the ridges of the distance, where it turns from one edge to another.
-    if (g2 < 0.25 || g2 > 4.0 || abs(mean) > reach_m) {
+    let t = (surface.anchor + u) >> vec2u(22u - level);
+    let slot = mask_of(level, t);
+    if (slot == 0u) {
         return vec2i(0);
     }
+    let v = (t & vec2i(255)) >> vec2u(2u);
+    let word = textureLoad(snaps, v, slot - 1u, 0).x;
+    let moved = vec2f(f32((bitcast<i32>(word) << 16u) >> 16u), f32(bitcast<i32>(word) >> 16u));
     let fade = 1.0 - smoothstep(0.75 * masks.reach, masks.reach, length(lod_space(vec2f(u))));
-    // A distance grows by a metre per metre, so the step takes only the direction of the quantized
-    // gradient: a step scaled by the gradient's length overshoots or falls short, and the triangles
-    // fold on the edge.
-    let shift_m = -(mean + 0.25 * metres) * g / sqrt(g2);
-    let snapped = vec2i(round(shift_m * min(1.0, reach_m / length(shift_m)) * fade / surface.unit));
-    // A vertex on an edge of its node moves only along it: every border between two levels lies on
-    // an edge of the coarser node, so each node draws exactly its own area, as drawn_level finds it.
-    return select(snapped, vec2i(0), ((surface.anchor + u) & vec2i((1 << (30u - level)) - 1)) == vec2i(0));
+    return vec2i(round(moved * fade));
 }
 
 // The mesh vertex of a level at a grid point, `u` units about the anchor: an odd vertex slides onto the
@@ -115,14 +83,14 @@ fn drawn_height(s: vec2f) -> f32 {
     let block = 2 * cell;
     let low = surface.anchor & vec2i(block - 1);
     let at = (vec2f(low) + units_of(s)) / f32(block);
-    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. With the snap, a triangle
-    // reaches up to SNAP_UNITS out of its coarser cell, less than half of one: the 2 × 2 coarser cells
-    // nearest the point hold every triangle that can hold it.
-    let snapped = SNAP && level >= MASK_LEVEL;
-    let n = select(3, 5, snapped);
-    let before = select(vec2i(0), select(vec2i(0), vec2i(block), fract(at) < vec2f(0.5)), snapped);
-    let corner = vec2i(floor(at)) * block - low - before;
-    var v: array<Vertex, 25>;
+    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. Where the mesh snaps, a
+    // vertex moves up to 3/4 of a cell (SNAP_TEXELS of stamp.wgsl), and in the morph band up to 3/4 of
+    // a coarser cell: less than one, so the coarser cell of the point and its eight neighbours hold
+    // every triangle that can hold it.
+    let snapped = level >= MASK_LEVEL;
+    let n = select(3, 7, snapped);
+    let corner = (vec2i(floor(at)) - select(vec2i(0), vec2i(1), snapped)) * block - low;
+    var v: array<Vertex, 49>;
     for (var i = 0; i < n * n; i++) {
         v[i] = grid_vertex(corner + vec2i(i % n, i / n) * cell, level);
     }

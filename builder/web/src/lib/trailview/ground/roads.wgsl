@@ -15,42 +15,46 @@ struct Road {
     cover: f32,
     // The share of the ground that shows through the road's paint.
     share: f32,
-    // On a cut or a fill face of a paved road, where a steep face is a retaining wall: faded as the paint.
+    // On a cut or a fill face of a paved road that is a retaining wall: faded as the paint.
     wall: f32,
 }
+
+// The cone of a road's cut or fill (cut and fill 0.85, reach 10 m in roads.json) leaves the road's edge
+// at 40° and passes 75° this many metres out.
+const WALL_M: f32 = 5.2;
 
 // The share of a pixel w metres wide, centred on x, that falls inside [a, b].
 fn band(x: f32, a: f32, b: f32, w: f32) -> f32 {
     return clamp((min(x + 0.5 * w, b) - max(x - 0.5 * w, a)) / w, 0.0, 1.0);
 }
 
-// A road's surface at `inside` metres in from its edge and `across` metres from its middle, seen by a
-// pixel w metres wide, with the share of the ground beside it that shows through. Paved main roads
+// A road's surface at `inside` metres in from its edge and `across` metres from its middle, `half`
+// metres wide on each side, seen by a pixel w metres wide that spans `cross_w` metres across the road, with the share of the ground beside it that shows through. Paved main roads
 // keep a line along each edge and one in the middle; lanes and tracks wear two wheel ruts, grass and
 // dirt ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
 // gravel, dirt, grass, path, and oneway: a one-way main road, no line in its middle.
-fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f32) -> vec4f {
+fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, p: vec2f, w: f32, cross_w: f32) -> vec4f {
     let oneway = code == 7u;
     var c = rule(region, slot_roads() + i32(select(code, 1u, oneway)) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
     // Only roads of two full lanes carry lines. The middle one is solid: the mask holds no metres
     // along the road for dashes.
-    if ((code == 1u || oneway) && inside + across >= 3.5) {
+    if ((code == 1u || oneway) && half >= 3.5) {
         let line = rule(region, slot_road_line()).rgb;
-        c = mix(c, line, max(band(inside, 0.25, 0.37, w), select(band(across, -0.06, 0.06, w), 0.0, oneway)));
+        c = mix(c, line, max(band(inside, 0.25, 0.37, cross_w), select(band(across, -0.06, 0.06, cross_w), 0.0, oneway)));
     }
     if (code == 3u) {
         c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
     }
-    let ruts = band(across, 0.55, 1.05, w);
-    // One car wide: inside and across add up to the half-width.
-    let lane = inside + across < 2.6;
+    let ruts = band(across, 0.55, 1.05, cross_w);
+    // One car wide.
+    let lane = half < 2.6;
     if ((code == 2u && lane) || code == 3u) {
         c *= 1.0 - 0.08 * ruts;
     }
     if (code == 4u) {
-        return vec4f(c * (1.0 - 0.18 * ruts), band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), w) * 0.85);
+        return vec4f(c * (1.0 - 0.18 * ruts), band(across, -1.0, 0.3 + 0.12 * noise(p / 0.6), cross_w) * 0.85);
     }
     // Grass with the dirt of the ruts in it.
     if (code == 5u) {
@@ -75,11 +79,11 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
     return c * mix(0.93, 1.0 - 0.45 * joint, near);
 }
 
-// The road at a point of the ground: `s` in LOD space, `p` in world metres, a pixel `w` metres wide,
-// `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
+// The road at a point of the ground: `s` in LOD space with its screen derivatives `ds`, `p` in world
+// metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks.
-fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
+fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (!PAINT) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0);
     }
@@ -94,19 +98,29 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     }
     let code = mask.kind.x;
     let paved = code <= 2u || code == 7u;
-    let wall = select(0.0, reach * mask.shape.w, paved);
+    var wall = select(0.0, reach * mask.shape.w, paved);
+    // A face is a wall from the road's edge out where it is still a face WALL_M out, where its cone is
+    // steeper than 75°; elsewhere the slope stays ground.
+    if (wall > 0.0) {
+        let out = mask_at(s + mask.away * (WALL_M - mask_metres(mask.shape.x)), mask.level, false);
+        wall *= out.shape.w;
+    }
     var edge = mask_metres(mask.shape.x);
     if (edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall);
     }
     let across = abs(mask_metres(mask.shape.z));
-    let half = max(across - edge, 0.05);
-    let surface = road_surface(region, code, max(-edge, 0.0), across, p, w);
+    let half = max(mask.half, 0.05);
+    // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
+    // so the lines of a road that runs away from the eye stay sharp.
+    let span = length(vec2f(dot(ds[0], mask.away), dot(ds[1], mask.away)));
+    let cross_w = select(w, max(span, 1e-3), dot(mask.away, mask.away) > 0.0);
+    let surface = road_surface(region, code, max(-edge, 0.0), across, half, p, w, cross_w);
     // Unpaved edges fray into the ground.
     if (!paved) {
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
-    let thin = max(0.0, 0.5 * w - half);
-    let cover = (1.0 - smoothstep(-w, w, edge - thin)) * min(1.0, 2.0 * half / w + 0.35) * reach;
+    let thin = max(0.0, 0.5 * cross_w - half);
+    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall);
 }

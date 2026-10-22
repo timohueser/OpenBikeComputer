@@ -411,11 +411,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
-    let road = road_at(s, world, footprint, length(relative.xy), region);
-    // A cut or a fill face of a paved road steeper than about 55° is a retaining wall, but for a cut in
-    // bare rock, and in woodland, as rock walls. The ground's normals, not the mesh's facets, so that
-    // its edge does not follow the triangles.
-    let masoned = road.wall * (1.0 - smoothstep(0.5, 0.65, n.z)) * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
+    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)), world, footprint, length(relative.xy), region);
+    // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
+    let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
     // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
     let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
