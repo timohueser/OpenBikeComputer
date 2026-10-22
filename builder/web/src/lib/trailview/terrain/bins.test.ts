@@ -160,14 +160,14 @@ describe('a rounded line', () => {
 });
 
 describe('the surface of a road', () => {
-    it('is a carriageway, without a line in its middle, on one side of a main road that OSM maps as two one-way lines', () => {
+    it('is oneway, without a line in its middle, on a one-way main road', () => {
         expect(surfaceOf({ highway: 'trunk' })).toBe('main');
-        expect(surfaceOf({ highway: 'trunk', oneway: 'yes' })).toBe('carriageway');
-        expect(surfaceOf({ highway: 'motorway' })).toBe('carriageway');
+        expect(surfaceOf({ highway: 'trunk', oneway: 'yes' })).toBe('oneway');
+        expect(surfaceOf({ highway: 'motorway' })).toBe('oneway');
         expect(surfaceOf({ highway: 'motorway', oneway: 'no' })).toBe('main');
         expect(surfaceOf({ highway: 'residential', oneway: 'yes' })).toBe('road');
-        // The mask holds the surface code in 3 bits.
-        expect(Object.keys(SURFACES).indexOf('carriageway') + 1).toBe(7);
+        // The shaders know the surfaces by their codes, and the mask holds a code in 3 bits.
+        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway']);
     });
 });
 

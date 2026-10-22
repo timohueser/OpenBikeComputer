@@ -28,17 +28,17 @@ fn band(x: f32, a: f32, b: f32, w: f32) -> f32 {
 // pixel w metres wide, with the share of the ground beside it that shows through. Paved main roads
 // keep a line along each edge and one in the middle; lanes and tracks wear two wheel ruts, grass and
 // dirt ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
-// gravel, dirt, grass, path, and carriageway: a main road's one side, without the middle line.
+// gravel, dirt, grass, path, and oneway: a one-way main road, no line in its middle.
 fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f32) -> vec4f {
-    let carriageway = code == 7u;
-    var c = rule(region, slot_roads() + i32(select(code, 1u, carriageway)) - 1).rgb;
+    let oneway = code == 7u;
+    var c = rule(region, slot_roads() + i32(select(code, 1u, oneway)) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
     // Only roads of two full lanes carry lines. The middle one is solid: the mask holds no metres
     // along the road for dashes.
-    if ((code == 1u || carriageway) && inside + across >= 3.5) {
+    if ((code == 1u || oneway) && inside + across >= 3.5) {
         let line = rule(region, slot_road_line()).rgb;
-        c = mix(c, line, max(band(inside, 0.25, 0.37, w), select(band(across, -0.06, 0.06, w), 0.0, carriageway)));
+        c = mix(c, line, max(band(inside, 0.25, 0.37, w), select(band(across, -0.06, 0.06, w), 0.0, oneway)));
     }
     if (code == 3u) {
         c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));

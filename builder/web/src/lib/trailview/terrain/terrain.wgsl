@@ -50,9 +50,9 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
 // The debug view of the mask, as `mask` in DEBUG_VIEWS of view.ts.
 const MASK_VIEW: u32 = 10u;
 
-// The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path, carriageway.
+// The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path, oneway.
 const SURFACE_COLOURS = array<vec3f, 7>(vec3f(0.2, 0.2, 0.22), vec3f(0.35, 0.35, 0.37), vec3f(0.62, 0.55, 0.42),
-    vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55), vec3f(0.2, 0.2, 0.22));
+    vec3f(0.5, 0.36, 0.22), vec3f(0.45, 0.6, 0.3), vec3f(0.85, 0.75, 0.55), vec3f(0.16, 0.22, 0.34));
 
 // The decoded features, flat on grey terrain: water blue, roads by surface, cut and fill faces
 // orange, conflicts red, fords cyan.

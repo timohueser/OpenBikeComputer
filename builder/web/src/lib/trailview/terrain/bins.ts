@@ -29,9 +29,9 @@ const UNITS = 2 ** 30;
 
 /**
  * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype.
- * A carriageway is one side of a main road that OSM maps as two one-way lines: it has no line in its middle.
+ * `oneway` is a one-way main road: no line in its middle.
  */
-export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, carriageway: 4.5 } as const;
+export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, oneway: 4.5 } as const;
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
@@ -76,7 +76,7 @@ export function featureTile({ level, x, y }: Node): Node | undefined {
 export function surfaceOf(tags: Record<string, string>): Surface {
     const { highway = '', surface = '', tracktype = '', oneway = '' } = tags;
     // A motorway is one-way unless OSM says otherwise.
-    const main = (oneway ? ['yes', 'true', '1', '-1'].includes(oneway) : ['motorway', 'motorway_link'].includes(highway)) ? 'carriageway' : 'main';
+    const main = (oneway ? ['yes', 'true', '1', '-1'].includes(oneway) : ['motorway', 'motorway_link'].includes(highway)) ? 'oneway' : 'main';
     if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
@@ -90,7 +90,7 @@ export function surfaceOf(tags: Record<string, string>): Surface {
 export function halfWidth(tags: Record<string, string>, surface: Surface): number {
     const width = parseFloat(tags.width ?? '');
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
-    return ['main', 'carriageway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    return ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
 }
 
 /** Metres per world unit at world row y, on the sphere of the frame. */
