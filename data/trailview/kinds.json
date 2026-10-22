@@ -26,7 +26,7 @@
     "geometry": "line",
     "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
                            "secondary", "secondary_link"]}],
-    "keep": ["highway", "surface", "width", "lanes", "oneway", "bridge", "layer", "ford"],
+    "keep": ["highway", "surface", "width", "lanes", "oneway", "junction", "bridge", "layer", "ford"],
     "height": "profile",
     "min_zoom": 8
   },

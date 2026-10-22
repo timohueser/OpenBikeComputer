@@ -165,6 +165,8 @@ describe('the surface of a road', () => {
         expect(surfaceOf({ highway: 'trunk', oneway: 'yes' })).toBe('oneway');
         expect(surfaceOf({ highway: 'motorway' })).toBe('oneway');
         expect(surfaceOf({ highway: 'motorway', oneway: 'no' })).toBe('main');
+        expect(surfaceOf({ highway: 'primary', junction: 'roundabout' })).toBe('oneway');
+        expect(surfaceOf({ highway: 'secondary', oneway: 'reverse' })).toBe('oneway');
         expect(surfaceOf({ highway: 'residential', oneway: 'yes' })).toBe('road');
         // The shaders know the surfaces by their codes, and the mask holds a code in 3 bits.
         expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway']);
