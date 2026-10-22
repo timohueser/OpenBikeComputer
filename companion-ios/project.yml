@@ -88,6 +88,7 @@ targets:
       # is real (grep a Release build: the marker string is absent).
       - package: OBCKit
         product: OBCMock
+      - target: OBCShare
     entitlements:
       path: OBCCompanion/OBCCompanion.entitlements
       properties:
@@ -99,6 +100,7 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
+        NSLocationWhenInUseUsageDescription: "OBC uses your position only as the start of a route to a place you share."
         NSPhotoLibraryUsageDescription: "OBC shows the photos you took during a ride on that ride. It does not change your library."
         # The ride's photo offer has its own "Choose more photos…", so iOS must not add its own prompt.
         PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
@@ -117,10 +119,14 @@ targets:
           - com.openbikecomputer.companion.updatecheck
         # Route-file registration (B6): puts OBC in the share sheet's app row
         # for .gpx/.tcx files (Komoot/Strava/Garmin exports) and lets Files
-        # "open in" the app — delivery lands in RootView's onOpenURL. This IS
-        # the share-sheet entry: a dedicated Share Extension target would only
-        # add value for non-file shares (URLs/text), deliberately not built.
+        # "open in" the app — delivery lands in RootView's onOpenURL. A place
+        # shared from a map app is a link or text, not a file: the OBCShare
+        # extension takes it and opens the app on the scheme below.
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.openbikecomputer.companion
+            CFBundleURLSchemes:
+              - openbikecomputer
         CFBundleDocumentTypes:
           - CFBundleTypeName: GPX route
             CFBundleTypeRole: Viewer
@@ -171,6 +177,32 @@ targets:
         OTHER_LDFLAGS: ["$(inherited)", "-lplanner_service", "-lresolv", "-liconv"]
         # The native planner build provides the Apple Silicon simulator slice.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+
+  # ─────────────────────────────────────────────── share extension (a place from a map app)
+  #
+  # No UI and no OBCKit: it puts the shared link and text into an openbikecomputer://place link
+  # and opens the app, which resolves the place. Routing does not fit an extension's memory limit.
+  OBCShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: OBCShare
+    info:
+      path: OBCShare/Info.plist
+      properties:
+        CFBundleDisplayName: OBC
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsText: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.companion.share
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"      # iPhone only
 
   # ─────────────────────────────────────────────── device shell (the Rust host on a phone)
   #

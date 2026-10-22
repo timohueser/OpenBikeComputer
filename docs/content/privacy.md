@@ -159,6 +159,20 @@ location is then sent with every search to the server in section 7.1, to sort re
 you. It is not stored. You can withdraw your consent at any time with effect for the future
 in the location permission settings of your browser.
 
+### 7.3 Location in the iPhone app
+
+The iPhone app uses your location only when you share a place from a map app with it, and only
+after iOS asks you. This is your consent under Art. 6(1)(a) GDPR and § 25(1) TDDDG. The app reads
+your position one time and uses it as the start of the route to the shared place. When the app
+calculates the route online, it sends the position as a waypoint to the server in section 7.1.
+When an installed offline map covers the route, the position stays on your phone. The app does
+not store the position, except as the start of a route that you save. You can withdraw your
+consent at any time with effect for the future in the iOS settings under Privacy & Security ›
+Location Services.
+
+To read a short link from Google Maps or Apple Maps, the app opens the link one time. Google or
+Apple then receives your IP address and the link.
+
 ## 8. Verification console
 
 The verification console at `releases.openbikecomputer.com` serves the maintainers of the

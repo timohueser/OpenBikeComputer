@@ -221,6 +221,27 @@ struct PlannerPreviewModelTests {
         #expect(!model.isLoop && !model.hasRoute)
     }
 
+    @Test func aSeedRoutesWithoutAnUndoStepAndALoneFinishTakesTheStartBeforeIt() async {
+        let home = Coordinate(latitude: 47.99, longitude: 7.84), cafe = Coordinate(latitude: 48.0, longitude: 8.0)
+        let model = PlannerPreviewModel(seed: .init(start: home, finish: cafe, finishName: "Café", activity: .mtb),
+                                        service: PlannerTestSource())
+        #expect(model.start?.name == "My location")
+        #expect(model.finish?.name == "Café")
+        #expect(model.activity == .mtb)
+        #expect(!model.canUndo)
+        await model.calculateRoute()
+        #expect(model.canSave)
+
+        let alone = PlannerPreviewModel(seed: .init(start: nil, finish: cafe, finishName: "Café", activity: .road),
+                                        service: PlannerTestSource())
+        #expect(alone.start == nil)
+        #expect(alone.finish?.name == "Café")
+        alone.setStart(.init(id: "map", name: "Map point", coordinate: home))
+        #expect(alone.points.map(\.place.name) == ["Map point", "Café"])
+        #expect(alone.start?.name == "Map point")
+        #expect(alone.finish?.name == "Café")
+    }
+
     @Test func aSkillPresetBelongsToItsActivity() {
         let model = PlannerPreviewModel(sample: true, service: PlannerTestSource())
         model.setActivity(.mtb)

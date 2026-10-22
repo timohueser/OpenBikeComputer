@@ -49,12 +49,25 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.openbikecomputer.companion</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openbikecomputer</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>OBC uses Bluetooth to connect to your bike computer. It never leaves your phone.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>OBC uses your position only as the start of a route to a place you share.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>OBC shows the photos you took during a ride on that ride. It does not change your library.</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>

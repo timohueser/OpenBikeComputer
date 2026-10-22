@@ -82,24 +82,30 @@ public struct PlannerPreviewView: View {
 
     public init(onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
-        let model = PlannerPreviewModel(sample: sample, service: source)
-        _model = State(initialValue: model)
-        _search = State(initialValue: PlannerPlaceSearch(model: model))
-        self.onSave = onSave
-        self.onClose = onClose
-        isEditing = false
+        self.init(model: PlannerPreviewModel(sample: sample, service: source), isEditing: false, onSave: onSave, onClose: onClose)
     }
 
     /// Edits a saved route or trip from its plan.
     public init(editing plan: PlannerPlan,
                 onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, source: any PlannerDataSource = PlannerService.shared) {
-        let model = PlannerPreviewModel(plan: plan, service: source)
+        self.init(model: PlannerPreviewModel(plan: plan, service: source), isEditing: true, onSave: onSave, onClose: onClose)
+    }
+
+    /// Plans a new route to the seed's finish. The route calculates at once.
+    public init(seed: PlannerPreviewSeed,
+                onSave: @escaping (PlannerPreviewSave) -> Void,
+                onClose: @escaping () -> Void, source: any PlannerDataSource = PlannerService.shared) {
+        self.init(model: PlannerPreviewModel(seed: seed, service: source), isEditing: false, onSave: onSave, onClose: onClose)
+    }
+
+    private init(model: PlannerPreviewModel, isEditing: Bool,
+                 onSave: @escaping (PlannerPreviewSave) -> Void, onClose: @escaping () -> Void) {
         _model = State(initialValue: model)
         _search = State(initialValue: PlannerPlaceSearch(model: model))
         self.onSave = onSave
         self.onClose = onClose
-        isEditing = true
+        self.isEditing = isEditing
     }
 
     public var body: some View {
@@ -266,6 +272,11 @@ public struct PlannerPreviewView: View {
         }
     }
 
+    private var summaryTitle: String {
+        if model.hasRoute { return model.routeTitle }
+        return model.start != nil ? "Choose a finish" : model.finish != nil ? "Choose a start" : "New route"
+    }
+
     private var mapTools: some View {
         VStack(spacing: 8) {
             Button { fitRevision += 1; fraction = nil } label: {
@@ -325,7 +336,7 @@ public struct PlannerPreviewView: View {
                 Button { drawerPosition = .open } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         if drawerPosition != .collapsed || !model.hasRoute {
-                            Text(model.hasRoute ? model.routeTitle : (model.start == nil ? "New route" : "Choose a finish"))
+                            Text(summaryTitle)
                                 .font(.headline).lineLimit(1)
                         }
                         if model.isRouting { ProgressView("Calculating route…").font(.caption) }
@@ -966,11 +977,11 @@ public struct PlannerPreviewView: View {
 
     private var pins: [PlannerPreviewMapPin] {
         let nights = model.nights.map(\.id)
-        var pins = model.points.enumerated().map { index, point in
+        var pins = model.points.map { point in
             let night = nights.firstIndex(of: point.id)
             return PlannerPreviewMapPin(id: point.id, title: night.map { "End of day \($0 + 1), \(point.place.name)" } ?? point.place.name,
                 coordinate: point.place.coordinate, symbol: point.place.kind.symbol,
-                kind: index == 0 ? .start : model.isEndpoint(point.id) ? .finish : night.map { .night($0 + 1) }
+                kind: model.isStart(point.id) ? .start : model.isEndpoint(point.id) ? .finish : night.map { .night($0 + 1) }
                     ?? (point.kind == .shape ? .shape : .stop),
                 isDraggable: true)
         }
