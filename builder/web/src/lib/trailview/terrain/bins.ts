@@ -27,8 +27,11 @@ export const NEAR = 16;
 const LOW = 8, DEEP = 14;
 const UNITS = 2 ** 30;
 
-/** The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype. */
-export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6 } as const;
+/**
+ * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype.
+ * A carriageway is one side of a main road that OSM maps as two one-way lines: it has no line in its middle.
+ */
+export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, carriageway: 4.5 } as const;
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
@@ -71,21 +74,22 @@ export function featureTile({ level, x, y }: Node): Node | undefined {
 
 /** The prototype's road surface of a highway (`road_surface` in its bake). */
 export function surfaceOf(tags: Record<string, string>): Surface {
-    const { highway = '', surface = '', tracktype = '' } = tags;
-    if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? 'main' : 'road';
+    const { highway = '', surface = '', tracktype = '', oneway = '' } = tags;
+    const main = ['yes', 'true', '1', '-1'].includes(oneway) ? 'carriageway' : 'main';
+    if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
     if (['grass', 'grass_paver'].includes(surface)) return 'grass';
     if (PATHS.includes(highway)) return 'path';
     if (highway === 'track') return ({ grade1: 'road', grade2: 'gravel', grade3: 'dirt' } as const)[tracktype as 'grade1'] ?? 'grass';
-    return MAIN.includes(highway) ? 'main' : 'road';
+    return MAIN.includes(highway) ? main : 'road';
 }
 
 /** The half-width of a road: OSM's `width` where it has one (`road_width` in the prototype). */
 export function halfWidth(tags: Record<string, string>, surface: Surface): number {
     const width = parseFloat(tags.width ?? '');
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
-    return (surface === 'main' || surface === 'road') && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    return ['main', 'carriageway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
 }
 
 /** Metres per world unit at world row y, on the sphere of the frame. */

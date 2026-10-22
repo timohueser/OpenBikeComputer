@@ -28,16 +28,17 @@ fn band(x: f32, a: f32, b: f32, w: f32) -> f32 {
 // pixel w metres wide, with the share of the ground beside it that shows through. Paved main roads
 // keep a line along each edge and one in the middle; lanes and tracks wear two wheel ruts, grass and
 // dirt ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
-// gravel, dirt, grass, path.
+// gravel, dirt, grass, path, and carriageway: a main road's one side, without the middle line.
 fn road_surface(region: u32, code: u32, inside: f32, across: f32, p: vec2f, w: f32) -> vec4f {
-    var c = rule(region, slot_roads() + i32(code) - 1).rgb;
+    let carriageway = code == 7u;
+    var c = rule(region, slot_roads() + i32(select(code, 1u, carriageway)) - 1).rgb;
     // Patched asphalt, compacted gravel: broad tone, too faint to alias far off, and a grain near by.
     c *= 0.94 + 0.1 * noise(p / 4.0) + 0.06 * (noise(p / 0.35) - 0.5) * (1.0 - smoothstep(0.05, 0.3, w));
     // Only roads of two full lanes carry lines. The middle one is solid: the mask holds no metres
     // along the road for dashes.
-    if (code == 1u && inside + across >= 3.5) {
+    if ((code == 1u || carriageway) && inside + across >= 3.5) {
         let line = rule(region, slot_road_line()).rgb;
-        c = mix(c, line, max(band(inside, 0.25, 0.37, w), band(across, -0.06, 0.06, w)));
+        c = mix(c, line, max(band(inside, 0.25, 0.37, w), select(band(across, -0.06, 0.06, w), 0.0, carriageway)));
     }
     if (code == 3u) {
         c *= 0.93 + 0.14 * mix(0.5, noise(p / 0.18), 1.0 - smoothstep(0.05, 0.25, w));
@@ -91,8 +92,9 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (mask.level == 0u || mask.kind.x == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0);
     }
-    let code = min(mask.kind.x, 6u);
-    let wall = select(0.0, reach * mask.shape.w, code <= 2u);
+    let code = mask.kind.x;
+    let paved = code <= 2u || code == 7u;
+    let wall = select(0.0, reach * mask.shape.w, paved);
     var edge = mask_metres(mask.shape.x);
     if (edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall);
@@ -101,7 +103,7 @@ fn road_at(s: vec2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     let half = max(across - edge, 0.05);
     let surface = road_surface(region, code, max(-edge, 0.0), across, p, w);
     // Unpaved edges fray into the ground.
-    if (code > 2u) {
+    if (!paved) {
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * w - half);

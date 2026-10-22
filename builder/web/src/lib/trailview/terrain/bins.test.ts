@@ -5,7 +5,7 @@ import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, WARP_M, type Line, type Profile } from './bins';
+import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, surfaceOf, SURFACES, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -156,6 +156,16 @@ describe('a rounded line', () => {
         };
         expect(between(a, 2, 3)).toEqual(between(whole, 2, 3));
         expect(between(b, 3, 4)).toEqual(between(whole, 3, 4));
+    });
+});
+
+describe('the surface of a road', () => {
+    it('is a carriageway, without a line in its middle, on one side of a main road that OSM maps as two one-way lines', () => {
+        expect(surfaceOf({ highway: 'motorway' })).toBe('main');
+        expect(surfaceOf({ highway: 'motorway', oneway: 'yes' })).toBe('carriageway');
+        expect(surfaceOf({ highway: 'residential', oneway: 'yes' })).toBe('road');
+        // The mask holds the surface code in 3 bits.
+        expect(Object.keys(SURFACES).indexOf('carriageway') + 1).toBe(7);
     });
 });
 
