@@ -6,8 +6,8 @@
     {
       "id": "18/1204/1052",
       "bytes": 583,
-      "sha256": "863c9862cad2dff5b4633c082eb613078287a03085b1c6cd3ce0a997faf7b747",
-      "url": "https://maps.example.org/catalog/cells/fine/1204/1052.863c9862cad2dff5b4633c082eb613078287a03085b1c6cd3ce0a997faf7b747.obcm",
+      "sha256": "acb7c412b2b8c553015ec6f01edd978756c22293989e0f1baed4475bd757727b",
+      "url": "https://maps.example.org/catalog/cells/fine/1204/1052.acb7c412b2b8c553015ec6f01edd978756c22293989e0f1baed4475bd757727b.obcm",
       "sources": [
         {
           "extract_id": "europe/switzerland",
@@ -19,8 +19,8 @@
     {
       "id": "18/1204/1053",
       "bytes": 455,
-      "sha256": "091b4a0158b9c546bdd8cb47877094c02a69226fba4c6a47c3416d7edd6c1b5c",
-      "url": "https://maps.example.org/catalog/cells/fine/1204/1053.091b4a0158b9c546bdd8cb47877094c02a69226fba4c6a47c3416d7edd6c1b5c.obcm",
+      "sha256": "842160a4866cbcf8021b493423a5036748adf5a15c81186d3902e7ec429923ce",
+      "url": "https://maps.example.org/catalog/cells/fine/1204/1053.842160a4866cbcf8021b493423a5036748adf5a15c81186d3902e7ec429923ce.obcm",
       "sources": [
         {
           "extract_id": "europe/germany/baden-wuerttemberg",

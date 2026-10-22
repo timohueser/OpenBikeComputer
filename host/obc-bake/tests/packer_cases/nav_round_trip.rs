@@ -133,7 +133,14 @@ fn four_way_crossing_round_trips_identically() {
         // A distinctive packed way_kind per arm (surface 1 = paved, highway = k) so the kind byte's
         // round-trip is pinned end-to-end.
         let kind = (1u8 << 5) | (k as u8);
-        edges.push(Edge { a: 0, b: id, polyline: vec![cross, mid, end], length_m: 22_000 + k as u32, kind });
+        edges.push(Edge {
+            a: 0,
+            b: id,
+            polyline: vec![cross, mid, end],
+            length_m: 22_000 + k as u32,
+            kind,
+            no_ride: 0,
+        });
     }
     let graph = NavGraph { nodes, edges: edges.clone() };
     let bytes = map_with(&graph);
@@ -182,7 +189,7 @@ fn the_edge_pool_is_in_emission_order() {
         let up = (k < 6).then_some(k + 3);
         for n in [right, up].into_iter().flatten() {
             let polyline = vec![nodes[n as usize].coord, nodes[k as usize].coord];
-            edges.push(Edge { a: n, b: k, polyline, length_m: 1_000, kind: 0 });
+            edges.push(Edge { a: n, b: k, polyline, length_m: 1_000, kind: 0, no_ride: 0 });
         }
     }
     let decoded = decode_all(&map_with(&NavGraph { nodes, edges }));
@@ -231,6 +238,7 @@ fn populated_nav_chunk_regions_are_sector_aligned() {
             polyline: vec![(100_000, 100_000), (110_000, 110_000)],
             length_m: 1_560,
             kind: 0,
+            no_ride: 0,
         }],
     };
     let bytes = map_with(&graph);
@@ -270,7 +278,7 @@ fn long_segment_edge_is_densified() {
     let b = (100_000, 131_000);
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 3_451, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 3_451, kind: 0, no_ride: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -299,7 +307,7 @@ fn over_long_edge_splits_at_a_synthetic_node() {
     let (a, b) = (*polyline.first().unwrap(), *polyline.last().unwrap());
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: polyline.clone(), length_m: 1_478, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: polyline.clone(), length_m: 1_478, kind: 0, no_ride: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -341,7 +349,7 @@ fn absurd_degree_node_is_capped_at_24() {
         // split — the hub keeps a direct edge to each spoke and the degree cap is what limits it.
         let end = (500_000 + 1_000 * k as i32, 505_000);
         nodes.push(Node { id: k, coord: end });
-        edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k, kind: 0 });
+        edges.push(Edge { a: 0, b: k, polyline: vec![hub, end], length_m: 100 + k, kind: 0, no_ride: 0 });
     }
     let bytes = map_with(&NavGraph { nodes, edges });
     let decoded = decode_all(&bytes);
@@ -366,7 +374,7 @@ fn self_loop_gets_one_adjacency_entry() {
     let loop_poly = vec![n, (502_000, 500_000), (502_000, 502_000), n];
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: n }],
-        edges: vec![Edge { a: 0, b: 0, polyline: loop_poly.clone(), length_m: 668, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 0, polyline: loop_poly.clone(), length_m: 668, kind: 0, no_ride: 0 }],
     };
     let bytes = map_with(&graph);
     let decoded = decode_all(&bytes);
@@ -400,6 +408,7 @@ fn dense_graph_subdivides_and_point_query_descends() {
                     polyline: vec![at(gx - 1, gy), at(gx, gy)],
                     length_m: 5_566,
                     kind: 0,
+                    no_ride: 0,
                 });
             }
         }
@@ -443,7 +452,7 @@ fn profile_table_round_trips() {
     let b = (100_000, 110_000);
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: (3 << 5) | 12 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: (3 << 5) | 12, no_ride: 0 }],
     };
     // Profile 0: highway[12] = 4.0× (64), highway[4] forbidden (0), surface[3] = 5.0× (80), rest 1.0×.
     let mut hw = [16u8; 32];
@@ -495,7 +504,7 @@ fn grid_graph(g: i32) -> NavGraph {
             let b = (base_x + 400, base_y);
             nodes.push(Node { id, coord: a });
             nodes.push(Node { id: id + 1, coord: b });
-            edges.push(Edge { a: id, b: id + 1, polyline: vec![a, b], length_m: 44, kind: 8 });
+            edges.push(Edge { a: id, b: id + 1, polyline: vec![a, b], length_m: 44, kind: 8, no_ride: 0 });
             id += 2;
         }
     }
@@ -620,7 +629,7 @@ fn arc(decoded: &BTreeMap<u32, Decoded>, from: u32, to: u32) -> NavNeighbor {
 fn two_node_graph(a: (i32, i32), b: (i32, i32), length_m: u32) -> NavGraph {
     NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m, kind: (1 << 5) | 10 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m, kind: (1 << 5) | 10, no_ride: 0 }],
     }
 }
 
@@ -766,7 +775,7 @@ fn reversing_a_polyline_swaps_the_two_directions_exactly() {
     let poly = vec![a, (500_000, 495_000), (500_000, 507_000), b];
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: poly.clone(), length_m: 3_115, kind: 8 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: poly.clone(), length_m: 3_115, kind: 8, no_ride: 0 }],
     };
     let bytes = map_with_terrain(&graph, &default_profiles(), &mut terrain);
     let decoded = decode_all(&bytes);
@@ -810,11 +819,11 @@ fn a_graph_outside_coverage_books_nothing() {
     assert_eq!(arc(&decoded, 0, 1).ascent_m, 0, "uncovered is silent, not zero-height");
 }
 
-/// Absurd input saturates instead of wrapping: an edge that would book more than 65 535 m becomes
-/// maximally expensive, never free. (A wrap is the one failure mode a router must not have — it
-/// would turn a wall into a shortcut.)
+/// Absurd input saturates instead of wrapping: an edge that would book more than 32 767 m becomes
+/// maximally expensive, never free, and never spills into the No Ride bit. (A wrap is the one
+/// failure mode a router must not have — it would turn a wall into a shortcut.)
 #[test]
-fn an_impossible_climb_saturates_at_u16_max() {
+fn an_impossible_climb_saturates_below_the_no_ride_bit() {
     /// A sawtooth of ±20 000 m, which no terrain on Earth is and a corrupt file might be.
     struct Sawtooth(bool);
     impl ElevationSource for Sawtooth {
@@ -826,8 +835,11 @@ fn an_impossible_climb_saturates_at_u16_max() {
     let (a, b) = ((500_000, 486_000), (500_000, 514_000));
     let bytes = map_with_terrain(&two_node_graph(a, b, 3_115), &default_profiles(), &mut Sawtooth(false));
     let decoded = decode_all(&bytes);
-    assert_eq!(arc(&decoded, 0, 1).ascent_m, u16::MAX, "saturated, not wrapped");
-    assert_eq!(arc(&decoded, 1, 0).ascent_m, u16::MAX);
+    for (from, to) in [(0, 1), (1, 0)] {
+        let arc = arc(&decoded, from, to);
+        assert_eq!(arc.ascent_m, obc_formats::obcm::NAV_NEIGHBOR_ASCENT_MASK, "saturated, not wrapped");
+        assert!(arc.rideable);
+    }
 }
 
 /// Two packs of the same graph over the same terrain are **byte-identical**. Sampling introduces a

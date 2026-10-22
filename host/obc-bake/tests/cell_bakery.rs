@@ -224,6 +224,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         node_ids: (0..=24).collect(),
         coords: (0..=24).map(|k| ((lon0 + k * (lon1 - lon0) / 24) as i32, 47_300_000i32)).collect(),
         kind: 7,
+        no_ride: 0,
     }];
     let pois = (0..6)
         .map(|k| Poi {

@@ -63,6 +63,7 @@ fn ways() -> Vec<RoutableWay> {
             node_ids: (0..3).map(|col| id(row, col)).collect(),
             coords: (0..3).map(|col| at(row, col)).collect(),
             kind: 3,
+            no_ride: 0,
         });
     }
     for col in 0..3 {
@@ -70,6 +71,7 @@ fn ways() -> Vec<RoutableWay> {
             node_ids: (0..3).map(|row| id(row, col)).collect(),
             coords: (0..3).map(|row| at(row, col)).collect(),
             kind: 3,
+            no_ride: 0,
         });
     }
     out

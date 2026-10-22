@@ -8,7 +8,7 @@ pub mod peaks;
 pub use nav::{NavEdgeRecord, NavNeighbor, NavNodeRecord, NavVertices};
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 19;
+pub const VERSION: u8 = 20;
 /// Fixed header, including optional terrain and landmark region pointers.
 pub const HEADER_LEN: usize = 71;
 /// Header offset of the `Offset Scale` byte.
@@ -430,6 +430,10 @@ pub const NAV_NEIGHBOR_LEN: usize = 17;
 /// Offset of the `Ascent M` field inside a neighbor entry: the climb of riding the edge from this
 /// record's node toward the neighbor, so the two sides of an edge carry different values.
 pub const NAV_NEIGHBOR_ASCENT_OFF: usize = 15;
+/// Set in the `Ascent M` field when a bike may not ride from this record's node toward the
+/// neighbor: a one-way rule closes that direction.
+pub const NAV_NEIGHBOR_NO_RIDE: u16 = 0x8000;
+pub const NAV_NEIGHBOR_ASCENT_MASK: u16 = 0x7fff;
 pub const NAV_EDGE_FIXED_LEN: usize = 15;
 /// All terrain integration samples were present for this edge.
 pub const NAV_EDGE_ELEVATION_COMPLETE: u16 = 0x8000;
@@ -713,7 +717,7 @@ mod tests {
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
         validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x13, "the version byte is the hard cut, and it cuts in both directions");
+        assert_eq!(fixture[4], 0x14, "the version byte is the hard cut, and it cuts in both directions");
         assert_eq!(style.units(), 5);
         assert_eq!(style.bytes(), 80);
     }

@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v19)
+# OBCM File Format Specification (v20)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -10,9 +10,9 @@ This document is the normative byte contract. Its code authority for version num
 fixed lengths, flags, sentinels, the canonical POI id table, and endian primitives is
 `firmware/obc-formats/src/obcm.rs`; producers and consumers import those facts directly.
 
-**v19 is the only supported version**; earlier maps get repacked. A reader MUST
+**v20 is the only supported version**; earlier maps get repacked. A reader MUST
 check `Version` before it reads any later field and MUST refuse every value other
-than `0x13`. The header version applies to the whole file.
+than `0x14`. The header version applies to the whole file.
 
 Style flag bits gain meanings without a version bump, because the record's length, layout
 and offsets do not move. §2 states every defined bit.
@@ -59,7 +59,7 @@ Packed as `struct "<4sBiiiiIBIHIIBIIIIIIIH"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x13` |
+| 4 | Version | 1 | `uint8` | `0x14` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -856,7 +856,7 @@ Per neighbor entry (17 bytes):
 | 8 | Edge Id | 4 | `uint32` | The connecting edge, §8.4 addressing |
 | 12 | Cost M | 2 | `uint16` | The edge's raw ground length in meters (the unweighted distance) |
 | 14 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6) — the input to profile weighting |
-| 15 | Ascent M | 2 | `uint16` | **Directional**: the integrated climb, in metres, of riding this edge *from this record's node toward the neighbor*. Saturating; `0` on a map packed without terrain |
+| 15 | Ascent M | 2 | `uint16` | **Directional**. Bits 0–14: the integrated climb, in metres, of riding this edge *from this record's node toward the neighbor*; saturating at 32 767, `0` on a map packed without terrain. Bit 15, **No Ride**: a one-way rule closes this direction to a bike |
 
 The neighbor's absolute coord is reconstructed as `(Lat + dLat, Lon + dLon)`; the
 packer guarantees both endpoints of every edge sit within `int16` of each other
@@ -887,9 +887,13 @@ Rules:
   records with the **same** `Edge Id`, `Cost M`, and `Way Kind`. **`Ascent M` is
   the exception and MUST NOT be assumed equal**: the entry `a→b` carries
   `ascent(a→b)` and the entry `b→a` carries `ascent(b→a)`, which is the first
-  direction's *descent*. A consumer that verifies "both sides agree" must exclude
-  this field. A self-loop (`a == b`, e.g. a lollipop loop) appears **once** in its
-  node's record, carrying its forward direction's ascent.
+  direction's *descent*, and each carries its own direction's No Ride bit. A
+  consumer that verifies "both sides agree" must exclude this field. A self-loop
+  (`a == b`, e.g. a lollipop loop) appears **once** in its node's record, carrying
+  its forward direction's ascent.
+- **No Ride.** A router MUST NOT relax an entry whose No Ride bit is set, and MUST
+  NOT enter a partial edge in that direction from a snapped endpoint. The entry stays
+  in the record, so a closed direction still names its edge and its endpoint.
 - **Seam determinism.** A producer that cuts one edge into pieces at a cell border
   (`OBCA_Spec.md` §3) integrates each piece over the **same global elevation
   lattice**, so two neighbouring cells' stubs are each the integral of their own
@@ -1151,7 +1155,7 @@ The weighted A\* cost of the edge is
 weighted = (Cost M × effective) >> 4  +  Ascent M × Climb Weight     # saturating
 ```
 
-The addition saturates into the `uint16` frontier cost.
+The router accumulates the sum in a `uint32` frontier cost.
 
 **Admissibility invariant (normative).** Every **non-zero** multiplier is `≥ 16` (that is,
 `≥ 1.0×`), which keeps the great-circle heuristic admissible. The packer **rejects** a config
@@ -1208,7 +1212,11 @@ class names.
 `highway=motorway|motorway_link`; `highway=trunk|trunk_link` without `bicycle=yes`;
 `motorroad=yes`; `bicycle=no|use_sidepath`; or `access=no|private`. Everything else
 — including `footway`/`steps` (legal to *walk* a bike) — is kept; preference (not
-legality) is the profile's job.
+legality) is the profile's job. A segment that touches a `barrier=stile|kissing_gate|turnstile`
+node is dropped, so no route passes a barrier a bike must be lifted over. A one-way rule
+(`oneway`, `oneway:bicycle`, an implied roundabout, a contraflow cycle lane) sets the §8.3 No
+Ride bit on the closed direction; a way whose one-way value the producer does not know is
+dropped.
 
 ### 8.7 Sparse exact-edge snap index
 

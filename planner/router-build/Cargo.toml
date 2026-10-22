@@ -8,6 +8,7 @@ license = "GPL-3.0-only"
 
 [dependencies]
 planner-router = { path = "../router" }
+obc-places = { path = "../../host/obc-places" }
 osmpbfreader = "0.19"
 country-boundaries = "1.2"
 serde_json = "1"

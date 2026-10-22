@@ -9,7 +9,7 @@ use obc_draw::serialize::{LodLayer, Node as GeomNode};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_map_core::serialize::NavProfile;
-use obc_network::nav::{Edge, NavGraph, Node};
+use obc_network::nav::{Edge, NavGraph, Node, NO_RIDE_BACKWARD, NO_RIDE_FORWARD};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
 use obc_route::{BikeType, RouteIndex, RouteObjectInfo, RouteReader};
@@ -81,19 +81,19 @@ fn grid3(shortcut: bool) -> NavGraph {
             if col < 2 {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500); // nudge lat
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
+                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0, no_ride: 0 });
             }
             if row < 2 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2); // nudge lon
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0 });
+                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: 0, no_ride: 0 });
             }
         }
     }
     if shortcut {
         let (ca, cb) = (at(0, 0), at(2, 2));
         let mid = ((ca.0 + cb.0) / 2 + 500, (ca.1 + cb.1) / 2 - 500);
-        edges.push(Edge { a: 0, b: 8, polyline: vec![ca, mid, cb], length_m: SHORTCUT_COST, kind: 0 });
+        edges.push(Edge { a: 0, b: 8, polyline: vec![ca, mid, cb], length_m: SHORTCUT_COST, kind: 0, no_ride: 0 });
     }
     NavGraph { nodes, edges }
 }
@@ -105,7 +105,7 @@ fn line_graph(n: u32, step_udeg: i32, cost_m: u32) -> NavGraph {
     let edges = (0..n - 1)
         .map(|i| {
             let (ca, cb) = (nodes[i as usize].coord, nodes[i as usize + 1].coord);
-            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m, kind: 0 }
+            Edge { a: i, b: i + 1, polyline: vec![ca, cb], length_m: cost_m, kind: 0, no_ride: 0 }
         })
         .collect();
     NavGraph { nodes, edges }
@@ -181,6 +181,33 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
     );
 }
 
+/// A one-way shortcut wins in its open direction and is skipped in the closed one.
+#[test]
+fn a_one_way_shortcut_is_ridden_only_in_its_open_direction() {
+    let mut graph = grid3(true);
+    graph.edges.last_mut().unwrap().no_ride = NO_RIDE_BACKWARD;
+    let bytes = map_with(&graph);
+    let (c0, c8) = (at(0, 0), at(2, 2));
+    assert_eq!(plan(&bytes, c0, c8, "Fwd").0.unwrap().total_distance_m, 3152, "the shortcut, ridden a→b");
+    assert_eq!(plan(&bytes, c8, c0, "Rev").0.unwrap().total_distance_m, 4474, "the grid, not the shortcut b→a");
+}
+
+/// Snapped endpoints obey the closed direction too: inside a one-way edge the route can only run
+/// with it.
+#[test]
+fn a_closed_direction_also_binds_partial_edges_from_snapped_endpoints() {
+    let a = BASE;
+    let b = (BASE.0 + 8_000, BASE.1);
+    let graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 890, kind: 0, no_ride: NO_RIDE_FORWARD }],
+    };
+    let bytes = map_with(&graph);
+    let (west, east) = ((BASE.0 + 2_000, BASE.1), (BASE.0 + 6_000, BASE.1));
+    assert_eq!(plan(&bytes, west, east, "With").0, Err(NavError::NoPath));
+    assert_eq!(plan(&bytes, east, west, "Against").0.unwrap().total_distance_m, 445);
+}
+
 /// Two components in snap range of the endpoints but not of each other.
 #[test]
 fn disconnected_graph_is_no_path() {
@@ -196,8 +223,8 @@ fn disconnected_graph_is_no_path() {
             Node { id: 3, coord: b1 },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
+            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0, no_ride: 0 },
+            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0, no_ride: 0 },
         ],
     };
     let (res, obcr, _) = plan(&map_with(&graph), a0, b0, "x");
@@ -233,10 +260,10 @@ fn goal_tracked_before_fill_survives_exhaustion() {
     let coord = |i: u32| (BASE.0 + i as i32 * step, BASE.1);
     let mut nodes: Vec<Node> = (0..9).map(|i| Node { id: i, coord: coord(i) }).collect();
     let mut edges: Vec<Edge> = (0..8)
-        .map(|i| Edge { a: i, b: i + 1, polyline: vec![coord(i), coord(i + 1)], length_m: 400, kind: 0 })
+        .map(|i| Edge { a: i, b: i + 1, polyline: vec![coord(i), coord(i + 1)], length_m: 400, kind: 0, no_ride: 0 })
         .collect();
     // The expensive direct escape: 20 km for a ~1.8 km straight line, still admissible.
-    edges.push(Edge { a: 0, b: 8, polyline: vec![coord(0), coord(8)], length_m: 20_000, kind: 0 });
+    edges.push(Edge { a: 0, b: 8, polyline: vec![coord(0), coord(8)], length_m: 20_000, kind: 0, no_ride: 0 });
     let _ = &mut nodes;
     let bytes = map_with(&NavGraph { nodes, edges });
 
@@ -279,7 +306,7 @@ fn sparse_anchor_discovers_long_road_for_exact_projection() {
     let b = (BASE.0 + SP, BASE.1);
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1_113, kind: 0, no_ride: 0 }],
     };
     let bytes = map_with(&graph);
     // Deliberately not on an anchor: the anchor only finds the edge, the projection uses the
@@ -304,7 +331,7 @@ fn near_a_node_still_starts_at_the_exact_road_projection() {
     let b = (BASE.0 + 2_000, BASE.1); // ~223 m, so no interior lookup anchor
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 223, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 223, kind: 0, no_ride: 0 }],
     };
     let rider = (BASE.0 + 400, BASE.1 + 180); // ~20 m off-road and ~49 m from node a
     let (result, obcr, _) = plan(&map_with(&graph), rider, b, "Near node");
@@ -325,7 +352,7 @@ fn both_endpoints_project_and_clip_inside_one_curving_edge() {
     let b = (BASE.0 + 8_000, BASE.1 + 4_000);
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, bend_a, bend_b, b], length_m: 1_335, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, bend_a, bend_b, b], length_m: 1_335, kind: 0, no_ride: 0 }],
     };
     let from = (BASE.0 + 2_000, BASE.1 - 250);
     let to = (BASE.0 + 6_000, BASE.1 + 4_250);
@@ -472,11 +499,12 @@ fn record_stride_keeps_odd_offsets_exercised() {
     // record heads decode at odd offsets in multi-record chunks as well.
 }
 
-/// The 26 B/node layout holds: a 24 B entry plus a 2 B heap slot, plus the two length fields.
+/// The 26 B/node layout holds: a 24 B entry plus a 2 B heap slot, plus the lengths, the ε rung and
+/// the goal.
 #[test]
 fn scratch_fits_the_per_target_budget() {
     let size = core::mem::size_of::<NavScratch<{ obc_route::NAV_MAX_NODES }>>();
-    assert!(size <= 26 * obc_route::NAV_MAX_NODES + 8, "NavScratch is {size} B — the 26 B/node layout drifted");
+    assert!(size <= 26 * obc_route::NAV_MAX_NODES + 20, "NavScratch is {size} B — the 26 B/node layout drifted");
 }
 
 /// Every node on this ~9 km line must be tracked to reach the goal, so a 300-node table exhausts
@@ -517,8 +545,8 @@ fn saturated_costs_plan_without_panicking() {
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: n0 }, Node { id: 1, coord: n1 }, Node { id: 2, coord: n2 }],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000, kind: 0 },
-            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000, kind: 0 },
+            Edge { a: 0, b: 1, polyline: vec![n0, n1], length_m: 60_000, kind: 0, no_ride: 0 },
+            Edge { a: 1, b: 2, polyline: vec![n1, n2], length_m: 60_000, kind: 0, no_ride: 0 },
         ],
     };
     let (res, obcr, _) = plan(&map_with(&graph), n0, n2, "Far");
@@ -719,10 +747,10 @@ fn profile_steers_between_equal_length_corridors() {
             Node { id: 3, coord: b },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE },
-            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE },
-            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY },
-            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY },
+            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY, no_ride: 0 },
+            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY, no_ride: 0 },
         ],
     };
     let cycle_loving = profile("cycle", &[(K_CYCLE, 16), (K_PRIMARY, 48)]); // primary 3.0×
@@ -756,9 +784,9 @@ fn detour_is_taken_exactly_when_the_multiplier_math_says_so() {
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }, Node { id: 2, coord: d }],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: direct, kind: K_PRIMARY },
-            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: leg, kind: K_CYCLE },
-            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: leg, kind: K_CYCLE },
+            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: direct, kind: K_PRIMARY, no_ride: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: leg, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: leg, kind: K_CYCLE, no_ride: 0 },
         ],
     };
     let primary_2x = profile("p2", &[(K_PRIMARY, 32), (K_CYCLE, 16)]);
@@ -786,9 +814,9 @@ fn forbidden_class_detours_then_no_paths() {
     let detourable = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }, Node { id: 2, coord: d }],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS },
-            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: 1_680, kind: K_CYCLE },
-            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: 1_680, kind: K_CYCLE },
+            Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS, no_ride: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, d], length_m: 1_680, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 2, b: 1, polyline: vec![d, b], length_m: 1_680, kind: K_CYCLE, no_ride: 0 },
         ],
     };
     let bytes = map_with_profiles(&detourable, std::slice::from_ref(&no_steps));
@@ -799,7 +827,7 @@ fn forbidden_class_detours_then_no_paths() {
     // The only edge is forbidden steps, so A snaps but has no legal escape.
     let dead = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 2_400, kind: K_STEPS, no_ride: 0 }],
     };
     let bytes = map_with_profiles(&dead, &[no_steps]);
     let (res, obcr, _) = plan_p(&bytes, a, b, "Dead", BikeType::Road);
@@ -815,7 +843,7 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
     let length = 2_000;
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: length, kind: K_PRIMARY, no_ride: 0 }],
     };
     let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0x
     let (res, _, _) = plan_p(&bytes, a, b, "Honest", BikeType::Road);
@@ -840,10 +868,10 @@ fn out_of_range_profile_index_falls_back_to_zero() {
             Node { id: 3, coord: b },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE },
-            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE },
-            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY },
-            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY },
+            Edge { a: 0, b: 1, polyline: vec![a, c1], length_m: hop, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 1, b: 3, polyline: vec![c1, b], length_m: hop, kind: K_CYCLE, no_ride: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, c2], length_m: hop, kind: K_PRIMARY, no_ride: 0 },
+            Edge { a: 2, b: 3, polyline: vec![c2, b], length_m: hop, kind: K_PRIMARY, no_ride: 0 },
         ],
     };
     // The second profile exists only to prove that a type past the table does not select it.
@@ -876,12 +904,19 @@ fn found_cost_is_within_epsilon_of_dijkstra_reference() {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
                 let kind = if row == 2 { K_CYCLE } else { K_PRIMARY }; // the bottom row is cheap
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind, no_ride: 0 });
             }
             if row < 2 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
-                edges.push(Edge { a, b: a + 3, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind: K_CYCLE });
+                edges.push(Edge {
+                    a,
+                    b: a + 3,
+                    polyline: vec![ca, mid, cb],
+                    length_m: EDGE_COST,
+                    kind: K_CYCLE,
+                    no_ride: 0,
+                });
             }
         }
     }
@@ -963,12 +998,19 @@ fn grid_diag(rows: i32, cols: i32, kind: u8) -> NavGraph {
             if col < cols - 1 {
                 let (ca, cb) = (at(row, col), at(row, col + 1));
                 let mid = ((ca.0 + cb.0) / 2, ca.1 + 500);
-                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(Edge { a, b: a + 1, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind, no_ride: 0 });
             }
             if row < rows - 1 {
                 let (ca, cb) = (at(row, col), at(row + 1, col));
                 let mid = (ca.0 + 500, (ca.1 + cb.1) / 2);
-                edges.push(Edge { a, b: a + cols as u32, polyline: vec![ca, mid, cb], length_m: EDGE_COST, kind });
+                edges.push(Edge {
+                    a,
+                    b: a + cols as u32,
+                    polyline: vec![ca, mid, cb],
+                    length_m: EDGE_COST,
+                    kind,
+                    no_ride: 0,
+                });
             }
         }
     }
@@ -1096,8 +1138,8 @@ fn no_retry_on_disconnect_fails_fast_at_rung_zero() {
             Node { id: 3, coord: b1 },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0 },
+            Edge { a: 0, b: 1, polyline: vec![a0, a1], length_m: 600, kind: 0, no_ride: 0 },
+            Edge { a: 2, b: 3, polyline: vec![b0, b1], length_m: 600, kind: 0, no_ride: 0 },
         ],
     };
     let bytes = map_with(&graph);
@@ -1528,10 +1570,10 @@ fn pass_vs_valley() -> NavGraph {
             Node { id: 3, coord: b },
         ],
         edges: vec![
-            Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 },
-            Edge { a: 1, b: 3, polyline: vec![pass, b], length_m: PASS_LEG, kind: 0 },
-            Edge { a: 0, b: 2, polyline: vec![a, valley], length_m: VALLEY_LEG, kind: 0 },
-            Edge { a: 2, b: 3, polyline: vec![valley, b], length_m: VALLEY_LEG, kind: 0 },
+            Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0, no_ride: 0 },
+            Edge { a: 1, b: 3, polyline: vec![pass, b], length_m: PASS_LEG, kind: 0, no_ride: 0 },
+            Edge { a: 0, b: 2, polyline: vec![a, valley], length_m: VALLEY_LEG, kind: 0, no_ride: 0 },
+            Edge { a: 2, b: 3, polyline: vec![valley, b], length_m: VALLEY_LEG, kind: 0, no_ride: 0 },
         ],
     }
 }
@@ -1671,7 +1713,7 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
     let (a, pass) = (at(0, 0), at(1, 1));
     let graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: pass }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, pass], length_m: PASS_LEG, kind: 0, no_ride: 0 }],
     };
     let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
     let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", BikeType::Road);
@@ -1713,7 +1755,7 @@ fn imported_surface_requires_unique_directed_continuous_graph_attribution() {
     let to = (BASE.0 + 3_500, BASE.1);
     let mut graph = NavGraph {
         nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
-        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1113, kind: 32 }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1113, kind: 32, no_ride: 0 }],
     };
     let check = |graph: &NavGraph, from, to| {
         let bytes = map_with(graph);
@@ -1729,7 +1771,7 @@ fn imported_surface_requires_unique_directed_continuous_graph_attribution() {
     let c = (a.0, a.1 + 40);
     let d = (b.0, b.1 + 40);
     graph.nodes.extend([Node { id: 2, coord: c }, Node { id: 3, coord: d }]);
-    graph.edges.push(Edge { a: 2, b: 3, polyline: vec![c, d], length_m: 1113, kind: 96 });
+    graph.edges.push(Edge { a: 2, b: 3, polyline: vec![c, d], length_m: 1113, kind: 96, no_ride: 0 });
     assert_eq!(check(&graph, from, to), 0, "a parallel road inside the tolerance is ambiguous");
     graph.edges.truncate(1);
     graph.edges[0].polyline = vec![a, b, a, b];
@@ -1780,7 +1822,14 @@ fn unreadable_parallel_edge_cannot_prove_unique_import_attribution() {
         let polyline: Vec<_> = (0..124).map(|i| (BASE.0 + i * 80, BASE.1 + lane * 40)).collect();
         let a = graph.nodes.len() as u32;
         graph.nodes.extend([Node { id: a, coord: polyline[0] }, Node { id: a + 1, coord: polyline[123] }]);
-        graph.edges.push(Edge { a, b: a + 1, polyline, length_m: 1095, kind: if lane == 0 { 32 } else { 96 } });
+        graph.edges.push(Edge {
+            a,
+            b: a + 1,
+            polyline,
+            length_m: 1095,
+            kind: if lane == 0 { 32 } else { 96 },
+            no_ride: 0,
+        });
     }
     let bytes = map_with(&graph);
     let source = SliceSource(&bytes);

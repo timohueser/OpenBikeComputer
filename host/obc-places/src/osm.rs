@@ -2,23 +2,67 @@
 
 use crate::hours;
 use crate::metadata::{self as poi, Poi};
-use crate::routing::RoutableWay;
+use crate::routing::access::{self, Barrier};
+use crate::routing::{RoutableWay, NO_RIDE_BACKWARD, NO_RIDE_FORWARD};
 use obc_pbf::bbox::to_deg;
 use obc_pbf::scan::Keyed;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Capture a routable way's node-id sequence and µdeg coords for the nav graph. Routability is
 /// tag-based ([`crate::routing::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
 /// grid POIs and the serializer use, so edge lengths and later serialization agree.
-pub fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
-    if refs.len() < 2 {
-        return;
+pub fn push_routable_way(
+    id: i64,
+    w: &osmpbf::Way,
+    refs: &[i64],
+    coords: &[(f64, f64)],
+    foot_only: &HashSet<i64>,
+    out: &mut Keyed<RoutableWay>,
+) {
+    // This is the only place tags exist, so the kind and the riding directions are captured here
+    // or never.
+    let tags: Vec<_> = w.tags().collect();
+    for way in routable_runs(&tags, refs, coords, foot_only) {
+        out.push(id, way);
     }
-    // Classify once (routability plus the way-kind byte). This is the only place tags exist, so
-    // the kind is captured here or never.
-    let Some(kind) = crate::routing::classify(w.tags()) else { return };
-    let coords_udeg = coords.iter().map(|&(x, y)| (crate::to_udeg(x), crate::to_udeg(y))).collect();
-    out.push(id, RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
+}
+
+/// The routable pieces of one way. A segment that touches a node in `foot_only` (a
+/// [`Barrier::FootOnly`] barrier) stays out of the graph, so the way splits into the runs of
+/// segments around it and no route passes the barrier.
+fn routable_runs(
+    tags: &[(&str, &str)],
+    refs: &[i64],
+    coords: &[(f64, f64)],
+    foot_only: &HashSet<i64>,
+) -> Vec<RoutableWay> {
+    let Some(kind) = crate::routing::classify(tags.iter().copied()) else { return Vec::new() };
+    let no_ride = crate::routing::no_ride(|key| tags.iter().find(|(k, _)| *k == key).map(|(_, v)| *v));
+    if refs.len() < 2 || no_ride == NO_RIDE_FORWARD | NO_RIDE_BACKWARD {
+        return Vec::new();
+    }
+    let open = |i: usize| !foot_only.contains(&refs[i]) && !foot_only.contains(&refs[i + 1]);
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i + 1 < refs.len() {
+        if !open(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i + 1 < refs.len() && open(i) {
+            i += 1;
+        }
+        let coords = coords[start..=i].iter().map(|&(x, y)| (crate::to_udeg(x), crate::to_udeg(y))).collect();
+        runs.push(RoutableWay { node_ids: refs[start..=i].to_vec(), coords, kind, no_ride });
+    }
+    runs
+}
+
+/// Whether a node's tags close it to a bike: a [`Barrier::FootOnly`] barrier.
+pub fn is_foot_only<'a>(tags: impl IntoIterator<Item = (&'a str, &'a str)>) -> bool {
+    let value = tags.into_iter().find(|(k, _)| *k == "barrier").map(|(_, v)| v);
+    access::barrier(value) == Barrier::FootOnly
 }
 
 /// Classify one node's tags against the POI table; push a candidate on match.
@@ -152,7 +196,6 @@ pub fn harvest(
     use obc_pbf::area::assemble_multipolygon;
     use obc_pbf::scan::{scan_blobs, Scan};
     use osmpbf::{Element, RelMemberType};
-    use std::collections::HashSet;
 
     if paths.is_empty() {
         return Err("no .osm.pbf input given".into());
@@ -163,21 +206,29 @@ pub fn harvest(
     }
     let merging = paths.len() > 1;
     let mut nodes = HashMap::new();
+    let mut foot_only = HashSet::new();
     let mut node_pois = Keyed::new(merging);
     let mut relations = Keyed::new(merging);
     let mut links = Keyed::new(merging);
     let (mut seen_relations, mut seen_links) = (HashSet::new(), HashSet::new());
     for (index, path) in paths.iter().enumerate() {
         let mut source_nodes = HashMap::new();
+        let mut source_foot_only = HashSet::new();
         let mut source_pois = Keyed::new(merging);
         scan_blobs(path, None, progress, |el| {
             match el {
                 Element::Node(n) => {
                     source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                    if is_foot_only(n.tags()) {
+                        source_foot_only.insert(n.id());
+                    }
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
                 }
                 Element::DenseNode(n) => {
                     source_nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
+                    if is_foot_only(n.tags()) {
+                        source_foot_only.insert(n.id());
+                    }
                     push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut source_pois);
                 }
                 Element::Relation(r) => {
@@ -213,6 +264,7 @@ pub fn harvest(
             source_pois.retain_keys(|id| !nodes.contains_key(&id));
         }
         node_pois.append(source_pois);
+        foot_only.extend(source_foot_only.into_iter().filter(|id| !nodes.contains_key(id)));
         for (id, coordinates) in source_nodes {
             nodes.entry(id).or_insert(coordinates);
         }
@@ -236,7 +288,7 @@ pub fn harvest(
                     source_claimed.push(w.id());
                     let refs: Vec<_> = w.refs().collect();
                     if let Some(coords) = resolve_coords(&refs, &nodes) {
-                        push_routable_way(w.id(), &w, &refs, &coords, &mut routable);
+                        push_routable_way(w.id(), &w, &refs, &coords, &foot_only, &mut routable);
                         push_way_poi(&w, &refs, &coords, &mut way_pois);
                         if needed.contains(&w.id()) {
                             member_geom.insert(w.id(), coords);
@@ -277,4 +329,39 @@ pub fn harvest(
     pois.retain(|p| p.subtype != 0);
     progress.log(poi::format_counts(&pois, dropped));
     Ok(Places { pois, links: landmark_links, ways })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runs(tags: &[(&str, &str)], foot_only: &[i64]) -> Vec<(Vec<i64>, u8)> {
+        let refs: Vec<i64> = (0..5).collect();
+        let coords: Vec<_> = refs.iter().map(|&i| (8.0 + i as f64 * 1e-3, 46.0)).collect();
+        routable_runs(tags, &refs, &coords, &foot_only.iter().copied().collect())
+            .into_iter()
+            .map(|way| (way.node_ids, way.no_ride))
+            .collect()
+    }
+
+    #[test]
+    fn one_way_rules_close_a_direction_and_an_unknown_rule_drops_the_way() {
+        let road = [("highway", "residential")];
+        assert_eq!(runs(&road, &[]), [((0..5).collect(), 0)]);
+        assert_eq!(runs(&[road[0], ("oneway", "yes")], &[]), [((0..5).collect(), NO_RIDE_BACKWARD)]);
+        assert_eq!(runs(&[road[0], ("oneway", "-1")], &[]), [((0..5).collect(), NO_RIDE_FORWARD)]);
+        assert_eq!(runs(&[road[0], ("oneway", "yes"), ("oneway:bicycle", "no")], &[]), [((0..5).collect(), 0)]);
+        assert!(runs(&[road[0], ("oneway", "sometimes")], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_foot_only_barrier_removes_the_segments_that_touch_it() {
+        let road = [("highway", "track")];
+        assert_eq!(runs(&road, &[2]), [(vec![0, 1], 0), (vec![3, 4], 0)]);
+        assert_eq!(runs(&road, &[0]), [(vec![1, 2, 3, 4], 0)]);
+        assert_eq!(runs(&road, &[1, 3]), []);
+        assert!(is_foot_only([("barrier", "stile")]));
+        assert!(!is_foot_only([("barrier", "gate")]));
+        assert!(!is_foot_only([("barrier", "something_new")]));
+    }
 }

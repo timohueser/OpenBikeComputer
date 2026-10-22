@@ -1,5 +1,7 @@
 //! Routable source ways and their byte classification, before graph construction.
 
+pub mod access;
+
 /// Map an OSM `highway=*` value to its highway class (5-bit). `None` for a value that carries no
 /// class, including `motorway`, which is always bike-illegal, and `trunk`, which [`classify`]
 /// handles separately (class 13, only with `bicycle=yes`).
@@ -102,12 +104,35 @@ where
     classify(tags).is_some()
 }
 
+/// [`RoutableWay::no_ride`]: a bike may not ride in the way's node order.
+pub const NO_RIDE_FORWARD: u8 = 1;
+/// [`RoutableWay::no_ride`]: a bike may not ride against the way's node order.
+pub const NO_RIDE_BACKWARD: u8 = 2;
+
+/// The same closed directions seen from the other end of the way.
+pub fn reverse_no_ride(no_ride: u8) -> u8 {
+    (no_ride & NO_RIDE_FORWARD) << 1 | (no_ride & NO_RIDE_BACKWARD) >> 1
+}
+
+/// The [`NO_RIDE_FORWARD`] and [`NO_RIDE_BACKWARD`] directions the bicycle one-way rule closes. A
+/// one-way value the rules do not know closes both.
+pub fn no_ride<'a>(get: impl Fn(&str) -> Option<&'a str>) -> u8 {
+    match access::oneway(get, "bicycle") {
+        access::Oneway::Both | access::Oneway::Reversible => 0,
+        access::Oneway::Forward => NO_RIDE_BACKWARD,
+        access::Oneway::Backward => NO_RIDE_FORWARD,
+        access::Oneway::Unknown => NO_RIDE_FORWARD | NO_RIDE_BACKWARD,
+    }
+}
+
 /// One routable way handed to the graph builder: the OSM node-id sequence, the matching µdeg
-/// `(lon, lat)` coordinates in way order, and the way's packed [`classify`] `kind`. The caller
-/// filters before pushing, so `kind` is always a real class here.
+/// `(lon, lat)` coordinates in way order, the way's packed [`classify`] `kind`, and the directions
+/// a one-way rule closes ([`no_ride`]). The caller filters before pushing, so `kind` is always a
+/// real class and at least one direction is open.
 #[derive(Debug, Clone)]
 pub struct RoutableWay {
     pub node_ids: Vec<i64>,
     pub coords: Vec<(i32, i32)>,
     pub kind: u8,
+    pub no_ride: u8,
 }

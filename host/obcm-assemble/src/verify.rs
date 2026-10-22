@@ -413,7 +413,7 @@ fn record_digest(node: &NavNodeRef<'_>) -> u64 {
     for n in node.neighbors() {
         h = fold(h, ((n.id as u64) << 32) | n.edge_id as u64);
         h = fold(h, ((n.lat as u32 as u64) << 32) | n.lon as u32 as u64);
-        h = fold(h, ((n.cost_m as u64) << 32) | ((n.way_kind as u64) << 16) | n.ascent_m as u64);
+        h = fold(h, ((n.cost_m as u64) << 32) | ((n.way_kind as u64) << 16) | n.ascent_word() as u64);
     }
     h
 }

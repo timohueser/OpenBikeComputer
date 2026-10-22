@@ -19,6 +19,7 @@ fn map_bytes_with(elevation: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
             polyline: vec![coords[a as usize], coords[b as usize]],
             length_m,
             kind: 0,
+            no_ride: 0,
         })
         .collect();
     let bbox = (490_000, 490_000, 530_000, 520_000);

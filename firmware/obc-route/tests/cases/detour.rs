@@ -75,6 +75,7 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
                 polyline: vec![road_at(i), road_at(i + 1)],
                 length_m: SEG_COST,
                 kind: 0,
+                no_ride: 0,
             });
         }
     }
@@ -88,6 +89,7 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
                     polyline: vec![street_at(i), street_at(i + 1)],
                     length_m: SEG_COST,
                     kind: 0,
+                    no_ride: 0,
                 });
             }
         }
@@ -97,6 +99,7 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
             polyline: vec![road_at(0), street_at(0)],
             length_m: CONN_COST,
             kind: 0,
+            no_ride: 0,
         });
         edges.push(Edge {
             a: road(SEGS),
@@ -104,6 +107,7 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
             polyline: vec![road_at(SEGS), street_at(SEGS)],
             length_m: CONN_COST,
             kind: 0,
+            no_ride: 0,
         });
     }
     if bridge {
@@ -116,6 +120,7 @@ fn road_graph(street: bool, bridge: bool) -> NavGraph {
             polyline: vec![(x, BASE.1 + 1_000), (x, BASE.1 - 1_000)],
             length_m: 223,
             kind: 0,
+            no_ride: 0,
         });
     }
     NavGraph { nodes, edges }
@@ -333,6 +338,7 @@ fn detour_bridge_crossing_edge_stays_usable() {
         polyline: vec![road_at(0), (BASE.0 + 6 * SP, BASE.1 + 1_000)],
         length_m: 1_700,
         kind: 0,
+        no_ride: 0,
     });
     let bytes = map_with(&graph);
     let obcr = road_route_obcr();
@@ -987,6 +993,7 @@ fn road_graph_two_reliefs() -> NavGraph {
                 polyline: vec![south_at(i), south_at(i + 1)],
                 length_m: SOUTH_SEG_COST,
                 kind: 0,
+                no_ride: 0,
             });
         }
     }
@@ -997,6 +1004,7 @@ fn road_graph_two_reliefs() -> NavGraph {
             polyline: vec![road_at(i), south_at(i)],
             length_m: CONN_COST,
             kind: 0,
+            no_ride: 0,
         });
     }
     g

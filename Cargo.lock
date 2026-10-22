@@ -4584,6 +4584,7 @@ dependencies = [
  "country-boundaries",
  "obc-data",
  "obc-dem",
+ "obc-places",
  "osmpbfreader",
  "planner-router",
  "postcard",

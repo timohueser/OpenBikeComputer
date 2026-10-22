@@ -2,7 +2,8 @@
 
 use super::{
     CHUNK_END, NAV_CHUNK_SIZE, NAV_EDGE_ELEVATION_COMPLETE, NAV_EDGE_FIXED_LEN, NAV_EDGE_POINT_COUNT_MASK,
-    NAV_EDGE_PT_COUNT_SENTINEL, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_EDGE_PT_COUNT_SENTINEL, NAV_NEIGHBOR_ASCENT_MASK, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN,
+    NAV_NEIGHBOR_NO_RIDE, NAV_NODE_FIXED_LEN,
 };
 use crate::io::{rd_i16, rd_i32, rd_u16, rd_u32};
 
@@ -131,6 +132,15 @@ pub struct NavNeighbor {
     pub way_kind: u8,
     /// Directional climb from this node toward the neighbor.
     pub ascent_m: u16,
+    /// A bike may ride from this node toward the neighbor.
+    pub rideable: bool,
+}
+
+impl NavNeighbor {
+    /// The wire `Ascent M` field: the climb plus the [`NAV_NEIGHBOR_NO_RIDE`] flag.
+    pub fn ascent_word(&self) -> u16 {
+        self.ascent_m | if self.rideable { 0 } else { NAV_NEIGHBOR_NO_RIDE }
+    }
 }
 
 /// One validated junction record. Neighbor entries decode lazily in record order.
@@ -162,14 +172,18 @@ impl<'a> NavNodeRecord<'a> {
     }
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
         let (lat, lon) = (self.lat, self.lon);
-        self.bytes[NAV_NODE_FIXED_LEN..].as_chunks::<NAV_NEIGHBOR_LEN>().0.iter().map(move |e| NavNeighbor {
-            id: rd_u32(e, 0),
-            lat: lat.wrapping_add(rd_i16(e, 4) as i32),
-            lon: lon.wrapping_add(rd_i16(e, 6) as i32),
-            edge_id: rd_u32(e, 8),
-            cost_m: rd_u16(e, 12) as u32,
-            way_kind: e[14],
-            ascent_m: rd_u16(e, NAV_NEIGHBOR_ASCENT_OFF),
+        self.bytes[NAV_NODE_FIXED_LEN..].as_chunks::<NAV_NEIGHBOR_LEN>().0.iter().map(move |e| {
+            let ascent = rd_u16(e, NAV_NEIGHBOR_ASCENT_OFF);
+            NavNeighbor {
+                id: rd_u32(e, 0),
+                lat: lat.wrapping_add(rd_i16(e, 4) as i32),
+                lon: lon.wrapping_add(rd_i16(e, 6) as i32),
+                edge_id: rd_u32(e, 8),
+                cost_m: rd_u16(e, 12) as u32,
+                way_kind: e[14],
+                ascent_m: ascent & NAV_NEIGHBOR_ASCENT_MASK,
+                rideable: ascent & NAV_NEIGHBOR_NO_RIDE == 0,
+            }
         })
     }
 }
@@ -246,13 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn odd_offset_node_neighbors_keep_order_and_directional_climb() {
+    fn odd_offset_node_neighbors_keep_order_directional_climb_and_riding() {
         let mut bytes = std::vec![0];
         bytes.extend(i32::MAX.to_le_bytes());
         bytes.extend(i32::MIN.to_le_bytes());
         bytes.extend(123u32.to_le_bytes());
         bytes.push(2);
-        for (id, dlat, dlon, ascent) in [(124u32, 1i16, -1i16, 5u16), (122, -2, 3, 17)] {
+        for (id, dlat, dlon, ascent) in [(124u32, 1i16, -1i16, 5u16), (122, -2, 3, 17 | NAV_NEIGHBOR_NO_RIDE)] {
             bytes.extend(id.to_le_bytes());
             bytes.extend(dlat.to_le_bytes());
             bytes.extend(dlon.to_le_bytes());
@@ -273,7 +287,8 @@ mod tests {
                     edge_id: 31,
                     cost_m: 400,
                     way_kind: 0x2a,
-                    ascent_m: 5
+                    ascent_m: 5,
+                    rideable: true,
                 },
                 NavNeighbor {
                     id: 122,
@@ -282,7 +297,8 @@ mod tests {
                     edge_id: 31,
                     cost_m: 400,
                     way_kind: 0x2a,
-                    ascent_m: 17
+                    ascent_m: 17,
+                    rideable: false,
                 },
             ]
         );

@@ -1265,7 +1265,14 @@ mod tests {
             edges: points
                 .windows(2)
                 .enumerate()
-                .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 2222, kind: 0 })
+                .map(|(id, p)| Edge {
+                    a: id as u32,
+                    b: id as u32 + 1,
+                    polyline: p.to_vec(),
+                    length_m: 2222,
+                    kind: 0,
+                    no_ride: 0,
+                })
                 .collect(),
         };
         let lods = [obc_draw::serialize::LodLayer {
@@ -1382,7 +1389,14 @@ mod tests {
             edges: points
                 .windows(2)
                 .enumerate()
-                .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 222, kind: 0 })
+                .map(|(id, p)| Edge {
+                    a: id as u32,
+                    b: id as u32 + 1,
+                    polyline: p.to_vec(),
+                    length_m: 222,
+                    kind: 0,
+                    no_ride: 0,
+                })
                 .collect(),
         };
         let lods = [obc_draw::serialize::LodLayer {
