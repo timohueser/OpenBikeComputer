@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="570" viewBox="0 0 1400 570" role="img" aria-label="Two compilers, one flashed image"><title>Two compilers, one flashed image</title><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#236899"/></marker></defs><rect width="1400" height="570" fill="#fff"/><g font-family="Arial, Helvetica, sans-serif" fill="#183344">
+<text x="60" y="48" font-size="31" text-anchor="start" fill="#183344" font-weight="bold">Two compilers, one flashed image</text>
+<rect x="60" y="120" width="250" height="95" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="185.0" y="158.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Rust + Embassy</text>
+<text x="185.0" y="192.5" font-size="22" text-anchor="middle" fill="#183344" font-weight="normal">M33 source</text>
+<rect x="390" y="120" width="230" height="95" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="505.0" y="175.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Arm compiler</text>
+<rect x="700" y="120" width="270" height="95" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="835.0" y="158.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Arm firmware</text>
+<text x="835.0" y="192.5" font-size="22" text-anchor="middle" fill="#183344" font-weight="normal">ELF to flash</text>
+<rect x="1080" y="120" width="260" height="95" rx="12" fill="#eef5fa" stroke="#bed0dc" stroke-width="2"/>
+<text x="1210.0" y="175.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">Cortex-M33</text>
+<rect x="60" y="350" width="250" height="95" rx="12" fill="#edf7f1" stroke="#bed0dc" stroke-width="2"/>
+<text x="185.0" y="388.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">C + assembly</text>
+<text x="185.0" y="422.5" font-size="22" text-anchor="middle" fill="#183344" font-weight="normal">FLPR source</text>
+<rect x="390" y="350" width="230" height="95" rx="12" fill="#edf7f1" stroke="#bed0dc" stroke-width="2"/>
+<text x="505.0" y="405.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">RISC-V compiler</text>
+<rect x="700" y="350" width="270" height="95" rx="12" fill="#edf7f1" stroke="#bed0dc" stroke-width="2"/>
+<text x="835.0" y="388.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">FLPR binary</text>
+<text x="835.0" y="422.5" font-size="22" text-anchor="middle" fill="#183344" font-weight="normal">data in Arm image</text>
+<rect x="1080" y="350" width="260" height="95" rx="12" fill="#edf7f1" stroke="#bed0dc" stroke-width="2"/>
+<text x="1210.0" y="388.5" font-size="25" text-anchor="middle" fill="#183344" font-weight="bold">FLPR</text>
+<text x="1210.0" y="422.5" font-size="22" text-anchor="middle" fill="#183344" font-weight="normal">executes from RAM</text>
+<path d="M 310 167 H 380" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 620 167 H 690" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 310 397 H 380" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 620 397 H 690" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M 970 167 H 1070" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="1023" y="151" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">flash</text>
+<path d="M 835 350 V 225" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="745" y="289" font-size="21" text-anchor="middle" fill="#236899" font-weight="normal">embed bytes</text>
+<path d="M 1210 215 V 340" fill="none" stroke="#236899" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="1250" y="273" font-size="22" text-anchor="start" fill="#236899" font-weight="normal">copy</text>
+<text x="1250" y="305" font-size="22" text-anchor="start" fill="#236899" font-weight="normal">start</text>
+<text x="700" y="515" font-size="24" text-anchor="middle" fill="#647781" font-weight="normal">At run time: commands in shared RAM; completion through EGU20.</text>
+</g></svg>
