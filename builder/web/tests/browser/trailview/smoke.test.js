@@ -25,6 +25,8 @@ async function debug(page, view) {
 }
 
 test('the page draws the fixture with no WebGPU error, and the probe gives the height that an instance shader evaluates, to 1 mm', async ({ page }) => {
+    // SwiftShader on the Linux runners loads this view in about the default timeout.
+    test.slow();
     const errors = errorsOf(page);
     await open(page, DOWN);
     const { drawn, failed } = await page.evaluate(() => window.trailView.stats());
