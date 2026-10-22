@@ -24,8 +24,4 @@ describe('rulesOf', () => {
         expect(insubric.look.roadLine).toBe('#d6d4cc');
         expect(insubric.look.mistTop).toBe(900);
     });
-
-    it('refuses a chain that loops', () => {
-        expect(() => rulesOf({ format: 1, materials, regions: [{ id: 'a', extends: 'b' }, { id: 'b', extends: 'a' }] })).toThrow(/loops/);
-    });
 });

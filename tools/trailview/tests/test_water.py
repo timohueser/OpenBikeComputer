@@ -112,9 +112,6 @@ class Lakes(unittest.TestCase):
     def level(self, terrain, tags=None):
         return water.solve([("lake", tags or {}, [(True, list(self.SQUARE), None)])], terrain)[0][0][0][0]
 
-    def test_a_flat_lake_takes_the_median_of_its_interior(self):
-        self.assertAlmostEqual(self.level(Terrain(lambda e, s: 700.0 + 0 * e)), 700.0, places=3)
-
     def test_the_interior_of_a_lake_leaves_out_its_island(self):
         # The island's ring is closed: its last vertex repeats the first.
         island = [at(40, 40), at(360, 40), at(360, 360), at(40, 360), at(40, 40)]

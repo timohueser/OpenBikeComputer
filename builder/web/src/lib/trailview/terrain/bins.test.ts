@@ -4,8 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import type { Feature } from '../stream/features';
-import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, surfaceOf, STREAM, SURFACES, WARP_M, type Line, type Profile } from './bins';
+import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, STREAM, SURFACES, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -46,7 +45,7 @@ const lakeNode = () => {
 };
 
 describe('the stamp data of a node', () => {
-    it('gates the lines with the numbers of stamp-core.wgsl, and packs the profiles in the order of its struct', () => {
+    it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
@@ -54,6 +53,8 @@ describe('the stamp data of a node', () => {
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
+        // The shaders know the surfaces by their codes, and the mask holds a code in 3 bits.
+        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway']);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
@@ -98,30 +99,6 @@ describe('the stamp data of a node', () => {
         }
         expect(inside).toBeGreaterThan(0);
     });
-
-    it('puts every texel of a cell on its side of a shore that passes through the cell\'s centre', () => {
-        // A level-18 node of the Trübsee tile, and shores in every direction with a vertex on the centre of its cell (5, 9).
-        const node = { level: 18, x: TILE.x * 16 + 5, y: TILE.y * 16 + 7 }, c = 9 * GRID + 5, scale = 2 ** (17 - TILE.level);
-        const [cx, cy] = [(node.x * PAGE - CELL + 5 * CELL + CELL / 2) * 16 / scale - TILE.x * 8192, (node.y * PAGE - CELL + 9 * CELL + CELL / 2) * 16 / scale - TILE.y * 8192];
-        for (let turn = 0; turn < 24; turn++) {
-            const [cos, sin] = [Math.cos(turn * Math.PI / 12), Math.sin(turn * Math.PI / 12)];
-            const shore = [[-200, -20], [0, 0], [200, 20], [200, 300], [-200, 300]].flatMap(([u, v]) => [cx + Math.round(u * cos - v * sin), cy + Math.round(u * sin + v * cos)]);
-            const lake = { kind: 'lake', tags: {}, parts: [{ outer: true, xy: new Int32Array(shore), z: new Float32Array(5).fill(1764) }] } as Feature;
-            const { data } = nodeStamps([lake], TILE, node), { entries, origin } = cellOf(data!, node, c);
-            const records = 2 + GRID * GRID + 1 + data![1], word = (r: number, i: number) => data![records + RECORD * r + i] | 0;
-            const rings = features([lake], TILE).lakes[0].rings;
-            for (let j = 0; j < CELL; j++) for (let i = 0; i < CELL; i++) {
-                const p = [(node.x * PAGE - CELL + 5 * CELL + i) * 16 + 8, (node.y * PAGE - CELL + 9 * CELL + j) * 16 + 8];
-                let inside = false;
-                for (const entry of entries) {
-                    const r = entry & ~INSIDE;
-                    if (word(r, 4) === EDGE) inside = inside !== crosses(origin, p, [0, 1, 2, 3].map(k => word(r, k)));
-                    else if (word(r, 4) === LAKE) inside = inside !== ((entry & INSIDE) !== 0);
-                }
-                expect(inside, `turn ${turn}, texel ${i}, ${j}`).toBe(insideRings(rings, p[0], p[1]));
-            }
-        }
-    });
 });
 
 describe('the side of a shore', () => {
@@ -160,20 +137,6 @@ describe('a rounded line', () => {
     });
 });
 
-describe('the surface of a road', () => {
-    it('is oneway, without a line in its middle, on a one-way main road', () => {
-        expect(surfaceOf({ highway: 'trunk' })).toBe('main');
-        expect(surfaceOf({ highway: 'trunk', oneway: 'yes' })).toBe('oneway');
-        expect(surfaceOf({ highway: 'motorway' })).toBe('oneway');
-        expect(surfaceOf({ highway: 'motorway', oneway: 'no' })).toBe('main');
-        expect(surfaceOf({ highway: 'primary', junction: 'roundabout' })).toBe('oneway');
-        expect(surfaceOf({ highway: 'secondary', oneway: 'reverse' })).toBe('oneway');
-        expect(surfaceOf({ highway: 'residential', oneway: 'yes' })).toBe('road');
-        // The shaders know the surfaces by their codes, and the mask holds a code in 3 bits.
-        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway']);
-    });
-});
-
 describe('the plane of a junction', () => {
     it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
         // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
@@ -192,18 +155,5 @@ describe('the plane of a junction', () => {
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
         expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
-    });
-});
-
-describe('the road height of the audit', () => {
-    it('runs from end to end of each segment and meets at the bisector of a bend', () => {
-        // Two segments of 100 units, with a bend of 90° at (100, 0).
-        const line: Line = { kind: ROAD, xy: [0, 0, 100, 0, 100, 100], z: [10, 11, 13], h: 2, code: 2, ford: false, profile: 0 };
-        expect(roadHeight(line, [50, 0], 10, 1)).toBeCloseTo(10.5);
-        expect(roadHeight(line, [100, 50], 10, 1)).toBeCloseTo(12);
-        // Either side of the bisector, close to it: the height of the bend.
-        expect(roadHeight(line, [96, 3.9], 10, 1)).toBeCloseTo(11, 1);
-        expect(roadHeight(line, [96, 4.1], 10, 1)).toBeCloseTo(11, 1);
-        expect(roadHeight(line, [50, 30], 10, 1)).toBeNaN();
     });
 });

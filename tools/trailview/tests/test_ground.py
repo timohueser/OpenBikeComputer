@@ -42,7 +42,7 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(parent[-1, -1], 128, "a missing child is no data")
         self.assertEqual(tiles.mode({(0, 0): child(128, 128, 128, 4)}, 128)[0, 0], 4)
 
-    def test_the_archive_holds_each_byte_in_red_and_leaves_out_tiles_without_data(self):
+    def test_the_archive_holds_each_byte_in_red_and_leaves_out_tiles_without_data_and_a_coarser_region_tile_has_no_data_where_its_children_are_missing(self):
         west, south, east, north = geo.tile_bounds(Z, X, Y)
         bounds = [west, south, west + (east - west) / 3, north]
         bake = lambda z, x, y: np.where(tiles.inside(bounds, z, x, y), np.arange(tiles.TILE, dtype=np.uint8)[None, :] % 64, 128).astype(np.uint8)
@@ -56,6 +56,16 @@ class ArchiveTest(unittest.TestCase):
                 self.assertIsNone(reader.get(Z, X + 1, Y))
         self.assertTrue((rgb[..., 0] == bake(Z, X, Y)).all())
         self.assertTrue((rgb[..., 0] == rgb[..., 2]).all())
+
+        west, south, east, north = geo.tile_bounds(10, X10, Y10)
+        inner = [west + 1e-6, south + 1e-6, east - 1e-6, north - 1e-6]
+        with tempfile.TemporaryDirectory() as tmp:
+            ground.bake_layer("region", lambda z, x, y: np.full((tiles.TILE, tiles.TILE), 3, np.uint8), 10, inner, Path(tmp), {})
+            with open(Path(tmp) / "region.pmtiles", "rb") as stream:
+                parent = np.asarray(Image.open(io.BytesIO(Reader(MmapSource(stream)).get(9, X10 // 2, Y10 // 2))).convert("RGB"))[..., 0]
+        mine = (slice((Y10 % 2) * 256, (Y10 % 2) * 256 + 256), slice((X10 % 2) * 256, (X10 % 2) * 256 + 256))
+        self.assertTrue((parent[mine] == 3).all())
+        self.assertEqual(sorted(np.unique(parent).tolist()), [3, ground.REGION_NO_DATA])
 
 
 def raster(path, bounds, values, dtype="int16", nodata=-32768):
@@ -135,31 +145,18 @@ class LithologyTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def test_igme_5000_is_read_in_its_archive(self):
+    def test_igme_5000_is_read_in_its_archive_and_a_term_with_a_slash_names_its_rock(self):
         import pyogrio
 
         with tempfile.TemporaryDirectory() as empty, mock.patch.object(tempfile, "tempdir", empty):
             path = ground.igme_shapefile({"IGME5000.zip": self.archive})
             self.assertEqual(list(Path(empty).iterdir()), [])
         self.assertEqual(pyogrio.read_info(path)["features"], 1)
-
-    def test_an_igme_5000_term_with_a_slash_names_its_rock(self):
-        units, = ground.lithology_units([ground.igme_shapefile({"IGME5000.zip": self.archive})], [ground.IGME5000], self.bounds, VOCABULARY)
+        units, = ground.lithology_units([path], [ground.IGME5000], self.bounds, VOCABULARY)
         self.assertEqual([code for _, code in units], [VOCABULARY.lithology["dolomite"]])
 
 
 class RegionTest(unittest.TestCase):
-    def test_a_coarser_region_tile_has_no_data_where_its_children_are_missing(self):
-        west, south, east, north = geo.tile_bounds(10, X10, Y10)
-        inner = [west + 1e-6, south + 1e-6, east - 1e-6, north - 1e-6]
-        with tempfile.TemporaryDirectory() as tmp:
-            ground.bake_layer("region", lambda z, x, y: np.full((tiles.TILE, tiles.TILE), 3, np.uint8), 10, inner, Path(tmp), {})
-            with open(Path(tmp) / "region.pmtiles", "rb") as stream:
-                parent = np.asarray(Image.open(io.BytesIO(Reader(MmapSource(stream)).get(9, X10 // 2, Y10 // 2))).convert("RGB"))[..., 0]
-        mine = (slice((Y10 % 2) * 256, (Y10 % 2) * 256 + 256), slice((X10 % 2) * 256, (X10 % 2) * 256 + 256))
-        self.assertTrue((parent[mine] == 3).all())
-        self.assertEqual(sorted(np.unique(parent).tolist()), [3, ground.REGION_NO_DATA])
-
     def test_a_texel_takes_its_ecoregion_or_the_nearest_within_reach_then_its_subregion(self):
         z, x, y = 10, *map(int, geo.mercator(8.40, 46.82, 10))
         west, south, east, north = geo.tile_bounds(z, x, y)
