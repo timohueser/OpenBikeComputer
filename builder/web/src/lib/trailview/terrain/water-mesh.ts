@@ -1,6 +1,7 @@
 // The water mesh of a node: each lake that reaches the node's square cut to it and into triangles at
-// its level, and each river and stream a ribbon along its line. The stamp worker makes it with the
-// node's stamps; water.wgsl draws it on the node's square, a ribbon on the drawn surface.
+// its level, each river area cut the same way into triangles of AREA_CELLS mesh cells at most, and
+// each river and stream a ribbon along its line. The stamp worker makes it with the node's stamps;
+// water.wgsl draws it on the node's square, a river area and a ribbon on the drawn surface.
 import earcut from 'earcut';
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
@@ -12,19 +13,24 @@ export const WATER_VERTEX = 6;
 export const EDGE_M = 1000;
 /** A mitre grows at most this much in a sharp bend. */
 const MITRE = 3;
+/** The level of a vertex that lies on the drawn surface, as DRAPED of water.wgsl. */
+export const DRAPED = -1e30;
+/** The longest edge of a river area's triangles, in mesh cells. */
+const AREA_CELLS = 4;
 
 export interface WaterMesh {
     vertices: ArrayBuffer;
-    /** The ribbons' triangles, then the lakes'. */
+    /** The ribbons' triangles, then the lakes', then the river areas'. */
     indices: Uint32Array<ArrayBuffer>;
-    /** The indices of the ribbons. */
+    /** The indices of the ribbons and of the lakes. */
     ribbons: number;
+    lakes: number;
 }
 
 /** The water mesh of a node from the features of its feature tile, null without water. */
 export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | null {
-    const { lines, lakes } = features(list, tile);
-    const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [];
+    const { lines, lakes, areas } = features(list, tile);
+    const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [], drapes: number[] = [];
     const vertex = (x: number, y: number, z: number, ax = 0, ay = 0, half = 0) => words.push(Math.round(x), Math.round(y), z, ax, ay, half) / WATER_VERTEX - 1;
     const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
     const box: [number, number, number, number] = [x0 - margin, y0 - margin, x0 + side + margin, y0 + side + margin];
@@ -64,27 +70,32 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
         }
         if (run.length) ribbon(line, run);
     }
-    for (const { level, rings, outer } of lakes) {
-        // Each outer ring with its holes, cut to the square, in triangles no longer than an edge may be.
+    // Each outer ring with its holes, cut to the square, in triangles no longer than `edge`: a lake's at
+    // its level, a river area's AREA_CELLS mesh cells at most, so that it follows the smooth water surface
+    // of the terrain that it lies on.
+    const surface = (rings: number[][], outer: boolean[], level: number, edge: number, into: number[]) => {
+        const cut = (ring: number[]) => clipped(ring, box);
         for (let r = 0; r < rings.length; r++) {
-            const flat = outer[r] ? clipped(rings[r], box) : [], holes: number[] = [];
+            const flat = outer[r] ? cut(rings[r]) : [], holes: number[] = [];
             if (flat.length < 6) continue;
             for (let k = r + 1; k < rings.length && !outer[k]; k++) {
-                const hole = clipped(rings[k], box);
+                const hole = cut(rings[k]);
                 if (hole.length < 6) continue;
                 holes.push(flat.length / 2);
                 flat.push(...hole);
             }
-            const triangles = refined(flat, earcut(flat.map((v, i) => v - (i % 2 ? y0 : x0)), holes), longest);
+            const triangles = refined(flat, earcut(flat.map((v, i) => v - (i % 2 ? y0 : x0)), holes), edge);
             const first = words.length / WATER_VERTEX;
             for (let i = 0; i < flat.length; i += 2) vertex(flat[i], flat[i + 1], level);
-            surfaces.push(...triangles.map(i => first + i));
+            into.push(...triangles.map(i => first + i));
         }
-    }
-    if (!ribbons.length && !surfaces.length) return null;
+    };
+    for (const { level, rings, outer } of lakes) surface(rings, outer, level, longest, surfaces);
+    for (const { rings, outer } of areas) surface(rings, outer, DRAPED, Math.min(longest, AREA_CELLS * cell), drapes);
+    if (!ribbons.length && !surfaces.length && !drapes.length) return null;
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);
     words.forEach((word, i) => (i % WATER_VERTEX < 2 ? (ints[i] = word) : (floats[i] = word)));
-    return { vertices, indices: new Uint32Array([...ribbons, ...surfaces]), ribbons: ribbons.length };
+    return { vertices, indices: new Uint32Array([...ribbons, ...surfaces, ...drapes]), ribbons: ribbons.length, lakes: surfaces.length };
 }
 
 /** The unit direction of segment v of a line. */

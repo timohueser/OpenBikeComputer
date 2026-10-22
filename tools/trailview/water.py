@@ -7,11 +7,10 @@ import re
 
 import numpy as np
 
-# The waterways and the areas that the solver reads: river areas give widths; falls, weirs and dams
-# keep the smoothing of a level from crossing them.
+# The waterways and lakes that the solver sets, and the falls, weirs and dams that keep the smoothing of
+# a level from crossing them.
 RIVERS = {"river", "stream"}
 LAKES = {"lake"}
-AREAS = {"river-area"}
 MARKS = {"waterfall", "dam", "dam-point"}
 # As WATERWAYS of the engine's bins.ts: the half-width of a waterway without a `width` tag.
 HALF_WIDTHS = {"river": 5.0, "canal": 5.0, "stream": 1.0}
@@ -51,7 +50,7 @@ EQUATOR_M = 40075016.686
 def solves(kind, tags):
     """Whether the solver reads or sets the heights of a feature: a river, a lake or what the solver only
     reads, but not a river in a tunnel."""
-    return kind in RIVERS | LAKES | AREAS | MARKS and not (kind in RIVERS and tags.get("tunnel", "no") != "no")
+    return kind in RIVERS | LAKES | MARKS and not (kind in RIVERS and tags.get("tunnel", "no") != "no")
 
 
 def metres(y):
@@ -262,15 +261,12 @@ def spills(level, rings, terrain, rivers):
 def solve(features, terrain):
     """Per feature (kind, tags, parts), the heights of each part: one level for a lake, one per vertex
     for a river, None for a part of a feature that the solver only reads. A river way that OSM draws uphill
-    turns round in place, and a river without a `width` tag inside a river area takes the area's width.
-    Returns the heights and the metrics."""
+    turns round in place. Returns the heights and the metrics."""
     lakes = []
     for index, (kind, tags, parts) in enumerate(features):
         if kind in LAKES:
             rings = [points for _, points, *_ in parts]
             lakes.append((index, rings, box(rings), lake_level(tags, parts, terrain)))
-    areas = [[points for _, points, *_ in parts] for kind, _, parts in features if kind in AREAS]
-    area_boxes = [box(rings) for rings in areas]
     marks = np.array([point for kind, _, parts in features if kind in MARKS for _, points, *_ in parts for point in points]
                      or np.zeros((0, 2)), np.float64)
     ways, turned = [], 0
@@ -279,7 +275,6 @@ def solve(features, terrain):
             continue
         width = number(tags.get("width"))
         half = width / 2 if math.isfinite(width) else HALF_WIDTHS.get(tags.get("waterway"), 1.0)
-        mine = []
         for n, (_, points, *_) in enumerate(parts):
             if len(points) < 2:
                 continue
@@ -289,12 +284,7 @@ def solve(features, terrain):
                 way = Way(points, half, terrain)
                 turned += 1
             way.feature, way.part = index, n
-            mine.append(way)
-        ways += mine
-        if not math.isfinite(width) and kind == "river":
-            half = river_area_half(mine, areas, area_boxes)
-            if half:
-                tags["width"] = f"{2 * half:.1f}"
+            ways.append(way)
     boxes = [way.bounds for way in ways]
     pin(ways, boxes, lakes)
     levels = network(ways, marks)
@@ -316,23 +306,6 @@ def number(value):
     """The leading number of a tag, as JavaScript's parseFloat reads it: "8 m" is 8. NaN without one."""
     match = re.match(r"\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", value or "")
     return float(match.group()) if match else math.nan
-
-
-def river_area_half(ways, areas, area_boxes):
-    """The half-width of a river inside river areas: the median distance from its samples there to the
-    areas' edges, None where less than a third of it lies inside one."""
-    distances, total = [], 0
-    for way in ways:
-        total += len(way.xy)
-        for i in overlapping(area_boxes, way.bounds):
-            rings = areas[i]
-            near = near_box(way.xy, area_boxes[i])
-            if not near.any():
-                continue
-            x, y = way.xy[near].T
-            at = contains(rings, x, y)
-            distances.extend(distance(rings, x[at], y[at]) * metres(y[at]))
-    return float(np.median(distances)) if total and len(distances) * 3 >= total else None
 
 
 def pin(ways, boxes, lakes):
