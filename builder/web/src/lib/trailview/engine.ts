@@ -282,7 +282,7 @@ export class TrailView {
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             const ndc: [number, number] = [2 * offset[0] / width, -2 * offset[1] / height];
-            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc)));
+            gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), targets.height));
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale));
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
@@ -335,12 +335,13 @@ export class TrailView {
         return true;
     }
 
-    private uniforms(eye: Eye, viewProj: Float32Array): ArrayBuffer {
+    private uniforms(eye: Eye, viewProj: Float32Array, pixels: number): ArrayBuffer {
         const data = new ArrayBuffer(FRAME_BYTES), floats = new Float32Array(data);
         floats.set(viewProj, 0);
         floats.set(this.sun(), 16);
         floats.set([eye.z, CURVATURE], 20);
         new Uint32Array(data)[22] = DEBUG_VIEWS.indexOf(this.extras.debug);
+        floats[23] = 2 * Math.tan(VFOV * RAD / 2) / pixels;
         return data;
     }
 

@@ -1,33 +1,18 @@
-"""The master terrain for the solvers of the TrailView feature tiles, and simple water levels from it: a
-river lies at the terrain smoothed along it and held from rising downstream, and a lake at the median of
-the terrain inside it. The water solver replaces them; until then the stamps of the engine have levels to
-shape the terrain to. `roads.py` solves the roads."""
+"""The master terrain for the solvers of the TrailView feature tiles: `roads.py` sets the heights of roads,
+`water.py` the levels of rivers and lakes."""
 
 from collections import OrderedDict
 import io
 import json
-import math
 import os
 from pathlib import Path
 import sqlite3
 
 import numpy as np
 
-RIVERS = {"river", "stream"}
-LAKES = {"lake"}
-# As GRADE_SMOOTH_M of the prototype's grading: a river follows the terrain averaged over ±12 m.
-SMOOTH_M = 12.0
-STEP_M = 2.0
-# A lake reads the terrain at no more than this many points.
-LAKE_POINTS = 250_000
 EQUATOR_M = 40075016.686
 TILE = 512
 CACHED = 256
-
-
-def solves(kind, tags):
-    """Whether this module sets the heights of a feature: a river that is not in a tunnel, or a lake."""
-    return kind in LAKES or (kind in RIVERS and tags.get("tunnel", "no") == "no")
 
 
 class Terrain:
@@ -123,79 +108,3 @@ class Terrain:
 def metres(y):
     """Metres per world unit at world row y: the Mercator scale."""
     return EQUATOR_M * np.cos(np.arctan(np.sinh(np.pi * (1 - 2 * y))))
-
-
-def along(points, terrain):
-    """The heights at the vertices of a line: the terrain sampled every STEP_M, and a straight line fitted
-    to it over ±SMOOTH_M of length along the line. Toward the ends the window narrows to one side, and the
-    line keeps a constant grade unbiased. NaN where the terrain is unknown over the whole window."""
-    xy = np.asarray(points, np.float64)
-    if len(xy) < 2:
-        return np.full(len(xy), np.nan)
-    d = np.diff(xy, axis=0)
-    lengths = np.hypot(*d.T) * metres((xy[:-1, 1] + xy[1:, 1]) / 2)
-    steps = np.maximum(1, np.ceil(lengths / STEP_M)).astype(int)
-    t = np.concatenate([np.arange(n) / n for n in steps] + [[1.0]])
-    segment = np.concatenate([np.full(n, k) for k, n in enumerate(steps)] + [[len(d) - 1]])
-    samples = xy[segment] + t[:, None] * d[segment]
-    along = np.concatenate([[0], np.cumsum(lengths)])[segment] + t * lengths[segment]
-    h = terrain.heights(samples[:, 0], samples[:, 1]).astype(np.float64)
-    known = np.isfinite(h)
-    s0 = np.where(known, along - along[-1] / 2, 0)
-    sums = [np.concatenate([[0], np.cumsum(value)]) for value in (known, s0, s0 * s0, np.where(known, h, 0), s0 * np.where(known, h, 0))]
-    lo = np.searchsorted(along, along - SMOOTH_M)
-    hi = np.searchsorted(along, along + SMOOTH_M, side="right")
-    n, sx, sxx, sz, sxz = (total[hi] - total[lo] for total in sums)
-    spread = n * sxx - sx * sx
-    slope = np.where(spread > 1e-9 * np.maximum(n, 1) ** 2, (n * sxz - sx * sz) / np.where(spread > 0, spread, 1), 0)
-    fit = np.where(n > 0, (sz - slope * sx) / np.maximum(n, 1) + slope * (along - along[-1] / 2), np.nan)
-    vertices = np.concatenate([[0], np.cumsum(steps)])
-    return fit[vertices]
-
-
-def river(points, terrain):
-    """The water level at the vertices of a river, which OSM draws in the direction of its flow: the
-    terrain smoothed as for a road, never rising downstream."""
-    return np.fmin.accumulate(along(points, terrain))
-
-
-def inside(rings, xs, ys):
-    """Per point of the grid xs × ys, whether it lies inside the rings, even-odd: a hole is a ring too."""
-    edges = np.array([(*a, *b) for ring in rings for a, b in zip(ring, ring[1:] + ring[:1])], np.float64)
-    ax, ay, bx, by = edges.T
-    y = ys[:, None]
-    crosses = (ay <= y) != (by <= y)
-    x = np.where(crosses, ax + (y - ay) * (bx - ax) / np.where(by == ay, 1, by - ay), np.inf)
-    x.sort(axis=1)
-    counts = np.array([np.searchsorted(row, xs) for row in x])
-    return counts % 2 == 1
-
-
-def lake(parts, terrain):
-    """The median of the terrain inside an area, NaN where it knows none. A lake smaller than the grid
-    reads the mean of its vertices."""
-    rings = [points for _, points, *_ in parts]
-    xy = np.concatenate([np.asarray(ring, np.float64) for ring in rings])
-    (x0, y0), (x1, y1) = xy.min(0), xy.max(0)
-    area = sum(abs(sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]))) / 2 for ring in rings)
-    step = max(1 / ((1 << terrain.top) * TILE), math.sqrt(area / LAKE_POINTS))
-    xs, ys = np.arange(x0 + step / 2, x1, step), np.arange(y0 + step / 2, y1, step)
-    mask = inside(rings, xs, ys) if xs.size and ys.size else np.zeros((0, 0), bool)
-    if mask.any():
-        rows, columns = np.nonzero(mask)
-        h = terrain.heights(xs[columns], ys[rows])
-    else:
-        h = terrain.heights(*np.asarray(rings[0], np.float64).mean(0, keepdims=True).T)
-    return float(np.nanmedian(h)) if np.isfinite(h).any() else math.nan
-
-
-def solve(features, terrain):
-    """Per feature (kind, tags, parts), the levels of each part, None where unknown."""
-    out = []
-    for kind, _, parts in features:
-        if kind in LAKES:
-            level = lake(parts, terrain)
-            out.append([[level] * len(points) for _, points, *_ in parts])
-        else:
-            out.append([river(points, terrain).tolist() for _, points, *_ in parts])
-    return [[[h if math.isfinite(h) else None for h in z] for z in heights] for heights in out]

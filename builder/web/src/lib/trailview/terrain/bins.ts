@@ -15,8 +15,8 @@ const HEAD = 2;
 const OFFSETS = GRID * GRID + 1;
 /** A cell entry of a lake marker: the lake's cell centre lies inside it. */
 export const INSIDE = 1 << 30;
-/** Primitive kinds, as in stamp-core.wgsl. */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6;
+/** Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. */
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -44,11 +44,16 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
  * across it by `tilt` metres per metre.
  */
 export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number }
-/** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too. */
-export const PROFILES: Record<string, Profile> = Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt }]));
+/** A river's water lies flat on its core; banks of 27° near the water stay under its ribbon's edge. */
+const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0 };
+/** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too, and the rivers. */
+export const PROFILES: Record<string, Profile> = {
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt }])),
+    river: RIVER_BANKS,
+};
 const CLASSES = Object.keys(PROFILES);
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
-const profileOf = (kind: string, highway = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, highway) ? highway : kind === 'path' ? 'path' : 'road');
+const profileOf = (kind: string, highway = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, highway) ? highway : kind === 'path' ? 'path' : 'road');
 /** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats. */
 export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8;
 export function profileTable(): Float32Array<ArrayBuffer> {
@@ -107,12 +112,14 @@ export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS /
 export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean] }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
+/** The shapes of a tile: lines and lakes with heights, and the river areas, which lie on the drawn surface. */
+export interface Shapes { lines: Line[]; lakes: Lake[]; areas: Omit<Lake, 'level'>[] }
 
 /**
- * As road_shows, path_shows and river_shows of stamp-core.wgsl: whether a level with texels of this
- * size can stamp a line. bins.test.ts holds these numbers equal to the shader's.
+ * The numbers of stamp-core.wgsl that the gates of a line and the shore samples of the audit use.
+ * bins.test.ts holds them equal to the shader's.
  */
-export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, BANK_M: 2, BANK_RAMP: 8 } as const;
+export const RULES = { BUFFER_M: 40, MESH_TEXELS: 4, GATE_COS: 0.70710678, SHORE_CELLS: 1.5 } as const;
 /** As MASK_RANGE of stamp.wgsl: the mask reads a road this far past its edge. */
 const MASK_RANGE_M = 12.75;
 
@@ -121,34 +128,49 @@ export const gateTexel = (level: number) => 2 * Math.PI * EARTH_RADIUS * RULES.G
 
 export function shows({ kind, h, profile }: Line, texel: number): boolean {
     const limit = RULES.BUFFER_M - 2 * texel - 1, { reach, least } = Object.values(PROFILES)[profile];
+    if (kind === STREAM) return false;
     if (kind === PATH) return 2 * h >= texel && h + reach <= limit;
-    if (kind === RIVER) return 2 * h >= texel && Math.max(h, RULES.MESH_TEXELS * texel) + RULES.BANK_M + 2 * RULES.MESH_TEXELS * texel + RULES.BANK_RAMP <= limit;
     return 2 * h >= texel && h + least <= limit;
 }
 
-/** The roads, paths, rivers and lakes of a tile that have heights, in world units. */
-export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: Lake[] } {
+/** The shapes of each decoded tile, made once: the stamps and the water of each of its nodes read them. */
+const shapes = new WeakMap<Feature[], Shapes & { tile: string }>();
+
+/** The roads, paths, rivers and lakes of a tile that have heights, and its river areas, in world units. */
+export function features(list: Feature[], tile: Node): Shapes {
+    const name = `${tile.level}/${tile.x}/${tile.y}`;
+    let known = shapes.get(list);
+    if (known?.tile !== name) shapes.set(list, (known = { tile: name, ...shapesOf(list, tile) }));
+    return known;
+}
+
+function shapesOf(list: Feature[], tile: Node): Shapes {
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
-    const lines: Line[] = [], lakes: Lake[] = [];
+    const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [];
+    const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     for (const { kind, tags, parts } of list) {
         if (kind === 'lake') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
-            lakes.push({ level, rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
+            lakes.push({ level, ...area(parts) });
+            continue;
+        }
+        if (kind === 'river-area') {
+            areas.push(area(parts));
             continue;
         }
         const river = kind === 'river' || kind === 'stream';
         if (!river && (!['main-road', 'road', 'path'].includes(kind) || (tags.bridge && tags.bridge !== 'no'))) continue;
         const surface = surfaceOf(tags), width = parseFloat(tags.width ?? '');
         const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
-        const profile = river ? 0 : profileOf(kind, tags.highway);
+        const profile = profileOf(kind, tags.highway), type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : kind === 'path' ? PATH : ROAD;
         for (const { xy, z } of parts) {
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m.
             let run: number[] = [], heights: number[] = [];
             const flush = () => {
-                if (heights.length >= 2) lines.push({ kind: river ? RIVER : kind === 'path' ? PATH : ROAD, ...smoothed(run, heights), h, code, ford: !!tags.ford && tags.ford !== 'no', profile });
+                if (heights.length >= 2) lines.push({ kind: type, ...smoothed(run, heights), h, code, ford: !!tags.ford && tags.ford !== 'no', profile });
                 run = [];
                 heights = [];
             };
@@ -163,7 +185,7 @@ export function features(list: Feature[], tile: Node): { lines: Line[]; lakes: L
         }
     }
     junctionPlanes(lines);
-    return { lines, lakes };
+    return { lines, lakes, areas };
 }
 
 /**
@@ -396,7 +418,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     let heights = false;
     lines.forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
-        if (!stamps && node.level < NEAR) return;
+        if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;

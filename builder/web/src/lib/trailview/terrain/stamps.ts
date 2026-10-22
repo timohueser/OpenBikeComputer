@@ -4,11 +4,18 @@ import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { WaterMesh } from './water-mesh';
 
-/** Feature tile bodies kept, binned nodes kept, and water meshes kept. */
-const BODIES = 32 * 2 ** 20, NODES = 4096, MESHES = 256;
+/** Feature tile bodies kept, and the bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
+const BODIES = 32 * 2 ** 20, NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
-const NOTHING: NodeStamps = { data: null, heights: false };
+
+/** What a node stamps and its water, from the worker. */
+export interface NodeFeatures extends NodeStamps {
+    water: WaterMesh | null;
+}
+
+const NOTHING: NodeFeatures = { data: null, heights: false, water: null };
+const bytesOf = ({ data, water }: NodeFeatures) => ENTRY_BYTES + (data?.byteLength ?? 0) + (water ? water.vertices.byteLength + water.indices.byteLength : 0);
 
 /** The body of feature tile z/x/y, undefined where it is absent. */
 export type FeatureTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
@@ -25,12 +32,12 @@ export interface NodeSamples {
 const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 0, rivers: 0, rising: 0 };
 
 /**
- * The binned features of each node and the water meshes of each feature tile, made in a worker. A node
- * without a feature tile above it, or without a feature archive, stamps nothing and has no water.
+ * The binned features and the water mesh of each node, made in a worker. A node without a feature tile
+ * above it, or without a feature archive, stamps nothing and has no water.
  */
 export class Stamps implements StampSource {
-    private readonly nodes = new Map<string, NodeStamps>();
-    private readonly meshes = new Map<string, WaterMesh | null>();
+    private readonly nodes = new Map<string, NodeFeatures>();
+    private nodeBytes = 0;
     private readonly pending = new Set<string>();
     private readonly bodies = new Map<string, Promise<ArrayBuffer | undefined>>();
     private readonly sizes = new Map<string, number>();
@@ -51,19 +58,16 @@ export class Stamps implements StampSource {
         };
     }
 
-    /** The node's stamps, undefined while they are on their way. */
-    get(node: Node): NodeStamps | undefined {
+    /** The node's stamps and water, undefined while they are on their way. */
+    get(node: Node): NodeFeatures | undefined {
         const tile = featureTile(node);
         if (!this.tiles || !tile) return NOTHING;
-        const name = key(node), known = this.nodes.get(name);
-        if (known) {
-            this.nodes.delete(name);
-            this.nodes.set(name, known);
-            return known;
-        }
+        const known = this.known(node);
+        if (known) return known;
+        const name = key(node);
         if (!this.pending.has(name) && this.pending.size < REQUESTS) {
             this.pending.add(name);
-            this.ask<NodeStamps>(tile, node, 'stamps').then(stamps => this.keep(name, stamps), error => {
+            this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => this.keep(name, stamps), error => {
                 // A tile that fails stamps nothing, as an absent one.
                 console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
                 this.failed++;
@@ -82,34 +86,32 @@ export class Stamps implements StampSource {
         return this.tiles && tile ? this.ask<NodeSamples>(tile, node, 'samples') : NO_SAMPLES;
     }
 
-    /** The water mesh of a feature tile, null without water, undefined while it is on its way. */
-    mesh(tile: Node): WaterMesh | null | undefined {
-        const name = `water/${key(tile)}`, known = this.meshes.get(name);
-        if (!this.tiles) return null;
-        if (known !== undefined) return known;
-        if (!this.pending.has(name) && this.pending.size < REQUESTS) {
-            this.pending.add(name);
-            this.ask<WaterMesh | null>(tile, tile, 'water').then(mesh => mesh, () => {
-                this.failed++;
-                return null;
-            }).then(mesh => {
-                this.meshes.set(name, mesh);
-                if (this.meshes.size > MESHES) this.meshes.delete(this.meshes.keys().next().value!);
-                this.pending.delete(name);
-                this.changed();
-            });
+    /** The node's stamps and water once they are known, without a request. */
+    known(node: Node): NodeFeatures | undefined {
+        if (!this.tiles || !featureTile(node)) return NOTHING;
+        const name = key(node), known = this.nodes.get(name);
+        if (known) {
+            this.nodes.delete(name);
+            this.nodes.set(name, known);
         }
-        return undefined;
+        return known;
     }
 
-    private keep(name: string, stamps: NodeStamps): void {
+    private keep(name: string, stamps: NodeFeatures): void {
+        const old = this.nodes.get(name);
+        if (old) this.nodeBytes -= bytesOf(old);
         this.nodes.set(name, stamps);
-        if (this.nodes.size > NODES) this.nodes.delete(this.nodes.keys().next().value!);
+        this.nodeBytes += bytesOf(stamps);
+        for (const [first, kept] of this.nodes) {
+            if (this.nodeBytes <= NODE_BYTES) break;
+            this.nodes.delete(first);
+            this.nodeBytes -= bytesOf(kept);
+        }
     }
 
     private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
         const body = await this.body(tile);
-        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES, water: null } as const)[what] as T;
+        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });

@@ -2,8 +2,8 @@
 // buckets that combine from the top, then clamp(base, lo, hi). The result does not depend on the
 // order of the features, and neighbouring nodes get the same intervals where their data overlap.
 // stamp.wgsl stamps pages with it and audit.wgsl checks against it. Include it with
-// `// #include stamp-core.wgsl`; bins.ts packs the data and the profiles, and mirrors the gates of `road_shows`,
-// `path_shows` and `river_shows`.
+// `// #include stamp-core.wgsl`; bins.ts packs the data and the profiles, and mirrors the gates of `road_shows`
+// and `path_shows`.
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
@@ -62,22 +62,27 @@ const PI: f32 = 3.14159265;
 const RADIUS: f32 = 6371000.0;
 // The buffer of the feature tiles: no stamp reaches further, less two texels and a metre.
 const BUFFER_M: f32 = 40.0;
-// A level shows a road at least one texel wide, with the same width and shape on every level, so the
-// mesh draws its edges soft by up to a mesh cell (MESH_TEXELS). Water reaches a mesh cell under its
-// banks. The gates of a level use its texel at 45° N, so that a feature shows on all of a level or on none of it.
+// A level shows a road or a river at least one texel wide, with the same width and shape on every
+// level, so the mesh draws its edges soft by up to a mesh cell (MESH_TEXELS). The gates of a level use
+// its texel at 45° N, so that a feature shows on all of a level or on none of it.
 const GATE_COS: f32 = 0.70710678;
 const MESH_TEXELS: f32 = 4.0;
 // Near a junction, where the cores of its roads overlap, they hold the middle of their heights where
 // these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
-// A lake bed: at least LAKE_DEPTH below the level, deeper by BED_SLOPE per metre from the shore to BED_DEPTH.
-const LAKE_DEPTH: f32 = 0.1;
-const BED_SLOPE: f32 = 0.2;
-const BED_DEPTH: f32 = 2.0;
-// Banks: at least FREEBOARD above the level over BANK_M and two mesh cells from the shore, then a ramp.
-const BANK_M: f32 = 2.0;
-const FREEBOARD: f32 = 0.3;
-const BANK_RAMP: f32 = 8.0;
+// A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
+// terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
+// mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
+// crosses the level at the shore, and the lake's outline is the water's edge.
+const SHORE_SLOPE: f32 = 0.5;
+const SHORE_CELLS: f32 = 1.5;
+const BED_DEPTH: f32 = 4.0;
+// The least widening that a level must fit past the ramp.
+const SHORE_EASE: f32 = 4.0;
+// Water lies LIFT_M plus LIFT of a mesh cell above the terrain that it meets, so that the mesh between
+// the vertices of a ribbon, and the terrain at a lake's shore, stay under it.
+const LIFT_M: f32 = 0.03;
+const LIFT: f32 = 0.02;
 const INF: f32 = 1e30;
 // As WARP_M of bins.ts: the metres over which the cross-slope of a junction fades out.
 const WARP_M: f32 = 6.0;
@@ -112,33 +117,25 @@ fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
     return 2.0 * h >= texel && h + rule.reach <= reach_limit(texel);
 }
 
-// Whether a level shows a river of half-width h: at least one texel wide, its bed, banks and their ramp inside the buffer.
-fn river_shows(h: f32, level: u32) -> bool {
+fn shore_band(texel: f32) -> f32 {
+    return SHORE_CELLS * MESH_TEXELS * texel;
+}
+
+// Whether a level holds the terrain about a lake under its ramp.
+fn shore_shows(level: u32) -> bool {
     let texel = gate_texel(level);
-    return 2.0 * h >= texel && river_half(h, texel) + water_bank(texel) + BANK_RAMP <= reach_limit(texel);
+    return shore_band(texel) + SHORE_EASE <= reach_limit(texel);
 }
 
-// The half-width of a river's bed on a level: a mesh cell at least, so that the mesh always has a
-// row of points under water and draws the river as one ribbon.
-fn river_half(h: f32, texel: f32) -> f32 {
-    return max(h, MESH_TEXELS * texel);
+// How far water lies above the terrain that it meets, on a level with texels of this size.
+fn water_lift(texel: f32) -> f32 {
+    return LIFT_M + LIFT * MESH_TEXELS * texel;
 }
 
-// The width of the banks from a shore or a river's bed. The water reaches a mesh cell under them, and
-// the mesh points about its edge lie within two cells, so the banks hold them all above the water.
-fn water_bank(texel: f32) -> f32 {
-    return BANK_M + 2.0 * MESH_TEXELS * texel;
-}
-
-fn banks_show(level: u32) -> bool {
-    let texel = gate_texel(level);
-    return water_bank(texel) + BANK_RAMP <= reach_limit(texel);
-}
-
-// How far past the shore the water goes, under the banks, so that it meets the terrain. A level
-// without banks keeps the water at the shore: it has nothing to reach under.
-fn water_reach(level: u32, texel: f32) -> f32 {
-    return select(0.0, MESH_TEXELS * texel, banks_show(level));
+// The most that the terrain may rise d metres from a lake's shore.
+fn shore_cap(d: f32, texel: f32) -> f32 {
+    let band = shore_band(texel);
+    return SHORE_SLOPE * d + widen(max(0.0, d - band), reach_limit(texel) - band, 1.0);
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -290,7 +287,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var crossed = false;
     var shore = INF;
     var water_in = -1e30;
-    var water_near = -1e30;
+    var in_lake = false;
     // The road line of the segments so far: whether p lies in its core band, and whether a segment
     // holds it there. Inside a bend tighter than the core, none does: a conflict, which the mask flags.
     var line = NO_DATA;
@@ -316,16 +313,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         } else if (kind == LAKE) {
             let water = real(r + 6u);
             if (((entry & INSIDE) != 0u) != crossed) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], water - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * shore));
+                hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
                 water_in = max(water_in, water);
+                in_lake = true;
                 out.shore = min(out.shore, -shore);
                 out.lake = min(out.lake, -shore);
             } else {
-                if (banks_show(level)) {
-                    lo[BANKS] = max(lo[BANKS], water + FREEBOARD - widen(max(0.0, shore - water_bank(texel)), BANK_RAMP, 1.0));
-                }
-                if (shore <= water_reach(level, texel)) {
-                    water_near = max(water_near, water);
+                if (shore_shows(level)) {
+                    hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
                 }
                 out.shore = min(out.shore, shore);
                 out.lake = min(out.lake, shore);
@@ -333,23 +328,27 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             crossed = false;
             shore = INF;
         } else if (kind == RIVER) {
+            // A river holds its level over its width as a road holds its height, with banks for cones.
+            // In a lake the lake's bed holds: its river line runs on through it. The cell lists its lakes
+            // before its lines, so in_lake is final here.
             let h = real(r + 8u);
+            let rule = profiles[word(r + 5u) >> 16u];
             let g = along(r, p, unit);
-            if (g.lateral >= INF || !river_shows(h, level)) {
+            if (g.lateral >= INF || in_lake || !road_shows(h, rule, level)) {
                 continue;
             }
-            // Metres from the bed's edge, negative in the river; the level runs along it as a road's height does.
-            let d = g.lateral - river_half(h, texel);
-            if (d <= 0.0) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], g.z - LAKE_DEPTH - min(BED_DEPTH, BED_SLOPE * -d));
+            let x = g.lateral - h;
+            if (g.core && x <= 0.0) {
+                lo[WATER_CORE] = max(lo[WATER_CORE], g.z - rule.tol);
+                hi[WATER_CORE] = min(hi[WATER_CORE], g.z + rule.tol);
                 water_in = max(water_in, g.z);
-            } else {
-                lo[BANKS] = max(lo[BANKS], g.z + FREEBOARD - widen(max(0.0, d - water_bank(texel)), BANK_RAMP, 1.0));
-                if (d <= water_reach(level, texel)) {
-                    water_near = max(water_near, g.z);
-                }
             }
-            out.shore = min(out.shore, d);
+            let reach = cone_reach(h, rule, texel);
+            if (g.cone && max(x, 0.0) < reach) {
+                lo[BANKS] = max(lo[BANKS], g.z - (rule.tol + widen(max(x, 0.0), reach, rule.fill)));
+                hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
+            }
+            out.shore = min(out.shore, x);
         } else {
             if (word(r + 13u) != line) {
                 out.conflict = out.conflict || (line_near && !line_held);
@@ -406,10 +405,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
     }
     out.conflict = out.conflict || (line_near && !line_held);
-    out.water = select(water_near, water_in, water_in > -1e29);
+    out.water = water_in;
     // Under water no bank holds: where a river meets a lake or another river.
     if (hi[WATER_CORE] < INF) {
         lo[BANKS] = -INF;
+        hi[BANKS] = INF;
     }
     // Near a junction the cores of its roads hold the middle of their heights where they disagree by
     // the centimetres of the solver, and a core outranks the cones. Their cones step as anywhere else,
