@@ -32,6 +32,7 @@ is the palette of the `world` region.
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
+| `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
@@ -47,7 +48,8 @@ is the palette of the `world` region.
 | `alt` | Fly: metres above sea level, at most 100 000 |
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
-| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask flat: roads by surface, water blue, road faces orange, conflicts red, fords cyan) |
+| `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
+| `scale` | The render scale per axis, 0.25 to 1 (default 1); debug views draw at 1 |
 | `lab` | `name:variant`, a list with commas |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
@@ -56,8 +58,7 @@ The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
-pages with an offset and a scale per page.
+at the same view.
 
 ## Shots and flights
 
@@ -115,7 +116,6 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 
 ## What bites
 
-- SwiftShader times are not GPU times. Measure on a GPU.
 - macOS lowers the GPU clock while a frame leaves the GPU time to spare, and a pass then measures
   much longer than its work. `flight.mjs --gpu` keeps the clock high with a compute load before each
   frame; a measurement without it is not comparable.
@@ -129,6 +129,9 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - `OBC_BROWSER_WS` names a Playwright browser server for the scripts, so `--gpu` runs share one window.
 - Vitest needs the generated WASM: `npm run build:wasm`.
 - No shader uses NaN: compilers may assume that there is none. An unknown height is `NONE`.
+- Surfaces write linear light; the resolve calls `finish()`. Pixel sizes (`dpdx`, minimum widths)
+  multiply by `look.screen.z`.
+- A still view shows the mean of 16 jittered frames; only new pages, nodes or extras restart them.
 - A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
   `lod.test.ts` holds it.
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.

@@ -156,6 +156,8 @@ interface Resources {
 export class Terrain {
     readonly pages: Pages;
     readonly stamps: Stamps;
+    /** Whether the last frame draws other content than the frame before it: new pages, masks, normals, nodes or water. */
+    newContent = false;
     private readonly water: Water;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
@@ -182,6 +184,7 @@ export class Terrain {
     /** The camera of the last frame, for the audit: only what the frame shows counts. */
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
     private floor = 0;
+    private instances = new Int32Array(0);
 
     constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
@@ -238,8 +241,8 @@ export class Terrain {
         return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
     }
 
-    /** Compiles the pipelines for a device, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
-    async attach(gpu: Gpu, frameUniform: GPUBuffer, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
+    /** Compiles the pipelines for a device and the formats of the frame, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
+    async attach(gpu: Gpu, frameUniform: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -326,7 +329,7 @@ export class Terrain {
         const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
             label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
             vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
-            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format: gpu.format }], constants: { PAINT: paint ? 1 : 0 } },
+            fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format }], constants: { PAINT: paint ? 1 : 0 } },
             primitive: { topology: 'triangle-list' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
@@ -350,7 +353,7 @@ export class Terrain {
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
-        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, depthFormat);
+        await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, format, depthFormat);
         this.resources = {
             ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
@@ -390,7 +393,7 @@ export class Terrain {
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint.
         this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
-        this.water.update(this.nodes);
+        const water = this.water.update(this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -408,6 +411,7 @@ export class Terrain {
         this.lonLat = view.lonLat;
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         this.write(r, anchor, rule, forward, work, view.above);
+        this.newContent ||= water || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length || work.normals.length);
     }
 
     /**
@@ -712,6 +716,8 @@ export class Terrain {
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
+        this.newContent = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
+        this.instances = instances;
         this.water.write();
     }
 }

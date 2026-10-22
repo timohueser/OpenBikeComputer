@@ -2,7 +2,7 @@ import { linear, VARIEGATED } from '../ground/rules';
 import type { EyeLook, Light } from './light';
 
 /** Bytes of `Look` in shade.wgsl, and the offset of its `codes`. */
-export const LOOK_BYTES = 272, LOOK_CODES = 240;
+export const LOOK_BYTES = 288, LOOK_CODES = 240;
 
 export interface LookInput {
     /** Toward the sun in render space. */
@@ -17,6 +17,9 @@ export interface LookInput {
     /** The material code of heath, the finest ground level, and the materials and lithologies of the vocabulary. */
     codes: [number, number, number, number];
     debug: number;
+    /** This frame's jitter in clip space, and the render scale. */
+    jitter: [number, number];
+    scale: number;
 }
 
 /** `Look` of shade.wgsl. */
@@ -36,5 +39,6 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, 0, 0, 0], 64);
+    floats.set([...input.jitter, input.scale, 0], 68);
     return data;
 }

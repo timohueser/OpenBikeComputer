@@ -29,10 +29,11 @@ export class Water {
     /** Per draw in the buffers: its first index, its first vertex and its index count; and the tiles that the buffers were filled for. */
     private placed = new Map<string, { first: number; base: number; count: number }>();
     private filled = '';
+    private drawn = '';
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, V = GPUShaderStage.VERTEX;
         const layout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -51,7 +52,7 @@ export class Water {
                     ],
                 }],
             },
-            fragment: { module, entryPoint: 'water_fragment', targets: [{ format: gpu.format }] },
+            fragment: { module, entryPoint: 'water_fragment', targets: [{ format }] },
             primitive: { topology: 'triangle-list' },
             depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'greater' },
         });
@@ -65,8 +66,8 @@ export class Water {
         };
     }
 
-    /** The draws of a frame: per feature tile with water, the drawn nodes that read it. */
-    update(nodes: Node[]): void {
+    /** The draws of a frame: per feature tile with water, the drawn nodes that read it. True when they differ from the last frame's. */
+    update(nodes: Node[]): boolean {
         const tiles = new Map<string, Draw | null>();
         nodes.forEach((node, i) => {
             const tile = featureTile(node), name = tile && key(tile);
@@ -78,6 +79,10 @@ export class Water {
             tiles.get(name)?.nodes.push(i);
         });
         this.draws = [...tiles.values()].filter((draw): draw is Draw => draw !== null);
+        const drawn = this.draws.map(({ name, nodes }) => `${name}:${nodes}`).join(' ');
+        if (drawn === this.drawn) return false;
+        this.drawn = drawn;
+        return true;
     }
 
     /** Uploads the meshes when the frame's tiles change, and the nodes of each draw. */

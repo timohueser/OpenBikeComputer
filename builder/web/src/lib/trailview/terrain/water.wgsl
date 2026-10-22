@@ -1,8 +1,8 @@
 // The water: the meshes of water-mesh.ts at their levels, one flat colour, drawn after the terrain
 // and hidden where the terrain stands above them. Each drawn node draws the mesh of its feature tile
 // and keeps the part over its own square, as its stamps read that tile. A skirt and a river edge
-// move out by the reach of the node's level, under the banks that the stamps raise there. The haze
-// and `finish()` are those of the ground, from the look in group 2.
+// move out by the reach of the node's level, under the banks that the stamps raise there. The haze is
+// that of the ground, from the look in group 2.
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
 // #include ../light/shade.wgsl
@@ -84,5 +84,5 @@ fn water_fragment(in: WaterOut) -> @location(0) vec4f {
     if (any(in.u < in.low) || any(in.u >= in.high) || frame.debug == 3u || frame.debug == 4u) {
         discard;
     }
-    return vec4f(finish(atmosphere(WATER, in.relative, in.altitude)), 1.0);
+    return vec4f(atmosphere(WATER, in.relative, in.altitude), 1.0);
 }
