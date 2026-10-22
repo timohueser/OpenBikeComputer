@@ -7,9 +7,9 @@
 // Whether the vertices of the levels with masks move onto the road edges, so that the mesh folds
 // where the paint ends: the lab `edges`.
 override SNAP: bool = false;
-// A vertex moves onto a road edge within this many metres: 3/4 of a cell of level 18, so that every
-// triangle along an edge has a vertex on it there, and less than half a cell of level 17.
-const SNAP_M: f32 = 1.2;
+// A vertex moves onto a road edge within this many units, at any latitude: 3/4 of a cell of level 18,
+// so that every triangle along an edge has a vertex on it there, and less than half a cell of level 17.
+const SNAP_UNITS: f32 = 48.0;
 
 // Whether the selection splits the node of a level that holds a point at `u` units about the anchor,
 // as `Rule.split` in lod.ts.
@@ -68,15 +68,16 @@ fn snap(u: vec2i, level: u32) -> vec2i {
     let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
     let mean = 0.25 * (d[0] + d[1] + d[2] + d[3]);
     let g2 = dot(g, g);
+    let reach_m = SNAP_UNITS * surface.unit;
     // Off the ridges of the distance, where it turns from one edge to another.
-    if (g2 < 0.25 || g2 > 4.0 || abs(mean) > SNAP_M) {
+    if (g2 < 0.25 || g2 > 4.0 || abs(mean) > reach_m) {
         return vec2i(0);
     }
     let fade = 1.0 - smoothstep(0.75 * masks.reach, masks.reach, length(lod_space(vec2f(u))));
     // A distance grows by a metre per metre, so the step takes only the direction of the quantized
     // gradient: by its length, it overshoots or falls short, and the triangles fold on the edge.
     let shift_m = -(mean + 0.25 * metres) * g / sqrt(g2);
-    let snapped = vec2i(round(shift_m * min(1.0, SNAP_M / length(shift_m)) * fade / surface.unit));
+    let snapped = vec2i(round(shift_m * min(1.0, reach_m / length(shift_m)) * fade / surface.unit));
     // A vertex on an edge of its node moves only along it: every border between two levels lies on
     // an edge of the coarser node, so each node draws exactly its own area, as drawn_level finds it.
     return select(snapped, vec2i(0), ((surface.anchor + u) & vec2i((1 << (30u - level)) - 1)) == vec2i(0));
@@ -113,9 +114,9 @@ fn drawn_height(s: vec2f) -> f32 {
     let block = 2 * cell;
     let low = surface.anchor & vec2i(block - 1);
     let at = (vec2f(low) + units_of(s)) / f32(block);
-    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. With the snap, the 2 × 2
-    // coarser cells nearest the point: a snapped even vertex takes the cell that a morphed odd vertex
-    // stretches by up to SNAP_M into the next coarser cell, and SNAP_M is less than half of one.
+    // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. With the snap, a triangle
+    // reaches up to SNAP_UNITS out of its coarser cell, less than half of one: the 2 × 2 coarser cells
+    // nearest the point hold every triangle that can hold it.
     let snapped = SNAP && level >= MASK_LEVEL;
     let n = select(3, 5, snapped);
     let before = select(vec2i(0), select(vec2i(0), vec2i(block), fract(at) < vec2f(0.5)), snapped);
