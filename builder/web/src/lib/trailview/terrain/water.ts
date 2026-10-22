@@ -74,7 +74,7 @@ export class Water {
             },
             fragment: { module, entryPoint: 'water_fragment', targets: [{ format: gpu.format, ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
             primitive: { topology: 'triangle-list' },
-            depthStencil: { format: depthFormat, depthWriteEnabled: kind !== 'ribbons', depthCompare: 'greater', depthBiasSlopeScale: kind === 'lakes' ? 0 : DRAPE_BIAS },
+            depthStencil: { format: depthFormat, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' ? 0 : DRAPE_BIAS },
         });
         const pipelines = Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>;
         this.placed.clear();
