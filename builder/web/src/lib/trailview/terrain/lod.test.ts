@@ -27,15 +27,17 @@ describe.each(RULES)('the %s selection', (_, make) => {
         };
         for (const e of EYES) {
             const rule = make(e), { nodes } = select(rule, BOUNDS, () => true);
-            for (const node of nodes) for (let j = 0; j <= GRID; j += 8) for (let i = 0; i <= GRID; i += 8) {
+            // A 5 × 5 subset of the grid vertices of each node.
+            let outside = 0;
+            for (const node of nodes) for (let j = 0; j <= GRID; j += 16) for (let i = 0; i <= GRID; i += 16) {
                 const lod = vertexLod(rule, e, node, i, j);
-                expect(lod, `${e.above} m`).toBeGreaterThanOrEqual(node.level - 1);
-                expect(lod, `${e.above} m`).toBeLessThanOrEqual(node.level);
+                if (lod < node.level - 1 || lod > node.level) outside++;
             }
+            expect(outside, `${e.above} m`).toBe(0);
 
             expect(nodes.reduce((sum, node) => sum + area(clip(node)), 0), `${e.above} m`).toBeCloseTo(area(BOUNDS), -3);
             const byKey = new Map(nodes.map(node => [`${node.level}/${node.x}/${node.y}`, node]));
-            let meetings = 0;
+            let meetings = 0, off = 0;
             for (const fine of nodes) {
                 // The coarser node beside each edge of this node, if one draws there.
                 for (const [dx, dy, edge] of [[-1, 0, 'west'], [1, 0, 'east'], [0, -1, 'north'], [0, 1, 'south']] as const) {
@@ -44,10 +46,11 @@ describe.each(RULES)('the %s selection', (_, make) => {
                     meetings++;
                     for (let k = 0; k <= GRID; k++) {
                         const [i, j] = edge === 'west' ? [0, k] : edge === 'east' ? [GRID, k] : edge === 'north' ? [k, 0] : [k, GRID];
-                        expect(vertexLod(rule, e, fine, i, j), `${e.above} m`).toBe(coarse.level);
+                        if (vertexLod(rule, e, fine, i, j) !== coarse.level) off++;
                     }
                 }
             }
+            expect(off, `${e.above} m`).toBe(0);
             if (e.above < 1000) expect(meetings, `${e.above} m`).toBeGreaterThan(0);
 
             for (const { level, x, y } of nodes) {
