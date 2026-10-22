@@ -416,6 +416,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     // bare rock, and in woodland, as rock walls. The ground's normals, not the mesh's facets, so that
     // its edge does not follow the triangles.
     let masoned = road.wall * (1.0 - smoothstep(0.5, 0.65, n.z)) * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
+    // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
+    // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
+    let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
     // outcrops, cos turf_deg, snow_share, speckle size
     let speckle_size = rule(region, slot_cliff() + 3).w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
@@ -489,10 +492,8 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (masoned > 0.0) {
         let stone = rule(region, slot_lithologies() + i32(g.lithology)).rgb;
-        // The blocks run along the world axis nearer to the wall's direction, cross-faded about 45°. A
-        // coordinate along the wall itself turns with its normal: far from the frame's origin, a slight
-        // turn is a large step.
-        let east = smoothstep(-0.1, 0.1, abs(n.y) - abs(n.x));
+        // A coordinate along the wall itself would turn with its normal: far from the frame's origin, a
+        // slight turn is a large step.
         var blocks = vec3f(0.0);
         if (east < 1.0) {
             blocks = masonry(stone, world.y, altitude, surface_size);
