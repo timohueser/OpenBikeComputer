@@ -13,9 +13,9 @@ export function scaleOf(search: string): number {
 }
 
 /**
- * The render targets at the output size: the linear HDR frame, the depth of this frame and of the last
- * one, and the history pair. A frame draws into the top left of the frame and the depth, at the render
- * scale, so a new scale makes no texture.
+ * The render targets at the output size: the linear HDR frame, its depth, and the history pair, which
+ * also keeps the depth of the last frame. A frame draws into the top left of the frame and the depth,
+ * at the render scale, so a new scale makes no texture.
  */
 export class Targets {
     readonly format: GPUTextureFormat;
@@ -24,8 +24,8 @@ export class Targets {
     /** Bumps when the textures are made again. */
     version = 0;
     scene?: GPUTexture;
-    /** The pairs of depth and history: a frame writes those of `parity` and reads the others, the last frame's. */
-    depth: GPUTexture[] = [];
+    depth?: GPUTexture;
+    /** A frame writes the history of `parity` and reads the other one, the last frame's. */
     history: GPUTexture[] = [];
     parity = 0;
 
@@ -42,11 +42,11 @@ export class Targets {
     fit(width: number, height: number): boolean {
         if (width === this.width && height === this.height) return false;
         const { gpu } = this;
-        for (const texture of [this.scene, ...this.depth, ...this.history]) if (texture) gpu.destroy('targets', texture);
+        for (const texture of [this.scene, this.depth, ...this.history]) if (texture) gpu.destroy('targets', texture);
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING, texels = width * height;
         const make = (format: GPUTextureFormat, bytes: number) => gpu.texture('targets', { size: [width, height], format, usage }, bytes * texels);
         this.scene = make(this.format, this.format === 'rg11b10ufloat' ? 4 : 8);
-        this.depth = [make(DEPTH, 4), make(DEPTH, 4)];
+        this.depth = make(DEPTH, 4);
         this.history = [make(HISTORY, 8), make(HISTORY, 8)];
         this.width = width;
         this.height = height;
@@ -54,7 +54,7 @@ export class Targets {
         return true;
     }
 
-    /** After a frame: its depth and history are the last ones of the next frame. */
+    /** After a frame: its history is the last one of the next frame. */
     swap(): void {
         this.parity ^= 1;
     }

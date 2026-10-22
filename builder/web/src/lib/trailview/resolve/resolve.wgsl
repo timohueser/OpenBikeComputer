@@ -9,7 +9,7 @@ struct Resolve {
     last_view_proj: mat4x4f,
     // xyz: the eye minus the last frame's eye, in metres. w: metres of drop per square metre of distance.
     moved: vec4f,
-    // xy: this frame's render size in pixels. zw: the last frame's.
+    // xy: this frame's render size in pixels. zw: unused.
     render: vec4f,
     // xy: this frame's jitter in render pixels, y down. z: the near plane in metres. w: the sharpening.
     jitter: vec4f,
@@ -21,10 +21,10 @@ struct Resolve {
 @group(0) @binding(0) var<uniform> resolve: Resolve;
 @group(0) @binding(1) var scene: texture_2d<f32>;
 @group(0) @binding(2) var depth: texture_depth_2d;
-@group(0) @binding(3) var last_depth: texture_depth_2d;
-@group(0) @binding(4) var history: texture_2d<f32>;
-@group(0) @binding(5) var bilinear: sampler;
-@group(0) @binding(6) var nearest_texel: sampler;
+// rgb: the accumulated colour in linear light. a: the depth of the last frame, times DEPTH_SCALE.
+@group(0) @binding(3) var history: texture_2d<f32>;
+@group(0) @binding(4) var bilinear: sampler;
+@group(0) @binding(5) var nearest_texel: sampler;
 
 struct Out {
     @location(0) canvas: vec4f,
@@ -36,6 +36,8 @@ struct Out {
 const HIDDEN: f32 = 1.1;
 // The neighbourhood that the history keeps to while the camera moves, in standard deviations.
 const SPREAD: f32 = 1.25;
+// Keeps a far depth (reversed Z: near / distance) in the normal range of a half float.
+const DEPTH_SCALE: f32 = 1e4;
 const CROSS = array<vec2i, 5>(vec2i(0, 0), vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1));
 
 @vertex
@@ -151,7 +153,7 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         if (resolve.blend.y > 0.5) {
             // Hidden in the last frame: every depth about the point there is nearer than the point.
             let expected = select(0.0, resolve.jitter.z / was.w, nearest > 0.0);
-            let around = textureGather(last_depth, nearest_texel, uv * resolve.render.zw / vec2f(textureDimensions(last_depth)));
+            let around = textureGather(3, history, nearest_texel, uv) / DEPTH_SCALE;
             if (min(min(around.x, around.y), min(around.z, around.w)) > expected * HIDDEN) {
                 weight = 1.0;
             }
@@ -175,5 +177,5 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         shown = clamp(blended + resolve.jitter.w * (blended - 0.25 * (a + b + e + f)), low, high);
     }
     let colour = expand(blended);
-    return Out(vec4f(finish(expand(shown)), 1.0), vec4f(colour, 1.0));
+    return Out(vec4f(finish(expand(shown)), 1.0), vec4f(colour, nearest * DEPTH_SCALE));
 }

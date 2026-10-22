@@ -49,10 +49,9 @@ export class Resolve {
             { binding: 0, visibility: F, buffer: { type: 'uniform' } },
             { binding: 1, visibility: F, texture: { sampleType: 'unfilterable-float' } },
             { binding: 2, visibility: F, texture: { sampleType: 'depth' } },
-            { binding: 3, visibility: F, texture: { sampleType: 'depth' } },
-            { binding: 4, visibility: F, texture: { sampleType: 'float' } },
-            { binding: 5, visibility: F, sampler: { type: 'filtering' } },
-            { binding: 6, visibility: F, sampler: { type: 'non-filtering' } },
+            { binding: 3, visibility: F, texture: { sampleType: 'float' } },
+            { binding: 4, visibility: F, sampler: { type: 'filtering' } },
+            { binding: 5, visibility: F, sampler: { type: 'non-filtering' } },
         ] });
         const empty = device.createBindGroupLayout({ entries: [] });
         const module = device.createShaderModule({ label: 'resolve', code: wgsl('resolve/resolve.wgsl') });
@@ -73,19 +72,19 @@ export class Resolve {
     /** Encodes the resolve of this frame into the canvas and the history of the targets' parity. */
     encode(encoder: GPUCommandEncoder, targets: Targets, canvas: GPUTextureView, look: GPUBindGroup, frame: Frame, blend: Blend, timestampWrites?: GPURenderPassTimestampWrites): void {
         const r = this.resources;
-        if (!r || !targets.scene) return;
+        if (!r || !targets.scene || !targets.depth) return;
         if (this.version !== targets.version) {
             this.version = targets.version;
             this.last = undefined;
             const { scene, depth, history } = targets;
             this.groups = [0, 1].map(p => r.gpu.device.createBindGroup({ layout: r.layout, entries: [
-                { buffer: r.uniform }, scene.createView(), depth[p].createView(), depth[1 - p].createView(), history[1 - p].createView(), r.sampler, r.nearest,
+                { buffer: r.uniform }, scene.createView(), depth.createView(), history[1 - p].createView(), r.sampler, r.nearest,
             ].map((resource, binding) => ({ binding, resource })) }));
         }
         const last = this.last ?? frame, data = new Float32Array(UNIFORM_BYTES / 4);
         data.set(last.viewProj, 0);
         data.set([frame.eye[0] - last.eye[0], frame.eye[1] - last.eye[1], frame.eye[2] - last.eye[2], CURVATURE], 16);
-        data.set([...frame.render, ...last.render], 20);
+        data.set([...frame.render, 0, 0], 20);
         data.set([...frame.jitter, NEAR, SHARPEN], 24);
         data.set([this.last ? blend.weight : 1, blend.clip ? 1 : 0, blend.copy ? 1 : 0, 0], 28);
         r.gpu.device.queue.writeBuffer(r.uniform, 0, data);

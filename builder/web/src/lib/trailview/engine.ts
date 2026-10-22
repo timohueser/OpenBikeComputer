@@ -300,7 +300,7 @@ export class TrailView {
             // The frame at the render scale in the top left of the targets; a still view that has all its frames draws none.
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{ view: targets.scene!.createView(), loadOp: 'clear', storeOp: 'store', clearValue: this.extras.debug === 'cracks' ? RED : [0, 0, 0, 1] }],
-                depthStencilAttachment: { view: targets.depth[targets.parity].createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' },
+                depthStencilAttachment: { view: targets.depth!.createView(), depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' },
                 timestampWrites: times.writes('terrain'),
             });
             pass.setViewport(0, 0, width, height, 0, 1);
