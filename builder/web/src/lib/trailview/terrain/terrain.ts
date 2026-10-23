@@ -294,7 +294,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 2 * MAX_HOLES) * 16, storage),
+            holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             normalJobs: buffer('compute', 2 * ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -399,10 +399,11 @@ export class Terrain {
     }
 
     /**
-     * Selects the nodes for a view and takes the pages that they want. A frame that wants more pages
-     * than a pool holds draws coarser from the next frame on: quality goes down before memory goes up.
+     * Selects the nodes for a view and takes the pages that they want, and the pages of `reads`, which
+     * the ground's relief reads. A frame that wants more pages than a pool holds draws coarser from the
+     * next frame on: quality goes down before memory goes up.
      */
-    update(view: View): void {
+    update(view: View, reads: Node[] = []): void {
         const r = this.resources;
         if (!r) return;
         this.frameNumber++;
@@ -414,9 +415,10 @@ export class Terrain {
         this.selection = performance.now() - start;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
-        wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
-        this.wantedNodes = wanted;
-        const work = this.pages.update(wanted, anchor);
+        const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
+        // The ground takes the selection alone: with its own reads it would want the ground of coarser and coarser pages.
+        this.wantedNodes = wanted.sort(order);
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint, those with a tunnel's portal first of all,
         // with its hole. Each pipeline draws near to far, so that a GPU that shades before the depth test
@@ -766,13 +768,13 @@ export class Terrain {
 
 /** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
 function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
-    const out = new Float32Array(4 * (1 + 2 * MAX_HOLES)), seen = new Set<string>();
+    const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;
     for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
         const name = `${list[i]},${list[i + 1]}`;
         if (seen.has(name)) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 8 * n++);
+        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;

@@ -84,9 +84,55 @@ class Bridges(unittest.TestCase):
         out, _, _, metrics = roads.solve(ways, self.Flat(), [river])
         self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (2, 0))
         deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
-        self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - 0.01)
+        self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
         below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
-        self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 0.01)
+        # The row holds the deck's vertex nearest to the crossing; the deck slopes a little to the crossing.
+        self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 2 * roads.KEEP_M)
+
+    def test_a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the_path_that_it_leaves(self):
+        path = lambda points, **tags: ("path", {"highway": "footway", **tags}, [(False, points, None)])
+        river = ([self.at(1, -50), self.at(1, 50)], [500.0, 500.0])
+        least = 500 + roads.CLEAR_WATER_M + roads.DECK_PATH_M
+        out, _, _, _ = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes")], self.Flat(), [river])
+        # The deck clears the stream, and its free end stands on the terrain.
+        deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck(1), least - 0.01)
+        self.assertLess(max(out[1][0][2]), least + 0.5)
+        self.assertLess(deck(9), 501)
+        # As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
+        river = ([self.at(-50, 1), self.at(50, 1)], [500.0, 500.0])
+        out, _, _, _ = roads.solve([path([self.at(-50), self.at(50)]), path([self.at(0), self.at(0, 9)], bridge="yes")], self.Flat(), [river])
+        self.assertLess(max(out[1][0][2]), 500.05)
+        # A bridge whose end lies on a road, within its half-width, meets it and does not pass over it.
+        road = ("road", {"highway": "residential"}, [(False, [self.at(0.5, -50), self.at(0.5, 50)], None)])
+        out, _, _, metrics = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes"), road], self.Flat())
+        self.assertEqual(metrics["clearances"], 0)
+
+    def test_a_short_bridge_over_a_ditch_clears_its_water_and_one_on_the_ground_is_a_culvert(self):
+        class Ditch:
+            def heights(_, x, y):
+                east, north = (np.asarray(x) - 0.53) / self.M, (self.Y - np.asarray(y)) / self.M
+                return np.where((np.abs(east) < 2) & (north < 25), 498.0, 500.0)
+        road = lambda points, **tags: ("road", {"highway": "track", **tags}, [(False, points, None)])
+        ways = [road([self.at(east, north) for east in ends], **tags) for north in (0, 50)
+                for ends, tags in (((-100, -3), {}), ((-3, 3), {"bridge": "yes"}), ((3, 100), {}))]
+        rivers = [([self.at(0, north - 20), self.at(0, north + 20)], [level, level]) for north, level in ((0, 498.2), (50, 499.9))]
+        out, culverts, _, _ = roads.solve(ways, Ditch(), rivers)
+        self.assertEqual(culverts, {4})
+        deck = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck, 498.2 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
+
+    def test_of_two_bridges_at_one_layer_the_better_class_passes_over_and_moves_less(self):
+        road = lambda highway, points, **tags: ("road", {"highway": highway, **tags}, [(False, points, None)])
+        ways = [road("motorway", [self.at(-200), self.at(-50)]), road("motorway", [self.at(-50), self.at(50)], bridge="yes", layer="1"),
+                road("motorway", [self.at(50), self.at(200)]), road("service", [self.at(0, -200), self.at(0, -30)]),
+                road("service", [self.at(0, -30), self.at(0, 30)], bridge="yes", layer="1"), road("service", [self.at(0, 30), self.at(0, 200)])]
+        out, _, _, metrics = roads.solve(ways, self.Flat())
+        over = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        under = np.interp(0, [(self.Y - y) / self.M for _, y in out[4][0][1]], out[4][0][2])
+        self.assertGreaterEqual(over - under, roads.CLEAR_ROAD_M + roads.DECK_M - roads.KEEP_M)
+        self.assertLess(abs(over - 500), abs(under - 500))
+        self.assertEqual((metrics["passes"], metrics["passes_near_cm"]), (1, 0))
 
     def test_a_long_tunnel_runs_straight_between_its_portals_a_shaft_does_not_lift_it_and_over_a_valley_it_floats(self):
         class Mountain:
@@ -107,15 +153,17 @@ class Bridges(unittest.TestCase):
         self.assertFalse(structures.floating(out[1][0][1], out[1][0][2], Mountain()))
         self.assertTrue(structures.floating(out[1][0][1], out[1][0][2], self.Flat()))
 
-    def test_a_tunnel_sinks_under_the_road_over_it_and_the_road_stays(self):
+    def test_a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays(self):
         road = lambda highway, points, **tags: ("tunnel" if tags else "road", {"highway": highway, **tags}, [(False, points, None)])
+        # The north portal lies just past the motorway's edge, structures.MAIN_HALF_M from its centreline.
         ways = [road("motorway", [self.at(-200), self.at(200)]), road("unclassified", [self.at(5, -200), self.at(5, -20)]),
-                road("unclassified", [self.at(5, -20), self.at(5, 20)], tunnel="yes"), road("unclassified", [self.at(5, 20), self.at(5, 200)])]
+                road("unclassified", [self.at(5, -20), self.at(5, 7)], tunnel="yes"), road("unclassified", [self.at(5, 7), self.at(5, 200)])]
         out, _, under, _ = roads.solve(ways, self.Flat())
         self.assertEqual(under, {2})
         self.assertAlmostEqual(np.interp(5, [(x - 0.53) / self.M for x, _ in out[0][0][1]], out[0][0][2]), 500, delta=0.05)
-        tunnel = out[2][0][2]
-        self.assertLessEqual((tunnel[0] + tunnel[-1]) / 2, 500 - structures.BORE_M - roads.COVER_M + 0.01)
+        tunnel = lambda north: np.interp(north, [(self.Y - y) / self.M for _, y in out[2][0][1]], out[2][0][2])
+        for north in (-structures.MAIN_HALF_M, 0, structures.MAIN_HALF_M):
+            self.assertLessEqual(tunnel(north), 500 - structures.BORE_M - roads.COVER_M + 0.01)
 
     def test_a_footbridge_over_a_gorge_does_not_sag_under_its_ends(self):
         class Gorge:

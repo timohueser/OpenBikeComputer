@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, SURFACES, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -181,5 +181,19 @@ describe('the plane of a junction', () => {
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
         expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 9);
+    });
+});
+
+describe('the ends of bridges and tunnels', () => {
+    it('meet the ground at a road on it and where a bridge runs into a tunnel, not where a tunnel runs on', () => {
+        const way = (kind: string, tags: Record<string, string>, x0: number, x1: number) =>
+            ({ kind, tags: { highway: 'motorway', ...tags }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([x0, 4000, x1, 4000]), z: Float32Array.from([500, 500]) }] });
+        const { lines } = features([
+            way('main-road', {}, 1000, 2000),
+            way('main-road', { bridge: 'yes' }, 2000, 3000),
+            way('tunnel', { tunnel: 'yes' }, 3000, 4000),
+            way('tunnel', { tunnel: 'yes' }, 4000, 5000),
+        ], { level: 14, x: 8574, y: 5778 });
+        expect(lines.filter(line => line.kind === BRIDGE || line.kind === TUNNEL).map(line => line.abut)).toEqual([[true, true], [true, false], [false, false]]);
     });
 });

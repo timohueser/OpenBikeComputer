@@ -128,11 +128,20 @@ road meets the track. It is part of the options of the step. The road solver:
   straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
   or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line
   between the two ends of its chain of bridge ways,
-- raises a bridge that is not shorter than 8 m where it crosses a waterway, a road, a path or a track
-  that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path) or 6 m (track)
-  over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give the room,
-- sinks a tunnel where a road, a path or a track on the ground crosses over it without meeting it: the
-  tunnel's road lies at least its bore and 1 m under that way, which does not move,
+- raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
+  the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path) or
+  6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give the room. A bridge whose end
+  lies on the road that it crosses, within that road's half-width, meets it there and does not rise,
+- lets a bridge rise from where it lands at a height that it cannot move no more steeply than 1:1: an
+  end that meets no other way stands on the terrain, and an end that leaves a junction as a side lies on
+  the through road. A crossing that asks more lies where the bridge lands and does not raise it,
+- sinks a tunnel where a road, a path or a track crosses over it without meeting it: the tunnel's road lies at
+  least its bore and 1 m under that road's middle and both its edges. A road on the ground over a tunnel
+  does not move,
+- passes one way over the other where two bridges that no bridge joins cross, and where two ways on the
+  ground with a different `layer` cross, without meeting: the one of the higher `layer`, at an equal
+  layer of the first class of the table, lies over the other by the clearance and the deck above. Both
+  ways may move to give the room,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 

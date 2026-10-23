@@ -58,15 +58,20 @@ const JOIN_B: u32 = 64u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
-const TROUGH: u32 = 1u;
+// Nothing on the ground rises through the road of a deck.
+const DECK: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
 // A tunnel's road into its portal yields to every road over it, as under a road on an embankment.
 const PORTAL_CORE: u32 = 3u;
-const BANKS: u32 = 4u;
-const CONES: u32 = 5u;
-const BENCH: u32 = 6u;
-const COVER: u32 = 7u;
-const BUCKETS: u32 = 8u;
+// A path's tread outranks the slopes of the roads beside it.
+const PATH_CORE: u32 = 4u;
+const BANKS: u32 = 5u;
+const CONES: u32 = 6u;
+const BENCH: u32 = 7u;
+// The ground under a deck yields to every road beside it and under it.
+const TROUGH: u32 = 8u;
+const COVER: u32 = 9u;
+const BUCKETS: u32 = 10u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -105,6 +110,8 @@ const ABUTMENT_CELLS: f32 = 2.0;
 const CLEAR_M: f32 = 1.0;
 const TROUGH_M: f32 = 1.0;
 const TROUGH_REACH_M: f32 = 15.0;
+// The ground under a deck's road stays at least DECK_GAP_M under it, whatever road beside it holds the ground.
+const DECK_GAP_M: f32 = 0.1;
 // A tunnel runs on the ground into its portal for PORTAL_CELLS mesh cells from an end that meets the
 // ground. Past them the ground stays COVER_M over its bore, out to BORE_WALL_M past the road's edge, and
 // falls from there at 45° until it stops binding COVER_REACH_M out.
@@ -344,6 +351,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     // The metres from the road that holds each bound of the cones.
     var cone_lo_x = INF;
     var cone_hi_x = INF;
+    // Whether p lies under the road of a deck.
+    var under_deck = false;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
@@ -418,6 +427,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let x = max(0.0, g.lateral - h - TROUGH_M);
                 let reach = min(TROUGH_REACH_M, reach_limit(texel) - h - TROUGH_M);
                 hi[TROUGH] = min(hi[TROUGH], g.z - f32(word(r + 5u) >> 24u) * 0.1 - CLEAR_M + widen(x, reach, 1.0));
+                if (g.lateral <= h) {
+                    hi[DECK] = min(hi[DECK], g.z - DECK_GAP_M);
+                    under_deck = true;
+                }
                 continue;
             }
             // A tunnel past its portals holds the ground over its bore, and paints nothing.
@@ -483,9 +496,22 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
                 let tol = rule.tol + rule.tilt * min(g.lateral, h);
+                if (g.core && g.lateral <= h) {
+                    lo[PATH_CORE] = max(lo[PATH_CORE], g.z - tol);
+                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
+                }
                 if ((g.core || g.cone) && x < rule.reach) {
-                    lo[BENCH] = max(lo[BENCH], g.z - tol - widen(x, rule.reach, rule.fill));
-                    hi[BENCH] = min(hi[BENCH], g.z + tol + widen(x, rule.reach, rule.cut));
+                    // A path's slopes meet the slopes of the roads beside it as two roads' slopes meet.
+                    let l = g.z - tol - widen(x, rule.reach, rule.fill);
+                    let u = g.z + tol + widen(x, rule.reach, rule.cut);
+                    if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
+                        lo[CONES] = l;
+                        cone_lo_x = x;
+                    }
+                    if (u < hi[CONES] || (u == hi[CONES] && x < cone_hi_x)) {
+                        hi[CONES] = u;
+                        cone_hi_x = x;
+                    }
                 }
             }
         }
@@ -493,8 +519,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = water_in;
     // Under a deck the ground falls away: no road's cone or bench holds it up. Their cuts hold, so a
-    // road under a bridge keeps its cut slopes.
-    if (hi[TROUGH] < INF) {
+    // road under a bridge keeps its cut slopes. Beside the deck the fills of the roads there hold: the
+    // deck's face hides their step.
+    if (under_deck) {
         lo[CONES] = -INF;
         lo[BENCH] = -INF;
     }
@@ -503,6 +530,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
     }
+    // A bank cuts no deeper than a bore's cover: a lake's shore ramp and a river's bank leave a tunnel buried.
+    hi[BANKS] = max(hi[BANKS], lo[COVER]);
     // Near a junction the cores of its roads hold the middle of their heights where they disagree by
     // the centimetres of the solver, and a core outranks the cones. Their cones step as anywhere else,
     // so a wall between two roads grows from nothing at their junction.
@@ -526,16 +555,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
         var l = lo[b];
         var u = hi[b];
-        // A portal and the cover of a tunnel yield to the buckets above them without a conflict.
-        if ((b == PORTAL_CORE || b == COVER) && (l > out.hi || u < out.lo)) {
+        // A portal, the ground under a deck and the cover of a tunnel yield to the buckets above them without a conflict.
+        if ((b == PORTAL_CORE || b == TROUGH || b == COVER) && (l > out.hi || u < out.lo)) {
             continue;
         }
         if (l > u) {
             out.conflict = true;
-            // The cones of two roads: the nearer road's face holds, so the ground steps where the
-            // two are equally far, by nothing where the conflict begins. The look draws a wall there.
+            // The cones of two roads: the ground ramps from the fill of the one to the cut of the
+            // other by the share of the way between them, so it has no step where the conflict
+            // begins nor inside it. The look draws a wall where the ramp is steep.
             if (b == CONES) {
-                l = select(u, l, cone_lo_x < cone_hi_x);
+                l = mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3));
             } else {
                 l = 0.5 * (l + u);
             }

@@ -43,7 +43,7 @@ export function floorsOf(list: Feature[], tile: Node, node: Node): Float64Array<
 }
 
 /** Words of a portal's box: its facade's middle in world units, its unit way into the tunnel, and its `portalBox`. */
-export const BOX = 8;
+export const BOX = 9;
 
 /** The boxes of the tunnels' portals within REACH_M of a node's square, where the terrain draws nothing; null without any. */
 export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Array<ArrayBuffer> | null {

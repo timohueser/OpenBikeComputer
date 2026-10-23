@@ -7,13 +7,16 @@ import { metresPerUnit, RAIL_CODE, TUNNEL, type Line } from '../terrain/bins';
 import { INSIDE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
-/** A portal of a road and of a path: the bore's margin past the road, the depth of the box, the facade's wings past the opening and its height over the bore. */
-const ROAD_PORTAL = { margin: 0.6, depth: 12, wings: 3, crown: 1.5 }, PATH_PORTAL = { margin: 0.3, depth: 6, wings: 1.2, crown: 0.8 };
+/** A portal of a road and of a path: the bore's margin past the road, the depth of the box and the facade's wings past the opening. */
+const ROAD_PORTAL = { margin: 0.6, depth: 12, wings: 3 }, PATH_PORTAL = { margin: 0.3, depth: 6, wings: 1.2 };
 /** A road's bore: the kerb's height, and its lamps' length and spacing. */
 const KERB_M = 0.15, LAMP_M = 1.2, LAMPS_M = 10;
 /** The arch springs at this share of the bore's height; the void stands this far in. The bore's road lies this far over the ground that runs into the portal. */
 const SPRING = 0.6, VOID_M = 0.7, LIFT_M = 0.03;
-/** The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. */
+/**
+ * The facade's thickness, the box's walls and roof, and how deep the facade stands in the ground. The
+ * facade's top is flush with the roof, under COVER_M of the road solver: a road over a tunnel hides both.
+ */
 const FACADE_M = 0.6, WALL_M = 0.6, SINK_M = 1;
 /** Segments of the arch. */
 const ARCH = 8;
@@ -64,12 +67,12 @@ export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
 
 /**
  * The box of a tunnel's portal at vertex `from` toward vertex `to`, in which the terrain draws nothing:
- * its depth, its half-width to the middle of its walls, the height of its roof's top at the facade and
- * the rise of that roof per metre into the tunnel.
+ * its depth, its half-width to the middle of its walls, the heights of its roof's top and of its walls'
+ * foot at the facade, and the rise of both per metre into the tunnel.
  */
-export function portalBox(line: Line, from: number, to: number, widen = 0): [number, number, number, number] {
+export function portalBox(line: Line, from: number, to: number, widen = 0): [number, number, number, number, number] {
     const depth = (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).depth, z = line.z[from];
-    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, (along(line, from, to, depth).z - z) / depth];
+    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, z - SINK_M, (along(line, from, to, depth).z - z) / depth];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */
@@ -125,7 +128,7 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
         return { ...st, x: st.x + st.ax * pair.shift, y: st.y + st.ay * pair.shift };
     };
     const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(size.depth);
-    const half = boreHalf(line) + pair.widen, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + size.crown;
+    const half = boreHalf(line) + pair.widen, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + WALL_M;
     const facade = road ? FACADE : ROCK_FACADE, body = road ? BOX : ROCK_BOX, arch = outline(half, height);
     // Out of the tunnel, east, north and up.
     const ex = front.x - inside.x, ey = front.y - inside.y, el = Math.hypot(ex, ey) || 1, away: [number, number, number] = [ex / el, -ey / el, 0];
@@ -142,9 +145,9 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
     const rim = [[half, 0] as Corner, ...arch.slice().reverse(), [-half, 0] as Corner].map(c => b.at(inside, c, DARK));
     rim.forEach((v, k) => b.triangle(centre, v, rim[(k + 1) % rim.length], away));
     // The box of the bore behind the facade: its walls and its roof. The bore runs on through it.
-    const outer = half + WALL_M, roof = height + WALL_M;
-    for (const side of [1, -1]) b.strip(face, back, [side * outer, -SINK_M], [side * outer, roof], body, [side, 0]);
-    b.strip(face, back, [-outer, roof], [outer, roof], body, [0, 1]);
+    const outer = half + WALL_M;
+    for (const side of [1, -1]) b.strip(face, back, [side * outer, -SINK_M], [side * outer, top], body, [side, 0]);
+    b.strip(face, back, [-outer, top], [outer, top], body, [0, 1]);
 }
 
 /** The bore from station s to t, `length` metres long, `half` metres wide on each side, seen from inside. */

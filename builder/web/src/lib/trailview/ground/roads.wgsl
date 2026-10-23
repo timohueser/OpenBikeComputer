@@ -17,11 +17,16 @@ struct Road {
     share: f32,
     // On a cut or a fill face of a paved road that is a retaining wall: faded as the paint.
     wall: f32,
+    // The share of the ground that a road's cut or fill shaped, or a bank: within SHAPED_M of a road's
+    // edge or of the waterline.
+    shaped: f32,
 }
 
 // The cone of a road's cut or fill (cut and fill 0.85, reach 10 m in roads.json) leaves the road's edge
 // at 40° and passes 75° this many metres out.
 const WALL_M: f32 = 5.2;
+// A road's cut or fill reaches this far from its edge (reach in roads.json), a bank as far from the waterline.
+const SHAPED_M: f32 = 10.0;
 
 // The tracks, from RAIL_CODE on as SURFACES of bins.ts: standard and narrow gauge, each without and with
 // a rack. A track painted where nothing counts its sleepers, on a deck or in a bore, takes NO_SLEEPERS
@@ -123,16 +128,16 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // half of the morph band of the coarsest level with masks.
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (!PAINT) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
     let paved = code <= 2u || code == 7u;
@@ -144,8 +149,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         wall *= out.shape.w;
     }
     var edge = mask_metres(mask.shape.x);
+    let shaped = reach * (1.0 - smoothstep(0.75 * SHAPED_M, SHAPED_M, min(edge, mask_metres(mask.shape.y))));
     if (edge > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, wall);
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped);
     }
     let across = abs(mask.across);
     let half = max(mask.half, 0.05);
@@ -162,5 +168,5 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     }
     let thin = max(0.0, 0.5 * cross_w - half);
     let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, wall);
+    return Road(surface.rgb, cover, surface.w, wall, shaped);
 }
