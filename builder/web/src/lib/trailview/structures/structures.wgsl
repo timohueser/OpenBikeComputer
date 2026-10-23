@@ -1,8 +1,8 @@
 // The structures: the meshes of mesh.ts, drawn after the terrain as opaque flat faces in their vertex
 // colours. Each drawn node draws the mesh of the node whose page it draws and keeps the part over its
 // own square. A vertex stands at its height from the bake, or on the drawn surface (plain_height). A
-// road face takes the road paint of the ground. The light, the haze and `finish()` are those of the
-// ground, from the look in group 2.
+// road face takes the road paint of the ground. The light and the haze are those of the ground, from
+// the look in group 2.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../ground/look.wgsl
 
@@ -113,5 +113,5 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
         albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, look.place.xy + in.relative.xy, w, w).rgb;
     }
     let lit = select(light_up(albedo, n, 1.0, 1.0, look.horizon.w), albedo, (flags & VOID_FACE) != 0u);
-    return vec4f(finish(atmosphere(lit, in.relative, in.altitude)), 1.0);
+    return vec4f(atmosphere(lit, in.relative, in.altitude), 1.0);
 }

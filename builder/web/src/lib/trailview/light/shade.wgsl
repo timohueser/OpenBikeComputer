@@ -1,7 +1,7 @@
 // Light and air, the same for every surface, in linear light: the sky colour, the three toon bands of
-// sunlight, the haze and the valley mist, and `finish()` to the screen. A port of SKY, FINISH and
-// SHADE of the prototype's src/shaders.ts, without the cloud layer. Include it with
-// `// #include ../light/shade.wgsl`.
+// sunlight, the haze and the valley mist, and `finish()` to the screen, which only the resolve calls.
+// A port of SKY, FINISH and SHADE of the prototype's src/shaders.ts, without the cloud layer. Include
+// it with `// #include ../light/shade.wgsl`.
 
 struct Look {
     // xyz: toward the sun, in render space.
@@ -34,6 +34,8 @@ struct Look {
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y, z, w: unused.
     modes: vec4u,
+    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
+    screen: vec4f,
 }
 
 @group(2) @binding(0) var<uniform> look: Look;

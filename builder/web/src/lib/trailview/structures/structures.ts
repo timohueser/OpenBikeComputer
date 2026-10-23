@@ -35,10 +35,11 @@ export class Structures {
     private indexEnd = 0;
     /** The meshes of the last frame that did not fit in the pool. */
     dropped = 0;
+    private drawn = '';
 
     constructor(private readonly stamps: Stamps) {}
 
-    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, nodes: GPUBuffer, surfaceLayout: GPUBindGroupLayout, groundLayout: GPUBindGroupLayout, featureLayout: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, V = GPUShaderStage.VERTEX;
         const layout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -57,7 +58,7 @@ export class Structures {
                     ],
                 }],
             },
-            fragment: { module, entryPoint: 'structure_fragment', targets: [{ format: gpu.format }] },
+            fragment: { module, entryPoint: 'structure_fragment', targets: [{ format }] },
             primitive: { topology: 'triangle-list', cullMode: 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
@@ -71,8 +72,11 @@ export class Structures {
         };
     }
 
-    /** The draws of a frame: per mesh, the drawn nodes that draw it. `drawing` has the node of the page that each drawn node draws. */
-    update(drawing: Node[]): void {
+    /**
+     * The draws of a frame: per mesh, the drawn nodes that draw it. `drawing` has the node of the page
+     * that each drawn node draws. True when they differ from the last frame's.
+     */
+    update(drawing: Node[]): boolean {
         const draws = new Map<string, Draw>();
         drawing.forEach((node, i) => {
             for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) {
@@ -86,6 +90,10 @@ export class Structures {
             }
         });
         this.draws = [...draws.values()].sort((a, b) => b.level - a.level);
+        const drawn = [...draws].map(([name, { nodes }]) => `${name}:${nodes}`).join(' ');
+        if (drawn === this.drawn) return false;
+        this.drawn = drawn;
+        return true;
     }
 
     /** Uploads the meshes that the pool lacks, and the instances of each draw. */

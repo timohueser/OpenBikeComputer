@@ -41,7 +41,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         text.textContent = [
             `adapter ${stats.adapter} · lost devices recovered: ${stats.recoveries}`,
             `gpu   ${passes}`,
-            `cpu   ${stats.cpu.toFixed(2)} ms`,
+            `cpu   ${stats.cpu.toFixed(2)} ms · render scale ${stats.scale}`,
             `MiB   ${pools}`,
             `net   ${stats.requests} requests · ${(stats.bytes / MIB).toFixed(2)} MiB${stats.failed ? ` · ${stats.failed} failed` : ''}`,
             `nodes ${stats.drawn} · ${(stats.terrain.triangles / 1e6).toFixed(2)} M triangles · selection ${stats.terrain.selection.toFixed(2)} ms · quality ${stats.terrain.quality}`,

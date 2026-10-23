@@ -6,14 +6,14 @@ export class Sky {
     private pipeline?: GPURenderPipeline;
     private empty?: GPUBindGroup;
 
-    async attach(gpu: Gpu, look: GPUBindGroupLayout, depthFormat: GPUTextureFormat): Promise<void> {
+    async attach(gpu: Gpu, look: GPUBindGroupLayout, format: GPUTextureFormat, depthFormat: GPUTextureFormat): Promise<void> {
         const { device } = gpu, module = device.createShaderModule({ label: 'sky', code: wgsl('light/sky.wgsl') });
         const empty = device.createBindGroupLayout({ entries: [] });
         this.empty = device.createBindGroup({ layout: empty, entries: [] });
         this.pipeline = await device.createRenderPipelineAsync({
             label: 'sky', layout: device.createPipelineLayout({ bindGroupLayouts: [empty, empty, look] }),
             vertex: { module, entryPoint: 'sky_vertex' },
-            fragment: { module, entryPoint: 'sky_fragment', targets: [{ format: gpu.format }] },
+            fragment: { module, entryPoint: 'sky_fragment', targets: [{ format }] },
             depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'equal' },
         });
     }

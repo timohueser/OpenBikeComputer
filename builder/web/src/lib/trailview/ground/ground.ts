@@ -62,6 +62,8 @@ export class Ground {
     private surfaceGroup?: GPUBindGroup;
     private readonly pages: GroundPages;
     private jobs: { page: Slot; data?: GroundPage }[] = [];
+    /** Whether the last frame draws another ground than the frame before it: new pages, a new map or a new date. */
+    newContent = false;
 
     constructor(private readonly source: GroundSource | undefined, changed: () => void) {
         this.rules = source?.rules ?? NEUTRAL;
@@ -178,7 +180,8 @@ export class Ground {
     update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
         const r = this.resources;
         if (!r) return;
-        if (this.pages.setDate(date)) {
+        const day = this.pages.setDate(date);
+        if (day) {
             const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
@@ -186,6 +189,7 @@ export class Ground {
         for (const { page, data } of work.uploads) this.jobs.push({ page, data });
         for (const page of work.refreshes) this.jobs.push({ page });
         if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);
+        this.newContent = day || !!work.map || this.jobs.length > 0;
     }
 
     /**
