@@ -18,6 +18,7 @@ import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
+import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -81,6 +82,7 @@ export class TrailView {
     private readonly instances = new Instances();
     private readonly forest: Forest;
     private readonly plants: Plants;
+    private readonly orchards: Orchards;
     private readonly sky = new Sky();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
@@ -117,6 +119,7 @@ export class TrailView {
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
         this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
         this.plants = new Plants(this.groundLook.rules, this.instances, () => this.request());
+        this.orchards = new Orchards(this.groundLook.rules, this.instances, featureTiles(config), () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -197,7 +200,7 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.forest.idle || !this.plants.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -215,6 +218,7 @@ export class TrailView {
         await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
         await this.forest.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, layouts.compute[1]);
         await this.plants.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, layouts.compute[1]);
+        await this.orchards.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -325,13 +329,14 @@ export class TrailView {
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         this.forest.update(lonLat, this.extras.date);
         this.plants.update(lonLat, this.extras.date);
+        this.orchards.update(lonLat, this.extras.date, this.groundLook.rules.regions[[...this.groundLook.regionsAt(...lonLat)].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1]);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.forest.newContent || this.plants.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);

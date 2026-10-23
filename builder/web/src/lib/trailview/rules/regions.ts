@@ -53,6 +53,8 @@ export interface Region {
     trees: TreeRule[];
     /** The ground plants of the region's pack: what the pack says of each, over its plant model's `ground`. */
     ground: GroundRule[];
+    /** The tree model of the pack's orchards. */
+    orchard?: string;
 }
 
 /** A ground plant of a pack: its model, and the keys of the model's `ground` that the pack changes. */
@@ -128,6 +130,13 @@ function treesOf(packs: Record<string, Record<string, unknown>> | undefined, pac
     return speciesOf(packs, pack, 'trees') as TreeRule[];
 }
 
+/** The tree model of a pack's orchards, by place. */
+function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): string | undefined {
+    if (typeof pack !== 'string' || !packs?.[pack]) return undefined;
+    const model = local(inherited(packs, pack).orchard);
+    return typeof model === 'string' ? model : undefined;
+}
+
 /** The species of a pack's table `trees` or `ground`: a species that a child sets to null is dropped, a model defaults to the species. */
 function speciesOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown, table: 'trees' | 'ground'): { model: string }[] {
     if (typeof pack !== 'string' || !packs?.[pack]) return [];
@@ -160,7 +169,7 @@ export function rulesOf(json: {
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack), trees: treesOf(json.packs, resolved.pack), ground: speciesOf(json.packs, resolved.pack, 'ground') as GroundRule[] };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack), trees: treesOf(json.packs, resolved.pack), ground: speciesOf(json.packs, resolved.pack, 'ground') as GroundRule[], orchard: orchardOf(json.packs, resolved.pack) };
     });
     return { vocabulary: json.materials, regions, styles };
 }
