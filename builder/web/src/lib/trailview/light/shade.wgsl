@@ -34,7 +34,7 @@ struct Look {
     codes: vec4u,
     // x: the debug view of terrain.wgsl. y, z, w: unused.
     modes: vec4u,
-    // xy: this frame's jitter in clip space. z: output pixels per render pixel, the render scale. w: unused.
+    // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
     screen: vec4f,
 }
 

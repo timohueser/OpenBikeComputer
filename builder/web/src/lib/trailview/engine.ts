@@ -126,6 +126,7 @@ export class TrailView {
         if (Math.hypot(pose.east - this.pose.east, pose.north - this.pose.north) > NEW_PLACE) {
             this.footing = undefined;
             this.terrain.forget();
+            this.temporal.reset();
         }
         this.pose = pose;
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
@@ -266,7 +267,8 @@ export class TrailView {
         const debug = this.extras.debug !== 'off', scale = this.scaleNow, [width, height] = targets.viewport(scale), aspect = targets.width / targets.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
-        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: height });
+        // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
+        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] });
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         const group = this.groundLook.group;

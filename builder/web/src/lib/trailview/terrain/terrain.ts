@@ -420,8 +420,7 @@ export class Terrain {
         this.above = view.above;
         this.lonLat = view.lonLat;
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
-        this.write(r, anchor, rule, forward, work, view.above);
-        this.newContent ||= water || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length || work.normals.length);
+        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length || work.normals.length);
     }
 
     /**
@@ -697,7 +696,8 @@ export class Terrain {
         if (data.length) r.gpu.device.queue.writeBuffer(r.stampData, 0, data);
     }
 
-    private write(r: Resources, anchor: Anchor, rule: Rule, forward: Float64Array, work: Work, above: number): void {
+    /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */
+    private write(r: Resources, anchor: Anchor, rule: Rule, forward: Float64Array, work: Work, above: number): boolean {
         const { device } = r.gpu;
         const surface = new ArrayBuffer(SURFACE_BYTES), ints = new Int32Array(surface), floats = new Float32Array(surface);
         ints.set(anchor.whole, 0);
@@ -726,9 +726,10 @@ export class Terrain {
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
-        this.newContent = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
+        const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
+        return changed;
     }
 }
 
