@@ -177,7 +177,8 @@ platforms = ["linux"]
 [[package]]
 name = "obc-desktop"
 command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
-triggers = ["builder/web/**", "planner/search/place-kinds.json"]
+# A web change reaches the shell only as the bundle that desktop-frontend builds and checks.
+triggers = ["planner/search/place-kinds.json"]
 
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
