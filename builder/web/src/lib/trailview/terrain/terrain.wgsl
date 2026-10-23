@@ -54,23 +54,6 @@ fn hole_distance(u: vec2f, h: f32) -> f32 {
 }
 
 const CELLS = 64u;
-// Past the trees, woodland is a shell this high over the ground: its crowns, which the trees fade into
-// over SHELL_BAND of the trees' reach.
-const SHELL_M: f32 = 18.0;
-const SHELL_BAND: f32 = 0.15;
-
-// The share of woodland at a point, from the cache of the finest resident ground page of a level or coarser.
-fn woodland(s: vec2f, level: u32) -> f32 {
-    for (var k = min(level, look.codes.y); k >= COARSEST; k--) {
-        let t = texel_of(s, k);
-        let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-        let page = ground_page(k, whole);
-        if (page >= 0) {
-            return textureSampleLevel(cache, filtered, page_uv(page, vec2f(whole & vec2i(255)) + t.part - vec2f(t.part >= vec2f(0.5)) + 0.5), page_layer(page) * 4 + 1, 0.0).r;
-        }
-    }
-    return 0.0;
-}
 
 @vertex
 fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Varyings {
@@ -80,11 +63,6 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
     var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
-    let reach = look.screen.w;
-    let far = length(p);
-    if (far > reach * (1.0 - SHELL_BAND) && frame.debug == 0u) {
-        p.z += SHELL_M * smoothstep(reach * (1.0 - SHELL_BAND), reach, far) * woodland(v.s, node.level);
-    }
     var out: Varyings;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     out.s = v.s;
