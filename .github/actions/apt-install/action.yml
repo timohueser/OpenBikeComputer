@@ -1,0 +1,33 @@
+name: Install apt packages
+description: >
+  apt-get install whose downloaded packages live in the Actions cache. The Ubuntu mirrors can serve
+  the runners at tens of kB/s, so a cold download of a few dozen MB takes over ten minutes; a warm
+  cache installs in seconds. The key carries the runner image, so each new image downloads once.
+
+inputs:
+  packages:
+    description: The packages, separated by spaces
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Key of the downloaded packages
+      id: key
+      shell: bash
+      run: echo "key=apt-${ImageOS:-unknown}-${ImageVersion:-0}-$(echo '${{ inputs.packages }}' | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache the downloaded packages
+      uses: actions/cache@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Install ${{ inputs.packages }}
+      shell: bash
+      run: |
+        mkdir -p ~/apt-archives/partial
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" ${{ inputs.packages }}
+        # apt writes as root; the cache step reads the folder as the runner user.
+        sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
