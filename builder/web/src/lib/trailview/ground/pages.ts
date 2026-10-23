@@ -85,7 +85,7 @@ export class GroundPages {
     private missing = 0;
     private dirty = true;
     private kept = new Set<string>();
-    /** The terrain nodes that the relief of the kept pages reads, which the terrain draws for it. */
+    /** The terrain nodes that the relief of the kept pages reads, which the terrain keeps resident for it. */
     reads: Node[] = [];
     private origins: [number, number][] = [];
 
@@ -317,7 +317,9 @@ export class GroundPages {
 
 /**
  * The terrain nodes whose drawn heights the relief of a ground page reads: its own, and the one of the
- * coarse level of `relief_of` in ground.wgsl that holds it.
+ * coarse level of `relief_of` in ground.wgsl that holds it. Its openness, three texels across, reads past
+ * the edges of these two into their neighbours where they are resident, a coarser level where not; a
+ * page does not wait for them, nor refresh when they arrive.
  */
 export function reliefReads(node: Node, finest: number): Node[] {
     const coarse = Math.max(node.level, COARSEST + 2) - (node.level === finest ? 1 : 2), shift = node.level - coarse;
