@@ -192,5 +192,12 @@
     "match": [{"natural": ["arete", "ridge"]}],
     "keep": ["natural"],
     "height": "surface"
+  },
+  {
+    "kind": "cross",
+    "geometry": "point",
+    "match": [{"man_made": ["cross"]}, {"historic": ["wayside_cross"]}, {"summit:cross": ["yes"]}],
+    "keep": ["height", "summit:cross", "material"],
+    "height": "surface"
   }
 ]
