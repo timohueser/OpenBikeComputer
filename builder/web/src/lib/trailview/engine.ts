@@ -15,9 +15,10 @@ import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { GroundSource } from './stream/ground';
 import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
+import { Houses, type HouseStats } from './structures/houses';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground', 'stamp', 'resolve'];
+const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -52,6 +53,7 @@ export interface Stats {
     recoveries: number;
     terrain: TerrainStats;
     ground: GroundStats;
+    houses: HouseStats;
 }
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
@@ -71,6 +73,7 @@ export class TrailView {
     private readonly frame: Frame;
     private readonly terrain: Terrain;
     private readonly groundLook: Ground;
+    private readonly houses: Houses;
     private readonly sky = new Sky();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
@@ -102,6 +105,7 @@ export class TrailView {
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
+        this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -149,7 +153,7 @@ export class TrailView {
         return {
             adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
             requests: pages.requests + ground.requests, bytes: pages.bytes + ground.bytes, failed: pages.failed + ground.failed + this.terrain.stamps.failed,
-            drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground,
+            drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats,
         };
     }
 
@@ -181,7 +185,7 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -195,6 +199,7 @@ export class TrailView {
         const layouts = this.groundLook.layouts(gpu.device);
         await this.terrain.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
         await Promise.all([this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render)]);
+        await this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -299,13 +304,14 @@ export class TrailView {
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
+        this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
-        let step: Step | undefined, offset: [number, number] = [0, 0];
+        let step: Step | undefined, offset: [number, number] = [0, 0], moved = true, changed = false;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
-            const moved = camera.some((value, i) => value !== this.camera[i]);
-            const changed = this.terrain.newContent || this.groundLook.newContent || extras !== this.drawnExtras;
+            moved = camera.some((value, i) => value !== this.camera[i]);
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
@@ -318,6 +324,7 @@ export class TrailView {
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
+        const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({
@@ -335,6 +342,7 @@ export class TrailView {
             });
             pass.setViewport(0, 0, width, height, 0, 1);
             this.terrain.draw(pass, group);
+            this.houses.draw(pass, group);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
             pass.end();
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
@@ -345,11 +353,12 @@ export class TrailView {
         gpu.device.queue.submit([encoder.finish()]);
         read();
         probed();
+        counted();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames.
-        if (steer || !settled || this.terrain.working || this.groundLook.working || this.converging) this.request();
+        if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.converging) this.request();
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
         for (const resolve of this.rendered.splice(0)) resolve();

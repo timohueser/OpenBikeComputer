@@ -32,6 +32,8 @@ is the palette of the `world` region.
 | `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), and the shared handlers (`kind.ts`): a line structure on the surface, a model on the surface |
 | `models/` | The procedural models of the kinds, flat triangles in one colour each (`shape.ts`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
+| `structures/` | The houses: a worker makes a record per building of the zoom 14 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
+| `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
