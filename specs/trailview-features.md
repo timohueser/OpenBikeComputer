@@ -119,6 +119,11 @@ road meets the track. It is part of the options of the step. The road solver:
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
+- puts each vertex of a track on the ground at the height of the nearest track on the ground that runs
+  the same way within 6 m beside it, so that the tracks of a double line lie at one height. A track
+  follows only a track after it in the bake's order. A vertex keeps its own height where the terrain
+  under the two tracks differs by more than 0.5 m, there or within 100 m along its way: a ramp or a
+  flyover,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in a
   straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
   or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line

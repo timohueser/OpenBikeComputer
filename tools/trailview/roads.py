@@ -50,8 +50,9 @@ DECK_M, DECK_PATH_M = 1.0, 0.4
 # A road or a path over a tunnel lies at least this far over its bore.
 COVER_M = 1.0
 # A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its height,
-# unless the terrain under the two differs by more than PARALLEL_RISE_M: a ramp or a flyover.
-PARALLEL_M, PARALLEL_COS, PARALLEL_RISE_M = 6.0, 0.9, 1.5
+# unless the terrain under the two differs by more than PARALLEL_RISE_M within PARALLEL_FREE_M along it: a
+# ramp or a flyover, whose climb the smoothing of a track spreads that far.
+PARALLEL_M, PARALLEL_COS, PARALLEL_RISE_M, PARALLEL_FREE_M = 6.0, 0.9, 0.5, 100.0
 # Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no road,
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
@@ -560,7 +561,7 @@ def parallel_pins(net, classes, terrain):
     """(variables, coefficients, values) of z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a track on the
     ground and the nearest segment A-B of a track on the ground with a higher way number within PARALLEL_M
     beside it that runs its way, τ the foot of P on A-B, where the terrain at P and at its foot is known and
-    differs by no more than PARALLEL_RISE_M. Each track follows only tracks after it, so no two
+    differs by no more than PARALLEL_RISE_M, here and within PARALLEL_FREE_M along P's way. Each track follows only tracks after it, so no two
     rows pull against each other, and the tracks of a double line or a station lie at one height."""
     none = (np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0))
     rail = np.array([name in RAILS for name in classes])[net.rule] & ~net.free
@@ -600,6 +601,16 @@ def parallel_pins(net, classes, terrain):
     p, foot = net.vertex_xy[v], pa[k] + t[:, None] * d[k]
     with np.errstate(invalid="ignore"):
         level = np.abs(terrain.heights(p[:, 0], p[:, 1]) - terrain.heights(foot[:, 0], foot[:, 1])) <= PARALLEL_RISE_M
+    # Metres along its way at each vertex, and the pins of each way that lie too near a parting.
+    steps = np.zeros(len(net.vertex_xy))
+    steps[net.segment_start + 1] = net.length
+    along = np.cumsum(steps)
+    way = np.repeat(np.arange(len(net.ways)), net.way_last - net.way_first + 1)
+    along -= along[net.way_first][way]
+    for w in np.unique(way[v[~level]]).tolist():
+        mine = way[v] == w
+        parted = along[v[mine & ~level]]
+        level[mine] &= np.min(np.abs(along[v[mine]][:, None] - parted[None, :]), axis=1) > PARALLEL_FREE_M
     v, k, t = v[level], k[level], t[level]
     variables = np.column_stack([net.vertex_var[v], net.a[segments[k]], net.b[segments[k]]]).astype(np.int64)
     return variables, np.column_stack([np.ones(len(t)), -(1 - t), -t]), np.zeros(len(t))

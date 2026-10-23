@@ -16,7 +16,7 @@ def track(points, **tags):
 
 class RailTest(unittest.TestCase):
     def test_the_tracks_of_a_double_line_on_noisy_ground_lie_at_one_height(self):
-        noisy = Terrain(lambda e, n: 500 + 0.02 * e + 0.4 * np.sin(e / 7) * np.sign(n))
+        noisy = Terrain(lambda e, n: 500 + 0.02 * e + 0.2 * np.sin(e / 7) * np.sign(n))
         ways = [track(line((0, 2), (400, 2), step=10)), track(line((0, -2), (400, -2), step=10))]
         out, _, _, _ = roads.solve(ways, noisy)
         north, south = profile(out[0][0]), profile(out[1][0])
