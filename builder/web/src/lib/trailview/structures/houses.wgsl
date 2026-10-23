@@ -6,17 +6,8 @@
 // storey. `fit` writes what each house draws with, once: then each template of models/house.ts draws
 // its houses from a list, and the outline meshes draw the footprints that no template fits.
 // #include ../terrain/drawn-mesh.wgsl
+// #include ../terrain/view.wgsl
 // #include ../ground/look.wgsl
-
-// As Frame of terrain.wgsl, which shares its buffer.
-struct Frame {
-    view_proj: mat4x4f,
-    sun: vec4f,
-    eye: f32,
-    curvature: f32,
-    debug: u32,
-    pixel: f32,
-}
 
 // As house-records.ts writes it.
 struct House {
@@ -141,7 +132,6 @@ struct DrawOf {
     capacity: u32,
 }
 
-@group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> houses: array<House>;
 @group(0) @binding(2) var<storage, read_write> fits_out: array<Kept>;
 // The indirect draws (vertex count, instance count, first vertex, first instance), the count of drawn
@@ -366,27 +356,6 @@ fn house_space(h: House, p: vec2f) -> vec2f {
     let s = sin(h.angle);
     let centre = lod_space(vec2f(h.at - surface.anchor));
     return centre + vec2f(c * p.x - s * p.y, s * p.x + c * p.y) * (surface.unit / h.unit);
-}
-
-// Render space about the eye, with the drop of the Earth's curvature.
-fn render_at(s: vec2f, z: f32) -> vec3f {
-    var p = vec3f(to_render(s), z - frame.eye);
-    p.z -= frame.curvature * dot(p.xy, p.xy);
-    return p;
-}
-
-fn visible(p: vec3f, radius: f32) -> bool {
-    let m = frame.view_proj;
-    let row0 = vec4f(m[0][0], m[1][0], m[2][0], m[3][0]);
-    let row1 = vec4f(m[0][1], m[1][1], m[2][1], m[3][1]);
-    let row3 = vec4f(m[0][3], m[1][3], m[2][3], m[3][3]);
-    for (var i = 0u; i < 4u; i++) {
-        let plane = row3 + select(1.0, -1.0, (i & 1u) == 1u) * select(row0, row1, i >= 2u);
-        if (dot(plane.xyz, p) + plane.w < -radius * length(plane.xyz)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 // The tile of workgroup g of `fit` (ranges' z) or of `refit` (w): the last whose first workgroup is at most g.

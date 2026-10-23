@@ -400,8 +400,7 @@ export class TrailView {
         this.instances.occlude(encoder, last);
         this.instances.bake(encoder);
         const pass = encoder.beginComputePass({ label: 'vegetation', timestampWrites: timing() });
-        this.forest.encode(pass, ground);
-        this.instances.sort(pass);
+        this.instances.run(pass, ground);
         pass.end();
         return this.instances.read(encoder);
     }

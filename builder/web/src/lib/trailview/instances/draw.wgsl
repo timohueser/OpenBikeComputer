@@ -1,17 +1,8 @@
 // Draws the instances of one draw: its model's mesh of that tier, once per instance of its list, in the
 // vertex colours under the light and the haze of the ground. Two tiers that fade into each other keep
 // complementary pixels of a dither that changes with each jittered frame, so the resolve blends them.
+// #include ../terrain/view.wgsl
 // #include ../light/shade.wgsl
-
-// As Frame of terrain.wgsl, which shares its buffer.
-struct Frame {
-    view_proj: mat4x4f,
-    sun: vec4f,
-    eye: f32,
-    curvature: f32,
-    debug: u32,
-    pixel: f32,
-}
 
 struct Instance {
     at: vec4f,
@@ -30,7 +21,6 @@ struct Model {
     spread: f32,
 }
 
-@group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> lists: array<Instance>;
 @group(0) @binding(2) var<storage, read> bases: array<u32>;
 @group(0) @binding(3) var<uniform> models: array<Model, 128>;

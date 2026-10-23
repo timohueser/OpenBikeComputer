@@ -44,6 +44,9 @@ export interface ModelSpec {
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
 export interface LastFrame { depth: GPUTexture; pixels: [number, number]; viewProj: Float32Array; moved: [number, number, number] }
 
+/** A compute pass that emits instances (emit.wgsl), with the ground pages in group 2. */
+export interface Producer { encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void }
+
 export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number }
 
 interface Resources {
@@ -114,6 +117,7 @@ export class Instances {
     private readonly atlas = new Map<number, { slot: number; used: number }>();
     /** Models whose layer needs a bake. */
     private readonly unbaked = new Set<number>();
+    private readonly producers: Producer[] = [];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
     newContent = false;
 
@@ -152,6 +156,11 @@ export class Instances {
         this.specs.push(spec);
         this.uploaded = false;
         return this.specs.length - 1;
+    }
+
+    /** Adds a producer, which `run` encodes each frame. */
+    produce(producer: Producer): void {
+        this.producers.push(producer);
     }
 
     /** Changes a model's meshes, such as for another season. */
@@ -352,10 +361,11 @@ export class Instances {
         this.newContent = true;
     }
 
-    /** Sorts what the producers staged into the draw lists, in the producers' compute pass after them. */
-    sort(pass: GPUComputePassEncoder): void {
+    /** Runs the producers, then sorts what they staged into the draw lists. */
+    run(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r) return;
+        for (const producer of this.producers) producer.encode(pass, ground);
         // A fixed number of lanes, each looping over the staged instances: the CPU does not know their count.
         pass.setBindGroup(0, r.sortGroup);
         pass.setPipeline(r.countDraws);

@@ -3,18 +3,7 @@
 // instances and their drawn heights; instances.ts sorts what the producers stage into one list per
 // draw. Group 0 holds bindings 0 to 4; a producer's own bindings start at 8. Include it with
 // `// #include ../instances/emit.wgsl`.
-// #include ../terrain/drawn-height.wgsl
-
-// As Frame of terrain.wgsl, which shares its buffer.
-struct Frame {
-    view_proj: mat4x4f,
-    sun: vec4f,
-    eye: f32,
-    curvature: f32,
-    debug: u32,
-    // Metres per pixel at 1 m from the eye.
-    pixel: f32,
-}
+// #include ../terrain/view.wgsl
 
 // A model, as instances.ts writes it.
 struct Model {
@@ -65,7 +54,6 @@ fn tier_end(m: Model, tier: u32) -> f32 {
     return m.until[tier] * select(params.lod, params.detail, last);
 }
 
-@group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<uniform> models: array<Model, 128>;
 @group(0) @binding(2) var<storage, read_write> staged: array<Instance>;
 @group(0) @binding(3) var<storage, read_write> tally: Tally;
@@ -86,27 +74,6 @@ struct Occlusion {
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
 const INCOMING: u32 = 1u << 16u;
-
-// The point of render space of a point of LOD space at height h above sea level: frame metres about
-// the eye, dropped by the curvature.
-fn render_at(s: vec2f, h: f32) -> vec3f {
-    let xy = to_render(s);
-    return vec3f(xy, h - frame.eye - frame.curvature * dot(xy, xy));
-}
-
-// Whether a sphere of render space meets the view, past the near plane.
-fn in_view(centre: vec3f, radius: f32) -> bool {
-    let m = frame.view_proj;
-    let row = transpose(m);
-    let w = row[3];
-    for (var i = 0u; i < 4u; i++) {
-        let plane = w + select(1.0, -1.0, (i & 1u) == 1u) * row[i >> 1u];
-        if (dot(plane.xyz, centre) + plane.w < -radius * length(plane.xyz)) {
-            return false;
-        }
-    }
-    return dot(w.xyz, centre) + w.w > -radius * length(w.xyz);
-}
 
 // Whether the last frame hid a sphere of render space: its nearest point lay behind the farthest depth
 // of the pixels that it covered. A sphere at the frame's edge or too near the eye is never hidden.
@@ -158,7 +125,7 @@ fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, a
     let m = models[model];
     let centre = base + vec3f(0.0, 0.0, 0.5 * height);
     let radius = m.radius * height * max(width, 1.0);
-    if (appear <= 0.0 || !in_view(centre, radius) || hidden(centre, radius)) {
+    if (appear <= 0.0 || !visible(centre, radius) || hidden(centre, radius)) {
         return;
     }
     let d = length(base);

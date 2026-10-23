@@ -3,7 +3,7 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type ModelSpec } from '../instances/instances';
+import { Instances, type ModelSpec, type Producer } from '../instances/instances';
 import { TREES } from '../models/library';
 import { SEASONS, type Rules, type Season } from '../rules/regions';
 import type { Labs } from '../labs';
@@ -39,7 +39,7 @@ interface Resources {
  * The forest: the canopy layer about the eye, the tree models of the season, and the producer of
  * instances (forest.wgsl) that places the trees each frame.
  */
-export class Forest {
+export class Forest implements Producer {
     private resources?: Resources;
     private readonly canopy: Canopy;
     /** The models by `model|evergreen`, as instance model indexes. */
@@ -60,6 +60,7 @@ export class Forest {
     constructor(config: PlannerConfig, rules: Rules, private readonly instances: Instances, labs: Labs, private readonly wake: () => void) {
         this.reach = Number(labs.shell);
         this.impostors = labs.trees === 'impostor';
+        instances.produce(this);
         this.canopy = new Canopy(config, wake);
         const words = new Uint32Array(rules.regions.length * SPECIES * 4), table = new Float32Array(words.buffer);
         rules.regions.forEach((region, r) => {
