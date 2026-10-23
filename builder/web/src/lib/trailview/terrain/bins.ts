@@ -43,9 +43,8 @@ export const RAIL_CODE = Object.keys(SURFACES).indexOf('rail') + 1;
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
-const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
-/** The widest half-width of a path without a `width` tag, whatever its surface: a paved footway is not a road. */
-const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, via_ferrata: 0.6 };
+/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of tools/trailview/structures.py. */
+const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
 /** OSM bridge values of a way that lies on the ground, as GROUND of tools/trailview/structures.py. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of tools/trailview/structures.py. */
@@ -118,7 +117,8 @@ export function surfaceOf(tags: Record<string, string>): Surface {
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
     if (['grass', 'grass_paver'].includes(surface)) return 'grass';
-    if (PATHS.includes(highway)) return 'path';
+    // A path without a `surface` tag is a path's, but a cycleway is paved.
+    if (Object.hasOwn(PATH_HALF, highway) && highway !== 'cycleway') return 'path';
     if (highway === 'track') return ({ grade1: 'road', grade2: 'gravel', grade3: 'dirt' } as const)[tracktype as 'grade1'] ?? 'grass';
     return MAIN.includes(highway) ? main : 'road';
 }
@@ -219,7 +219,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const river = kind === 'river' || kind === 'stream';
         if (!river && !['main-road', 'road', 'path', 'railway', 'tunnel', 'gallery'].includes(kind)) continue;
         // A passage through a building is a road: the building stands over it.
-        const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = PATHS.includes(tags.highway) || tags.highway === 'cycleway';
+        const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = Object.hasOwn(PATH_HALF, tags.highway);
         const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = isTrack(tags);
         const surface = track ? trackSurface(tags) : surfaceOf(tags), width = parseFloat(tags.width ?? '');
         const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : track ? SURFACES[surface] : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;

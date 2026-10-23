@@ -6,6 +6,7 @@ from cables and has no piers. The engine draws the deck along the ways and a pie
 point, from the deck down into the ground."""
 
 import math
+import re
 
 import numpy as np
 
@@ -25,9 +26,12 @@ DEPTH = {"road": (1 / 30, 0.5, 2.5), "path": (1 / 40, 0.3, 1.0)}
 CHANNEL_M, PIER_GAP_M, MIN_SPAN_M = 30.0, 2.0, 6.0
 # A pier keeps this far from a waterway's edge and a road's.
 BANK_M = 1.0
-# The half-width of a road, the widest of its class in the engine.
+# The half-width of a way without a `width` tag, the widest of its class in the engine (PAVED and PATH_HALF
+# of bins.ts).
 MAIN = {"motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"}
-MAIN_HALF_M, ROAD_HALF_M, PATH_HALF_M, RAIL_HALF_M = 6.0, 3.0, 1.0, 1.9
+MAIN_HALF_M, ROAD_HALF_M, RAIL_HALF_M = 6.0, 3.0, 1.9
+PATH_HALF_M = {"path": 1.0, "footway": 1.0, "cycleway": 1.5, "bridleway": 1.0, "steps": 1.0, "pedestrian": 3.0, "via_ferrata": 0.6}
+PATHS = set(PATH_HALF_M)
 # A footbridge longer than CABLE_M that runs more than HIGH_M over the ground hangs from cables, as one that
 # OSM tags so.
 CABLE_M, HIGH_M = 40.0, 25.0
@@ -78,8 +82,11 @@ def is_track(tags):
 
 
 def road_half(tags):
+    """The half-width of a way: OSM's `width` where it has one, as halfWidth of bins.ts reads it."""
+    if width := re.match(r"\s*[+-]?(\d+\.?\d*|\.\d+)", tags.get("width", "")):
+        return max(float(width[0]) / 2, 0.4)
     highway = tags.get("highway")
-    return RAIL_HALF_M if is_track(tags) else PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
+    return RAIL_HALF_M if is_track(tags) else PATH_HALF_M.get(highway) or (MAIN_HALF_M if highway in MAIN else ROAD_HALF_M)
 
 
 def boxed(items, points):
@@ -191,7 +198,6 @@ def uphill(points, terrain):
 
 # The bore of a tunnel for a road, for a path and for a railway with room for its contact wire, and the samples along it.
 BORE_M, BORE_PATH_M, BORE_RAIL_M, BORE_STEP_M = 5.0, 2.6, 6.5, 2.0
-PATHS = {"path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"}
 
 
 def bore(tags):

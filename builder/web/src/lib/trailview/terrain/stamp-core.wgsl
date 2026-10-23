@@ -66,12 +66,12 @@ const PORTAL_CORE: u32 = 3u;
 // A path's tread outranks the slopes of the roads beside it.
 const PATH_CORE: u32 = 4u;
 const BANKS: u32 = 5u;
+// The slopes of the roads and the paths.
 const CONES: u32 = 6u;
-const BENCH: u32 = 7u;
 // The ground under a deck yields to every road beside it and under it.
-const TROUGH: u32 = 8u;
-const COVER: u32 = 9u;
-const BUCKETS: u32 = 10u;
+const TROUGH: u32 = 7u;
+const COVER: u32 = 8u;
+const BUCKETS: u32 = 9u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -348,9 +348,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var line = NO_DATA;
     var line_near = false;
     var line_held = false;
-    // The metres from the road that holds each bound of the cones.
+    // The metres from the road that holds each bound of the cones, and whether a road holds it, not a path.
     var cone_lo_x = INF;
     var cone_hi_x = INF;
+    var cone_lo_road = false;
+    var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
     let first_entry = offset & 0xffffffu;
@@ -487,10 +489,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
+                        cone_lo_road = true;
                     }
                     if (u < hi[CONES] || (u == hi[CONES] && x < cone_hi_x)) {
                         hi[CONES] = u;
                         cone_hi_x = x;
+                        cone_hi_road = true;
                     }
                 }
             } else if (kind == PATH && path_shows(h, rule, level)) {
@@ -507,10 +511,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
+                        cone_lo_road = false;
                     }
                     if (u < hi[CONES] || (u == hi[CONES] && x < cone_hi_x)) {
                         hi[CONES] = u;
                         cone_hi_x = x;
+                        cone_hi_road = false;
                     }
                 }
             }
@@ -518,12 +524,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     }
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = water_in;
-    // Under a deck the ground falls away: no road's cone or bench holds it up. Their cuts hold, so a
+    // Under a deck the ground falls away: no fill of a road or a path holds it up. Their cuts hold, so a
     // road under a bridge keeps its cut slopes. Beside the deck the fills of the roads there hold: the
     // deck's face hides their step.
     if (under_deck) {
         lo[CONES] = -INF;
-        lo[BENCH] = -INF;
     }
     // Under water no bank holds: where a river meets a lake or another river.
     if (hi[WATER_CORE] < INF) {
@@ -533,8 +538,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     // A bank cuts no deeper than a bore's cover: a lake's shore ramp and a river's bank leave a tunnel buried.
     hi[BANKS] = max(hi[BANKS], lo[COVER]);
     // Near a junction the cores of its roads hold the middle of their heights where they disagree by
-    // the centimetres of the solver, and a core outranks the cones. Their cones step as anywhere else,
-    // so a wall between two roads grows from nothing at their junction.
+    // the centimetres of the solver, and a core outranks the cones. Past the cores their cones ramp as
+    // anywhere else, so a wall between two roads grows from nothing at their junction.
     if (junction) {
         if (lo[ROAD_CORE] > hi[ROAD_CORE]) {
             let middle = 0.5 * (lo[ROAD_CORE] + hi[ROAD_CORE]);
@@ -578,13 +583,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             out.hi = end;
             continue;
         }
+        // A road's slope may be a retaining wall; a path's never is.
         if (l > out.lo) {
             out.lo = l;
-            out.fill = b == CONES;
+            out.fill = b == CONES && cone_lo_road;
         }
         if (u < out.hi) {
             out.hi = u;
-            out.cut = b == CONES;
+            out.cut = b == CONES && cone_hi_road;
         }
     }
     return out;

@@ -86,7 +86,7 @@ class Bridges(unittest.TestCase):
         deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
         self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
         below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
-        # The row holds the deck's vertex nearest to the crossing; the deck slopes a little to the crossing.
+        # The row holds the deck and the road at the crossing; the tiles drop vertices within KEEP_M of the profile.
         self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 2 * roads.KEEP_M)
 
     def test_a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the_path_that_it_leaves(self):

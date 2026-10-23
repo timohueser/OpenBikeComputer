@@ -83,7 +83,7 @@ export class Ground {
         return this.pages.working || this.jobs.length > 0;
     }
 
-    /** The terrain nodes that the relief of the ground reads: the terrain draws them, so the relief does not hang on what happens to be resident. */
+    /** The terrain nodes that the relief of the ground reads: the terrain keeps them resident, so the relief does not hang on what the view happens to load. */
     get reads(): Node[] {
         return this.pages.reads;
     }

@@ -138,10 +138,13 @@ road meets the track. It is part of the options of the step. The road solver:
 - sinks a tunnel where a road, a path or a track crosses over it without meeting it: the tunnel's road lies at
   least its bore and 1 m under that road's middle and both its edges. A road on the ground over a tunnel
   does not move,
-- passes one way over the other where two bridges that no bridge joins cross, and where two ways on the
-  ground with a different `layer` cross, without meeting: the one of the higher `layer`, at an equal
-  layer of the first class of the table, lies over the other by the clearance and the deck above. Both
-  ways may move to give the room,
+- passes one way over the other where two bridges cross that no bridge joins or that both tag a
+  different `layer`, and where two ways on the ground with a different `layer` cross, without meeting: the one of
+  the higher `layer`, at an equal layer of the first class of the table, and of one class the later one
+  in the OSM data, lies over the other by the clearance and the deck above. Both ways may move to give
+  the room. A way on the ground of a negative `layer` without a `tunnel` tag, such as a corridor of a
+  station, runs under something that the solver leaves out: no way on the ground passes over or under
+  it,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
@@ -183,8 +186,10 @@ A bridge is the chain of bridge ways whose ends meet two by two. Its piers divid
 of at most 45 m, or 30 m for a path. A pier that falls in water which the bridge crosses for less than
 30 m moves 2 m past the nearer bank of it, and one that falls on a road, a path or a tunnel moves 2 m
 past its nearer side; one that comes within 6 m of another pier or of an end goes. Water is a waterway
-within its half-width and 1 m, a river area or a lake. A road is its line within 1 m and 6 m (a main
-road), 3 m (a road) or 1 m (a path). A cable bridge has no piers.
+within its half-width and 1 m, a river area or a lake. A road is its line within 1 m and its
+half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for a road or a
+`pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
+bridge has no piers.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the

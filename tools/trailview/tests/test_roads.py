@@ -1,6 +1,7 @@
 """The road solver: a road follows a noisy slope without its noise, a hairpin climbs within the grade of its
 class, a side road meets the through road flat, a short link of a lower class does not move its roads, a
-ford lies under the water, a low short bridge is a culvert and a bridge past unknown terrain has no height."""
+ford lies under the water, a low short bridge is a culvert, a bridge past unknown terrain has no height, and of
+two ways on the ground the one of the higher layer passes over, but not over one indoors."""
 
 import math
 import unittest
@@ -133,6 +134,18 @@ class RoadSolverTest(unittest.TestCase):
         # The bridge runs straight over the gully between its ends.
         self.assertLess(np.max(np.abs(z - np.interp(along, [along[0], along[-1]], [z[0], z[-1]]))), 0.05)
         self.assertEqual(solved[7][0][2], [None] * len(solved[7][0][1]))
+
+    def test_a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain(self):
+        terrain = Terrain(lambda east, north: 1000 + 0 * east)
+        street = road("road", "residential", line((-100, 0), (100, 0), step=20))
+        for tags, rise in (({"layer": "1"}, roads.CLEAR_ROAD_M + roads.DECK_PATH_M), ({"layer": "-1", "indoor": "yes"}, 0.0)):
+            with self.subTest(**tags):
+                corridor = road("path", "footway", line((5, -50), (5, 50)), **tags)
+                (s, c), _, _, metrics = roads.solve([street, corridor], terrain)
+                over = np.interp(50, *profile(c[0])) - np.interp(105, *profile(s[0]))
+                self.assertEqual(metrics["passes"], 1 if rise else 0)
+                self.assertGreaterEqual(over, rise - roads.KEEP_M)
+                self.assertLess(over, rise + 0.5)
 
 
 if __name__ == "__main__":
