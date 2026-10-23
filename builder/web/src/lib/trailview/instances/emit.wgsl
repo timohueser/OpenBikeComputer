@@ -71,6 +71,18 @@ fn tier_end(m: Model, tier: u32) -> f32 {
 @group(0) @binding(3) var<storage, read_write> tally: Tally;
 @group(0) @binding(4) var<uniform> params: Params;
 
+// The last frame, whose depth pyramid (hiz.wgsl) culls what it hid.
+struct Occlusion {
+    // Its view projection.
+    last: mat4x4f,
+    // xyz: the eye's move since then. w: 1 when the pyramid holds the last frame, else 0.
+    moved: vec4f,
+    // xy: its render pixels. z: its pixels per texel of level 0 a side.
+    pixels: vec4f,
+}
+@group(0) @binding(5) var<uniform> occlusion: Occlusion;
+@group(0) @binding(6) var pyramid: texture_2d<f32>;
+
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
 const INCOMING: u32 = 1u << 16u;
@@ -96,6 +108,40 @@ fn in_view(centre: vec3f, radius: f32) -> bool {
     return dot(w.xyz, centre) + w.w > -radius * length(w.xyz);
 }
 
+// Whether the last frame hid a sphere of render space: its nearest point lay behind the farthest depth
+// of the pixels that it covered. A sphere at the frame's edge or too near the eye is never hidden.
+fn hidden(centre: vec3f, radius: f32) -> bool {
+    if (occlusion.moved.w == 0.0) {
+        return false;
+    }
+    let clip = occlusion.last * vec4f(centre + occlusion.moved.xyz, 1.0);
+    let w = clip.w - radius;
+    if (w <= 1.0) {
+        return false;
+    }
+    let row = transpose(occlusion.last);
+    let ndc = clip.xy / clip.w;
+    let extent = radius * vec2f(length(row[0].xyz), length(row[1].xyz)) / w;
+    let lo = (vec2f(ndc.x - extent.x, -ndc.y - extent.y) * 0.5 + 0.5) * occlusion.pixels.xy;
+    let hi = (vec2f(ndc.x + extent.x, -ndc.y + extent.y) * 0.5 + 0.5) * occlusion.pixels.xy;
+    if (any(lo < vec2f(0.0)) || any(hi >= occlusion.pixels.xy)) {
+        return false;
+    }
+    let a = lo / occlusion.pixels.z;
+    let b = hi / occlusion.pixels.z;
+    // The level where the sphere spans two texels at most each way.
+    let level = u32(ceil(log2(max(max(b.x - a.x, b.y - a.y), 1.0))));
+    if (level >= textureNumLevels(pyramid)) {
+        return false;
+    }
+    let ta = vec2u(a) >> vec2u(level);
+    let tb = vec2u(b) >> vec2u(level);
+    let far = min(min(textureLoad(pyramid, ta, level).x, textureLoad(pyramid, vec2u(tb.x, ta.y), level).x),
+        min(textureLoad(pyramid, vec2u(ta.x, tb.y), level).x, textureLoad(pyramid, tb, level).x));
+    // The depth is reversed: NEAR / w.
+    return clip.z / w < far;
+}
+
 fn stage(draw: u32, at: vec4f, turn: u32, model: u32, look: u32) {
     let k = atomicAdd(&tally.staged, 1u);
     if (k < params.capacity) {
@@ -110,7 +156,9 @@ fn stage(draw: u32, at: vec4f, turn: u32, model: u32, look: u32) {
 // the share `appear` of its pixels. In the last share `fade` of a tier it goes to the next by a dither.
 fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
     let m = models[model];
-    if (appear <= 0.0 || !in_view(base + vec3f(0.0, 0.0, 0.5 * height), m.radius * height * max(width, 1.0))) {
+    let centre = base + vec3f(0.0, 0.0, 0.5 * height);
+    let radius = m.radius * height * max(width, 1.0);
+    if (appear <= 0.0 || !in_view(centre, radius) || hidden(centre, radius)) {
         return;
     }
     let d = length(base);

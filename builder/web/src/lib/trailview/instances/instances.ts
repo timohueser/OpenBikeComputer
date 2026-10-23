@@ -22,6 +22,8 @@ const REFERENCE_PIXELS = 1120;
 const ROOM = [0.7, 0.9];
 /** Impostor layers in the atlas, and the atlas's texels a side: 8 × 8 frames of 32 texels, as FRAMES in hemi.wgsl. */
 const SLOTS = 16, ATLAS = 256, FRAMES = 64;
+/** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
+const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
 /** The quad of an impostor: corners at ±1. */
 const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0], normal: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], color: new Array(12).fill(1), index: [0, 1, 2, 2, 1, 3] };
 
@@ -38,6 +40,9 @@ export interface ModelSpec {
     /** The share of a tier's end distance over which it fades into the next tier. */
     fade?: number;
 }
+
+/** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
+export interface LastFrame { depth: GPUTexture; pixels: [number, number]; viewProj: Float32Array; moved: [number, number, number] }
 
 export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number }
 
@@ -71,6 +76,15 @@ interface Resources {
     emptyGroup: GPUBindGroup;
     atlasGroup: GPUBindGroup;
     bakeGroup: GPUBindGroup;
+    pyramid: GPUTexture;
+    occlusion: GPUBuffer;
+    viewport: GPUBuffer;
+    hizFirst: GPUComputePipeline;
+    hizDown: GPUComputePipeline;
+    firstLayout: GPUBindGroupLayout;
+    downGroups: GPUBindGroup[];
+    /** The bind group of `first` and the depth that it reads. */
+    first?: { depth: GPUTexture; group: GPUBindGroup };
 }
 
 /** Where a model's meshes lie in the pools, per tier: first index, index count, base vertex. */
@@ -112,20 +126,24 @@ export class Instances {
         return this.unbaked.size === 0;
     }
 
-    /** Layout entries 0 to 4 of a producer's group 0, for its compute stage. */
+    /** Layout entries 0 to 6 of a producer's group 0, for its compute stage. */
     static emitEntries(): GPUBindGroupLayoutEntry[] {
         const C = GPUShaderStage.COMPUTE;
         return [
             { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'uniform' } },
             { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'storage' } },
-            { binding: 4, visibility: C, buffer: { type: 'uniform' } },
+            { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 5, visibility: C, buffer: { type: 'uniform' } },
+            { binding: 6, visibility: C, texture: { sampleType: 'unfilterable-float' } },
         ];
     }
 
-    /** The resources of entries 0 to 4 of a producer's group 0, after `attach`. */
+    /** The resources of entries 0 to 6 of a producer's group 0, after `attach`. */
     emitResources(frame: GPUBuffer): GPUBindGroupEntry[] {
         const r = this.resources!;
-        return [frame, r.models, r.staged, r.tally, r.params].map((buffer, binding) => ({ binding, resource: { buffer } }));
+        return [
+            ...[frame, r.models, r.staged, r.tally, r.params, r.occlusion].map((buffer, binding) => ({ binding, resource: { buffer } })),
+            { binding: 6, resource: r.pyramid.createView() },
+        ];
     }
 
     /** Adds a model and returns its index. */
@@ -174,6 +192,7 @@ export class Instances {
         const drawOf = new Uint32Array(DRAWS * STRIDE / 4);
         for (let d = 0; d < DRAWS; d++) drawOf[d * STRIDE / 4] = d;
         device.queue.writeBuffer(b.drawOf, 0, drawOf);
+        const module = (label: string, path: string) => device.createShaderModule({ label, code: wgsl(path) });
         const entry = (binding: number, visibility: number, type: GPUBufferBindingType, dynamic = false): GPUBindGroupLayoutEntry =>
             ({ binding, visibility, buffer: { type, hasDynamicOffset: dynamic, minBindingSize: dynamic ? 16 : undefined } });
         const sortLayout = device.createBindGroupLayout({ entries: [
@@ -187,8 +206,25 @@ export class Instances {
             { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'),
         ] });
         const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V, 'uniform', true)] });
+        const firstLayout = device.createBindGroupLayout({ entries: [
+            { binding: 0, visibility: C, texture: { sampleType: 'depth' } }, { binding: 1, visibility: C, storageTexture: { format: 'r32float' } }, entry(4, C, 'uniform'),
+        ] });
+        const downLayout = device.createBindGroupLayout({ entries: [
+            { binding: 2, visibility: C, texture: { sampleType: 'unfilterable-float' } }, { binding: 3, visibility: C, storageTexture: { format: 'r32float' } },
+        ] });
+        const hizModule = module('depth pyramid', 'instances/hiz.wgsl');
+        const [hizFirst, hizDown] = await Promise.all([
+            device.createComputePipelineAsync({ label: 'pyramid first', layout: device.createPipelineLayout({ bindGroupLayouts: [firstLayout] }), compute: { module: hizModule, entryPoint: 'first' } }),
+            device.createComputePipelineAsync({ label: 'pyramid down', layout: device.createPipelineLayout({ bindGroupLayouts: [downLayout] }), compute: { module: hizModule, entryPoint: 'down' } }),
+        ]);
+        const pyramid = gpu.texture('instances', {
+            size: [PYRAMID, PYRAMID], mipLevelCount: PYRAMID_LEVELS, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, PYRAMID * PYRAMID * 4 * 4 / 3);
+        const level = (k: number) => pyramid.createView({ baseMipLevel: k, mipLevelCount: 1 });
+        const downGroups = Array.from({ length: PYRAMID_LEVELS - 1 }, (_, k) => device.createBindGroup({
+            layout: downLayout, entries: [{ binding: 2, resource: level(k) }, { binding: 3, resource: level(k + 1) }],
+        }));
         const emptyLayout = device.createBindGroupLayout({ entries: [] });
-        const module = (label: string, path: string) => device.createShaderModule({ label, code: wgsl(path) });
         const sortModule = module('instances sort', 'instances/sort.wgsl'), drawModule = module('instances draw', 'instances/draw.wgsl');
         const impostorModule = module('impostor', 'instances/impostor.wgsl'), bakeModule = module('impostor bake', 'instances/impostor-bake.wgsl');
         const vertexLayout: GPUVertexBufferLayout = {
@@ -230,7 +266,8 @@ export class Instances {
         });
         const layers = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         this.resources = {
-            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake,
+            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
             renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
             emptyGroup: group(emptyLayout, []),
@@ -251,6 +288,37 @@ export class Instances {
         new Uint32Array(params)[1] = CAPACITY;
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
         r.gpu.device.queue.writeBuffer(r.tally, 0, new Uint32Array(TALLY_BYTES / 4));
+    }
+
+    /**
+     * Builds the depth pyramid of the last frame, which `hidden` of emit.wgsl reads; without a last
+     * frame, nothing is hidden.
+     */
+    occlude(encoder: GPUCommandEncoder, last: LastFrame | undefined): void {
+        const r = this.resources;
+        if (!r) return;
+        const data = new ArrayBuffer(OCCLUSION_BYTES), f = new Float32Array(data);
+        if (!last) return r.gpu.device.queue.writeBuffer(r.occlusion, 0, data);
+        const block = Math.max(4, Math.ceil(Math.max(...last.pixels) / PYRAMID));
+        f.set(last.viewProj);
+        f.set([...last.moved, 1, ...last.pixels, block], 16);
+        r.gpu.device.queue.writeBuffer(r.occlusion, 0, data);
+        r.gpu.device.queue.writeBuffer(r.viewport, 0, new Uint32Array([...last.pixels, block, 0]));
+        if (r.first?.depth !== last.depth) r.first = {
+            depth: last.depth, group: r.gpu.device.createBindGroup({ layout: r.firstLayout, entries: [
+                { binding: 0, resource: last.depth.createView() }, { binding: 1, resource: r.pyramid.createView({ baseMipLevel: 0, mipLevelCount: 1 }) }, { binding: 4, resource: { buffer: r.viewport } },
+            ] }),
+        };
+        const pass = encoder.beginComputePass({ label: 'depth pyramid' });
+        pass.setPipeline(r.hizFirst);
+        pass.setBindGroup(0, r.first.group);
+        pass.dispatchWorkgroups(Math.ceil(last.pixels[0] / block / 8), Math.ceil(last.pixels[1] / block / 8));
+        pass.setPipeline(r.hizDown);
+        r.downGroups.forEach((group, k) => {
+            pass.setBindGroup(0, group);
+            pass.dispatchWorkgroups(Math.ceil((PYRAMID >> (k + 1)) / 8), Math.ceil((PYRAMID >> (k + 1)) / 8));
+        });
+        pass.end();
     }
 
     /** Bakes the impostors that the frames asked for, before the frame draws them. */

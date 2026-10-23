@@ -196,7 +196,9 @@ fn find_cells(@builtin(global_invocation_id) id: vec3u) {
     let ground = units_height(middle, u32(ceil(lod(s))));
     let half = 0.5 * f32(units) * surface.unit;
     // The cell's box: its ground within SLOPE_M per base cell of its middle's, and its trees.
-    if (!known(ground) || !in_view(render_at(s, ground + 0.5 * TALLEST_M), 1.5 * half + SLOPE_M * f32(1u << level) + TALLEST_M)) {
+    let centre = render_at(s, ground + 0.5 * TALLEST_M);
+    let radius = 1.5 * half + SLOPE_M * f32(1u << level) + TALLEST_M;
+    if (!known(ground) || !in_view(centre, radius) || hidden(centre, radius)) {
         return;
     }
     // The densest canopy that a point of the cell reads, with its jitter of up to half a canopy cell:
@@ -297,7 +299,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32, region: u32) {
     }
     let height = max(3.0, canopy_height(code) * (0.7 + 0.35 * unit_float(mix_bits(h + 13u))));
     // On the cell's ground, a tree out of view stays out of view on its own.
-    if (length(s) < EYE_CLEAR_M || !in_view(render_at(s, ground_near + 0.5 * height), slope + height)) {
+    let centre = render_at(s, ground_near + 0.5 * height);
+    if (length(s) < EYE_CLEAR_M || !in_view(centre, slope + height) || hidden(centre, slope + height)) {
         return;
     }
     var ground: f32;

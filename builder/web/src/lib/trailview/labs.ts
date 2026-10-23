@@ -7,6 +7,8 @@ export const LABS: Record<string, readonly string[]> = {
     trees: ['impostor', 'mesh'],
     // Metres where the trees end and the woodland's shell begins.
     shell: ['4500', '2000'],
+    // Instances that the last frame's depth hid are culled, or not.
+    hiz: ['off', 'on'],
 };
 
 export type Labs = Record<string, string>;

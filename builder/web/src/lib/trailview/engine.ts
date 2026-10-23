@@ -12,7 +12,7 @@ import { Sky } from './light/sky';
 import { Resolve } from './resolve/resolve';
 import { DEPTH, MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
-import { Instances, type InstanceStats } from './instances/instances';
+import { Instances, type InstanceStats, type LastFrame } from './instances/instances';
 import { GroundSource } from './stream/ground';
 import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
@@ -100,6 +100,9 @@ export class TrailView {
     private camera: number[] = [];
     private drawnExtras = '';
     private rendered: (() => void)[] = [];
+    /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
+    private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
+    private readonly occluding: boolean;
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number, labs: Labs) {
         this.context = canvas.getContext('webgpu')!;
@@ -109,6 +112,7 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.forest = new Forest(config, this.groundLook.rules, this.instances, labs, () => this.request());
+        this.occluding = labs.hiz === 'on';
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -144,6 +148,7 @@ export class TrailView {
             this.feet = undefined;
             this.terrain.forget();
             this.temporal.reset();
+            this.lastFrame = undefined;
         }
         this.pose = pose;
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
@@ -300,7 +305,10 @@ export class TrailView {
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
-        if (this.fit()) this.temporal.reset();
+        if (this.fit()) {
+            this.temporal.reset();
+            this.lastFrame = undefined;
+        }
         const debug = this.extras.debug !== 'off', scale = this.scaleNow, [width, height] = targets.viewport(scale), aspect = targets.width / targets.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
@@ -311,7 +319,7 @@ export class TrailView {
         this.forest.update(lonLat, this.extras.date);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
-        let step: Step | undefined, offset: [number, number] = [0, 0];
+        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0];
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             const moved = camera.some((value, i) => value !== this.camera[i]);
@@ -321,14 +329,16 @@ export class TrailView {
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
-            const ndc: [number, number] = [2 * offset[0] / width, -2 * offset[1] / height];
+            ndc = [2 * offset[0] / width, -2 * offset[1] / height];
             gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), targets.height));
             gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale, step?.sample ?? 0));
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
-        const counted = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, () => times.writes('vegetation'));
+        const last = this.occluding && eye && this.lastFrame
+            ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
+        const counted = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({
@@ -353,6 +363,7 @@ export class TrailView {
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             targets.swap();
+            this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
@@ -369,11 +380,15 @@ export class TrailView {
         for (const resolve of this.rendered.splice(0)) resolve();
     }
 
-    /** Encodes the producers of instances and the sort of what they stage, for a render `pixels` high (0: none draws). */
-    private vegetation(encoder: GPUCommandEncoder, pixels: number, timing: () => GPUComputePassTimestampWrites | undefined): () => void {
+    /**
+     * Encodes the producers of instances and the sort of what they stage, for a render `pixels` high (0:
+     * none draws), with the last frame's depth hiding what it hid.
+     */
+    private vegetation(encoder: GPUCommandEncoder, pixels: number, last: LastFrame | undefined, timing: () => GPUComputePassTimestampWrites | undefined): () => void {
         const ground = this.groundLook.computeGroup;
         if (!pixels || !ground) return () => {};
         this.instances.begin(pixels);
+        this.instances.occlude(encoder, last);
         this.instances.bake(encoder);
         const pass = encoder.beginComputePass({ label: 'vegetation', timestampWrites: timing() });
         this.forest.encode(pass, ground);
