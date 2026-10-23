@@ -612,9 +612,9 @@ def clearances(net, rivers, lakes, classes, terrain):
     """(variables, coefficients, values, ways) of the decks over what they cross, in rows of four variables: where
     a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck, and so at each bridge vertex
     over a lake; where it crosses a road or a path on the ground that it does not meet, z − z_below ≥
-    CLEAR_ROAD_M or CLEAR_PATH_M + its deck. Where a bridge lands at a height that it cannot move
-    (`landings`), its deck climbs no steeper than it runs: a crossing that asks more lies where the bridge
-    lands and has no row."""
+    CLEAR_ROAD_M or CLEAR_PATH_M + its deck; but a bridge whose end lies on that road, within its half-width,
+    meets it there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
+    climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row."""
     path = list(classes).index("path")
     deck = lambda w: DECK_PATH_M if net.rule[w] >= path else DECK_M
     rows = []
@@ -625,9 +625,11 @@ def clearances(net, rivers, lakes, classes, terrain):
     grid = gridded(below)
     boxes = np.array([(*np.min([np.min(ring, 0) for ring in rings], 0), *np.max([np.max(ring, 0) for ring in rings], 0)) for rings, _ in lakes]).reshape(-1, 4)
     landed = landings(net)
+    continued = np.bincount(net.osm_var[(net.free & ~net.tunnel)[net.osm_way]], minlength=net.osm_count) >= 2
     for w in bridges:
         first, last = net.way_first[w], net.way_last[w]
         along = np.concatenate([[0], np.cumsum(net.length[first - w:last - w])])
+        tips = [along[v - first] for v in (first, last) if not continued[net.vertex_var[v]]]
         ends = [(along[v - first], float(terrain.heights(*net.vertex_xy[v, :, None])[0])) for v in (first, last) if net.vertex_var[v] in landed]
 
         def add(variables, coefficients, value, top, at):
@@ -648,7 +650,8 @@ def clearances(net, rivers, lakes, classes, terrain):
                     add([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v], net.vertex_var[v]], [1 - u, u, 0.0, 0.0], value, value, at)
                     continue
                 other, k = road
-                if {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]} or not (0 <= tr < 1 and 0 <= u < 1):
+                if ({net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]} or not (0 <= tr < 1 and 0 <= u < 1)
+                        or any(abs(at - tip) <= net.half[other] for tip in tips)):
                     continue
                 clear = (CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M) + deck(w)
                 add([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[k], net.vertex_var[k + 1]], [1 - u, u, -(1 - tr), -tr], clear,

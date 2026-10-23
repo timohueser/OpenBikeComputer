@@ -106,6 +106,10 @@ class Bridges(unittest.TestCase):
         river = ([self.at(-50, 1), self.at(50, 1)], [500.0, 500.0])
         out, _, _, _ = roads.solve([path([self.at(-50), self.at(50)]), path([self.at(0), self.at(0, 9)], bridge="yes")], self.Flat(), [river])
         self.assertLess(max(out[1][0][2]), 500.05)
+        # A bridge whose end lies on a road, within its half-width, meets it and does not pass over it.
+        road = ("road", {"highway": "residential"}, [(False, [self.at(0.5, -50), self.at(0.5, 50)], None)])
+        out, _, _, metrics = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes"), road], self.Flat())
+        self.assertEqual(metrics["clearances"], 0)
 
     def test_a_short_bridge_over_a_ditch_clears_its_water_and_one_on_the_ground_is_a_culvert(self):
         class Ditch:
