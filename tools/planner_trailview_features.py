@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, structures, water
+from .trailview import profiles, rails, structures, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -529,15 +529,16 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
 
     for entry, tags, parts in objects(kinds, pbf, binary):
         parts = [(outer, points, None) for outer, points in parts]
-        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads) if m.solves(entry["kind"], tags)), None)
+        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads, rails) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
         else:
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
-    # The heights of a junction need every road that meets there, a river level its whole network, and a
-    # ford the water it crosses.
+    # The heights of a junction need every road that meets there, a river level its whole network, a ford
+    # the water it crosses, and a platform its tracks.
+    tracks = []
     if held:
         waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
@@ -572,8 +573,19 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                     entry = kind_of(kinds, "line", {**tags, "tunnel": "no"}) or entry
                     metrics["roads"]["shallow_tunnels"] = metrics["roads"].get("shallow_tunnels", 0) + 1
                 place(entry, {**tags, **extra.get(n, {})}, parts)
+                if "railway" in tags:
+                    tracks += [(entry["kind"], tags, part) for part in parts if part[2]]
             for point, z, way in piers:
                 place({"kind": "bridge-pier", "geometry": "point", "min_zoom": ways[decks[way][0]][0].get("min_zoom", MAX_ZOOM)}, {}, [(False, [point], [z])])
+        outside = [(tags, points, z) for kind, tags, (_, points, z) in tracks if kind != "tunnel"]
+        wired = [(tags, points, z, structures.is_bridge(kind, tags)) for kind, tags, (_, points, z) in tracks if kind == "railway" and rails.electrified(tags)]
+        for point, z, tags in rails.masts(wired, outside):
+            place({"kind": "catenary-mast", "geometry": "point"}, tags, [(False, [point], [z])])
+        stations = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is rails]
+        heights = rails.platforms([parts for _, _, parts in stations], outside)
+        for (entry, tags, parts), solved in zip(stations, heights):
+            place(entry, tags, solved or parts)
+        metrics["rails"] = {"tracks": len(tracks), "masts": counts.get("catenary-mast", 0), "platforms_unknown": sum(h is None for h in heights)}
     for entry, tags, parts in low:
         anchors = [[index for index, point in enumerate(points) if shared[point] > 1] for _, points, _ in parts]
         for zoom in range(entry["min_zoom"], MAX_ZOOM):

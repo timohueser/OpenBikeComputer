@@ -102,10 +102,12 @@ first vertex of a feature is the difference from (0, 0).
 
 The solvers of the bake set the heights of a feature. A feature with no height has `has_z` 0.
 
-Each vertex of a `main-road`, `road`, `path`, `tunnel` or `gallery` has the height of the road surface,
-except a `via_ferrata`, which has none. The class table
-[`data/trailview/roads.json`](../data/trailview/roads.json) gives the rules per `highway` class: the
-steepest grade and a smoothing length. It is part of the options of the step. The road solver:
+Each vertex of a `main-road`, `road`, `path`, `railway`, `tunnel` or `gallery` has the height of the road
+surface or of the rails, except a `via_ferrata`, which has none. The class table
+[`data/trailview/roads.json`](../data/trailview/roads.json) gives the rules per class: the steepest grade
+and a smoothing length. The class of a road is its `highway`, and of a track its `railway`, or `rack`
+when it has a `rack` tag other than `no`. The table lists the tracks first, so at a level crossing the
+road meets the track. It is part of the options of the step. The road solver:
 
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
@@ -120,11 +122,11 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
   straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
   or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line
   between the two ends of its chain of bridge ways,
-- raises a bridge that is not shorter than 8 m where it crosses a waterway, a road or a path that it
-  does not meet: its road lies at least 1.5 m (water), 4.5 m (road) or 2.5 m (path) over it, plus a
-  deck of 1 m, or 0.4 m for a path. The road below may sink to give the room,
-- sinks a tunnel where a road or a path on the ground crosses over it without meeting it: the tunnel's
-  road lies at least its bore and 1 m under that road, which does not move,
+- raises a bridge that is not shorter than 8 m where it crosses a waterway, a road, a path or a track
+  that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path) or 6 m (track)
+  over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give the room,
+- sinks a tunnel where a road, a path or a track on the ground crosses over it without meeting it: the
+  tunnel's road lies at least its bore and 1 m under that way, which does not move,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
@@ -132,10 +134,10 @@ The tiles keep the vertices of OSM and the vertex at the end of each approach of
 a vertex between two of them where the solved height leaves the straight line between them by more
 than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
-A tunnel whose terrain lies less than its bore (5 m, or 2.6 m for a path) over it everywhere runs under
-something that the terrain leaves out, such as a building or a railway: the tiles keep it without its
-`tunnel` tag, as a road of its class. A `building_passage` and a tunnel under a road or a path stay
-tunnels. The tiles leave out a part of
+A tunnel whose terrain lies less than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it
+everywhere runs under something that the terrain leaves out, such as a building: the tiles keep it
+without its `tunnel` tag, as a way of its class. A `building_passage` and a tunnel under a road, a path or
+a track stay tunnels. The tiles leave out a part of
 a tunnel that rises more than 5 m over the terrain anywhere farther than 20 m from its ends: the solver
 could not put it under the terrain.
 
@@ -149,6 +151,16 @@ The bake adds these to the features of the road solver:
 | tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
 | tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
 | point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+| point `catenary-mast` | each mast of the contact wire of a `railway` tagged `electrified` `contact_line` or `yes`, but not a funicular | Its height is its track's rail there. Tag `on` `deck` on a bridge |
+
+The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle, or
+2.5 m for a narrow gauge (`gauge` below 1200 mm, else `narrow_gauge` and `funicular`). A mast stands on
+the side away from another track that lies 1 to 8 m beside it; a track with such tracks on both sides
+has no masts. A track in a tunnel has no masts.
+
+Each vertex of a `platform` or a `platform-line` has the height of its top: 0.55 m, or 0.35 m for a narrow
+gauge, over the rail of the nearest track within 15 m that is not in a tunnel. A vertex with no track
+near takes the median of the other vertices; a platform with no track near has no heights.
 
 A bridge is the chain of bridge ways whose ends meet two by two. Its piers divide it evenly into spans
 of at most 45 m, or 30 m for a path. A pier that falls in water which the bridge crosses for less than

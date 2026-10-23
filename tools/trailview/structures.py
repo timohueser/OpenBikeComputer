@@ -14,7 +14,7 @@ from .water import contains
 
 # OSM bridge values of a way that lies on the ground.
 GROUND = {"no", "boardwalk", "low_water_crossing"}
-KINDS = {"main-road", "road", "path"}
+KINDS = {"main-road", "road", "path", "railway"}
 # The longest span between piers, and the deck depth per metre of span within its least and greatest.
 SPAN_M = {"road": 45.0, "path": 30.0}
 DEPTH = {"road": (1 / 30, 0.5, 2.5), "path": (1 / 40, 0.3, 1.0)}
@@ -25,7 +25,7 @@ CHANNEL_M, PIER_GAP_M, MIN_SPAN_M = 30.0, 2.0, 6.0
 BANK_M = 1.0
 # The half-width of a road, the widest of its class in the engine.
 MAIN = {"motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"}
-MAIN_HALF_M, ROAD_HALF_M, PATH_HALF_M = 6.0, 3.0, 1.0
+MAIN_HALF_M, ROAD_HALF_M, PATH_HALF_M, RAIL_HALF_M = 6.0, 3.0, 1.0, 1.9
 # A footbridge longer than CABLE_M that runs more than HIGH_M over the ground hangs from cables, as one that
 # OSM tags so.
 CABLE_M, HIGH_M = 40.0, 25.0
@@ -72,7 +72,7 @@ def chains(ways):
 
 def road_half(tags):
     highway = tags.get("highway")
-    return PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
+    return RAIL_HALF_M if "railway" in tags else PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
 
 
 def boxed(items, points):
@@ -182,9 +182,13 @@ def uphill(points, terrain):
     return "right" if rise < 0 else "left"
 
 
-# The bore of a tunnel for a road and for a path, and the samples along it.
-BORE_M, BORE_PATH_M, BORE_STEP_M = 5.0, 2.6, 2.0
+# The bore of a tunnel for a road, for a path and for a railway with room for its contact wire, and the samples along it.
+BORE_M, BORE_PATH_M, BORE_RAIL_M, BORE_STEP_M = 5.0, 2.6, 6.5, 2.0
 PATHS = {"path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"}
+
+
+def bore(tags):
+    return BORE_RAIL_M if "railway" in tags else BORE_PATH_M if tags.get("highway") in PATHS else BORE_M
 # Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the solver
 # could not put it under the hill: a network of shafts and caverns, or a bore that the terrain misses.
 FLOAT_M, PORTAL_M = 5.0, 20.0
@@ -206,11 +210,11 @@ def cover(points, z, terrain):
 
 def shallow(tags, points, z, terrain):
     """Whether a tunnel has less than its bore of terrain over it everywhere: what covers it (a building, a
-    railway, a deck) is not in the terrain, so it runs on the ground."""
+    deck) is not in the terrain, so it runs on the ground."""
     if (found := cover(points, z, terrain)) is None:
         return False
     with np.errstate(invalid="ignore"):
-        return bool(np.nanmax(found[0], initial=-np.inf) < (BORE_PATH_M if tags.get("highway") in PATHS else BORE_M))
+        return bool(np.nanmax(found[0], initial=-np.inf) < bore(tags))
 
 
 def floating(points, z, terrain):

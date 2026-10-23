@@ -233,8 +233,8 @@ class Bake(unittest.TestCase):
                 tiles = {key: features.decode(gzip.decompress(data)) for key, data in all_tiles(source)}
         left, right = tiles[(14, self.COLUMN, self.ROW)], tiles[(14, self.COLUMN + 1, self.ROW)]
         kinds = lambda tile: sorted(feature["kind"] for feature in tile)
-        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "river",
-                                       "road", "ruin"])
+        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "railway",
+                                       "river", "road", "ruin"])
         self.assertEqual(kinds(right), ["road"])
         self.assertEqual({key[0] for key in tiles}, set(range(8, 15)))
         dam = next(feature for feature in left if feature["kind"] == "dam")

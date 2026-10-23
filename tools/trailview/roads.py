@@ -1,5 +1,6 @@
-"""The road solver of the TrailView feature tiles: a height on each vertex of the roads, paths, tunnels and
-galleries, from the master terrain, by the rules per `highway` class of `data/trailview/roads.json`.
+"""The road solver of the TrailView feature tiles: a height on each vertex of the roads, paths, railways,
+tunnels and galleries, from the master terrain, by the rules per class of `data/trailview/roads.json`: the
+`highway` of a road, the `railway` of a track, or `rack` for a rack railway.
 
 A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − hᵢ)² + λ·Σ Δgrade² / s, with Huber
 weights wᵢ, so that a spike or a gully of the terrain does not move the road, and λ = smooth_m⁴ of its
@@ -7,7 +8,8 @@ class. No segment is steeper than the grade of its class. Ways that share a vert
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
 under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
 between its ends, and rises where it would pass too low over the water, the road or the path that it crosses.
-A tunnel sinks under a road or a path that crosses over it, which does not move. A ford lies FORD_M below the water it crosses."""
+A tunnel sinks under a road or a path that crosses over it, which does not move. A ford lies FORD_M below the water it crosses.
+Tracks side by side, as OSM maps each track of a double line, lie at one height: their beds are one bed."""
 
 import json
 import math
@@ -15,15 +17,18 @@ from pathlib import Path
 
 import numpy as np
 from scipy import sparse
+from scipy.spatial import cKDTree
 from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
-from .structures import BORE_M, BORE_PATH_M
+from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
 FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
-KINDS = {"main-road", "road", "path", "tunnel", "gallery"}
+KINDS = {"main-road", "road", "path", "railway", "tunnel", "gallery"}
+# The classes of the tracks.
+RAILS = {"rail", "light_rail", "narrow_gauge", "rack", "funicular"}
 # A cable route on rock has no bench to stamp.
 UNSOLVED = {"via_ferrata"}
 SAMPLE_M = 2.0
@@ -37,12 +42,14 @@ HUBER_M = 1.0
 FORD_M = 0.2
 # A bridge shorter than this that lies no higher than CULVERT_RISE_M over the terrain is a road over a culvert.
 CULVERT_M, CULVERT_RISE_M = 8.0, 1.0
-# The least height of a deck's road over the water, the road and the path that it crosses: the clearance
-# under the deck and the deck's depth (DECK_M for a road, DECK_PATH_M for a path).
-CLEAR_WATER_M, CLEAR_ROAD_M, CLEAR_PATH_M = 1.5, 4.5, 2.5
+# The least height of a deck's road over the water, the road, the path and the track that it crosses: the
+# clearance under the deck and the deck's depth (DECK_M for a road, DECK_PATH_M for a path).
+CLEAR_WATER_M, CLEAR_ROAD_M, CLEAR_PATH_M, CLEAR_RAIL_M = 1.5, 4.5, 2.5, 6.0
 DECK_M, DECK_PATH_M = 1.0, 0.4
 # A road or a path over a tunnel lies at least this far over its bore.
 COVER_M = 1.0
+# A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its height.
+PARALLEL_M, PARALLEL_COS = 6.0, 0.9
 # Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no road,
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
@@ -79,9 +86,16 @@ def solves(kind, tags):
     return kind in KINDS and tags.get("highway") not in UNSOLVED
 
 
+def class_of(tags):
+    """The class of a way: `rack` for a rack railway, else its `railway` or its `highway`."""
+    if "railway" in tags:
+        return "rack" if tags.get("rack", "no") != "no" else tags["railway"]
+    return tags.get("highway", "")
+
+
 def rule_of(kind, tags, classes=CLASSES):
     """The row of the class table of a way: its class, else that of its kind."""
-    name = tags.get("highway", "")
+    name = class_of(tags)
     return name if name in classes else ("path" if kind == "path" else "road")
 
 
@@ -292,6 +306,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
     bores = chain_rows(net, net.tunnel)
+    beside = parallel_pins(net, classes)
     above = clearances(net, rivers, classes)
     sags = chain_rows(net, net.free & ~net.tunnel)
     above = (np.concatenate([above[0], np.column_stack([sags[0], sags[0][:, 0]])]), np.concatenate([above[1], np.pad(sags[1], ((0, 0), (0, 1)))]),
@@ -304,9 +319,9 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     held_up = np.all(known[under[0]], axis=1) & np.all(known[under[2]], axis=1)
     pairs = lambda variables, coefficients: sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(variables)), 2), variables.ravel())), shape=(len(variables), n))
     T, R, need = pairs(under[0][held_up], under[1][held_up]), pairs(under[2][held_up], under[3][held_up]), under[4][held_up]
-    variables = np.concatenate([approach[0], fords[0], bores[0]])
-    coefficients = np.concatenate([approach[1], fords[1], bores[1]])
-    values = np.concatenate([approach[2], fords[2], bores[2]])
+    variables = np.concatenate([approach[0], fords[0], bores[0], beside[0]])
+    coefficients = np.concatenate([approach[1], fords[1], bores[1], beside[1]])
+    values = np.concatenate([approach[2], fords[2], bores[2], beside[2]])
     ok = np.all(known[variables], axis=1)
     variables, coefficients, values = variables[ok], coefficients[ok], values[ok]
     P = sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(values)), 3), variables.ravel())), shape=(len(values), n))
@@ -539,6 +554,50 @@ def chain_rows(net, members):
     return np.array([r[0] for r in rows], np.int64), np.array([r[1] for r in rows]), np.zeros(len(rows))
 
 
+def parallel_pins(net, classes):
+    """(variables, coefficients, values) of z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a track on the
+    ground and the nearest segment A-B of a track on the ground with a higher way number within PARALLEL_M
+    beside it that runs its way, τ the foot of P on A-B. Each track follows only tracks after it, so no two
+    rows pull against each other, and the tracks of a double line or a station lie at one height."""
+    none = (np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0))
+    rail = np.array([name in RAILS for name in classes])[net.rule] & ~net.free
+    segments = np.flatnonzero(rail[net.segment_way])
+    if not len(segments):
+        return none
+    start = net.segment_start[segments]
+    pa, pb = net.vertex_xy[start], net.vertex_xy[start + 1]
+    unit = metres(pa[:, 1])
+    d = pb - pa
+    length = np.hypot(*d.T)
+    # One scale for the search, a little wider than the metres of any of its rows.
+    scale = float(unit.max())
+    tree = cKDTree((pa + pb) / 2 * scale)
+    reach = (PARALLEL_M + VERTEX_M / 2) * scale / float(unit.min())
+    variables, coefficients = [], []
+    for w in np.flatnonzero(rail).tolist():
+        span = np.arange(net.way_first[w], net.way_last[w] + 1)
+        for v, near in zip(span.tolist(), tree.query_ball_point(net.vertex_xy[span] * scale, reach)):
+            p = net.vertex_xy[v]
+            u = v + 1 if v < net.way_last[w] else v - 1
+            own = (net.vertex_xy[u] - p) / max(np.hypot(*(net.vertex_xy[u] - p)), 1e-300)
+            best = None
+            for k in near:
+                other = net.segment_way[segments[k]]
+                if other <= w or abs(float(own @ d[k]) / max(length[k], 1e-300)) < PARALLEL_COS:
+                    continue
+                t = float(np.clip((p - pa[k]) @ d[k] / max(length[k] ** 2, 1e-300), 0, 1))
+                gap = float(np.hypot(*(p - pa[k] - t * d[k]))) * unit[k]
+                if gap <= PARALLEL_M and (best is None or gap < best[0]):
+                    best = (gap, k, t)
+            if best:
+                _, k, t = best
+                variables.append([net.vertex_var[v], net.a[segments[k]], net.b[segments[k]]])
+                coefficients.append([1.0, -(1 - t), -t])
+    if not variables:
+        return none
+    return np.array(variables, np.int64), np.array(coefficients), np.zeros(len(variables))
+
+
 def ford_pins(net, rivers):
     """(variables, coefficients, values) of the fords, in rows of three variables: a road vertex that a
     waterway shares, and the point where a way tagged as a ford crosses a waterway, lie FORD_M below
@@ -587,9 +646,10 @@ def ford_pins(net, rivers):
 
 def clearances(net, rivers, classes):
     """(variables, coefficients, values) of the decks over what they cross, in rows of four variables: where
-    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road or a
-    path that it does not meet, z − z_below ≥ CLEAR_ROAD_M or CLEAR_PATH_M + its deck."""
+    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road, a
+    path or a track that it does not meet, z − z_below ≥ CLEAR_ROAD_M, CLEAR_PATH_M or CLEAR_RAIL_M + its deck."""
     path = list(classes).index("path")
+    rail = np.array([name in RAILS for name in classes])
     deck = lambda w: DECK_PATH_M if net.rule[w] >= path else DECK_M
     variables, coefficients, values = [], [], []
     # A bridge shorter than a culvert may be one: the terrain decides that.
@@ -618,7 +678,7 @@ def clearances(net, rivers, classes):
                 other, k = road
                 if {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]} or not (0 <= tr < 1 and 0 <= u < 1):
                     continue
-                clear = CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M
+                clear = CLEAR_RAIL_M if rail[net.rule[other]] else CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M
                 variables.append([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[k], net.vertex_var[k + 1]])
                 coefficients.append([1 - u, u, -(1 - tr), -tr])
                 values.append(clear + deck(w))
@@ -632,12 +692,13 @@ def ceilings(net, classes):
     segment a-b passes under a segment c-d, (1 − u)·z_a + u·z_b ≤ (1 − r)·z_c + r·z_d − its bore − COVER_M.
     The tunnel's variables and coefficients, the road's, the margins and the tunnel's way, per row."""
     path = list(classes).index("path")
+    rail = np.array([name in RAILS for name in classes])
     tunnels = np.flatnonzero(net.tunnel).tolist()
     above = ground_near(net, tunnels)
     grid = gridded(above)
     rows = []
     for w in tunnels:
-        bore = (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M
+        bore = (BORE_RAIL_M if rail[net.rule[w]] else BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M
         for v in range(net.way_first[w], net.way_last[w]):
             p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
             for number in sorted({k for cell in cells(p, q) for k in grid.get(cell, [])}):
