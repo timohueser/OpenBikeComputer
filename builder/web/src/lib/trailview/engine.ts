@@ -26,6 +26,10 @@ const RED = { r: 1, g: 0, b: 0, a: 1 };
 const FRAME_BYTES = 96;
 const MAX_PIXEL_RATIO = 2;
 const RAD = Math.PI / 180;
+/** A walking eye steps up or down this far onto a floor; on a floor this far under the terrain it is in a tunnel. */
+const STEP_M = 1, HEADROOM_M = 2;
+/** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
+const BORE_M = 6;
 
 export interface Stats {
     adapter: string;
@@ -50,6 +54,9 @@ export interface Stats {
     ground: GroundStats;
 }
 
+/** Where the eye stands: a height, and whether it lies in a tunnel. */
+interface Feet { z: number; tunnel: boolean }
+
 /** Where the selection looks from: `above` is the eye's height above the ground, or the pose's height over an unknown ground. */
 interface Place { east: number; north: number; above: number }
 /** The eye in the frame, at height z above sea level. */
@@ -73,6 +80,8 @@ export class TrailView {
     private gpuState!: { gpu: Gpu; uniform: GPUBuffer; look: GPUBuffer; times: PassTimes; targets: Targets };
     /** The ground under the eye, on the plane of the last probe; a new view forgets it. */
     private footing?: Footing;
+    /** Where the eye stood in the last frame: the height, and whether it was in a tunnel. */
+    private feet?: Feet;
     private ready = false;
     private pending = false;
     private moved = false;
@@ -125,6 +134,7 @@ export class TrailView {
         // A view at another place forgets the ground; a scripted flight step keeps it for the probe to follow.
         if (Math.hypot(pose.east - this.pose.east, pose.north - this.pose.north) > NEW_PLACE) {
             this.footing = undefined;
+            this.feet = undefined;
             this.terrain.forget();
             this.temporal.reset();
         }
@@ -204,9 +214,26 @@ export class TrailView {
         requestAnimationFrame(now => this.render(now));
     }
 
-    /** The ground under the eye, from the GPU probe; where no level knows it, the last known ground. */
+    /** The height that the eye stands on. */
     private ground(): number | undefined {
-        return this.footing && groundOf(this.footing, this.pose.east, this.pose.north);
+        return this.stand()?.z;
+    }
+
+    /**
+     * Where the eye stands: on the ground under it from the GPU probe, or where no level knows it, the
+     * last known ground. A walking eye stands on the floor of a deck or a tunnel within a step of its
+     * feet instead. Off a tunnel's floor, past its edge or between its segments, it keeps its feet: the
+     * hill over it is no place to land. A flying eye under the terrain stands on a tunnel's floor below it.
+     */
+    private stand(): Feet | undefined {
+        const terrain = this.footing && groundOf(this.footing, this.pose.east, this.pose.north);
+        if (terrain === undefined) return terrain;
+        const at = this.frame.lonLat(this.pose.east, this.pose.north), feet = this.feet?.z ?? terrain;
+        const floor = this.pose.mode === 'fly'
+            ? this.pose.height < terrain ? this.terrain.floorAt(at, this.pose.height - BORE_M, this.pose.height) : undefined
+            : this.terrain.floorAt(at, feet - STEP_M, feet + STEP_M) ?? (this.feet?.tunnel ? feet : undefined);
+        const z = floor ?? terrain;
+        return { z, tunnel: z < terrain - HEADROOM_M };
     }
 
     /** Whether a still view that can draw needs more jittered frames. */
@@ -259,6 +286,7 @@ export class TrailView {
             const [east, north] = this.frame.local(...probe.lonLat);
             this.footing = follow(this.footing, { ...probe, east, north }, this.pose.east, this.pose.north, dt);
         }
+        this.feet = this.stand();
         const settled = this.settled();
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
@@ -268,7 +296,7 @@ export class TrailView {
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
-        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] });
+        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         const group = this.groundLook.group;

@@ -15,8 +15,11 @@ const HEAD = 2;
 const OFFSETS = GRID * GRID + 1;
 /** A cell entry of a lake marker: the lake's cell centre lies inside it. */
 export const INSIDE = 1 << 30;
-/** Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. */
-export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7;
+/**
+ * Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. A bridge holds
+ * the ground under its deck, and a tunnel holds the ground over its bore.
+ */
+export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
 export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A = 32, JOIN_B = 64;
 /** No stamp reaches further than the feature tiles' buffer, so a primitive goes to each cell within it. */
@@ -35,7 +38,17 @@ export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 
 type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
-const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
+/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of tools/trailview/structures.py. */
+const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
+/** OSM bridge values of a way that lies on the ground, as GROUND of tools/trailview/structures.py. */
+const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
+/** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road and a path. */
+const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6;
+/** The top of a gallery's roof at its hill, over a road and over a path. */
+export const ROOF_M = 6.2, ROOF_PATH_M = 4;
+/** A bridge on piers, one with a roof and walls, or one that hangs from cables. */
+export type BridgeStyle = 'beam' | 'covered' | 'cable';
+const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
 /**
  * The profile of a road or path class, as `Profile` in stamp-core.wgsl. The core holds the road height
  * ± `tol`. The cut and the fill (rise per metre) widen until they stop binding `reach` metres past the
@@ -88,7 +101,8 @@ export function surfaceOf(tags: Record<string, string>): Surface {
     if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
     if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
     if (['grass', 'grass_paver'].includes(surface)) return 'grass';
-    if (PATHS.includes(highway)) return 'path';
+    // A path without a `surface` tag is a path's, but a cycleway is paved.
+    if (Object.hasOwn(PATH_HALF, highway) && highway !== 'cycleway') return 'path';
     if (highway === 'track') return ({ grade1: 'road', grade2: 'gravel', grade3: 'dirt' } as const)[tracktype as 'grade1'] ?? 'grass';
     return MAIN.includes(highway) ? main : 'road';
 }
@@ -97,8 +111,12 @@ export function surfaceOf(tags: Record<string, string>): Surface {
 export function halfWidth(tags: Record<string, string>, surface: Surface): number {
     const width = parseFloat(tags.width ?? '');
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
-    return ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    const half = ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    return Math.min(half, PATH_HALF[tags.highway] ?? half);
 }
+
+/** Whether a line is a path, by its class: a footbridge has railings, whatever its surface. */
+export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.profile]);
 
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
@@ -109,7 +127,14 @@ export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS /
  * `packTilt` packs them: the through road's surface near a junction, zero elsewhere. `join` marks the
  * first and the last vertex where the line runs on into the next line of the through road at a bend.
  */
-export interface Line { kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean] }
+export interface Line {
+    kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean];
+    /**
+     * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
+     * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground, as `abutments` has it.
+     */
+    deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
+}
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 /** The shapes of a tile: lines and lakes with heights, and the river areas, which lie on the drawn surface. */
@@ -161,16 +186,22 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             continue;
         }
         const river = kind === 'river' || kind === 'stream';
-        if (!river && (!['main-road', 'road', 'path'].includes(kind) || (tags.bridge && tags.bridge !== 'no'))) continue;
+        if (!river && !['main-road', 'road', 'path', 'tunnel', 'gallery'].includes(kind)) continue;
+        // A passage through a building is a road: the building stands over it.
+        const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = Object.hasOwn(PATH_HALF, tags.highway);
+        const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no');
         const surface = surfaceOf(tags), width = parseFloat(tags.width ?? '');
         const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
-        const profile = profileOf(kind, tags.highway), type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : kind === 'path' ? PATH : ROAD;
+        const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, tags.highway);
+        const type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'path' || path ? PATH : ROAD;
+        const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (path ? BORE_PATH_M : BORE_M) : kind === 'gallery' ? (path ? ROOF_PATH_M : ROOF_M) : undefined;
+        const style: BridgeStyle | undefined = !bridge ? undefined : tags.bridge === 'covered' ? 'covered' : CABLES.includes(tags['bridge:structure']) ? 'cable' : 'beam';
         for (const { xy, z } of parts) {
             if (!z) continue;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m.
             let run: number[] = [], heights: number[] = [];
             const flush = () => {
-                if (heights.length >= 2) lines.push({ kind: type, ...smoothed(run, heights), h, code, ford: !!tags.ford && tags.ford !== 'no', profile });
+                if (heights.length >= 2) lines.push({ kind: type, ...smoothed(run, heights), h, code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style, gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined });
                 run = [];
                 heights = [];
             };
@@ -185,8 +216,26 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         }
     }
     junctionPlanes(lines);
+    abutments(lines);
     return { lines, lakes, areas };
 }
+
+/**
+ * The ends of the bridges and the tunnels that meet the ground: an abutment, a portal. An end meets the
+ * ground where it meets a road or a path on it, and where a bridge and a tunnel meet: in the hillside.
+ */
+function abutments(lines: Line[]): void {
+    const vertices = (kinds: number[]) => new Set(lines.filter(({ kind }) => kinds.includes(kind)).flatMap(({ xy }) => xy.filter((_, i) => i % 2 === 0).map((x, v) => `${x},${xy[2 * v + 1]}`)));
+    const bridge = vertices([ROAD, PATH, TUNNEL]), tunnel = vertices([ROAD, PATH, BRIDGE]);
+    for (const line of lines) {
+        if (line.kind !== BRIDGE && line.kind !== TUNNEL) continue;
+        const n = line.z.length, ground = line.kind === BRIDGE ? bridge : tunnel;
+        line.abut = [ground.has(`${line.xy[0]},${line.xy[1]}`), ground.has(`${line.xy[2 * n - 2]},${line.xy[2 * n - 1]}`)];
+    }
+}
+
+/** The lines whose shared vertices are junctions of the road cores: roads, bridges and tunnels. */
+export const cores = (lines: Line[]) => lines.filter(({ kind }) => kind === ROAD || kind === BRIDGE || kind === TUNNEL);
 
 /**
  * As APPROACH_M of tools/trailview/roads.py: the solver puts the first metres of a side road on the
@@ -408,7 +457,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
     const f = (value: number) => ((floats[0] = value), ints[0]);
 
-    const joins = junctions(lines.filter(line => line.kind === ROAD));
+    const joins = junctions(cores(lines));
     for (const { x, y, h } of joins.values()) {
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
@@ -422,16 +471,24 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
+        // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
+        const along = [0];
+        for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
         for (let v = 0; v + 1 < n; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
             const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
-            const flags = (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
+            const flags = line.kind === BRIDGE || line.kind === TUNNEL ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
-                line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0]);
+            // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
+            const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
+            // A bridge's or a tunnel's metres from its ends where they meet the ground, a gallery's from its ends; else a road's tilts.
+            const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f)
+                : line.gallery ? [along[v], along[n - 1] - along[v + 1]].map(f) : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
+            const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
+                ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

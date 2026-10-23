@@ -2,6 +2,7 @@ import { featureTile, type NodeStamps } from './bins';
 import { key, type Node } from './lod';
 import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
+import type { StructureMesh } from '../structures/mesh';
 import type { WaterMesh } from './water-mesh';
 
 /** Feature tile bodies kept, and the bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
@@ -9,13 +10,17 @@ const BODIES = 32 * 2 ** 20, NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
 
-/** What a node stamps and its water, from the worker. */
+/** What a node stamps, its water, its structures, their floors and the boxes of its tunnels' portals, from the worker. */
 export interface NodeFeatures extends NodeStamps {
     water: WaterMesh | null;
+    structures: StructureMesh | null;
+    floors: Float64Array<ArrayBuffer> | null;
+    portals: Float64Array<ArrayBuffer> | null;
 }
 
-const NOTHING: NodeFeatures = { data: null, heights: false, water: null };
-const bytesOf = ({ data, water }: NodeFeatures) => ENTRY_BYTES + (data?.byteLength ?? 0) + (water ? water.vertices.byteLength + water.indices.byteLength : 0);
+const NOTHING: NodeFeatures = { data: null, heights: false, water: null, structures: null, floors: null, portals: null };
+const meshBytes = (mesh: WaterMesh | StructureMesh | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
+const bytesOf = ({ data, water, structures, floors, portals }: NodeFeatures) => ENTRY_BYTES + (data?.byteLength ?? 0) + meshBytes(water) + meshBytes(structures) + (floors?.byteLength ?? 0) + (portals?.byteLength ?? 0);
 
 /** The body of feature tile z/x/y, undefined where it is absent. */
 export type FeatureTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;

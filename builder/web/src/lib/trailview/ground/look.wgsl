@@ -432,6 +432,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var broad = 0.0;
     if (n.z < 0.95 || skirt > 0.0) {
         broad = max(1.0 - smoothstep(0.85, 0.95, g.coarse.z), skirt);
+        // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
+        // where that is bare.
+        broad *= 1.0 - road.shaped * (1.0 - g.barren);
         let towards = max(cliff, skirt);
         n = normalize(mix(n, g.coarse, towards));
         open = mix(open, g.coarse_open, towards);

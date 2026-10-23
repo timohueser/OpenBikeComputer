@@ -26,6 +26,32 @@ struct Node {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
+// The boxes of the tunnels' portals near the eye: x the count; then per box its facade's middle in units
+// about the anchor and its way into the tunnel; in metres its depth, its half-width, the heights of its
+// roof's top and of its walls' foot at the facade; and the rise of both per metre in.
+@group(0) @binding(2) var<storage, read> holes: array<vec4f>;
+
+// The nodes with a tunnel's portal draw no terrain in its box between its walls' foot and its roof: the
+// bore shows through.
+override HOLES: bool = false;
+
+// Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
+// box, negative inside. The distance is convex, so its interpolation over a triangle never clips the
+// terrain outside a box: beside it, behind it, on the hill over its roof or on the slope under it.
+fn hole_distance(u: vec2f, h: f32) -> f32 {
+    var d = 1e6;
+    for (var i = 0u; i < u32(holes[0].x); i++) {
+        let a = holes[1u + 3u * i];
+        let b = holes[2u + 3u * i];
+        let rise = holes[3u + 3u * i].x;
+        let p = (u - a.xy) * surface.unit;
+        let along = dot(p, a.zw);
+        let across = abs(a.z * p.y - a.w * p.x);
+        let height = h - rise * along;
+        d = min(d, max(max(max(-along, along - b.x), across - b.y), max(height - b.z, b.w - height)));
+    }
+    return d;
+}
 
 const CELLS = 64u;
 
@@ -42,6 +68,7 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.s = v.s;
     out.relative = p;
     mark_known(&out, known(v.h));
+    mark_hole(&out, select(1e6, hole_distance(units_of(v.s), v.h), HOLES));
     out.h = v.h;
     out.level = node.level;
     return out;

@@ -116,7 +116,27 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
-- ignores the terrain under a bridge and in a tunnel: these run between their ends,
+- ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in a
+  straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
+  or a shaft that joins it follows it and does not lift it. A bridge never sags under the straight line
+  between the two ends of its chain of bridge ways,
+- raises a bridge that is not a culvert where it crosses a waterway, or a road or a path on the ground
+  that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road) or 2.5 m (path) over it,
+  plus a deck of 1 m, or 0.4 m for a path. The road below may sink to give the room. A bridge whose end
+  lies on the road that it crosses, within that road's half-width, meets it there and does not rise,
+- lets a bridge rise from where it lands at a height that it cannot move no more steeply than 1:1: an
+  end that meets no other way stands on the terrain, and an end that leaves a junction as a side lies on
+  the through road. A crossing that asks more lies where the bridge lands and does not raise it,
+- sinks a tunnel where a road or a path crosses over it without meeting it: the tunnel's road lies at
+  least its bore and 1 m under that road's middle and both its edges. A road on the ground over a tunnel
+  does not move,
+- passes one way over the other where two bridges cross that no bridge joins or that both tag a
+  different `layer`, and where two ways on the ground with a different `layer` cross, without meeting: the one of
+  the higher `layer`, at an equal layer of the first class of the table, and of one class the later one
+  in the OSM data, lies over the other by the clearance and the deck above. Both ways may move to give
+  the room. A way on the ground of a negative `layer` without a `tunnel` tag, such as a corridor of a
+  station, runs under something that the solver leaves out: no way on the ground passes over or under
+  it,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
@@ -124,6 +144,32 @@ The tiles keep the vertices of OSM and the vertex at the end of each approach of
 a vertex between two of them where the solved height leaves the straight line between them by more
 than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
+A tunnel whose terrain lies less than its bore (5 m, or 2.6 m for a path) over it everywhere runs under
+something that the terrain leaves out, such as a building or a railway: the tiles keep it without its
+`tunnel` tag, as a road of its class. A `building_passage` and a tunnel under a road or a path stay
+tunnels. The tiles leave out a part of
+a tunnel that rises more than 5 m over the terrain anywhere farther than 20 m from its ends: the solver
+could not put it under the terrain.
+
+### Structures
+
+The bake adds these to the features of the road solver:
+
+| Added | On | Value |
+| --- | --- | --- |
+| tag `deck` | each way of a bridge | The depth of its deck in metres, one decimal: 1/30 of its longest span within 0.5 to 2.5 m, for a path 1/40 within 0.3 to 1 m |
+| tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
+| tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
+| point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+
+A bridge is the chain of bridge ways whose ends meet two by two. Its piers divide it evenly into spans
+of at most 45 m, or 30 m for a path. A pier that falls in water which the bridge crosses for less than
+30 m moves 2 m past the nearer bank of it, and one that falls on a road, a path or a tunnel moves 2 m
+past its nearer side; one that comes within 6 m of another pier or of an end goes. Water is a waterway
+within its half-width and 1 m, a river area or a lake. A road is its line within 1 m and its
+half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for a road or a
+`pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
+bridge has no piers.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the

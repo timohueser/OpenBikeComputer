@@ -73,4 +73,14 @@ describe('the ground pages', () => {
         expect(counts).toEqual([8, 8, 4]);
         expect(pages.idle).toBe(true);
     });
+
+    it('ask the terrain for the coarse node that the relief reads, and build the relief again when it changes', async () => {
+        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        const drawn = row(8580, 4);
+        await settle(pages, drawn);
+        expect(pages.reads).toEqual(expect.arrayContaining([{ level: 13, x: 4290, y: 2885 }, { level: 13, x: 4291, y: 2885 }]));
+        const work = pages.update(drawn, drawn, [{ level: 13, x: 4290, y: 2885 }], [], EYE);
+        expect(work.refreshes.map(slot => slot.node.x).sort()).toEqual([8580, 8581]);
+    });
 });
