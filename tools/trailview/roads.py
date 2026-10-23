@@ -6,8 +6,10 @@ weights wᵢ, so that a spike or a gully of the terrain does not move the road, 
 class. No segment is steeper than the grade of its class. Ways that share a vertex share its height, and
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
 under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
-between its ends, and rises where it would pass too low over the water, the road or the path that it crosses.
-A tunnel sinks under a road or a path that crosses over it, which does not move. A ford lies FORD_M below the water it crosses."""
+between its ends, and rises where it would pass too low over the river, the road or the path that it
+crosses; a short bridge that lies on the terrain is a culvert and does not. A tunnel sinks under a road or a path
+that crosses over it, which does not move. Of two bridges that cross, the one of the higher layer passes over the
+other, at one layer the better class. A ford lies FORD_M below the water it crosses."""
 
 import json
 import math
@@ -19,7 +21,7 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
-from .structures import BORE_M, BORE_PATH_M
+from .structures import BORE_M, BORE_PATH_M, road_half
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
 FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
@@ -85,6 +87,14 @@ def rule_of(kind, tags, classes=CLASSES):
     return name if name in classes else ("path" if kind == "path" else "road")
 
 
+def layer(tags):
+    """The OSM `layer` of a way, 0 where it has none."""
+    try:
+        return int(tags.get("layer", 0))
+    except ValueError:
+        return 0
+
+
 def key(points):
     """One complex number per point, equal for equal points."""
     return points[..., 0] + 1j * points[..., 1]
@@ -114,6 +124,8 @@ class Network:
         self.rule = np.array([way[3] for way in self.ways])
         self.free = np.array([way[4] for way in self.ways], bool)
         self.tunnel = np.array([features[way[0]][0] == "tunnel" for way in self.ways], bool)
+        self.layer = np.array([layer(features[way[0]][1]) for way in self.ways])
+        self.half = np.array([road_half(features[way[0]][1]) for way in self.ways])
         self.osm_xy = np.concatenate([way[2] for way in self.ways])
         self.osm_way = np.repeat(np.arange(len(self.ways)), counts)
         self.osm_first = np.cumsum(counts) - counts
@@ -243,7 +255,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     """Per feature (kind, tags, parts): its parts (outer, points, heights) with the heights solved, None
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
     features that are culverts; the tunnels that pass under a road or a path; and the metrics of the solve. `rivers` lists (points, levels) of the
-    solved waterways, for the fords."""
+    solved waterways, for the fords and the decks."""
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     net = Network(features, classes)
     if not net.ways:
@@ -260,8 +272,12 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     ends = np.cumsum(net.way_last - net.way_first) - 1
     seg, t = np.concatenate([seg, ends]), np.concatenate([t, np.ones(len(ends))])
     free = net.free[net.segment_way]
-    # A bridge or a tunnel sees no terrain, unless nothing that it meets does.
-    weight = (length / k)[seg] * ~free[seg]
+    # A bridge or a tunnel sees no terrain, unless nothing that it meets does. A bridge's end that meets no
+    # other way stands on the terrain (`landings`): else the smoothness carries any rise of its deck on up.
+    loose = np.zeros(n, bool)
+    ends = np.concatenate([net.way_first, net.way_last])[np.tile(net.free & ~net.tunnel, 2)]
+    loose[net.vertex_var[ends]] = ~net.junction[net.vertex_var[ends]]
+    weight = (length / k)[seg] * (~free[seg] | loose[np.where(t == 0, a[seg], b[seg])] & ((t == 0) | (t == 1)))
     h = np.empty(len(seg))
     pa, pb = net.vertex_xy[net.segment_start], net.vertex_xy[net.segment_start + 1]
     for begin in range(0, len(seg), CHUNK):
@@ -292,18 +308,20 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
     bores = chain_rows(net, net.tunnel)
-    above = clearances(net, rivers, classes)
+    above = clearances(net, rivers, classes, terrain)
     sags = chain_rows(net, net.free & ~net.tunnel)
     above = (np.concatenate([above[0], np.column_stack([sags[0], sags[0][:, 0]])]), np.concatenate([above[1], np.pad(sags[1], ((0, 0), (0, 1)))]),
-             np.concatenate([above[2], sags[2]]))
-    C = sparse.csr_matrix((above[1].ravel(), (np.repeat(np.arange(len(above[2])), 4), above[0].ravel())), shape=(len(above[2]), n))
-    C = C[np.all(known[above[0]], axis=1)]
-    least = above[2][np.all(known[above[0]], axis=1)]
-    clear = (np.arange(len(above[2])) < len(above[2]) - len(sags[2]))[np.all(known[above[0]], axis=1)]
-    under = ceilings(net, classes)
+             np.concatenate([above[2], sags[2]]), np.concatenate([above[3], np.full(len(sags[2]), -1)]))
+    whole = np.all(known[above[0]], axis=1)
+    C = sparse.csr_matrix((above[1].ravel(), (np.repeat(np.arange(len(above[2])), 4), above[0].ravel())), shape=(len(above[2]), n))[whole]
+    least, deck_way = above[2][whole], above[3][whole]
+    clear = deck_way >= 0
+    under = passes(net, classes)
     held_up = np.all(known[under[0]], axis=1) & np.all(known[under[2]], axis=1)
     pairs = lambda variables, coefficients: sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(variables)), 2), variables.ravel())), shape=(len(variables), n))
-    T, R, need = pairs(under[0][held_up], under[1][held_up]), pairs(under[2][held_up], under[3][held_up]), under[4][held_up]
+    # U is the upper way and L the lower at each crossing; the row of a tunnel under a road holds the tunnel alone.
+    U, L, need = pairs(under[0][held_up], under[1][held_up]), pairs(under[2][held_up], under[3][held_up]), under[4][held_up]
+    apart = sparse.diags(under[6][held_up].astype(float)) @ U - L
     variables = np.concatenate([approach[0], fords[0], bores[0]])
     coefficients = np.concatenate([approach[1], fords[1], bores[1]])
     values = np.concatenate([approach[2], fords[2], bores[2]])
@@ -376,15 +394,18 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         if solves_ < SOLVES - 1:
             residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
             w = weight * np.minimum(1.0, HUBER_M / np.maximum(residual, 1e-9))
-            # A deck that passes too low holds its least height from the next solve on.
-            low = C[C @ z < least - TOLERANCE_M]
-            fixed = fixed + PIN * (low.T @ low)
-            pinned = pinned + PIN * (low.T @ least[C @ z < least - TOLERANCE_M])
-            # A tunnel that passes too high under a road holds its greatest height: the road stays.
-            ceiling = R @ z - need
-            over = T @ z > ceiling + TOLERANCE_M
-            fixed = fixed + PIN * (T[over].T @ T[over])
-            pinned = pinned + PIN * (T[over].T @ ceiling[over])
+            # A short bridge that lies on the terrain is a culvert. Any other deck that passes too low holds
+            # its least height from the next solve on.
+            culvert = culverts_of(net, z, seg, t, h, finite)
+            low = (C @ z < least - TOLERANCE_M) & ~(clear & culvert[deck_way])
+            fixed = fixed + PIN * (C[low].T @ C[low])
+            pinned = pinned + PIN * (C[low].T @ least[low])
+            # Ways that pass too near hold the margin from the next solve on; a tunnel under a road holds
+            # the road's height less the margin.
+            near = U @ z - L @ z < need - TOLERANCE_M
+            target = np.where(under[6][held_up], need, need - U @ z)
+            fixed = fixed + PIN * (apart[near].T @ apart[near])
+            pinned = pinned + PIN * (apart[near].T @ target[near])
         before, held = held, update(held, G @ z)
     # Rounds of the slope limits near the segments whose limit changed, the rest of the network fixed.
     # Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
@@ -411,7 +432,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         v = net.vertex_var[span][mask]
         heights = np.where(known[v], z[v], np.nan).tolist()
         out[f][p] = (out[f][p][0], points, [None if math.isnan(value) else value for value in heights])
-    culverts = culvert_features(net, features, z, seg, t, h, finite)
+    culverts = {net.ways[w][0] for w in np.flatnonzero(culvert).tolist()}
     excess = np.abs(G @ z) - bound
     worst = limited[np.argmax(excess)] if len(excess) else 0
     lon, lat = world_degrees(net.vertex_xy[net.segment_start[worst]]) if len(excess) else (0, 0)
@@ -419,13 +440,14 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     metrics = {
         "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
         "fords": int(np.count_nonzero(ok[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
-        "clearances": int(clear.sum()), "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & clear)),
-        "ceilings": len(need), "ceilings_high_cm": int(np.count_nonzero(T @ z > R @ z - need + 0.01)),
+        "clearances": int(np.count_nonzero(clear & ~culvert[deck_way])),
+        "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & clear & ~culvert[deck_way])),
+        "passes": len(need), "passes_near_cm": int(np.count_nonzero(U @ z - L @ z < need - 0.01)),
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
         "residual_p99_m": round(float(np.percentile(residual[~free[seg] & (weight > 0)], 99)), 2) if (~free[seg] & (weight > 0)).any() else 0,
     }
-    return out, culverts, {net.ways[w][0] for w in under[5][held_up].tolist()}, metrics
+    return out, culverts, {net.ways[w][0] for w in under[5][held_up & under[7]].tolist()}, metrics
 
 
 def world_degrees(point):
@@ -585,24 +607,33 @@ def ford_pins(net, rivers):
     return np.array(variables, np.int64), np.array(coefficients), np.array(values)
 
 
-def clearances(net, rivers, classes):
-    """(variables, coefficients, values) of the decks over what they cross, in rows of four variables: where
-    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road or a
-    path that it does not meet, z − z_below ≥ CLEAR_ROAD_M or CLEAR_PATH_M + its deck."""
+def clearances(net, rivers, classes, terrain):
+    """(variables, coefficients, values, ways) of the decks over what they cross, in rows of four variables: where
+    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road or a path on the ground that it does not meet, z − z_below ≥
+    CLEAR_ROAD_M or CLEAR_PATH_M + its deck; but a bridge whose end lies on that road, within its half-width,
+    meets it there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
+    climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row."""
     path = list(classes).index("path")
     deck = lambda w: DECK_PATH_M if net.rule[w] >= path else DECK_M
-    variables, coefficients, values = [], [], []
-    # A bridge shorter than a culvert may be one: the terrain decides that.
-    way_length = np.bincount(net.segment_way, net.length, len(net.ways))
-    bridges = [w for w, way in enumerate(net.ways) if way[4] and not net.tunnel[w] and way_length[w] >= CULVERT_M]
-    if not bridges:
-        return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0)
+    rows = []
+    bridges = np.flatnonzero(net.free & ~net.tunnel).tolist()
     # Waterway segments with a level at both ends, and the segments on the ground in the cells of the bridges.
     below = [(p, q, (zp, zq), None) for points, z in rivers for (p, zp), (q, zq) in zip(zip(points, z), zip(points[1:], z[1:])) if zp is not None and zq is not None]
-    below += [(p, q, None, road) for p, q, road in ground_near(net, bridges)]
+    below += [(p, q, None, road) for p, q, road in near(net, bridges, ~net.free)]
     grid = gridded(below)
+    landed = landings(net)
+    continued = np.bincount(net.osm_var[(net.free & ~net.tunnel)[net.osm_way]], minlength=net.osm_count) >= 2
     for w in bridges:
-        for v in range(net.way_first[w], net.way_last[w]):
+        first, last = net.way_first[w], net.way_last[w]
+        along = np.concatenate([[0], np.cumsum(net.length[first - w:last - w])])
+        tips = [along[v - first] for v in (first, last) if not continued[net.vertex_var[v]]]
+        ends = [(along[v - first], float(terrain.heights(*net.vertex_xy[v, :, None])[0])) for v in (first, last) if net.vertex_var[v] in landed]
+
+        def add(variables, coefficients, value, top, at):
+            if all(top - ground <= abs(at - place) for place, ground in ends):
+                rows.append((variables, coefficients, value, w))
+
+        for v in range(first, last):
             p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
             for number in sorted({k for cell in cells(p, q) for k in grid.get(cell, [])}):
                 r0, r1, level, road = below[number]
@@ -610,60 +641,108 @@ def clearances(net, rivers, classes):
                 if hit is None:
                     continue
                 u, tr = hit
+                at = along[v - first] + u * (along[v - first + 1] - along[v - first])
                 if road is None:
-                    variables.append([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v], net.vertex_var[v]])
-                    coefficients.append([1 - u, u, 0.0, 0.0])
-                    values.append(level[0] + (level[1] - level[0]) * tr + CLEAR_WATER_M + deck(w))
+                    value = level[0] + (level[1] - level[0]) * tr + CLEAR_WATER_M + deck(w)
+                    add([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v], net.vertex_var[v]], [1 - u, u, 0.0, 0.0], value, value, at)
                     continue
                 other, k = road
-                if {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]} or not (0 <= tr < 1 and 0 <= u < 1):
+                if ({net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]} or not (0 <= tr < 1 and 0 <= u < 1)
+                        or any(abs(at - tip) <= net.half[other] for tip in tips)):
                     continue
-                clear = CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M
-                variables.append([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[k], net.vertex_var[k + 1]])
-                coefficients.append([1 - u, u, -(1 - tr), -tr])
-                values.append(clear + deck(w))
-    if not values:
-        return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0)
-    return np.array(variables, np.int64), np.array(coefficients), np.array(values)
-
-
-def ceilings(net, classes):
-    """The rows of the tunnels under a road or a path on the ground that they do not meet: where a tunnel
-    segment a-b passes under a segment c-d, (1 − u)·z_a + u·z_b ≤ (1 − r)·z_c + r·z_d − its bore − COVER_M.
-    The tunnel's variables and coefficients, the road's, the margins and the tunnel's way, per row."""
-    path = list(classes).index("path")
-    tunnels = np.flatnonzero(net.tunnel).tolist()
-    above = ground_near(net, tunnels)
-    grid = gridded(above)
-    rows = []
-    for w in tunnels:
-        bore = (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M
-        for v in range(net.way_first[w], net.way_last[w]):
-            p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
-            for number in sorted({k for cell in cells(p, q) for k in grid.get(cell, [])}):
-                r0, r1, (_, k) = above[number]
-                hit = crossing(p, q, np.asarray(r0), np.asarray(r1))
-                if hit is None or {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]}:
-                    continue
-                u, r = hit
-                if 0 <= u < 1 and 0 <= r < 1:
-                    rows.append(((net.vertex_var[v], net.vertex_var[v + 1]), (1 - u, u), (net.vertex_var[k], net.vertex_var[k + 1]), (1 - r, r), bore, w))
+                clear = (CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M) + deck(w)
+                add([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[k], net.vertex_var[k + 1]], [1 - u, u, -(1 - tr), -tr], clear,
+                    float(terrain.heights(*(p + u * (q - p))[:, None])[0]) + clear, at)
     if not rows:
-        return np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros(0), np.zeros(0, np.int64)
-    return tuple(np.array([row[i] for row in rows]) for i in range(6))
+        return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0), np.zeros(0, np.int64)
+    return tuple(np.array([row[i] for row in rows], dtype) for i, dtype in enumerate((np.int64, np.float64, np.float64, np.int64)))
 
 
-def ground_near(net, ways):
-    """The segments of the ways on the ground in the grid cells of `ways`: (start, end, (way, its first vertex))."""
-    near = {cell for w in ways for v in range(net.way_first[w], net.way_last[w]) for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1])}
-    ground = np.flatnonzero(~net.free[net.segment_way])
+def landings(net):
+    """The variables where a bridge lands at a height that it cannot move: an end that meets no other way
+    stands on the terrain, and one that leaves a junction as a side lies on its through road."""
+    bridge = net.free & ~net.tunnel
+    last = np.append(net.osm_first[1:], len(net.osm_var)) - 1
+    ends = np.concatenate([net.osm_first[bridge], last[bridge]])
+    loose = ends[~net.junction[net.osm_var[ends]]]
+    sides = net.sides[0][np.isin(net.sides[0], ends)]
+    return set(net.osm_var[np.concatenate([loose, sides])].tolist())
+
+
+def passes(net, classes):
+    """The rows of the ways that cross without meeting, one over the other: a tunnel under the way that it
+    crosses, by its bore and COVER_M; of two bridges that no bridge joins, and of two ways on the ground of
+    different layers, the one of the higher layer, at an equal layer of the better class, over the other, by
+    the clearance of the lower and the deck of the upper. A road on the ground over a tunnel keeps its height,
+    and the tunnel keeps the margin under its centreline and both edges; any other pair moves apart, the
+    stiffer less. (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ± the margin. Per row: the variables and
+    coefficients of the upper way, of the lower, the margin, the lower way, whether the upper moves too, and
+    whether the lower is a tunnel under a road on the ground."""
+    path = list(classes).index("path")
+    rows = []
+
+    def add(upper, v, lower, k, margin):
+        p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
+        hit = crossing(p, q, net.vertex_xy[k], net.vertex_xy[k + 1])
+        if hit is None or {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]}:
+            return
+        u, r = hit
+        if not (0 <= u < 1 and 0 <= r < 1):
+            return
+        above = ((net.vertex_var[v], net.vertex_var[v + 1]), (1 - u, u))
+        under = (net.vertex_var[k], net.vertex_var[k + 1])
+        if not (net.tunnel[lower] and not net.free[upper]):
+            rows.append((*above, under, (1 - r, r), margin, lower, True, False))
+            return
+        # Where the tunnel's line meets each edge of the road, on this segment of the tunnel at most.
+        e = q - p
+        side = np.array([-e[1], e[0]]) / np.hypot(*e) * net.half[upper] / metres(p[1])
+        places = [r] + [min(max(edge[0], 0.0), 1.0) for offset in (side, -side)
+                        if (edge := lines(net.vertex_xy[k], net.vertex_xy[k + 1], p + offset, e)) is not None]
+        rows.extend((*above, under, (1 - x, x), margin, lower, False, True) for x in places)
+
+    def crossed(ways, among):
+        grid = gridded(segments := near(net, ways, among))
+        for w in ways:
+            for v in range(net.way_first[w], net.way_last[w]):
+                for number in sorted({i for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1]) for i in grid.get(cell, [])}):
+                    yield w, v, *segments[number][2]
+
+    for w, v, other, k in crossed(np.flatnonzero(net.tunnel).tolist(), ~net.tunnel):
+        add(other, k, w, v, (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M)
+    bridge = net.free & ~net.tunnel
+    # The bridges that bridge ways join are one structure, such as a spiral stair: its ways set its heights.
+    on = bridge[net.osm_way]
+    links = sparse.csr_matrix((np.ones(np.count_nonzero(on)), (net.osm_way[on], net.osm_var[on])), shape=(len(net.ways), net.osm_count))
+    _, structure = connected_components(sparse.bmat([[None, links], [links.T, None]]), directed=False)
+    margin = lambda upper, lower: (CLEAR_PATH_M if net.rule[lower] >= path else CLEAR_ROAD_M) + (DECK_PATH_M if net.rule[upper] >= path else DECK_M)
+    rank = lambda i: (net.layer[i], -net.rule[i])
+    for w, v, other, k in crossed(np.flatnonzero(bridge).tolist(), bridge):
+        if rank(w) > rank(other) and structure[w] != structure[other]:
+            add(w, v, other, k, margin(w, other))
+    # A pair of ways on the ground of different layers has one of layer 0 at most; the other one finds it.
+    ground = ~net.free
+    for w, v, other, k in crossed(np.flatnonzero(ground & (net.layer != 0)).tolist(), ground):
+        if net.layer[w] > net.layer[other]:
+            add(w, v, other, k, margin(w, other))
+        elif net.layer[w] < net.layer[other] and net.layer[other] == 0:
+            add(other, k, w, v, margin(other, w))
+    if not rows:
+        return np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros(0), np.zeros(0, np.int64), np.zeros(0, bool), np.zeros(0, bool)
+    return tuple(np.array([row[i] for row in rows]) for i in range(8))
+
+
+def near(net, ways, among):
+    """The segments of the ways that `among` marks in the grid cells of `ways`: (start, end, (way, its first vertex))."""
+    cells_of_ways = {cell for w in ways for v in range(net.way_first[w], net.way_last[w]) for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1])}
+    ground = np.flatnonzero(among[net.segment_way])
     start = net.segment_start[ground]
     lo = np.floor(np.minimum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
     hi = np.floor(np.maximum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
     # A segment is shorter than a cell: its corner cells hold it.
     corners = [(lo[:, 0], lo[:, 1]), (hi[:, 0], lo[:, 1]), (lo[:, 0], hi[:, 1]), (hi[:, 0], hi[:, 1])]
     hit = np.zeros(len(start), bool)
-    keys = np.array(sorted(cx * (1 << 32) + cy for cx, cy in near), np.int64)
+    keys = np.array(sorted(cx * (1 << 32) + cy for cx, cy in cells_of_ways), np.int64)
     for cx, cy in corners:
         hit |= np.isin(cx * (1 << 32) + cy, keys)
     return [(net.vertex_xy[v], net.vertex_xy[v + 1], (int(net.segment_way[i]), v)) for i in ground[hit].tolist() for v in [int(net.segment_start[i])]]
@@ -684,16 +763,20 @@ def cells(p, q):
             for cy in range(int(min(p[1], q[1]) // GRID_UNITS), int(max(p[1], q[1]) // GRID_UNITS) + 1)]
 
 
-def crossing(p, q, r, s):
-    """The parameters (along p-q, along r-s) where two segments cross, or None."""
-    d, e = q - p, s - r
+def lines(p, q, r, e):
+    """The parameters (along p-q, along e from r) where the lines through p-q and along e from r meet, or None."""
+    d = q - p
     denominator = d[0] * e[1] - d[1] * e[0]
     if denominator == 0:
         return None
     f = r - p
-    tp = (f[0] * e[1] - f[1] * e[0]) / denominator
-    tr = (f[0] * d[1] - f[1] * d[0]) / denominator
-    return (tp, tr) if 0 <= tp <= 1 and 0 <= tr <= 1 else None
+    return (f[0] * e[1] - f[1] * e[0]) / denominator, (f[0] * d[1] - f[1] * d[0]) / denominator
+
+
+def crossing(p, q, r, s):
+    """The parameters (along p-q, along r-s) where two segments cross, or None."""
+    hit = lines(p, q, r, s - r)
+    return hit if hit is not None and 0 <= hit[0] <= 1 and 0 <= hit[1] <= 1 else None
 
 
 def kept(net, z, known):
@@ -737,15 +820,13 @@ def kept(net, z, known):
     return keep
 
 
-def culvert_features(net, features, z, seg, t, h, finite):
-    """The features of the short low bridges: no longer than CULVERT_M, with the deck no more than
+def culverts_of(net, z, seg, t, h, finite):
+    """Per way, whether it is a culvert: a bridge shorter than CULVERT_M, with the deck no more than
     CULVERT_RISE_M above the terrain under it."""
     way_length = np.bincount(net.segment_way, net.length, len(net.ways))
-    bridge = np.array([way[4] and features[way[0]][0] != "tunnel" for way in net.ways], bool) & (way_length < CULVERT_M)
-    if not bridge.any():
-        return set()
+    bridge = net.free & ~net.tunnel & (way_length < CULVERT_M)
     sample = np.flatnonzero(bridge[net.segment_way[seg]] & finite)
     rise = np.full(len(net.ways), -np.inf)
     deck = z[net.a[seg[sample]]] * (1 - t[sample]) + z[net.b[seg[sample]]] * t[sample]
     np.maximum.at(rise, net.segment_way[seg[sample]], deck - h[sample])
-    return {net.ways[w][0] for w in np.flatnonzero(bridge & (rise > -np.inf) & (rise <= CULVERT_RISE_M)).tolist()}
+    return bridge & (rise > -np.inf) & (rise <= CULVERT_RISE_M)
