@@ -125,6 +125,7 @@ class Network:
         self.free = np.array([way[4] for way in self.ways], bool)
         self.tunnel = np.array([features[way[0]][0] == "tunnel" for way in self.ways], bool)
         self.layer = np.array([layer(features[way[0]][1]) for way in self.ways])
+        self.layered = np.array(["layer" in features[way[0]][1] for way in self.ways], bool)
         # A way on the ground of a negative `layer` without a `tunnel` tag lies under something that the
         # solver does not model, such as a station hall: no way on the ground passes over or under it.
         self.indoor = ~self.free & (self.layer < 0) & np.array([features[way[0]][1].get("tunnel", "no") == "no" for way in self.ways], bool)
@@ -675,10 +676,10 @@ def landings(net):
 
 def passes(net, classes):
     """The rows of the ways that cross without meeting, one over the other: a tunnel under the way that it
-    crosses, by its bore and COVER_M; of two bridges that no bridge joins or of different layers, and of two
-    ways on the ground of different layers that are not `indoor`, the one of the higher layer, at an equal
-    layer of the better class, and of one class the later one, over the other, by the clearance of the lower
-    and the deck of the upper. A road on the ground over a tunnel keeps its height,
+    crosses, by its bore and COVER_M; of two bridges that no bridge joins or that both tag different layers,
+    and of two ways on the ground of different layers that are not `indoor`, the one of the higher layer, at
+    an equal layer of the better class, and of one class the later one, over the other, by the clearance of
+    the lower and the deck of the upper. A road on the ground over a tunnel keeps its height,
     and the tunnel keeps the margin under its centreline and both edges; any other pair moves apart, the
     stiffer less. (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ± the margin. Per row: the variables and
     coefficients of the upper way, of the lower, the margin, the lower way, whether the upper moves too, and
@@ -725,15 +726,16 @@ def passes(net, classes):
     for w, v, other, k in crossed(np.flatnonzero(net.tunnel).tolist(), ~net.tunnel):
         add(other, k, w, v, (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M)
     bridge = net.free & ~net.tunnel
-    # The bridges that bridge ways join are one structure, such as a spiral stair: its ways of one layer set
-    # their heights. Of two of one layer and class, the later one passes over.
+    # The bridges that bridge ways join are one structure, such as a spiral stair: its ways set their heights,
+    # but where both tag different layers, as the ramps of an interchange. Of two of one layer and class, the
+    # later one passes over.
     on = bridge[net.osm_way]
     links = sparse.csr_matrix((np.ones(np.count_nonzero(on)), (net.osm_way[on], net.osm_var[on])), shape=(len(net.ways), net.osm_count))
     _, structure = connected_components(sparse.bmat([[None, links], [links.T, None]]), directed=False)
     margin = lambda upper, lower: (CLEAR_PATH_M if net.rule[lower] >= path else CLEAR_ROAD_M) + (DECK_PATH_M if net.rule[upper] >= path else DECK_M)
     rank = lambda i: (net.layer[i], -net.rule[i], i)
     for w, v, other, k in crossed(np.flatnonzero(bridge).tolist(), bridge):
-        if rank(w) > rank(other) and (structure[w] != structure[other] or net.layer[w] != net.layer[other]):
+        if rank(w) > rank(other) and (structure[w] != structure[other] or (net.layered[w] and net.layered[other] and net.layer[w] != net.layer[other])):
             add(w, v, other, k, margin(w, other))
     # A pair of ways on the ground of different layers has one of layer 0 at most; the other one finds it.
     ground = ~net.free & ~net.indoor
