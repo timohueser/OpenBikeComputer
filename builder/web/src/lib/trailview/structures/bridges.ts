@@ -63,15 +63,16 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             return mix(at(v), at(v + 1), (d - along[v]) / (along[v + 1] - along[v] || 1));
         };
         const end = (v: number) => (v ? (to < total ? point(to) : at(v)) : from > 0 ? point(from) : at(v));
+        const decks = wider(line, lines, endKey);
         for (let v = 0; v + 1 < n; v++) {
             const lo = Math.max(along[v], from), hi = Math.min(along[v + 1], to);
             if (lo >= hi || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             const stop = (d: number) => (d === along[v] ? at(v) : d === along[v + 1] ? at(v + 1) : point(d));
             // Where the deck runs on a wider deck's road at its height, that deck carries it: it draws nothing there.
-            const pieces = Math.ceil((hi - lo) / PIECE_M);
+            const pieces = decks.length ? Math.ceil((hi - lo) / PIECE_M) : 0;
             let run = lo;
             for (let k = 1; k <= pieces; k++) {
-                const a = lo + (hi - lo) * (k - 1) / pieces, c = lo + (hi - lo) * k / pieces, carried = onDeck(line, point((a + c) / 2), lines);
+                const a = lo + (hi - lo) * (k - 1) / pieces, c = lo + (hi - lo) * k / pieces, carried = onDeck(point((a + c) / 2), decks);
                 if (carried && run < a) segment(b, stop(run), stop(a), line, t, a - run);
                 if (carried) run = c;
             }
@@ -87,8 +88,8 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             cap(-w, w, -t, LIFT_M);
             if (parapets) for (const side of [1, -1]) cap(side * h, side * w, LIFT_M, PARAPET[1]);
             if (line.abut?.[v ? 1 : 0]) {
-                const w2 = v ? v - 1 : 1, length = Math.hypot(line.xy[2 * w2] - line.xy[2 * v], line.xy[2 * w2 + 1] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
-                abutment(b, s, mix(s, at(w2), Math.min(0.5, ABUTMENT_M / Math.max(length, 1e-3))), w, t, out);
+                const depth = Math.min(ABUTMENT_M, (to - from) / 2);
+                abutment(b, s, point(v ? to - depth : from + depth), w, t, out);
             }
         }
     }
@@ -108,16 +109,37 @@ function abutment(b: MeshBuilder, s: Station, inner: Station, half: number, dept
     for (const side of [1, -1]) b.quad([down(s, side * half), down(inner, side * half), up(inner, side * half), up(s, side * half)], b.outward(s, inner, [side, 0]));
 }
 
-/** Whether station s of a deck lies on the road of a wider deck within MEET_M of its height; not of the decks that it runs on into at a joint. */
-function onDeck(line: Line, s: Station, lines: Line[]): boolean {
-    const unit = metresPerUnit(s.y), key = (l: Line, v: number) => `${l.xy[2 * v]},${l.xy[2 * v + 1]}`;
-    const joints = new Set([key(line, 0), key(line, line.z.length - 1)]);
-    for (const other of lines) {
-        if (other.h <= line.h || joints.has(key(other, 0)) || joints.has(key(other, other.z.length - 1))) continue;
-        for (let v = 0; v + 1 < other.z.length; v++) {
-            const [ax, ay, bx, by] = other.xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay;
+/** The decks wider than `line` that it may run on: not those that it runs on into at a joint, and only those whose road comes within its box. */
+function wider(line: Line, lines: Line[], endKey: (line: Line, v: number) => string): Line[] {
+    const joints = new Set([endKey(line, 0), endKey(line, line.z.length - 1)]), [x0, y0, x1, y1] = box(line.xy);
+    const unit = Math.min(metresPerUnit(y0), metresPerUnit(y1));
+    return lines.filter(other => {
+        if (other.h <= line.h || joints.has(endKey(other, 0)) || joints.has(endKey(other, other.z.length - 1))) return false;
+        const [a0, b0, a1, b1] = box(other.xy), grow = other.h / unit;
+        return a0 - grow <= x1 && a1 + grow >= x0 && b0 - grow <= y1 && b1 + grow >= y0;
+    });
+}
+
+/** The box of a line's points: west, north, east, south in world units. */
+function box(xy: ArrayLike<number>): [number, number, number, number] {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < xy.length; i += 2) {
+        x0 = Math.min(x0, xy[i]);
+        x1 = Math.max(x1, xy[i]);
+        y0 = Math.min(y0, xy[i + 1]);
+        y1 = Math.max(y1, xy[i + 1]);
+    }
+    return [x0, y0, x1, y1];
+}
+
+/** Whether station s of a deck lies on the road of one of the wider `decks` within MEET_M of its height. */
+function onDeck(s: Station, decks: Line[]): boolean {
+    const unit = metresPerUnit(s.y);
+    for (const { xy, z, h } of decks) {
+        for (let v = 0; v + 1 < z.length; v++) {
+            const ax = xy[2 * v], ay = xy[2 * v + 1], dx = xy[2 * v + 2] - ax, dy = xy[2 * v + 3] - ay;
             const u = Math.min(1, Math.max(0, ((s.x - ax) * dx + (s.y - ay) * dy) / (dx * dx + dy * dy || 1)));
-            if (Math.hypot(s.x - ax - u * dx, s.y - ay - u * dy) * unit <= other.h && Math.abs(s.z - other.z[v] - (other.z[v + 1] - other.z[v]) * u) < MEET_M) return true;
+            if (Math.hypot(s.x - ax - u * dx, s.y - ay - u * dy) * unit <= h && Math.abs(s.z - z[v] - (z[v + 1] - z[v]) * u) < MEET_M) return true;
         }
     }
     return false;
