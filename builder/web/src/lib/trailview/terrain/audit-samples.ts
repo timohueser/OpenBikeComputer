@@ -2,11 +2,11 @@
 // in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
+import { BRIDGE, cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RAIL, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
-export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4, SHORE_SIDE = 5;
+export const CROSS_FALL = 1, ROAD_HEIGHT = 2, IN_WATER = 3, ON_BANK = 4, SHORE_SIDE = 5, UNDER_DECK = 6;
 /** Samples per node at most. */
 const MOST = 8192;
 /** No river or other lake may lie within 13 texels of a shore sample, which the mesh there may read. */
@@ -93,10 +93,10 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const push = (x: number, y: number, kind: number, expected: number, half: number, shore: number, junction = Infinity, junctionHalf = 0, other: [number, number] = [0, 0], otherExpected = 0) =>
         out.push([Math.round(x), Math.round(y), kind, f(expected), f(half), f(shore), f(junction), f(junctionHalf), Math.round(other[0]), Math.round(other[1]), f(otherExpected), node.level]);
 
-    const joins = [...junctions(lines.filter(line => line.kind === ROAD)).values()];
+    const joins = [...junctions(cores(lines)).values()];
     const step = Math.max(0.25, 2 * texel) / unit;
     for (const line of lines) {
-        if (line.kind !== ROAD) continue;
+        if (line.kind !== ROAD && line.kind !== RAIL) continue;
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), length = Math.hypot(bx - ax, by - ay);
             if (!length) continue;
@@ -116,6 +116,24 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
                 if (Number.isNaN(zl) || Number.isNaN(zr) || Number.isNaN(zc)) continue;
                 push(...left, CROSS_FALL | (line.profile << 8), zl, line.h, 0, junction, junctionHalf, right, zr);
                 push(...centre, ROAD_HEIGHT | (line.profile << 8), zc, line.h, 0, junction, junctionHalf);
+            }
+        }
+    }
+    // Under a deck: its middle and its edges, with the metres to the nearer abutment, and its underside.
+    for (const line of lines) {
+        if (line.kind !== BRIDGE || !line.abut) continue;
+        const n = line.z.length, along = [0];
+        for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * unit);
+        for (let v = 0; v + 1 < n; v++) {
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), length = Math.hypot(bx - ax, by - ay);
+            if (!length) continue;
+            const across = [-(by - ay) / length, (bx - ax) / length], half = 0.98 * line.h / unit, count = Math.ceil(length / step);
+            for (let i = 0; i < count; i++) {
+                const t = (i + 0.5) / count, cx = ax + t * (bx - ax), cy = ay + t * (by - ay), s = along[v] + t * (along[v + 1] - along[v]);
+                if (!inNode(cx, cy)) continue;
+                const abutment = Math.min(line.abut[0] ? s : Infinity, line.abut[1] ? along[n - 1] - s : Infinity);
+                const under = line.z[v] + t * (line.z[v + 1] - line.z[v]) - line.deck!;
+                for (const k of [-1, 0, 1]) push(cx + k * across[0] * half, cy + k * across[1] * half, UNDER_DECK | (line.profile << 8), under, line.h, abutment);
             }
         }
     }

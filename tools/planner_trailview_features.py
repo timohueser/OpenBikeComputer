@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, water
+from .trailview import profiles, structures, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -510,13 +510,13 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     `roads.TABLE`); return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
-    # The road solver needs scipy, which the readers of the tiles do not have.
-    from .trailview import roads
+    # The road solver and the rails need scipy, which the readers of the tiles do not have.
+    from .trailview import rails, roads
 
     classes = roads.CLASSES if classes is None else roads.validate(classes)
 
     binary, version = region_osm.probe()
-    tiles, low, shared, counts, held, metrics = Tiles(bounds), [], {}, {}, [], {}
+    tiles, low, shared, counts, held, metrics, river_areas = Tiles(bounds), [], {}, {}, [], {}, []
 
     def place(entry, tags, parts):
         if tiles.add(MAX_ZOOM, entry, tags, parts):
@@ -529,13 +529,16 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
 
     for entry, tags, parts in objects(kinds, pbf, binary):
         parts = [(outer, points, None) for outer, points in parts]
-        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads) if m.solves(entry["kind"], tags)), None)
+        solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads, rails) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
         else:
             place(entry, tags, parts)
-    # The heights of a junction need every road that meets there, a river level its whole network, and a
-    # ford the water it crosses.
+            if entry["kind"] == "river-area":
+                river_areas.append([points for _, points, _ in parts])
+    # The heights of a junction need every road that meets there, a river level its whole network, a ford
+    # the water it crosses, and a platform its tracks.
+    tracks = []
     if held:
         waters = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is water]
         ways = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is roads]
@@ -545,10 +548,44 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
         for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
-            for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights)):
-                # A culvert is a road: the stamps build it over the ground.
-                place(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts)
+            heights, culverts, underpasses, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            # A culvert is a road: the stamps build it over the ground.
+            ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
+            decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
+            waterways = [(water.half_width(tags), points) for (entry, tags, parts) in waters if entry["kind"] in water.RIVERS for _, points, _ in parts]
+            lakes = [[points for _, points, _ in parts] for entry, _, parts in waters if entry["kind"] in water.LAKES]
+            under = [(structures.road_half(tags), points) for entry, tags, parts in ways if not structures.is_bridge(entry["kind"], tags) for _, points, _ in parts]
+            added, piers, metrics["bridges"] = structures.bridges([(kind, tags, part[1], part[2]) for _, kind, tags, part in decks], waterways, lakes + river_areas, terrain, under)
+            extra = {n: tags for (n, *_), tags in zip(decks, added)}
+            for n, (entry, tags, parts) in enumerate(ways):
+                if entry["kind"] == "gallery" and parts[0][2]:
+                    extra[n] = {"uphill": structures.uphill(parts[0][1], terrain)}
+                if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage":
+                    kept = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
+                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(kept)
+                    if not kept:
+                        continue
+                    parts = kept
+                if (entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and n not in underpasses
+                        and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z)):
+                    # A tunnel under what the terrain leaves out, such as a building, is a road on the ground.
+                    tags = {k: v for k, v in tags.items() if k != "tunnel"}
+                    entry = kind_of(kinds, "line", {**tags, "tunnel": "no"}) or entry
+                    metrics["roads"]["shallow_tunnels"] = metrics["roads"].get("shallow_tunnels", 0) + 1
+                place(entry, {**tags, **extra.get(n, {})}, parts)
+                if structures.is_track(tags):
+                    tracks += [(entry["kind"], tags, part) for part in parts if part[2]]
+            for point, z, way in piers:
+                place({"kind": "bridge-pier", "geometry": "point", "min_zoom": ways[decks[way][0]][0].get("min_zoom", MAX_ZOOM)}, {}, [(False, [point], [z])])
+        outside = [(tags, points, z) for kind, tags, (_, points, z) in tracks if kind != "tunnel"]
+        wired = [(tags, points, z, structures.is_bridge(kind, tags)) for kind, tags, (_, points, z) in tracks if kind == "railway" and rails.electrified(tags)]
+        for point, z, tags in rails.masts(wired, outside):
+            place({"kind": "catenary-mast", "geometry": "point"}, tags, [(False, [point], [z])])
+        stations = [(entry, tags, parts) for solver, entry, tags, parts in held if solver is rails]
+        heights = rails.platforms([parts for _, _, parts in stations], outside)
+        for (entry, tags, parts), solved in zip(stations, heights):
+            place(entry, tags, solved or parts)
+        metrics["rails"] = {"tracks": len(tracks), "masts": counts.get("catenary-mast", 0), "platforms_unknown": sum(h is None for h in heights)}
     for entry, tags, parts in low:
         anchors = [[index for index, point in enumerate(points) if shared[point] > 1] for _, points, _ in parts]
         for zoom in range(entry["min_zoom"], MAX_ZOOM):

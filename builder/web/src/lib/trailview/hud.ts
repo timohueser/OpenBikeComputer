@@ -45,7 +45,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
             `MiB   ${pools}`,
             `net   ${stats.requests} requests · ${(stats.bytes / MIB).toFixed(2)} MiB${stats.failed ? ` · ${stats.failed} failed` : ''}`,
             `nodes ${stats.drawn} · ${(stats.terrain.triangles / 1e6).toFixed(2)} M triangles · selection ${stats.terrain.selection.toFixed(2)} ms · quality ${stats.terrain.quality}`,
-            `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}${stats.terrain.waterDropped ? ` · ${stats.terrain.waterDropped} water meshes dropped` : ''}`,
+            `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}${stats.terrain.waterDropped ? ` · ${stats.terrain.waterDropped} water meshes dropped` : ''}${stats.terrain.structuresDropped ? ` · ${stats.terrain.structuresDropped} structure meshes dropped` : ''}`,
             `ground ${stats.ground.resident} of ${stats.ground.capacity} pages · ${stats.ground.wanted} wanted${stats.ground.shortage ? ` · ${stats.ground.shortage} short` : ''} · colour ${stats.ground.colour}`,
             `houses ${stats.houses.houses} in ${stats.houses.tiles} tiles · drawn ${stats.houses.full} in full, ${stats.houses.simple} simple`,
             `lab   ${lab}`,

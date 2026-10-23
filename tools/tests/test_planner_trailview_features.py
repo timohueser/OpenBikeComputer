@@ -13,7 +13,7 @@ import unittest
 import numpy as np
 
 from tools import planner_trailview_features as features, region_osm
-from tools.trailview import roads
+from tools.trailview import roads, structures
 
 VECTORS = Path(__file__).resolve().parents[2] / "specs/vectors"
 
@@ -64,6 +64,135 @@ class Generalization(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) or os.environ.get("CI"),
                      "Prepared Osmium is unavailable")
+class Bridges(unittest.TestCase):
+    # Metres east and north of a point at about 46.7° N, in world units.
+    Y = 0.3218
+    M = 1 / structures.metres(Y)
+
+    def at(self, east, north=0.0):
+        return (0.53 + east * self.M, self.Y - north * self.M)
+
+    class Flat:
+        def heights(self, x, y):
+            return np.full(np.shape(x), 500.0)
+
+    def test_a_deck_rises_over_the_water_and_the_road_that_it_crosses(self):
+        road = lambda points, **tags: ("road", {"highway": "residential", **tags}, [(False, points, None)])
+        ways = [road([self.at(-100), self.at(0)]), road([self.at(0), self.at(60)], bridge="yes"), road([self.at(60), self.at(160)]),
+                ("road", {"highway": "tertiary"}, [(False, [self.at(45, -80), self.at(45, 80)], None)])]
+        river = ([self.at(20, -100), self.at(20, 100)], [499.0, 499.0])
+        out, _, _, metrics = roads.solve(ways, self.Flat(), [river])
+        self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (2, 0))
+        deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
+        below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
+        # The row holds the deck and the road at the crossing; the tiles drop vertices within KEEP_M of the profile.
+        self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 2 * roads.KEEP_M)
+
+    def test_a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the_path_that_it_leaves(self):
+        path = lambda points, **tags: ("path", {"highway": "footway", **tags}, [(False, points, None)])
+        river = ([self.at(1, -50), self.at(1, 50)], [500.0, 500.0])
+        least = 500 + roads.CLEAR_WATER_M + roads.DECK_PATH_M
+        out, _, _, _ = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes")], self.Flat(), [river])
+        # The deck clears the stream, and its free end stands on the terrain.
+        deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck(1), least - 0.01)
+        self.assertLess(max(out[1][0][2]), least + 0.5)
+        self.assertLess(deck(9), 501)
+        # As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
+        river = ([self.at(-50, 1), self.at(50, 1)], [500.0, 500.0])
+        out, _, _, _ = roads.solve([path([self.at(-50), self.at(50)]), path([self.at(0), self.at(0, 9)], bridge="yes")], self.Flat(), [river])
+        self.assertLess(max(out[1][0][2]), 500.05)
+        # A bridge whose end lies on a road, within its half-width, meets it and does not pass over it.
+        road = ("road", {"highway": "residential"}, [(False, [self.at(0.5, -50), self.at(0.5, 50)], None)])
+        out, _, _, metrics = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes"), road], self.Flat())
+        self.assertEqual(metrics["clearances"], 0)
+
+    def test_a_short_bridge_over_a_ditch_clears_its_water_and_one_on_the_ground_is_a_culvert(self):
+        class Ditch:
+            def heights(_, x, y):
+                east, north = (np.asarray(x) - 0.53) / self.M, (self.Y - np.asarray(y)) / self.M
+                return np.where((np.abs(east) < 2) & (north < 25), 498.0, 500.0)
+        road = lambda points, **tags: ("road", {"highway": "track", **tags}, [(False, points, None)])
+        ways = [road([self.at(east, north) for east in ends], **tags) for north in (0, 50)
+                for ends, tags in (((-100, -3), {}), ((-3, 3), {"bridge": "yes"}), ((3, 100), {}))]
+        rivers = [([self.at(0, north - 20), self.at(0, north + 20)], [level, level]) for north, level in ((0, 498.2), (50, 499.9))]
+        out, culverts, _, _ = roads.solve(ways, Ditch(), rivers)
+        self.assertEqual(culverts, {4})
+        deck = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck, 498.2 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
+
+    def test_of_two_bridges_at_one_layer_the_better_class_passes_over_and_moves_less(self):
+        road = lambda highway, points, **tags: ("road", {"highway": highway, **tags}, [(False, points, None)])
+        ways = [road("motorway", [self.at(-200), self.at(-50)]), road("motorway", [self.at(-50), self.at(50)], bridge="yes", layer="1"),
+                road("motorway", [self.at(50), self.at(200)]), road("service", [self.at(0, -200), self.at(0, -30)]),
+                road("service", [self.at(0, -30), self.at(0, 30)], bridge="yes", layer="1"), road("service", [self.at(0, 30), self.at(0, 200)])]
+        out, _, _, metrics = roads.solve(ways, self.Flat())
+        over = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        under = np.interp(0, [(self.Y - y) / self.M for _, y in out[4][0][1]], out[4][0][2])
+        self.assertGreaterEqual(over - under, roads.CLEAR_ROAD_M + roads.DECK_M - roads.KEEP_M)
+        self.assertLess(abs(over - 500), abs(under - 500))
+        self.assertEqual((metrics["passes"], metrics["passes_near_cm"]), (1, 0))
+
+    def test_a_long_tunnel_runs_straight_between_its_portals_a_shaft_does_not_lift_it_and_over_a_valley_it_floats(self):
+        class Mountain:
+            def heights(_, x, y):
+                return np.where(np.abs(np.asarray(x) - 0.53) < 2995 * self.M, 2500.0, 1000.0)
+        road = lambda points, **tags: ("road", {"highway": "primary", **tags}, [(False, points, None)])
+        ways = [road([self.at(-3200), self.at(-3000)]), road([self.at(-3000), self.at(-1000), self.at(0)], tunnel="yes"),
+                road([self.at(0), self.at(3000)], tunnel="yes"), road([self.at(3000), self.at(3200)]),
+                ("road", {"highway": "service", "tunnel": "yes"}, [(False, [self.at(-1000), self.at(-1000, 300)], None)]),
+                ("road", {"highway": "service"}, [(False, [self.at(-1000, 300), self.at(-1000, 500)], None)])]
+        ways = [("tunnel" if tags.get("tunnel") else kind, tags, parts) for kind, tags, parts in ways]
+        out, _, _, _ = roads.solve(ways, Mountain())
+        east = [(x - 0.53) / self.M for part in (out[1][0], out[2][0]) for x, _ in part[1]]
+        z = [h for part in (out[1][0], out[2][0]) for h in part[2]]
+        for e, h in zip(east, z):
+            self.assertAlmostEqual(h, np.interp(e, [-3000, 3000], [z[0], z[-1]]), delta=0.01)
+        self.assertLess(max(z), 1001)
+        self.assertFalse(structures.floating(out[1][0][1], out[1][0][2], Mountain()))
+        self.assertTrue(structures.floating(out[1][0][1], out[1][0][2], self.Flat()))
+
+    def test_a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays(self):
+        road = lambda highway, points, **tags: ("tunnel" if tags else "road", {"highway": highway, **tags}, [(False, points, None)])
+        # The north portal lies just past the motorway's edge, structures.MAIN_HALF_M from its centreline.
+        ways = [road("motorway", [self.at(-200), self.at(200)]), road("unclassified", [self.at(5, -200), self.at(5, -20)]),
+                road("unclassified", [self.at(5, -20), self.at(5, 7)], tunnel="yes"), road("unclassified", [self.at(5, 7), self.at(5, 200)])]
+        out, _, under, _ = roads.solve(ways, self.Flat())
+        self.assertEqual(under, {2})
+        self.assertAlmostEqual(np.interp(5, [(x - 0.53) / self.M for x, _ in out[0][0][1]], out[0][0][2]), 500, delta=0.05)
+        tunnel = lambda north: np.interp(north, [(self.Y - y) / self.M for _, y in out[2][0][1]], out[2][0][2])
+        for north in (-structures.MAIN_HALF_M, 0, structures.MAIN_HALF_M):
+            self.assertLessEqual(tunnel(north), 500 - structures.BORE_M - roads.COVER_M + 0.01)
+
+    def test_a_footbridge_over_a_gorge_does_not_sag_under_its_ends(self):
+        class Gorge:
+            def heights(_, x, y):
+                east = (np.asarray(x) - 0.53) / self.M
+                return np.where(east < 0, 500 - 0.3 * east, np.where(east > 30, 500 + 0.05 * (east - 30), 470.0))
+        path = lambda points, **tags: ("path", {"highway": "path", **tags}, [(False, points, None)])
+        ways = [path([self.at(-100), self.at(0)]), path([self.at(0), self.at(15, 8), self.at(30)], bridge="yes"), path([self.at(30), self.at(130)])]
+        out, _, _, _ = roads.solve(ways, Gorge())
+        z = out[1][0][2]
+        self.assertGreaterEqual(min(z), min(z[0], z[-1]) - 0.05)
+
+    def test_a_pier_steps_out_of_a_narrow_channel_and_a_high_footbridge_hangs(self):
+        ways = [("road", {}, [self.at(0), self.at(80)], [500.0, 500.0]), ("path", {}, [self.at(0, 50), self.at(120, 50)], [600.0, 600.0])]
+        added, piers, metrics = structures.bridges(ways, [(5.0, [self.at(40, -50), self.at(40, 100)])], [], self.Flat())
+        (east, _), _, _ = piers[0]
+        self.assertEqual(len(piers), 1)
+        self.assertGreater(abs((east - 0.53) / self.M - 40), 5 + structures.BANK_M)
+        self.assertEqual(added[1]["bridge:structure"], "simple-suspension")
+        self.assertEqual(metrics["cable_bridges"], 1)
+
+    def test_a_pier_stands_beside_the_road_under_its_bridge(self):
+        ways = [("road", {}, [self.at(0), self.at(80)], [510.0, 510.0])]
+        under = [(structures.ROAD_HALF_M, [self.at(40, -50), self.at(40, 50)])]
+        _, piers, _ = structures.bridges(ways, [], [], self.Flat(), under)
+        (east, _), _, _ = piers[0]
+        self.assertGreater(abs((east - 0.53) / self.M - 40), structures.ROAD_HALF_M + structures.BANK_M)
+
+
 class Bake(unittest.TestCase):
     # A zoom-14 tile in Engelberg. Each node is (id, u, v) in its tile units.
     COLUMN, ROW = 8574, 5778
@@ -152,14 +281,15 @@ class Bake(unittest.TestCase):
                 tiles = {key: features.decode(gzip.decompress(data)) for key, data in all_tiles(source)}
         left, right = tiles[(14, self.COLUMN, self.ROW)], tiles[(14, self.COLUMN + 1, self.ROW)]
         kinds = lambda tile: sorted(feature["kind"] for feature in tile)
-        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "river", "road",
-                                       "ruin", "tunnel"])
+        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "railway",
+                                       "river", "road", "ruin"])
         self.assertEqual(kinds(right), ["road"])
         self.assertEqual({key[0] for key in tiles}, set(range(8, 15)))
         dam = next(feature for feature in left if feature["kind"] == "dam")
         self.assertEqual(len(dam["parts"][0]["xy"]), 2, "a closed dam way is an area, not a ring line")
-        tunnel = next(feature for feature in left if feature["kind"] == "tunnel")
-        self.assertEqual(tunnel["tags"]["highway"], "secondary")
+        # A tunnel with no terrain over it runs on the ground, as a road.
+        tunnel = next(feature for feature in left if feature["kind"] == "main-road")
+        self.assertEqual(tunnel["tags"], {"highway": "secondary"})
         buffer = features.pad(14, self.ROW)
         road = next(feature for feature in left if feature["kind"] == "road")
         self.assertEqual(road["tags"], {"highway": "track", "surface": "gravel"})
@@ -188,8 +318,8 @@ class Bake(unittest.TestCase):
         # Above zoom 14 a tile holds the water and the main roads only, and the river still ends on
         # the shore of the lake.
         overview = next(tile for (zoom, _, _), tile in tiles.items() if zoom == 11)
-        self.assertEqual(kinds(overview), ["lake", "river"])
-        lake, river = sorted(overview, key=lambda feature: feature["kind"])
+        self.assertEqual(kinds(overview), ["lake", "main-road", "river"])
+        lake, _, river = sorted(overview, key=lambda feature: feature["kind"])
         self.assertIn(river["parts"][0]["xy"][-1], lake["parts"][0]["xy"])
 
 

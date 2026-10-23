@@ -85,6 +85,11 @@ export class Ground {
         return this.pages.working || this.jobs.length > 0;
     }
 
+    /** The terrain nodes that the relief of the ground reads: the terrain keeps them resident, so the relief does not hang on what the view happens to load. */
+    get reads(): Node[] {
+        return this.pages.reads;
+    }
+
     get stats(): GroundStats {
         const { requests = 0, bytes = 0, failed = 0 } = this.source ?? {}, { wanted, shortage } = this.pages;
         return { resident: this.pages.resident, capacity: POOL, wanted, shortage, colour: this.source?.colour ?? 'none', requests, bytes, failed };
@@ -182,7 +187,7 @@ export class Ground {
 
     /**
      * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), on the date
-     * of the view. `refreshed` are the nodes whose heights changed, so their relief follows.
+     * of the view. `refreshed` are the terrain nodes whose heights changed, so the relief that reads them follows.
      */
     update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
         const r = this.resources;

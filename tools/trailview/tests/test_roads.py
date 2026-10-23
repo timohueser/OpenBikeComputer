@@ -1,6 +1,7 @@
 """The road solver: a road follows a noisy slope without its noise, a hairpin climbs within the grade of its
 class, a side road meets the through road flat, a short link of a lower class does not move its roads, a
-ford lies under the water, a low short bridge is a culvert and a bridge past unknown terrain has no height."""
+ford lies under the water, a low short bridge is a culvert, a bridge past unknown terrain has no height, and of
+two ways on the ground the one of the higher layer passes over, but not over one indoors."""
 
 import math
 import unittest
@@ -56,7 +57,7 @@ class RoadSolverTest(unittest.TestCase):
             spike = np.where(np.abs(east - 250) < 2, 3.0, 0.0)
             return 1000 + 0.10 * east + 0.3 * np.sin(east * 1.7) + spike
 
-        (solved,), _, _ = roads.solve([road("road", "residential", line((0, 0), (500, 0), step=50))], Terrain(height))
+        (solved,), _, _, _ = roads.solve([road("road", "residential", line((0, 0), (500, 0), step=50))], Terrain(height))
         along, z = profile(solved[0])
         self.assertLess(np.max(np.abs(z - (1000 + 0.10 * along))), 0.15)
         self.assertLessEqual(np.max(np.abs(np.diff(z) / np.diff(along))), 0.20 + 1e-4)
@@ -65,7 +66,7 @@ class RoadSolverTest(unittest.TestCase):
         # A hillside of 30 %, and a tertiary road (15 %) that turns back on it: the bend alone would climb at 20 %.
         terrain = Terrain(lambda east, north: 1000 + 0.30 * north)
         bend = [(300, 36), (312, 41), (316, 46), (312, 51), (300, 56)]
-        (solved,), _, _ = roads.solve([road("road", "tertiary", line((0, 0), *bend, (0, 92), step=20))], terrain)
+        (solved,), _, _, _ = roads.solve([road("road", "tertiary", line((0, 0), *bend, (0, 92), step=20))], terrain)
         along, z = profile(solved[0])
         grades = np.diff(z) / np.diff(along)
         self.assertLessEqual(np.max(grades), 0.15 + 1e-4)
@@ -80,7 +81,7 @@ class RoadSolverTest(unittest.TestCase):
         west = road("main-road", "secondary", line((-100, 0), (0, 0), step=20))
         east = road("main-road", "secondary", line((0, 0), (100, 0), step=20))
         side = road("road", "residential", line((0, 0), (0, 100), step=25))
-        (w, e, s), _, metrics = roads.solve([west, east, side], terrain)
+        (w, e, s), _, _, metrics = roads.solve([west, east, side], terrain)
         junction = at(0, 0)
         heights = [dict(zip(points, z))[junction] for _, points, z in (w[0], e[0], s[0])]
         self.assertAlmostEqual(max(heights) - min(heights), 0, places=9)
@@ -104,7 +105,7 @@ class RoadSolverTest(unittest.TestCase):
                 lower = road("main-road", "primary", line((-100, 0), (0, 0), (100, 0), step=20))
                 upper = road("main-road", "primary", line((-100, gap), (0, gap), (100, gap), step=20))
                 link = road("road", "residential", line((0, 0), (0, gap)))
-                (lo, up, _), _, _ = roads.solve([lower, upper, link], terrain)
+                (lo, up, _), _, _, _ = roads.solve([lower, upper, link], terrain)
                 self.assertLess(abs(dict(zip(lo[0][1], lo[0][2]))[at(0, 0)] - 1000), 0.2)
                 self.assertLess(abs(dict(zip(up[0][1], up[0][2]))[at(0, gap)] - 1002.4), 0.2)
 
@@ -124,7 +125,7 @@ class RoadSolverTest(unittest.TestCase):
         dark = [road("road", "track", line((250, 80), (300, 80))), road("road", "track", line((320, 80), (350, 80)))]
         unknown = road("road", "track", line((300, 80), (320, 80)), bridge="yes")
         streams = [([at(50, -10), crossing, at(50, 10)], [999.1, 999.0, 998.9]), ([at(70, 20), at(70, 40)], [998.6, 998.4])]
-        solved, culverts, _ = roads.solve([ford, culvert, bridge, tagged, known, *dark, unknown], Terrain(height), streams)
+        solved, culverts, _, _ = roads.solve([ford, culvert, bridge, tagged, known, *dark, unknown], Terrain(height), streams)
         self.assertAlmostEqual(dict(zip(solved[0][0][1], solved[0][0][2]))[crossing], 999.0 - roads.FORD_M, delta=0.01)
         along, z = profile(solved[3][0])
         self.assertAlmostEqual(np.interp(10, along, z), 998.5 - roads.FORD_M, delta=0.01)
@@ -133,6 +134,18 @@ class RoadSolverTest(unittest.TestCase):
         # The bridge runs straight over the gully between its ends.
         self.assertLess(np.max(np.abs(z - np.interp(along, [along[0], along[-1]], [z[0], z[-1]]))), 0.05)
         self.assertEqual(solved[7][0][2], [None] * len(solved[7][0][1]))
+
+    def test_a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain(self):
+        terrain = Terrain(lambda east, north: 1000 + 0 * east)
+        street = road("road", "residential", line((-100, 0), (100, 0), step=20))
+        for tags, rise in (({"layer": "1"}, roads.CLEAR_ROAD_M + roads.DECK_PATH_M), ({"layer": "-1", "indoor": "yes"}, 0.0)):
+            with self.subTest(**tags):
+                corridor = road("path", "footway", line((5, -50), (5, 50)), **tags)
+                (s, c), _, _, metrics = roads.solve([street, corridor], terrain)
+                over = np.interp(50, *profile(c[0])) - np.interp(105, *profile(s[0]))
+                self.assertEqual(metrics["passes"], 1 if rise else 0)
+                self.assertGreaterEqual(over, rise - roads.KEEP_M)
+                self.assertLess(over, rise + 0.5)
 
 
 if __name__ == "__main__":
