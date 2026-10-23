@@ -14,6 +14,7 @@ import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type P
 import { Stamps, type FeatureTiles } from './stamps';
 import { Water } from './water';
 import { Structures } from '../structures/structures';
+import { BOX } from '../structures/node';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
@@ -28,6 +29,8 @@ const BUDGET: Record<Kind, number> = { stored: 240 * 2 ** 20, synth: 70 * 2 ** 2
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
+/** Portal boxes in the terrain's holes at most. */
+const MAX_HOLES = 32;
 /** Nodes drawn per frame at most. */
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
@@ -50,7 +53,7 @@ const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
-const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 39, FOUND = 64;
+const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 45, FOUND = 64;
 /** Cells per strip of the grid's index order. */
 const STRIP = 8;
 const GRID_INDICES = gridIndices();
@@ -92,7 +95,7 @@ export interface Audit {
      * Per check: samples checked, violations, misses in a conflict, misses within the reach of a junction,
      * where the simple profiles of the bake meet, and the largest error elsewhere and at a junction in metres.
      */
-    checks: Record<'crossFall' | 'roadHeight' | 'inWater' | 'onBank' | 'shoreSide', { checked: number; violations: number; conflicts: number; junctions: number; largest: number; junctionLargest: number }>;
+    checks: Record<'crossFall' | 'roadHeight' | 'inWater' | 'onBank' | 'shoreSide' | 'underDeck', { checked: number; violations: number; conflicts: number; junctions: number; largest: number; junctionLargest: number }>;
     /** Lakes of the frame's feature tiles, and those with more than one level. */
     levels: { lakes: number; mixed: number };
     /** Rivers of the frame's feature tiles, and those whose level rises downstream. */
@@ -116,6 +119,7 @@ interface Resources {
     map: GPUBuffer;
     scales: GPUBuffer;
     nodes: GPUBuffer;
+    holes: GPUBuffer;
     synthJobs: GPUBuffer;
     normalJobs: GPUBuffer;
     synthOut: GPUBuffer;
@@ -138,6 +142,7 @@ interface Resources {
     emptyGroup: GPUBindGroup;
     mesh: GPURenderPipeline;
     plainMesh: GPURenderPipeline;
+    holedMesh: GPURenderPipeline;
     synthesize: GPUComputePipeline;
     normalsOf: GPUComputePipeline;
     quantize: GPUComputePipeline;
@@ -173,6 +178,10 @@ export class Terrain {
     private resources?: Resources;
     private readonly bounds: [number, number, number, number];
     private nodes: Node[] = [];
+    /** The first drawn nodes that hold a tunnel's portal: they draw with its hole. */
+    private holed = 0;
+    /** The portals' boxes of those nodes, as BOX words per box. */
+    private boxes: Float64Array[] = [];
     private wantedNodes: Node[] = [];
     private work?: Work;
     private jobs = { near: 0, coarse: 0, masks: 0 };
@@ -243,6 +252,11 @@ export class Terrain {
         return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
+    /** The highest floor of a deck or a tunnel at a point between heights `low` and `high`, where it is known. */
+    floorAt(lonLat: [number, number], low: number, high: number): number | undefined {
+        return this.structures.floor(...worldPixel(lonLat, UNITS), low, high);
+    }
+
     /** The drawn surface's pages for other passes: group 1 of the terrain. drawn_height reads the feature mask of group 3 too. */
     get surface(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
         return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
@@ -267,7 +281,7 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'synthesize' | 'normalsOf' | 'quantize'
+        const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'holedMesh' | 'synthesize' | 'normalsOf' | 'quantize'
             | 'probe' | 'check' | 'stamp' | 'snap' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
             gpu, heights, normals,
             mask, snaps,
@@ -279,6 +293,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
+            holes: buffer('terrain', (1 + 2 * MAX_HOLES) * 16, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             normalJobs: buffer('compute', 2 * ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -303,7 +318,7 @@ export class Terrain {
             [all, { buffer: { type: 'uniform' } }], [all, { buffer: read }], [all, { texture: { sampleType: 'uint', viewDimension: '2d-array' } }],
             [all, { buffer: read }], [all, { texture: { sampleType: 'float', viewDimension: '2d-array' } }], [all, { sampler: { type: 'non-filtering' } }],
         ]);
-        const meshLayout = layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }]]);
+        const meshLayout = layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]);
         const jobLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const quantizeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
         const probeLayout = layout([[GPUShaderStage.COMPUTE, { buffer: read }], [GPUShaderStage.COMPUTE, { buffer: write }]]);
@@ -333,9 +348,9 @@ export class Terrain {
         const modules = Object.fromEntries(['terrain', 'pages', 'probe', 'quantize', 'stamp', 'audit'].map(name => [name, device.createShaderModule({ label: name, code: wgsl(`terrain/${name}.wgsl`, swap) })]));
         const compute = (module: string, entryPoint: string, layout: GPUPipelineLayout) =>
             device.createComputePipelineAsync({ label: entryPoint, layout, compute: { module: modules[module], entryPoint } });
-        const terrainPipeline = (paint: boolean) => device.createRenderPipelineAsync({
-            label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
-            vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
+        const terrainPipeline = (paint: boolean, holes = false) => device.createRenderPipelineAsync({
+            label: holes ? 'terrain with holes' : paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
+            vertex: { module: modules.terrain, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
             fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format }], constants: { PAINT: paint ? 1 : 0 } },
             // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
             // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
@@ -343,8 +358,8 @@ export class Terrain {
             primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
-        const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
-            terrainPipeline(true), terrainPipeline(false),
+        const [mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
+            terrainPipeline(true), terrainPipeline(false), terrainPipeline(true, true),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
             compute('quantize', 'quantize', pipelineLayout(quantizeLayout)),
@@ -364,9 +379,9 @@ export class Terrain {
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
-        await this.structures.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
+        await this.structures.attach(gpu, frameUniform, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
-            ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
+            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
@@ -374,7 +389,7 @@ export class Terrain {
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(emptyLayout, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, normals.createView({ dimension: '2d-array' }), device.createSampler()]),
-            meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }]),
+            meshGroup: group(meshLayout, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
             synthGroup: group(jobLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             normalGroup: group(jobLayout, [{ buffer: r.normalJobs }, { buffer: r.normalOut }, { buffer: r.extent }]),
             quantizeGroup: group(quantizeLayout, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
@@ -402,14 +417,17 @@ export class Terrain {
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
-        // with masks come first: they draw with the road paint. Each pipeline draws near to far, so that a
-        // GPU that shades before the depth test shades few hidden fragments.
+        // with masks come first: they draw with the road paint, those with a tunnel's portal first of all,
+        // with its hole. Each pipeline draws near to far, so that a GPU that shades before the depth test
+        // shades few hidden fragments.
         const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
-        const plain = drawn.map(node => +(node.level < NEAR)), near = drawn.map(node => distances(eye, node)[0]);
-        this.nodes = drawn.map((_, i) => i).sort((a, b) => plain[a] - plain[b] || near[a] - near[b]).map(i => drawn[i]);
+        const group = drawn.map(node => (node.level < NEAR ? 2 : this.stamps.known(node)?.portals ? 0 : 1)), near = drawn.map(node => distances(eye, node)[0]);
+        this.boxes = drawn.flatMap((node, i) => (group[i] === 0 ? [this.stamps.known(node)!.portals!] : []));
+        this.nodes = drawn.map((_, i) => i).sort((a, b) => group[a] - group[b] || near[a] - near[b]).map(i => drawn[i]);
+        this.holed = group.filter(g => g === 0).length;
         const drawing = this.nodes.map(node => this.pages.drawing(node)!);
         const water = this.water.update(drawing);
-        const structures = this.structures.update(drawing);
+        const structures = this.structures.update(this.nodes);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -510,17 +528,20 @@ export class Terrain {
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
-        const painted = this.nodes.filter(node => node.level >= NEAR).length;
+        const painted = this.nodes.filter(node => node.level >= NEAR).length, holed = this.holed;
+        // Before the terrain: the terrain that they hide fails the depth test.
+        this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
         pass.setBindGroup(3, r.featureGroup);
         pass.setIndexBuffer(r.indices, 'uint16');
+        pass.setPipeline(r.holedMesh);
+        if (holed) pass.drawIndexed(GRID_INDICES.length, holed);
         pass.setPipeline(r.mesh);
-        if (painted) pass.drawIndexed(GRID_INDICES.length, painted);
+        if (painted > holed) pass.drawIndexed(GRID_INDICES.length, painted - holed, 0, 0, holed);
         pass.setPipeline(r.plainMesh);
         if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
-        this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup);
     }
 
@@ -655,10 +676,10 @@ export class Terrain {
         const c = new Uint32Array(counts), f = new Float32Array(found);
         const check = (kind: number) => ({ checked: c[6 * kind], violations: c[6 * kind + 1], conflicts: c[6 * kind + 2], junctions: c[6 * kind + 3], largest: c[6 * kind + 4] / 1e6, junctionLargest: c[6 * kind + 5] / 1e6 });
         return {
-            checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4), shoreSide: check(5) },
+            checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4), shoreSide: check(5), underDeck: check(6) },
             levels: { lakes: sum('lakes'), mixed: sum('mixed') }, rivers: { checked: sum('rivers'), rising: sum('rising') },
-            apron: { checked: c[36], differ: c[37] },
-            found: Array.from({ length: Math.min(c[38], FOUND) }, (_, i) => ({
+            apron: { checked: c[42], differ: c[43] },
+            found: Array.from({ length: Math.min(c[44], FOUND) }, (_, i) => ({
                 kind: f[8 * i + 4], level: f[8 * i + 5], s: [f[8 * i], f[8 * i + 1]] as [number, number], drawn: f[8 * i + 2], expected: f[8 * i + 3], detail: f[8 * i + 6],
             })),
         };
@@ -733,12 +754,27 @@ export class Terrain {
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
+        device.queue.writeBuffer(r.holes, 0, holes(this.boxes, anchor));
         const changed = instances.length !== this.instances.length || instances.some((v, i) => v !== this.instances[i]);
         this.instances = instances;
         this.water.write();
         this.structures.write();
         return changed;
     }
+}
+
+/** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
+function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
+    const out = new Float32Array(4 * (1 + 2 * MAX_HOLES)), seen = new Set<string>();
+    let n = 0;
+    for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
+        const name = `${list[i]},${list[i + 1]}`;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], list[i + 2], list[i + 3], list[i + 4], list[i + 5], 0, 0], 4 + 8 * n++);
+    }
+    out[0] = n;
+    return out;
 }
 
 /** Where a page lies: one of 8 × 8 tiles of a layer, as `in_layer` in drawn-height.wgsl has it. */

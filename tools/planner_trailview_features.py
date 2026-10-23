@@ -558,6 +558,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             for n, (entry, tags, parts) in enumerate(ways):
                 if entry["kind"] == "gallery" and parts[0][2]:
                     extra[n] = {"uphill": structures.uphill(parts[0][1], terrain)}
+                if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z):
+                    # A tunnel under what the terrain leaves out is a road on the ground.
+                    tags = {k: v for k, v in tags.items() if k != "tunnel"}
+                    entry = kind_of(kinds, "line", {**tags, "tunnel": "no"}) or entry
+                    metrics["roads"]["shallow_tunnels"] = metrics["roads"].get("shallow_tunnels", 0) + 1
                 place(entry, {**tags, **extra.get(n, {})}, parts)
             for point, z, way in piers:
                 place({"kind": "bridge-pier", "geometry": "point", "min_zoom": ways[decks[way][0]][0].get("min_zoom", MAX_ZOOM)}, {}, [(False, [point], [z])])

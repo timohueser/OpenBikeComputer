@@ -1,5 +1,5 @@
-"""The bridges and galleries of the TrailView feature tiles: piers, deck depths and the hill side of a
-gallery. A bridge is a chain of bridge ways that
+"""The bridges, tunnels and galleries of the TrailView feature tiles: piers, deck depths, the tunnels that
+run on the ground and the hill side of a gallery. A bridge is a chain of bridge ways that
 meet end to end. Its piers stand at most SPAN_M apart and never in water that the bridge crosses for less
 than CHANNEL_M; its deck is as deep as its longest span asks. A long footbridge high over the ground hangs
 from cables and has no piers. The engine draws the deck along the ways and a pier at each `bridge-pier`
@@ -169,3 +169,23 @@ def uphill(points, terrain):
     with np.errstate(invalid="ignore"):
         rise = np.nanmean(terrain.heights(*(at + left * reach).T) - terrain.heights(*(at - left * reach).T))
     return "right" if rise < 0 else "left"
+
+
+# The bore of a tunnel for a road and for a path, and the samples along it.
+BORE_M, BORE_PATH_M, BORE_STEP_M = 5.0, 2.6, 2.0
+PATHS = {"path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"}
+
+
+def shallow(tags, points, z, terrain):
+    """Whether a tunnel has less than its bore of terrain over it everywhere: what covers it (a building, a
+    railway, a deck) is not in the terrain, so it runs on the ground."""
+    known = [i for i, h in enumerate(z) if h is not None]
+    if len(known) < 2:
+        return False
+    xy = np.asarray(points, np.float64)
+    along = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T) * metres((xy[:-1, 1] + xy[1:, 1]) / 2))])
+    samples = np.arange(0, along[-1] + BORE_STEP_M / 2, BORE_STEP_M)
+    at = np.stack([np.interp(samples, along, xy[:, 0]), np.interp(samples, along, xy[:, 1])], 1)
+    depth = terrain.heights(at[:, 0], at[:, 1]) - np.interp(samples, along[known], np.asarray(z, np.float64)[known])
+    with np.errstate(invalid="ignore"):
+        return bool(np.nanmax(depth, initial=-np.inf) < (BORE_PATH_M if tags.get("highway") in PATHS else BORE_M))

@@ -55,6 +55,8 @@ const JOIN_B: u32 = 64u;
 const WATER_CORE: u32 = 0u;
 const TROUGH: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
+// A tunnel's road into its portal yields to every road over it, as under a road on an embankment.
+const PORTAL_CORE: u32 = 3u;
 const BANKS: u32 = 4u;
 const CONES: u32 = 5u;
 const BENCH: u32 = 6u;
@@ -105,6 +107,11 @@ const PORTAL_CELLS: f32 = 2.0;
 const COVER_M: f32 = 1.0;
 const BORE_WALL_M: f32 = 1.0;
 const COVER_REACH_M: f32 = 15.0;
+// Behind the wall of a gallery, GALLERY_BACK_M past its road's edge, the hill holds the top of its roof
+// and falls from there at GALLERY_FILL to the hillside, until it stops binding GALLERY_REACH_M out.
+const GALLERY_BACK_M: f32 = 1.0;
+const GALLERY_FILL: f32 = 0.6;
+const GALLERY_REACH_M: f32 = 15.0;
 
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
@@ -414,11 +421,19 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
+            // The hill side of a gallery behind its wall: the hill over its roof, and no cut.
+            let roof = f32((word(r + 5u) >> 24u) & 0x7fu) * 0.1;
+            if (kind <= PATH && roof > 0.0 && g.core && (g.side > 0.0) == ((word(r + 5u) >> 31u) != 0u) && g.lateral > h + GALLERY_BACK_M) {
+                let reach = min(GALLERY_REACH_M, reach_limit(texel) - h - GALLERY_BACK_M);
+                lo[COVER] = max(lo[COVER], g.z + roof - widen(g.lateral - h - GALLERY_BACK_M, reach, GALLERY_FILL));
+                continue;
+            }
             if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
                 if (g.core && g.lateral <= h) {
-                    lo[ROAD_CORE] = max(lo[ROAD_CORE], g.z - tol);
-                    hi[ROAD_CORE] = min(hi[ROAD_CORE], g.z + tol);
+                    let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
+                    lo[bucket] = max(lo[bucket], g.z - tol);
+                    hi[bucket] = min(hi[bucket], g.z + tol);
                 }
                 let x = max(0.0, g.lateral - h);
                 let reach = cone_reach(h, rule, texel);
@@ -481,8 +496,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
         var l = lo[b];
         var u = hi[b];
-        // The cover of a tunnel yields to every other bucket without a conflict.
-        if (b == COVER && l > out.hi) {
+        // A portal and the cover of a tunnel yield to the buckets above them without a conflict.
+        if ((b == PORTAL_CORE || b == COVER) && (l > out.hi || u < out.lo)) {
             continue;
         }
         if (l > u) {

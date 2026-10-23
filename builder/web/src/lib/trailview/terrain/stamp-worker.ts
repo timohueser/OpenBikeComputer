@@ -4,7 +4,7 @@ import { decodeFeatures, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
-import { structureMesh } from '../structures/node';
+import { floorsOf, portalBoxes, structureMesh } from '../structures/node';
 
 /** Decoded tiles kept, by name. */
 const KEPT = 24;
@@ -34,9 +34,9 @@ self.onmessage = async ({ data: { id, tile, node, body, what } }: MessageEvent<{
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else {
-            const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node), structures: structureMesh(features, tile, node) };
+            const result = { ...nodeStamps(features, tile, node), water: waterMesh(features, tile, node), structures: structureMesh(features, tile, node), floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
             const meshes = [result.water, result.structures].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
-            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...meshes] });
+            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...meshes, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });
         }
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });

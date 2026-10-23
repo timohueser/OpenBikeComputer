@@ -47,12 +47,13 @@ const ROAD_HEIGHT: u32 = 2u;
 const IN_WATER: u32 = 3u;
 const ON_BANK: u32 = 4u;
 const SHORE_SIDE: u32 = 5u;
-// counts: per kind 1 to 5 at 6 × kind the checked samples, the violations, the conflicts, the misses
+const UNDER_DECK: u32 = 6u;
+// counts: per kind 1 to 6 at 6 × kind the checked samples, the violations, the conflicts, the misses
 // within the reach of a junction, the largest error elsewhere and the largest at a junction in
-// micrometres; 36 apron texels compared, 37 apron texels that differ; 38 the violations found.
+// micrometres; 42 apron texels compared, 43 apron texels that differ; 44 the violations found.
 const SLOTS: u32 = 6u;
-const APRON_CHECKS: u32 = 36u;
-const FOUND: u32 = 38u;
+const APRON_CHECKS: u32 = 42u;
+const FOUND: u32 = 44u;
 const FOUND_MAX: u32 = 64u;
 // Cross-fall on a carriageway, as the epic sets it, and a kink of the grade across one mesh cell: the
 // mesh draws a straight line between its vertices, 4 texels apart, so a bend or a change of grade of
@@ -198,6 +199,15 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
             check(CROSS_FALL, abs((hb - ha) - expected), CROSS_FALL_MAX + kink, junction, 0.5 * (sa + sb), level, hb - ha, expected, q.junction);
         } else {
             check(ROAD_HEIGHT, abs(drawn - q.expected), rule.tol + kink + ROUNDING, junction, s, level, drawn, q.expected, q.junction);
+        }
+        return;
+    }
+    // Under a deck, past its abutments as far as a read: no ground above its underside, on the levels that
+    // show it with a trough wider than a read.
+    if (kind == UNDER_DECK) {
+        let rule = profiles[q.kind >> 8u];
+        if (road_shows(q.half, rule, level) && road_shows(q.half, rule, coarse) && q.half + TROUGH_M > read && q.shore >= ABUTMENT_CELLS * MESH_TEXELS * wide + read) {
+            check(UNDER_DECK, drawn - q.expected, ROUNDING, false, s, level, drawn, q.expected, q.shore);
         }
         return;
     }

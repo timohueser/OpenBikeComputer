@@ -6,9 +6,10 @@ import { metresPerUnit, mitre, type Line } from '../terrain/bins';
 export const STRUCTURE_VERTEX = 6;
 /**
  * Vertex flags in the colour's alpha: z is metres above the drawn surface; the face is a road, its colour's
- * red the surface code; the face takes no light, as the dark inside of a tunnel.
+ * red the surface code; the face is the dark void of a tunnel's opening, drawn only where the terrain has
+ * no hole in the portal; the face lies inside a tunnel, lit by its lamps; the face is a lamp.
  */
-export const GROUND = 1, PAINT = 2, VOID = 4;
+export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16;
 
 export interface StructureMesh {
     vertices: ArrayBuffer;
@@ -39,14 +40,12 @@ export function station(line: Line, v: number): Station {
 export const mix = (s: Station, t: Station, u: number): Station => ({ x: s.x + (t.x - s.x) * u, y: s.y + (t.y - s.y) * u, z: s.z + (t.z - s.z) * u, ax: s.ax + (t.ax - s.ax) * u, ay: s.ay + (t.ay - s.ay) * u });
 
 /**
- * Calls `post` with the stations about each place every `spacing` metres along a line between s and t,
- * `width` metres apart; s lies `along` metres along the line and t `length` metres after it.
+ * Calls `post` with the stations about each of the places that divide a segment from s to t, `length`
+ * metres long, about every `spacing` metres, from its start: `width` metres apart.
  */
-export function posts(s: Station, t: Station, along: number, length: number, post: (p: Station, q: Station) => void, width: number, spacing: number): void {
-    for (let k = Math.ceil(along / spacing); k * spacing < along + length; k++) {
-        const u = (k * spacing - along) / length, half = width / 2 / Math.max(length, 1e-3);
-        post(mix(s, t, Math.max(0, u - half)), mix(s, t, Math.min(1, u + half)));
-    }
+export function posts(s: Station, t: Station, length: number, post: (p: Station, q: Station) => void, width: number, spacing: number): void {
+    const n = Math.max(1, Math.round(length / spacing)), half = width / 2 / Math.max(length, 1e-3);
+    for (let k = 0; k < n; k++) post(mix(s, t, Math.max(0, k / n - half)), mix(s, t, k / n + half));
 }
 
 /** The colour of a hex `#rrggbb` as unorm8 bytes, with flags in alpha. */

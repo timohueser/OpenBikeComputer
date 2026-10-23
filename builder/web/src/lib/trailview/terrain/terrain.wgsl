@@ -26,6 +26,26 @@ struct Node {
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
+// The boxes of the tunnels' portals near the eye: x the count; then per box its facade's middle in units
+// about the anchor and its way into the tunnel, and its depth and half-width in metres.
+@group(0) @binding(2) var<storage, read> holes: array<vec4f>;
+
+// The nodes with a tunnel's portal draw no terrain in its box: the bore shows through.
+override HOLES: bool = false;
+
+// Metres from a point of LOD space, `u` units about the anchor, to the nearest portal box, negative inside.
+fn hole_distance(u: vec2f) -> f32 {
+    var d = 1e6;
+    for (var i = 0u; i < u32(holes[0].x); i++) {
+        let a = holes[1u + 2u * i];
+        let b = holes[2u + 2u * i];
+        let p = (u - a.xy) * surface.unit;
+        let along = dot(p, a.zw);
+        let across = abs(a.z * p.y - a.w * p.x);
+        d = min(d, max(max(-along, along - b.x), across - b.y));
+    }
+    return d;
+}
 
 const CELLS = 64u;
 
@@ -42,6 +62,7 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.s = v.s;
     out.relative = p;
     mark_known(&out, known(v.h));
+    mark_hole(&out, select(1e6, hole_distance(units_of(v.s)), HOLES));
     out.h = v.h;
     out.level = node.level;
     return out;

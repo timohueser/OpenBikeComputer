@@ -43,6 +43,8 @@ const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferra
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road and a path. */
 const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6;
+/** The top of a gallery's roof at its hill, over a road and over a path. */
+export const ROOF_M = 6.2, ROOF_PATH_M = 4;
 /** A bridge on piers, one with a roof and walls, or one that hangs from cables. */
 export type BridgeStyle = 'beam' | 'covered' | 'cable';
 const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
@@ -122,8 +124,8 @@ export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS /
 export interface Line {
     kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean];
     /**
-     * A bridge's deck depth or a tunnel's bore height, a bridge's look, the side of a gallery's hill (1 left,
-     * -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground: a road or a path that is
+     * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
+     * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground: a road or a path that is
      * not a bridge or a tunnel.
      */
     deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
@@ -187,7 +189,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
         const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, tags.highway);
         const type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'path' || path ? PATH : ROAD;
-        const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (path ? BORE_PATH_M : BORE_M) : undefined;
+        const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (path ? BORE_PATH_M : BORE_M) : kind === 'gallery' ? (path ? ROOF_PATH_M : ROOF_M) : undefined;
         const style: BridgeStyle | undefined = !bridge ? undefined : tags.bridge === 'covered' ? 'covered' : CABLES.includes(tags['bridge:structure']) ? 'cable' : 'beam';
         for (const { xy, z } of parts) {
             if (!z) continue;
@@ -471,7 +473,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            const deck = Math.min(255, Math.round(10 * (line.deck ?? 0)));
+            // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
+            const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
             const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f) : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
             const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
                 ...ends]);

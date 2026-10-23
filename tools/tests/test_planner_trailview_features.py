@@ -13,7 +13,7 @@ import unittest
 import numpy as np
 
 from tools import planner_trailview_features as features, region_osm
-from tools.trailview import roads
+from tools.trailview import roads, structures
 
 VECTORS = Path(__file__).resolve().parents[2] / "specs/vectors"
 
@@ -64,6 +64,40 @@ class Generalization(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which(os.environ.get("OBC_OSMIUM", "osmium")) or os.environ.get("CI"),
                      "Prepared Osmium is unavailable")
+class Bridges(unittest.TestCase):
+    # Metres east and north of a point at about 46.7° N, in world units.
+    Y = 0.3218
+    M = 1 / structures.metres(Y)
+
+    def at(self, east, north=0.0):
+        return (0.53 + east * self.M, self.Y - north * self.M)
+
+    class Flat:
+        def heights(self, x, y):
+            return np.full(np.shape(x), 500.0)
+
+    def test_a_deck_rises_over_the_water_and_the_road_that_it_crosses(self):
+        road = lambda points, **tags: ("road", {"highway": "residential", **tags}, [(False, points, None)])
+        ways = [road([self.at(-100), self.at(0)]), road([self.at(0), self.at(60)], bridge="yes"), road([self.at(60), self.at(160)]),
+                ("road", {"highway": "tertiary"}, [(False, [self.at(45, -80), self.at(45, 80)], None)])]
+        river = ([self.at(20, -100), self.at(20, 100)], [499.0, 499.0])
+        out, _, metrics = roads.solve(ways, self.Flat(), [river])
+        self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (2, 0))
+        deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - 0.01)
+        below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
+        self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 0.01)
+
+    def test_a_pier_steps_out_of_a_narrow_channel_and_a_high_footbridge_hangs(self):
+        ways = [("road", {}, [self.at(0), self.at(80)], [500.0, 500.0]), ("path", {}, [self.at(0, 50), self.at(120, 50)], [600.0, 600.0])]
+        added, piers, metrics = structures.bridges(ways, [(5.0, [self.at(40, -50), self.at(40, 100)])], [], self.Flat())
+        (east, _), _, _ = piers[0]
+        self.assertEqual(len(piers), 1)
+        self.assertGreater(abs((east - 0.53) / self.M - 40), 5 + structures.BANK_M)
+        self.assertEqual(added[1]["bridge:structure"], "simple-suspension")
+        self.assertEqual(metrics["cable_bridges"], 1)
+
+
 class Bake(unittest.TestCase):
     # A zoom-14 tile in Engelberg. Each node is (id, u, v) in its tile units.
     COLUMN, ROW = 8574, 5778
@@ -152,14 +186,15 @@ class Bake(unittest.TestCase):
                 tiles = {key: features.decode(gzip.decompress(data)) for key, data in all_tiles(source)}
         left, right = tiles[(14, self.COLUMN, self.ROW)], tiles[(14, self.COLUMN + 1, self.ROW)]
         kinds = lambda tile: sorted(feature["kind"] for feature in tile)
-        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "river", "road",
-                                       "ruin", "tunnel"])
+        self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "river",
+                                       "road", "ruin"])
         self.assertEqual(kinds(right), ["road"])
         self.assertEqual({key[0] for key in tiles}, set(range(8, 15)))
         dam = next(feature for feature in left if feature["kind"] == "dam")
         self.assertEqual(len(dam["parts"][0]["xy"]), 2, "a closed dam way is an area, not a ring line")
-        tunnel = next(feature for feature in left if feature["kind"] == "tunnel")
-        self.assertEqual(tunnel["tags"]["highway"], "secondary")
+        # A tunnel with no terrain over it runs on the ground, as a road.
+        tunnel = next(feature for feature in left if feature["kind"] == "main-road")
+        self.assertEqual(tunnel["tags"], {"highway": "secondary"})
         buffer = features.pad(14, self.ROW)
         road = next(feature for feature in left if feature["kind"] == "road")
         self.assertEqual(road["tags"], {"highway": "track", "surface": "gravel"})
@@ -188,8 +223,8 @@ class Bake(unittest.TestCase):
         # Above zoom 14 a tile holds the water and the main roads only, and the river still ends on
         # the shore of the lake.
         overview = next(tile for (zoom, _, _), tile in tiles.items() if zoom == 11)
-        self.assertEqual(kinds(overview), ["lake", "river"])
-        lake, river = sorted(overview, key=lambda feature: feature["kind"])
+        self.assertEqual(kinds(overview), ["lake", "main-road", "river"])
+        lake, _, river = sorted(overview, key=lambda feature: feature["kind"])
         self.assertIn(river["parts"][0]["xy"][-1], lake["parts"][0]["xy"])
 
 

@@ -3,6 +3,7 @@
 // at each `bridge-pier` point of the bake, down into the drawn surface.
 import { EXTENT, type Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, type Line, type Node } from '../terrain/bins';
+import type { Owns } from './node';
 import { GROUND, MeshBuilder, PAINT, posts, rgb, station, type Corner, type Station } from './mesh';
 
 /** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
@@ -25,28 +26,23 @@ const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 /** Paths, tracks of grass or dirt: a footbridge. */
 const isPath = (line: Line) => line.code >= 3 && line.code <= 6;
 
-/** The bridges of a feature tile's `list` and `lines` that reach into `box`, in world units. */
-export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], box: [number, number, number, number]): void {
+/** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. */
+export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns): void {
     const lines = all.filter(line => line.kind === BRIDGE);
     if (!lines.length) return;
-    const meets = (xs: number[], ys: number[], m: number) => Math.max(...xs) + m >= box[0] && Math.min(...xs) - m <= box[2] && Math.max(...ys) + m >= box[1] && Math.min(...ys) - m <= box[3];
     // Ends that two bridge lines share are joints: no cap there.
     const ends = new Map<string, number>();
     const endKey = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
     for (const line of lines) for (const v of [0, line.z.length - 1]) ends.set(endKey(line, v), (ends.get(endKey(line, v)) ?? 0) + 1);
     for (const line of lines) {
         const n = line.z.length, path = isPath(line), t = line.deck ?? 0.6, h = line.h;
-        const m = (h + 2) / metresPerUnit(line.xy[1]);
         const stations = new Map<number, Station>(), at = (v: number) => stations.get(v) ?? stations.set(v, station(line, v)).get(v)!;
-        let along = 0;
         for (let v = 0; v + 1 < n; v++) {
-            const xs = [line.xy[2 * v], line.xy[2 * v + 2]], ys = [line.xy[2 * v + 1], line.xy[2 * v + 3]];
-            const length = Math.hypot(xs[1] - xs[0], ys[1] - ys[0]) * metresPerUnit(ys[0]);
-            if (meets(xs, ys, m)) segment(b, at(v), at(v + 1), line, t, along, length);
-            along += length;
+            if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
+            segment(b, at(v), at(v + 1), line, t, Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]));
         }
         for (const v of [0, n - 1]) {
-            if (ends.get(endKey(line, v)) !== 1 || !meets([line.xy[2 * v]], [line.xy[2 * v + 1]], m)) continue;
+            if (ends.get(endKey(line, v)) !== 1 || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             // The end of the deck under its road, and of a road's parapets.
             const s = at(v), parapets = line.style === 'beam' && !path, w = parapets ? h + PARAPET[0] : h;
             const [ex, ey] = [line.xy[2 * (v ? v : 1)] - line.xy[2 * (v ? v - 1 : 0)], line.xy[2 * (v ? v : 1) + 1] - line.xy[2 * (v ? v - 1 : 0) + 1]];
@@ -56,11 +52,11 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             if (parapets) for (const side of [1, -1]) cap(side * h, side * w, LIFT_M, PARAPET[1]);
         }
     }
-    piers(b, list, tile, lines, box);
+    piers(b, list, tile, lines, owns);
 }
 
-/** The deck from station s to t, `along` metres from the line's start, `length` long, in the line's style. */
-function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, along: number, length: number): void {
+/** The deck from station s to t, `length` metres long, in the line's style. */
+function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, length: number): void {
     const h = line.h, road = !isPath(line);
     if (line.style === 'beam' && road) return roadBridge(b, s, t, line, depth);
     // A plank deck, or a road deck, its edges and its underside.
@@ -69,9 +65,9 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
     else b.strip(s, t, [-h, LIFT_M], [h, LIFT_M], WOOD, [0, 1]);
     for (const side of [1, -1]) b.strip(s, t, [side * h, LIFT_M], [side * h, -depth], edge, [side, 0]);
     b.strip(s, t, [-h, -depth], [h, -depth], edge, [0, -1]);
-    if (line.style === 'covered') return covered(b, s, t, h, along, length);
-    if (line.style === 'cable') return railing(b, s, t, h, along, length, STEEL, CABLE_M);
-    railing(b, s, t, h, along, length, WOOD, BAR_M);
+    if (line.style === 'covered') return covered(b, s, t, h, length);
+    if (line.style === 'cable') return railing(b, s, t, h, length, STEEL, CABLE_M);
+    railing(b, s, t, h, length, WOOD, BAR_M);
 }
 
 /** The road on a deck, painted as the road on the ground. */
@@ -92,14 +88,14 @@ function roadBridge(b: MeshBuilder, s: Station, t: Station, line: Line, depth: n
     b.strip(s, t, [-(h + pw), -depth], [h + pw, -depth], SOFFIT, [0, -1]);
 }
 
-/** A railing from station s to t on each side: a rail of `bar` metres square at the top, and a post every POSTS_M along the bridge. */
-function railing(b: MeshBuilder, s: Station, t: Station, h: number, along: number, length: number, colour: number, bar: number, top = RAIL_M, bottom = LIFT_M): void {
+/** A railing from station s to t on each side: a rail of `bar` metres square at the top, and a post about every POSTS_M. */
+function railing(b: MeshBuilder, s: Station, t: Station, h: number, length: number, colour: number, bar: number, top = RAIL_M, bottom = LIFT_M): void {
     for (const side of [1, -1]) {
         const inner = side * (h - bar);
         for (const [a, c, out] of [[[inner, top - bar], [inner, top], [-side, 0]], [[inner, top], [side * h, top], [0, 1]], [[side * h, top], [side * h, top - bar], [side, 0]], [[side * h, top - bar], [inner, top - bar], [0, -1]]] as [Corner, Corner, Corner][]) {
             b.strip(s, t, a, c, colour, out);
         }
-        posts(s, t, along, length, (p, q) => {
+        posts(s, t, length, (p, q) => {
             for (const [a, c, out] of [[[inner, bottom], [inner, top], [-side, 0]], [[side * h, bottom], [side * h, top], [side, 0]]] as [Corner, Corner, Corner][]) {
                 b.strip(p, q, a, c, colour, out);
             }
@@ -112,7 +108,7 @@ function railing(b: MeshBuilder, s: Station, t: Station, h: number, along: numbe
 }
 
 /** A covered bridge from station s to t: a wooden wall on each side, posts up to the eaves, and a pitched roof with its underside. */
-function covered(b: MeshBuilder, s: Station, t: Station, h: number, along: number, length: number): void {
+function covered(b: MeshBuilder, s: Station, t: Station, h: number, length: number): void {
     const w = h + 0.1, eave = w + OVERHANG_M, ridge = EAVES_M + PITCH * eave;
     for (const side of [1, -1]) {
         b.strip(s, t, [side * w, LIFT_M], [side * w, COVER_WALL_M], WOOD_DARK, [-side, 0]);
@@ -120,17 +116,17 @@ function covered(b: MeshBuilder, s: Station, t: Station, h: number, along: numbe
         b.strip(s, t, [0, ridge], [side * eave, EAVES_M], ROOF, [0, 1]);
         b.strip(s, t, [side * eave, EAVES_M], [0, ridge], ROOF_UNDER, [0, -1]);
     }
-    railing(b, s, t, w, along, length, WOOD_DARK, 0.15, EAVES_M, COVER_WALL_M);
+    railing(b, s, t, w, length, WOOD_DARK, 0.15, EAVES_M, COVER_WALL_M);
 }
 
 /** A pier at each `bridge-pier` point near the node, across its bridge line, from under the deck down into the drawn surface. */
-function piers(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], box: [number, number, number, number]): void {
+function piers(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns): void {
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     for (const { kind, parts } of list) {
         if (kind !== 'bridge-pier') continue;
         for (const { xy } of parts) {
             const px = (ox + xy[0]) * scale, py = (oy + xy[1]) * scale;
-            if (px < box[0] || px > box[2] || py < box[1] || py > box[3]) continue;
+            if (!owns(px, py)) continue;
             const unit = metresPerUnit(py);
             let best: { line: Line; v: number; u: number; d: number } | undefined;
             for (const line of lines) for (let v = 0; v + 1 < line.z.length; v++) {

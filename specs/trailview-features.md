@@ -117,6 +117,9 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends,
+- raises a bridge that is not shorter than 8 m where it crosses a waterway, a road or a path that it
+  does not meet: its road lies at least 1.5 m (water), 4.5 m (road) or 2.5 m (path) over it, plus a
+  deck of 1 m, or 0.4 m for a path. The road below may sink to give the room,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
@@ -124,6 +127,25 @@ The tiles keep the vertices of OSM and the vertex at the end of each approach of
 a vertex between two of them where the solved height leaves the straight line between them by more
 than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
+A tunnel whose terrain lies less than its bore (5 m, or 2.6 m for a path) over it everywhere runs under
+something that the terrain leaves out, such as a building or a railway: the tiles keep it without its
+`tunnel` tag, as a road of its class. A `building_passage` stays a tunnel.
+
+### Structures
+
+The bake adds these to the features of the road solver:
+
+| Added | On | Value |
+| --- | --- | --- |
+| tag `deck` | each way of a bridge | The depth of its deck in metres, one decimal: 1/30 of its longest span within 0.5 to 2.5 m, for a path 1/40 within 0.3 to 1 m |
+| tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
+| tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
+| point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+
+A bridge is the chain of bridge ways whose ends meet two by two. Its piers divide it evenly into spans
+of at most 45 m, or 30 m for a path. A pier that falls in water which the bridge crosses for less than
+30 m moves 2 m past the nearer bank of it; one that comes within 6 m of another pier or of an end goes.
+Water is a waterway within its half-width and 1 m, a river area or a lake. A cable bridge has no piers.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
