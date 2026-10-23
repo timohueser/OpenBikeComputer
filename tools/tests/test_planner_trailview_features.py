@@ -98,9 +98,10 @@ class Bridges(unittest.TestCase):
         least = 500 + roads.CLEAR_WATER_M + roads.DECK_PATH_M
         out, _, _, _ = roads.solve([path([self.at(-50), self.at(0)]), path([self.at(0), self.at(9)], bridge="yes")], self.Flat(), [river])
         # The deck clears the stream, and its free end stands on the terrain.
-        self.assertGreaterEqual(out[1][0][2][0], least - 0.01)
-        self.assertLess(max(out[1][0][2]), least + 0.05)
-        self.assertLess(out[1][0][2][-1], 501)
+        deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
+        self.assertGreaterEqual(deck(1), least - 0.01)
+        self.assertLess(max(out[1][0][2]), least + 0.5)
+        self.assertLess(deck(9), 501)
         # As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
         river = ([self.at(-50, 1), self.at(50, 1)], [500.0, 500.0])
         out, _, _, _ = roads.solve([path([self.at(-50), self.at(50)]), path([self.at(0), self.at(0, 9)], bridge="yes")], self.Flat(), [river])
@@ -120,7 +121,7 @@ class Bridges(unittest.TestCase):
         deck = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
         self.assertGreaterEqual(deck, 498.2 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
 
-    def test_of_two_bridges_at_one_layer_the_better_class_keeps_its_height_and_the_other_passes_under(self):
+    def test_of_two_bridges_at_one_layer_the_better_class_passes_over_and_moves_less(self):
         road = lambda highway, points, **tags: ("road", {"highway": highway, **tags}, [(False, points, None)])
         ways = [road("motorway", [self.at(-200), self.at(-50)]), road("motorway", [self.at(-50), self.at(50)], bridge="yes", layer="1"),
                 road("motorway", [self.at(50), self.at(200)]), road("service", [self.at(0, -200), self.at(0, -30)]),
@@ -128,8 +129,8 @@ class Bridges(unittest.TestCase):
         out, _, _, metrics = roads.solve(ways, self.Flat())
         over = np.interp(0, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
         under = np.interp(0, [(self.Y - y) / self.M for _, y in out[4][0][1]], out[4][0][2])
-        self.assertAlmostEqual(over, 500, delta=0.05)
-        self.assertLessEqual(under, over - roads.CLEAR_ROAD_M - roads.DECK_M + roads.KEEP_M)
+        self.assertGreaterEqual(over - under, roads.CLEAR_ROAD_M + roads.DECK_M - roads.KEEP_M)
+        self.assertLess(abs(over - 500), abs(under - 500))
         self.assertEqual((metrics["passes"], metrics["passes_near_cm"]), (1, 0))
 
     def test_a_long_tunnel_runs_straight_between_its_portals_a_shaft_does_not_lift_it_and_over_a_valley_it_floats(self):
