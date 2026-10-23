@@ -57,11 +57,13 @@ const TROUGH: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
 // A tunnel's road into its portal yields to every road over it, as under a road on an embankment.
 const PORTAL_CORE: u32 = 3u;
-const BANKS: u32 = 4u;
-const CONES: u32 = 5u;
-const BENCH: u32 = 6u;
-const COVER: u32 = 7u;
-const BUCKETS: u32 = 8u;
+// A path's tread outranks the slopes of the roads beside it.
+const PATH_CORE: u32 = 4u;
+const BANKS: u32 = 5u;
+const CONES: u32 = 6u;
+const BENCH: u32 = 7u;
+const COVER: u32 = 8u;
+const BUCKETS: u32 = 9u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -463,6 +465,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (kind == PATH && path_shows(h, rule, level)) {
                 let x = max(0.0, g.lateral - h);
                 let tol = rule.tol + rule.tilt * min(g.lateral, h);
+                if (g.core && g.lateral <= h) {
+                    lo[PATH_CORE] = max(lo[PATH_CORE], g.z - tol);
+                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
+                }
                 if ((g.core || g.cone) && x < rule.reach) {
                     lo[BENCH] = max(lo[BENCH], g.z - tol - widen(x, rule.reach, rule.fill));
                     hi[BENCH] = min(hi[BENCH], g.z + tol + widen(x, rule.reach, rule.cut));
