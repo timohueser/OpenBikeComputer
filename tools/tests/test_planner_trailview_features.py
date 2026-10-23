@@ -88,6 +88,23 @@ class Bridges(unittest.TestCase):
         below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
         self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 0.01)
 
+    def test_a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(self):
+        class Mountain:
+            def heights(_, x, y):
+                return np.where(np.abs(np.asarray(x) - 0.53) < 2995 * self.M, 2500.0, 1000.0)
+        road = lambda points, **tags: ("road", {"highway": "primary", **tags}, [(False, points, None)])
+        ways = [road([self.at(-3200), self.at(-3000)]), road([self.at(-3000), self.at(-1000), self.at(0)], tunnel="yes"),
+                road([self.at(0), self.at(3000)], tunnel="yes"), road([self.at(3000), self.at(3200)]),
+                ("road", {"highway": "service", "tunnel": "yes"}, [(False, [self.at(-1000), self.at(-1000, 300)], None)]),
+                ("road", {"highway": "service"}, [(False, [self.at(-1000, 300), self.at(-1000, 500)], None)])]
+        ways = [("tunnel" if tags.get("tunnel") else kind, tags, parts) for kind, tags, parts in ways]
+        out, _, _ = roads.solve(ways, Mountain())
+        east = [(x - 0.53) / self.M for part in (out[1][0], out[2][0]) for x, _ in part[1]]
+        z = [h for part in (out[1][0], out[2][0]) for h in part[2]]
+        for e, h in zip(east, z):
+            self.assertAlmostEqual(h, np.interp(e, [-3000, 3000], [z[0], z[-1]]), delta=0.01)
+        self.assertLess(max(z), 1001)
+
     def test_a_pier_steps_out_of_a_narrow_channel_and_a_high_footbridge_hangs(self):
         ways = [("road", {}, [self.at(0), self.at(80)], [500.0, 500.0]), ("path", {}, [self.at(0, 50), self.at(120, 50)], [600.0, 600.0])]
         added, piers, metrics = structures.bridges(ways, [(5.0, [self.at(40, -50), self.at(40, 100)])], [], self.Flat())

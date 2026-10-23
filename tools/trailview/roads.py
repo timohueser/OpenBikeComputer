@@ -5,8 +5,8 @@ A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − h�
 weights wᵢ, so that a spike or a gully of the terrain does not move the road, and λ = smooth_m⁴ of its
 class. No segment is steeper than the grade of its class. Ways that share a vertex share its height, and
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
-under it and runs between its ends; a bridge rises where it would pass too low over the water, the road or
-the path that it crosses. A ford lies FORD_M below the water it crosses."""
+under it and runs between its ends, a tunnel in a straight line; a bridge rises where it would pass too low
+over the water, the road or the path that it crosses. A ford lies FORD_M below the water it crosses."""
 
 import json
 import math
@@ -287,13 +287,14 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     # Rows that pin a combination of variables to a value: the approaches of side roads, and the fords.
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
+    bores = tunnel_pins(net)
     above = clearances(net, rivers, classes)
     C = sparse.csr_matrix((above[1].ravel(), (np.repeat(np.arange(len(above[2])), 4), above[0].ravel())), shape=(len(above[2]), n))
     C = C[np.all(known[above[0]], axis=1)]
     least = above[2][np.all(known[above[0]], axis=1)]
-    variables = np.concatenate([approach[0], fords[0]])
-    coefficients = np.concatenate([approach[1], fords[1]])
-    values = np.concatenate([approach[2], fords[2]])
+    variables = np.concatenate([approach[0], fords[0], bores[0]])
+    coefficients = np.concatenate([approach[1], fords[1], bores[1]])
+    values = np.concatenate([approach[2], fords[2], bores[2]])
     ok = np.all(known[variables], axis=1)
     variables, coefficients, values = variables[ok], coefficients[ok], values[ok]
     P = sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(values)), 3), variables.ravel())), shape=(len(values), n))
@@ -400,7 +401,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     residual = np.abs(z[a[seg]] * (1 - t) + z[b[seg]] * t - h)
     metrics = {
         "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
-        "fords": int(np.count_nonzero(ok[len(approach[2]):])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
+        "fords": int(np.count_nonzero(ok[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
         "clearances": len(least), "clearances_low_cm": int(np.count_nonzero(C @ z < least - 0.01)),
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
@@ -420,8 +421,10 @@ def approach_pins(net):
     direction that the side leans along most and τ ≥ 0 the place of P along J-Q. A side pins only the
     vertices at least a metre nearer to its junction than to the next junction along its way, so that
     the two ends of a short link do not pin one vertex. Last, whether each segment lies within the
-    approach distance of a junction where its way is a side."""
-    occurrence, step, distance, t1, s1, t2, s2 = net.sides
+    approach distance of a junction where its way is a side. A tunnel that leaves a junction as a side
+    runs straight (`tunnel_pins`) and has no approach."""
+    sides = ~net.tunnel[net.osm_way[net.sides[0]]]
+    occurrence, step, distance, t1, s1, t2, s2 = (column[sides] for column in net.sides)
     approached = np.zeros(len(net.segment_start), bool)
     if not len(occurrence):
         return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0), approached
@@ -465,6 +468,56 @@ def approach_pins(net):
     variables = np.column_stack([net.vertex_var[p], net.vertex_var[j[i]], net.vertex_var[q[i]]])
     coefficients = np.column_stack([np.ones(len(i)), -(1 - tau), -tau])
     return variables, coefficients, np.zeros(len(variables)), approached
+
+
+def tunnel_pins(net):
+    """(variables, coefficients, values) that hold each vertex inside a tunnel on the straight line between
+    the two ends of its tunnel: z_v − (1 − τ)·z_A − τ·z_B = 0, with τ its share of the tunnel's length. A
+    tunnel is a chain of tunnel ways: where the ends of tunnel ways meet, it runs on through the two that
+    continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft follows the
+    tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its heights."""
+    tunnels = np.flatnonzero(net.tunnel)
+    ends = {}
+    for w in tunnels.tolist():
+        for end, v, u in ((0, net.way_first[w], net.way_first[w] + 1), (1, net.way_last[w], net.way_last[w] - 1)):
+            d = net.vertex_xy[u] - net.vertex_xy[v]
+            ends.setdefault(int(net.vertex_var[v]), []).append((w, end, d / max(np.hypot(*d), 1e-300)))
+    # At each meeting of ends, pair the ends that run most nearly straight on, the straightest pair first.
+    partner = {}
+    for meeting in ends.values():
+        pairs = sorted((float(p[2] @ q[2]), i, k) for i, p in enumerate(meeting) for k, q in enumerate(meeting) if i < k and p[0] != q[0])
+        for _, i, k in pairs:
+            p, q = meeting[i][:2], meeting[k][:2]
+            if p not in partner and q not in partner:
+                partner[p], partner[q] = q, p
+    seen, rows = set(), []
+    for start in tunnels.tolist():
+        if start in seen:
+            continue
+        # Back to the first way of the chain, then along it.
+        w, end, steps = start, 0, 0
+        while (w, end) in partner and partner[(w, end)][0] != start and steps < len(tunnels):
+            w, end = partner[(w, end)][0], 1 - partner[(w, end)][1]
+            steps += 1
+        chain, flipped = [], end == 1
+        while w not in seen:
+            seen.add(w)
+            span = np.arange(net.way_first[w], net.way_last[w] + 1)
+            chain.extend((span[::-1] if flipped else span)[1 if chain else 0:].tolist())
+            following = partner.get((w, 0 if flipped else 1))
+            if not following:
+                break
+            w, flipped = following[0], following[1] == 1
+        a, b = net.vertex_var[chain[0]], net.vertex_var[chain[-1]]
+        if len(chain) < 3 or a == b:
+            continue
+        xy = net.vertex_xy[chain]
+        along = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T) * metres((xy[:-1, 1] + xy[1:, 1]) / 2))])
+        tau = along[1:-1] / along[-1]
+        rows += [((net.vertex_var[v], a, b), (1.0, -(1 - t), -t)) for v, t in zip(chain[1:-1], tau.tolist())]
+    if not rows:
+        return np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0)
+    return np.array([r[0] for r in rows], np.int64), np.array([r[1] for r in rows]), np.zeros(len(rows))
 
 
 def ford_pins(net, rivers):

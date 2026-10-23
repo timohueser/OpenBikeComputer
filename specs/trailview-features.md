@@ -116,7 +116,9 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
-- ignores the terrain under a bridge and in a tunnel: these run between their ends,
+- ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in a
+  straight line between the two ends of its chain of tunnel ways that meet end to end, so a side tunnel
+  or a shaft that joins it follows it and does not lift it,
 - raises a bridge that is not shorter than 8 m where it crosses a waterway, a road or a path that it
   does not meet: its road lies at least 1.5 m (water), 4.5 m (road) or 2.5 m (path) over it, plus a
   deck of 1 m, or 0.4 m for a path. The road below may sink to give the room,
