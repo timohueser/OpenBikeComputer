@@ -21,7 +21,7 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
-from .structures import BORE_M, BORE_PATH_M
+from .structures import BORE_M, BORE_PATH_M, road_half
 from .water import contains
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
@@ -126,6 +126,7 @@ class Network:
         self.free = np.array([way[4] for way in self.ways], bool)
         self.tunnel = np.array([features[way[0]][0] == "tunnel" for way in self.ways], bool)
         self.layer = np.array([layer(features[way[0]][1]) for way in self.ways])
+        self.half = np.array([road_half(features[way[0]][1]) for way in self.ways])
         self.osm_xy = np.concatenate([way[2] for way in self.ways])
         self.osm_way = np.repeat(np.arange(len(self.ways)), counts)
         self.osm_first = np.cumsum(counts) - counts
@@ -674,7 +675,8 @@ def landings(net):
 def passes(net, classes):
     """The rows of the ways that pass under or over a way that they do not meet:
     (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ∓ the margin. A tunnel passes under a road or a path on the
-    ground by its bore and COVER_M, and the road keeps its height. Of two bridges that no bridge joins, the one
+    ground by its bore and COVER_M across the road's whole width, under its centreline and both edges, and the
+    road keeps its height. Of two bridges that no bridge joins, the one
     of the higher layer, at an equal layer of the better class, passes over the other by the clearance of the
     lower and the deck of the upper; both move, the stiffer less. The mover's variables and coefficients,
     the other's, the margins, the mover's way and the sign, +1 over a bridge and −1 under a road, per row."""
@@ -690,7 +692,12 @@ def passes(net, classes):
         if not (0 <= u < 1 and 0 <= r < 1):
             return
         if sign < 0:
-            rows.append(((net.vertex_var[v], net.vertex_var[v + 1]), (1 - u, u), (net.vertex_var[k], net.vertex_var[k + 1]), (1 - r, r), margin, w, sign))
+            # Where the tunnel's line meets each edge of the road, on this segment of the tunnel at most.
+            c, e = net.vertex_xy[k], net.vertex_xy[k + 1] - net.vertex_xy[k]
+            side = np.array([-e[1], e[0]]) / np.hypot(*e) * net.half[other] / metres(c[1])
+            places = [u] + [min(max(edge[0], 0.0), 1.0) for offset in (side, -side) if (edge := lines(p, q, c + offset, e)) is not None]
+            rows.extend(((net.vertex_var[v], net.vertex_var[v + 1]), (1 - t, t), (net.vertex_var[k], net.vertex_var[k + 1]), (1 - r, r), margin, w, sign)
+                        for t in places)
             return
         # Two decks keep the margin between all ends of their crossing segments: a row on the crossing point
         # would be a lever on the far ends.
@@ -751,16 +758,20 @@ def cells(p, q):
             for cy in range(int(min(p[1], q[1]) // GRID_UNITS), int(max(p[1], q[1]) // GRID_UNITS) + 1)]
 
 
-def crossing(p, q, r, s):
-    """The parameters (along p-q, along r-s) where two segments cross, or None."""
-    d, e = q - p, s - r
+def lines(p, q, r, e):
+    """The parameters (along p-q, along e from r) where the lines through p-q and along e from r meet, or None."""
+    d = q - p
     denominator = d[0] * e[1] - d[1] * e[0]
     if denominator == 0:
         return None
     f = r - p
-    tp = (f[0] * e[1] - f[1] * e[0]) / denominator
-    tr = (f[0] * d[1] - f[1] * d[0]) / denominator
-    return (tp, tr) if 0 <= tp <= 1 and 0 <= tr <= 1 else None
+    return (f[0] * e[1] - f[1] * e[0]) / denominator, (f[0] * d[1] - f[1] * d[0]) / denominator
+
+
+def crossing(p, q, r, s):
+    """The parameters (along p-q, along r-s) where two segments cross, or None."""
+    hit = lines(p, q, r, s - r)
+    return hit if hit is not None and 0 <= hit[0] <= 1 and 0 <= hit[1] <= 1 else None
 
 
 def kept(net, z, known):

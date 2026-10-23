@@ -148,15 +148,17 @@ class Bridges(unittest.TestCase):
         self.assertFalse(structures.floating(out[1][0][1], out[1][0][2], Mountain()))
         self.assertTrue(structures.floating(out[1][0][1], out[1][0][2], self.Flat()))
 
-    def test_a_tunnel_sinks_under_the_road_over_it_and_the_road_stays(self):
+    def test_a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays(self):
         road = lambda highway, points, **tags: ("tunnel" if tags else "road", {"highway": highway, **tags}, [(False, points, None)])
+        # The north portal lies just past the motorway's edge, structures.MAIN_HALF_M from its centreline.
         ways = [road("motorway", [self.at(-200), self.at(200)]), road("unclassified", [self.at(5, -200), self.at(5, -20)]),
-                road("unclassified", [self.at(5, -20), self.at(5, 20)], tunnel="yes"), road("unclassified", [self.at(5, 20), self.at(5, 200)])]
+                road("unclassified", [self.at(5, -20), self.at(5, 7)], tunnel="yes"), road("unclassified", [self.at(5, 7), self.at(5, 200)])]
         out, _, under, _ = roads.solve(ways, self.Flat())
         self.assertEqual(under, {2})
         self.assertAlmostEqual(np.interp(5, [(x - 0.53) / self.M for x, _ in out[0][0][1]], out[0][0][2]), 500, delta=0.05)
-        tunnel = out[2][0][2]
-        self.assertLessEqual((tunnel[0] + tunnel[-1]) / 2, 500 - structures.BORE_M - roads.COVER_M + 0.01)
+        tunnel = lambda north: np.interp(north, [(self.Y - y) / self.M for _, y in out[2][0][1]], out[2][0][2])
+        for north in (-structures.MAIN_HALF_M, 0, structures.MAIN_HALF_M):
+            self.assertLessEqual(tunnel(north), 500 - structures.BORE_M - roads.COVER_M + 0.01)
 
     def test_a_footbridge_over_a_gorge_does_not_sag_under_its_ends(self):
         class Gorge:
