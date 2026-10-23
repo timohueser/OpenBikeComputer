@@ -2,7 +2,7 @@
 // a railing for a path, cables for a bridge that hangs and walls and a roof for a covered one, and a pier
 // at each `bridge-pier` point of the bake, down into the drawn surface.
 import { EXTENT, type Feature } from '../stream/features';
-import { BRIDGE, metresPerUnit, type Line, type Node } from '../terrain/bins';
+import { BRIDGE, isPath, metresPerUnit, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
 import { GROUND, MeshBuilder, PAINT, posts, rgb, station, type Corner, type Station } from './mesh';
 
@@ -26,8 +26,8 @@ const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 /** The half-width of a deck to the outer face of a road's parapets; a step past a path's railing still stands on it. */
 export const deckHalf = (line: Line) => line.h + PARAPET[0];
 
-/** Paths, tracks of grass or dirt: a footbridge. */
-const isPath = (line: Line) => line.code >= 3 && line.code <= 6;
+/** A paved road or path, by its surface, as `paved` of roads.wgsl: its deck is painted, not planked. */
+const isPaved = (line: Line) => line.code <= 2 || line.code === 7;
 
 /** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. */
 export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns): void {
@@ -64,7 +64,7 @@ function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: numb
     if (line.style === 'beam' && road) return roadBridge(b, s, t, line, depth);
     // A plank deck, or a road deck, its edges and its underside.
     const edge = line.style === 'cable' ? STEEL : WOOD_DARK;
-    if (road) roadway(b, s, t, line);
+    if (isPaved(line)) roadway(b, s, t, line);
     else b.strip(s, t, [-h, LIFT_M], [h, LIFT_M], WOOD, [0, 1]);
     for (const side of [1, -1]) b.strip(s, t, [side * h, LIFT_M], [side * h, -depth], edge, [side, 0]);
     b.strip(s, t, [-h, -depth], [h, -depth], edge, [0, -1]);
