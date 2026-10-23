@@ -109,15 +109,6 @@ fn clip_box(c: vec3f, centre: vec3f, extent: vec3f) -> vec3f {
     return select(c, centre + d / m, m > 1.0);
 }
 
-// A bilinear read of the history for the sharpening, clipped to the box when `clip` is true.
-fn neighbour(uv: vec2f, clip: bool, centre: vec3f, extent: vec3f) -> vec3f {
-    let c = decode(textureSampleLevel(history, bilinear, uv, 0.0).rgb);
-    if (clip) {
-        return rgb(clip_box(ycocg(c), centre, extent));
-    }
-    return c;
-}
-
 @fragment
 fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     let size = resolve.render.xy;
@@ -151,9 +142,6 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         nearest = max(nearest, textureLoad(depth, p, 0));
     }
     let current = sum / total;
-    let mean = m1 / 5.0;
-    let extent = SPREAD * sqrt(max(m2 / 5.0 - mean * mean, vec3f(0.0)));
-    let clip = resolve.blend.y > 0.5;
 
     // The pixel's point on its view ray at the nearest depth about it (reversed Z: depth = near /
     // distance along the view), in the last frame. The curvature drop is relative to the eye.
@@ -175,27 +163,29 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     var h = vec3f(0.0);
     if (weight < 1.0) {
         h = history_at(uv);
-        if (clip) {
+        if (resolve.blend.y > 0.5) {
             // Hidden in the last frame: every depth about the point there is nearer than the point.
             let expected = select(0.0, resolve.jitter.z / was.w, nearest > 0.0);
             let around = textureGather(0, last_depth, nearest_texel, uv) / DEPTH_SCALE;
             if (min(min(around.x, around.y), min(around.z, around.w)) > expected * HIDDEN) {
                 weight = 1.0;
             }
-            h = rgb(clip_box(ycocg(h), mean, extent));
+            let mean = m1 / 5.0;
+            let sigma = sqrt(max(m2 / 5.0 - mean * mean, vec3f(0.0)));
+            h = rgb(clip_box(ycocg(h), mean, SPREAD * sigma));
         }
     }
     let blended = mix(h, current, weight);
     // The canvas sharpens the blend against the history about the point, the image of a frame
-    // before, kept within their range so that no edge rings. While the camera moves, those reads keep
-    // to the clip box of the history, so no stale colour widens the range.
+    // before, kept within their range so that no edge rings. While the camera moves, these reads are
+    // not clipped: a stale colour widens the range and can leave a faint halo at a moving edge.
     var shown = blended;
     if (weight < 1.0 && resolve.jitter.w > 0.0) {
         let texel = 1.0 / output;
-        let a = neighbour(uv + vec2f(texel.x, 0.0), clip, mean, extent);
-        let b = neighbour(uv - vec2f(texel.x, 0.0), clip, mean, extent);
-        let e = neighbour(uv + vec2f(0.0, texel.y), clip, mean, extent);
-        let f = neighbour(uv - vec2f(0.0, texel.y), clip, mean, extent);
+        let a = decode(textureSampleLevel(history, bilinear, uv + vec2f(texel.x, 0.0), 0.0).rgb);
+        let b = decode(textureSampleLevel(history, bilinear, uv - vec2f(texel.x, 0.0), 0.0).rgb);
+        let e = decode(textureSampleLevel(history, bilinear, uv + vec2f(0.0, texel.y), 0.0).rgb);
+        let f = decode(textureSampleLevel(history, bilinear, uv - vec2f(0.0, texel.y), 0.0).rgb);
         let low = min(blended, min(min(a, b), min(e, f)));
         let high = max(blended, max(max(a, b), max(e, f)));
         shown = clamp(blended + resolve.jitter.w * (blended - 0.25 * (a + b + e + f)), low, high);
