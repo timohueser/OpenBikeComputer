@@ -75,7 +75,6 @@ JOBS: dict[str, Job] = {
     "planner-search": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
     "desktop": Job(needs=("selection", "desktop-frontend"), roots=("builder/desktop",)),
-    "desktop-launch": Job(needs=("selection", "desktop")),
 }
 
 # The job that evaluates the plan.  It is never a route for the work it reports.
