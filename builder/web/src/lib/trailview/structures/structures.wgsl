@@ -22,8 +22,10 @@ struct StructureIn {
     @location(1) z: f32,
     // rgb: the colour in sRGB; for a road face, r is its surface code. a: the flags.
     @location(2) colour: vec4f,
-    // A road face's metres across from its middle, and its half-width.
+    // A road face's metres across from its middle and its half-width, over ROAD_RANGE_M.
     @location(3) road: vec2f,
+    // A track's sleepers from its start, NO_SLEEPERS elsewhere.
+    @location(4) sleepers: f32,
 }
 
 struct StructureOut {
@@ -34,6 +36,7 @@ struct StructureOut {
     @location(2) altitude: f32,
     @location(3) @interpolate(flat) colour: vec4f,
     @location(4) road: vec2f,
+    @location(5) sleepers: f32,
 }
 
 // Vertex flags, as in mesh.ts.
@@ -47,19 +50,8 @@ const TUNNEL_LIGHT: vec3f = vec3f(0.36, 0.35, 0.33);
 // The void of a portal draws past this share of the masks' reach: nearer, the terrain has its hole in
 // the box and the bore shows through.
 const VOID_REACH: f32 = 0.75;
-
-// The region of the ground at a point, from the finest resident ground page.
-fn region_at(s: vec2f) -> u32 {
-    for (var k = min(u32(ceil(lod(s))), look.codes.y); k >= COARSEST; k--) {
-        let t = texel_of(s, k);
-        let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-        let page = ground_page(k, whole);
-        if (page >= 0) {
-            return textureLoad(cells, in_page(page, whole & vec2i(255)), page_layer(page), 0).b;
-        }
-    }
-    return 0u;
-}
+// As ROAD_RANGE_M of mesh.ts.
+const ROAD_RANGE_M: f32 = 16.0;
 
 @vertex
 fn structure_vertex(v: StructureIn) -> StructureOut {
@@ -84,7 +76,8 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     out.relative = p;
     out.altitude = z;
     out.colour = v.colour;
-    out.road = v.road;
+    out.road = v.road * ROAD_RANGE_M;
+    out.sleepers = v.sleepers;
     return out;
 }
 
@@ -95,9 +88,11 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     let flags = u32(round(in.colour.a * 255.0));
     var albedo = in.colour.rgb * in.colour.rgb;
     let w = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
+    // A pixel's span along a track: the rate of its count of sleepers.
+    let along_w = max(abs(dpdx(in.sleepers)), abs(dpdy(in.sleepers))) * SLEEPER_SPACING_M;
     if ((flags & ROAD_FACE) != 0u) {
         let across = abs(in.road.x);
-        albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, look.place.xy + in.relative.xy, w, w).rgb;
+        albedo = road_surface(region_at(lod_space(in.u)), u32(round(in.colour.r * 255.0)), max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w).rgb;
     }
     var lit = light_up(albedo, n, 1.0, 1.0, look.horizon.w);
     if ((flags & INSIDE_FACE) != 0u) {

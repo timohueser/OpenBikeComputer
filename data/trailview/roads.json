@@ -1,4 +1,9 @@
 {
+  "rail": {"grade": 0.08, "smooth_m": 80, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
+  "light_rail": {"grade": 0.1, "smooth_m": 50, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
+  "narrow_gauge": {"grade": 0.12, "smooth_m": 50, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
+  "rack": {"grade": 0.5, "smooth_m": 30, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
+  "funicular": {"grade": null, "smooth_m": 20, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
   "motorway": {"grade": 0.06, "smooth_m": 40, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
   "motorway_link": {"grade": 0.06, "smooth_m": 30, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},
   "trunk": {"grade": 0.09, "smooth_m": 30, "tol": 0.02, "reach": 10, "least": 5, "cut": 0.85, "fill": 0.85, "tilt": 0},

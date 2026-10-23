@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, STREAM, surfaceOf, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -53,8 +53,15 @@ describe('the stamp data of a node', () => {
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
         expect(Number(/const MASK_LEVEL: u32 = (\d+)u;/.exec(readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(NEAR);
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
-        // The shaders know the surfaces by their codes, and the mask holds a code in 3 bits.
-        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway']);
+        // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
+        expect(Object.keys(SURFACES)).toEqual(['main', 'road', 'gravel', 'dirt', 'grass', 'path', 'oneway', 'rail', 'narrow', 'rack', 'narrow-rack']);
+        const mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
+        expect([/const TRACK_CODE: u32 = (\d+)u;/.exec(shader)?.[1], /const RAIL_CODE: u32 = (\d+)u;/.exec(mask)?.[1]].map(Number)).toEqual([RAIL_CODE, RAIL_CODE]);
+        expect([/const SLEEPER_M: f32 = ([\d.]+);/.exec(shader)?.[1], /const SLEEPER_SPACING_M: f32 = ([\d.]+);/.exec(mask)?.[1]].map(Number)).toEqual([SLEEPER_M, SLEEPER_M]);
+        const range = /const TRACK_RANGE: f32 = ([\d.]+);/.exec(readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'))?.[1];
+        expect(Number(/const TRACK_M: f32 = ([\d.]+);/.exec(mask)?.[1])).toBe(Number(range));
+        const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
+        expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
@@ -134,6 +141,25 @@ describe('a rounded line', () => {
         };
         expect(between(a, 2, 3)).toEqual(between(whole, 2, 3));
         expect(between(b, 3, 4)).toEqual(between(whole, 3, 4));
+    });
+});
+
+describe('the sleepers of a track', () => {
+    it('are whole at each OSM vertex, so two tiles that cut the track elsewhere paint the same ones', () => {
+        const xy = [0, 0, 400, 0, 800, 300, 900, 800, 1300, 1000, 1700, 900, 2000, 400];
+        const track = (from: number, to: number) => features([{ kind: 'railway', tags: { railway: 'rail' }, geometry: 'line', parts: [{
+            outer: false, xy: Int32Array.from(xy.slice(2 * from, 2 * to + 2)), z: new Float32Array(to - from + 1).fill(1000),
+        }] }], TILE).lines[0];
+        const fractions = (line: Line, from: number, to: number) => {
+            const osm = line.anchors!.flatMap((anchor, v) => (anchor ? [v] : []));
+            return line.sleepers!.slice(osm[from], osm[to] + 1).map(count => count - Math.floor(count + 1e-6));
+        };
+        const whole = track(0, 6), a = track(0, 4), b = track(2, 6);
+        for (const line of [whole, a, b]) for (const fraction of fractions(line, 0, line.anchors!.filter(Boolean).length - 1).filter((_, v, all) => v === 0 || v === all.length - 1)) expect(fraction).toBeCloseTo(0, 4);
+        expect(whole.sleepers!.at(-1)! / SLEEPER_M).toBeGreaterThan(0);
+        // Tile A rounds segment 2-3 as the whole line does, and tile B segment 3-4.
+        fractions(a, 2, 3).forEach((fraction, i) => expect(fraction).toBeCloseTo(fractions(whole, 2, 3)[i], 4));
+        fractions(b, 1, 2).forEach((fraction, i) => expect(fraction).toBeCloseTo(fractions(whole, 3, 4)[i], 4));
     });
 });
 

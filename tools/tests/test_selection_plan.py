@@ -451,23 +451,23 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "desktop launch harness",
                 ["builder/desktop/e2e/launch.py"],
-                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges"],
+                ["desktop", "desktop-frontend", "fmt", "wasm-bridges"],
             ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app", "ios-release"]),
             (
                 "web only",
                 ["builder/web/src/lib/panel.ts"],
-                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web", "web-browser"],
+                ["desktop", "desktop-frontend", "fmt", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["sim/web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),

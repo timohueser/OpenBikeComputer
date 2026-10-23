@@ -77,7 +77,7 @@ const SPECIES: u32 = 16u;
 const WINDOW: i32 = 8;
 // A tree that stands this far into the ground still meets it on a slope.
 const SINK_M: f32 = 0.3;
-// A tree keeps this share of its crown's radius from a road's edge and from the waterline.
+// A tree keeps this share of its crown's radius from a road's edge.
 const CLEAR: f32 = 0.8;
 // The eye stands in a clearing this wide, so it is never inside a crown.
 const EYE_CLEAR_M: f32 = 6.0;
@@ -147,19 +147,6 @@ fn kept(d: f32) -> f32 {
 // The point of LOD space of whole world units plus a part.
 fn lod_at(u: vec2i, part: vec2f) -> vec2f {
     return lod_space(vec2f(u - surface.anchor) + part);
-}
-
-// The region of the ground at a point, from the finest resident ground page.
-fn region_at(s: vec2f) -> u32 {
-    for (var k = min(u32(ceil(lod(s))), look.codes.y); k >= COARSEST; k--) {
-        let t = texel_of(s, k);
-        let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-        let page = ground_page(k, whole);
-        if (page >= 0) {
-            return textureLoad(cells, in_page(page, whole & vec2i(255)), page_layer(page), 0).b;
-        }
-    }
-    return 0u;
 }
 
 // The metres from the eye to the nearest point of the cell of a level at a corner (in base cells).
@@ -265,15 +252,11 @@ fn species_of(region: u32, elevation: f32, leaf: u32, pick: f32) -> u32 {
     return model;
 }
 
-// Whether the feature mask keeps a tree off a point: on a road or nearer to it than `clear` metres, in
-// water or nearer to it, on a building.
+// Whether the feature mask keeps a tree off a point: on a road, a path or a track, or nearer to its edge
+// than `clear` metres. The canopy keeps trees off water and houses.
 fn off_ground(s: vec2f, clear: f32) -> bool {
-    let mask = mask_at(s, u32(ceil(lod(s))), false);
-    if (mask.level == 0u) {
-        return false;
-    }
-    let road = mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
-    return road || mask_metres(mask.shape.y) < clear || (mask.kind.z & BUILDING) != 0u;
+    let mask = mask_at(s, u32(ceil(lod(s))), true);
+    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
 }
 
 // Point r of a base cell, if a tree stands there: emitted on the drawn surface. `ground_near` is the

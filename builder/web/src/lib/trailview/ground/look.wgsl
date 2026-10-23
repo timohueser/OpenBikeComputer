@@ -190,6 +190,19 @@ fn ground_page(level: u32, t: vec2i) -> i32 {
     return i32(ground_map[(i32(level) * MAP + slot.y) * MAP + slot.x]) - 1;
 }
 
+// The region of the ground at a point, from the finest resident ground page.
+fn region_at(s: vec2f) -> u32 {
+    for (var k = min(u32(ceil(lod(s))), look.codes.y); k >= COARSEST; k--) {
+        let t = texel_of(s, k);
+        let whole = t.whole + vec2i(t.part >= vec2f(0.5));
+        let page = ground_page(k, whole);
+        if (page >= 0) {
+            return textureLoad(cells, in_page(page, whole & vec2i(255)), page_layer(page), 0).b;
+        }
+    }
+    return 0u;
+}
+
 fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }
