@@ -81,7 +81,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
-    rails(far.mesh, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
+    rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
     const out: Build = { far, near, owns, place: instance => (instance.near ? near : far).anchored.place(instance) };
     for (const feature of list) KINDS.get(feature.kind)?.build(placed(feature, tile), out);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });

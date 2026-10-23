@@ -66,6 +66,7 @@ const LAMP_FACE: u32 = 16u;
 const STONE_FACE: u32 = 32u;
 const CABLE_EDGE: u32 = 64u;
 const POINT_ANCHOR: u32 = 1u;
+const ABSOLUTE_ANCHOR: u32 = 2u;
 // The model grey that a stone face takes the rock's colour over: GREY of models/rocks.ts, squared as the albedo is.
 const ROCK_GREY: vec3f = vec3f(0.3101, 0.3189, 0.2929);
 // A cable's diameter, its least width on screen in output pixels (a render pixel at the default scale),
@@ -131,6 +132,10 @@ fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let an = anchors[id.x];
+    if ((an.flags & ABSOLUTE_ANCHOR) != 0u) {
+        anchor_out[id.x] = an.over;
+        return;
+    }
     let fallback = frame.eye - surface.above;
     let ha = plain_height(lod_space(vec2f(an.a - surface.anchor)));
     var z = vec2f(select(fallback, ha, known(ha)));

@@ -1,15 +1,16 @@
 // The furniture of the tracks of a node: a mast at each `catenary-mast` point of the bake with two arms
-// out over its track, the contact wire over each electrified track, and the platforms: slabs at their
+// out over its track, the contact wire over each electrified track as a cable of the anchored mesh, and the platforms: slabs at their
 // heights from the bake, whose sides reach down into the drawn surface. Each node draws the part of an
 // area platform inside its square.
 import earcut from 'earcut';
 import { EXTENT, type Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, RAIL, RAIL_CODE, type Line, type Node } from '../terrain/bins';
+import { ABSOLUTE, type AnchoredBuilder } from './anchored';
 import { GROUND, MeshBuilder, rgb, station } from './mesh';
 import type { Owns } from './node';
 
-/** The contact wire's height over the rail and its side. */
-const WIRE_M = 5.5, WIRE_SIDE_M = 0.02;
+/** The contact wire's height over the rail. */
+const WIRE_M = 5.5;
 /**
  * A mast: its side, its top over the rail, the heights of its two arms over the rail, how far they reach
  * past the track's middle and their side; on a deck it hangs this far below the rail, else it stands this
@@ -27,13 +28,14 @@ const STEEL = rgb('#7a7670'), WIRE = rgb('#3a3c3e'), PLATFORM = rgb('#b4b0a6'), 
 type Point = [number, number, number];
 
 /** `square` is the node's square as `owns` reads it: west, north, east and south in world units. */
-export function rails(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns, square: number[]): void {
+export function rails(b: MeshBuilder, wires: AnchoredBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns, square: number[]): void {
     const tracks = lines.filter(line => (line.kind === RAIL || line.kind === BRIDGE) && line.code >= RAIL_CODE);
     for (const line of tracks) {
         if (!line.wire) continue;
         for (let v = 0; v + 1 < line.z.length; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            bar(b, [line.xy[2 * v], line.xy[2 * v + 1], line.z[v] + WIRE_M], [line.xy[2 * v + 2], line.xy[2 * v + 3], line.z[v + 1] + WIRE_M], WIRE_SIDE_M / 2, WIRE);
+            const span = wires.span([line.xy[2 * v], line.xy[2 * v + 1]], [line.xy[2 * v + 2], line.xy[2 * v + 3]], line.z[v] + WIRE_M, line.z[v + 1] + WIRE_M, 0, ABSOLUTE);
+            wires.cable(span, 0, 1, WIRE);
         }
     }
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;

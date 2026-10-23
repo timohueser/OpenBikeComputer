@@ -8,8 +8,8 @@ import { metresPerUnit } from '../terrain/bins';
 
 /** Words of an anchor, as `Anchor` in structures.wgsl: a and b (int32 world units), the heights over them and the sag (float32), and flags. */
 export const ANCHOR_WORDS = 8;
-/** Anchor flags: the anchor is a point, and its far end only gives the heading. */
-export const POINT = 1;
+/** Anchor flags: the anchor is a point, and its far end only gives the heading; its heights are above sea level, not over the drawn surface. */
+export const POINT = 1, ABSOLUTE = 2;
 /** Words of a vertex, as `AnchoredIn` in structures.wgsl: the offset in 1/OFFSET_SCALE m (sint16x4, w the side of a cable), the anchor and t (uint16 each), the colour and flags (unorm8x4). */
 export const ANCHORED_VERTEX = 4;
 export const OFFSET_SCALE = 256;
@@ -39,16 +39,14 @@ export class AnchoredBuilder {
     constructor(private readonly anchorWords: number[]) {}
 
     /** A span from a to b in world units, `ha` and `hb` metres over the drawn surface, sagging `sag` metres at its middle. */
-    span(a: [number, number], b: [number, number], ha: number, hb: number, sag: number): number {
-        this.anchorWords.push(Math.round(a[0]), Math.round(a[1]), Math.round(b[0]), Math.round(b[1]), ha, hb, sag, 0);
+    span(a: [number, number], b: [number, number], ha: number, hb: number, sag: number, flags = 0): number {
+        this.anchorWords.push(Math.round(a[0]), Math.round(a[1]), Math.round(b[0]), Math.round(b[1]), ha, hb, sag, flags);
         return this.anchorWords.length / ANCHOR_WORDS - 1;
     }
 
     /** A point on the drawn surface at world point x, y, whose +y points `yaw` radians counter-clockwise from east. */
     point(x: number, y: number, yaw: number): number {
-        const at = this.span([x, y], [x + HEADING * Math.cos(yaw), y - HEADING * Math.sin(yaw)], 0, 0, 0);
-        this.anchorWords[at * ANCHOR_WORDS + 7] = POINT;
-        return at;
+        return this.span([x, y], [x + HEADING * Math.cos(yaw), y - HEADING * Math.sin(yaw)], 0, 0, 0, POINT);
     }
 
     /** A vertex t along an anchor, at offset x, y, z metres in its frame, `w` the side of a cable's edge. */
