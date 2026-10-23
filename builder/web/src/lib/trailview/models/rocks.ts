@@ -5,7 +5,7 @@ import { srgb, Model, type Vec } from './flat';
 
 /** Grey body, a lit top and lichen. A wall face in GREY takes the colour of the rock under it. */
 export const GREY = srgb('#8e908a');
-const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(srgb), LICHEN = srgb('#b4b05a');
+const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(srgb), LICHEN = srgb('#9c9a72');
 
 /** An icosahedron cut once: 80 faces on the unit sphere. */
 function lump(): Vec[][] {
@@ -49,7 +49,7 @@ export function rock(name: RockName, seed: number): Model {
         const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
         const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], nz = n[2] / (Math.hypot(...n) || 1);
         const lit = smooth(0.6, 0.95, nz), body = nz < 0 ? BODY[0] : BODY[1];
-        const colour = fleck(a, seed) < 0.06 && nz > 0.3 ? LICHEN : lit > 0.5 ? BODY[2] : body;
+        const colour = fleck(a, seed) < 0.04 && nz > 0.3 ? LICHEN : lit > 0.5 ? BODY[2] : body;
         m.tri(a, b, c, colour);
     }
     return m;
