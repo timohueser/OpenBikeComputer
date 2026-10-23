@@ -26,7 +26,9 @@ const NEUTRAL: Rules = {
             snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, snow_share: 0.5, turf_deg: 42,
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
         },
+        houses: [0, 0],
     }],
+    styles: [],
 };
 
 export interface GroundStats { resident: number; capacity: number; wanted: number; shortage: number; colour: string; requests: number; bytes: number; failed: number }
@@ -171,6 +173,11 @@ export class Ground {
             ],
         };
         this.surfaceGroup = surface.group;
+    }
+
+    /** Group 2 of a compute pass that reads the ground pages, with the layout `layouts().compute[1]`. */
+    get computeGroup(): GPUBindGroup | undefined {
+        return this.resources?.computeGroups[1];
     }
 
     /** Group 2 of the terrain and the sky. */
