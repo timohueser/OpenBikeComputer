@@ -91,7 +91,7 @@ function box(b: Builder, [x0, x1]: [Bound, Bound], [y0, y1]: [Bound, Bound], [z0
 export const Z = { BOTTOM: 0, WALL: 1 } as const;
 
 /**
- * Slots of the gable template, as `gable_slots` in houses.wgsl. x: L/2, the roof's end, the ridge's
+ * Slots of the gable template, as `slots_of` in houses.wgsl fills them. x: L/2, the roof's end, the ridge's
  * end, then the two sides of each chimney and each balcony's half-length, zero without them. y: W/2,
  * the eaves, the hip's foot, the gable's top, a chimney's half depth, a balcony's outer side. z: the
  * eaves, the ridge, the hip, the gable's top, the chimneys' foot and tops, and the balconies' floors
@@ -132,7 +132,7 @@ function gable(): Mesh {
     return b.mesh();
 }
 
-/** Slots of the flat template, as `flat_slots` in houses.wgsl: the walls' half sides, and the roof's 20 cm past them. */
+/** Slots of the flat template, as `slots_of` in houses.wgsl fills them: the walls' half sides, and the roof's 20 cm past them. */
 function flat(): Mesh {
     const b = new Builder();
     walls(b, 1, 1, Z.WALL);
@@ -144,7 +144,7 @@ function flat(): Mesh {
 }
 
 /**
- * Slots of the church templates, as `church_slots` in houses.wgsl, with x signed: the nave's west and
+ * Slots of the church templates, as `slots_of` in houses.wgsl fills them, with x signed: the nave's west and
  * east walls and roof ends, the tower's west side, its middle, and the spire's eaves. y: W/2, the
  * eaves, the tower's half side and the spire's eaves. z: the eaves, the ridge, the tower's top, the
  * spire's eaves and its apex.

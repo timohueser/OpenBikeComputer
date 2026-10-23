@@ -25,14 +25,17 @@ const GROW_M = 150, LOWEST_M = -500, HIGHEST_M = 4900;
 /** Two draws per template: in full, and simple. */
 const DRAWS = 2 * TEMPLATES.length;
 /**
- * The houses fit their ground again in every TURNS-th frame that moves, and in the first that does
- * not: any refit makes the frame wait for the longest chain of ground samples, however few refit.
+ * The houses fit their ground again in every TURNS-th frame that the camera moves: any refit makes
+ * the frame wait for the longest chain of ground samples, however few refit. A frame of a still
+ * camera that draws refits at once, so that the still frames accumulate one fit.
  */
 const TURNS = 4;
 /** Houses per workgroup of `refit`: nine lanes each, and of `fit`: one each, as in houses.wgsl. */
 const PER_GROUP = 7, FIT_GROUP = 64;
 /** Words of the draws and the drawn count before the lists, as LISTS in houses.wgsl. */
 const LISTS = 36;
+/** The outline houses' entries after a re-upload, until `fit` writes them: NO_DRAW in houses.wgsl. */
+const NO_DRAWS = new Uint32Array(HOUSES).fill(0xffffffff);
 const TIMBER = ['none', 'upper', 'all', 'frame'];
 /**
  * The pad of a house, as `Params` in houses.wgsl: the floor stands `plinth` metres over the lowest
@@ -146,7 +149,7 @@ export class Houses {
     }
 
     get stats(): HouseStats {
-        return { houses: this.count, tiles: [...this.tiles.values()].filter(Boolean).length, ...this.drawnCounts };
+        return { houses: this.count, tiles: this.ranges.length, ...this.drawnCounts };
     }
 
     async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup },
@@ -237,7 +240,8 @@ export class Houses {
                 this.changed();
             });
         }
-        const known = wanted.filter(({ name }) => this.tiles.get(name)).map(({ name }) => name), drawn = known.join(' ');
+        // The set of tiles decides a re-upload, their distance which of them fit.
+        const known = wanted.filter(({ name }) => this.tiles.get(name)).map(({ name }) => name), drawn = [...known].sort().join(' ');
         if (drawn === this.drawn) return;
         this.drawn = drawn;
         this.drawnTiles = new Set(known);
@@ -269,9 +273,10 @@ export class Houses {
             this.moves.push({ from: before.get(name)?.count === count ? before.get(name)!.start : -1, to: base, count });
             this.ranges.push({ x, y, start: base, count });
             records.set(tile.records, base * RECORD_WORDS);
-            for (let i = 0; outlined[k] && i < tile.outlines.length; i += OUTLINE_WORDS, at += OUTLINE_WORDS) {
-                outlines.set(tile.outlines.subarray(i, i + OUTLINE_WORDS), at);
-                outlines[at + 2] += base;
+            if (outlined[k]) {
+                outlines.set(tile.outlines, at);
+                for (let i = at + 2; i < at + tile.outlines.length; i += OUTLINE_WORDS) outlines[i] += base;
+                at += tile.outlines.length;
             }
             base += tile.records.length / RECORD_WORDS;
         });
@@ -284,13 +289,14 @@ export class Houses {
 
     /**
      * Encodes the fit of the houses of the tiles in view, which fills the draws, and in some frames
-     * their refit; a frame that moved nothing (`moving` false) keeps the draws of the frame before.
-     * Call the returned function after the submit.
+     * their refit; a frame where neither the camera (`moving`) nor the content (`changed`) changed
+     * keeps the draws of the frame before. Call the returned function after the submit.
      */
-    encode(encoder: GPUCommandEncoder, ground: GPUBindGroup | undefined, moving: boolean, timing: () => GPUComputePassTimestampWrites | undefined = () => undefined): () => void {
+    encode(encoder: GPUCommandEncoder, ground: GPUBindGroup | undefined, moving: boolean, changed: boolean, timing: () => GPUComputePassTimestampWrites | undefined = () => undefined): () => void {
         const r = this.resources;
-        if (!moving && !this.stale && !this.moved) return () => {};
-        const refitting = moving ? ++this.frames % TURNS === 0 : this.stale || this.moved;
+        if (!moving && !changed && !this.stale && !this.moved) return () => {};
+        // New records have no fit yet: they refit at once.
+        const refitting = !moving || ++this.frames % TURNS === 0 || this.moved;
         this.stale = !refitting;
         if (!r || !ground || !this.count) return () => {};
         const args = new Uint32Array(LISTS);
@@ -324,6 +330,7 @@ export class Houses {
                 else encoder.copyBufferToBuffer(from, move.from * bytes, to, move.to * bytes, move.count * bytes);
             }
             this.set ^= 1;
+            r.device.queue.writeBuffer(r.draws, (LISTS + DRAWS * DRAWN) * 4, NO_DRAWS, 0, this.count);
         }
         this.moved = false;
         const pass = encoder.beginComputePass({ label: 'houses', timestampWrites: timing() });

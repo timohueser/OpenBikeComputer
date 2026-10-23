@@ -37,8 +37,13 @@ const RECTANGULAR = 0.7;
 const PARTS = 4;
 /** Sides of a footprint within this many degrees of its rectangle's sides, and corners closer than SNAP_M, count as square. */
 const SQUARE_DEG = 12, SNAP_M = 0.5;
-/** A part narrower than this that covers little of the footprint goes, and the parts may miss this share of it. */
+/** A part narrower than NARROW_M that covers less than MISSED of the footprint goes; the parts may miss MISSED of it. */
 const NARROW_M = 2.5, MISSED = 0.08;
+/**
+ * Part k is k × INSET_M smaller on each side, so that the walls of overlapping parts never share a
+ * plane: more than the rounding of two parts' middles to world units moves them apart.
+ */
+const INSET_M = 0.04;
 /** The wall of an outline without levels or a height. */
 const OUTLINE_WALL_M = 8;
 /** World units per tile unit of a zoom 14 tile. */
@@ -129,18 +134,20 @@ function parts(ring: number[][], fit: { x: number; y: number; angle: number }): 
         return sum;
     };
     const inner = cells.reduce((sum, row, i) => sum + row.reduce((r, cell, j) => r + (cell ? area(i, i, j, j) : 0), 0), 0);
+    const candidates = boxes.filter(([i0, i1, j0, j1]) => Math.min(xs[i1 + 1] - xs[i0], ys[j1 + 1] - ys[j0]) >= NARROW_M || area(i0, i1, j0, j1) >= MISSED * inner);
     const chosen: number[][] = [];
     let missing = inner;
-    while (missing > MISSED * inner && chosen.length < PARTS) {
-        const best = boxes.reduce((a, b) => (uncovered(b) > uncovered(a) ? b : a));
+    while (missing > MISSED * inner && chosen.length < PARTS && candidates.length) {
+        const best = candidates.reduce((a, b) => (uncovered(b) > uncovered(a) ? b : a));
         missing -= uncovered(best);
         chosen.push(best);
         for (let i = best[0]; i <= best[1]; i++) for (let j = best[2]; j <= best[3]; j++) covered[i][j] = true;
     }
     if (missing > MISSED * inner) return null;
-    const out = chosen.map(([i0, i1, j0, j1]) => ({ u: (xs[i0] + xs[i1 + 1]) / 2, v: (ys[j0] + ys[j1 + 1]) / 2, width: xs[i1 + 1] - xs[i0], depth: ys[j1 + 1] - ys[j0] }))
-        .filter(({ width, depth }, _, all) => Math.min(width, depth) >= NARROW_M || all.length === 1);
-    return out.length ? out.map(({ u, v, width, depth }) => ({ x: fit.x + u * c - v * s, y: fit.y + u * s + v * c, width, depth })) : null;
+    return chosen.length ? chosen.map(([i0, i1, j0, j1], k) => {
+        const u = (xs[i0] + xs[i1 + 1]) / 2, v = (ys[j0] + ys[j1 + 1]) / 2, inset = 2 * k * INSET_M;
+        return { x: fit.x + u * c - v * s, y: fit.y + u * s + v * c, width: xs[i1 + 1] - xs[i0] - inset, depth: ys[j1 + 1] - ys[j0] - inset };
+    }) : null;
 }
 
 /** A stable seed from a point. */
@@ -177,7 +184,7 @@ export function tileHouses(list: Feature[], tile: Node): TileHouses {
             const [L, W, angle] = piece.width >= piece.depth ? [piece.width, piece.depth, fit.angle] : [piece.depth, piece.width, fit.angle + Math.PI / 2];
             const x = Math.round((left + x0 + piece.x / m) * UNITS_PER_TILE_UNIT), y = Math.round((top + y0 - piece.y / m) * UNITS_PER_TILE_UNIT);
             records.push(x, y, f32(angle), f32(L), f32(W), f32(outline ? wall || OUTLINE_WALL_M : wall), f32(unit),
-                ((flatRoof ? BLOCK : kind) | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (seed << 16)) >>> 0);
+                (kind | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (seed << 16)) >>> 0);
         }
         if (!outline) continue;
         // The walls, from the bottom to the top, with the metres along the outline; then the roof.

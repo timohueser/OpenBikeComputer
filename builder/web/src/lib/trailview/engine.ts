@@ -279,15 +279,14 @@ export class TrailView {
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
-        let step: Step | undefined, offset: [number, number] = [0, 0], moving = true;
+        let step: Step | undefined, offset: [number, number] = [0, 0], moved = true, changed = false;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
-            const moved = camera.some((value, i) => value !== this.camera[i]);
-            const changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || extras !== this.drawnExtras;
+            moved = camera.some((value, i) => value !== this.camera[i]);
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
-            moving = moved || changed;
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
             const ndc: [number, number] = [2 * offset[0] / width, -2 * offset[1] / height];
@@ -297,7 +296,7 @@ export class TrailView {
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
-        const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moving, () => times.writes('houses'));
+        const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({

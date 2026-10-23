@@ -78,7 +78,7 @@ struct Drawn {
     ground: vec2u,
     // render, wood, roof, door, shutter, plinth, chimney and balcony, in sRGB.
     colours: array<u32, 8>,
-    // The slots of the template as f16 pairs: x at 0, y at X_SLOTS, z at Z_SLOTS.
+    // The slots of the template as f16 pairs: x at 0, y at Y_SLOTS, z at Z_SLOTS.
     slots: array<u32, 18>,
 }
 
@@ -146,8 +146,7 @@ struct DrawOf {
 @group(0) @binding(2) var<storage, read_write> fits_out: array<Kept>;
 // The indirect draws (vertex count, instance count, first vertex, first instance), the count of drawn
 // houses, the list of drawn houses of each draw, then each house's entry in `drawn` for the outline
-// meshes: `fit` writes them, the vertices read them. They and `drawn` alternate between two buffers
-// from frame to frame, so that `fit` never waits for the frame before to draw.
+// meshes: `fit` writes them, the vertices read them.
 @group(0) @binding(5) var<storage, read_write> draws: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read> lists: array<u32>;
 @group(0) @binding(7) var<uniform> draw_of: DrawOf;
@@ -301,7 +300,8 @@ fn shape_of(h: House, index: u32) -> Shape {
     s.shutters = ((*style).flags & SHUTTERS) != 0u && s.kind != BARN && !church;
     s.chimneys = select((*style).chimneys, 0u, s.kind == BARN || church);
     s.balconies = ((*style).flags & BALCONIES) != 0u && s.kind != BARN && !church;
-    let flat = s.kind == BLOCK && ((h.bits >> 6u) & 1u) == 1u;
+    // A flat roof flattens any kind but a church, which keeps its tower.
+    let flat = ((h.bits >> 6u) & 1u) == 1u;
     s.form = select(select(T_GABLE, T_FLAT, flat), select(T_SPIRE, T_ONION, ((*style).flags & ONION_DOME) != 0u), church);
     return s;
 }
@@ -316,8 +316,8 @@ fn slots_of(s: Shape, index: u32, bottom: f32) -> Slots {
     let eave_m = params.styles[index].eave;
     let verge = params.styles[index].verge;
     var o: Slots;
-    // A wide hall's roof keeps a low pitch.
-    let t = min(tan(radians(s.pitch)), ROOF_M / s.half.y);
+    // A wide hall's roof keeps a low pitch, and a style of 0° a near-flat one.
+    let t = max(min(tan(radians(s.pitch)), ROOF_M / s.half.y), 0.05);
     let w = s.half;
     o.z[0] = bottom;
     o.z[1] = s.wall;
@@ -427,9 +427,12 @@ struct Seen {
 fn seen_at(h: House, floor: f32) -> Seen {
     let centre = house_space(h, vec2f(0.0));
     let radius = 0.5 * length(vec2f(h.length, h.width)) + 2.0;
-    let p = render_at(centre, floor + 6.0);
+    // A bound of the height: without OSM's, a kind's walls reach 14 m at most; a church's tower and
+    // spire rise at most five tower sides over its roof.
+    let height = max(h.wall, 14.0) + ROOF_M + select(0.0, 5.0 * min(0.6 * h.width, h.length / 3.0), kind_of(h) == CHURCH);
+    let p = render_at(centre, floor + 0.5 * height);
     let pixels = 2.0 * radius / (length(p) * frame.pixel);
-    return Seen(centre, pixels, pixels >= params.least && visible(p, radius + 12.0));
+    return Seen(centre, pixels, pixels >= params.least && visible(p, radius + 0.5 * height));
 }
 
 // The ground samples of a workgroup of `refit`: LANES threads sample a house's ground at once, for a
