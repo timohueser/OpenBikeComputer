@@ -18,12 +18,10 @@ runs:
   using: composite
   steps:
     - name: Install system libraries
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libudev-dev \
-          libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+      uses: ./.github/actions/apt-install
+      with:
+        packages: >-
+          libudev-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
           libxkbcommon-dev libssl-dev libasound2-dev rclone osmium-tool
 
     - name: Cache GEOS ${{ inputs.geos-version }}
