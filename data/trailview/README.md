@@ -37,5 +37,5 @@ uv run --locked --group trailview python -m tools.trailview.rules
 - Codes in `materials.json` are indexes in the ground tiles. Append only.
 - A region id is the index of the region in the sorted list of `regions/`. A new or removed
   region changes the ids, so the region tiles bake again; the material tiles do not.
-- The check does not know the models yet. A pack that names a model that the engine does not
-  have passes it, until the model port adds that check.
+- A pack names the engine's models (`builder/web/src/lib/trailview/models/trees/` and `plants/`).
+  A new species in a pack needs its model there, or the check fails.

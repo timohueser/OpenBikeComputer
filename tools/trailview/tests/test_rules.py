@@ -29,6 +29,9 @@ CASES = [
     ("regions/world", ["leaf"], "deciduous", 'regions/world.json: leaf: "deciduous" is not one of "needleleaved", "broadleaved", "mixed"'),
     ("overlays", ["atlantis"], {"look": {}}, "overlays/atlantis.json: has no regions/atlantis.json"),
     ("overlays", ["alps"], {"look": {"banks": "#000000"}}, "overlays/alps.json: look.banks: is an unknown key"),
+    # Not the prototype's: the engine draws each model that a pack names, also one that a child pack inherits.
+    ("packs/alps", ["trees", "norway-spruce", "model"], "monkey-puzzle", "packs/alps.insubric.json: trees.norway-spruce: the engine has no model monkey-puzzle"),
+    ("packs/alps", ["ground", "bilberry", "model"], "norway-spruce", "packs/alps.json: ground.bilberry: the engine has no plant norway-spruce"),
 ]
 
 

@@ -28,6 +28,43 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGIONS = 255
+# The engine's models: one file per tree and per plant, named by its id.
+MODELS = ROOT / "builder/web/src/lib/trailview/models"
+
+
+def models():
+    """The ids of the engine's tree and plant models."""
+    return ({path.stem for path in (MODELS / "trees").glob("*.ts")}, {path.stem for path in (MODELS / "plants").glob("*.ts")})
+
+
+def merged(a, b):
+    """Objects merge, any other value replaces, as the engine resolves a file that extends another."""
+    out = dict(a)
+    for key, value in b.items():
+        out[key] = merged(a[key], value) if isinstance(value, dict) and isinstance(a.get(key), dict) else value
+    return out
+
+
+def model_problems(packs, trees, plants):
+    """The models that a pack names, with what it inherits, and that the engine does not have: a tree of
+    `trees`, a shrub of `trees` or `plants`, a ground plant of `plants`, an orchard of `trees`."""
+    def resolved(name, seen=()):
+        up = packs[name].get("extends")
+        base = resolved(up, (*seen, name)) if isinstance(up, str) and up in packs and up not in seen else {}
+        return merged(base, packs[name])
+    out = []
+    for name in packs:
+        pack, file = resolved(name), f"packs/{name}.json"
+        for species, rule in (pack.get("trees") or {}).items():
+            model = rule and rule.get("model", species)
+            if rule and model not in trees and not (rule.get("cover") == "shrub" and model in plants):
+                out.append(f"{file}: trees.{species}: the engine has no model {model}")
+        for species, rule in (pack.get("ground") or {}).items():
+            if rule and rule.get("model", species) not in plants:
+                out.append(f"{file}: ground.{species}: the engine has no plant {rule.get('model', species)}")
+        if isinstance(pack.get("orchard"), str) and pack["orchard"] not in trees:
+            out.append(f"{file}: orchard: the engine has no tree {pack['orchard']}")
+    return out
 
 
 # A check takes a value and its key path, and returns its problems, each "key.path: what is wrong".
@@ -251,7 +288,7 @@ def validate(ruleset):
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"
         add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
-    return out
+    return out + model_problems(packs, *models())
 
 
 def bundle(ruleset):
