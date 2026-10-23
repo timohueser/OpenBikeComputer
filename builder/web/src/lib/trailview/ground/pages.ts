@@ -45,7 +45,7 @@ export interface Slot {
 /** The GPU work of a frame. */
 export interface GroundWork {
     uploads: { page: Slot; data: GroundPage }[];
-    /** Resident pages whose heights changed: their openness follows. */
+    /** Resident pages whose relief reads terrain that changed: their relief follows. */
     refreshes: Slot[];
     /** The ground map, when it changed: MAP × MAP entries per level in the windows of the LOD map, the slot + 1 or 0. */
     map?: Uint32Array<ArrayBuffer>;
@@ -85,6 +85,8 @@ export class GroundPages {
     private missing = 0;
     private dirty = true;
     private kept = new Set<string>();
+    /** The terrain nodes that the relief of the kept pages reads, which the terrain draws for it. */
+    reads: Node[] = [];
     private origins: [number, number][] = [];
 
     constructor(
@@ -123,7 +125,7 @@ export class GroundPages {
 
     /**
      * Takes the pages that the drawn nodes and the selection want, about the eye (lon, lat).
-     * `refreshed` are the nodes whose heights changed.
+     * `refreshed` are the terrain nodes whose heights changed.
      */
     update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], eye: [number, number]): GroundWork {
         this.frame++;
@@ -152,6 +154,7 @@ export class GroundPages {
         this.missing = 0;
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
+        this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
         for (const node of kept) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
@@ -175,10 +178,9 @@ export class GroundPages {
             work.uploads.push({ page, data });
             this.dirty = true;
         }
-        const uploaded = new Set(work.uploads.map(upload => upload.page));
-        for (const node of refreshed) {
-            const page = this.pages.get(key(node));
-            if (page && page.date >= 0 && !uploaded.has(page)) this.refresh.add(page);
+        const uploaded = new Set(work.uploads.map(upload => upload.page)), changed = new Set(refreshed.map(key));
+        if (changed.size) for (const page of this.pages.values()) {
+            if (page.date >= 0 && !uploaded.has(page) && reliefReads(page.node, this.finest).some(node => changed.has(key(node)))) this.refresh.add(page);
         }
         for (const page of [...this.refresh].slice(0, REFRESHES)) {
             this.refresh.delete(page);
@@ -311,6 +313,15 @@ export class GroundPages {
         }
         return map;
     }
+}
+
+/**
+ * The terrain nodes whose drawn heights the relief of a ground page reads: its own, and the one of the
+ * coarse level of `relief_of` in ground.wgsl that holds it.
+ */
+export function reliefReads(node: Node, finest: number): Node[] {
+    const coarse = Math.max(node.level, COARSEST + 2) - (node.level === finest ? 1 : 2), shift = node.level - coarse;
+    return [node, { level: coarse, x: node.x >> shift, y: node.y >> shift }];
 }
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);
