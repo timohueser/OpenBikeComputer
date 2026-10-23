@@ -130,10 +130,13 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
 - sinks a tunnel where a road or a path crosses over it without meeting it: the tunnel's road lies at
   least its bore and 1 m under that road's middle and both its edges. A road on the ground over a tunnel
   does not move,
-- passes one way over the other where two bridges that no bridge joins cross, and where two ways on the
-  ground with a different `layer` cross, without meeting: the one of the higher `layer`, at an equal
-  layer of the first class of the table, lies over the other by the clearance and the deck above. Both
-  ways may move to give the room,
+- passes one way over the other where two bridges cross that no bridge joins or that have a different
+  `layer`, and where two ways on the ground with a different `layer` cross, without meeting: the one of
+  the higher `layer`, at an equal layer of the first class of the table, and of one class the later one
+  in the OSM data, lies over the other by the clearance and the deck above. Both ways may move to give
+  the room. A way on the ground of a negative `layer` without a `tunnel` tag, such as a corridor of a
+  station, runs under something that the solver leaves out: no way on the ground passes over or under
+  it,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
