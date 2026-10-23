@@ -295,8 +295,8 @@ export class Houses {
     encode(encoder: GPUCommandEncoder, ground: GPUBindGroup | undefined, moving: boolean, changed: boolean, timing: () => GPUComputePassTimestampWrites | undefined = () => undefined): () => void {
         const r = this.resources;
         if (!moving && !changed && !this.stale && !this.moved) return () => {};
-        // New records have no fit yet: they refit at once.
-        const refitting = !moving || ++this.frames % TURNS === 0 || this.moved;
+        // A house without a fit yet draws from the next refit: up to TURNS - 1 frames late while the camera moves.
+        const refitting = !moving || ++this.frames % TURNS === 0;
         this.stale = !refitting;
         if (!r || !ground || !this.count) return () => {};
         const args = new Uint32Array(LISTS);
