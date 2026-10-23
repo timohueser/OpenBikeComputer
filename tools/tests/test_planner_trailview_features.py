@@ -76,18 +76,15 @@ class Bridges(unittest.TestCase):
         def heights(self, x, y):
             return np.full(np.shape(x), 500.0)
 
-    def test_a_deck_rises_over_the_water_the_lake_and_the_road_that_it_crosses(self):
+    def test_a_deck_rises_over_the_water_and_the_road_that_it_crosses(self):
         road = lambda points, **tags: ("road", {"highway": "residential", **tags}, [(False, points, None)])
         ways = [road([self.at(-100), self.at(0)]), road([self.at(0), self.at(60)], bridge="yes"), road([self.at(60), self.at(160)]),
                 ("road", {"highway": "tertiary"}, [(False, [self.at(45, -80), self.at(45, 80)], None)])]
         river = ([self.at(20, -100), self.at(20, 100)], [499.0, 499.0])
-        lake = ([[self.at(28, -10), self.at(36, -10), self.at(36, 10), self.at(28, 10)]], 503.0)
-        out, _, _, metrics = roads.solve(ways, self.Flat(), [river], lakes=[lake])
-        self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (3, 0))
+        out, _, _, metrics = roads.solve(ways, self.Flat(), [river])
+        self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (2, 0))
         deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
         self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - roads.KEEP_M)
-        over_lake = [z for (x, _), z in zip(*out[1][0][1:]) if 28 < (x - 0.53) / self.M < 36]
-        self.assertGreaterEqual(min(over_lake), 503 + roads.CLEAR_WATER_M + roads.DECK_M - 0.01)
         below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
         # The row holds the deck's vertex nearest to the crossing; the deck slopes a little to the crossing.
         self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 2 * roads.KEEP_M)

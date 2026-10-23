@@ -6,7 +6,7 @@ weights wᵢ, so that a spike or a gully of the terrain does not move the road, 
 class. No segment is steeper than the grade of its class. Ways that share a vertex share its height, and
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
 under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
-between its ends, and rises where it would pass too low over the river, the lake, the road or the path that it
+between its ends, and rises where it would pass too low over the river, the road or the path that it
 crosses; a short bridge that lies on the terrain is a culvert and does not. A tunnel sinks under a road or a path
 that crosses over it, which does not move. Of two bridges that cross, the one of the higher layer passes over the
 other, at one layer the better class. A ford lies FORD_M below the water it crosses."""
@@ -22,7 +22,6 @@ from scipy.sparse.linalg import splu
 
 from .profiles import metres
 from .structures import BORE_M, BORE_PATH_M, road_half
-from .water import contains
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
 FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
@@ -252,11 +251,11 @@ class Network:
         return [np.array(column, float if c == 2 else np.int64) for c, column in enumerate(out)], np.array(pairs, np.int64).reshape(-1, 4)
 
 
-def solve(features, terrain, rivers=(), classes=CLASSES, lakes=()):
+def solve(features, terrain, rivers=(), classes=CLASSES):
     """Per feature (kind, tags, parts): its parts (outer, points, heights) with the heights solved, None
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
     features that are culverts; the tunnels that pass under a road or a path; and the metrics of the solve. `rivers` lists (points, levels) of the
-    solved waterways, for the fords and the decks, and `lakes` (rings, level) of the lakes, for the decks."""
+    solved waterways, for the fords and the decks."""
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     net = Network(features, classes)
     if not net.ways:
@@ -309,7 +308,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES, lakes=()):
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
     bores = chain_rows(net, net.tunnel)
-    above = clearances(net, rivers, lakes, classes, terrain)
+    above = clearances(net, rivers, classes, terrain)
     sags = chain_rows(net, net.free & ~net.tunnel)
     above = (np.concatenate([above[0], np.column_stack([sags[0], sags[0][:, 0]])]), np.concatenate([above[1], np.pad(sags[1], ((0, 0), (0, 1)))]),
              np.concatenate([above[2], sags[2]]), np.concatenate([above[3], np.full(len(sags[2]), -1)]))
@@ -608,10 +607,9 @@ def ford_pins(net, rivers):
     return np.array(variables, np.int64), np.array(coefficients), np.array(values)
 
 
-def clearances(net, rivers, lakes, classes, terrain):
+def clearances(net, rivers, classes, terrain):
     """(variables, coefficients, values, ways) of the decks over what they cross, in rows of four variables: where
-    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck, and so at each bridge vertex
-    over a lake; where it crosses a road or a path on the ground that it does not meet, z − z_below ≥
+    a bridge segment crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road or a path on the ground that it does not meet, z − z_below ≥
     CLEAR_ROAD_M or CLEAR_PATH_M + its deck; but a bridge whose end lies on that road, within its half-width,
     meets it there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
     climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row."""
@@ -623,7 +621,6 @@ def clearances(net, rivers, lakes, classes, terrain):
     below = [(p, q, (zp, zq), None) for points, z in rivers for (p, zp), (q, zq) in zip(zip(points, z), zip(points[1:], z[1:])) if zp is not None and zq is not None]
     below += [(p, q, None, road) for p, q, road in near(net, bridges, ~net.free)]
     grid = gridded(below)
-    boxes = np.array([(*np.min([np.min(ring, 0) for ring in rings], 0), *np.max([np.max(ring, 0) for ring in rings], 0)) for rings, _ in lakes]).reshape(-1, 4)
     landed = landings(net)
     continued = np.bincount(net.osm_var[(net.free & ~net.tunnel)[net.osm_way]], minlength=net.osm_count) >= 2
     for w in bridges:
@@ -656,13 +653,6 @@ def clearances(net, rivers, lakes, classes, terrain):
                 clear = (CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M) + deck(w)
                 add([net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[k], net.vertex_var[k + 1]], [1 - u, u, -(1 - tr), -tr], clear,
                     float(terrain.heights(*(p + u * (q - p))[:, None])[0]) + clear, at)
-        xy = net.vertex_xy[first:last + 1]
-        lo, hi = xy.min(0), xy.max(0)
-        for i in np.flatnonzero((boxes[:, 0] <= hi[0]) & (boxes[:, 2] >= lo[0]) & (boxes[:, 1] <= hi[1]) & (boxes[:, 3] >= lo[1])).tolist():
-            rings, level = lakes[i]
-            for v in np.flatnonzero(contains(rings, xy[:, 0], xy[:, 1])).tolist():
-                value = level + CLEAR_WATER_M + deck(w)
-                add([net.vertex_var[first + v]] * 4, [1.0, 0.0, 0.0, 0.0], value, value, along[v])
     if not rows:
         return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0), np.zeros(0, np.int64)
     return tuple(np.array([row[i] for row in rows], dtype) for i, dtype in enumerate((np.int64, np.float64, np.float64, np.int64)))
