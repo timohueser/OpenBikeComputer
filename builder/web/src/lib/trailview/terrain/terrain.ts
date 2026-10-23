@@ -771,7 +771,7 @@ function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer>
         const name = `${list[i]},${list[i + 1]}`;
         if (seen.has(name)) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], list[i + 2], list[i + 3], list[i + 4], list[i + 5], 0, 0], 4 + 8 * n++);
+        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 8 * n++);
     }
     out[0] = n;
     return out;

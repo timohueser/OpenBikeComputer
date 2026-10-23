@@ -27,14 +27,17 @@ struct Node {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
 // The boxes of the tunnels' portals near the eye: x the count; then per box its facade's middle in units
-// about the anchor and its way into the tunnel, and its depth and half-width in metres.
+// about the anchor and its way into the tunnel, and in metres its depth, its half-width, the height of
+// its roof's top at the facade and the roof's rise per metre in.
 @group(0) @binding(2) var<storage, read> holes: array<vec4f>;
 
-// The nodes with a tunnel's portal draw no terrain in its box: the bore shows through.
+// The nodes with a tunnel's portal draw no terrain in its box under its roof: the bore shows through.
 override HOLES: bool = false;
 
-// Metres from a point of LOD space, `u` units about the anchor, to the nearest portal box, negative inside.
-fn hole_distance(u: vec2f) -> f32 {
+// Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
+// box, negative inside. The distance is convex, so its interpolation over a triangle never clips the
+// terrain outside a box: beside it, behind it, or on the hill over its roof.
+fn hole_distance(u: vec2f, h: f32) -> f32 {
     var d = 1e6;
     for (var i = 0u; i < u32(holes[0].x); i++) {
         let a = holes[1u + 2u * i];
@@ -42,7 +45,7 @@ fn hole_distance(u: vec2f) -> f32 {
         let p = (u - a.xy) * surface.unit;
         let along = dot(p, a.zw);
         let across = abs(a.z * p.y - a.w * p.x);
-        d = min(d, max(max(-along, along - b.x), across - b.y));
+        d = min(d, max(max(max(-along, along - b.x), across - b.y), h - b.z - b.w * along));
     }
     return d;
 }
@@ -62,7 +65,7 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     out.s = v.s;
     out.relative = p;
     mark_known(&out, known(v.h));
-    mark_hole(&out, select(1e6, hole_distance(units_of(v.s)), HOLES));
+    mark_hole(&out, select(1e6, hole_distance(units_of(v.s), v.h), HOLES));
     out.h = v.h;
     out.level = node.level;
     return out;

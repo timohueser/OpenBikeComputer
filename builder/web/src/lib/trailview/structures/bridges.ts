@@ -23,6 +23,9 @@ const CONCRETE = rgb('#9a978e'), CAP = rgb('#b3b0a7'), SOFFIT = rgb('#76746d'), 
 const STEEL = rgb('#4a4d50'), ROOF = rgb('#7a3f2c'), ROOF_UNDER = rgb('#3e2a1e');
 const pierColour = (road: boolean) => (road ? CONCRETE : rgb('#8d8a82'));
 
+/** The half-width of a deck to the outer face of a road's parapets; a step past a path's railing still stands on it. */
+export const deckHalf = (line: Line) => line.h + PARAPET[0];
+
 /** Paths, tracks of grass or dirt: a footbridge. */
 const isPath = (line: Line) => line.code >= 3 && line.code <= 6;
 

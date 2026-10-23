@@ -23,10 +23,17 @@ const ROCK_FACADE = rgb('#77716a'), ROCK_BOX = rgb('#6a655e');
 const TILES = rgb('#dcdad3', INSIDE), ARCH_LINING = rgb('#7f7e7a', INSIDE), WALK = rgb('#a3a19b', INSIDE), LIGHT = rgb('#fff3d6', LAMP);
 const ROCK = rgb('#6f6a62', INSIDE), ROCK_FLOOR = rgb('#7d7262', INSIDE);
 
-/** The box of a tunnel's portal in which the terrain draws nothing: its depth, and its half-width to the middle of its walls. */
-export function portalBox(line: Line): [number, number] {
-    const size = line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL;
-    return [size.depth, line.h + size.margin + WALL_M / 2];
+/** The half-width of a tunnel's bore, to its walls. */
+export const boreHalf = (line: Line) => line.h + (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).margin;
+
+/**
+ * The box of a tunnel's portal at vertex `from` toward vertex `to`, in which the terrain draws nothing:
+ * its depth, its half-width to the middle of its walls, the height of its roof's top at the facade and
+ * the rise of that roof per metre into the tunnel.
+ */
+export function portalBox(line: Line, from: number, to: number): [number, number, number, number] {
+    const depth = (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).depth, z = line.z[from];
+    return [depth, boreHalf(line) + WALL_M / 2, z + line.deck! + WALL_M, (along(line, from, to, depth).z - z) / depth];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */
@@ -64,7 +71,7 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
         for (let v = 0; v + 1 < n; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             const length = Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
-            bore(b, at(v), at(v + 1), line, line.h + size.margin, road, length);
+            bore(b, at(v), at(v + 1), line, boreHalf(line), road, length);
         }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
@@ -77,7 +84,7 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
 function portal(b: MeshBuilder, line: Line, from: number, to: number, size: typeof ROAD_PORTAL, road: boolean): void {
     const at = (s: number) => along(line, from, to, s);
     const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(size.depth);
-    const half = line.h + size.margin, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + size.crown;
+    const half = boreHalf(line), height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + size.crown;
     const facade = road ? FACADE : ROCK_FACADE, body = road ? BOX : ROCK_BOX, arch = outline(half, height);
     // Out of the tunnel, east, north and up.
     const ex = front.x - inside.x, ey = front.y - inside.y, el = Math.hypot(ex, ey) || 1, away: [number, number, number] = [ex / el, -ey / el, 0];
