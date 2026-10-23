@@ -544,10 +544,12 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
         levels, metrics["water"] = water.solve([(entry["kind"], tags, parts) for entry, tags, parts in waters], terrain)
         rivers = [(points, z) for (entry, _, parts), heights in zip(waters, levels) if entry["kind"] in water.RIVERS
                   for (_, points, _), z in zip(parts, heights) if z]
+        lake_levels = [([points for _, points, _ in parts], heights[0][0]) for (entry, _, parts), heights in zip(waters, levels)
+                       if entry["kind"] in water.LAKES and heights[0] and heights[0][0] is not None]
         for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, underpasses, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            heights, culverts, underpasses, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes, lake_levels)
             # A culvert is a road: the stamps build it over the ground.
             ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
