@@ -157,6 +157,7 @@ interface Resources {
     auditLayout: GPUBindGroupLayout;
     surfaceLayout: GPUBindGroupLayout;
     emptyLayout: GPUBindGroupLayout;
+    featureLayout: GPUBindGroupLayout;
 }
 
 /**
@@ -262,6 +263,11 @@ export class Terrain {
         return this.resources && { layout: this.resources.surfaceLayout, group: this.resources.surfaceGroup };
     }
 
+    /** The feature mask for other passes: group 3 of the terrain, which drawn_height reads. */
+    get features(): { layout: GPUBindGroupLayout; group: GPUBindGroup } | undefined {
+        return this.resources && { layout: this.resources.featureLayout, group: this.resources.featureGroup };
+    }
+
     /** Compiles the pipelines for a device and the formats of the frame, with the ground in group 2. A new device gets every page again, from the kept tile bodies. */
     async attach(gpu: Gpu, frameUniform: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
         this.resources = undefined;
@@ -282,7 +288,7 @@ export class Terrain {
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'holedMesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'snap' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout'> = {
+            | 'probe' | 'check' | 'stamp' | 'snap' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
             gpu, heights, normals,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -381,7 +387,7 @@ export class Terrain {
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         await this.structures.attach(gpu, frameUniform, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
-            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
+            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],

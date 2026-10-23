@@ -47,6 +47,19 @@ export interface Region {
     chain: string[];
     leaf: 'needleleaved' | 'broadleaved' | 'mixed';
     look: Look;
+    /** The trees of the region's pack, by species. */
+    trees: TreeRule[];
+}
+
+/** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
+export interface TreeRule {
+    model: string;
+    leaf: 'needleleaved' | 'broadleaved';
+    cover: 'tree' | 'shrub';
+    elevation: [number, number];
+    weight: number;
+    /** It keeps its summer leaves all year. */
+    evergreen?: boolean;
 }
 
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
@@ -71,8 +84,25 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
 /** A value by place, `{"es-ga": …, "es": …, "*": …}`: the release has no layer of the place, so `"*"`. */
 const local = (value: unknown) => (isObject(value) && '*' in value ? value['*'] : value);
 
+/** A file of a table with the files that it extends merged in, root first. */
+function inherited(table: Record<string, Record<string, unknown>>, name: string, seen: string[] = []): Record<string, unknown> {
+    const file = table[name];
+    if (!file || seen.includes(name)) throw new Error(`rules.json: ${[...seen, name].join(' → ')} misses a file or loops.`);
+    const { extends: up, ...own } = file;
+    return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
+}
+
+/** The trees of a pack: a species that a child sets to null is dropped, a model defaults to the species. */
+function treesOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): TreeRule[] {
+    if (typeof pack !== 'string' || !packs?.[pack]) return [];
+    const trees = (inherited(packs, pack).trees ?? {}) as Record<string, Partial<TreeRule> | null>;
+    return Object.entries(trees).flatMap(([species, rule]) => (rule ? [{ ...rule, model: rule.model ?? species } as TreeRule] : []));
+}
+
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
-export function rulesOf(json: { format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }> }): Rules {
+export function rulesOf(json: {
+    format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }>; packs?: Record<string, Record<string, unknown>>;
+}): Rules {
     if (json.format !== 1) throw new Error(`rules.json has format ${json.format}, not 1.`);
     const table = new Map(json.regions.map(entry => [entry.id, entry]));
     const regions = json.regions.map(({ id }): Region => {
@@ -87,7 +117,7 @@ export function rulesOf(json: { format: number; materials: Vocabulary; regions: 
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, trees: treesOf(json.packs, resolved.pack) };
     });
     return { vocabulary: json.materials, regions };
 }

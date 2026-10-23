@@ -30,6 +30,9 @@ is the palette of the `world` region.
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `structures/` | The bridges (`bridges.ts`), tunnel portals (`portals.ts`) and galleries (`galleries.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), and their pool and draw (`structures.ts`, `structures.wgsl`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
+| `instances/` | Instances on the drawn surface, GPU driven: producers emit them (`emit.wgsl`), the core sorts them into one list per model and tier (`sort.wgsl`) and draws each list with one indirect draw (`draw.wgsl`), far away as impostors that it bakes per model (`impostor.wgsl`, `impostor-bake.wgsl`) |
+| `vegetation/` | The canopy layer about the eye (`canopy.ts`) and the forest, a producer that places the trees from it each frame (`forest.wgsl`); its model worker |
+| `models/` | The prototype's tree models, without three.js: `shape.ts` (the primitives), `trees.ts` (the builder), `trees/` (one file per species, verbatim) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -81,8 +84,9 @@ of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a con
 whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--cracks 10` counts the red pixels of every tenth frame with
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
-`--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
-does: `DIR/rules.json`, `DIR/{material,lithology,region,snow}.pmtiles` and
+`--ground DIR` serves the bakes of `tools/trailview`, `tools/planner_snow.py` and
+`tools/planner_trailview_canopy.py` as the tile service does: `DIR/rules.json`,
+`DIR/{material,lithology,region,snow,trailview-canopy}.pmtiles` and
 `DIR/colour/<variant>/{q1,q2,q3,q4,ndvimax}.pmtiles`; `--colour` picks the variant (`webp-12`). Build
 the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
 `trailview_rules` is `https://tiles.test/trailview/rules.json`.
@@ -133,6 +137,10 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
   multiply by `look.screen.z`.
 - A still view shows the mean of 16 jittered frames; only new pages, nodes or extras restart them.
 - Debug colours lose bits in the `rg11b10ufloat` frame (2–4/255 near 1).
+- A pipeline has 8 storage buffers per stage at most, its groups together: a producer of instances
+  keeps its read-only data in one buffer.
+- A buffer that an indirect dispatch reads must not be writable in that dispatch's bind groups.
+- WebGPU has no multi-draw-indirect: each model and tier is one draw call, empty or not.
 - A finer node meets a coarser one only on the LOD plateau: keep `RANGE.least` of `lod.ts`
   (`lod.test.ts`).
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.

@@ -2,7 +2,12 @@
  * The variant registry. Each lab lists its variants, the default first. `?lab=name:variant` selects
  * a variant; `?lab=a:x,b:y` or a repeated `lab` selects several.
  */
-export const LABS: Record<string, readonly string[]> = {};
+export const LABS: Record<string, readonly string[]> = {
+    // The far trees: impostors, or the coarsest mesh.
+    trees: ['impostor', 'mesh'],
+    // Metres where the trees end and the woodland's shell begins.
+    shell: ['4500', '2000'],
+};
 
 export type Labs = Record<string, string>;
 

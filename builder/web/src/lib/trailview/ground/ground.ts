@@ -26,6 +26,7 @@ const NEUTRAL: Rules = {
             snap: 0.4, hazeKm: 35, hazeHeight: 2500, mistTop: 0, softness: 0.08, gradient: 0.35, ramps: {}, outcrops: 0, snow_share: 0.5, turf_deg: 42,
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
         },
+        trees: [],
     }],
 };
 
@@ -99,7 +100,8 @@ export class Ground {
 
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        const stages = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
+        // The terrain's vertices read the woodland of the cache for the shell.
+        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
         const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
             { binding: 0, visibility: stages, buffer: { type: 'uniform' } },
@@ -111,7 +113,7 @@ export class Ground {
         // The compute writes the cache: its bind group does not hold it for sampling.
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
-                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                ...entries, { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -171,6 +173,11 @@ export class Ground {
             ],
         };
         this.surfaceGroup = surface.group;
+    }
+
+    /** Group 2 of a compute pass that reads the ground pages, with the layout `layouts().compute[1]`. */
+    get computeGroup(): GPUBindGroup | undefined {
+        return this.resources?.computeGroups[1];
     }
 
     /** Group 2 of the terrain and the sky. */
