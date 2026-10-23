@@ -470,8 +470,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
                 }
                 if ((g.core || g.cone) && x < rule.reach) {
-                    lo[BENCH] = max(lo[BENCH], g.z - tol - widen(x, rule.reach, rule.fill));
-                    hi[BENCH] = min(hi[BENCH], g.z + tol + widen(x, rule.reach, rule.cut));
+                    // A path's slopes meet the slopes of the roads beside it as two roads' slopes meet.
+                    let l = g.z - tol - widen(x, rule.reach, rule.fill);
+                    let u = g.z + tol + widen(x, rule.reach, rule.cut);
+                    if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
+                        lo[CONES] = l;
+                        cone_lo_x = x;
+                    }
+                    if (u < hi[CONES] || (u == hi[CONES] && x < cone_hi_x)) {
+                        hi[CONES] = u;
+                        cone_hi_x = x;
+                    }
                 }
             }
         }
