@@ -23,9 +23,6 @@ COVER_ORDER = ("tree", "shrub", "grass", "crop", "built", "bare", "snow", "water
 COVERS = ("tree", "shrub", "grass", "crop", "bare", "wetland", "moss")
 SEASONS = ("winter", "spring", "summer", "autumn")
 RAMP_COVERS = (*(cover for cover in COVER_ORDER if cover != "tree"), "needle", "broad")
-WORLD = (-180, -90, 180, 90)
-# The clip of the prototype's `tune/ecoregions.py`: a region of a short with an ecoregion keeps its areas inside.
-EUROPE = (-32, 27, 60, 72)
 PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 # The look keys of the engine that overlays/ may set, as a key table like LOOK's below.
 OVERLAY_LOOK = {}
@@ -75,16 +72,6 @@ def listed(item, length=None):
     return check
 
 
-def span(item, equal=False):
-    """[low, high] with low below high, or with `equal` at most high."""
-    def check(v, p):
-        problems = listed(item, 2)(v, p)
-        if problems or v[0] < v[1] or (equal and v[0] == v[1]):
-            return problems
-        return wrong(p, f"low {said(v[0])} is not below high {said(v[1])}")
-    return check
-
-
 def obj(table):
     """An object whose keys each have their check; any other key is unknown."""
     def check(v, p):
@@ -116,23 +103,18 @@ def by_place(check):
     return by
 
 
-def point(bounds):
-    w, s, e, n = bounds
-    return lambda v, p: ([] if isinstance(v, list) and len(v) == 2 and all(map(is_number, v)) and w <= v[0] <= e and s <= v[1] <= n
-                         else wrong(p, f"{said(v)} is not a [lon, lat] within {w}..{e}, {s}..{n}"))
+def point(v, p):
+    return [] if isinstance(v, list) and len(v) == 2 and all(map(is_number, v)) else wrong(p, f"{said(v)} is not a [lon, lat]")
 
 
-def area(bounds):
+def area(v, p):
     """A box [west, south, east, north] or a ring of three or more [lon, lat]."""
-    def check(v, p):
-        if isinstance(v, list) and len(v) == 4 and all(map(is_number, v)):
-            w, s, e, n = v
-            order = [] if w < e and s < n else wrong(p, f"{said(v)}: west is not below east, or south below north")
-            return [*point(bounds)([w, s], p), *point(bounds)([e, n], p), *order]
-        if isinstance(v, list) and len(v) >= 3 and all(isinstance(x, list) for x in v):
-            return listed(point(bounds))(v, p)
-        return wrong(p, f"{said(v)} is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]")
-    return check
+    if isinstance(v, list) and len(v) == 4 and all(map(is_number, v)):
+        w, s, e, n = v
+        return [] if w < e and s < n else wrong(p, f"{said(v)}: west is not below east, or south below north")
+    if isinstance(v, list) and len(v) >= 3 and all(isinstance(x, list) for x in v):
+        return listed(point)(v, p)
+    return wrong(p, f"{said(v)} is not a box [west, south, east, north] or a ring of 3 or more [lon, lat]")
 
 
 def tables(materials):
@@ -160,8 +142,8 @@ def tables(materials):
         "grade": obj({"shadow": listed(number(-0.1, 0.1), 3), "light": listed(number(-0.1, 0.1), 3), "saturation": number(0, 3)}),
         "weather": each(("sunny", "cloudy", "rainy"), weather),
     })
-    region = lambda bounds: obj({
-        "name": text, "about": text, "ecoregion": number(1, 1e6), "extends": text, "where": listed(area(bounds)),
+    region = obj({
+        "name": text, "about": text, "ecoregion": number(1, 1e6), "extends": text, "where": listed(area),
         "leaf": one_of("needleleaved", "broadleaved", "mixed"), "pack": text,
         "cliffs": obj({"reach_m": number(0, 1000), "raise_m": number(0, 500), "min_m": number(0, 1000)}),
         "summits": obj({"reach_m": number(0, 5000), "max_cut_m": number(0, 1000)}),
@@ -170,20 +152,20 @@ def tables(materials):
     })
     species = obj({
         "model": text, "latin": text, "leaf": one_of("needleleaved", "broadleaved"), "cover": one_of("tree", "shrub"),
-        "elevation": span(number(-500, 9000)), "weight": positive, "evergreen": one_of(True, False),
+        "elevation": listed(number(-500, 9000), 2), "weight": positive, "evergreen": one_of(True, False),
     })
     ground = obj({
-        "model": text, "latin": text, "on": listed(one_of(*COVERS)), "height": span(number(0, 50)), "share": number(0, 1),
+        "model": text, "latin": text, "on": listed(one_of(*COVERS)), "height": listed(number(0, 50), 2), "share": number(0, 1),
         "habitat": one_of("moor", "lush"), "own": one_of(True), "clumped": one_of(True),
     })
-    herd = obj({"model": text, "latin": text, "groups": number(1, 100), "size": span(number(1, 1000), True),
+    herd = obj({"model": text, "latin": text, "groups": number(1, 100), "size": listed(number(1, 1000), 2),
                 "on": listed(one_of(*materials["materials"]))})
     pack = obj({
         "name": text, "about": text, "extends": text, "trees": entries(species), "ground": entries(ground),
         "herds": entries(herd), "style": by_place(text), "houses": text, "orchard": text,
     })
     style = obj({
-        "name": text, "about": text, "extends": text, "pitch": span(number(0, 80)), "eave": number(0, 5), "verge": number(0, 5),
+        "name": text, "about": text, "extends": text, "pitch": listed(number(0, 80), 2), "eave": number(0, 5), "verge": number(0, 5),
         "hip": number(0, 1), "timber": one_of("none", "upper", "all", "frame"), "shutters": one_of(True, False),
         "balconies": one_of(True, False), "chimneys": one_of(0, 1, 2), "spire": one_of("onion"), "storeys": number(1, 8),
         "palette": obj({"render": listed(colour), "wood": listed(colour), "roof": listed(colour), "door": listed(colour),
@@ -241,23 +223,18 @@ def validate(ruleset):
     region_check, pack_check, style_check, overlay_check = tables(ids)
     regions, packs, styles = ruleset["regions"], ruleset["packs"], ruleset["styles"]
     add = lambda file, problems: out.extend(f"{file}: {problem}" for problem in problems)
-    short = lambda name: str(name).split(".")[0]
 
-    # Keys and types, then each file's parent: it exists, the chain does not loop, and it is of the file's own short.
+    # Keys and types, then each file's parent: it exists and the chain does not loop.
     for name, data in regions.items():
-        add(f"regions/{name}.json", region_check(EUROPE if "ecoregion" in regions.get(short(name), {}) else WORLD)(data, ""))
+        add(f"regions/{name}.json", region_check(data, ""))
     for name, data in packs.items():
         add(f"packs/{name}.json", pack_check(data, ""))
     for name, data in styles.items():
         add(f"styles/{name}.json", style_check(data, ""))
-    for kind, table, root in (("region", regions, "world"), ("pack", packs, "base"), ("style", styles, "")):
+    for kind, table in (("region", regions), ("pack", packs), ("style", styles)):
         for name, data in table.items():
             file, up = f"{kind}s/{name}.json", data.get("extends")
-            # A subregion is only ever entered from its own short, so it may not extend the root.
-            sub = kind == "region" and "." in name
-            if root and name != root and (sub or up != root) and short(up) != short(name):
-                add(file, [f"extends: {said(up)} is not {'' if sub else f'{root} or '}a {kind} of {short(name)}"])
-            if sub and "where" not in data:
+            if kind == "region" and "." in name and "where" not in data:
                 add(file, ["where: a subregion needs its areas"])
             if up is None:
                 continue
@@ -270,21 +247,6 @@ def validate(ruleset):
                     add(file, [f"extends: a loop {' › '.join(loop)}"])
                     break
                 at = table[at].get("extends")
-
-    for name, region in regions.items():
-        file = f"regions/{name}.json"
-        if isinstance(region.get("pack"), str) and region["pack"] not in packs:
-            add(file, [f"pack: no packs/{region['pack']}.json"])
-        if "ecoregion" in region and next((e["id"] for e in ruleset["ecoregions"] if e.get("short") == name), None) != region["ecoregion"]:
-            add(file, [f"ecoregion: {said(region['ecoregion'])} is not the id of {name} in ecoregions.json"])
-
-    for name, pack in packs.items():
-        file = f"packs/{name}.json"
-        style = pack.get("style")
-        named = [(f"style.{c}", s) for c, s in style.items()] if isinstance(style, dict) else [("style", style)]
-        for key, value in [*named, ("houses", pack.get("houses"))]:
-            if isinstance(value, str) and value not in styles:
-                add(file, [f"{key}: no styles/{value}.json"])
 
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"

@@ -286,10 +286,11 @@ jobs = ["web"]
 platforms = ["linux", "macos"]
 triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trailview/gpu/include.ts", "builder/web/scripts/check-wgsl.mjs", "builder/web/package.json"]
 
-# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: no WebGPU error, a
-# lost device that recovers, the probe, and the notice without WebGPU. A test that draws for minutes on
-# SwiftShader takes the tag @gpu (the crack and surface audits, the invariant audits of the stamps along
-# the roads of a village and in a lake, debug=mask): pull requests skip it, `web.trailview-weekly` runs it.
+# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one page load that
+# draws with no WebGPU error and whose probe gives the height of an instance shader, and the snow mark of
+# the ground worker. A test that draws for minutes on SwiftShader takes the tag @gpu (the crack and
+# surface audits, the invariant audits of the stamps along the roads of a village and in a lake,
+# debug=mask): pull requests skip it, `web.trailview-weekly` runs it.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"

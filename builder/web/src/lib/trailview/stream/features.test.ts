@@ -17,11 +17,8 @@ const plain = ({ kind, tags, geometry, parts }: Feature) => ({
 describe('feature tiles', () => {
     const bytes = new Uint8Array(vector('trailview-features.bin'));
 
-    it('decode the shared vector to the features that the encoder read', () => {
+    it('decode the shared vector to the features that the encoder read, and reject a tile that ends early or has bytes after its last feature', () => {
         expect(decodeFeatures(bytes).map(plain)).toEqual(JSON.parse(vector('trailview-features.json').toString()));
-    });
-
-    it('reject a tile that ends early or has bytes after its last feature', () => {
         expect(() => decodeFeatures(bytes.subarray(0, bytes.length - 1))).toThrow('ends inside');
         expect(() => decodeFeatures(new Uint8Array([...bytes, 0]))).toThrow('after its last feature');
     });

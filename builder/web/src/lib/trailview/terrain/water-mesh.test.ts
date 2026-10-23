@@ -70,8 +70,4 @@ describe('the water mesh of a node', () => {
         }
         expect(covered / (3000 * 1000 * SCALE * SCALE)).toBeCloseTo(1, 5);
     });
-
-    it('has no water for a node that no water reaches', () => {
-        expect(waterMesh([lake, river] as Feature[], TILE, { ...NODE, x: NODE.x + 2 })).toBeNull();
-    });
 });

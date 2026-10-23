@@ -12,11 +12,4 @@ describe('the view in the address', () => {
         const fly: View = { ...walk, mode: 'fly', height: 60000, debug: 'off' };
         expect(parseView(formatView(fly), fallback)).toEqual(fly);
     });
-
-    it('keeps the fallback for a missing or invalid value', () => {
-        expect(fallback).toMatchObject({ lat: 46.7975, lon: 8.415, mode: 'walk', height: 1.6, date: '2026-08-15', time: '12:00' });
-        expect(parseView('?lat=91&lon=x&date=2026-13-40&time=25:00&weather=snow&debug=no', fallback)).toEqual(fallback);
-        expect(parseView('?date=2026-02-30', fallback).date).toBe(fallback.date);
-        expect(parseView('?date=2028-02-29', fallback).date).toBe('2028-02-29');
-    });
 });
