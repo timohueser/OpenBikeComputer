@@ -51,6 +51,19 @@ export interface Region {
     houses: [number, number];
     /** The trees of the region's pack, by species. */
     trees: TreeRule[];
+    /** The ground plants of the region's pack: what the pack says of each, over its plant model's `ground`. */
+    ground: GroundRule[];
+}
+
+/** A ground plant of a pack: its model, and the keys of the model's `ground` that the pack changes. */
+export interface GroundRule {
+    model: string;
+    on?: string[];
+    height?: [number, number];
+    share?: number;
+    habitat?: 'moor' | 'lush';
+    own?: true;
+    clumped?: true;
 }
 
 /** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
@@ -112,9 +125,14 @@ function inherited(table: Record<string, Record<string, unknown>>, name: string,
 
 /** The trees of a pack: a species that a child sets to null is dropped, a model defaults to the species. */
 function treesOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): TreeRule[] {
+    return speciesOf(packs, pack, 'trees') as TreeRule[];
+}
+
+/** The species of a pack's table `trees` or `ground`: a species that a child sets to null is dropped, a model defaults to the species. */
+function speciesOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown, table: 'trees' | 'ground'): { model: string }[] {
     if (typeof pack !== 'string' || !packs?.[pack]) return [];
-    const trees = (inherited(packs, pack).trees ?? {}) as Record<string, Partial<TreeRule> | null>;
-    return Object.entries(trees).flatMap(([species, rule]) => (rule ? [{ ...rule, model: rule.model ?? species } as TreeRule] : []));
+    const entries = (inherited(packs, pack)[table] ?? {}) as Record<string, { model?: string } | null>;
+    return Object.entries(entries).flatMap(([species, rule]) => (rule ? [{ ...rule, model: rule.model ?? species }] : []));
 }
 
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
@@ -142,7 +160,7 @@ export function rulesOf(json: {
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack), trees: treesOf(json.packs, resolved.pack) };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack), trees: treesOf(json.packs, resolved.pack), ground: speciesOf(json.packs, resolved.pack, 'ground') as GroundRule[] };
     });
     return { vocabulary: json.materials, regions, styles };
 }

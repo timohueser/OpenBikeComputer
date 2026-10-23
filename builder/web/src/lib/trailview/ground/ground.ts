@@ -28,6 +28,7 @@ const NEUTRAL: Rules = {
         },
         houses: [0, 0],
         trees: [],
+        ground: [],
     }],
     styles: [],
 };
