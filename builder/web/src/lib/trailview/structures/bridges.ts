@@ -4,7 +4,7 @@
 import { EXTENT, type Feature } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
-import { GROUND, MeshBuilder, PAINT, posts, rgb, station, type Corner, type Station } from './mesh';
+import { GROUND, MeshBuilder, mix, PAINT, posts, rgb, station, type Corner, type Station } from './mesh';
 
 /** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
 const LIFT_M = 0.03;
@@ -16,6 +16,8 @@ const RAIL_M = 1.05, BAR_M = 0.08, CABLE_M = 0.04, POSTS_M = 2;
 const COVER_WALL_M = 1.0, EAVES_M = 2.6, PITCH = 0.5, OVERHANG_M = 0.4;
 /** A pier: its thickness along the bridge for a road and a path, the share of the deck's width that it takes, and how deep it stands in the ground. */
 const PIER_M = { road: 1.6, path: 0.5 }, PIER_WIDTH = 0.6, PIER_SINK_M = 1.5;
+/** An abutment's thickness along the bridge. */
+const ABUTMENT_M = 1.0;
 /** A pier stands on the nearest bridge line within this many metres. */
 const PIER_REACH_M = 3;
 
@@ -53,9 +55,26 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
             const cap = (a: number, c: number, bottom: number, top: number) => b.quad([b.at(s, [a, bottom], CONCRETE), b.at(s, [c, bottom], CONCRETE), b.at(s, [c, top], CONCRETE), b.at(s, [a, top], CONCRETE)], out);
             cap(-w, w, -t, LIFT_M);
             if (parapets) for (const side of [1, -1]) cap(side * h, side * w, LIFT_M, PARAPET[1]);
+            if (line.abut?.[v ? 1 : 0]) {
+                const w2 = v ? v - 1 : 1, length = Math.hypot(line.xy[2 * w2] - line.xy[2 * v], line.xy[2 * w2 + 1] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
+                abutment(b, s, mix(s, at(w2), Math.min(0.5, ABUTMENT_M / Math.max(length, 1e-3))), w, t, out);
+            }
         }
     }
     piers(b, list, tile, lines, owns);
+}
+
+/**
+ * The abutment under a deck's end at station s: a wall from the deck's underside down into the drawn
+ * ground, `half` metres to each side and back to station `inner`, so the deck never ends in the air
+ * where the ground falls away under it. Where the ground holds the road's height, it hides the wall.
+ */
+function abutment(b: MeshBuilder, s: Station, inner: Station, half: number, depth: number, out: [number, number, number]): void {
+    const down = (st: Station, a: number) => b.vertex(st.x + st.ax * a, st.y + st.ay * a, -PIER_SINK_M, CONCRETE | (GROUND << 24));
+    const up = (st: Station, a: number) => b.at(st, [a, -depth], CONCRETE);
+    b.quad([down(s, -half), down(s, half), up(s, half), up(s, -half)], out);
+    b.quad([down(inner, half), down(inner, -half), up(inner, -half), up(inner, half)], [-out[0], -out[1], 0]);
+    for (const side of [1, -1]) b.quad([down(s, side * half), down(inner, side * half), up(inner, side * half), up(s, side * half)], b.outward(s, inner, [side, 0]));
 }
 
 /** The deck from station s to t, `length` metres long, in the line's style. */
