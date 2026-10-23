@@ -495,6 +495,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
     }
+    // A bank cuts no deeper than a bore's cover: a lake's shore ramp and a river's bank leave a tunnel buried.
+    hi[BANKS] = max(hi[BANKS], lo[COVER]);
     // Near a junction the cores of its roads hold the middle of their heights where they disagree by
     // the centimetres of the solver, and a core outranks the cones. Their cones step as anywhere else,
     // so a wall between two roads grows from nothing at their junction.

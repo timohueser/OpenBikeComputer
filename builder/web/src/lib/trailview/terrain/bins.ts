@@ -131,8 +131,7 @@ export interface Line {
     kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; tilt?: number[]; join?: [boolean, boolean];
     /**
      * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
-     * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground: a road or a path that is
-     * not a bridge or a tunnel.
+     * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground, as `abutments` has it.
      */
     deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
 }
@@ -221,12 +220,16 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     return { lines, lakes, areas };
 }
 
-/** The ends of the bridges and the tunnels that meet a road or a path on the ground: an abutment, a portal. */
+/**
+ * The ends of the bridges and the tunnels that meet the ground: an abutment, a portal. An end meets the
+ * ground where it meets a road or a path on it, and where a bridge and a tunnel meet: in the hillside.
+ */
 function abutments(lines: Line[]): void {
-    const ground = new Set(lines.filter(({ kind }) => kind === ROAD || kind === PATH).flatMap(({ xy }) => xy.filter((_, i) => i % 2 === 0).map((x, v) => `${x},${xy[2 * v + 1]}`)));
+    const vertices = (kinds: number[]) => new Set(lines.filter(({ kind }) => kinds.includes(kind)).flatMap(({ xy }) => xy.filter((_, i) => i % 2 === 0).map((x, v) => `${x},${xy[2 * v + 1]}`)));
+    const bridge = vertices([ROAD, PATH, TUNNEL]), tunnel = vertices([ROAD, PATH, BRIDGE]);
     for (const line of lines) {
         if (line.kind !== BRIDGE && line.kind !== TUNNEL) continue;
-        const n = line.z.length;
+        const n = line.z.length, ground = line.kind === BRIDGE ? bridge : tunnel;
         line.abut = [ground.has(`${line.xy[0]},${line.xy[1]}`), ground.has(`${line.xy[2 * n - 2]},${line.xy[2 * n - 1]}`)];
     }
 }
