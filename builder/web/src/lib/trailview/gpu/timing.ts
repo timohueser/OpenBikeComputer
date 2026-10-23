@@ -17,7 +17,11 @@ export class PassTimes {
     private readonly free: GPUBuffer[] = [];
     private readonly written = new Set<string>();
 
-    constructor(gpu: Gpu, private readonly passes: readonly string[]) {
+    /**
+     * `after` names, per pass, a pass before it whose end its time counts from: a tiled GPU starts the
+     * next pass while the one before still draws, so its own begin would count that pass too.
+     */
+    constructor(gpu: Gpu, private readonly passes: readonly string[], private readonly after: Record<string, string> = {}) {
         if (!gpu.device.features.has('timestamp-query')) return;
         const bytes = 16 * passes.length;
         this.set = gpu.device.createQuerySet({ type: 'timestamp', count: 2 * passes.length });
@@ -43,8 +47,9 @@ export class PassTimes {
             const times = new BigInt64Array(target.getMappedRange());
             for (const pass of this.passes) delete this.ms[pass];
             for (const pass of passes) {
-                const index = this.passes.indexOf(pass);
-                this.ms[pass] = Number(times[2 * index + 1] - times[2 * index]) / 1e6;
+                const index = this.passes.indexOf(pass), before = this.after[pass];
+                const from = before && passes.includes(before) ? times[2 * this.passes.indexOf(before) + 1] : times[2 * index];
+                this.ms[pass] = Number(times[2 * index + 1] - from) / 1e6;
             }
             this.tag = tag;
             target.unmap();

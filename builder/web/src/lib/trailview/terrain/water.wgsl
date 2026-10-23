@@ -4,7 +4,7 @@
 // river or a stream is a ribbon on it at its width, at least RIBBON_PIXELS wide, and fades
 // with its share of that width. The shading is the prototype's: a still body, dark from above and a
 // mirror of the sky toward the horizon, with a sun glint; white where a ribbon runs down a steep bed.
-// The haze and `finish()` are those of the ground, from the look in group 2.
+// The haze is that of the ground, from the look in group 2; a ribbon blends in linear light.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
@@ -118,7 +118,7 @@ fn water_fragment(in: WaterOut) -> @location(0) vec4f {
         discard;
     }
     let edge = clamp((1.0 - abs(in.side)) * in.pixels + 0.5, 0.0, 1.0);
-    return vec4f(finish(atmosphere(water_colour(in), in.relative, in.altitude)), in.share * edge);
+    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge);
 }
 
 fn water_colour(in: WaterOut) -> vec3f {

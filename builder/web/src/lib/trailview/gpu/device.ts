@@ -1,5 +1,5 @@
 /** The features that the engine uses when the adapter has them. */
-const OPTIONAL_FEATURES: GPUFeatureName[] = ['timestamp-query', 'clip-distances'];
+const OPTIONAL_FEATURES: GPUFeatureName[] = ['timestamp-query', 'clip-distances', 'rg11b10ufloat-renderable'];
 
 /** The device, and the bytes that each pool holds. A lost device needs a new `Gpu`. */
 export class Gpu {

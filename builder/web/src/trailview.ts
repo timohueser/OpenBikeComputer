@@ -4,6 +4,7 @@ import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
 import { labsOf } from './lib/trailview/labs';
+import { scaleOf } from './lib/trailview/resolve/targets';
 import { defaultView, formatView, parseView } from './lib/trailview/view';
 
 /** The address follows the view at most this often. */
@@ -27,7 +28,7 @@ async function main(): Promise<void> {
     const release = await config;
     pageRelease(release.id);
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view);
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search));
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;

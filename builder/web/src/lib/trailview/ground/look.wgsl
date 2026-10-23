@@ -396,14 +396,16 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 }
 
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
-// `altitude` above sea level, on a node of `level`. Ends with the haze and `finish()`.
+// `altitude` above sea level, on a node of `level`, in linear light with the haze. The sizes of a
+// pixel are those of an output pixel, so the detail follows the canvas at any render scale.
 fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f {
     let world = look.place.xy + relative.xy;
-    let footprint = max(length(dpdx(relative.xy)), length(dpdy(relative.xy)));
-    let lateral = min(length(dpdx(relative.xy)), length(dpdy(relative.xy)));
+    let scale = look.screen.z;
+    let footprint = max(length(dpdx(relative.xy)), length(dpdy(relative.xy))) * scale;
+    let lateral = min(length(dpdx(relative.xy)), length(dpdy(relative.xy))) * scale;
     // The pixel's size on the surface itself: on a slope facing the eye it is far larger than its map
     // footprint, and texture finer than it shows as blotches.
-    let surface_size = max(length(dpdx(relative)), length(dpdy(relative)));
+    let surface_size = max(length(dpdx(relative)), length(dpdy(relative))) * scale;
     var facet = normalize(cross(dpdx(relative), dpdy(relative)));
     facet *= sign(facet.z);
     var n = render_normal(drawn_normal(s));
@@ -411,7 +413,7 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
-    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)), world, footprint, length(relative.xy), region);
+    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region);
     // A road's retaining wall, but for a cut in bare rock, and in woodland, as rock walls.
     let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
@@ -589,5 +591,5 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
     let c = light_up(albedo, n, 1.0, open, mix(look.horizon.w, 0.5, walled));
-    return finish(atmosphere(c, relative, altitude));
+    return atmosphere(c, relative, altitude);
 }
