@@ -85,8 +85,9 @@ export interface TerrainStats {
     jobs: { near: number; coarse: number; masks: number };
     /** Masks in use. */
     masks: number;
-    /** Water meshes of the last frame that did not fit in their pool. */
+    /** Water and structure meshes of the last frame that did not fit in their pools. */
     waterDropped: number;
+    structuresDropped: number;
 }
 
 /** What the audit counts, as audit.wgsl does. */
@@ -243,7 +244,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks, waterDropped: this.water.dropped,
+            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped,
         };
     }
 

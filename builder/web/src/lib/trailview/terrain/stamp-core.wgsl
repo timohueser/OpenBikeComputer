@@ -7,7 +7,7 @@
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
-// words per primitive. A cell lists its junctions, then per lake its edges and its marker, then the
+// words per primitive. A cell lists its junctions, then per lake and pad its edges and its marker, then the
 // segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
@@ -43,6 +43,11 @@ const JUNCTION: u32 = 5u;
 const RIVER: u32 = 6u;
 const BRIDGE: u32 = 8u;
 const TUNNEL: u32 = 9u;
+const RAIL: u32 = 10u;
+const PAD: u32 = 11u;
+// As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
+const TRACK_CODE: u32 = 8u;
+const SLEEPER_M: f32 = 0.6;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
@@ -248,6 +253,16 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     return Along(INF, 0.0, 0.0, false, false, false, beside, da * unit, db * unit);
 }
 
+// A track's sleepers from its start at a texel: a track counts them in its last words; a bridge, a tunnel
+// or a gallery of a track counts SLEEPER_M from an end that meets the ground.
+fn sleepers_at(r: u32, kind: u32, g: Along) -> f32 {
+    if (kind == RAIL) {
+        return mix(real(r + 14u), real(r + 15u), clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0));
+    }
+    let start = real(r + 14u);
+    return select(-(real(r + 15u) + g.db), start + g.da, start < 1e29) / SLEEPER_M;
+}
+
 fn segment_distance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
     let ab = b - a;
     let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
@@ -270,7 +285,7 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
 }
 
 // The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the
-// metres from the middle of that road (signed by side) and its surface, the nearest waterline (negative in water), the water height (NONE without water) and the flags.
+// metres from the middle of that road (signed by side), its surface and a track's sleepers from its start, the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
     hi: f32,
@@ -280,7 +295,7 @@ struct Stamp {
     across: f32,
     surface: u32,
     ford: bool,
-    shore: f32,
+    sleepers: f32,
     // The nearest lake shore alone, negative in a lake.
     lake: f32,
     // Whether the cones of the roads hold the lower bound (a fill) and the upper bound (a cut).
@@ -291,7 +306,7 @@ struct Stamp {
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, INF, INF, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, 0.0, INF, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -343,19 +358,24 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let b = point(r + 2u);
             crossed = crossed != crosses(vec2f(0.0), vec2f(p - centre), vec2f(a - centre), vec2f(b - centre));
             shore = min(shore, segment_distance(vec2f(p - a), vec2f(0.0), vec2f(b - a)) * unit);
+        } else if (kind == PAD) {
+            // A platform holds the ground inside it under its top.
+            if (((entry & INSIDE) != 0u) != crossed) {
+                hi[BANKS] = min(hi[BANKS], real(r + 6u));
+            }
+            crossed = false;
+            shore = INF;
         } else if (kind == LAKE) {
             let water = real(r + 6u);
             if (((entry & INSIDE) != 0u) != crossed) {
                 hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
                 water_in = max(water_in, water);
                 in_lake = true;
-                out.shore = min(out.shore, -shore);
                 out.lake = min(out.lake, -shore);
             } else {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
                 }
-                out.shore = min(out.shore, shore);
                 out.lake = min(out.lake, shore);
             }
             crossed = false;
@@ -381,7 +401,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 lo[BANKS] = max(lo[BANKS], g.z - (rule.tol + widen(max(x, 0.0), reach, rule.fill)));
                 hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
             }
-            out.shore = min(out.shore, x);
         } else {
             if (word(r + 13u) != line) {
                 out.conflict = out.conflict || (line_near && !line_held);
@@ -409,7 +428,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 lo[COVER] = max(lo[COVER], g.z + f32(word(r + 5u) >> 24u) * 0.1 + COVER_M - widen(x, reach, 1.0));
                 continue;
             }
-            let paved = kind == ROAD || bridge || kind == TUNNEL;
+            let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
             if (paved && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h);
@@ -424,6 +443,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.across = g.side * g.lateral;
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
+                out.sleepers = select(0.0, sleepers_at(r, kind, g), out.surface >= TRACK_CODE);
             }
             // A gallery's floor runs flat to a mesh cell past its walls and pillars, so the mesh's slope up to
             // the hill lies behind its wall. Past that, on the hill side, the hill holds the top of its roof

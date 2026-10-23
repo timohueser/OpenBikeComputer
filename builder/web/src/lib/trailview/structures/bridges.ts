@@ -2,9 +2,9 @@
 // a railing for a path, cables for a bridge that hangs and walls and a roof for a covered one, and a pier
 // at each `bridge-pier` point of the bake, down into the drawn surface.
 import { EXTENT, type Feature } from '../stream/features';
-import { BRIDGE, metresPerUnit, type Line, type Node } from '../terrain/bins';
+import { BRIDGE, metresPerUnit, RAIL_CODE, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
-import { GROUND, MeshBuilder, PAINT, posts, rgb, station, type Corner, type Station } from './mesh';
+import { GROUND, MeshBuilder, PAINT, posts, rgb, stationsOf, type Corner, type Station } from './mesh';
 
 /** The deck's road lies this far above the abutment's ground, which holds the road's height under it. */
 const LIFT_M = 0.03;
@@ -28,6 +28,8 @@ export const deckHalf = (line: Line) => line.h + PARAPET[0];
 
 /** Paths, tracks of grass or dirt: a footbridge. */
 const isPath = (line: Line) => line.code >= 3 && line.code <= 6;
+/** A railway's bridge: no parapets, which would stand between the decks of two tracks side by side, but a steel railing. */
+const isTrack = (line: Line) => line.code >= RAIL_CODE;
 
 /** The bridges of a feature tile's `list` and `lines` whose pieces a square `owns`. */
 export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[], owns: Owns): void {
@@ -39,7 +41,7 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
     for (const line of lines) for (const v of [0, line.z.length - 1]) ends.set(endKey(line, v), (ends.get(endKey(line, v)) ?? 0) + 1);
     for (const line of lines) {
         const n = line.z.length, path = isPath(line), t = line.deck ?? 0.6, h = line.h;
-        const stations = new Map<number, Station>(), at = (v: number) => stations.get(v) ?? stations.set(v, station(line, v)).get(v)!;
+        const at = stationsOf(line);
         for (let v = 0; v + 1 < n; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             segment(b, at(v), at(v + 1), line, t, Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]));
@@ -47,7 +49,7 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
         for (const v of [0, n - 1]) {
             if (ends.get(endKey(line, v)) !== 1 || !owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             // The end of the deck under its road, and of a road's parapets.
-            const s = at(v), parapets = line.style === 'beam' && !path, w = parapets ? h + PARAPET[0] : h;
+            const s = at(v), parapets = line.style === 'beam' && !path && !isTrack(line), w = parapets ? h + PARAPET[0] : h;
             const [ex, ey] = [line.xy[2 * (v ? v : 1)] - line.xy[2 * (v ? v - 1 : 0)], line.xy[2 * (v ? v : 1) + 1] - line.xy[2 * (v ? v - 1 : 0) + 1]];
             const l = Math.hypot(ex, ey) || 1, sign = v ? 1 : -1, out: [number, number, number] = [(sign * ex) / l, (-sign * ey) / l, 0];
             const cap = (a: number, c: number, bottom: number, top: number) => b.quad([b.at(s, [a, bottom], CONCRETE), b.at(s, [c, bottom], CONCRETE), b.at(s, [c, top], CONCRETE), b.at(s, [a, top], CONCRETE)], out);
@@ -60,16 +62,16 @@ export function bridges(b: MeshBuilder, list: Feature[], tile: Node, all: Line[]
 
 /** The deck from station s to t, `length` metres long, in the line's style. */
 function segment(b: MeshBuilder, s: Station, t: Station, line: Line, depth: number, length: number): void {
-    const h = line.h, road = !isPath(line);
-    if (line.style === 'beam' && road) return roadBridge(b, s, t, line, depth);
+    const h = line.h, road = !isPath(line), track = isTrack(line);
+    if (line.style === 'beam' && road && !track) return roadBridge(b, s, t, line, depth);
     // A plank deck, or a road deck, its edges and its underside.
-    const edge = line.style === 'cable' ? STEEL : WOOD_DARK;
+    const edge = line.style === 'cable' ? STEEL : track ? CONCRETE : WOOD_DARK;
     if (road) roadway(b, s, t, line);
     else b.strip(s, t, [-h, LIFT_M], [h, LIFT_M], WOOD, [0, 1]);
     for (const side of [1, -1]) b.strip(s, t, [side * h, LIFT_M], [side * h, -depth], edge, [side, 0]);
     b.strip(s, t, [-h, -depth], [h, -depth], edge, [0, -1]);
     if (line.style === 'covered') return covered(b, s, t, h, length);
-    if (line.style === 'cable') return railing(b, s, t, h, length, STEEL, CABLE_M);
+    if (line.style === 'cable' || track) return railing(b, s, t, h, length, STEEL, track ? BAR_M : CABLE_M);
     railing(b, s, t, h, length, WOOD, BAR_M);
 }
 

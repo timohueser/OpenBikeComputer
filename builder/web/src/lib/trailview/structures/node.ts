@@ -3,7 +3,8 @@ import { BRIDGE, features, metresPerUnit, TUNNEL, type Node } from '../terrain/b
 import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
-import { boreHalf, portalBox, tunnels } from './tunnels';
+import { rails } from './rails';
+import { boreHalf, portalBox, tunnels, twins } from './tunnels';
 
 /**
  * The level of the nodes that hold the structures: each piece belongs to the one whose square holds its
@@ -47,13 +48,15 @@ export const BOX = 8;
 /** The boxes of the tunnels' portals within REACH_M of a node's square, where the terrain draws nothing; null without any. */
 export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Array<ArrayBuffer> | null {
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side, m = REACH_M / metresPerUnit(y0 + side / 2), out: number[] = [];
-    for (const line of features(list, tile).lines) {
+    const { lines } = features(list, tile), twin = twins(lines);
+    for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         for (const end of [0, 1]) {
-            const v = end ? line.z.length - 1 : 0, w = end ? v - 1 : 1, x = line.xy[2 * v], y = line.xy[2 * v + 1];
-            if (!line.abut[end] || x < x0 - m || x >= x0 + side + m || y < y0 - m || y >= y0 + side + m) continue;
-            const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1;
-            out.push(x, y, dx / l, dy / l, ...portalBox(line, v, end ? 0 : line.z.length - 1));
+            const v = end ? line.z.length - 1 : 0, w = end ? v - 1 : 1, x = line.xy[2 * v], y = line.xy[2 * v + 1], pair = twin.get(line)?.[end];
+            if (!line.abut[end] || pair === null || x < x0 - m || x >= x0 + side + m || y < y0 - m || y >= y0 + side + m) continue;
+            // A portal over two tracks: its middle moves to the left of the way in, as `portal` of tunnels.ts moves it.
+            const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1, shift = (pair?.shift ?? 0) / metresPerUnit(y);
+            out.push(x + dy / l * shift, y - dx / l * shift, dx / l, dy / l, ...portalBox(line, v, end ? 0 : line.z.length - 1, pair?.widen));
         }
     }
     return out.length ? new Float64Array(out) : null;
@@ -68,5 +71,6 @@ export function structureMesh(list: Feature[], tile: Node, node: Node): Structur
     bridges(b, list, tile, lines, owns);
     tunnels(b, lines, owns);
     galleries(b, lines, owns);
+    rails(b, list, tile, lines, owns);
     return b.mesh();
 }

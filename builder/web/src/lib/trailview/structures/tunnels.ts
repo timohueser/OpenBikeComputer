@@ -3,8 +3,8 @@
 // and a box of the bore into the hill. The stamps hold the road on the ground into the portal and the
 // hill over the bore behind it, and the terrain draws no ground in the box: the box hides the slope
 // between. Beyond the reach of the masks the terrain has no hole, and a dark void fills the opening.
-import { metresPerUnit, TUNNEL, type Line } from '../terrain/bins';
-import { INSIDE, LAMP, MeshBuilder, PAINT, posts, rgb, station, VOID, type Corner, type Station } from './mesh';
+import { metresPerUnit, RAIL_CODE, TUNNEL, type Line } from '../terrain/bins';
+import { INSIDE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
 /** A portal of a road and of a path: the bore's margin past the road, the depth of the box, the facade's wings past the opening and its height over the bore. */
@@ -21,19 +21,51 @@ const ARCH = 8;
 const FACADE = rgb('#a5a299'), BOX = rgb('#8f8c84'), DARK = rgb('#0a0a0b', VOID);
 const ROCK_FACADE = rgb('#77716a'), ROCK_BOX = rgb('#6a655e');
 const TILES = rgb('#dcdad3', INSIDE), ARCH_LINING = rgb('#7f7e7a', INSIDE), WALK = rgb('#a3a19b', INSIDE), LIGHT = rgb('#fff3d6', LAMP);
-const ROCK = rgb('#6f6a62', INSIDE), ROCK_FLOOR = rgb('#7d7262', INSIDE);
+const ROCK = rgb('#6f6a62', INSIDE), ROCK_FLOOR = rgb('#7d7262', INSIDE), LINING = rgb('#8a877f', INSIDE);
 
 /** The half-width of a tunnel's bore, to its walls. */
 export const boreHalf = (line: Line) => line.h + (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).margin;
+
+/** Two tracks in one bore: their tunnels' ends that meet the ground lie at most this far apart, side by side. */
+const TWIN_M = 8;
+
+/**
+ * A portal over two tracks: the move of its middle to the left of the way into the tunnel and the widening
+ * of each side, in metres; null for the end whose twin draws the portal.
+ */
+export type Twin = { shift: number; widen: number } | null;
+
+/**
+ * Per tunnel line of a track, the twins of its two ends that meet the ground: two such ends of two tracks'
+ * tunnels that lie side by side within TWIN_M and lead the same way are one portal, which the end that
+ * comes first by its point draws.
+ */
+export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
+    const ends = lines.filter(line => line.kind === TUNNEL && line.abut && line.code >= RAIL_CODE).flatMap(line => [0, 1].filter(end => line.abut![end]).map(end => {
+        const n = line.z.length, v = end ? n - 1 : 0, w = end ? n - 2 : 1, x = line.xy[2 * v], y = line.xy[2 * v + 1];
+        const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1;
+        return { line, end, x, y, into: [dx / l, dy / l] };
+    }));
+    const out = new Map<Line, [Twin?, Twin?]>();
+    for (const a of ends) for (const b of ends) {
+        if (a.line === b.line || a.x > b.x || (a.x === b.x && a.y >= b.y)) continue;
+        const unit = metresPerUnit(a.y), ox = (b.x - a.x) * unit, oy = (b.y - a.y) * unit;
+        if (Math.hypot(ox, oy) > TWIN_M || a.into[0] * b.into[0] + a.into[1] * b.into[1] < 0.9) continue;
+        const across = ox * a.into[1] - oy * a.into[0];
+        (out.get(a.line) ?? out.set(a.line, [undefined, undefined]).get(a.line)!)[a.end] = { shift: across / 2, widen: Math.abs(across) / 2 };
+        (out.get(b.line) ?? out.set(b.line, [undefined, undefined]).get(b.line)!)[b.end] = null;
+    }
+    return out;
+}
 
 /**
  * The box of a tunnel's portal at vertex `from` toward vertex `to`, in which the terrain draws nothing:
  * its depth, its half-width to the middle of its walls, the height of its roof's top at the facade and
  * the rise of that roof per metre into the tunnel.
  */
-export function portalBox(line: Line, from: number, to: number): [number, number, number, number] {
+export function portalBox(line: Line, from: number, to: number, widen = 0): [number, number, number, number] {
     const depth = (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).depth, z = line.z[from];
-    return [depth, boreHalf(line) + WALL_M / 2, z + line.deck! + WALL_M, (along(line, from, to, depth).z - z) / depth];
+    return [depth, boreHalf(line) + widen + WALL_M / 2, z + line.deck! + WALL_M, (along(line, from, to, depth).z - z) / depth];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */
@@ -64,10 +96,11 @@ function along(line: Line, from: number, to: number, s: number): Station {
 }
 
 export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
+    const twin = twins(lines);
     for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
-        const stations = new Map<number, Station>(), at = (v: number) => stations.get(v) ?? stations.set(v, station(line, v)).get(v)!;
+        const at = stationsOf(line);
         for (let v = 0; v + 1 < n; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             const length = Math.hypot(line.xy[2 * v + 2] - line.xy[2 * v], line.xy[2 * v + 3] - line.xy[2 * v + 1]) * metresPerUnit(line.xy[2 * v + 1]);
@@ -75,16 +108,20 @@ export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
         }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
-            if (!line.abut[end] || !owns(x, y)) continue;
-            portal(b, line, from, to, size, road);
+            const pair = twin.get(line)?.[end];
+            if (!line.abut[end] || !owns(x, y) || pair === null) continue;
+            portal(b, line, from, to, size, road, pair);
         }
     }
 }
 
-function portal(b: MeshBuilder, line: Line, from: number, to: number, size: typeof ROAD_PORTAL, road: boolean): void {
-    const at = (s: number) => along(line, from, to, s);
+function portal(b: MeshBuilder, line: Line, from: number, to: number, size: typeof ROAD_PORTAL, road: boolean, pair = { shift: 0, widen: 0 }): void {
+    const at = (s: number) => {
+        const st = along(line, from, to, s);
+        return { ...st, x: st.x + st.ax * pair.shift, y: st.y + st.ay * pair.shift };
+    };
     const front = at(0), face = at(FACADE_M), inside = at(VOID_M), back = at(size.depth);
-    const half = boreHalf(line), height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + size.crown;
+    const half = boreHalf(line) + pair.widen, height = line.deck!, spring = SPRING * height, wing = half + size.wings, top = height + size.crown;
     const facade = road ? FACADE : ROCK_FACADE, body = road ? BOX : ROCK_BOX, arch = outline(half, height);
     // Out of the tunnel, east, north and up.
     const ex = front.x - inside.x, ey = front.y - inside.y, el = Math.hypot(ex, ey) || 1, away: [number, number, number] = [ex / el, -ey / el, 0];
@@ -119,10 +156,11 @@ function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, 
     } else {
         b.strip(s, t, [half, LIFT_M], [-half, LIFT_M], ROCK_FLOOR, [0, 1]);
     }
-    const wall = road ? TILES : ROCK, vault = road ? ARCH_LINING : ROCK;
+    // A track's bore is lined in concrete and dark.
+    const track = line.code >= RAIL_CODE, wall = track ? LINING : road ? TILES : ROCK, vault = track ? LINING : road ? ARCH_LINING : ROCK;
     for (const side of [1, -1]) b.strip(s, t, [side * half, 0], [side * half, spring], wall, [-side, 0]);
     for (let k = 0; k < ARCH; k++) b.strip(s, t, arch[k], arch[k + 1], vault, [-(arch[k][0] + arch[k + 1][0]), -(arch[k][1] + arch[k + 1][1] - 2 * spring)]);
-    if (!road) return;
+    if (!road || track) return;
     // A lamp under the crown about every LAMPS_M.
     posts(s, t, length, (p, q) => b.quad([b.at(p, [-0.15, height - 0.05], LIGHT), b.at(p, [0.15, height - 0.05], LIGHT), b.at(q, [0.15, height - 0.05], LIGHT), b.at(q, [-0.15, height - 0.05], LIGHT)], b.outward(p, q, [0, -1])), LAMP_M, LAMPS_M);
 }
