@@ -30,7 +30,7 @@ struct Anchor {
 
 @group(0) @binding(1) var<storage, read> anchors: array<Anchor>;
 // The heights of each anchor's ends above sea level: written by `anchor_heights`, read by `anchored_vertex`.
-@group(0) @binding(2) var<storage, read_write> anchor_out: array<vec2f>;
+@group(0) @binding(2) var<storage, read_write> anchor_out: array<f32>;
 @group(0) @binding(3) var<uniform> anchor_count: vec4u;
 @group(0) @binding(4) var<storage, read> anchor_z: array<vec2f>;
 
@@ -112,25 +112,28 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     return out;
 }
 
-// The heights of the frame's anchors: the drawn surface at each end, or under the eye where no page knows it.
+// Anchors nearer than this stand on the drawn surface, farther ones on the level that draws them: the
+// mesh meets it within its morph, below a pixel there. As MESH_HEIGHT_M of instances/points.wgsl.
+const ANCHOR_MESH_M: f32 = 400.0;
+
+// The heights of the frame's anchors, one lane per end: the drawn surface there, or under the eye where
+// no page knows it. A point's far end takes the height of its near one.
 @compute @workgroup_size(64)
 fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= anchor_count.x) {
+    let i = id.x >> 1u;
+    let end = id.x & 1u;
+    if (i >= anchor_count.x) {
         return;
     }
-    let an = anchors[id.x];
+    let an = anchors[i];
     if ((an.flags & ABSOLUTE_ANCHOR) != 0u) {
-        anchor_out[id.x] = an.over;
+        anchor_out[id.x] = an.over[end];
         return;
     }
-    let fallback = frame.eye - surface.above;
-    let ha = plain_height(lod_space(vec2f(an.a - surface.anchor)));
-    var z = vec2f(select(fallback, ha, known(ha)));
-    if ((an.flags & POINT_ANCHOR) == 0u) {
-        let hb = plain_height(lod_space(vec2f(an.b - surface.anchor)));
-        z.y = select(fallback, hb, known(hb));
-    }
-    anchor_out[id.x] = z + an.over;
+    let u = select(an.a, an.b, end == 1u && (an.flags & POINT_ANCHOR) == 0u);
+    let s = lod_space(vec2f(u - surface.anchor));
+    let h = select(units_height(u, u32(ceil(lod(s)))), plain_height(s), length(s) < ANCHOR_MESH_M);
+    anchor_out[id.x] = select(frame.eye - surface.above, h, known(h)) + an.over[end];
 }
 
 struct AnchoredIn {

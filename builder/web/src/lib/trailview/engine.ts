@@ -408,6 +408,8 @@ export class TrailView {
         this.instances.bake(encoder);
         const pass = encoder.beginComputePass({ label: 'vegetation', timestampWrites: timing() });
         this.instances.run(pass, ground);
+        // The anchored meshes' heights share the pass: a pass of their own costs more than their work.
+        this.terrain.encodeAnchors(pass);
         pass.end();
         return this.instances.read(encoder);
     }

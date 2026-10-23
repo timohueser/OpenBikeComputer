@@ -150,23 +150,29 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     if (d > dressing.reach.y || d < CLEAR_M) {
         return;
     }
+    // The cheap tests first: the view on the level's ground, then the ground's rules, then the slope.
+    let coarse = units_height(at, u32(ceil(lod(s))));
+    if (!known(coarse) || !visible(render_at(s, coarse), 2.0 * ROCK_HEIGHT_M.y)) {
+        return;
+    }
     let cell = cell_at(s);
     let kinds = rule(cell.b, slot_kinds() + i32(cell.r));
-    // Open ground or exposed rock: kinds.a open, kinds.z rocky.
-    if (kinds.a == 0.0 && kinds.z == 0.0) {
-        return;
-    }
     let outcrops = rule(cell.b, slot_cliff() + 3).x;
-    let hardness = rule(cell.b, slot_hardness() + i32(cell.g)).x;
-    let n = drawn_normal(s);
-    let slope = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.1);
-    if (outcrops <= 0.0 || slope > STEEPEST) {
+    // Open ground or exposed rock: kinds.a open, kinds.z rocky.
+    if ((kinds.a == 0.0 && kinds.z == 0.0) || outcrops <= 0.0) {
         return;
     }
+    let hardness = rule(cell.b, slot_hardness() + i32(cell.g)).x;
     // As the prototype's near field: hard rock breaks through even on level ground; mapped rock shows as rocks.
     let mapped = 0.9 * kinds.z * smoothstep(0.0, 0.6, outcrops) * smoothstep(0.2, 0.6, hardness);
+    let pick = unit_float(mix_bits(h + 3u)) / 0.55;
+    if (pick > max(outcrops * (0.3 + 1.4 * hardness), mapped)) {
+        return;
+    }
+    let n = drawn_normal(s);
+    let slope = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.1);
     let rocky = max(outcrops * (0.3 + 1.4 * hardness) * clamp(1.4 * slope + 0.6 * (hardness - 0.5) - 0.05, 0.0, 1.0), mapped);
-    if (unit_float(mix_bits(h + 3u)) > 0.55 * rocky || on_road(s)) {
+    if (slope > STEEPEST || pick > rocky || on_road(s)) {
         return;
     }
     let ground = stand_height(s, at);

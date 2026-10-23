@@ -19,7 +19,7 @@ const VERTEX_BYTES = 8 * 2 ** 20, INDEX_BYTES = 4 * 2 ** 20, ANCHORED_BYTES = 6 
 const REACH_M = 3;
 /** An OWNER node is near while a node of this level or finer draws in it: within about 2 km. */
 const NEAR_LEVEL = 17;
-/** Anchors per workgroup of `anchor_heights`. */
+/** Anchor ends per workgroup of `anchor_heights`. */
 const ANCHOR_GROUP = 64;
 
 interface Mesh { vertices: ArrayBuffer; indices: Uint32Array<ArrayBuffer> }
@@ -230,18 +230,16 @@ export class Structures {
         r.device.queue.writeBuffer(r.count, 0, new Uint32Array([this.anchorWords.length / ANCHOR_WORDS, 0, 0, 0]));
     }
 
-    /** The heights of the frame's anchors on the drawn surface, before the draw. */
-    encode(encoder: GPUCommandEncoder, surfaceGroup: GPUBindGroup, features: GPUBindGroup): void {
+    /** Encodes the heights of the frame's anchors on the drawn surface into a compute pass before the draw. */
+    encode(pass: GPUComputePassEncoder, surfaceGroup: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources, count = this.anchorWords.length / ANCHOR_WORDS;
         if (!r || !count) return;
-        const pass = encoder.beginComputePass({ label: 'anchor heights' });
         pass.setPipeline(r.heightsPipeline);
         pass.setBindGroup(0, r.computeGroup);
         pass.setBindGroup(1, surfaceGroup);
         pass.setBindGroup(2, r.emptyGroup);
         pass.setBindGroup(3, features);
-        pass.dispatchWorkgroups(Math.ceil(count / ANCHOR_GROUP));
-        pass.end();
+        pass.dispatchWorkgroups(Math.ceil(2 * count / ANCHOR_GROUP));
     }
 
     draw(pass: GPURenderPassEncoder, surfaceGroup: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {

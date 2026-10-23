@@ -9,7 +9,7 @@ import { rock } from '../models/rocks';
 import type { Rules } from '../rules/regions';
 
 /** Herds stand within this many metres, rocks within this many; as HERDS and SLABS of dressing.wgsl. */
-const HERD_REACH_M = 1500, ROCK_REACH_M = 400, HERDS = 4, SLABS = 3;
+const HERD_REACH_M = 1500, ROCK_REACH_M = 300, HERDS = 4, SLABS = 3;
 /** Units along a herd cell and a rock point's cell, as HERD_SHIFT and ROCK_SHIFT of dressing.wgsl. */
 const HERD_CELL = 2 ** 14, ROCK_CELL = 2 ** 7;
 /** Words of `Herd` and bytes of `Dressing` in dressing.wgsl. */
