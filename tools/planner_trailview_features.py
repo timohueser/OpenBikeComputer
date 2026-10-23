@@ -547,7 +547,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
         for (entry, tags, parts), heights in zip(waters, levels):
             place(entry, tags, [(outer, points, z) for (outer, points, _), z in zip(parts, heights)])
         if ways:
-            heights, culverts, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
+            heights, culverts, underpasses, metrics["roads"] = roads.solve([(entry["kind"], tags, parts) for entry, tags, parts in ways], terrain, rivers, classes)
             # A culvert is a road: the stamps build it over the ground.
             ways = [(entry, {k: v for k, v in tags.items() if k != "bridge"} if n in culverts else tags, parts) for n, ((entry, tags, _), parts) in enumerate(zip(ways, heights))]
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
@@ -565,8 +565,9 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                     if not kept:
                         continue
                     parts = kept
-                if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z):
-                    # A tunnel under what the terrain leaves out is a road on the ground.
+                if (entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and n not in underpasses
+                        and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z)):
+                    # A tunnel under what the terrain leaves out, such as a building, is a road on the ground.
                     tags = {k: v for k, v in tags.items() if k != "tunnel"}
                     entry = kind_of(kinds, "line", {**tags, "tunnel": "no"}) or entry
                     metrics["roads"]["shallow_tunnels"] = metrics["roads"].get("shallow_tunnels", 0) + 1

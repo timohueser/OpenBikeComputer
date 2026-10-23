@@ -6,7 +6,8 @@ weights wᵢ, so that a spike or a gully of the terrain does not move the road, 
 class. No segment is steeper than the grade of its class. Ways that share a vertex share its height, and
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
 under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
-between its ends, and rises where it would pass too low over the water, the road or the path that it crosses. A ford lies FORD_M below the water it crosses."""
+between its ends, and rises where it would pass too low over the water, the road or the path that it crosses.
+A tunnel sinks under a road or a path that crosses over it, which does not move. A ford lies FORD_M below the water it crosses."""
 
 import json
 import math
@@ -18,6 +19,7 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
+from .structures import BORE_M, BORE_PATH_M
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
 FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
@@ -39,6 +41,8 @@ CULVERT_M, CULVERT_RISE_M = 8.0, 1.0
 # under the deck and the deck's depth (DECK_M for a road, DECK_PATH_M for a path).
 CLEAR_WATER_M, CLEAR_ROAD_M, CLEAR_PATH_M = 1.5, 4.5, 2.5
 DECK_M, DECK_PATH_M = 1.0, 0.4
+# A road or a path over a tunnel lies at least this far over its bore.
+COVER_M = 1.0
 # Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no road,
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
@@ -238,12 +242,12 @@ class Network:
 def solve(features, terrain, rivers=(), classes=CLASSES):
     """Per feature (kind, tags, parts): its parts (outer, points, heights) with the heights solved, None
     where the terrain is unknown, and vertices added where the profile bends between two of OSM; the
-    features that are culverts; and the metrics of the solve. `rivers` lists (points, levels) of the
+    features that are culverts; the tunnels that pass under a road or a path; and the metrics of the solve. `rivers` lists (points, levels) of the
     solved waterways, for the fords."""
     out = [[(outer, points, None) for outer, points, _ in parts] for _, _, parts in features]
     net = Network(features, classes)
     if not net.ways:
-        return out, set(), {}
+        return out, set(), set(), {}
     n, a, b, length = net.count, net.a, net.b, net.length
     rows = [classes[name] for name in classes]
     # Samples: k per segment from its start, and the last vertex of each way. Ordered by terrain tile, so
@@ -296,6 +300,10 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     C = C[np.all(known[above[0]], axis=1)]
     least = above[2][np.all(known[above[0]], axis=1)]
     clear = (np.arange(len(above[2])) < len(above[2]) - len(sags[2]))[np.all(known[above[0]], axis=1)]
+    under = ceilings(net, classes)
+    held_up = np.all(known[under[0]], axis=1) & np.all(known[under[2]], axis=1)
+    pairs = lambda variables, coefficients: sparse.csr_matrix((coefficients.ravel(), (np.repeat(np.arange(len(variables)), 2), variables.ravel())), shape=(len(variables), n))
+    T, R, need = pairs(under[0][held_up], under[1][held_up]), pairs(under[2][held_up], under[3][held_up]), under[4][held_up]
     variables = np.concatenate([approach[0], fords[0], bores[0]])
     coefficients = np.concatenate([approach[1], fords[1], bores[1]])
     values = np.concatenate([approach[2], fords[2], bores[2]])
@@ -372,6 +380,11 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
             low = C[C @ z < least - TOLERANCE_M]
             fixed = fixed + PIN * (low.T @ low)
             pinned = pinned + PIN * (low.T @ least[C @ z < least - TOLERANCE_M])
+            # A tunnel that passes too high under a road holds its greatest height: the road stays.
+            ceiling = R @ z - need
+            over = T @ z > ceiling + TOLERANCE_M
+            fixed = fixed + PIN * (T[over].T @ T[over])
+            pinned = pinned + PIN * (T[over].T @ ceiling[over])
         before, held = held, update(held, G @ z)
     # Rounds of the slope limits near the segments whose limit changed, the rest of the network fixed.
     # Nothing anchors a bridge or a tunnel but its ends: a region takes it whole.
@@ -407,11 +420,12 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
         "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
         "fords": int(np.count_nonzero(ok[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
         "clearances": int(clear.sum()), "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & clear)),
+        "ceilings": len(need), "ceilings_high_cm": int(np.count_nonzero(T @ z > R @ z - need + 0.01)),
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
         "residual_p99_m": round(float(np.percentile(residual[~free[seg] & (weight > 0)], 99)), 2) if (~free[seg] & (weight > 0)).any() else 0,
     }
-    return out, culverts, metrics
+    return out, culverts, {net.ways[w][0] for w in under[5][held_up].tolist()}, metrics
 
 
 def world_degrees(point):
@@ -585,24 +599,8 @@ def clearances(net, rivers, classes):
         return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0)
     # Waterway segments with a level at both ends, and the segments on the ground in the cells of the bridges.
     below = [(p, q, (zp, zq), None) for points, z in rivers for (p, zp), (q, zq) in zip(zip(points, z), zip(points[1:], z[1:])) if zp is not None and zq is not None]
-    near = {cell for w in bridges for v in range(net.way_first[w], net.way_last[w]) for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1])}
-    ground = np.flatnonzero(~net.free[net.segment_way])
-    start = net.segment_start[ground]
-    lo = np.floor(np.minimum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
-    hi = np.floor(np.maximum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
-    # A segment is shorter than a cell: its corner cells hold it.
-    corners = [(lo[:, 0], lo[:, 1]), (hi[:, 0], lo[:, 1]), (lo[:, 0], hi[:, 1]), (hi[:, 0], hi[:, 1])]
-    hit = np.zeros(len(start), bool)
-    keys = np.array(sorted(cx * (1 << 32) + cy for cx, cy in near), np.int64)
-    for cx, cy in corners:
-        hit |= np.isin(cx * (1 << 32) + cy, keys)
-    for i in ground[hit].tolist():
-        v = int(net.segment_start[i])
-        below.append((net.vertex_xy[v], net.vertex_xy[v + 1], None, (int(net.segment_way[i]), v)))
-    grid = {}
-    for number, (p, q, _, _) in enumerate(below):
-        for cell in cells(p, q):
-            grid.setdefault(cell, []).append(number)
+    below += [(p, q, None, road) for p, q, road in ground_near(net, bridges)]
+    grid = gridded(below)
     for w in bridges:
         for v in range(net.way_first[w], net.way_last[w]):
             p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
@@ -627,6 +625,57 @@ def clearances(net, rivers, classes):
     if not values:
         return np.zeros((0, 4), np.int64), np.zeros((0, 4)), np.zeros(0)
     return np.array(variables, np.int64), np.array(coefficients), np.array(values)
+
+
+def ceilings(net, classes):
+    """The rows of the tunnels under a road or a path on the ground that they do not meet: where a tunnel
+    segment a-b passes under a segment c-d, (1 − u)·z_a + u·z_b ≤ (1 − r)·z_c + r·z_d − its bore − COVER_M.
+    The tunnel's variables and coefficients, the road's, the margins and the tunnel's way, per row."""
+    path = list(classes).index("path")
+    tunnels = np.flatnonzero(net.tunnel).tolist()
+    above = ground_near(net, tunnels)
+    grid = gridded(above)
+    rows = []
+    for w in tunnels:
+        bore = (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M
+        for v in range(net.way_first[w], net.way_last[w]):
+            p, q = net.vertex_xy[v], net.vertex_xy[v + 1]
+            for number in sorted({k for cell in cells(p, q) for k in grid.get(cell, [])}):
+                r0, r1, (_, k) = above[number]
+                hit = crossing(p, q, np.asarray(r0), np.asarray(r1))
+                if hit is None or {net.vertex_var[v], net.vertex_var[v + 1]} & {net.vertex_var[k], net.vertex_var[k + 1]}:
+                    continue
+                u, r = hit
+                if 0 <= u < 1 and 0 <= r < 1:
+                    rows.append(((net.vertex_var[v], net.vertex_var[v + 1]), (1 - u, u), (net.vertex_var[k], net.vertex_var[k + 1]), (1 - r, r), bore, w))
+    if not rows:
+        return np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros(0), np.zeros(0, np.int64)
+    return tuple(np.array([row[i] for row in rows]) for i in range(6))
+
+
+def ground_near(net, ways):
+    """The segments of the ways on the ground in the grid cells of `ways`: (start, end, (way, its first vertex))."""
+    near = {cell for w in ways for v in range(net.way_first[w], net.way_last[w]) for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1])}
+    ground = np.flatnonzero(~net.free[net.segment_way])
+    start = net.segment_start[ground]
+    lo = np.floor(np.minimum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
+    hi = np.floor(np.maximum(net.vertex_xy[start], net.vertex_xy[start + 1]) / GRID_UNITS).astype(np.int64)
+    # A segment is shorter than a cell: its corner cells hold it.
+    corners = [(lo[:, 0], lo[:, 1]), (hi[:, 0], lo[:, 1]), (lo[:, 0], hi[:, 1]), (hi[:, 0], hi[:, 1])]
+    hit = np.zeros(len(start), bool)
+    keys = np.array(sorted(cx * (1 << 32) + cy for cx, cy in near), np.int64)
+    for cx, cy in corners:
+        hit |= np.isin(cx * (1 << 32) + cy, keys)
+    return [(net.vertex_xy[v], net.vertex_xy[v + 1], (int(net.segment_way[i]), v)) for i in ground[hit].tolist() for v in [int(net.segment_start[i])]]
+
+
+def gridded(segments):
+    """Per cell of the grid, the numbers of the segments (start, end, ...) whose boxes meet it."""
+    grid = {}
+    for number, (p, q, *_) in enumerate(segments):
+        for cell in cells(p, q):
+            grid.setdefault(cell, []).append(number)
+    return grid
 
 
 def cells(p, q):

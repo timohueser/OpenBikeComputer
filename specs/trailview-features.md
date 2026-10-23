@@ -123,6 +123,8 @@ steepest grade and a smoothing length. It is part of the options of the step. Th
 - raises a bridge that is not shorter than 8 m where it crosses a waterway, a road or a path that it
   does not meet: its road lies at least 1.5 m (water), 4.5 m (road) or 2.5 m (path) over it, plus a
   deck of 1 m, or 0.4 m for a path. The road below may sink to give the room,
+- sinks a tunnel where a road or a path on the ground crosses over it without meeting it: the tunnel's
+  road lies at least its bore and 1 m under that road, which does not move,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
   with a waterway, 0.2 m below the water.
 
@@ -132,7 +134,8 @@ than 20 cm. A bridge shorter than 8 m whose deck lies
 no more than 1 m above the terrain is a culvert: the tiles keep it without its `bridge` tag, as a road.
 A tunnel whose terrain lies less than its bore (5 m, or 2.6 m for a path) over it everywhere runs under
 something that the terrain leaves out, such as a building or a railway: the tiles keep it without its
-`tunnel` tag, as a road of its class. A `building_passage` stays a tunnel. The tiles leave out a part of
+`tunnel` tag, as a road of its class. A `building_passage` and a tunnel under a road or a path stay
+tunnels. The tiles leave out a part of
 a tunnel that rises more than 5 m over the terrain anywhere farther than 20 m from its ends: the solver
 could not put it under the terrain.
 

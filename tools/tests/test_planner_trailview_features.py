@@ -81,7 +81,7 @@ class Bridges(unittest.TestCase):
         ways = [road([self.at(-100), self.at(0)]), road([self.at(0), self.at(60)], bridge="yes"), road([self.at(60), self.at(160)]),
                 ("road", {"highway": "tertiary"}, [(False, [self.at(45, -80), self.at(45, 80)], None)])]
         river = ([self.at(20, -100), self.at(20, 100)], [499.0, 499.0])
-        out, _, metrics = roads.solve(ways, self.Flat(), [river])
+        out, _, _, metrics = roads.solve(ways, self.Flat(), [river])
         self.assertEqual((metrics["clearances"], metrics["clearances_low_cm"]), (2, 0))
         deck = lambda east: np.interp(east, [(x - 0.53) / self.M for x, _ in out[1][0][1]], out[1][0][2])
         self.assertGreaterEqual(deck(20), 499 + roads.CLEAR_WATER_M + roads.DECK_M - 0.01)
@@ -98,7 +98,7 @@ class Bridges(unittest.TestCase):
                 ("road", {"highway": "service", "tunnel": "yes"}, [(False, [self.at(-1000), self.at(-1000, 300)], None)]),
                 ("road", {"highway": "service"}, [(False, [self.at(-1000, 300), self.at(-1000, 500)], None)])]
         ways = [("tunnel" if tags.get("tunnel") else kind, tags, parts) for kind, tags, parts in ways]
-        out, _, _ = roads.solve(ways, Mountain())
+        out, _, _, _ = roads.solve(ways, Mountain())
         east = [(x - 0.53) / self.M for part in (out[1][0], out[2][0]) for x, _ in part[1]]
         z = [h for part in (out[1][0], out[2][0]) for h in part[2]]
         for e, h in zip(east, z):
@@ -107,6 +107,16 @@ class Bridges(unittest.TestCase):
         self.assertFalse(structures.floating(out[1][0][1], out[1][0][2], Mountain()))
         self.assertTrue(structures.floating(out[1][0][1], out[1][0][2], self.Flat()))
 
+    def test_a_tunnel_sinks_under_the_road_over_it_and_the_road_stays(self):
+        road = lambda highway, points, **tags: ("tunnel" if tags else "road", {"highway": highway, **tags}, [(False, points, None)])
+        ways = [road("motorway", [self.at(-200), self.at(200)]), road("unclassified", [self.at(5, -200), self.at(5, -20)]),
+                road("unclassified", [self.at(5, -20), self.at(5, 20)], tunnel="yes"), road("unclassified", [self.at(5, 20), self.at(5, 200)])]
+        out, _, under, _ = roads.solve(ways, self.Flat())
+        self.assertEqual(under, {2})
+        self.assertAlmostEqual(np.interp(5, [(x - 0.53) / self.M for x, _ in out[0][0][1]], out[0][0][2]), 500, delta=0.05)
+        tunnel = out[2][0][2]
+        self.assertLessEqual((tunnel[0] + tunnel[-1]) / 2, 500 - structures.BORE_M - roads.COVER_M + 0.01)
+
     def test_a_footbridge_over_a_gorge_does_not_sag_under_its_ends(self):
         class Gorge:
             def heights(_, x, y):
@@ -114,7 +124,7 @@ class Bridges(unittest.TestCase):
                 return np.where(east < 0, 500 - 0.3 * east, np.where(east > 30, 500 + 0.05 * (east - 30), 470.0))
         path = lambda points, **tags: ("path", {"highway": "path", **tags}, [(False, points, None)])
         ways = [path([self.at(-100), self.at(0)]), path([self.at(0), self.at(15, 8), self.at(30)], bridge="yes"), path([self.at(30), self.at(130)])]
-        out, _, _ = roads.solve(ways, Gorge())
+        out, _, _, _ = roads.solve(ways, Gorge())
         z = out[1][0][2]
         self.assertGreaterEqual(min(z), min(z[0], z[-1]) - 0.05)
 
