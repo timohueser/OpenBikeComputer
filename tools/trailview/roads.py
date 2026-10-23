@@ -676,10 +676,10 @@ def passes(net, classes):
     """The rows of the ways that pass under or over a way that they do not meet:
     (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ∓ the margin. A tunnel passes under a road or a path on the
     ground by its bore and COVER_M across the road's whole width, under its centreline and both edges, and the
-    road keeps its height. Of two bridges that no bridge joins, the one
-    of the higher layer, at an equal layer of the better class, passes over the other by the clearance of the
-    lower and the deck of the upper; both move, the stiffer less. The mover's variables and coefficients,
-    the other's, the margins, the mover's way and the sign, +1 over a bridge and −1 under a road, per row."""
+    road keeps its height; under a bridge by the same, and both move. Of two bridges that no bridge joins, the one of the higher layer, at an equal layer
+    of the better class, passes over the other by the clearance of the lower and the deck of the upper; and so
+    of two ways on the ground of different layers. Both move, the stiffer less. The mover's variables and
+    coefficients, the other's, the margins, the mover's way and the sign, +1 over and −1 under, per row."""
     path = list(classes).index("path")
     rows = []
 
@@ -711,17 +711,29 @@ def passes(net, classes):
                 for number in sorted({i for cell in cells(net.vertex_xy[v], net.vertex_xy[v + 1]) for i in grid.get(cell, [])}):
                     yield w, v, *segments[number][2]
 
-    for w, v, other, k in crossed(np.flatnonzero(net.tunnel).tolist(), ~net.free):
-        add(w, v, other, k, (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M, -1)
+    for w, v, other, k in crossed(np.flatnonzero(net.tunnel).tolist(), ~net.tunnel):
+        bore = (BORE_PATH_M if net.rule[w] >= path else BORE_M) + COVER_M
+        if net.free[other]:
+            add(other, k, w, v, bore, 1)
+        else:
+            add(w, v, other, k, bore, -1)
     bridge = net.free & ~net.tunnel
     # The bridges that bridge ways join are one structure, such as a spiral stair: its ways set its heights.
     on = bridge[net.osm_way]
     links = sparse.csr_matrix((np.ones(np.count_nonzero(on)), (net.osm_way[on], net.osm_var[on])), shape=(len(net.ways), net.osm_count))
     _, structure = connected_components(sparse.bmat([[None, links], [links.T, None]]), directed=False)
+    margin = lambda upper, lower: (CLEAR_PATH_M if net.rule[lower] >= path else CLEAR_ROAD_M) + (DECK_PATH_M if net.rule[upper] >= path else DECK_M)
     for w, v, other, k in crossed(np.flatnonzero(bridge).tolist(), bridge):
         rank = lambda i: (net.layer[i], -net.rule[i])
         if rank(w) > rank(other) and structure[w] != structure[other]:
-            add(w, v, other, k, (CLEAR_PATH_M if net.rule[other] >= path else CLEAR_ROAD_M) + (DECK_PATH_M if net.rule[w] >= path else DECK_M), 1)
+            add(w, v, other, k, margin(w, other), 1)
+    # A pair of ways on the ground of different layers has one of layer 0 at most; the other one finds it.
+    ground = ~net.free
+    for w, v, other, k in crossed(np.flatnonzero(ground & (net.layer != 0)).tolist(), ground):
+        if net.layer[w] > net.layer[other]:
+            add(w, v, other, k, margin(w, other), 1)
+        elif net.layer[w] < net.layer[other] and net.layer[other] == 0:
+            add(other, k, w, v, margin(other, w), 1)
     if not rows:
         return np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros((0, 2), np.int64), np.zeros((0, 2)), np.zeros(0), np.zeros(0, np.int64), np.zeros(0)
     return tuple(np.array([row[i] for row in rows]) for i in range(7))
