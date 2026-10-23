@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, rails, structures, water
+from .trailview import profiles, structures, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -510,8 +510,8 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     `roads.TABLE`); return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
-    # The road solver needs scipy, which the readers of the tiles do not have.
-    from .trailview import roads
+    # The road solver and the rails need scipy, which the readers of the tiles do not have.
+    from .trailview import rails, roads
 
     classes = roads.CLASSES if classes is None else roads.validate(classes)
 
