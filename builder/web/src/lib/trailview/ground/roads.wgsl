@@ -17,16 +17,19 @@ struct Road {
     share: f32,
     // On a cut or a fill face of a paved road that is a retaining wall: faded as the paint.
     wall: f32,
-    // The share of the ground that a road's cut or fill shaped, or a bank: within SHAPED_M of a road's
-    // edge or of the waterline.
+    // The share of the ground that a road's or a path's cut or fill shaped: within its reach of the edge.
     shaped: f32,
 }
 
 // The cone of a road's cut or fill (cut and fill 0.85, reach 10 m in roads.json) leaves the road's edge
 // at 40° and passes 75° this many metres out.
 const WALL_M: f32 = 5.2;
-// A road's cut or fill reaches this far from its edge (reach in roads.json), a bank as far from the waterline.
+// The reach of a road's cut and fill and of a path's (reach in roads.json). A line narrower than PATH_HALF_M
+// is a path: PATH_HALF of bins.ts holds most paths to 1 m, and no road without a `width` tag is narrower
+// than 1.25 m.
 const SHAPED_M: f32 = 10.0;
+const PATH_SHAPED_M: f32 = 3.0;
+const PATH_HALF_M: f32 = 1.2;
 
 // The share of a pixel w metres wide, centred on x, that falls inside [a, b].
 fn band(x: f32, a: f32, b: f32, w: f32) -> f32 {
@@ -111,12 +114,13 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         wall *= out.shape.w;
     }
     var edge = mask_metres(mask.shape.x);
-    let shaped = reach * (1.0 - smoothstep(0.75 * SHAPED_M, SHAPED_M, min(edge, mask_metres(mask.shape.y))));
+    let half = max(mask.half, 0.05);
+    let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
+    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge));
     if (edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped);
     }
     let across = abs(mask_metres(mask.shape.z));
-    let half = max(mask.half, 0.05);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
     // so the lines of a road that runs away from the eye stay sharp.
     let span = length(vec2f(dot(ds[0], mask.away), dot(ds[1], mask.away)));
