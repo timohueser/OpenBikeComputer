@@ -1,7 +1,6 @@
 # TrailView
 
-TrailView is the 3D view of the planner. The engine is TypeScript with raw WebGPU and WGSL, and
-it uses no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
+TrailView is the 3D view of the planner: TypeScript, raw WebGPU and WGSL, no framework. The page is `builder/web/trailview.html`. The terrain streams with LOD from
 the master terrain tiles: zooms 0 to 12 from the tile service, zoom 13 from its packs. The ground
 look comes from the TrailView layers of the release ([specs/trailview-tiles.md](../../../../../specs/trailview-tiles.md))
 and the planner's snow tiles.
@@ -16,8 +15,7 @@ VITE_PLANNER_CATALOG=URL npm run dev -- --mode trailview   # open /trailview.htm
 npm run build:trailview                                 # dist/trailview
 ```
 
-The page reads the `active` entry of the planner catalogue.
-`VITE_PLANNER_CONFIG` replaces the entry. A browser without WebGPU shows a notice. The ground needs
+The page reads the `active` entry of the planner catalogue, or `VITE_PLANNER_CONFIG`. The ground needs
 `trailview_rules` and the `trailview-*` archives in `layers` of the entry; without them the ground
 is the palette of the `world` region.
 
@@ -49,7 +47,7 @@ is the palette of the `world` region.
 | `date`, `time` | `YYYY-MM-DD` and `HH:MM`, the wall clock in Europe/Zurich |
 | `weather` | `sunny`, `cloudy` or `rainy` |
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
-| `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1 |
+| `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
 | `lab` | `name:variant`, a list with commas |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
@@ -58,7 +56,8 @@ The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
 builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view.
+at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+pages with an offset and a scale per page.
 
 ## Shots and flights
 
@@ -74,7 +73,7 @@ npm run test:trailview                     # every browser test; CI adds -- --gr
 
 `shoot.mjs` writes one PNG per view of `views.json` after `waitForIdle()`. Two runs give the same
 bytes. `flight.mjs` prints the GPU time per pass, the CPU selection time, the nodes, triangles and
-pages over the flights of `flights.json`. The `ground` pass runs only when ground pages arrive:
+pages of each flight of `flights.json`. The `ground` pass runs only when ground pages arrive:
 read its `amortized` time. Run it on the M1 Pro with `--gpu`: Chrome then draws
 2560 × 1600 pixels and reports exact timestamps. `--tiles` serves a `planner-dem` MBTiles instead
 of the fixture, and `--features` a folder `z/x/y.bin`; build the page with a config
@@ -89,7 +88,7 @@ the page with a config whose `layers` name `https://tiles.test/<name>.json` and 
 
 `skyline.mjs` draws each photograph of `peak-view-photos` from 1.6 m above its `ground_m` and
 prints the RMS of the drawn skyline against the photograph's, per quarter-degree column. It exits 1
-when one is past its `rms_limit_deg`.
+past an `rms_limit_deg`.
 
 ## Checks
 
@@ -116,14 +115,14 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 
 ## What bites
 
-- macOS lowers the GPU clock while a frame leaves the GPU time to spare, and a pass then measures
-  much longer than its work. `flight.mjs --gpu` keeps the clock high with a compute load before each
-  frame; a measurement without it is not comparable.
-- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`. Pull requests skip
-  it, and `test-weekly.yml` runs it each Monday.
+- SwiftShader times are not GPU times. Measure on a GPU.
+- macOS lowers the GPU clock while a frame leaves time to spare, so a pass measures longer than its
+  work. `flight.mjs --gpu` keeps the clock high with a compute load before each frame.
+- A browser test that draws for minutes on SwiftShader takes `{ tag: '@gpu' }`: pull requests skip
+  it, `test-weekly.yml` runs it each Monday.
 - Headless Chromium on Linux with no GPU shows a WebGPU canvas only with
-  `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Without it, the device is lost with
-  "A valid external Instance reference no longer exists".
+  `--use-vulkan=swiftshader` (`SWIFTSHADER` in `harness.js`). Else the device is lost: "A valid
+  external Instance reference no longer exists".
 - Chrome rounds timestamps to 100 µs unless it runs with `--enable-webgpu-developer-features`.
 - `OBC_CHROMIUM` names a Chromium for the scripts and the smoke when Playwright's own is absent.
 - `OBC_BROWSER_WS` names a Playwright browser server for the scripts, so `--gpu` runs share one window.
@@ -132,14 +131,14 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - Surfaces write linear light; the resolve calls `finish()`. Pixel sizes (`dpdx`, minimum widths)
   multiply by `look.screen.z`.
 - A still view shows the mean of 16 jittered frames; only new pages, nodes or extras restart them.
-- A finer node meets a coarser one only on the LOD plateau. Keep `RANGE.least` of `lod.ts`;
-  `lod.test.ts` holds it.
+- Debug colours lose bits in the `rg11b10ufloat` frame (2–4/255 near 1).
+- A finer node meets a coarser one only on the LOD plateau: keep `RANGE.least` of `lod.ts`
+  (`lod.test.ts`).
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
-- The ground pool has a fixed size too. A view that wants more ground pages draws the farthest of
-  them from their cover, two levels coarser; the HUD counts them as short.
-- A new date builds every ground page again: the rules, the two Sentinel-2 quarters about the date
-  and the snow are part of a page. A view's tile bodies exceed the 96 MiB that the ground
-  keeps, so most come again.
+- The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
+  coarser (`short` in the HUD).
+- A new date builds every ground page again (the rules, the Sentinel-2 quarters and the snow are
+  part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its
   finest grains, and a view that starts elsewhere draws other grains, so compare shots of one first view.
