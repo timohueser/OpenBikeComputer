@@ -7893,7 +7893,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `tokio-util 0.7.19`, `tokio 1.53.1`
+Applies to: `tokio-util 0.7.19`, `tokio 1.53.3`
 
 ```text
 MIT License
@@ -12208,7 +12208,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `tokio-util 0.7.19`, `tokio 1.53.1`
+Applies to: `tokio-util 0.7.19`, `tokio 1.53.3`
 
 ```text
 MIT License
@@ -14004,7 +14004,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `tokio-util 0.7.19`, `tokio 1.53.1`
+Applies to: `tokio-util 0.7.19`, `tokio 1.53.3`
 
 ```text
 MIT License
