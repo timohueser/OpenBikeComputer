@@ -18,6 +18,8 @@ import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
+import { Dressing } from './dressing/dressing';
+import { KindPoints } from './structures/kind-points';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'resolve'];
@@ -79,6 +81,8 @@ export class TrailView {
     private readonly houses: Houses;
     private readonly instances = new Instances();
     private readonly forest: Forest;
+    private readonly kindPoints: KindPoints;
+    private readonly dressing: Dressing;
     private readonly sky = new Sky();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
@@ -114,6 +118,8 @@ export class TrailView {
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
         this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
+        this.kindPoints = new KindPoints(this.instances);
+        this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -211,6 +217,8 @@ export class TrailView {
         await this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH);
         await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
         await this.forest.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, layouts.compute[1]);
+        await this.kindPoints.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!);
+        await this.dressing.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, layouts.compute[1]);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -316,10 +324,12 @@ export class TrailView {
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
+        this.kindPoints.update(this.terrain.kindPoints);
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         this.forest.update(lonLat, this.extras.date);
+        this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false;

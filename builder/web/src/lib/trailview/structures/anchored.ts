@@ -24,13 +24,6 @@ export interface AnchoredMesh {
     indices: Uint32Array<ArrayBuffer>;
 }
 
-/**
- * A model on the surface, as kinds hand it over: its foot at world point x, y, its +y turned `yaw`
- * radians counter-clockwise from east, scaled; `flags` as the vertex flags, and whether it draws only
- * near the eye.
- */
-export interface Instance { x: number; y: number; yaw: number; scale: number; model: Model; flags?: number; near?: boolean }
-
 /** Collects the vertices that hang from anchors; the anchors are in `anchorWords`, which several builders of a node share. */
 export class AnchoredBuilder {
     private readonly words: number[] = [];
@@ -71,11 +64,6 @@ export class AnchoredBuilder {
             });
             this.triangle(v[0], v[1], v[2]);
         });
-    }
-
-    /** A model on the surface at the foot of an instance. */
-    place({ x, y, yaw, scale, model, flags = 0 }: Instance): void {
-        this.model(model, this.point(x, y, yaw), 0, 0, [0, 0, 0], scale, flags);
     }
 
     /**

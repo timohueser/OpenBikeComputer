@@ -13,7 +13,7 @@ const region: Region = {
         materials: { bracken: { colour: { autumn: '#c86a1e' } } },
     },
     houses: [0, 0],
-    trees: [],
+    trees: [], herds: [],
 };
 
 describe('the rules of the ground', () => {

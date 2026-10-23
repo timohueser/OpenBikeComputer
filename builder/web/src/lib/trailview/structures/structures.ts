@@ -92,6 +92,8 @@ export class Structures {
     /** The anchored meshes of the frame, with the first anchor of their node. */
     private hung: { mesh: Mesh; anchor: number }[] = [];
     private anchorWords = new Uint32Array(0);
+    /** The models on the surface of the kinds of the drawn nodes, a list per node. */
+    points: Uint32Array[] = [];
     private drawn = '';
     /** Whether the anchors of the frame are not on the GPU yet. */
     private fresh = false;
@@ -170,10 +172,12 @@ export class Structures {
         let anchor = 0;
         this.draws = [];
         this.hung = [];
+        this.points = [];
         for (const [name, { node, near }] of owners) {
             const meshes: NodeMeshes | null | undefined = this.stamps.get(node)?.meshes;
             if (!meshes) continue;
             const parts = near ? [meshes.far, meshes.near] : [meshes.far];
+            if (meshes.points) this.points.push(meshes.points);
             for (const { structures } of parts) if (structures) this.draws.push(structures);
             const count = (meshes.anchors?.byteLength ?? 0) / (ANCHOR_WORDS * 4);
             if (meshes.anchors && anchor + count <= ANCHORS) {

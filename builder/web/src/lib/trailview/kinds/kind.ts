@@ -2,7 +2,8 @@
 // of its entry in data/trailview/kinds.json and default-exports a Kind; the registry (index.ts) finds it,
 // so a new kind changes no other file of the engine.
 import { EXTENT, type Feature } from '../stream/features';
-import type { AnchoredBuilder, Instance } from '../structures/anchored';
+import type { ModelSpec } from '../instances/instances';
+import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner, type Station } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { metresPerUnit, type Line, type Node } from '../terrain/bins';
@@ -13,20 +14,26 @@ export interface Placed {
     parts: { outer: boolean; xy: number[]; ends: [boolean, boolean] }[];
 }
 
+/** A model on the surface for the instances: its foot at world point x, y, its +x turned `yaw` radians counter-clockwise from east, its height in metres, a model of the kind by name and a tint, 0.75 to 1.25. */
+export interface Placement { x: number; y: number; yaw: number; height: number; model: string; tint?: number }
+
 /**
  * What a kind builds for a node, in the stamp worker, only of the pieces that the node `owns`: faces on
  * the drawn surface (`mesh`) and anchored models and cables (`anchored`), in `far`, which draws at any
- * distance, or in `near`, which draws only near the eye; and models on the surface (`place`).
+ * distance, or in `near`, which draws only near the eye; and models on the surface (`place`), which the
+ * instances stand on the drawn surface, cull and draw in tiers.
  */
 export interface Build {
     far: { mesh: MeshBuilder; anchored: AnchoredBuilder };
     near: { mesh: MeshBuilder; anchored: AnchoredBuilder };
-    place: (instance: Instance) => void;
+    place: (placement: Placement) => void;
     owns: Owns;
 }
 
 export interface Kind {
     build(feature: Placed, out: Build): void;
+    /** The models that `place` names, each 1 tall with its base at the origin, for the instances. */
+    models?: Record<string, () => ModelSpec>;
 }
 
 /** A feature of a tile in world units. */
@@ -42,7 +49,7 @@ export function placed({ tags, parts }: Feature, tile: Node): Placed {
 }
 
 /** A model on the surface at each point of a feature that the node owns. */
-export function pointModels(feature: Placed, out: Build, instance: (x: number, y: number) => Omit<Instance, 'x' | 'y'> | undefined): void {
+export function pointModels(feature: Placed, out: Build, instance: (x: number, y: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
     for (const { xy } of feature.parts) for (let i = 0; i < xy.length; i += 2) {
         if (!out.owns(xy[i], xy[i + 1])) continue;
         const it = instance(xy[i], xy[i + 1]);

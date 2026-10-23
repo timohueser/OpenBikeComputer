@@ -254,6 +254,11 @@ export class Terrain {
         return { drawn: this.nodes, wanted: this.wantedNodes, refreshed: this.work?.normals.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
+    /** The models on the surface of the kinds of the drawn nodes, a list per node. */
+    get kindPoints(): Uint32Array[] {
+        return this.structures.points;
+    }
+
     /** The highest floor of a deck or a tunnel at a point between heights `low` and `high`, where it is known. */
     floorAt(lonLat: [number, number], low: number, high: number): number | undefined {
         return this.structures.floor(...worldPixel(lonLat, UNITS), low, high);

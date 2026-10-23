@@ -20,7 +20,8 @@ export interface NodeFeatures extends NodeStamps {
 
 const NOTHING: NodeFeatures = { data: null, heights: false, water: null, meshes: null, floors: null, portals: null };
 const meshBytes = (mesh: { vertices: ArrayBuffer; indices: Uint32Array } | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
-const kindBytes = ({ far, near, anchors }: NodeMeshes) => [far.structures, far.anchored, near.structures, near.anchored].reduce((n, mesh) => n + meshBytes(mesh), anchors?.byteLength ?? 0);
+const kindBytes = ({ far, near, anchors, points }: NodeMeshes) =>
+    [far.structures, far.anchored, near.structures, near.anchored].reduce((n, mesh) => n + meshBytes(mesh), (anchors?.byteLength ?? 0) + (points?.byteLength ?? 0));
 const bytesOf = ({ data, water, meshes, floors, portals }: NodeFeatures) =>
     ENTRY_BYTES + (data?.byteLength ?? 0) + meshBytes(water) + (meshes ? kindBytes(meshes) : 0) + (floors?.byteLength ?? 0) + (portals?.byteLength ?? 0);
 

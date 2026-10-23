@@ -37,7 +37,8 @@ export default {
             for (let v = 0; v < n; v++) {
                 if (!out.owns(...at(v))) continue;
                 if (end(v)) anchored.model(model(`station ${rig} ${seed}`, () => station(rig, seed)), anchored.point(...at(v), v ? yaw(v, v - 1) : yaw(v, v + 1)));
-                else if (v > 0 && v < n - 1) out.place({ x: xy[2 * v], y: xy[2 * v + 1], yaw: yaw(v - 1, v + 1), scale: 1, model: model(`pylon ${rig} ${seed}`, () => pylon(rig, high, seed)) });
+                // A pylon stays in the anchored mesh: its foot is the end of its cables' spans.
+                else if (v > 0 && v < n - 1) anchored.model(model(`pylon ${rig} ${seed}`, () => pylon(rig, high, seed)), anchored.point(...at(v), yaw(v - 1, v + 1)));
             }
             for (let v = 0; v + 1 < n; v++) {
                 if (!out.owns(...at(v))) continue;

@@ -1,8 +1,9 @@
 // Rocks 1 m tall with their base at the origin, z up: faceted lumps sunk into the ground, each face in its
-// own colour, from the prototype's src/models/rocks.ts. A crag is a leaning blade taller than wide.
+// own colour, from the prototype's src/models/rocks.ts. A slab is wider than tall, a boulder rounder, a
+// crag a leaning blade taller than wide.
 import { srgb, Model, type Vec } from './flat';
 
-/** Grey body, a lit top and lichen; the shader multiplies them by the rock under them over GREY. */
+/** Grey body, a lit top and lichen. A wall face in GREY takes the colour of the rock under it. */
 export const GREY = srgb('#8e908a');
 const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(srgb), LICHEN = srgb('#b4b05a');
 
@@ -32,12 +33,14 @@ const fleck = ([x, y, z]: Vec, s: number) => {
     return h - Math.floor(h);
 };
 
-/** A crag: a lump stretched up and leant over, a fifth of it below the ground. */
-export function crag(seed: number): Model {
+export type RockName = 'slab' | 'boulder' | 'crag';
+
+/** A rock: a wobbled lump, flat underneath and shaped by its name, a fifth of it below the ground. */
+export function rock(name: RockName, seed: number): Model {
     const shaped = lump().map(face => face.map(p => {
         const k = 1 + 0.22 * wobble(p, seed), q: Vec = [p[0] * k, p[1] * k, p[2] * k];
-        const z = Math.max(q[2], -0.35) * 1.9;
-        return [q[0] * 0.55 + 0.25 * z, q[1] * 0.9, z] as Vec;
+        const z = Math.max(q[2], -0.35) * { slab: 0.42, boulder: 0.8, crag: 1.9 }[name];
+        return (name === 'crag' ? [q[0] * 0.55 + 0.25 * z, q[1] * 0.9, z] : [q[0] * (name === 'slab' ? 1.35 : 1), q[1], z]) as Vec;
     }));
     const zs = shaped.flat().map(p => p[2]), low = Math.min(...zs), high = Math.max(...zs), lift = -low - 0.2 * (high - low), scale = 1 / (high + lift);
     const m = new Model();
@@ -46,7 +49,7 @@ export function crag(seed: number): Model {
         const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
         const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], nz = n[2] / (Math.hypot(...n) || 1);
         const lit = smooth(0.6, 0.95, nz), body = nz < 0 ? BODY[0] : BODY[1];
-        const colour = fleck(a, seed) < 0.15 && nz > 0.3 ? LICHEN : lit > 0.5 ? BODY[2] : body;
+        const colour = fleck(a, seed) < 0.06 && nz > 0.3 ? LICHEN : lit > 0.5 ? BODY[2] : body;
         m.tri(a, b, c, colour);
     }
     return m;

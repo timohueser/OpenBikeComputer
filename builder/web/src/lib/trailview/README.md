@@ -29,13 +29,13 @@ is the palette of the `world` region.
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `structures/` | The bridges (`bridges.ts`), tunnels and their portals (`tunnels.ts`), galleries (`galleries.ts`) and the masts, contact wires and platforms of the tracks (`rails.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), the anchored meshes of the kinds, whose vertices hang from anchors on the drawn surface (`anchored.ts`); their pools, the heights of the anchors and the draw (`structures.ts`, `structures.wgsl`) |
-| `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), and the shared handlers (`kind.ts`): a line structure on the surface, a model on the surface |
-| `models/` | The procedural models of the kinds, flat triangles in one colour each (`shape.ts`) |
+| `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), with the models that it stands on the surface; the shared handlers (`kind.ts`): a line structure on the surface, models at points. The instances draw the models of the kinds' points (`structures/kind-points.ts`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `structures/` | The houses: a worker makes a record per building of the zoom 14 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
-| `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees without three.js (`shape.ts`, `trees.ts`, `trees/`) |
+| `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees without three.js (`shape.ts`, `trees.ts`, `trees/`); the models of flat faces of the kinds and the dressing (`flat.ts`, lifts, landmarks, rocks, animals, crosses) |
 | `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
 | `vegetation/` | The canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`) |
+| `dressing/` | The herds of the packs on the materials that they graze, and rocks on open and rocky ground, placed each frame (`dressing.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -144,8 +144,8 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
 - A kind's faces in `near` draw only where a node of level 17 draws, about 2 km; the near meshes of
   every drawn node still take room in the pools.
-- A model on the surface goes into the anchored mesh until the vegetation's instances hold it: `place` of
-  `kinds/kind.ts` is the only call to change.
+- The models of the kinds take their numbers in the instances in the registry's order, the same in the
+  stamp worker and on the main thread: a kind names its models in `models`, never by number.
 - Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
 - The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
   coarser (`short` in the HUD).
