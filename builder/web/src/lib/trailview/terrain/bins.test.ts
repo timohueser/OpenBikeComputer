@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, EXTENT } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
-import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, INSIDE, insideRings, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, STREAM, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RECORD, RIVER, ROAD, RULES, shows, STREAM, surfaceOf, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -169,5 +169,18 @@ describe('the ends of bridges and tunnels', () => {
             way('tunnel', { tunnel: 'yes' }, 4000, 5000),
         ], { level: 14, x: 8574, y: 5778 });
         expect(lines.filter(line => line.kind === BRIDGE || line.kind === TUNNEL).map(line => line.abut)).toEqual([[true, true], [true, false], [false, false]]);
+    });
+});
+
+describe('a path', () => {
+    it('without a `width` tag is on its widest surface as wide as structures.py takes it, and a pedestrian bridge is a path', () => {
+        const python = readFileSync(new URL('../../../../../../tools/trailview/structures.py', import.meta.url), 'utf8');
+        const table: Record<string, number> = JSON.parse(/^PATH_HALF_M = (\{.*\})$/m.exec(python)![1]);
+        for (const [highway, half] of Object.entries(table)) {
+            const widest = Math.max(...['', 'asphalt', 'gravel', 'dirt', 'grass'].map(surface => halfWidth({ highway, surface }, surfaceOf({ highway, surface }))));
+            expect(widest, highway).toBe(half);
+            expect(isPath({ profile: Object.keys(PROFILES).indexOf(highway) } as Line), highway).toBe(true);
+        }
+        expect(isPath({ profile: Object.keys(PROFILES).indexOf('track') } as Line)).toBe(false);
     });
 });

@@ -166,8 +166,10 @@ A bridge is the chain of bridge ways whose ends meet two by two. Its piers divid
 of at most 45 m, or 30 m for a path. A pier that falls in water which the bridge crosses for less than
 30 m moves 2 m past the nearer bank of it, and one that falls on a road, a path or a tunnel moves 2 m
 past its nearer side; one that comes within 6 m of another pier or of an end goes. Water is a waterway
-within its half-width and 1 m, a river area or a lake. A road is its line within 1 m and 6 m (a main
-road), 3 m (a road) or 1 m (a path). A cable bridge has no piers.
+within its half-width and 1 m, a river area or a lake. A road is its line within 1 m and its
+half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for a road or a
+`pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
+bridge has no piers.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
