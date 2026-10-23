@@ -472,12 +472,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     }
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = water_in;
-    // Under a deck the ground falls away: no road's cone or bench holds it up.
+    // Under a deck the ground falls away: no road's cone or bench holds it up. Their cuts hold, so a
+    // road under a bridge keeps its cut slopes.
     if (hi[TROUGH] < INF) {
         lo[CONES] = -INF;
-        hi[CONES] = INF;
         lo[BENCH] = -INF;
-        hi[BENCH] = INF;
     }
     // Under water no bank holds: where a river meets a lake or another river.
     if (hi[WATER_CORE] < INF) {
