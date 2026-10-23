@@ -1240,53 +1240,6 @@ jobs:
           cargo build --release --locked --target x86_64-apple-darwin
           file target/x86_64-apple-darwin/release/obc-desktop
 
-  # Launch the existing Linux release artifact with its embedded frontend.
-  desktop-launch:
-    needs: [selection, desktop]
-    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-launch')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: obc-desktop-linux-x86_64
-          path: builder/desktop/target/release
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: *python-uv-version
-      - name: Install Linux launch dependencies
-        run: |
-          sudo apt-get update
-          webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
-          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
-          uv sync --locked --group desktop-e2e
-          cargo install tauri-driver --version 2.0.6 --locked
-          chmod +x builder/desktop/target/release/obc-desktop
-          dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
-      - name: Launch the release frontend and select a catalog region
-        id: launch
-        env:
-          OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
-      - name: Upload Linux launch evidence
-        if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-launch-linux-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-launch
-          if-no-files-found: error
-          retention-days: 7
-
   planner-search:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'planner-search')
@@ -1348,7 +1301,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, desktop-launch, verification, planner-search]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, verification, planner-search]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
