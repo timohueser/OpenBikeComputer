@@ -171,6 +171,11 @@ half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for
 `pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
 bridge has no piers.
 
+Each vertex of an `aerialway` between its ends is a pylon. OSM maps the stations at the ends of the way
+and often no pylon between them. Where a span is longer than its rig allows, or where a carrier would
+come nearer the terrain than its clearance, the bake adds a pylon where the carrier comes nearest; an
+added pylon stands at least 25 m from its neighbours. The rigs are those of `tools/trailview/lifts.py`.
+
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
 bake turns a way whose terrain rises by more than 5 m from end to end. The level is the fit that never

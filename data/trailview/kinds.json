@@ -130,17 +130,16 @@
   {
     "kind": "ruin",
     "geometry": "area",
-    "match": [{"building": "*", "ruins": ["yes"]}, {"building": "*", "historic": ["castle", "tower", "ruins"]},
-              {"building": ["ruins"]}],
+    "match": [{"building": "*", "ruins": ["yes"]}, {"building": "*", "historic": ["ruins"]}, {"building": ["ruins"]}],
     "keep": ["building", "historic", "building:levels", "height"],
-    "height": "pad"
+    "height": "surface"
   },
   {
     "kind": "lighthouse",
     "geometry": "area",
     "match": [{"building": "*", "man_made": ["lighthouse"]}],
     "keep": ["building:levels", "height"],
-    "height": "pad"
+    "height": "surface"
   },
   {
     "kind": "building",
@@ -162,7 +161,7 @@
     "kind": "wall",
     "geometry": "line",
     "match": [{"barrier": ["wall", "retaining_wall"]}],
-    "keep": ["barrier", "height"],
+    "keep": ["barrier", "wall", "height"],
     "height": "surface"
   },
   {
@@ -184,7 +183,7 @@
     "kind": "orchard",
     "geometry": "area",
     "match": [{"landuse": ["orchard"]}],
-    "keep": [],
+    "keep": ["trees", "produce"],
     "height": "surface"
   },
   {

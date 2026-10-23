@@ -4,7 +4,7 @@
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
 objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/water.py`
-the levels of rivers and lakes."""
+the levels of rivers and lakes, `trailview/lifts.py` adds the pylons of lifts."""
 
 import argparse
 from functools import lru_cache
@@ -16,7 +16,7 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, structures, water
+from .trailview import lifts, profiles, structures, water
 
 FORMAT = 1
 EXTENT = 8192
@@ -529,6 +529,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
 
     for entry, tags, parts in objects(kinds, pbf, binary):
         parts = [(outer, points, None) for outer, points in parts]
+        if terrain and lifts.solves(entry["kind"], tags):
+            rigged = [(outer, lifts.pylons(tags, points, terrain), None) for outer, points, _ in parts]
+            metrics["lifts"] = metrics.get("lifts", 0) + 1
+            metrics["added_pylons"] = metrics.get("added_pylons", 0) + sum(len(r[1]) - len(p[1]) for r, p in zip(rigged, parts))
+            parts = rigged
         solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
