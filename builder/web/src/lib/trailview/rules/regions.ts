@@ -47,6 +47,24 @@ export interface Region {
     chain: string[];
     leaf: 'needleleaved' | 'broadleaved' | 'mixed';
     look: Look;
+    /** Indexes in `styles` of the region's pack: its house style, and the style of its cottages and houses. */
+    houses: [number, number];
+}
+
+/** A house style of `styles/`, as `BuildingStyle` in the prototype's models/buildings.ts. */
+export interface HouseStyle {
+    name: string;
+    pitch: [number, number];
+    eave: number;
+    verge: number;
+    hip: number;
+    timber: 'none' | 'upper' | 'all' | 'frame';
+    shutters: boolean;
+    balconies?: boolean;
+    chimneys: 0 | 1 | 2;
+    spire?: 'onion';
+    storeys?: number;
+    palette: Record<'render' | 'wood' | 'roof' | 'door' | 'shutter', string[]> & { plinth: string; chimney: string };
 }
 
 /** The ground vocabulary of `materials.json`: a material or lithology code is its index. */
@@ -55,7 +73,7 @@ export interface Vocabulary {
     lithologies: { id: string; hardness: number }[];
 }
 
-export interface Rules { vocabulary: Vocabulary; regions: Region[] }
+export interface Rules { vocabulary: Vocabulary; regions: Region[]; styles: HouseStyle[] }
 
 type Entry = Record<string, unknown> & { id: string; extends?: string };
 
@@ -71,10 +89,27 @@ function merge(a: Record<string, unknown>, b: Record<string, unknown>): Record<s
 /** A value by place, `{"es-ga": …, "es": …, "*": …}`: the release has no layer of the place, so `"*"`. */
 const local = (value: unknown) => (isObject(value) && '*' in value ? value['*'] : value);
 
+/** A file of a table with the files that it extends merged in, root first. */
+function inherited(table: Record<string, Record<string, unknown>>, name: string, seen: string[] = []): Record<string, unknown> {
+    const file = table[name];
+    if (!file || seen.includes(name)) throw new Error(`rules.json: ${[...seen, name].join(' → ')} misses a file or loops.`);
+    const { extends: up, ...own } = file;
+    return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
+}
+
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
-export function rulesOf(json: { format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }> }): Rules {
+export function rulesOf(json: {
+    format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }>;
+    packs?: Record<string, Record<string, unknown>>; styles?: Record<string, Record<string, unknown>>;
+}): Rules {
     if (json.format !== 1) throw new Error(`rules.json has format ${json.format}, not 1.`);
     const table = new Map(json.regions.map(entry => [entry.id, entry]));
+    const names = Object.keys(json.styles ?? {}).sort(), styles = names.map(name => inherited(json.styles!, name) as unknown as HouseStyle);
+    const styleOf = (pack: unknown): [number, number] => {
+        if (typeof pack !== 'string' || !json.packs?.[pack]) return [0, 0];
+        const { style, houses } = inherited(json.packs, pack), own = Math.max(0, names.indexOf(local(style) as string));
+        return [own, typeof houses === 'string' ? Math.max(0, names.indexOf(houses)) : own];
+    };
     const regions = json.regions.map(({ id }): Region => {
         const chain = [id];
         for (let up = table.get(id)!.extends; up !== undefined; up = table.get(up)!.extends) {
@@ -87,7 +122,7 @@ export function rulesOf(json: { format: number; materials: Vocabulary; regions: 
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack) };
     });
-    return { vocabulary: json.materials, regions };
+    return { vocabulary: json.materials, regions, styles };
 }

@@ -12,6 +12,7 @@ const region: Region = {
         rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [0, 0, 0], light: [0, 0, 0], saturation: 1 },
         materials: { bracken: { colour: { autumn: '#c86a1e' } } },
     },
+    houses: [0, 0],
 };
 
 describe('the rules of the ground', () => {
