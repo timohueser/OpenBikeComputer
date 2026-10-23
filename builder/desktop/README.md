@@ -84,10 +84,10 @@ The shared Svelte checks run from `builder/web`: `npm run check`, `npm test`, `n
 
 ## Linux release-launch test
 
-The `desktop-launch` CI job opens the real window under Xvfb, checks its `tauri://localhost`
-origin, searches for Switzerland and adds it to the map, against a loopback catalog. To run it on
-a Linux host with no OBC device attached, build the release app first, then from the repository
-root:
+The manual suite `manual.desktop-linux-launch` opens the real window under Xvfb, checks its
+`tauri://localhost` origin, searches for Switzerland and adds it to the map, against a loopback
+catalog. CI does not run it. To run it on a Linux host with no OBC device attached, build the
+release app first, then from the repository root:
 
 ```sh
 sudo apt-get install webkit2gtk-driver xvfb imagemagick dbus-daemon
@@ -95,8 +95,7 @@ cargo install tauri-driver --version 2.0.6 --locked
 xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
 ```
 
-**Use a WebKit driver with the same version as the installed WebKitGTK runtime.** CI installs an
-exactly matched pair and records both package versions. `dbus-run-session` gives the app and the
+**Use a WebKit driver with the same version as the installed WebKitGTK runtime.** `dbus-run-session` gives the app and the
 desktop portal services a private session bus with the Xvfb display.
 
 `OBC_DESKTOP_BINARY` names an existing release executable. Evidence goes to

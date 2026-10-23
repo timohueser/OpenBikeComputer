@@ -751,20 +751,6 @@ triggers = [
   "tools/build-ios-host.sh",
 ]
 
-[[suite]]
-id = "e2e.desktop-linux-launch"
-route = "ordinary"
-command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
-jobs = ["desktop-launch"]
-platforms = ["linux"]
-triggers = [
-  "pyproject.toml", "uv.lock",
-  "builder/desktop/**",
-  "builder/web/**",
-  "host/obc-pack/schema/*.example.json",
-  "tools/fixture_catalog.py",
-]
-
 # ── Explicitly invoked work ─────────────────────────────────────────────────
 
 [[suite]]
@@ -806,6 +792,12 @@ triggers = [
   "host/obc-pack/src/landmarks/**",
   "fixtures/sources/peak-view/peak-articles-source.json",
 ]
+
+[[suite]]
+id = "manual.desktop-linux-launch"
+route = "manual"
+command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
+platforms = ["linux"]
 
 [[suite]]
 id = "manual.obc-link"
