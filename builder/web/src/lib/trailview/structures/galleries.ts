@@ -1,7 +1,7 @@
 // The galleries of a node: over the road of each gallery line, a wall on the side of the hill, a roof that
 // slopes down to the valley, and pillars on the open side. The road under it is the road on the ground.
 import { metresPerUnit, ROAD, type Line } from '../terrain/bins';
-import { MeshBuilder, posts, rgb, station, type Corner, type Station } from './mesh';
+import { INSIDE, MeshBuilder, posts, rgb, station, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
 /** A gallery of a road and of a path: the margin of its walls past the road, its pillars' spacing. Its roof's top at the hill is the line's `deck`. */
@@ -9,7 +9,7 @@ const ROAD_GALLERY = { margin: 0.4, spacing: 4.5 }, PATH_GALLERY = { margin: 0.2
 /** The walls' and the pillars' thickness, the roof's thickness at the hill and at the valley, how far it reaches into the hill, and how deep the walls stand in the ground. */
 const WALL_M = 0.6, ROOF = [1.2, 0.6], TUCK_M = 1.5, SINK_M = 0.5;
 
-const WALL = rgb('#a19e95'), ROOF_TOP = rgb('#8c8a83'), ROOF_UNDER = rgb('#5e5c57'), PILLAR = rgb('#aeaba2');
+const WALL = rgb('#c4c1b8', INSIDE), ROOF_TOP = rgb('#8c8a83'), ROOF_UNDER = rgb('#a9a69e', INSIDE), PILLAR = rgb('#aeaba2');
 
 export function galleries(b: MeshBuilder, lines: Line[], owns: Owns): void {
     for (const line of lines) {

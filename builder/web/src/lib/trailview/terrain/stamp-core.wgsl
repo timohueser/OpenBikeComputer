@@ -107,11 +107,14 @@ const PORTAL_CELLS: f32 = 2.0;
 const COVER_M: f32 = 1.0;
 const BORE_WALL_M: f32 = 1.0;
 const COVER_REACH_M: f32 = 15.0;
-// Behind the wall of a gallery, GALLERY_BACK_M past its road's edge, the hill holds the top of its roof
-// and falls from there at GALLERY_FILL to the hillside, until it stops binding GALLERY_REACH_M out.
+// A gallery's wall and pillars stand GALLERY_BACK_M past its road's edge. Behind them the hill holds the
+// top of its roof, less toward its ends, and falls from there at GALLERY_FILL to the hillside and to
+// its ends, until it stops binding
+// GALLERY_REACH_M out; on the valley side the ground falls away, cut at GALLERY_VALLEY_CUT at most.
 const GALLERY_BACK_M: f32 = 1.0;
 const GALLERY_FILL: f32 = 0.6;
 const GALLERY_REACH_M: f32 = 15.0;
+const GALLERY_VALLEY_CUT: f32 = 0.2;
 
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
@@ -228,7 +231,8 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
-    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE);
+    // Bridges, tunnels and galleries hold their ends' metres in those words, not tilts.
+    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
@@ -421,25 +425,32 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
-            // The hill side of a gallery behind its wall: the hill over its roof, and no cut.
+            // A gallery's floor runs flat to a mesh cell past its walls and pillars, so the mesh's slope up to
+            // the hill lies behind its wall. Past that, on the hill side, the hill holds the top of its roof
+            // and no cut; on the valley side a shallow cut keeps it open.
             let roof = f32((word(r + 5u) >> 24u) & 0x7fu) * 0.1;
-            if (kind <= PATH && roof > 0.0 && g.core && (g.side > 0.0) == ((word(r + 5u) >> 31u) != 0u) && g.lateral > h + GALLERY_BACK_M) {
-                let reach = min(GALLERY_REACH_M, reach_limit(texel) - h - GALLERY_BACK_M);
-                lo[COVER] = max(lo[COVER], g.z + roof - widen(g.lateral - h - GALLERY_BACK_M, reach, GALLERY_FILL));
+            let gallery = kind <= PATH && roof > 0.0;
+            let wall = h + GALLERY_BACK_M + MESH_TEXELS * texel;
+            let hill = gallery && (g.side > 0.0) == ((word(r + 5u) >> 31u) != 0u);
+            if (hill && g.core && g.lateral > wall) {
+                let reach = min(GALLERY_REACH_M, reach_limit(texel) - wall);
+                let end = min(real(r + 14u) + g.da, real(r + 15u) + g.db);
+                lo[COVER] = max(lo[COVER], g.z + min(roof, GALLERY_FILL * end) - widen(g.lateral - wall, reach, GALLERY_FILL));
                 continue;
             }
             if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
-                if (g.core && g.lateral <= h) {
+                let core_half = select(h, wall, gallery);
+                if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
                     hi[bucket] = min(hi[bucket], g.z + tol);
                 }
-                let x = max(0.0, g.lateral - h);
-                let reach = cone_reach(h, rule, texel);
+                let x = max(0.0, g.lateral - core_half);
+                let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let u = g.z + (tol + widen(x, reach, rule.cut));
+                    let u = g.z + (tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery)));
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

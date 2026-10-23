@@ -475,7 +475,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             if (!touched.length) continue;
             // The deck, the bore or the roof in decimetres; the top bit marks a gallery whose hill is on its right.
             const deck = Math.min(line.gallery ? 127 : 255, Math.round(10 * (line.deck ?? 0))) | (line.gallery === -1 ? 128 : 0);
-            const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f) : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
+            // A bridge's or a tunnel's metres from its ends where they meet the ground, a gallery's from its ends; else a road's tilts.
+            const ends = line.abut ? [line.abut[0] ? along[v] : 1e30, line.abut[1] ? along[n - 1] - along[v + 1] : 1e30].map(f)
+                : line.gallery ? [along[v], along[n - 1] - along[v + 1]].map(f) : [line.tilt?.[2 * v] ?? 0, line.tilt?.[2 * v + 1] ?? 0];
             const at = record([ax, ay, bx, by, line.kind, line.code | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h), f(mx), f(my), f(nx), f(ny), id,
                 ...ends]);
             for (const c of touched) cells[2][c].push(at);

@@ -12,6 +12,11 @@ import { FLOOR, OWNER } from './node';
  * the frame.
  */
 const VERTEX_BYTES = 8 * 2 ** 20, INDEX_BYTES = 4 * 2 ** 20;
+/**
+ * A floor reaches this far past the ends of its segments: off a deck or out of a tunnel the ground holds
+ * the road's height, and the probe of the ground under the eye, a few frames late, catches up meanwhile.
+ */
+const REACH_M = 3;
 
 interface Resources {
     device: GPUDevice;
@@ -97,8 +102,8 @@ export class Structures {
         let best: number | undefined;
         for (let i = 0; i < floors.length; i += FLOOR) {
             const [ax, ay, bx, by, za, zb, half] = floors.subarray(i, i + FLOOR), dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
-            const t = ((x - ax) * dx + (y - ay) * dy) / l2;
-            if (t < 0 || t > 1 || Math.abs((x - ax) * dy - (y - ay) * dx) / Math.sqrt(l2) * metresPerUnit(y) > half) continue;
+            const t = ((x - ax) * dx + (y - ay) * dy) / l2, past = REACH_M / metresPerUnit(y) / Math.sqrt(l2);
+            if (t < -past || t > 1 + past || Math.abs((x - ax) * dy - (y - ay) * dx) / Math.sqrt(l2) * metresPerUnit(y) > half) continue;
             const z = za + (zb - za) * t;
             if (z >= low && z <= high && (best === undefined || z > best)) best = z;
         }
