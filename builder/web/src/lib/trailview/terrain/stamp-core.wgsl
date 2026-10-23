@@ -524,10 +524,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
         if (l > u) {
             out.conflict = true;
-            // The cones of two roads: the nearer road's face holds, so the ground steps where the
-            // two are equally far, by nothing where the conflict begins. The look draws a wall there.
+            // The cones of two roads: the ground ramps from the fill of the one to the cut of the
+            // other by the share of the way between them, so it has no step where the conflict
+            // begins nor inside it. The look draws a wall where the ramp is steep.
             if (b == CONES) {
-                l = select(u, l, cone_lo_x < cone_hi_x);
+                l = mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3));
             } else {
                 l = 0.5 * (l + u);
             }
