@@ -379,10 +379,11 @@ export class Terrain {
     }
 
     /**
-     * Selects the nodes for a view and takes the pages that they want. A frame that wants more pages
-     * than a pool holds draws coarser from the next frame on: quality goes down before memory goes up.
+     * Selects the nodes for a view and takes the pages that they want, and the pages of `reads`, which
+     * the ground's relief reads. A frame that wants more pages than a pool holds draws coarser from the
+     * next frame on: quality goes down before memory goes up.
      */
-    update(view: View): void {
+    update(view: View, reads: Node[] = []): void {
         const r = this.resources;
         if (!r) return;
         this.frameNumber++;
@@ -394,9 +395,10 @@ export class Terrain {
         this.selection = performance.now() - start;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
-        wanted.sort((a, b) => a.level - b.level || far(a) - far(b));
-        this.wantedNodes = wanted;
-        const work = this.pages.update(wanted, anchor);
+        const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
+        // The ground takes the selection alone: with its own reads it would want the ground of coarser and coarser pages.
+        this.wantedNodes = wanted.sort(order);
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
         // with masks come first: they draw with the road paint. Each pipeline draws near to far, so that a
         // GPU that shades before the depth test shades few hidden fragments.
