@@ -5,8 +5,8 @@ A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − h�
 weights wᵢ, so that a spike or a gully of the terrain does not move the road, and λ = smooth_m⁴ of its
 class. No segment is steeper than the grade of its class. Ways that share a vertex share its height, and
 a side road leaves a junction on the surface of the through road. A bridge or a tunnel ignores the terrain
-under it and runs between its ends, a tunnel in a straight line; a bridge rises where it would pass too low
-over the water, the road or the path that it crosses. A ford lies FORD_M below the water it crosses."""
+under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
+between its ends, and rises where it would pass too low over the water, the road or the path that it crosses. A ford lies FORD_M below the water it crosses."""
 
 import json
 import math
@@ -287,11 +287,15 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     # Rows that pin a combination of variables to a value: the approaches of side roads, and the fords.
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
-    bores = tunnel_pins(net)
+    bores = chain_rows(net, net.tunnel)
     above = clearances(net, rivers, classes)
+    sags = chain_rows(net, net.free & ~net.tunnel)
+    above = (np.concatenate([above[0], np.column_stack([sags[0], sags[0][:, 0]])]), np.concatenate([above[1], np.pad(sags[1], ((0, 0), (0, 1)))]),
+             np.concatenate([above[2], sags[2]]))
     C = sparse.csr_matrix((above[1].ravel(), (np.repeat(np.arange(len(above[2])), 4), above[0].ravel())), shape=(len(above[2]), n))
     C = C[np.all(known[above[0]], axis=1)]
     least = above[2][np.all(known[above[0]], axis=1)]
+    clear = (np.arange(len(above[2])) < len(above[2]) - len(sags[2]))[np.all(known[above[0]], axis=1)]
     variables = np.concatenate([approach[0], fords[0], bores[0]])
     coefficients = np.concatenate([approach[1], fords[1], bores[1]])
     values = np.concatenate([approach[2], fords[2], bores[2]])
@@ -402,7 +406,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     metrics = {
         "ways": len(net.ways), "variables": n, "known": int(known.sum()), "approaches": int(np.count_nonzero(ok[:len(approach[2])])),
         "fords": int(np.count_nonzero(ok[len(approach[2]):len(approach[2]) + len(fords[2])])), "culverts": len(culverts), "rounds": rounds, "held": int(np.count_nonzero(held)),
-        "clearances": len(least), "clearances_low_cm": int(np.count_nonzero(C @ z < least - 0.01)),
+        "clearances": int(clear.sum()), "clearances_low_cm": int(np.count_nonzero((C @ z < least - 0.01) & clear)),
         "grade_excess_m": round(float(np.max(excess, initial=0)), 4), "grade_excess_at": [round(lat, 5), round(lon, 5)],
         "grade_excess_over_1cm": int(np.count_nonzero(excess > 0.01)),
         "residual_p99_m": round(float(np.percentile(residual[~free[seg] & (weight > 0)], 99)), 2) if (~free[seg] & (weight > 0)).any() else 0,
@@ -422,7 +426,7 @@ def approach_pins(net):
     vertices at least a metre nearer to its junction than to the next junction along its way, so that
     the two ends of a short link do not pin one vertex. Last, whether each segment lies within the
     approach distance of a junction where its way is a side. A tunnel that leaves a junction as a side
-    runs straight (`tunnel_pins`) and has no approach."""
+    runs straight (`chain_rows`) and has no approach."""
     sides = ~net.tunnel[net.osm_way[net.sides[0]]]
     occurrence, step, distance, t1, s1, t2, s2 = (column[sides] for column in net.sides)
     approached = np.zeros(len(net.segment_start), bool)
@@ -470,15 +474,16 @@ def approach_pins(net):
     return variables, coefficients, np.zeros(len(variables)), approached
 
 
-def tunnel_pins(net):
-    """(variables, coefficients, values) that hold each vertex inside a tunnel on the straight line between
-    the two ends of its tunnel: z_v − (1 − τ)·z_A − τ·z_B = 0, with τ its share of the tunnel's length. A
-    tunnel is a chain of tunnel ways: where the ends of tunnel ways meet, it runs on through the two that
-    continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft follows the
-    tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its heights."""
-    tunnels = np.flatnonzero(net.tunnel)
+def chain_rows(net, members):
+    """(variables, coefficients, values) of z_v − (1 − τ)·z_A − τ·z_B per vertex inside a chain of the ways
+    that `members` marks, with A and B the chain's ends and τ the vertex's share of its length: = 0 holds a
+    tunnel straight, ≥ 0 keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on
+    through the two that continue most nearly straight, and the others are side tunnels. So a side tunnel or
+    a shaft follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
+    heights."""
+    chained = np.flatnonzero(members)
     ends = {}
-    for w in tunnels.tolist():
+    for w in chained.tolist():
         for end, v, u in ((0, net.way_first[w], net.way_first[w] + 1), (1, net.way_last[w], net.way_last[w] - 1)):
             d = net.vertex_xy[u] - net.vertex_xy[v]
             ends.setdefault(int(net.vertex_var[v]), []).append((w, end, d / max(np.hypot(*d), 1e-300)))
@@ -491,12 +496,12 @@ def tunnel_pins(net):
             if p not in partner and q not in partner:
                 partner[p], partner[q] = q, p
     seen, rows = set(), []
-    for start in tunnels.tolist():
+    for start in chained.tolist():
         if start in seen:
             continue
         # Back to the first way of the chain, then along it.
         w, end, steps = start, 0, 0
-        while (w, end) in partner and partner[(w, end)][0] != start and steps < len(tunnels):
+        while (w, end) in partner and partner[(w, end)][0] != start and steps < len(chained):
             w, end = partner[(w, end)][0], 1 - partner[(w, end)][1]
             steps += 1
         chain, flipped = [], end == 1

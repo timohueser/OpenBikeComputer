@@ -553,11 +553,18 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             decks = [(n, entry["kind"], tags, parts[0]) for n, (entry, tags, parts) in enumerate(ways) if structures.is_bridge(entry["kind"], tags) and parts[0][2]]
             waterways = [(water.half_width(tags), points) for (entry, tags, parts) in waters if entry["kind"] in water.RIVERS for _, points, _ in parts]
             lakes = [[points for _, points, _ in parts] for entry, _, parts in waters if entry["kind"] in water.LAKES]
-            added, piers, metrics["bridges"] = structures.bridges([(kind, tags, part[1], part[2]) for _, kind, tags, part in decks], waterways, lakes + river_areas, terrain)
+            under = [(structures.road_half(tags), points) for entry, tags, parts in ways if not structures.is_bridge(entry["kind"], tags) for _, points, _ in parts]
+            added, piers, metrics["bridges"] = structures.bridges([(kind, tags, part[1], part[2]) for _, kind, tags, part in decks], waterways, lakes + river_areas, terrain, under)
             extra = {n: tags for (n, *_), tags in zip(decks, added)}
             for n, (entry, tags, parts) in enumerate(ways):
                 if entry["kind"] == "gallery" and parts[0][2]:
                     extra[n] = {"uphill": structures.uphill(parts[0][1], terrain)}
+                if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage":
+                    kept = [part for part in parts if not (part[2] and structures.floating(part[1], part[2], terrain))]
+                    metrics["roads"]["floating_tunnels"] = metrics["roads"].get("floating_tunnels", 0) + len(parts) - len(kept)
+                    if not kept:
+                        continue
+                    parts = kept
                 if entry["kind"] == "tunnel" and tags.get("tunnel") != "building_passage" and all(structures.shallow(tags, points, z, terrain) for _, points, z in parts if z):
                     # A tunnel under what the terrain leaves out is a road on the ground.
                     tags = {k: v for k, v in tags.items() if k != "tunnel"}

@@ -88,7 +88,7 @@ class Bridges(unittest.TestCase):
         below = np.interp(0, [(self.Y - y) / self.M for _, y in out[3][0][1]], out[3][0][2])
         self.assertGreaterEqual(deck(45) - below, roads.CLEAR_ROAD_M + roads.DECK_M - 0.01)
 
-    def test_a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(self):
+    def test_a_long_tunnel_runs_straight_between_its_portals_a_shaft_does_not_lift_it_and_over_a_valley_it_floats(self):
         class Mountain:
             def heights(_, x, y):
                 return np.where(np.abs(np.asarray(x) - 0.53) < 2995 * self.M, 2500.0, 1000.0)
@@ -104,6 +104,19 @@ class Bridges(unittest.TestCase):
         for e, h in zip(east, z):
             self.assertAlmostEqual(h, np.interp(e, [-3000, 3000], [z[0], z[-1]]), delta=0.01)
         self.assertLess(max(z), 1001)
+        self.assertFalse(structures.floating(out[1][0][1], out[1][0][2], Mountain()))
+        self.assertTrue(structures.floating(out[1][0][1], out[1][0][2], self.Flat()))
+
+    def test_a_footbridge_over_a_gorge_does_not_sag_under_its_ends(self):
+        class Gorge:
+            def heights(_, x, y):
+                east = (np.asarray(x) - 0.53) / self.M
+                return np.where(east < 0, 500 - 0.3 * east, np.where(east > 30, 500 + 0.05 * (east - 30), 470.0))
+        path = lambda points, **tags: ("path", {"highway": "path", **tags}, [(False, points, None)])
+        ways = [path([self.at(-100), self.at(0)]), path([self.at(0), self.at(15, 8), self.at(30)], bridge="yes"), path([self.at(30), self.at(130)])]
+        out, _, _ = roads.solve(ways, Gorge())
+        z = out[1][0][2]
+        self.assertGreaterEqual(min(z), min(z[0], z[-1]) - 0.05)
 
     def test_a_pier_steps_out_of_a_narrow_channel_and_a_high_footbridge_hangs(self):
         ways = [("road", {}, [self.at(0), self.at(80)], [500.0, 500.0]), ("path", {}, [self.at(0, 50), self.at(120, 50)], [600.0, 600.0])]
@@ -113,6 +126,13 @@ class Bridges(unittest.TestCase):
         self.assertGreater(abs((east - 0.53) / self.M - 40), 5 + structures.BANK_M)
         self.assertEqual(added[1]["bridge:structure"], "simple-suspension")
         self.assertEqual(metrics["cable_bridges"], 1)
+
+    def test_a_pier_stands_beside_the_road_under_its_bridge(self):
+        ways = [("road", {}, [self.at(0), self.at(80)], [510.0, 510.0])]
+        under = [(structures.ROAD_HALF_M, [self.at(40, -50), self.at(40, 50)])]
+        _, piers, _ = structures.bridges(ways, [], [], self.Flat(), under)
+        (east, _), _, _ = piers[0]
+        self.assertGreater(abs((east - 0.53) / self.M - 40), structures.ROAD_HALF_M + structures.BANK_M)
 
 
 class Bake(unittest.TestCase):

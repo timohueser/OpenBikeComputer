@@ -1,7 +1,7 @@
 """The bridges, tunnels and galleries of the TrailView feature tiles: piers, deck depths, the tunnels that
 run on the ground and the hill side of a gallery. A bridge is a chain of bridge ways that
-meet end to end. Its piers stand at most SPAN_M apart and never in water that the bridge crosses for less
-than CHANNEL_M; its deck is as deep as its longest span asks. A long footbridge high over the ground hangs
+meet end to end. Its piers stand at most SPAN_M apart, never on a road or a path under it and never in
+water that the bridge crosses for less than CHANNEL_M; its deck is as deep as its longest span asks. A long footbridge high over the ground hangs
 from cables and has no piers. The engine draws the deck along the ways and a pier at each `bridge-pier`
 point, from the deck down into the ground."""
 
@@ -21,8 +21,11 @@ DEPTH = {"road": (1 / 30, 0.5, 2.5), "path": (1 / 40, 0.3, 1.0)}
 # Water crossed for less than CHANNEL_M takes no pier; a pier stands PIER_GAP_M beside it. A pier
 # keeps MIN_SPAN_M from another pier and from the bridge's ends.
 CHANNEL_M, PIER_GAP_M, MIN_SPAN_M = 30.0, 2.0, 6.0
-# A pier keeps this far from a waterway's edge.
+# A pier keeps this far from a waterway's edge and a road's.
 BANK_M = 1.0
+# The half-width of a road, the widest of its class in the engine.
+MAIN = {"motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"}
+MAIN_HALF_M, ROAD_HALF_M, PATH_HALF_M = 6.0, 3.0, 1.0
 # A footbridge longer than CABLE_M that runs more than HIGH_M over the ground hangs from cables, as one that
 # OSM tags so.
 CABLE_M, HIGH_M = 40.0, 25.0
@@ -67,16 +70,26 @@ def chains(ways):
     return out
 
 
-def wet_runs(xy, waterways, areas):
-    """The runs of the samples `xy` (world units) that lie in water: [(first, last)] sample indices.
-    `waterways` and `areas` hold (box, half-width, line) and (box, rings)."""
+def road_half(tags):
+    highway = tags.get("highway")
+    return PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
+
+
+def boxed(items, points):
+    """The items with the bounding boxes of their `points`, as `runs` reads them."""
+    return np.array([(*xy.min(0), *xy.max(0)) for xy in map(points, items)], np.float64).reshape(-1, 4), items
+
+
+def runs(xy, lines, areas):
+    """The runs of the samples `xy` (world units) within a line's half-width or in an area: [(first, last)]
+    sample indices. `lines` and `areas` are `boxed` lists of (half-width, points) and of rings."""
     wet = np.zeros(len(xy), bool)
     scale = metres(xy[:, 1])
     reach = 50 / scale.min()
-    near = lambda box: box[0] <= xy[:, 0].max() + reach and box[2] >= xy[:, 0].min() - reach and box[1] <= xy[:, 1].max() + reach and box[3] >= xy[:, 1].min() - reach
-    for box, half, line in waterways:
-        if not near(box):
-            continue
+    lo, hi = xy.min(0) - reach, xy.max(0) + reach
+    near = lambda boxes: np.flatnonzero((boxes[:, 0] <= hi[0]) & (boxes[:, 2] >= lo[0]) & (boxes[:, 1] <= hi[1]) & (boxes[:, 3] >= lo[1]))
+    for i in near(lines[0]):
+        half, line = lines[1][i]
         a, b = line[:-1], line[1:]
         d = b - a
         for i in range(0, len(xy), 4096):
@@ -84,22 +97,22 @@ def wet_runs(xy, waterways, areas):
             t = np.clip(np.sum((p - a) * d, 2) / np.maximum(np.sum(d * d, 1), 1e-30), 0, 1)
             gap = np.min(np.hypot(*np.moveaxis(p - a - t[..., None] * d, 2, 0)), 1) * scale[i:i + 4096]
             wet[i:i + 4096] |= gap <= half + BANK_M
-    for box, rings in areas:
-        if near(box):
-            wet |= contains(rings, xy[:, 0], xy[:, 1])
+    for i in near(areas[0]):
+        wet |= contains(areas[1][i], xy[:, 0], xy[:, 1])
     edges = np.flatnonzero(np.diff(np.concatenate([[0], wet.astype(np.int8), [0]])))
     return list(zip(edges[::2], edges[1::2] - 1))
 
 
-def bridges(ways, waterways, areas, terrain):
+def bridges(ways, waterways, areas, terrain, roads=()):
     """Per bridge way, the tags that the bake adds: its deck depth in metres, and `bridge:structure` for a
     cable bridge; and the piers as (point, deck height there, a way of their bridge). `ways` lists (kind,
-    tags, points, z) with the solved heights, `waterways` (half-width, points) and `areas` the rings of
-    river areas and lakes, all in world coordinates."""
+    tags, points, z) with the solved heights, `waterways` and `roads` (half-width, points) and `areas` the
+    rings of river areas and lakes, all in world coordinates."""
     added, piers, moved, hanging = [None] * len(ways), [], 0, 0
-    bounds = lambda xy: (*xy.min(0), *xy.max(0))
-    waterways = [(bounds(line), half, line) for half, points in waterways if len(line := np.asarray(points, np.float64)) >= 2]
-    areas = [(bounds(np.concatenate([np.asarray(ring, np.float64) for ring in rings])), rings) for rings in areas]
+    lines = lambda items: boxed([(half, xy) for half, points in items if len(xy := np.asarray(points, np.float64)) >= 2], lambda item: item[1])
+    waterways, roads = lines(waterways), lines(roads)
+    areas = boxed(list(areas), lambda rings: np.concatenate([np.asarray(ring, np.float64) for ring in rings]))
+    dry = boxed([], None)
     for chain in chains([(kind, tags, points) for kind, tags, points, _ in ways]):
         xy, z = [], []
         for w, flipped in chain:
@@ -124,10 +137,8 @@ def bridges(ways, waterways, areas, terrain):
         spans = 1 if structure else max(1, math.ceil(total / SPAN_M[kind]))
         stations = [k * total / spans for k in range(1, spans)]
         if stations:
-            for first, last in wet_runs(at, waterways, areas):
-                lo, hi = samples[first], samples[last]
-                if hi - lo >= CHANNEL_M:
-                    continue
+            blocked = [(lo, hi) for first, last in runs(at, waterways, areas) if (hi := samples[last]) - (lo := samples[first]) < CHANNEL_M]
+            for lo, hi in blocked + [(samples[first], samples[last]) for first, last in runs(at, roads, dry)]:
                 for k, s in enumerate(stations):
                     if lo - PIER_GAP_M < s < hi + PIER_GAP_M:
                         stations[k] = lo - PIER_GAP_M if s - lo < hi - s else hi + PIER_GAP_M
@@ -174,18 +185,38 @@ def uphill(points, terrain):
 # The bore of a tunnel for a road and for a path, and the samples along it.
 BORE_M, BORE_PATH_M, BORE_STEP_M = 5.0, 2.6, 2.0
 PATHS = {"path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"}
+# Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the solver
+# could not put it under the hill: a network of shafts and caverns, or a bore that the terrain misses.
+FLOAT_M, PORTAL_M = 5.0, 20.0
 
 
-def shallow(tags, points, z, terrain):
-    """Whether a tunnel has less than its bore of terrain over it everywhere: what covers it (a building, a
-    railway, a deck) is not in the terrain, so it runs on the ground."""
+def cover(points, z, terrain):
+    """The terrain over a tunnel at samples along it, in metres over its road, and the samples' metres
+    from its nearer end; None with fewer than two heights."""
     known = [i for i, h in enumerate(z) if h is not None]
     if len(known) < 2:
-        return False
+        return None
     xy = np.asarray(points, np.float64)
     along = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T) * metres((xy[:-1, 1] + xy[1:, 1]) / 2))])
     samples = np.arange(0, along[-1] + BORE_STEP_M / 2, BORE_STEP_M)
     at = np.stack([np.interp(samples, along, xy[:, 0]), np.interp(samples, along, xy[:, 1])], 1)
     depth = terrain.heights(at[:, 0], at[:, 1]) - np.interp(samples, along[known], np.asarray(z, np.float64)[known])
+    return depth, np.minimum(samples, along[-1] - samples)
+
+
+def shallow(tags, points, z, terrain):
+    """Whether a tunnel has less than its bore of terrain over it everywhere: what covers it (a building, a
+    railway, a deck) is not in the terrain, so it runs on the ground."""
+    if (found := cover(points, z, terrain)) is None:
+        return False
     with np.errstate(invalid="ignore"):
-        return bool(np.nanmax(depth, initial=-np.inf) < (BORE_PATH_M if tags.get("highway") in PATHS else BORE_M))
+        return bool(np.nanmax(found[0], initial=-np.inf) < (BORE_PATH_M if tags.get("highway") in PATHS else BORE_M))
+
+
+def floating(points, z, terrain):
+    """Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends."""
+    if (found := cover(points, z, terrain)) is None:
+        return False
+    depth, end = found
+    with np.errstate(invalid="ignore"):
+        return bool(np.nanmin(depth[end > PORTAL_M], initial=np.inf) < -FLOAT_M)
