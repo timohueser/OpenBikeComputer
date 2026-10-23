@@ -13,6 +13,7 @@ import { cdlod, distances, FINEST, GRID, key, MAP, RANGE, select, size, type Nod
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { Water } from './water';
+import { Structures } from '../structures/structures';
 
 /**
  * GPU memory for pages, heights and normals: the stored and the synthesized budgets for a laptop, in
@@ -161,6 +162,7 @@ export class Terrain {
     readonly pages: Pages;
     readonly stamps: Stamps;
     private readonly water: Water;
+    private readonly structures: Structures;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -196,6 +198,7 @@ export class Terrain {
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
         this.stamps = new Stamps(features, changed);
         this.water = new Water(this.stamps);
+        this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
 
@@ -358,6 +361,7 @@ export class Terrain {
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(1 + pages).fill(NO_LIMIT, 0, 1));
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, depthFormat);
+        await this.structures.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, depthFormat);
         this.resources = {
             ...r, mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
@@ -400,7 +404,9 @@ export class Terrain {
         const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
         const plain = drawn.map(node => +(node.level < NEAR)), near = drawn.map(node => distances(eye, node)[0]);
         this.nodes = drawn.map((_, i) => i).sort((a, b) => plain[a] - plain[b] || near[a] - near[b]).map(i => drawn[i]);
-        this.water.update(this.nodes.map(node => this.pages.drawing(node)!));
+        const drawing = this.nodes.map(node => this.pages.drawing(node)!);
+        this.water.update(drawing);
+        this.structures.update(drawing);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -511,6 +517,7 @@ export class Terrain {
         if (painted) pass.drawIndexed(GRID_INDICES.length, painted);
         pass.setPipeline(r.plainMesh);
         if (painted < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - painted, 0, 0, painted);
+        this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup);
     }
 
@@ -723,6 +730,7 @@ export class Terrain {
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
         device.queue.writeBuffer(r.nodes, 0, instances);
         this.water.write();
+        this.structures.write();
     }
 }
 

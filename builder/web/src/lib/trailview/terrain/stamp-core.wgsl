@@ -41,6 +41,8 @@ const EDGE: u32 = 3u;
 const LAKE: u32 = 4u;
 const JUNCTION: u32 = 5u;
 const RIVER: u32 = 6u;
+const BRIDGE: u32 = 8u;
+const TUNNEL: u32 = 9u;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
@@ -51,11 +53,13 @@ const JOIN_B: u32 = 64u;
 
 // The buckets, from the top.
 const WATER_CORE: u32 = 0u;
+const TROUGH: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
 const BANKS: u32 = 4u;
 const CONES: u32 = 5u;
 const BENCH: u32 = 6u;
-const BUCKETS: u32 = 7u;
+const COVER: u32 = 7u;
+const BUCKETS: u32 = 8u;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -86,6 +90,21 @@ const LIFT: f32 = 0.02;
 const INF: f32 = 1e30;
 // As WARP_M of bins.ts: the metres over which the cross-slope of a junction fades out.
 const WARP_M: f32 = 6.0;
+// A bridge rests on its abutments for ABUTMENT_CELLS mesh cells from an end that meets the ground: the
+// road's core runs on under the deck, so no mesh triangle there reaches the trough. Past them the
+// ground stays CLEAR_M under the deck's underside, out to TROUGH_M past the deck's edge, and widens
+// from there at 45° until it stops binding TROUGH_REACH_M out.
+const ABUTMENT_CELLS: f32 = 2.0;
+const CLEAR_M: f32 = 1.0;
+const TROUGH_M: f32 = 1.0;
+const TROUGH_REACH_M: f32 = 15.0;
+// A tunnel runs on the ground into its portal for PORTAL_CELLS mesh cells from an end that meets the
+// ground. Past them the ground stays COVER_M over its bore, out to BORE_WALL_M past the road's edge, and
+// falls from there at 45° until it stops binding COVER_REACH_M out.
+const PORTAL_CELLS: f32 = 2.0;
+const COVER_M: f32 = 1.0;
+const BORE_WALL_M: f32 = 1.0;
+const COVER_REACH_M: f32 = 15.0;
 
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
@@ -177,6 +196,9 @@ struct Along {
     paint: bool,
     // Metres from the segment's line where the foot of the perpendicular lies on the segment, else INF.
     beside: f32,
+    // Metres past the mitre lines of the start and of the end, measured along the segment.
+    da: f32,
+    db: f32,
 }
 
 // The slope across a segment from one of its ends, `s` metres from it, as packTilt of bins.ts packs it:
@@ -199,20 +221,20 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
-    let tilt = cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit));
+    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE);
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
         let t = da / max(da + db, 1e-6);
-        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt, sign(cross), true, true, true, beside);
+        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt, sign(cross), true, true, true, beside, da * unit, db * unit);
     }
     if (da < 0.0 && db >= 0.0 && (flags & (CORE_A | CONE_A)) != 0u) {
-        return Along(length(ap) * unit, real(r + 6u) + tilt, sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, (flags & (CORE_A | JOIN_A)) != 0u, beside);
+        return Along(length(ap) * unit, real(r + 6u) + tilt, sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, (flags & (CORE_A | JOIN_A)) != 0u, beside, da * unit, db * unit);
     }
     if (db < 0.0 && da >= 0.0 && (flags & (CORE_B | CONE_B)) != 0u) {
-        return Along(length(bp) * unit, real(r + 7u) + tilt, sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, (flags & (CORE_B | JOIN_B)) != 0u, beside);
+        return Along(length(bp) * unit, real(r + 7u) + tilt, sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, (flags & (CORE_B | JOIN_B)) != 0u, beside, da * unit, db * unit);
     }
-    return Along(INF, 0.0, 0.0, false, false, false, beside);
+    return Along(INF, 0.0, 0.0, false, false, false, beside, da * unit, db * unit);
 }
 
 fn segment_distance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
@@ -332,7 +354,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // In a lake the lake's bed holds: its river line runs on through it. The cell lists its lakes
             // before its lines, so in_lake is final here.
             let h = real(r + 8u);
-            let rule = profiles[word(r + 5u) >> 16u];
+            let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
             let g = along(r, p, unit);
             if (g.lateral >= INF || in_lake || !road_shows(h, rule, level)) {
                 continue;
@@ -357,9 +379,27 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 line_held = false;
             }
             let h = real(r + 8u);
-            let rule = profiles[word(r + 5u) >> 16u];
+            let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
             let g = along(r, p, unit);
-            if (kind == ROAD && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
+            // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
+            let bridge = kind == BRIDGE;
+            if (bridge && g.lateral < INF && road_shows(h, rule, level)
+                && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= ABUTMENT_CELLS * MESH_TEXELS * texel) {
+                let x = max(0.0, g.lateral - h - TROUGH_M);
+                let reach = min(TROUGH_REACH_M, reach_limit(texel) - h - TROUGH_M);
+                hi[TROUGH] = min(hi[TROUGH], g.z - f32(word(r + 5u) >> 24u) * 0.1 - CLEAR_M + widen(x, reach, 1.0));
+                continue;
+            }
+            // A tunnel past its portals holds the ground over its bore, and paints nothing.
+            if (kind == TUNNEL && g.lateral < INF && road_shows(h, rule, level)
+                && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= PORTAL_CELLS * MESH_TEXELS * texel) {
+                let x = max(0.0, g.lateral - h - BORE_WALL_M);
+                let reach = min(COVER_REACH_M, reach_limit(texel) - h - BORE_WALL_M);
+                lo[COVER] = max(lo[COVER], g.z + f32(word(r + 5u) >> 24u) * 0.1 + COVER_M - widen(x, reach, 1.0));
+                continue;
+            }
+            let paved = kind == ROAD || bridge || kind == TUNNEL;
+            if (paved && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h);
             }
@@ -374,7 +414,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.surface = word(r + 5u) & 0xffu;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
             }
-            if (kind == ROAD && road_shows(h, rule, level)) {
+            if (paved && road_shows(h, rule, level)) {
                 let tol = rule.tol;
                 if (g.core && g.lateral <= h) {
                     lo[ROAD_CORE] = max(lo[ROAD_CORE], g.z - tol);
@@ -406,6 +446,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     }
     out.conflict = out.conflict || (line_near && !line_held);
     out.water = water_in;
+    // Under a deck the ground falls away: no road's cone or bench holds it up.
+    if (hi[TROUGH] < INF) {
+        lo[CONES] = -INF;
+        hi[CONES] = INF;
+        lo[BENCH] = -INF;
+        hi[BENCH] = INF;
+    }
     // Under water no bank holds: where a river meets a lake or another river.
     if (hi[WATER_CORE] < INF) {
         lo[BANKS] = -INF;
@@ -434,6 +481,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
         var l = lo[b];
         var u = hi[b];
+        // The cover of a tunnel yields to every other bucket without a conflict.
+        if (b == COVER && l > out.hi) {
+            continue;
+        }
         if (l > u) {
             out.conflict = true;
             // The cones of two roads: the nearer road's face holds, so the ground steps where the

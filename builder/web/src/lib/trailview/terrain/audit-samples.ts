@@ -2,7 +2,7 @@
 // in each lake and on its shore, along each river; and the checks of a tile's water levels. A worker uses it.
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
+import { cores, crossSlope, features, insideRings, junctions, metresPerUnit, mitre, RIVER, ROAD, RULES, STREAM, type Line, type Node } from './bins';
 
 /** Words of a sample, and its kinds. */
 export const SAMPLE = 12;
@@ -93,7 +93,7 @@ export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Arr
     const push = (x: number, y: number, kind: number, expected: number, half: number, shore: number, junction = Infinity, junctionHalf = 0, other: [number, number] = [0, 0], otherExpected = 0) =>
         out.push([Math.round(x), Math.round(y), kind, f(expected), f(half), f(shore), f(junction), f(junctionHalf), Math.round(other[0]), Math.round(other[1]), f(otherExpected), node.level]);
 
-    const joins = [...junctions(lines.filter(line => line.kind === ROAD)).values()];
+    const joins = [...junctions(cores(lines)).values()];
     const step = Math.max(0.25, 2 * texel) / unit;
     for (const line of lines) {
         if (line.kind !== ROAD) continue;

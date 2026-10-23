@@ -273,8 +273,7 @@ def solve(features, terrain):
     for index, (kind, tags, parts) in enumerate(features):
         if kind not in RIVERS:
             continue
-        width = number(tags.get("width"))
-        half = width / 2 if math.isfinite(width) else HALF_WIDTHS.get(tags.get("waterway"), 1.0)
+        half = half_width(tags)
         for n, (_, points, *_) in enumerate(parts):
             if len(points) < 2:
                 continue
@@ -300,6 +299,12 @@ def solve(features, terrain):
         near = [ways[i] for i in overlapping(boxes, (bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin))]
         spilling += math.isfinite(level) and spills(level, rings, terrain, near)
     return out, {"lakes": len(lakes), "lakes_spilling": int(spilling), "river_parts": len(ways), "turned": turned}
+
+
+def half_width(tags):
+    """The half-width of a waterway in metres: its `width`, else that of its kind."""
+    width = number(tags.get("width"))
+    return width / 2 if math.isfinite(width) else HALF_WIDTHS.get(tags.get("waterway"), 1.0)
 
 
 def number(value):
