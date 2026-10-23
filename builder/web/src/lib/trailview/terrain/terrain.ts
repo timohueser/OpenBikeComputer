@@ -499,6 +499,7 @@ export class Terrain {
             work.normals.forEach((page, k) => encoder.copyBufferToTexture(
                 { buffer: r.normalOut, offset: k * texels * 2, bytesPerRow: PAGE * 2 }, { texture: r.normals, origin: origin(page.drawn!) }, [PAGE, PAGE, 1]));
         }
+        this.structures.encode(encoder, r.surfaceGroup, r.featureGroup);
         const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
         const readback = state === this.probed ? undefined : r.readbacks.pop();
         if (!readback) return () => {};

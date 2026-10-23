@@ -28,7 +28,9 @@ is the palette of the `world` region.
 | `gpu/` | The device and its pools, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
 | `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
-| `structures/` | The bridges (`bridges.ts`), tunnel portals (`portals.ts`) and galleries (`galleries.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), and their pool and draw (`structures.ts`, `structures.wgsl`) |
+| `structures/` | The bridges (`bridges.ts`), tunnel portals (`portals.ts`) and galleries (`galleries.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`); the anchored meshes of the kinds, whose vertices hang from anchors on the drawn surface (`anchored.ts`); their pools, the heights of the anchors and the draw (`structures.ts`, `structures.wgsl`) |
+| `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), and the shared handlers (`kind.ts`): a line structure on the surface, a model on the surface |
+| `models/` | The procedural models of the kinds, flat triangles in one colour each (`shape.ts`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
@@ -136,6 +138,10 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - A finer node meets a coarser one only on the LOD plateau: keep `RANGE.least` of `lod.ts`
   (`lod.test.ts`).
 - The page pools have a fixed size. A view that wants more pages lowers `quality` in the HUD.
+- A kind's faces in `near` draw only where a node of level 17 draws, about 2 km; the near meshes of
+  every drawn node still take room in the pools.
+- A model on the surface goes into the anchored mesh until the vegetation's instances hold it: `place` of
+  `kinds/kind.ts` is the only call to change.
 - Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
 - The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
   coarser (`short` in the HUD).
