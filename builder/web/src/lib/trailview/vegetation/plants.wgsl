@@ -96,6 +96,12 @@ fn ground_height(s: vec2f, u: vec2i) -> f32 {
     return units_height(u, u32(ceil(lod(s))));
 }
 
+// Whether a point may show, before its ground is known: about the ground under the eye, within a
+// slope of 35° from it.
+fn roughly_visible(s: vec2f, d: f32) -> bool {
+    return visible(render_at(s, frame.eye - surface.above), 0.7 * d + 10.0);
+}
+
 // The point of a grid cell: its corner and a jitter of up to the cell.
 fn grid_point(cell: vec2i, units: i32) -> vec2i {
     return cell * units + vec2i(vec2f(plant_hash(cell, 1u), plant_hash(cell, 2u)) * f32(units));
@@ -111,6 +117,9 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     let s = lod_space(vec2f(u - surface.anchor));
     let d = length(s);
     if (d > GROUND_M || d < GROUND_CLEAR_M) {
+        return;
+    }
+    if (!roughly_visible(s, d)) {
         return;
     }
     // Past FULL_M a share of the plants stands, a little larger: from afar the count shows less than the cost.
@@ -171,6 +180,9 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     let s = lod_space(vec2f(u - surface.anchor));
     let d = length(s);
     if (d > SHRUB_M || d < SHRUB_CLEAR_M) {
+        return;
+    }
+    if (!roughly_visible(s, d)) {
         return;
     }
     let ground = cell_at(s);
