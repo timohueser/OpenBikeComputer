@@ -50,6 +50,8 @@ const SURFACE_BYTES = 416, JOB_BYTES = 32, STAMP_JOB_BYTES = 32, NODE_BYTES = 16
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
 const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 39, FOUND = 64;
+/** Cells per strip of the grid's index order. */
+const STRIP = 8;
 const GRID_INDICES = gridIndices();
 /** The road and path profiles, as stamp-core.wgsl reads them. */
 const PROFILE_TABLE = profileTable();
@@ -332,7 +334,10 @@ export class Terrain {
             label: paint ? 'terrain' : 'terrain without paint', layout: pipelineLayout(meshLayout, surfaceLayout, groundLayout, featureLayout),
             vertex: { module: modules.terrain, entryPoint: 'vertex_main' },
             fragment: { module: modules.terrain, entryPoint: 'fragment_main', targets: [{ format }], constants: { PAINT: paint ? 1 : 0 } },
-            primitive: { topology: 'triangle-list' },
+            // The plain nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
+            // ray from an eye above them meets a front face first. The painted (near) nodes draw both faces:
+            // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
+            primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
         const [mesh, plainMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
@@ -393,8 +398,11 @@ export class Terrain {
         this.wantedNodes = wanted;
         const work = this.pages.update(wanted, anchor);
         // After the update, so that a page draws in the frame that it arrives in. The nodes of the levels
-        // with masks come first: they draw with the road paint.
-        this.nodes = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node)).sort((a, b) => +(b.level >= NEAR) - +(a.level >= NEAR));
+        // with masks come first: they draw with the road paint. Each pipeline draws near to far, so that a
+        // GPU that shades before the depth test shades few hidden fragments.
+        const drawn = nodes.slice(0, MAX_NODES).filter(node => this.pages.covers(node));
+        const plain = drawn.map(node => +(node.level < NEAR)), near = drawn.map(node => distances(eye, node)[0]);
+        this.nodes = drawn.map((_, i) => i).sort((a, b) => plain[a] - plain[b] || near[a] - near[b]).map(i => drawn[i]);
         const water = this.water.update(this.nodes.map(node => this.pages.drawing(node)!));
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
@@ -757,11 +765,15 @@ function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32
     return { jobs, data };
 }
 
-/** The triangles of the grid mesh, with vertex j × 65 + i at cell column i and row j. */
-function gridIndices(): Uint16Array<ArrayBuffer> {
+/**
+ * The triangles of the grid mesh, with vertex j × 65 + i at cell column i and row j, counter-clockwise
+ * from above. They go row by row in strips of STRIP columns: the vertex cache then still holds the
+ * strip's last row of vertices, and most vertices run once.
+ */
+export function gridIndices(): Uint16Array<ArrayBuffer> {
     const out = new Uint16Array(6 * GRID * GRID), n = GRID + 1;
     let k = 0;
-    for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) {
+    for (let strip = 0; strip < GRID; strip += STRIP) for (let j = 0; j < GRID; j++) for (let i = strip; i < strip + STRIP; i++) {
         const a = j * n + i;
         out.set([a, a + n, a + 1, a + 1, a + n, a + n + 1], k);
         k += 6;
