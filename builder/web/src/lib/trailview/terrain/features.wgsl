@@ -30,6 +30,9 @@ const RAIL_CODE: u32 = 8u;
 const SLEEPER_SPACING_M: f32 = 0.6;
 // As TRACK_RANGE of stamp.wgsl: a track's paint lies this near its middle, so its rails take finer steps.
 const TRACK_M: f32 = 3.2;
+// As SURFACES of bins.ts: the half-widths of a standard and a narrow track, whose codes alternate from RAIL_CODE on.
+const RAIL_HALF_M: f32 = 1.9;
+const NARROW_HALF_M: f32 = 1.5;
 
 // Metres from a code of the mask's shapes.
 fn mask_metres(code: f32) -> f32 {
@@ -94,9 +97,12 @@ fn across_metres(texel: vec4f) -> f32 {
     return select(mask_metres(texel.z), (texel.z - 0.5) * 2.0 * TRACK_M, track);
 }
 
-// The half-width of the road that a texel's distances belong to.
+// The half-width of the road that a texel's distances belong to; a track's from its code, as `across`
+// stops at ±TRACK_M.
 fn half_width(texel: vec4f) -> f32 {
-    return abs(across_metres(texel)) - mask_metres(texel.x);
+    let code = u32(round(texel.w * 255.0)) & 15u;
+    let track = select(RAIL_HALF_M, NARROW_HALF_M, ((code - RAIL_CODE) & 1u) == 1u);
+    return select(abs(across_metres(texel)) - mask_metres(texel.x), track, code >= RAIL_CODE);
 }
 
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the

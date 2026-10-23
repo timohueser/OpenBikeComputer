@@ -1,7 +1,10 @@
 """The railway furniture of the TrailView feature tiles: the masts of the contact wire of the electrified
 tracks, and the heights of the platforms. Masts stand evenly along each track, at most MAST_M apart, on the
-side away from a neighbouring track; a track with neighbours on both sides takes the masts of the outer
-tracks. A platform's top lies PLATFORM_M over the rail of the track nearest to each of its vertices."""
+side away from a neighbouring track, and none within MAST_GAP_M of another; a track with neighbours on both
+sides has no masts, as the arms of a mast reach only over its own track. A platform's top lies PLATFORM_M
+over the rail of the track nearest to each of its vertices."""
+
+import re
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -10,9 +13,12 @@ from .profiles import metres
 
 KINDS = {"platform", "platform-line"}
 # The most metres between two masts of a track, and how far beside the track's middle a mast stands, for
-# a standard and for a narrow gauge.
-MAST_M = 50.0
+# a standard and for a narrow gauge. On a deck a mast stands against the deck's edge: the half-width of
+# the track's bed in the engine (SURFACES of bins.ts) and half the mast's side. A mast within MAST_GAP_M
+# of one placed before it, as at a switch, is left out.
+MAST_M, MAST_GAP_M = 50.0, 8.0
 MAST_SIDE_M = {False: 3.0, True: 2.5}
+DECK_SIDE_M = {False: 1.9 + 0.12, True: 1.5 + 0.12}
 # A track within NEIGHBOUR_M beside a mast, but farther than NEAR_M from its track, is a neighbour.
 NEIGHBOUR_M, NEAR_M = 8.0, 1.0
 SAMPLE_M = 2.0
@@ -29,9 +35,10 @@ def solves(kind, tags):
 
 
 def narrow(tags):
-    """Whether a track is narrower than standard gauge: by its `gauge` in mm, else by its class."""
-    gauge = str(tags.get("gauge", "")).split(";")[0]
-    return int(gauge) < NARROW_MM if gauge.isdigit() else tags.get("railway") in {"narrow_gauge", "funicular"}
+    """Whether a track is narrower than standard gauge: by the leading digits of its first `gauge` in mm, as
+    `trackSurface` of bins.ts reads it, else by its class."""
+    gauge = re.match(r"\s*(\d+)", str(tags.get("gauge", "")).split(";")[0])
+    return int(gauge[1]) < NARROW_MM if gauge else tags.get("railway") in {"narrow_gauge", "funicular"}
 
 
 def electrified(tags):
@@ -76,7 +83,7 @@ def masts(tracks, beside):
             continue
         # A centimetre over the spacing takes no extra mast.
         n = max(1, int(np.ceil((along[-1] - 0.01) / MAST_M)))
-        side_m = MAST_SIDE_M[narrow(tags)]
+        side_m = (DECK_SIDE_M if deck else MAST_SIDE_M)[narrow(tags)]
         for s in (np.arange(n) + 0.5) * along[-1] / n:
             k = min(int(np.searchsorted(along, s, "right")) - 1, len(lengths) - 1)
             u = (s - along[k]) / max(lengths[k], 1e-9)
@@ -96,7 +103,13 @@ def masts(tracks, beside):
             sign = -1 if sides == {1} else 1
             point = at + sign * left * side_m / unit
             out.append(((float(point[0]), float(point[1])), float(height), {"on": "deck"} if deck else {}))
-    return out
+    if not out:
+        return out
+    xy = np.array([point for point, _, _ in out])
+    kept = np.zeros(len(out), bool)
+    for i, near in enumerate(cKDTree(xy).query_ball_point(xy, MAST_GAP_M / metres(xy[:, 1]))):
+        kept[i] = not any(kept[j] for j in near if j < i)
+    return [mast for mast, keep in zip(out, kept) if keep]
 
 
 def platforms(parts, tracks):

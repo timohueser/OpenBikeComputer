@@ -38,7 +38,7 @@ export type Twin = { shift: number; widen: number } | null;
 /**
  * Per tunnel line of a track, the twins of its two ends that meet the ground: two such ends of two tracks'
  * tunnels that lie side by side within TWIN_M and lead the same way are one portal, which the end that
- * comes first by its point draws.
+ * comes first by its point draws. The nearest pairs pair first, and an end has at most one twin.
  */
 export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
     const ends = lines.filter(line => line.kind === TUNNEL && line.abut && line.code >= RAIL_CODE).flatMap(line => [0, 1].filter(end => line.abut![end]).map(end => {
@@ -46,12 +46,16 @@ export function twins(lines: Line[]): Map<Line, [Twin?, Twin?]> {
         const dx = line.xy[2 * w] - x, dy = line.xy[2 * w + 1] - y, l = Math.hypot(dx, dy) || 1;
         return { line, end, x, y, into: [dx / l, dy / l] };
     }));
-    const out = new Map<Line, [Twin?, Twin?]>();
+    const pairs: { a: (typeof ends)[number]; b: (typeof ends)[number]; d: number; across: number }[] = [];
     for (const a of ends) for (const b of ends) {
         if (a.line === b.line || a.x > b.x || (a.x === b.x && a.y >= b.y)) continue;
-        const unit = metresPerUnit(a.y), ox = (b.x - a.x) * unit, oy = (b.y - a.y) * unit;
-        if (Math.hypot(ox, oy) > TWIN_M || a.into[0] * b.into[0] + a.into[1] * b.into[1] < 0.9) continue;
-        const across = ox * a.into[1] - oy * a.into[0];
+        const unit = metresPerUnit(a.y), ox = (b.x - a.x) * unit, oy = (b.y - a.y) * unit, d = Math.hypot(ox, oy);
+        if (d <= TWIN_M && a.into[0] * b.into[0] + a.into[1] * b.into[1] >= 0.9) pairs.push({ a, b, d, across: ox * a.into[1] - oy * a.into[0] });
+    }
+    const out = new Map<Line, [Twin?, Twin?]>(), taken = new Set<(typeof ends)[number]>();
+    for (const { a, b, across } of pairs.sort((p, q) => p.d - q.d)) {
+        if (taken.has(a) || taken.has(b)) continue;
+        taken.add(a).add(b);
         (out.get(a.line) ?? out.set(a.line, [undefined, undefined]).get(a.line)!)[a.end] = { shift: across / 2, widen: Math.abs(across) / 2 };
         (out.get(b.line) ?? out.set(b.line, [undefined, undefined]).get(b.line)!)[b.end] = null;
     }

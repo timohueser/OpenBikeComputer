@@ -15,6 +15,8 @@ from .water import contains
 # OSM bridge values of a way that lies on the ground.
 GROUND = {"no", "boardwalk", "low_water_crossing"}
 KINDS = {"main-road", "road", "path", "railway"}
+# The `railway` values of a track. A tunnel or a gallery of a road can keep another `railway` value.
+TRACKS = {"rail", "narrow_gauge", "light_rail", "funicular"}
 # The longest span between piers, and the deck depth per metre of span within its least and greatest.
 SPAN_M = {"road": 45.0, "path": 30.0}
 DEPTH = {"road": (1 / 30, 0.5, 2.5), "path": (1 / 40, 0.3, 1.0)}
@@ -70,9 +72,14 @@ def chains(ways):
     return out
 
 
+def is_track(tags):
+    """Whether a way is a track: a `railway` of TRACKS and no `highway`."""
+    return tags.get("railway") in TRACKS and "highway" not in tags
+
+
 def road_half(tags):
     highway = tags.get("highway")
-    return RAIL_HALF_M if "railway" in tags else PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
+    return RAIL_HALF_M if is_track(tags) else PATH_HALF_M if highway in PATHS else MAIN_HALF_M if highway in MAIN else ROAD_HALF_M
 
 
 def boxed(items, points):
@@ -188,7 +195,10 @@ PATHS = {"path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via
 
 
 def bore(tags):
-    return BORE_RAIL_M if "railway" in tags else BORE_PATH_M if tags.get("highway") in PATHS else BORE_M
+    """The height of a tunnel's bore for a way."""
+    return BORE_RAIL_M if is_track(tags) else BORE_PATH_M if tags.get("highway") in PATHS else BORE_M
+
+
 # Farther than PORTAL_M from its ends, a tunnel that rises FLOAT_M over the terrain lies where the solver
 # could not put it under the hill: a network of shafts and caverns, or a bore that the terrain misses.
 FLOAT_M, PORTAL_M = 5.0, 20.0

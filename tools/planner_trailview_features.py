@@ -573,7 +573,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                     entry = kind_of(kinds, "line", {**tags, "tunnel": "no"}) or entry
                     metrics["roads"]["shallow_tunnels"] = metrics["roads"].get("shallow_tunnels", 0) + 1
                 place(entry, {**tags, **extra.get(n, {})}, parts)
-                if "railway" in tags:
+                if structures.is_track(tags):
                     tracks += [(entry["kind"], tags, part) for part in parts if part[2]]
             for point, z, way in piers:
                 place({"kind": "bridge-pier", "geometry": "point", "min_zoom": ways[decks[way][0]][0].get("min_zoom", MAX_ZOOM)}, {}, [(False, [point], [z])])

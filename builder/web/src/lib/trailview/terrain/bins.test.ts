@@ -60,6 +60,8 @@ describe('the stamp data of a node', () => {
         expect([/const SLEEPER_M: f32 = ([\d.]+);/.exec(shader)?.[1], /const SLEEPER_SPACING_M: f32 = ([\d.]+);/.exec(mask)?.[1]].map(Number)).toEqual([SLEEPER_M, SLEEPER_M]);
         const range = /const TRACK_RANGE: f32 = ([\d.]+);/.exec(readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'))?.[1];
         expect(Number(/const TRACK_M: f32 = ([\d.]+);/.exec(mask)?.[1])).toBe(Number(range));
+        const [rail, narrow] = ['RAIL_HALF_M', 'NARROW_HALF_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(mask)?.[1]));
+        expect(Object.values(SURFACES).slice(RAIL_CODE - 1)).toEqual([rail, narrow, rail, narrow]);
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {

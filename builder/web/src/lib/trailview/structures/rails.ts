@@ -1,6 +1,7 @@
 // The furniture of the tracks of a node: a mast at each `catenary-mast` point of the bake with two arms
 // out over its track, the contact wire over each electrified track, and the platforms: slabs at their
-// heights from the bake, whose sides reach down into the drawn surface.
+// heights from the bake, whose sides reach down into the drawn surface. Each node draws the part of an
+// area platform inside its square.
 import earcut from 'earcut';
 import { EXTENT, type Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, RAIL, RAIL_CODE, type Line, type Node } from '../terrain/bins';
@@ -25,7 +26,8 @@ const STEEL = rgb('#7a7670'), WIRE = rgb('#3a3c3e'), PLATFORM = rgb('#b4b0a6'), 
 /** A world point with its height in metres. */
 type Point = [number, number, number];
 
-export function rails(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns): void {
+/** `square` is the node's square as `owns` reads it: west, north, east and south in world units. */
+export function rails(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns, square: number[]): void {
     const tracks = lines.filter(line => (line.kind === RAIL || line.kind === BRIDGE) && line.code >= RAIL_CODE);
     for (const line of tracks) {
         if (!line.wire) continue;
@@ -42,8 +44,8 @@ export function rails(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[]
                 const [x, y] = world(xy, 0);
                 if (z && !Number.isNaN(z[0]) && owns(x, y)) mast(b, x, y, z[0], tags.on === 'deck', tracks);
             }
-        } else if (kind === 'platform' && parts[0]?.z && owns(...world(parts[0].xy, 0))) {
-            platform(b, parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v))), parts.map(({ z }) => Array.from(z!)), parts.map(({ outer }) => outer));
+        } else if (kind === 'platform' && parts[0]?.z) {
+            platform(b, parts.map(({ xy, z }) => clip(Array.from({ length: xy.length / 2 }, (_, v): Point => [...world(xy, v), z![v]]), square)), parts.map(({ outer }) => outer), square);
         } else if (kind === 'platform-line') {
             const width = parseFloat(tags.width ?? '') || PLATFORM_WIDTH_M;
             for (const { xy, z } of parts) {
@@ -53,7 +55,7 @@ export function rails(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[]
     }
 }
 
-/** A mast at world point x, y beside the nearest track, `z` its rail's height; on a deck it hangs from the deck's edge. */
+/** A mast at world point x, y beside the nearest track, `z` its rail's height; on a deck it stands against the deck's side, below its rail. */
 function mast(b: MeshBuilder, x: number, y: number, z: number, deck: boolean, tracks: Line[]): void {
     const unit = metresPerUnit(y);
     let best: { fx: number; fy: number; d: number } | undefined;
@@ -87,20 +89,38 @@ function bar(b: MeshBuilder, p: Point, q: Point, half: number, colour: number): 
     for (let k = 0; k < 4; k++) b.quad([from[k], from[(k + 1) % 4], to[(k + 1) % 4], to[k]], out[k]);
 }
 
-/** A platform from its rings of world points with a height at each vertex: its top, and its sides down into the drawn surface. */
-function platform(b: MeshBuilder, rings: [number, number][][], z: number[][], outer: boolean[]): void {
-    const [x0, y0] = rings[0][0], unit = metresPerUnit(y0);
+/** A ring of world points with heights cut to `square` (Sutherland–Hodgman); heights run straight along a cut edge. */
+function clip(ring: Point[], [x0, y0, x1, y1]: number[]): Point[] {
+    for (const [axis, bound, keep] of [[0, x0, 1], [0, x1, -1], [1, y0, 1], [1, y1, -1]] as const) {
+        const input = ring;
+        ring = [];
+        input.forEach((p, i) => {
+            const q = input[(i + 1) % input.length], inside = (p[axis] - bound) * keep >= 0;
+            if (inside) ring.push(p);
+            if (inside !== (q[axis] - bound) * keep >= 0) {
+                const t = (bound - p[axis]) / (q[axis] - p[axis]), cut = p.map((c, k) => c + t * (q[k] - c)) as Point;
+                cut[axis] = bound;
+                ring.push(cut);
+            }
+        });
+    }
+    return ring;
+}
+
+/** A platform from its rings cut to `square`: its top, and its sides down into the drawn surface, but none along the square's edges. */
+function platform(b: MeshBuilder, rings: Point[][], outer: boolean[], square: number[]): void {
+    const cut = (p: Point, q: Point) => [0, 1].some(a => [square[a], square[a + 2]].some(s => p[a] === s && q[a] === s));
     for (let r = 0; r < rings.length; r++) {
-        if (!outer[r]) continue;
-        const polygon = [r], holes: number[] = [];
-        for (let k = r + 1; k < rings.length && !outer[k]; k++) polygon.push(k);
+        if (!outer[r] || rings[r].length < 3) continue;
+        const [x0, y0] = rings[r][0], unit = metresPerUnit(y0), polygon = [r], holes: number[] = [];
+        for (let k = r + 1; k < rings.length && !outer[k]; k++) if (rings[k].length >= 3) polygon.push(k);
         const flat: number[] = [], first: number[] = [];
         for (const k of polygon) {
             if (k !== r) holes.push(flat.length / 2);
             first.push(flat.length / 2);
             for (const [x, y] of rings[k]) flat.push((x - x0) * unit, (y0 - y) * unit);
         }
-        const top = polygon.flatMap(k => rings[k].map(([x, y], v) => b.vertex(x, y, z[k][v], PLATFORM)));
+        const top = polygon.flatMap(k => rings[k].map(([x, y, z]) => b.vertex(x, y, z, PLATFORM)));
         const triangles = earcut(flat, holes);
         for (let i = 0; i < triangles.length; i += 3) b.triangle(top[triangles[i]], top[triangles[i + 1]], top[triangles[i + 2]], [0, 0, 1]);
         polygon.forEach((k, j) => {
@@ -111,8 +131,9 @@ function platform(b: MeshBuilder, rings: [number, number][][], z: number[][], ou
             const sign = (area > 0 ? 1 : -1) * (k === r ? 1 : -1);
             for (let v = 0; v < n; v++) {
                 const w = (v + 1) % n, east = flat[2 * (at + w)] - flat[2 * (at + v)], north = flat[2 * (at + w) + 1] - flat[2 * (at + v) + 1];
-                const [[ax, ay], [bx, by]] = [ring[v], ring[w]];
-                b.quad([b.vertex(ax, ay, z[k][v], PLATFORM_SIDE), b.vertex(bx, by, z[k][w], PLATFORM_SIDE), b.vertex(bx, by, -PLATFORM_SINK_M, PLATFORM_SIDE | (GROUND << 24)), b.vertex(ax, ay, -PLATFORM_SINK_M, PLATFORM_SIDE | (GROUND << 24))], [sign * north, -sign * east, 0]);
+                if (cut(ring[v], ring[w])) continue;
+                const [[ax, ay, az], [bx, by, bz]] = [ring[v], ring[w]];
+                b.quad([b.vertex(ax, ay, az, PLATFORM_SIDE), b.vertex(bx, by, bz, PLATFORM_SIDE), b.vertex(bx, by, -PLATFORM_SINK_M, PLATFORM_SIDE | (GROUND << 24)), b.vertex(ax, ay, -PLATFORM_SINK_M, PLATFORM_SIDE | (GROUND << 24))], [sign * north, -sign * east, 0]);
             }
         });
     }

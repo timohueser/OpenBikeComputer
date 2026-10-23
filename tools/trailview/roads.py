@@ -9,7 +9,8 @@ a side road leaves a junction on the surface of the through road. A bridge or a 
 under it and runs between its ends, a tunnel in a straight line; a bridge never sags under the straight line
 between its ends, and rises where it would pass too low over the water, the road or the path that it crosses.
 A tunnel sinks under a road or a path that crosses over it, which does not move. A ford lies FORD_M below the water it crosses.
-Tracks side by side, as OSM maps each track of a double line, lie at one height: their beds are one bed."""
+Tracks side by side, as OSM maps each track of a double line, lie at one height: their beds are one bed. A
+track on a ramp beside another keeps its own height."""
 
 import json
 import math
@@ -22,7 +23,7 @@ from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.sparse.linalg import splu
 
 from .profiles import metres
-from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M
+from .structures import BORE_M, BORE_PATH_M, BORE_RAIL_M, is_track
 
 TABLE = Path(__file__).resolve().parents[2] / "data/trailview/roads.json"
 FIELDS = {"grade", "smooth_m", "tol", "reach", "least", "cut", "fill", "tilt"}
@@ -48,8 +49,9 @@ CLEAR_WATER_M, CLEAR_ROAD_M, CLEAR_PATH_M, CLEAR_RAIL_M = 1.5, 4.5, 2.5, 6.0
 DECK_M, DECK_PATH_M = 1.0, 0.4
 # A road or a path over a tunnel lies at least this far over its bore.
 COVER_M = 1.0
-# A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its height.
-PARALLEL_M, PARALLEL_COS = 6.0, 0.9
+# A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its height,
+# unless the terrain under the two differs by more than PARALLEL_RISE_M: a ramp or a flyover.
+PARALLEL_M, PARALLEL_COS, PARALLEL_RISE_M = 6.0, 0.9, 1.5
 # Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no road,
 # a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or tunnel the
 # preference for level, so that one that meets a road at one end only is level from there.
@@ -87,8 +89,8 @@ def solves(kind, tags):
 
 
 def class_of(tags):
-    """The class of a way: `rack` for a rack railway, else its `railway` or its `highway`."""
-    if "railway" in tags:
+    """The class of a way: `rack` for a rack railway, else the `railway` of a track or its `highway`."""
+    if is_track(tags):
         return "rack" if tags.get("rack", "no") != "no" else tags["railway"]
     return tags.get("highway", "")
 
@@ -306,7 +308,7 @@ def solve(features, terrain, rivers=(), classes=CLASSES):
     approach = approach_pins(net)
     fords = ford_pins(net, rivers)
     bores = chain_rows(net, net.tunnel)
-    beside = parallel_pins(net, classes)
+    beside = parallel_pins(net, classes, terrain)
     above = clearances(net, rivers, classes)
     sags = chain_rows(net, net.free & ~net.tunnel)
     above = (np.concatenate([above[0], np.column_stack([sags[0], sags[0][:, 0]])]), np.concatenate([above[1], np.pad(sags[1], ((0, 0), (0, 1)))]),
@@ -554,10 +556,11 @@ def chain_rows(net, members):
     return np.array([r[0] for r in rows], np.int64), np.array([r[1] for r in rows]), np.zeros(len(rows))
 
 
-def parallel_pins(net, classes):
+def parallel_pins(net, classes, terrain):
     """(variables, coefficients, values) of z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a track on the
     ground and the nearest segment A-B of a track on the ground with a higher way number within PARALLEL_M
-    beside it that runs its way, τ the foot of P on A-B. Each track follows only tracks after it, so no two
+    beside it that runs its way, τ the foot of P on A-B, where the terrain at P and at its foot is known and
+    differs by no more than PARALLEL_RISE_M. Each track follows only tracks after it, so no two
     rows pull against each other, and the tracks of a double line or a station lie at one height."""
     none = (np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0))
     rail = np.array([name in RAILS for name in classes])[net.rule] & ~net.free
@@ -573,7 +576,7 @@ def parallel_pins(net, classes):
     scale = float(unit.max())
     tree = cKDTree((pa + pb) / 2 * scale)
     reach = (PARALLEL_M + VERTEX_M / 2) * scale / float(unit.min())
-    variables, coefficients = [], []
+    found = []
     for w in np.flatnonzero(rail).tolist():
         span = np.arange(net.way_first[w], net.way_last[w] + 1)
         for v, near in zip(span.tolist(), tree.query_ball_point(net.vertex_xy[span] * scale, reach)):
@@ -590,12 +593,16 @@ def parallel_pins(net, classes):
                 if gap <= PARALLEL_M and (best is None or gap < best[0]):
                     best = (gap, k, t)
             if best:
-                _, k, t = best
-                variables.append([net.vertex_var[v], net.a[segments[k]], net.b[segments[k]]])
-                coefficients.append([1.0, -(1 - t), -t])
-    if not variables:
+                found.append((v, best[1], best[2]))
+    if not found:
         return none
-    return np.array(variables, np.int64), np.array(coefficients), np.zeros(len(variables))
+    v, k, t = (np.array(column) for column in zip(*found))
+    p, foot = net.vertex_xy[v], pa[k] + t[:, None] * d[k]
+    with np.errstate(invalid="ignore"):
+        level = np.abs(terrain.heights(p[:, 0], p[:, 1]) - terrain.heights(foot[:, 0], foot[:, 1])) <= PARALLEL_RISE_M
+    v, k, t = v[level], k[level], t[level]
+    variables = np.column_stack([net.vertex_var[v], net.a[segments[k]], net.b[segments[k]]]).astype(np.int64)
+    return variables, np.column_stack([np.ones(len(t)), -(1 - t), -t]), np.zeros(len(t))
 
 
 def ford_pins(net, rivers):

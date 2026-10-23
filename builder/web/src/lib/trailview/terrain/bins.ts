@@ -19,7 +19,7 @@ export const INSIDE = 1 << 30;
  * Primitive kinds, as in stamp-core.wgsl. A stream shapes no terrain: only its water draws. A bridge holds
  * the ground under its deck, and a tunnel holds the ground over its bore. A track holds its bed as a road
  * does, and counts its sleepers where a road has its tilts. A pad holds the ground inside its edges under
-its level, as a platform does.
+ * its level, as a platform does.
  */
 export const ROAD = 1, PATH = 2, EDGE = 3, LAKE = 4, JUNCTION = 5, RIVER = 6, STREAM = 7, BRIDGE = 8, TUNNEL = 9, RAIL = 10, PAD = 11;
 /** Road flags: a ford, the round caps of the core and the cone at the start and the end, and of the paint where the through road runs on into another line. */
@@ -75,8 +75,11 @@ export const PROFILES: Record<string, Profile> = {
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
-/** The class of a way, as `class_of` of tools/trailview/roads.py: `rack` for a rack railway, else its `railway` or its `highway`. */
-const classOf = (tags: Record<string, string>) => (tags.railway ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
+/** Whether a way is a track, as `is_track` of tools/trailview/structures.py: a `railway` of these and no `highway`. */
+const TRACKS = ['rail', 'narrow_gauge', 'light_rail', 'funicular'];
+const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) && !tags.highway;
+/** The class of a way, as `class_of` of tools/trailview/roads.py: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
+const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(kind === 'river' ? 'river' : Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');
 /** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats. */
@@ -212,7 +215,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         if (!river && !['main-road', 'road', 'path', 'railway', 'tunnel', 'gallery'].includes(kind)) continue;
         // A passage through a building is a road: the building stands over it.
         const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = PATHS.includes(tags.highway) || tags.highway === 'cycleway';
-        const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = !!tags.railway;
+        const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = isTrack(tags);
         const surface = track ? trackSurface(tags) : surfaceOf(tags), width = parseFloat(tags.width ?? '');
         const h = river ? (Number.isFinite(width) ? width / 2 : WATERWAYS[tags.waterway] ?? 1) : track ? SURFACES[surface] : halfWidth(tags, surface), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
         const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, classOf(tags));

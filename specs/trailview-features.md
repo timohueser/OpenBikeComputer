@@ -105,8 +105,9 @@ The solvers of the bake set the heights of a feature. A feature with no height h
 Each vertex of a `main-road`, `road`, `path`, `railway`, `tunnel` or `gallery` has the height of the road
 surface or of the rails, except a `via_ferrata`, which has none. The class table
 [`data/trailview/roads.json`](../data/trailview/roads.json) gives the rules per class: the steepest grade
-and a smoothing length. The class of a road is its `highway`, and of a track its `railway`, or `rack`
-when it has a `rack` tag other than `no`. The table lists the tracks first, so at a level crossing the
+and a smoothing length. A track is a way with a `railway` of `rail`, `narrow_gauge`, `light_rail` or
+`funicular` and no `highway`. The class of a track is its `railway`, or `rack` when it has a `rack` tag
+other than `no`; the class of another way is its `highway`. The table lists the tracks first, so at a level crossing the
 road meets the track. It is part of the options of the step. The road solver:
 
 - samples the master terrain every 2 m along each way,
@@ -154,9 +155,11 @@ The bake adds these to the features of the road solver:
 | point `catenary-mast` | each mast of the contact wire of a `railway` tagged `electrified` `contact_line` or `yes`, but not a funicular | Its height is its track's rail there. Tag `on` `deck` on a bridge |
 
 The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle, or
-2.5 m for a narrow gauge (`gauge` below 1200 mm, else `narrow_gauge` and `funicular`). A mast stands on
+2.5 m for a narrow gauge (`gauge` below 1200 mm, else `narrow_gauge` and `funicular`). On a bridge a mast
+stands against the deck's edge: 2.02 m beside the middle, or 1.62 m for a narrow gauge. A mast stands on
 the side away from another track that lies 1 to 8 m beside it; a track with such tracks on both sides
-has no masts. A track in a tunnel has no masts.
+has no masts. The bake leaves out a mast that lies less than 8 m from a mast before it. A track in a
+tunnel has no masts.
 
 Each vertex of a `platform` or a `platform-line` has the height of its top: 0.55 m, or 0.35 m for a narrow
 gauge, over the rail of the nearest track within 15 m that is not in a tunnel. A vertex with no track

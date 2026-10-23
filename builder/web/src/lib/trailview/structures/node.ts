@@ -71,6 +71,6 @@ export function structureMesh(list: Feature[], tile: Node, node: Node): Structur
     bridges(b, list, tile, lines, owns);
     tunnels(b, lines, owns);
     galleries(b, lines, owns);
-    rails(b, list, tile, lines, owns);
+    rails(b, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
     return b.mesh();
 }
