@@ -105,7 +105,6 @@ export class TrailView {
     private rendered: (() => void)[] = [];
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
-    private readonly occluding: boolean;
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number, labs: Labs) {
         this.context = canvas.getContext('webgpu')!;
@@ -116,7 +115,6 @@ export class TrailView {
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
         this.forest = new Forest(config, this.groundLook.rules, this.instances, labs, () => this.request());
-        this.occluding = labs.hiz === 'on';
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -343,7 +341,7 @@ export class TrailView {
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
-        const last = this.occluding && eye && this.lastFrame
+        const last = eye && this.lastFrame
             ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
         const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
         if (!eye || !group) {
