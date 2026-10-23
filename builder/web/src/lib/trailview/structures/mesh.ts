@@ -1,9 +1,15 @@
 // The mesh of the structures of a node, as structures.wgsl reads it: flat faces in vertex colours,
 // at heights from the bake, and some vertices on the drawn surface.
-import { metresPerUnit, mitre, type Line } from '../terrain/bins';
+import { metresPerUnit, mitre, RAIL_CODE, SLEEPER_M, type Line } from '../terrain/bins';
 
-/** Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags (unorm8x4), across and half-width. */
+/**
+ * Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags
+ * (unorm8x4), across and half-width (snorm16x2 of ±ROAD_RANGE_M), and a track's sleepers from its start.
+ */
 export const STRUCTURE_VERTEX = 6;
+const ROAD_RANGE_M = 16;
+/** As NO_SLEEPERS of roads.wgsl: a face without a count of sleepers. */
+export const NO_SLEEPERS = -1e9;
 /**
  * Vertex flags in the colour's alpha: z is metres above the drawn surface; the face is a road, its colour's
  * red the surface code; the face is the dark void of a tunnel's opening, drawn only where the terrain has
@@ -20,13 +26,20 @@ export interface StructureMesh {
 export type Corner = [number, number];
 
 /**
- * A place on a line: its point in world units, its height, and the unit vector across it to the left
- * in world units per metre, with the length of a mitre.
+ * A place on a line: its point in world units, its height, the unit vector across it to the left
+ * in world units per metre, with the length of a mitre, and on a track its sleepers from its start.
  */
-export interface Station { x: number; y: number; z: number; ax: number; ay: number }
+export interface Station { x: number; y: number; z: number; ax: number; ay: number; sleepers?: number }
 
 /** A mitre grows at most this much in a sharp bend. */
 const MITRE = 3;
+
+/** The stations of a line's vertices, made once each; a track's count its sleepers. */
+export function stationsOf(line: Line): (v: number) => Station {
+    const along = [0], n = line.z.length, made = new Map<number, Station>();
+    if (line.code >= RAIL_CODE) for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
+    return v => made.get(v) ?? made.set(v, { ...station(line, v), sleepers: line.code >= RAIL_CODE ? deckSleepers(line, along[v], along[n - 1]) : undefined }).get(v)!;
+}
 
 /** The station of vertex v of a line: across to the left of its mitre, per metre. */
 export function station(line: Line, v: number): Station {
@@ -37,7 +50,18 @@ export function station(line: Line, v: number): Station {
 }
 
 /** The station a share u of the way from s to t. */
-export const mix = (s: Station, t: Station, u: number): Station => ({ x: s.x + (t.x - s.x) * u, y: s.y + (t.y - s.y) * u, z: s.z + (t.z - s.z) * u, ax: s.ax + (t.ax - s.ax) * u, ay: s.ay + (t.ay - s.ay) * u });
+export const mix = (s: Station, t: Station, u: number): Station => ({
+    x: s.x + (t.x - s.x) * u, y: s.y + (t.y - s.y) * u, z: s.z + (t.z - s.z) * u, ax: s.ax + (t.ax - s.ax) * u, ay: s.ay + (t.ay - s.ay) * u,
+    sleepers: s.sleepers === undefined || t.sleepers === undefined ? undefined : s.sleepers + (t.sleepers - s.sleepers) * u,
+});
+
+/**
+ * The sleepers of a deck or a bore of a track `metres` along its line of `total` metres, as `sleepers_at` of
+ * stamp-core.wgsl counts them on the ground at its ends: from an end that meets the ground.
+ */
+export function deckSleepers(line: Line, metres: number, total: number): number | undefined {
+    return line.abut?.[0] ? metres / SLEEPER_M : line.abut?.[1] ? -(total - metres) / SLEEPER_M : undefined;
+}
 
 /**
  * Calls `post` with the stations about each of the places that divide a segment from s to t, `length`
@@ -60,13 +84,14 @@ export class MeshBuilder {
     private readonly indices: number[] = [];
 
     /** A vertex at a station's corner, or at a point. */
-    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0): number {
-        this.words.push(Math.round(x), Math.round(y), z, colour, across, half);
+    vertex(x: number, y: number, z: number, colour: number, across = 0, half = 0, sleepers = NO_SLEEPERS): number {
+        const snorm = (metres: number) => Math.round(Math.max(-1, Math.min(1, metres / ROAD_RANGE_M)) * 32767) & 0xffff;
+        this.words.push(Math.round(x), Math.round(y), z, colour, (snorm(across) | (snorm(half) << 16)) >>> 0, sleepers);
         return this.words.length / STRUCTURE_VERTEX - 1;
     }
 
     at(s: Station, [a, up]: Corner, colour: number, across = 0, half = 0): number {
-        return this.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + up, colour, across, half);
+        return this.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + up, colour, across, half, s.sleepers);
     }
 
     /** A quad of four vertices in order around it, turned to face `out` (east, north, up). */
@@ -91,7 +116,7 @@ export class MeshBuilder {
         this.words.forEach((word, i) => {
             const k = i % STRUCTURE_VERTEX;
             if (k < 2) ints[i] = word;
-            else if (k === 3) uints[i] = word;
+            else if (k === 3 || k === 4) uints[i] = word;
             else floats[i] = word;
         });
         return { vertices, indices: new Uint32Array(this.indices) };

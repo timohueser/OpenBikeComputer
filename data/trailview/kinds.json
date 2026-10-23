@@ -6,8 +6,9 @@
                            "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
                            "residential", "living_street", "service", "road", "track", "path", "footway",
                            "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"],
-               "tunnel": ["yes", "building_passage"]}],
-    "keep": ["highway", "tunnel", "width", "lanes", "layer"],
+               "tunnel": ["yes", "building_passage"]},
+              {"railway": ["rail", "narrow_gauge", "light_rail", "funicular"], "tunnel": ["yes"]}],
+    "keep": ["highway", "tunnel", "width", "lanes", "layer", "railway", "gauge", "rack", "electrified"],
     "height": "profile"
   },
   {
@@ -17,8 +18,9 @@
                            "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
                            "residential", "living_street", "service", "road", "track", "path", "footway",
                            "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"],
-               "tunnel": ["avalanche_protector"]}],
-    "keep": ["highway", "width", "lanes", "layer"],
+               "tunnel": ["avalanche_protector"]},
+              {"railway": ["rail", "narrow_gauge", "light_rail", "funicular"], "tunnel": ["avalanche_protector"]}],
+    "keep": ["highway", "width", "lanes", "layer", "railway", "gauge", "rack", "electrified"],
     "height": "profile"
   },
   {
@@ -48,10 +50,23 @@
   {
     "kind": "railway",
     "geometry": "line",
-    "match": [{"railway": ["rail", "narrow_gauge", "light_rail", "tram", "funicular", "monorail"]}],
-    "keep": ["railway", "usage", "service", "gauge", "electrified", "rack", "bridge", "tunnel", "layer"],
-    "height": "profile",
-    "active": false
+    "match": [{"railway": ["rail", "narrow_gauge", "light_rail", "funicular"]}],
+    "keep": ["railway", "gauge", "electrified", "rack", "bridge", "bridge:structure", "layer"],
+    "height": "profile"
+  },
+  {
+    "kind": "platform",
+    "geometry": "area",
+    "match": [{"railway": ["platform"]}],
+    "keep": [],
+    "height": "profile"
+  },
+  {
+    "kind": "platform-line",
+    "geometry": "line",
+    "match": [{"railway": ["platform"]}],
+    "keep": ["width"],
+    "height": "profile"
   },
   {
     "kind": "river",

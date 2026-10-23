@@ -129,7 +129,8 @@ export class Structures {
             render('structure_vertex', [{
                 arrayStride: STRUCTURE_VERTEX * 4, attributes: [
                     { shaderLocation: 0, offset: 0, format: 'sint32x2' }, { shaderLocation: 1, offset: 8, format: 'float32' },
-                    { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'float32x2' },
+                    { shaderLocation: 2, offset: 12, format: 'unorm8x4' }, { shaderLocation: 3, offset: 16, format: 'snorm16x2' },
+                    { shaderLocation: 4, offset: 20, format: 'float32' },
                 ],
             }], 'back'),
             // Models need no winding: both faces draw.

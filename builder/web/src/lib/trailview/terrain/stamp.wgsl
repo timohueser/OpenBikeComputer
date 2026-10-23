@@ -41,12 +41,14 @@ const MASK: u32 = 4u;
 // A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
 // page's 16-bit heights.
 const FACE_M: f32 = 0.02;
-// The mask holds distances of ±MASK_RANGE metres in 0.1 m steps.
+// The mask holds distances of ±MASK_RANGE metres in 0.1 m steps, and a track's metres from its middle
+// within ±TRACK_RANGE, in 2.5 cm steps for its rails.
 const MASK_RANGE: f32 = 12.75;
+const TRACK_RANGE: f32 = 3.2;
 // Mask flags, as features.wgsl reads them.
-const WALL_FLAG: u32 = 2u;
-const CONFLICT_FLAG: u32 = 4u;
-const FORD_FLAG: u32 = 8u;
+const WALL_FLAG: u32 = 1u;
+const CONFLICT_FLAG: u32 = 2u;
+const FORD_FLAG: u32 = 4u;
 // A mesh vertex moves onto a road edge within this many texels of its level: 3/4 of a mesh cell, so
 // that on every level with masks each triangle along an edge has a vertex on it.
 const SNAP_TEXELS: f32 = 3.0;
@@ -92,9 +94,10 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
         let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0);
-        let byte = select(0u, s.surface, s.road < MASK_RANGE) | (flags << 3u);
+        let surface = select(0u, s.surface, s.road < MASK_RANGE);
+        let across = select(distance_code(s.across), clamp(s.across / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), surface >= TRACK_CODE);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), distance_code(s.shore), distance_code(s.across), f32(byte) / 255.0));
+            vec4f(distance_code(s.road), fract(s.sleepers), across, f32(surface | (flags << 4u)) / 255.0));
     }
 }
 
@@ -117,7 +120,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     var road = true;
     for (var i = 0; i < 4; i++) {
         let texel = textureLoad(mask_in, in_layer(job.mask, low + vec2i(i % 2, i / 2)), job.mask >> 6u, 0);
-        road = road && (u32(round(texel.w * 255.0)) & 7u) != 0u;
+        road = road && (u32(round(texel.w * 255.0)) & 15u) != 0u;
         d[i] = (texel.x - 0.5) * 2.0 * MASK_RANGE;
     }
     let shift = 22u - job.level;
