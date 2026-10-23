@@ -31,12 +31,12 @@ export const boreHalf = (line: Line) => line.h + (line.deck! > 3 ? ROAD_PORTAL :
 
 /**
  * The box of a tunnel's portal at vertex `from` toward vertex `to`, in which the terrain draws nothing:
- * its depth, its half-width to the middle of its walls, the height of its roof's top at the facade and
- * the rise of that roof per metre into the tunnel.
+ * its depth, its half-width to the middle of its walls, the heights of its roof's top and of its walls'
+ * foot at the facade, and the rise of both per metre into the tunnel.
  */
-export function portalBox(line: Line, from: number, to: number): [number, number, number, number] {
+export function portalBox(line: Line, from: number, to: number): [number, number, number, number, number] {
     const depth = (line.deck! > 3 ? ROAD_PORTAL : PATH_PORTAL).depth, z = line.z[from];
-    return [depth, boreHalf(line) + WALL_M / 2, z + line.deck! + WALL_M, (along(line, from, to, depth).z - z) / depth];
+    return [depth, boreHalf(line) + WALL_M / 2, z + line.deck! + WALL_M, z - SINK_M, (along(line, from, to, depth).z - z) / depth];
 }
 
 /** The outline of a bore from its left foot over the arch to its right foot. */

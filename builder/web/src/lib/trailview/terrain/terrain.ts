@@ -293,7 +293,7 @@ export class Terrain {
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
-            holes: buffer('terrain', (1 + 2 * MAX_HOLES) * 16, storage),
+            holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             normalJobs: buffer('compute', 2 * ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
@@ -765,13 +765,13 @@ export class Terrain {
 
 /** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */
 function holes(lists: Float64Array[], anchor: Anchor): Float32Array<ArrayBuffer> {
-    const out = new Float32Array(4 * (1 + 2 * MAX_HOLES)), seen = new Set<string>();
+    const out = new Float32Array(4 * (1 + 3 * MAX_HOLES)), seen = new Set<string>();
     let n = 0;
     for (const list of lists) for (let i = 0; i < list.length && n < MAX_HOLES; i += BOX) {
         const name = `${list[i]},${list[i + 1]}`;
         if (seen.has(name)) continue;
         seen.add(name);
-        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 8 * n++);
+        out.set([list[i] - anchor.whole[0] - anchor.part[0], list[i + 1] - anchor.whole[1] - anchor.part[1], ...list.subarray(i + 2, i + BOX)], 4 + 12 * n++);
     }
     out[0] = n;
     return out;
