@@ -10,7 +10,7 @@ import { eyeLook, lightAt, weatherLight, WEATHERS } from './light/light';
 import { LOOK_BYTES, lookUniform } from './light/look';
 import { Sky } from './light/sky';
 import { Resolve } from './resolve/resolve';
-import { DEPTH, Targets } from './resolve/targets';
+import { DEPTH, MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
 import { GroundSource } from './stream/ground';
 import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
@@ -102,7 +102,7 @@ export class TrailView {
     }
 
     /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. `scale` is the render scale. */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale = 1): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, scale);
         await engine.attach(gpu);
@@ -178,7 +178,7 @@ export class TrailView {
         this.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
         const uniform = gpu.buffer('uniforms', FRAME_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const look = gpu.buffer('uniforms', LOOK_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-        const targets = new Targets(gpu, this.scale);
+        const targets = new Targets(gpu);
         this.gpuState = { gpu, uniform, look, times: new PassTimes(gpu, PASSES, { resolve: 'terrain' }), targets };
         this.temporal.reset();
         const layouts = this.groundLook.layouts(gpu.device);
@@ -329,7 +329,7 @@ export class TrailView {
     private fit(): boolean {
         const ratio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
         const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio)), height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
-        if (!this.gpuState.targets.fit(width, height)) return false;
+        if (!this.gpuState.targets.fit(width, height, Math.max(this.scaleNow, MAX_SCALE))) return false;
         this.canvas.width = width;
         this.canvas.height = height;
         return true;

@@ -2,7 +2,7 @@ import { NEAR } from '../frame/camera';
 import { CURVATURE } from '../frame/frame';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { HISTORY, type Targets } from './targets';
+import { HISTORY, HISTORY_DEPTH, type Targets } from './targets';
 
 /** `Resolve` in resolve.wgsl. */
 const UNIFORM_BYTES = 128;
@@ -52,13 +52,14 @@ export class Resolve {
             { binding: 3, visibility: F, texture: { sampleType: 'float' } },
             { binding: 4, visibility: F, sampler: { type: 'filtering' } },
             { binding: 5, visibility: F, sampler: { type: 'non-filtering' } },
+            { binding: 6, visibility: F, texture: { sampleType: 'float' } },
         ] });
         const empty = device.createBindGroupLayout({ entries: [] });
         const module = device.createShaderModule({ label: 'resolve', code: wgsl('resolve/resolve.wgsl') });
         const pipeline = await device.createRenderPipelineAsync({
             label: 'resolve', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, empty, look] }),
             vertex: { module, entryPoint: 'resolve_vertex' },
-            fragment: { module, entryPoint: 'resolve_fragment', targets: [{ format: gpu.format }, { format: HISTORY }] },
+            fragment: { module, entryPoint: 'resolve_fragment', targets: [{ format: gpu.format }, { format: HISTORY }, { format: HISTORY_DEPTH }] },
         });
         this.resources = {
             gpu, pipeline, layout, empty: device.createBindGroup({ layout: empty, entries: [] }),
@@ -76,9 +77,9 @@ export class Resolve {
         if (this.version !== targets.version) {
             this.version = targets.version;
             this.last = undefined;
-            const { scene, depth, history } = targets;
+            const { scene, depth, history, historyDepth } = targets;
             this.groups = [0, 1].map(p => r.gpu.device.createBindGroup({ layout: r.layout, entries: [
-                { buffer: r.uniform }, scene.createView(), depth.createView(), history[1 - p].createView(), r.sampler, r.nearest,
+                { buffer: r.uniform }, scene.createView(), depth.createView(), history[1 - p].createView(), r.sampler, r.nearest, historyDepth[1 - p].createView(),
             ].map((resource, binding) => ({ binding, resource })) }));
         }
         const last = this.last ?? frame, data = new Float32Array(UNIFORM_BYTES / 4);
@@ -89,7 +90,7 @@ export class Resolve {
         data.set([this.last ? blend.weight : 1, blend.clip ? 1 : 0, blend.copy ? 1 : 0, 0], 28);
         r.gpu.device.queue.writeBuffer(r.uniform, 0, data);
         const pass = encoder.beginRenderPass({
-            colorAttachments: [canvas, targets.history[targets.parity].createView()].map(view => ({ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] })),
+            colorAttachments: [canvas, targets.history[targets.parity].createView(), targets.historyDepth[targets.parity].createView()].map(view => ({ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] })),
             timestampWrites,
         });
         pass.setPipeline(r.pipeline);

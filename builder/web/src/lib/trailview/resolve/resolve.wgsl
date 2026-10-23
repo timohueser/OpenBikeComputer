@@ -21,14 +21,17 @@ struct Resolve {
 @group(0) @binding(0) var<uniform> resolve: Resolve;
 @group(0) @binding(1) var scene: texture_2d<f32>;
 @group(0) @binding(2) var depth: texture_depth_2d;
-// rgb: the accumulated colour in linear light. a: the depth of the last frame, times DEPTH_SCALE.
+// The accumulated colour, compressed and encoded (`encode`).
 @group(0) @binding(3) var history: texture_2d<f32>;
 @group(0) @binding(4) var bilinear: sampler;
 @group(0) @binding(5) var nearest_texel: sampler;
+// The nearest depth about each pixel of the last frame, times DEPTH_SCALE.
+@group(0) @binding(6) var last_depth: texture_2d<f32>;
 
 struct Out {
     @location(0) canvas: vec4f,
     @location(1) history: vec4f,
+    @location(2) depth: vec4f,
 }
 
 // A depth farther than this share of the expected depth of the last frame at every texel about a
@@ -55,6 +58,16 @@ fn compress(c: vec3f) -> vec3f {
 
 fn expand(c: vec3f) -> vec3f {
     return c / max(1.0 - luminance(c), 1e-4);
+}
+
+// A compressed colour for the 10 bits of the history: halved, so channels up to 2 fit, and square-rooted
+// for the steps of dark tones. The Catmull-Rom filters the history in this form.
+fn encode(c: vec3f) -> vec3f {
+    return sqrt(0.5 * c);
+}
+
+fn decode(e: vec3f) -> vec3f {
+    return 2.0 * e * e;
 }
 
 fn ycocg(c: vec3f) -> vec3f {
@@ -85,7 +98,7 @@ fn history_at(uv: vec2f) -> vec3f {
         + textureSampleLevel(history, bilinear, vec2f(t3.x, t12.y), 0.0).rgb * (w3.x * w12.y)
         + textureSampleLevel(history, bilinear, vec2f(t12.x, t3.y), 0.0).rgb * (w12.x * w3.y);
     let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
-    return compress(max(c / total, vec3f(0.0)));
+    return decode(max(c / total, vec3f(0.0)));
 }
 
 // Moves a colour toward the centre of a box until it is inside it.
@@ -102,7 +115,7 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     let last = vec2i(size) - 1;
     if (resolve.blend.z > 0.5) {
         let c = textureLoad(scene, min(vec2i(at.xy), last), 0).rgb;
-        return Out(vec4f(c, 1.0), vec4f(c, 1.0));
+        return Out(vec4f(c, 1.0), vec4f(encode(compress(c)), 1.0), vec4f(0.0));
     }
     let output = vec2f(textureDimensions(history));
     // Render pixel i holds the point at i + 0.5 - jitter: the pixel about this pixel's point and its
@@ -153,7 +166,7 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
         if (resolve.blend.y > 0.5) {
             // Hidden in the last frame: every depth about the point there is nearer than the point.
             let expected = select(0.0, resolve.jitter.z / was.w, nearest > 0.0);
-            let around = textureGather(3, history, nearest_texel, uv) / DEPTH_SCALE;
+            let around = textureGather(0, last_depth, nearest_texel, uv) / DEPTH_SCALE;
             if (min(min(around.x, around.y), min(around.z, around.w)) > expected * HIDDEN) {
                 weight = 1.0;
             }
@@ -168,14 +181,13 @@ fn resolve_fragment(@builtin(position) at: vec4f) -> Out {
     var shown = blended;
     if (weight < 1.0 && resolve.jitter.w > 0.0) {
         let texel = 1.0 / output;
-        let a = compress(textureSampleLevel(history, bilinear, uv + vec2f(texel.x, 0.0), 0.0).rgb);
-        let b = compress(textureSampleLevel(history, bilinear, uv - vec2f(texel.x, 0.0), 0.0).rgb);
-        let e = compress(textureSampleLevel(history, bilinear, uv + vec2f(0.0, texel.y), 0.0).rgb);
-        let f = compress(textureSampleLevel(history, bilinear, uv - vec2f(0.0, texel.y), 0.0).rgb);
+        let a = decode(textureSampleLevel(history, bilinear, uv + vec2f(texel.x, 0.0), 0.0).rgb);
+        let b = decode(textureSampleLevel(history, bilinear, uv - vec2f(texel.x, 0.0), 0.0).rgb);
+        let e = decode(textureSampleLevel(history, bilinear, uv + vec2f(0.0, texel.y), 0.0).rgb);
+        let f = decode(textureSampleLevel(history, bilinear, uv - vec2f(0.0, texel.y), 0.0).rgb);
         let low = min(blended, min(min(a, b), min(e, f)));
         let high = max(blended, max(max(a, b), max(e, f)));
         shown = clamp(blended + resolve.jitter.w * (blended - 0.25 * (a + b + e + f)), low, high);
     }
-    let colour = expand(blended);
-    return Out(vec4f(finish(expand(shown)), 1.0), vec4f(colour, nearest * DEPTH_SCALE));
+    return Out(vec4f(finish(expand(shown)), 1.0), vec4f(encode(blended), 1.0), vec4f(nearest * DEPTH_SCALE));
 }
