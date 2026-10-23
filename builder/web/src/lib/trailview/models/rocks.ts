@@ -1,10 +1,10 @@
 // Rocks 1 m tall with their base at the origin, z up: faceted lumps sunk into the ground, each face in its
 // own colour, from the prototype's src/models/rocks.ts. A crag is a leaning blade taller than wide.
-import { hex, Model, type Vec } from './shape';
+import { srgb, Model, type Vec } from './flat';
 
 /** Grey body, a lit top and lichen; the shader multiplies them by the rock under them over GREY. */
-export const GREY = hex('#8e908a');
-const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(hex), LICHEN = hex('#b4b05a');
+export const GREY = srgb('#8e908a');
+const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(srgb), LICHEN = srgb('#b4b05a');
 
 /** An icosahedron cut once: 80 faces on the unit sphere. */
 function lump(): Vec[][] {

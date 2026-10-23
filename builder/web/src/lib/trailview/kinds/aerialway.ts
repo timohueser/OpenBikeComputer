@@ -1,7 +1,7 @@
 // Cable cars and ski lifts: a station at each end of the line, a pylon at each vertex between (the bake
 // adds the pylons that OSM lacks), two cables that sag from anchor to anchor, and carriers on them.
 import { carrier, pylon, station, TRACK_HALF_M, type Rig } from '../models/aerialways';
-import type { Model } from '../models/shape';
+import type { Model } from '../models/flat';
 import { metresBetween } from '../structures/anchored';
 import { rgb } from '../structures/mesh';
 import type { Kind } from './kind';

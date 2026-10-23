@@ -2,7 +2,7 @@
 // the cable, ported from the prototype's src/models/aerialways.ts. One seed per line gives its pylons,
 // stations and carriers the same steel and livery; a gondola line takes a seed per cabin, so its cabins
 // come in many colours.
-import { hex, Model, outline, pick, roof, shade, type Vec } from './shape';
+import { srgb, Model, outline, pick, roof, shade, type Vec } from './flat';
 
 export type Rig = 'cable_car' | 'gondola' | 'chair_lift' | 'drag_lift';
 
@@ -14,13 +14,13 @@ export const CABLE_AT_STATION_M: Record<Rig, number> = { cable_car: 8.4, gondola
 const FOOTING_M = 3;
 
 /** Galvanised, reseda green and blue-grey paint. */
-const STEEL = ['#a3aaab', '#86a08c', '#8c979f'].map(hex);
-const LIVERY = ['#d0402f', '#2f6db0', '#e8b530', '#3f9a5c', '#e5702d'].map(hex);
-const TRAM = ['#c8372d', '#2f5f9e'].map(hex);
-const DARK = hex('#30363a'), CONCRETE = hex('#b8b2a6'), RENDER = hex('#e6dfcf'), GLASS = hex('#3b4c58');
+const STEEL = ['#a3aaab', '#86a08c', '#8c979f'].map(srgb);
+const LIVERY = ['#d0402f', '#2f6db0', '#e8b530', '#3f9a5c', '#e5702d'].map(srgb);
+const TRAM = ['#c8372d', '#2f5f9e'].map(srgb);
+const DARK = srgb('#30363a'), CONCRETE = srgb('#b8b2a6'), RENDER = srgb('#e6dfcf'), GLASS = srgb('#3b4c58');
 /** A hall's big panes, lighter than a cabin's windows: they hold the sky. */
-const PANES = hex('#7790a0');
-const WHITE = hex('#eeece6'), TIMBER = hex('#8f6440'), SLATE = hex('#5a5652');
+const PANES = srgb('#7790a0');
+const WHITE = srgb('#eeece6'), TIMBER = srgb('#8f6440'), SLATE = srgb('#5a5652');
 
 /** A flat bar of width w from a to b, facing `out`: the angle iron in a tower's face. */
 function strip(m: Model, a: Vec, b: Vec, w: number, out: Vec, colour: number): void {

@@ -1,8 +1,8 @@
 // Landmarks: the buildings a place is known by, drawn as themselves rather than as a kit house, from the
 // prototype's src/models/landmarks.ts. Footprint-sized, base at the origin, z up.
-import { hex, Model, random, shade } from './shape';
+import { srgb, Model, random, shade } from './flat';
 
-const STONE = ['#8a877e', '#7c7a72', '#969287'].map(hex), SLIT = hex('#2c2a28');
+const STONE = ['#8a877e', '#7c7a72', '#969287'].map(srgb), SLIT = srgb('#2c2a28');
 /** The walls reach this far into the ground, so a slope does not show under them. */
 const FOOTING_M = 3;
 
@@ -26,10 +26,10 @@ export function ruin(width: number, depth: number, height: number, seed: number)
 
 /** A squat white lighthouse: a tapering tower, a dark lantern and a cap, on the middle of its footprint. */
 export function lighthouse(width: number, depth: number, height: number): Model {
-    const r = Math.max(1.5, Math.min(width, depth) / 2), m = new Model(), dark = hex('#2f3a40');
-    m.beam([0, 0, -FOOTING_M], [0, 0, height], 2 * r, hex('#f2efe6'), { sides: 12, w1: 1.6 * r });
+    const r = Math.max(1.5, Math.min(width, depth) / 2), m = new Model(), dark = srgb('#2f3a40');
+    m.beam([0, 0, -FOOTING_M], [0, 0, height], 2 * r, srgb('#f2efe6'), { sides: 12, w1: 1.6 * r });
     m.beam([0, 0, height], [0, 0, height + 0.3], 2.1 * r, dark, { sides: 12, capped: true });
-    m.beam([0, 0, height + 0.3], [0, 0, height + 1.9], 1.1 * r, hex('#3a4a50'), { sides: 10 });
+    m.beam([0, 0, height + 0.3], [0, 0, height + 1.9], 1.1 * r, srgb('#3a4a50'), { sides: 10 });
     m.beam([0, 0, height + 1.9], [0, 0, height + 2.9], 1.3 * r, dark, { sides: 10, w1: 0.01, capped: true });
     return m;
 }

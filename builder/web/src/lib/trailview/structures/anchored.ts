@@ -3,7 +3,7 @@
 // it, offset in the span's frame: x across to the right, y along, z up. A model on the surface hangs
 // from a point: the span's far end only turns it, and its vertices lie at t = 0. The GPU finds the
 // heights of the anchors once per frame (`anchor_heights` in structures.wgsl).
-import type { Model } from '../models/shape';
+import type { Model } from '../models/flat';
 import { metresPerUnit } from '../terrain/bins';
 
 /** Words of an anchor, as `Anchor` in structures.wgsl: a and b (int32 world units), the heights over them and the sag (float32), and flags. */

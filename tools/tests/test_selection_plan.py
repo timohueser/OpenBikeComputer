@@ -457,7 +457,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "web only",
                 ["builder/web/src/lib/panel.ts"],
-                ["desktop", "desktop-frontend", "fmt", "wasm-bridges", "web", "web-browser"],
+                ["desktop-frontend", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",

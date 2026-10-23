@@ -48,6 +48,7 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
             `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}${stats.terrain.waterDropped ? ` · ${stats.terrain.waterDropped} water meshes dropped` : ''}${stats.terrain.structuresDropped ? ` · ${stats.terrain.structuresDropped} structure meshes dropped` : ''}`,
             `ground ${stats.ground.resident} of ${stats.ground.capacity} pages · ${stats.ground.wanted} wanted${stats.ground.shortage ? ` · ${stats.ground.shortage} short` : ''} · colour ${stats.ground.colour}`,
             `houses ${stats.houses.houses} in ${stats.houses.tiles} tiles · drawn ${stats.houses.full} in full, ${stats.houses.simple} simple`,
+            `instances ${stats.instances.staged} staged · ${stats.instances.perTier.join(' / ')} by tier · ${stats.instances.impostors} impostors baked${stats.instances.dropped ? ` · ${stats.instances.dropped} dropped` : ''}`,
             `lab   ${lab}`,
             `view  ${view.mode} · ${view.lat.toFixed(5)}, ${view.lon.toFixed(5)} · heading ${view.heading.toFixed(0)}° · pitch ${view.pitch.toFixed(0)}° · ${height}`,
             `light ${view.date} ${view.time} · ${view.weather}`,

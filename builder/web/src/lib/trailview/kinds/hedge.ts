@@ -1,10 +1,10 @@
 // Hedges: a cross-section as wide as tall with a rounded top, in greens that change from hedge to hedge.
-import { hex, pick } from '../models/shape';
+import { srgb, pick } from '../models/flat';
 import { along, type Kind } from './kind';
 
 /** The width, the height and how far it stands in the ground; a `height` tag wins. */
 const WIDTH_M = 1.2, HEIGHT_M = 1.8, SUNK_M = 0.3;
-const GREENS = ['#3f5a2a', '#4a6430', '#36502a', '#55703a'].map(hex);
+const GREENS = ['#3f5a2a', '#4a6430', '#36502a', '#55703a'].map(srgb);
 
 export default {
     build(feature, out) {

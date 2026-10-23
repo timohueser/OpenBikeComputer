@@ -12,13 +12,15 @@ import { Sky } from './light/sky';
 import { Resolve } from './resolve/resolve';
 import { DEPTH, MAX_SCALE, Targets } from './resolve/targets';
 import { jitter, STILL_FRAMES, Temporal, type Step } from './resolve/temporal';
+import { Instances, type InstanceStats, type LastFrame } from './instances/instances';
 import { GroundSource } from './stream/ground';
 import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
+import { Forest } from './vegetation/forest';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'resolve'];
+const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'resolve'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** The clear colour of the crack test: any red pixel is a hole in the terrain. */
@@ -54,6 +56,7 @@ export interface Stats {
     terrain: TerrainStats;
     ground: GroundStats;
     houses: HouseStats;
+    instances: InstanceStats;
 }
 
 /** Where the eye stands: a height, and whether it lies in a tunnel. */
@@ -74,6 +77,8 @@ export class TrailView {
     private readonly terrain: Terrain;
     private readonly groundLook: Ground;
     private readonly houses: Houses;
+    private readonly instances = new Instances();
+    private readonly forest: Forest;
     private readonly sky = new Sky();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
@@ -97,6 +102,8 @@ export class TrailView {
     private camera: number[] = [];
     private drawnExtras = '';
     private rendered: (() => void)[] = [];
+    /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
+    private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
 
     private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number) {
         this.context = canvas.getContext('webgpu')!;
@@ -106,6 +113,7 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
+        this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -141,6 +149,7 @@ export class TrailView {
             this.feet = undefined;
             this.terrain.forget();
             this.temporal.reset();
+            this.lastFrame = undefined;
         }
         this.pose = pose;
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
@@ -149,11 +158,11 @@ export class TrailView {
     }
 
     stats(): Stats {
-        const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats;
+        const { gpu, times } = this.gpuState, { pages } = this.terrain, terrain = this.terrain.stats, ground = this.groundLook.stats, forest = this.forest.requests;
         return {
             adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
-            requests: pages.requests + ground.requests, bytes: pages.bytes + ground.bytes, failed: pages.failed + ground.failed + this.terrain.stamps.failed,
-            drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats,
+            requests: pages.requests + ground.requests + forest.requests, bytes: pages.bytes + ground.bytes + forest.bytes, failed: pages.failed + ground.failed + forest.failed + this.terrain.stamps.failed,
+            drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats, instances: this.instances.stats,
         };
     }
 
@@ -185,7 +194,7 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.forest.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -200,6 +209,8 @@ export class TrailView {
         await this.terrain.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
         await Promise.all([this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render)]);
         await this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH);
+        await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
+        await this.forest.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, layouts.compute[1]);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
@@ -296,7 +307,10 @@ export class TrailView {
         this.last = steer || !settled ? now : 0;
         const eye = this.eye(), place = this.place();
         const { gpu, uniform, times, targets } = this.gpuState;
-        if (this.fit()) this.temporal.reset();
+        if (this.fit()) {
+            this.temporal.reset();
+            this.lastFrame = undefined;
+        }
         const debug = this.extras.debug !== 'off', scale = this.scaleNow, [width, height] = targets.viewport(scale), aspect = targets.width / targets.height;
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
@@ -305,26 +319,30 @@ export class TrailView {
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
+        this.forest.update(lonLat, this.extras.date);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
-        let step: Step | undefined, offset: [number, number] = [0, 0], moved = true, changed = false;
+        let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false;
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || extras !== this.drawnExtras;
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.forest.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
             if (step && !debug) offset = jitter(step.sample);
             // The jitter in clip space: render pixels are y down.
-            const ndc: [number, number] = [2 * offset[0] / width, -2 * offset[1] / height];
+            ndc = [2 * offset[0] / width, -2 * offset[1] / height];
             gpu.device.queue.writeBuffer(uniform, 0, this.uniforms(eye, jittered(viewProj, ndc), targets.height));
-            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale));
+            gpu.device.queue.writeBuffer(this.gpuState.look, 0, this.look(eye, aspect, ndc, scale, step?.sample ?? 0));
         } else this.temporal.reset();
         const encoder = gpu.device.createCommandEncoder();
         const probed = this.terrain.encode(encoder, pass => times.writes(pass));
         this.groundLook.encode(encoder, () => times.writes('ground'));
         const counted = this.houses.encode(encoder, this.groundLook.computeGroup, moved, changed, () => times.writes('houses'));
+        const last = eye && this.lastFrame
+            ? { ...this.lastFrame, moved: [eye.east - this.lastFrame.eye[0], eye.north - this.lastFrame.eye[1], eye.z - this.lastFrame.eye[2]] as [number, number, number] } : undefined;
+        const placed = this.vegetation(encoder, eye && group && step ? targets.viewport(this.scale)[1] : 0, last, () => times.writes('vegetation'));
         if (!eye || !group) {
             // Until the eye has ground nothing draws: the horizon of the weather fills the canvas.
             encoder.beginRenderPass({
@@ -341,6 +359,8 @@ export class TrailView {
                 timestampWrites: times.writes('terrain'),
             });
             pass.setViewport(0, 0, width, height, 0, 1);
+            // Before the terrain: the ground that the trees hide fails the depth test.
+            this.instances.draw(pass, group);
             this.terrain.draw(pass, group);
             this.houses.draw(pass, group);
             if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
@@ -348,12 +368,14 @@ export class TrailView {
             this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
             targets.swap();
+            this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
         }
         const read = times.resolve(encoder, { ...this.terrain.stats.jobs, frame: start });
         gpu.device.queue.submit([encoder.finish()]);
         read();
         probed();
         counted();
+        placed();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
@@ -362,6 +384,22 @@ export class TrailView {
         if (steer || this.moved) this.onView?.(this.view);
         this.moved = false;
         for (const resolve of this.rendered.splice(0)) resolve();
+    }
+
+    /**
+     * Encodes the producers of instances and the sort of what they stage, for a render `pixels` high (0:
+     * none draws), with the last frame's depth hiding what it hid.
+     */
+    private vegetation(encoder: GPUCommandEncoder, pixels: number, last: LastFrame | undefined, timing: () => GPUComputePassTimestampWrites | undefined): () => void {
+        const ground = this.groundLook.computeGroup;
+        if (!pixels || !ground) return () => {};
+        this.instances.begin(pixels);
+        this.instances.occlude(encoder, last);
+        this.instances.bake(encoder);
+        const pass = encoder.beginComputePass({ label: 'vegetation', timestampWrites: timing() });
+        this.instances.run(pass, ground);
+        pass.end();
+        return this.instances.read(encoder);
     }
 
     /** Fits the canvas and the targets to the element; true when the targets are new. */
@@ -388,7 +426,7 @@ export class TrailView {
      * The look of shade.wgsl: the light keys at the sun's altitude under the weather, and the haze,
      * light and grade of the regions about the eye.
      */
-    private look(eye: Eye, aspect: number, jitter: [number, number], scale: number): ArrayBuffer {
+    private look(eye: Eye, aspect: number, jitter: [number, number], scale: number, sample: number): ArrayBuffer {
         const [x, y, z] = this.sun(), [lon, lat] = this.frame.lonLat(eye.east, eye.north), { rules } = this.groundLook;
         const near = eyeLook(rules.regions, this.groundLook.regionsAt(lon, lat), this.extras.weather);
         const h = this.pose.heading * RAD, p = this.pose.pitch * RAD, ty = Math.tan(VFOV * RAD / 2), tx = ty * aspect;
@@ -398,8 +436,8 @@ export class TrailView {
             sun: [x, y, z], light: weatherLight(lightAt(Math.asin(z) / RAD), near.weather), eye: near, altitude: eye.z, place: [eye.east, eye.north],
             camera: { right: right.map(v => v * tx), up: up.map(v => v * ty), forward },
             codes: this.groundLook.codes,
-            debug: DEBUG_VIEWS.indexOf(this.extras.debug),
-            jitter, scale,
+            debug: DEBUG_VIEWS.indexOf(this.extras.debug), sample,
+            jitter, scale, shell: this.forest.reach * this.instances.detail,
         });
     }
 

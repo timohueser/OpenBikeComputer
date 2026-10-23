@@ -1,7 +1,7 @@
 // Grazing animals for the herds, a low-poly rework of the prototype's src/models/animals/: one
 // four-legged build whose proportions, coats, horns and patches make the breed. 1 m tall at the withers'
 // top, feet at the origin, z up, facing +y; the instance scales it to the breed's height.
-import { hex, Model, random, shade, type Vec } from './shape';
+import { srgb, Model, random, shade, type Vec } from './flat';
 
 interface Breed {
     /** Metres to the top of the back, which the instance scales to. */
@@ -33,7 +33,7 @@ export const BREEDS: Record<string, Breed> = {
 /** An animal of a breed in one of its coats. */
 export function animal(name: string, seed = 0): Model {
     const b = BREEDS[name], [length, half, deep] = b.body, rand = random(seed + 3);
-    const [coat, other] = b.coats[seed % b.coats.length].map(hex), m = new Model();
+    const [coat, other] = b.coats[seed % b.coats.length].map(srgb), m = new Model();
     const back = 1, belly = b.leg, mid = (back + belly) / 2, y0 = -length / 2, y1 = length / 2;
     // The body: an octagon swept from rump to chest; patches paint some of its faces in the second colour.
     const ring = (y: number, k: number): Vec[] => Array.from({ length: 8 }, (_, i) => {
@@ -55,16 +55,16 @@ export function animal(name: string, seed = 0): Model {
     // Legs, hooves and tail.
     for (const [x, y] of [[-1, y0 + 0.12], [1, y0 + 0.12], [-1, y1 - 0.12], [1, y1 - 0.12]]) {
         m.beam([x * half * 0.55, y, mid], [x * half * 0.55, y, 0.06], 0.09 + 0.05 * half, name === 'sheep' || b.patches ? other : coat, { sides: 4, w1: 0.07 });
-        m.box([x * half * 0.55, y, 0.03], [0.1, 0.12, 0.06], hex(b.hooves));
+        m.box([x * half * 0.55, y, 0.03], [0.1, 0.12, 0.06], srgb(b.hooves));
     }
     m.beam([0, y0, back - 0.05], [0, y0 - 0.06, belly - 0.05], 0.05, coat, { sides: 3 });
     // Horns.
-    const horn = hex('#e2d6b8'), top = neck[2] + 0.1;
+    const horn = srgb('#e2d6b8'), top = neck[2] + 0.1;
     if (b.horns) for (const s of [-1, 1]) {
         const at: Vec = [s * deep * 0.35, neck[1] + 0.02, top];
         const tip: Vec = b.horns === 'long' ? [s * (deep + 0.45), at[1] + 0.05, top + 0.12] : b.horns === 'goat' ? [s * 0.12, at[1] - 0.22, top + 0.2]
             : b.horns === 'curl' ? [s * (deep * 0.6), at[1] - 0.05, top - 0.12] : [s * (deep * 0.5 + 0.12), at[1] + 0.04, top + 0.12];
-        m.beam(at, tip, 0.06, b.horns === 'goat' ? hex('#6b5c4a') : horn, { sides: 3, w1: 0.02 });
+        m.beam(at, tip, 0.06, b.horns === 'goat' ? srgb('#6b5c4a') : horn, { sides: 3, w1: 0.02 });
     }
     return m;
 }

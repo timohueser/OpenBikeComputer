@@ -24,4 +24,18 @@ describe('rulesOf', () => {
         expect(insubric.look.roadLine).toBe('#d6d4cc');
         expect(insubric.look.mistTop).toBe(900);
     });
+
+    it("takes a region's trees from its pack: a child adds or changes a species, null drops one, a model defaults to its species", () => {
+        const spruce = { leaf: 'needleleaved', cover: 'tree', elevation: [600, 2000], weight: 5 };
+        const rules = rulesOf({
+            format: 1, materials,
+            regions: [{ id: 'alps', leaf: 'needleleaved', look, pack: 'alps' }, { id: 'world', leaf: 'mixed', look }],
+            packs: {
+                base: { trees: { 'norway-spruce': spruce, 'scots-pine': { ...spruce, weight: 1 } } },
+                alps: { extends: 'base', trees: { 'scots-pine': null, 'norway-spruce': { weight: 2 }, 'swiss-stone-pine': { ...spruce, model: 'scots-pine' } } },
+            },
+        });
+        expect(rules.regions[0].trees).toEqual([{ ...spruce, weight: 2, model: 'norway-spruce' }, { ...spruce, model: 'scots-pine' }]);
+        expect(rules.regions[1].trees).toEqual([]);
+    });
 });
