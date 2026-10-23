@@ -151,10 +151,10 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
     let half = max(mask.half, 0.05);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
     // so the lines of a road that runs away from the eye stay sharp.
-    let span = length(vec2f(dot(ds[0], mask.away), dot(ds[1], mask.away)));
-    let cross_w = select(w, max(span, 1e-3), dot(mask.away, mask.away) > 0.0);
-    let ahead = vec2f(-mask.away.y, mask.away.x);
-    let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), dot(mask.away, mask.away) > 0.0);
+    let known = dot(mask.axis, mask.axis) > 0.0;
+    let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
+    let ahead = vec2f(-mask.axis.y, mask.axis.x);
+    let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
     let surface = road_surface(region, code, max(-edge, 0.0), across, half, mask.sleepers, p, w, cross_w, along_w);
     // Unpaved edges fray into the ground.
     if (!paved) {

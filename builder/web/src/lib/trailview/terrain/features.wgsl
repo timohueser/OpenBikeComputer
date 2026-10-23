@@ -77,6 +77,9 @@ struct Mask {
     sleepers: f32,
     // The metres from the middle of the nearest road, signed by side, filtered.
     across: f32,
+    // The unit direction in LOD space across the nearest road, from the rise of `across`, which has no
+    // ridge on the road's middle as the distance to its edge has; `away` where it does not tell it.
+    axis: vec2f,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -127,9 +130,10 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let across = mix(mix(m[0], m[1], t.part.x), mix(m[2], m[3], t.part.x), t.part.y);
             let middle = vec2f(mix(m[1] - m[0], m[3] - m[2], t.part.y), mix(m[2] - m[0], m[3] - m[1], t.part.x));
             let ahead = select(vec2f(0.0), normalize(vec2f(middle.y, -middle.x)), dot(middle, middle) > 0.0);
+            let axis = select(away, normalize(vec2f(middle.x, -middle.y)), dot(middle, middle) > 0.0);
             let sleepers = shape_at(page, whole).y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
-            return Mask(vec4f(shape.xyz, face), vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across);
+            return Mask(vec4f(shape.xyz, face), vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis);
         }
     }
-    return Mask(vec4f(0.5), vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0);
+    return Mask(vec4f(0.5), vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0));
 }
