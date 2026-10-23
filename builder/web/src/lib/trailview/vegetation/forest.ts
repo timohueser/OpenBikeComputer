@@ -6,10 +6,11 @@ import { wgsl } from '../gpu/wgsl';
 import { Instances, type ModelSpec, type Producer } from '../instances/instances';
 import { TREES } from '../models/library';
 import { SEASONS, type Rules, type Season } from '../rules/regions';
-import type { Labs } from '../labs';
 import { Canopy, CANOPY_ZOOM } from './canopy';
 import type { BuiltTier } from './model-worker';
 
+/** Trees stand within this many metres of the eye: the stamps of main roads reach 4 km. */
+const REACH_M = 4500;
 /** Past this many metres the trees thin with the distance; cells of 2^k × 2^k base cells start at 2^k times it. */
 const THIN_M = 600;
 /** The mesh tiers of a tree: the prototype's three levels of detail, and where each ends; impostors follow to the reach. */
@@ -51,13 +52,12 @@ export class Forest implements Producer {
     private species = new Float32Array(0);
     private window: [number, number] = [0, 0];
     private side = 0;
-    /** Metres from the eye where trees stand, at the instances' detail 1: the main roads' stamps reach 4 km. */
-    readonly reach: number;
+    /** Metres from the eye where trees stand, at the instances' detail 1. */
+    readonly reach = REACH_M;
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, private readonly instances: Instances, labs: Labs, private readonly wake: () => void) {
-        this.reach = Number(labs.shell);
+    constructor(config: PlannerConfig, rules: Rules, private readonly instances: Instances, private readonly wake: () => void) {
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
         const words = new Uint32Array(rules.regions.length * SPECIES * 4), table = new Float32Array(words.buffer);
