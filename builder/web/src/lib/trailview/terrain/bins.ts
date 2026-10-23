@@ -39,6 +39,8 @@ type Surface = keyof typeof SURFACES;
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
 const PATHS = ['path', 'footway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
+/** The widest half-width of a path without a `width` tag, whatever its surface: a paved footway is not a road. */
+const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, via_ferrata: 0.6 };
 /** OSM bridge values of a way that lies on the ground, as GROUND of tools/trailview/structures.py. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road and a path. */
@@ -109,8 +111,12 @@ export function surfaceOf(tags: Record<string, string>): Surface {
 export function halfWidth(tags: Record<string, string>, surface: Surface): number {
     const width = parseFloat(tags.width ?? '');
     if (Number.isFinite(width)) return Math.max(width / 2, 0.4);
-    return ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    const half = ['main', 'oneway', 'road'].includes(surface) && PAVED[tags.highway] ? PAVED[tags.highway] : SURFACES[surface];
+    return Math.min(half, PATH_HALF[tags.highway] ?? half);
 }
+
+/** Whether a line is a path, by its class: a footbridge has railings, whatever its surface. */
+export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.profile]);
 
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
