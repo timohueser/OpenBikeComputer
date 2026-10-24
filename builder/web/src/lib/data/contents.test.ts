@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { CONTENTS, layerFlags, needs } from "./contents";
+import { CONTENTS, layerFlags, needs, toggled, unshown } from "./contents";
 import type { SourceRow } from "./sources";
 
 const card = (id: string) => CONTENTS.find((content) => content.id === id)!;
@@ -32,7 +32,22 @@ it("the flags switch exactly the layers of the cards that are on, and off the ot
         "trailview-colour",
         "sun",
     ]);
-    expect(flags.filter(([flag]) => flag === "--remove").map(([, layer]) => layer)).toEqual(["trailview-canopy", "snow", "climate"]);
+    expect(flags.filter(([flag]) => flag === "--remove").map(([, layer]) => layer)).toEqual([
+        "device",
+        "map",
+        "routing",
+        "search",
+        "trailview-canopy",
+        "snow",
+        "climate",
+    ]);
+});
+
+it("a card needs a card that shows it, and goes when the last one goes", () => {
+    expect(unshown(card("sun"), ["routing"])).toBe("Shows in Planner map: switch it on first.");
+    expect(unshown(card("snow"), ["trailview"])).toBeNull();
+    expect(toggled(["map", "trailview", "sun", "snow", "trailview-canopy"], "map", false)).toEqual(["trailview", "snow", "trailview-canopy"]);
+    expect(toggled(["trailview", "snow", "trailview-canopy"], "trailview", false)).toEqual([]);
 });
 
 it("an area that names its countries meets only their references", () => {

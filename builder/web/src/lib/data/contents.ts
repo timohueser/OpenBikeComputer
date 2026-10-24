@@ -1,5 +1,6 @@
 // What a bake contains, as a person names it. A card switches the optional layers of
-// `obc data update` that only make sense together; a card without layers is always in.
+// `obc data update` that only make sense together. The bake adds what a card reads, such as the
+// terrain; `shownBy` names the cards that show it, without which it has no reader.
 import type { Bbox } from "./areas";
 import type { SourceRow } from "./sources";
 
@@ -13,6 +14,8 @@ export interface Content {
     /** A prepared family, such as `forest-reference`: its members that meet the area. `required`
      *  cards cannot bake without one; the others fall back to coarser data. */
     reference?: { family: string; required: boolean; without: string };
+    /** The cards that show it; it can be on only while one of them is. */
+    shownBy?: string[];
 }
 
 export const CONTENTS: Content[] = [
@@ -20,11 +23,13 @@ export const CONTENTS: Content[] = [
         id: "device",
         title: "Bike computer maps",
         about: "Map, terrain, landmarks and peaks",
-        layers: [],
+        layers: ["device"],
         credentials: [],
         reference: { family: "terrain-reference", required: false, without: "Copernicus 30 m terrain" },
     },
-    { id: "planner", title: "Planner", about: "Web map, routing, search and places", layers: [], credentials: [] },
+    { id: "map", title: "Planner map", about: "Base map, terrain shading and places", layers: ["map"], credentials: [] },
+    { id: "routing", title: "Routing", about: "Routes for each bike profile", layers: ["routing"], credentials: [] },
+    { id: "search", title: "Search", about: "Places and addresses by name", layers: ["search"], credentials: [] },
     {
         id: "trailview",
         title: "Trail View",
@@ -39,11 +44,32 @@ export const CONTENTS: Content[] = [
         layers: ["trailview-canopy"],
         credentials: [],
         reference: { family: "forest-reference", required: true, without: "no trees" },
+        shownBy: ["trailview"],
     },
-    { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [] },
-    { id: "snow", title: "Snow", about: "Typical snow cover through the year", layers: ["snow"], credentials: ["hr-wsi"] },
-    { id: "climate", title: "Climate", about: "Monthly temperature and rain", layers: ["climate"], credentials: ["era5-land"] },
+    { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [], shownBy: ["map"] },
+    { id: "snow", title: "Snow", about: "Typical snow cover through the year", layers: ["snow"], credentials: ["hr-wsi"], shownBy: ["map", "trailview"] },
+    { id: "climate", title: "Climate", about: "Monthly temperature and rain", layers: ["climate"], credentials: ["era5-land"], shownBy: ["map"] },
 ];
+
+const title = (id: string) => CONTENTS.find((content) => content.id === id)?.title ?? id;
+
+/** Why `content` cannot be on with the cards `on`, or `null`: none of the cards that show it is on. */
+export function unshown(content: Content, on: string[]): string | null {
+    if (!content.shownBy || content.shownBy.some((id) => on.includes(id))) return null;
+    return `Shows in ${new Intl.ListFormat("en", { type: "disjunction" }).format(content.shownBy.map(title))}: switch it on first.`;
+}
+
+/** The titles of the cards that `content` shows. */
+export const shows = (content: Content): string[] => CONTENTS.filter((other) => other.shownBy?.includes(content.id)).map((other) => other.title);
+
+/** `on` with `id` switched, and without the cards that no card that stays on shows. */
+export function toggled(on: string[], id: string, checked: boolean): string[] {
+    const shown = (ids: string[]) => ids.filter((at) => !unshown(CONTENTS.find((content) => content.id === at)!, ids));
+    let next = checked ? [...on, id] : on.filter((at) => at !== id);
+    // A card that goes can leave a card that only it showed: drop until nothing more goes.
+    for (let kept = shown(next); kept.length < next.length; kept = shown(next)) next = kept;
+    return next;
+}
 
 /** A prepared reference that meets the area: its member, such as `terrain-reference/ch`, and the
  *  target of its newest version, `null` while it has none. */

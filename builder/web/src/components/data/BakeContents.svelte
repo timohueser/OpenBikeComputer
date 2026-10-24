@@ -1,14 +1,14 @@
 <script lang="ts">
     import type { Bbox } from "../../lib/data/areas";
-    import { CONTENTS, layerFlags, needs } from "../../lib/data/contents";
+    import { CONTENTS, layerFlags, needs, shows, toggled, unshown } from "../../lib/data/contents";
     import { planArgs } from "../../lib/data/flags";
     import type { BakeRoute } from "../../lib/data/screens";
     import type { Started } from "../../lib/data/shapes";
     import type { SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
 
-    // What the bake makes: two parts that are always in, and cards that switch optional layers. A
-    // card shows what it needs in the area; a card that cannot bake here says why and cannot be on.
+    // What the bake makes: one card for each part. A card says what it needs in the area and which
+    // card shows it; one that cannot bake here, or that nothing on shows, says why and cannot be on.
     let {
         to,
         area,
@@ -32,33 +32,29 @@
         planned: (run: string) => void;
     } = $props();
 
-    const cards = $derived(CONTENTS.map((content) => ({ content, needs: needs(content, bounds, sources ?? [], countries) })));
+    const cards = $derived(
+        CONTENTS.map((content) => ({ content, needs: needs(content, bounds, sources ?? [], countries), unshown: unshown(content, on), shows: shows(content) })),
+    );
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on)]));
-    const toggle = (id: string, checked: boolean) => change(checked ? [...on, id] : on.filter((at) => at !== id));
+    const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
     const prepare = (source: string) =>
         `#/sources/${encodeURIComponent(source)}/prepare?to=local${area.flag === "--region" ? `&region=${encodeURIComponent(area.value)}` : ""}`;
     const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
 </script>
 
 <div class="cards">
-    {#each cards as { content, needs } (content.id)}
-        {@const optional = content.layers.length > 0}
-        <label class="card-item" class:on={!optional || on.includes(content.id)} class:off={optional && !needs.ready && !on.includes(content.id)}>
+    {#each cards as { content, needs, unshown, shows } (content.id)}
+        {@const checked = on.includes(content.id)}
+        {@const closed = !checked && (!needs.ready || !!unshown)}
+        <label class="card-item" class:on={checked} class:off={closed}>
             <span class="top">
-                {#if optional}
-                    <input
-                        type="checkbox"
-                        checked={on.includes(content.id)}
-                        disabled={!needs.ready && !on.includes(content.id)}
-                        onchange={(event) => toggle(content.id, event.currentTarget.checked)}
-                    />
-                {:else}
-                    <span class="always">Always</span>
-                {/if}
+                <input type="checkbox" {checked} disabled={closed} onchange={(event) => toggle(content.id, event.currentTarget.checked)} />
                 <b>{content.title}</b>
             </span>
             <span class="about">{content.about}</span>
+            {#if unshown}<span class="soft note">{unshown}</span>{/if}
+            {#if shows.length}<span class="soft note">Shows {new Intl.ListFormat("en").format(shows)}</span>{/if}
             {#if !sources}
                 <span class="soft">Checking what it needs here…</span>
             {:else}
@@ -83,6 +79,7 @@
     {/each}
 </div>
 
+{#if !on.length}<p class="soft">Switch on what to bake.</p>{/if}
 {#if blocked.length}
     <p class="missing">{blocked.map(({ content }) => content.title).join(", ")} cannot bake here: switch {blocked.length === 1 ? "it" : "them"} off, or fix what {blocked.length === 1 ? "it needs" : "they need"}.</p>
 {/if}
@@ -92,7 +89,7 @@
     {args}
     primary
     folded
-    disabled={!sources || !!blocked.length || !!locked}
+    disabled={!sources || !on.length || !!blocked.length || !!locked}
     ondone={(started: Started) => planned(started.run)}
 />
 <p class="soft">The plan downloads what it needs to count the work, then shows the cost. It changes nothing yet.</p>
@@ -135,18 +132,10 @@
         outline: 2px solid var(--running);
         outline-offset: 2px;
     }
-    .always {
-        padding: 0 8px;
-        border-radius: 999px;
-        background: var(--parchment-3);
-        font-size: 12px;
-        line-height: 20px;
-        font-weight: 600;
-    }
     .about {
         color: var(--ink-soft);
     }
-    .card-item :is(.missing, .stale, .ready) {
+    .card-item :is(.missing, .stale, .ready, .note) {
         font-size: 13px;
         line-height: 19px;
     }

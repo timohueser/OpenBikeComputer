@@ -48,7 +48,7 @@
     const areaName = $derived(
         route.area ? (route.area.flag === "--box" ? `Box ${route.area.value}` : nameOf(route.area.value, areas.output)) : "",
     );
-    const chosen = $derived(CONTENTS.filter((content) => !content.layers.length || route.on.includes(content.id)).map((content) => content.title));
+    const chosen = $derived(CONTENTS.filter((content) => route.on.includes(content.id)).map((content) => content.title));
     const destinations = $derived(status?.targets ?? []);
     const where = (kind: string) => (kind === "r2" ? "Production" : "This computer");
     // Another run holds the lock of the destination: its bake shows here.
