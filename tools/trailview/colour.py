@@ -193,8 +193,8 @@ def average(children):
 
 def stored_ndvi(alpha):
     """The alpha of a quarter as the archives store it: a measured texel takes the mean NDVI code of the
-    measured texels of its 2 × 2 block, at the chroma's resolution of 4:2:0, in steps of NDVI_STEP; codes
-    0 and SNOW_MARK stay. The step buckets meet at code 128, NDVI 0, which the engine's water test reads."""
+    measured texels of its aligned 2 × 2 block, rounded half to even, in steps of NDVI_STEP; codes 0 and
+    SNOW_MARK stay. The step buckets meet at code 128, NDVI 0, which the engine's water test reads."""
     measured = alpha > SNOW_MARK
     blocks = lambda texels: texels.reshape(tiles.TILE // 2, 2, tiles.TILE // 2, 2).sum(axis=(1, 3))
     mean = np.round(blocks(np.where(measured, alpha, 0).astype(np.float32)) / np.maximum(blocks(measured), 1))

@@ -66,6 +66,13 @@ class ColourTest(unittest.TestCase):
         self.assertGreaterEqual(stored[2, 2], 128)
         self.assertEqual(stored[4, 4], 202)
 
+    def test_a_stored_ndvi_code_stays_on_the_step_grid_at_its_edges(self):
+        alpha = np.full((tiles.TILE, tiles.TILE), 255, np.uint8)
+        alpha[0:2, 0:2], alpha[0:2, 2:4] = 2, 3
+        stored = colour.stored_ndvi(alpha)
+        self.assertEqual(stored[:2, :4].tolist(), [[2, 2, 2, 2]] * 2)
+        self.assertEqual(stored[4, 4], 254)
+
     def test_the_webp_variant_stores_the_ndvi_codes_and_the_highest_code_exactly(self):
         rng = np.random.default_rng(1)
         stack = np.zeros((4, tiles.TILE, tiles.TILE, 4), np.uint8)
