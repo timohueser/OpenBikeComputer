@@ -38,9 +38,8 @@ struct Data {
     tiles: array<u32, 64>,
     // Progressive blue noise in the unit square.
     points: array<vec2f, 512>,
-    // Per region SPECIES species: the model and leaf type (1 broadleaved, 2 needleleaved) as bits of an
-    // f32, the elevation band in metres and the weight; weight 0 ends a region's list.
-    species: array<vec4f>,
+    // The species choices of the regions (speciesTable of forest.ts).
+    choices: array<u32>,
 }
 
 // A cell of the list: its corner in base cells, its trees at most in the low 16 bits and its level in
@@ -75,7 +74,6 @@ const LEVELS: u32 = 3u;
 // Units along a canopy cell edge: zoom 12 at 256 cells, 26 m at 47° N.
 const CANOPY_SHIFT: u32 = 10u;
 const UNKNOWN_CANOPY: u32 = 0xffffu;
-const SPECIES: u32 = 32u;
 const WINDOW: i32 = 8;
 // A tree that stands this far into the ground still meets it on a slope.
 const SINK_M: f32 = 0.3;
@@ -216,40 +214,32 @@ fn find_cells(@builtin(global_invocation_id) id: vec3u) {
 }
 
 // The species of a tree of a region at an elevation, of a leaf type (0 any): of those in their band
-// with the leaf type, else in their band, else with the leaf type, else of all, by weight.
+// with the leaf type, else in their band, else with the leaf type, else of all, by weight. The choices
+// of each slot of the elevation among the region's band edges are listed (speciesTable of forest.ts).
 fn species_of(region: u32, elevation: f32, leaf: u32, pick: f32) -> u32 {
-    var totals = vec4f(0.0);
-    for (var k = 0u; k < SPECIES; k++) {
-        let s = data.species[region * SPECIES + k];
-        if (s.w <= 0.0) {
-            break;
-        }
-        let band = elevation >= s.y && elevation <= s.z;
-        let same = leaf == 0u || (bitcast<u32>(s.x) >> 16u) == leaf;
-        totals += s.w * vec4f(f32(band && same), f32(band), f32(same), 1.0);
-    }
-    var rule = 3u;
-    for (var r = 0u; r < 3u; r++) {
-        if (totals[r] > 0.0) {
-            rule = r;
-            break;
+    let at = data.choices[1u + region];
+    let n = data.choices[at];
+    // The edges below the elevation.
+    var below = 0u;
+    var above = n;
+    while (below < above) {
+        let middle = (below + above) / 2u;
+        if (bitcast<f32>(data.choices[at + 1u + middle]) < elevation) {
+            below = middle + 1u;
+        } else {
+            above = middle;
         }
     }
-    var left = pick * totals[rule];
+    let on_edge = below < n && bitcast<f32>(data.choices[at + 1u + below]) == elevation;
+    let list = at + 1u + n + 3u * (3u * (2u * below + select(0u, 1u, on_edge)) + leaf);
+    let start = data.choices[list];
+    var left = pick * bitcast<f32>(data.choices[list + 2u]);
     var model = 0xffffffffu;
-    for (var k = 0u; k < SPECIES; k++) {
-        let s = data.species[region * SPECIES + k];
-        if (s.w <= 0.0) {
+    for (var k = 0u; k < data.choices[list + 1u]; k++) {
+        model = data.choices[start + 2u * k];
+        left -= bitcast<f32>(data.choices[start + 2u * k + 1u]);
+        if (left < 0.0) {
             break;
-        }
-        let band = elevation >= s.y && elevation <= s.z;
-        let same = leaf == 0u || (bitcast<u32>(s.x) >> 16u) == leaf;
-        if (select(select(true, same, rule == 2u), select(band, band && same, rule == 0u), rule < 2u)) {
-            model = bitcast<u32>(s.x) & 0xffffu;
-            left -= s.w;
-            if (left < 0.0) {
-                break;
-            }
         }
     }
     return model;
@@ -296,7 +286,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
     let found = textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
     let region = found.b;
-    if (region >= arrayLength(&data.species) / SPECIES || (found.r == forest.orchard && held.level == look.codes.y)) {
+    if (region >= data.choices[0] || (found.r == forest.orchard && held.level == look.codes.y)) {
         return;
     }
     // The drawn ground costs the most of a tree: it comes last, for the trees that stand.

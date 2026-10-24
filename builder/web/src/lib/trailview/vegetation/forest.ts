@@ -12,7 +12,7 @@ import { TREE_REACH_M, type TreeModels } from './tree-models';
 const THIN_M = 600;
 /** Units along a cell edge, as CELL in forest.wgsl, and blue-noise points per cell. */
 const CELL = 2048, POINTS = 512;
-/** Tree species per region, as SPECIES in forest.wgsl and tools/trailview/rules.py. */
+/** Tree species per region, as tools/trailview/rules.py checks. */
 const SPECIES = 32;
 /** Trees per hectare of each stems class: the middle of its range, and 700 for 600 or more (specs/trailview-tiles.md#canopy). */
 const STEMS_HA = [25, 75, 125, 175, 250, 350, 500, 700];
@@ -41,7 +41,7 @@ interface Resources {
 export class Forest implements Producer {
     private resources?: Resources;
     private readonly canopy: Canopy;
-    private readonly species: Float32Array<ArrayBuffer>;
+    private readonly species: Uint32Array<ArrayBuffer>;
     /** The material code of orchards, or 0xffffffff for none. */
     private readonly orchard: number;
     private window: [number, number] = [0, 0];
@@ -58,19 +58,11 @@ export class Forest implements Producer {
         this.canopy = new Canopy(config, wake);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
         this.orchard = rules.vocabulary.materials.findIndex(material => material.id === 'orchard') >>> 0;
-        const words = new Uint32Array(rules.regions.length * SPECIES * 4), table = new Float32Array(words.buffer);
-        rules.regions.forEach((region, r) => {
-            // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
-            const species = region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
-                const model = trees.index(rule.model, rule.evergreen);
-                return model === undefined ? [] : [{ ...rule, model }];
-            });
-            species.forEach((rule, k) => {
-                words[4 * (r * SPECIES + k)] = rule.model | ((rule.leaf === 'broadleaved' ? 1 : 2) << 16);
-                table.set([...rule.elevation, rule.weight], 4 * (r * SPECIES + k) + 1);
-            });
-        });
-        this.species = table;
+        // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
+        this.species = speciesTable(rules.regions.map(region => region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
+            const model = trees.index(rule.model, rule.evergreen);
+            return model === undefined ? [] : [{ model, leaf: rule.leaf === 'broadleaved' ? 1 : 2, band: rule.elevation, weight: rule.weight }];
+        })));
     }
 
     get idle(): boolean {
@@ -154,6 +146,45 @@ export class Forest implements Producer {
         pass.setBindGroup(0, r.groups[1]);
         pass.dispatchWorkgroupsIndirect(r.cells, 0);
     }
+}
+
+/** A tree species of a region: its model, leaf type (1 broadleaved, 2 needleleaved), elevation band in metres and weight. */
+export interface Species { model: number; leaf: number; band: [number, number]; weight: number }
+
+/**
+ * The species choices of the regions, as `species_of` of forest.wgsl reads them, in u32 words: the
+ * regions, then per region where its block starts. A block holds its n band edges (f32), then per slot
+ * of the elevation (2i between edge i - 1 and edge i, 2i + 1 on edge i) and leaf type (0 any) the
+ * start, count and total weight of its list, then the lists of (model, weight). A list holds the
+ * species of the first rule that has any: in their band with the leaf type, in their band, with the
+ * leaf type, all. The sums are f32 in the order of the species, as a scan of them on the GPU would add.
+ */
+export function speciesTable(regions: Species[][]): Uint32Array<ArrayBuffer> {
+    const words: number[] = [regions.length, ...regions.map(() => 0)], f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+    const bits = (value: number) => ((f32[0] = value), u32[0]);
+    regions.forEach((all, r) => {
+        // A weight of 0 ends a region's list.
+        const ended = all.findIndex(s => !(Math.fround(s.weight) > 0)), species = ended < 0 ? all : all.slice(0, ended);
+        const edges = [...new Set(species.flatMap(({ band }) => band.map(Math.fround)))].sort((a, b) => a - b), n = edges.length;
+        const at = (words[1 + r] = words.length);
+        words.push(n, ...edges.map(bits));
+        const slots = at + 1 + n, lists: number[] = [];
+        words.push(...new Array(3 * 3 * (2 * n + 1)).fill(0));
+        for (let slot = 0; slot <= 2 * n; slot++) {
+            const i = slot >> 1, e = slot % 2 ? edges[i] : i === 0 ? (edges[0] ?? 0) - 1 : i === n ? edges[n - 1] + 1 : (edges[i - 1] + edges[i]) / 2;
+            for (let leaf = 0; leaf < 3; leaf++) {
+                const fits = species.map(s => [e >= Math.fround(s.band[0]) && e <= Math.fround(s.band[1]), leaf === 0 || s.leaf === leaf]);
+                const rules = [([band, same]: boolean[]) => band && same, ([band]: boolean[]) => band, ([, same]: boolean[]) => same, () => true];
+                const totals = rules.map(rule => species.reduce((sum, s, k) => (rule(fits[k]) ? Math.fround(sum + Math.fround(s.weight)) : sum), 0));
+                const rule = Math.max(0, totals.findIndex(total => total > 0));
+                const list = species.filter((_, k) => rules[rule](fits[k]));
+                words.splice(slots + 3 * (3 * slot + leaf), 3, words.length + lists.length, list.length, bits(totals[rule]));
+                lists.push(...list.flatMap(s => [s.model, bits(s.weight)]));
+            }
+        }
+        words.push(...lists);
+    });
+    return Uint32Array.from(words);
 }
 
 /** Base cells a side of the window that holds the reach at a latitude, in whole cells of the coarsest level and their margin. */

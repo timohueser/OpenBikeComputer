@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { densest } from './canopy';
-import { bluePoints } from './forest';
+import { bluePoints, type Species, speciesTable } from './forest';
 
 /** The least distance between the first n points, across the edges of the unit square. */
 function spacing(points: Float32Array, n: number): number {
@@ -12,7 +12,54 @@ function spacing(points: Float32Array, n: number): number {
     return least;
 }
 
+/** species_of of forest.wgsl over the table, in f32. */
+function lookup(table: Uint32Array, region: number, elevation: number, leaf: number, pick: number): number {
+    const f = new Float32Array(table.buffer), at = table[1 + region], n = table[at];
+    let below = 0;
+    while (below < n && f[at + 1 + below] < elevation) below++;
+    const list = at + 1 + n + 3 * (3 * (2 * below + (below < n && f[at + 1 + below] === elevation ? 1 : 0)) + leaf);
+    let left = Math.fround(pick * f[list + 2]), model = -1;
+    for (let k = 0; k < table[list + 1]; k++) {
+        model = table[table[list] + 2 * k];
+        left = Math.fround(left - f[table[list] + 2 * k + 1]);
+        if (left < 0) break;
+    }
+    return model;
+}
+
+/** The scan of every species that the table stands for: the first rule with any weight, then by weight. */
+function scan(species: Species[], elevation: number, leaf: number, pick: number): number {
+    const rules = species.map(s => {
+        const band = elevation >= Math.fround(s.band[0]) && elevation <= Math.fround(s.band[1]), same = leaf === 0 || s.leaf === leaf;
+        return [band && same, band, same, true];
+    });
+    const totals = [0, 1, 2, 3].map(r => species.reduce((sum, s, k) => (rules[k][r] ? Math.fround(sum + Math.fround(s.weight)) : sum), 0));
+    const rule = [0, 1, 2].find(r => totals[r] > 0) ?? 3;
+    let left = Math.fround(pick * totals[rule]), model = -1;
+    for (const [k, s] of species.entries()) {
+        if (!rules[k][rule]) continue;
+        model = s.model;
+        left = Math.fround(left - Math.fround(s.weight));
+        if (left < 0) break;
+    }
+    return model;
+}
+
 describe('the forest', () => {
+    it('picks from its table the species that a scan of every species picks', () => {
+        const regions: Species[][] = [
+            [{ model: 3, leaf: 2, band: [800, 1900], weight: 4 }, { model: 5, leaf: 1, band: [400, 1200], weight: 2.5 }, { model: 7, leaf: 2, band: [1500, 2300], weight: 1 }, { model: 9, leaf: 1, band: [0, 900], weight: 0.3 }],
+            [{ model: 11, leaf: 1, band: [1000, 1000], weight: 1 }],
+            [],
+        ];
+        const table = speciesTable(regions);
+        for (const [r, species] of regions.entries())
+            for (const elevation of [-1e30, 0, 350, 400, 899.9, 900, 1000, 1150, 1200, 1499, 1900, 2299.5, 2300, 4000])
+                for (const leaf of [0, 1, 2])
+                    for (const pick of [0, 0.2, 0.5, 0.71, 0.999])
+                        expect(lookup(table, r, Math.fround(elevation), leaf, pick)).toBe(scan(species, Math.fround(elevation), leaf, pick));
+    });
+
     it('places progressive blue noise: every first n points keep apart as an even spread of n would', () => {
         const points = bluePoints(512);
         expect(points.every(v => v >= 0 && v < 1)).toBe(true);
