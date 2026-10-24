@@ -101,6 +101,30 @@ fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
     return mix(own, g * g * clamp(luma(colour) / 0.3, 0.5, 1.2) * tint, tie);
 }
 
+// A forest tree (a crown with no tie) takes the satellite's colour of the ground under it, which emit_tree
+// carries: its hue at the luma of the tree's own colour in summer, which matches the ground's. A near
+// tree takes SATELLITE_NEAR of it, so its season shows as the region's satellite sees it; from
+// SATELLITE_FROM_M to the trees' reach (TREE_REACH_M of tree-models.ts) the share grows to all of it,
+// so the forest goes on past the reach in the ground's colours.
+const SATELLITE_NEAR: f32 = 0.4;
+const SATELLITE_FROM_M: f32 = 1500.0;
+const SATELLITE_TO_M: f32 = 4500.0;
+
+// The share of the satellite's colour that an instance of a model takes at a distance, 0 for none.
+fn satellite_share(m: Model, ground: u32, d: f32) -> f32 {
+    let g = unpack4x8unorm(ground).rgb;
+    return select(0.0, mix(SATELLITE_NEAR, 1.0, smoothstep(SATELLITE_FROM_M, SATELLITE_TO_M, d)), m.crown >= 0.0 && m.tie <= 0.0 && luma(g) > 0.0);
+}
+
+// A crown's colour in its phase taken toward the satellite's by `share`; `summer` is its colour in summer.
+fn satellite(colour: vec3f, summer: vec3f, ground: u32, share: f32) -> vec3f {
+    if (share <= 0.0) {
+        return colour;
+    }
+    let g = unpack4x8unorm(ground).rgb;
+    return mix(colour, g * g * (luma(summer) / max(luma(g * g), 1e-6)), share);
+}
+
 // An albedo under the share of snow of an instance's look, which settles on the faces that turn up.
 fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
     return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
@@ -153,7 +177,9 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     // The snow last, as on an impostor, whose atlas holds the shaded crown.
     let tint = 0.75 + 0.5 * f32(i.look & 255u) / 255.0;
     // The trunk keeps its bark in every phase.
-    let colour = select(toned(linear(v.colour.rgb), draw.x / TIERS, i.ground), linear(v.colour.rgb), v.position.w > 0.0);
+    let summer = linear(v.colour.rgb);
+    let crown = satellite(toned(summer, draw.x / TIERS, i.ground), summer, i.ground, satellite_share(m, i.ground, length(p)));
+    let colour = select(crown, summer, v.position.w > 0.0);
     out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     return out;
