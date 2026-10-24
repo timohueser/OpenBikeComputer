@@ -56,9 +56,10 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
     let level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
     // The quad holds only the part of the frame that the model covers: the outline of the frame that
-    // holds the direction, which holds its neighbours too, as the fragments pick them, and a texel of
-    // the level about it.
-    let margin = exp2(ceil(level)) * 2.0 / FRAME_TEXELS;
+    // holds the direction, which holds its neighbours too, as the fragments pick them, and 1.5 texels of
+    // the coarser level that the sample blends about it: half a texel to the centre of the last texel
+    // that the model covers, one that the bilinear filter reaches past it.
+    let margin = exp2(ceil(level)) * 3.0 / FRAME_TEXELS;
     let at = clamp(vec2i(floor(hemi_encode(toward) * FRAMES)), vec2i(0), vec2i(i32(FRAMES) - 1));
     let outline = outlines[model * u32(FRAMES * FRAMES) + u32(at.y * i32(FRAMES) + at.x)];
     let up = 0.5 * v.position.y + 0.5;
