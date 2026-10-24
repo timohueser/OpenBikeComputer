@@ -86,7 +86,7 @@ impl Prepared for TerrainReference {
     /// `state/tiles/` keeps the pixel digests and the sources of a made tile, or `.none` for a tile
     /// without a height, so a resume fetches neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
-        let previous = job.previous(self.format())?;
+        let previous = job.extend(self.format())?;
         let scope = match job.scope.clone() {
             Some(scope) => Some(scope_tiles(job, &scope)?),
             None => None,
@@ -127,7 +127,7 @@ impl Prepared for TerrainReference {
         let base = job.state.join("base");
         let digests = prepared_tiles::make(job, &tiles, |job, name| {
             let mut command = (self.ingest)(job.root)?;
-            // A folder per tile: `fetch` removes its `--work` at the end, and two tiles run at once.
+            // A folder per tile: `fetch` removes its `--work` at the end, and tiles run at once.
             command.args(["fetch", &models[name], "--tile", name, "--work"]).arg(job.state.join("raw").join(name));
             command.arg("--out").arg(&job.work);
             let id = name.replace('-', "/");
@@ -197,7 +197,7 @@ impl Prepared for TerrainReference {
 }
 
 /// The box of the region of `scope` and its countries; none for a version of everything.
-fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
+pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Bbox>, Vec<String>), String> {
     let Some((regions, id)) = scope.map(regions).transpose()? else { return Ok((None, Vec::new())) };
     let countries = regions.get(&id).map(|region| region.countries.clone()).unwrap_or_default();
     Ok((regions.bounds(&id), countries))
@@ -317,6 +317,7 @@ fn scope_tiles(job: &mut Job, scope: &Scope) -> Result<BTreeSet<CellId>, String>
 mod tests {
     use super::*;
     use crate::device::tests::{temp, Temp};
+    use crate::prepared_tiles::RUNNING;
     use obc_data::engine::runs::Run;
     use obc_data::fetch::http::Http;
     use obc_data::prepared::Manifest;
@@ -423,7 +424,7 @@ esac
             fs::write(self.root().join(format!("{what}-{}", self.tiles[k])), text).unwrap();
         }
 
-        /// A run of the prepare, and the calls of the script, sorted: two fetches run at once.
+        /// A run of the prepare, and the calls of the script, sorted: fetches run at once.
         fn prepare(&self) -> (Result<(), String>, Vec<String>) {
             let (done, calls, _, _) = self.version("2026-10-01", None);
             (done, calls)
@@ -460,6 +461,7 @@ esac
                     files: job.files().cloned().collect(),
                     reused: job.reused().clone(),
                     scope: job.scope.clone(),
+                    extends: job.extends().to_vec(),
                     languages: Vec::new(),
                     licence: None,
                     attribution: None,
@@ -498,13 +500,16 @@ esac
         let index = || vec!["index-terrain max".to_string(), "index-terrain mean".to_string()];
 
         let last = tiles.len() - 1;
-        // Tile 2 fails once tile 3 runs beside it, and the failure stops tile 3.
+        // Tile 2 fails once the two tiles after the first that run beside it have started, when it
+        // is the oldest that runs, and the failure stops the tiles after it.
+        let started = RUNNING + 2;
+        assert!(tiles.len() > started, "{tiles:?}");
         fixture.mark("none", 0, "");
         fixture.mark("fail", 2, "");
-        fixture.mark("wait", 2, "4");
+        fixture.mark("wait", 2, &started.to_string());
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
-        assert_eq!(calls, fixture.fetches(0..4));
+        assert_eq!(calls, fixture.fetches(0..started));
 
         // No tile without a height is fetched, and the progress counts each tile of the version.
         for what in ["fail", "wait"] {
@@ -547,23 +552,24 @@ esac
     }
 
     #[test]
-    fn two_fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_other_which_removes_its_folder() {
+    fn fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_others_which_remove_their_folders() {
         let fixture = Fixture::new("terrain-reference-raw");
-        // Tile 0 ends only once tile 1 runs beside it. Tile 2 fails once tile 3 runs beside it, and
-        // tile 3 runs until the failure stops it.
+        // Tile 0 ends only once tile 1 runs beside it. Tile 2 fails when it is the oldest that runs,
+        // and tile 3 runs until the failure stops it.
+        let started = RUNNING + 2;
         fixture.mark("wait", 0, "2");
-        fixture.mark("wait", 2, "4");
+        fixture.mark("wait", 2, &started.to_string());
         fixture.mark("fail", 2, "");
         fixture.mark("hold", 3, "");
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, 2));
-        assert_eq!(calls, fixture.fetches(0..4));
+        assert_eq!(calls, fixture.fetches(0..started));
         let mut works: Vec<String> =
             fs::read_to_string(fixture.root().join("works")).unwrap().lines().map(String::from).collect();
         works.sort();
         let raw = fixture.state().join("raw");
         let mut folders: Vec<String> =
-            fixture.tiles[..4].iter().map(|tile| raw.join(tile).display().to_string()).collect();
+            fixture.tiles[..started].iter().map(|tile| raw.join(tile).display().to_string()).collect();
         folders.sort();
         assert_eq!(works, folders);
         assert_eq!(fs::read_dir(&raw).unwrap().count(), 0, "each fetch removed its folder before the end");

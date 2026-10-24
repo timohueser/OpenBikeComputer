@@ -1,5 +1,5 @@
 //! The tiles of a prepared source that a program of its producer makes, one tile per run of the
-//! program: `terrain` and `forest-reference/<key>`.
+//! program: `terrain` and `forest`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -10,8 +10,9 @@ use obc_data::prepared::{Job, Program};
 
 /// The tiles of one upload.
 const BATCH: usize = 64;
-/// The programs that run at once: while one pools its tile, the next downloads.
-const RUNNING: usize = 2;
+/// The programs that run at once. Eight, chosen by the owner: a program waits mostly on its
+/// downloads, and one tile needs little memory.
+pub(crate) const RUNNING: usize = 8;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
 /// its pixel digest; `marks` are other marks that the program writes before those.

@@ -1,37 +1,32 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import contentLanguages from "../../../../../specs/content-languages.json";
     import { boundsOf, nameOf, parseBox, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, type BakeRoute } from "../../lib/data/screens";
     import { list, size, span, type Started, type Target } from "../../lib/data/shapes";
-    import { family, FAMILIES, regional, type PrepareReview, type SourceRow } from "../../lib/data/sources";
+    import { modelsOf, referenceOf, type PrepareReview, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import BakeArea from "./BakeArea.svelte";
     import Failure from "./Failure.svelte";
 
-    // The review of a new version of reference `id` on target `to`, and its Start. Wiki, terrain and a version
-    // for this computer cover an area; R2 holds all of a forest member.
+    // The review of a new version of reference `id` on target `to` for an area, and its Start.
     let {
         id,
-        row,
+        rows,
         to,
         area,
         targets,
         areas,
-    }: { id: string; row: SourceRow | null; to: string; area: BakeRoute["area"]; targets: Target[]; areas: Areas | null } = $props();
+    }: { id: string; rows: SourceRow[]; to: string; area: BakeRoute["area"]; targets: Target[]; areas: Areas | null } = $props();
 
     const kind = $derived(targets.find((at) => at.target === to)?.kind ?? null);
     const wiki = $derived(id === "wiki");
-    const title = $derived(FAMILIES.find((at) => at.family === family(id))?.title ?? id);
+    const reference = $derived(referenceOf(id));
     let whole = $state(false);
     let languages = $state(contentLanguages.map(([code]) => code));
     const languageName = new Intl.DisplayNames(["en"], { type: "language" });
-    const scoped = $derived(regional(id) || to !== "prod");
-    // A version of `terrain` adds an area: all of it would be every national model.
-    const terrain = $derived(id === "terrain");
-    const covered = $derived(scoped && !whole && area);
+    const covered = $derived(!whole && area);
     const args = $derived([
         "source", "prepare", id, "--to", to,
         ...(covered ? [area!.flag, area!.value] : []),
@@ -39,8 +34,9 @@
         "--dry-run",
     ]);
     const bounds = $derived(area ? (area.flag === "--box" ? parseBox(area.value) : areas && boundsOf(area.value, areas)) : null);
+    // The map outlines where a national model has data.
     const extent = $derived(
-        row?.extent && !terrain ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : [],
+        modelsOf(id, rows).flatMap(({ row }) => (row.extent ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : [])),
     );
     let query = $state<CliQuery<PrepareReview> | null>(null);
     // A changed selection cannot start an earlier review, including a response still in flight.
@@ -49,17 +45,14 @@
         query = new CliQuery<PrepareReview>(args);
         void query.refresh();
     }
-    onMount(() => {
-        if (!scoped) inspect();
-    });
     const start = $derived(review?.output ? [...review.output.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
     const where = (target: string) => (targets.find((at) => at.target === target)?.kind ?? (target === "prod" ? "r2" : "dir")) === "r2";
 </script>
 
 <a href="#/references">All references</a>
 <div class="title">
-    <h1>Prepare {title}</h1>
-    {#if !wiki && row?.use}<span class="soft">{row.use}</span>{/if}
+    <h1>Prepare {reference?.title ?? id}</h1>
+    {#if reference}<span class="soft">{reference.about}</span>{/if}
 </div>
 
 {#if targets.length}
@@ -76,10 +69,9 @@
     </section>
 {/if}
 
-{#if scoped}
-    <form class="card options" onsubmit={(event) => (event.preventDefault(), inspect())}>
+<form class="card options" onsubmit={(event) => (event.preventDefault(), inspect())}>
         <h2>{wiki ? "Coverage and languages" : "Coverage"}</h2>
-        {#if !terrain}<label><input type="checkbox" bind:checked={whole} /> {wiki ? "Worldwide" : "All of it"}</label>{/if}
+        {#if wiki}<label><input type="checkbox" bind:checked={whole} /> Worldwide</label>{/if}
         {#if !whole}
             <BakeArea {areas} chosen={area} {bounds} served={extent} choose={(next) => (location.hash = prepareHash(id, to, next))} />
             <p class:soft={!!area} class:missing={!area}>{area ? `Covers ${area.flag === "--box" ? `the box ${area.value}` : nameOf(area.value, areas)}` : "Choose an area."}</p>
@@ -96,7 +88,6 @@
         <button type="submit" class="primary" disabled={(wiki && !languages.length) || (!whole && !area)}>Review preparation</button>
         <details class="terminal"><summary>In a terminal</summary><code>{command(args)}</code></details>
     </form>
-{/if}
 
 {#if review?.error}<Failure error={review.error} />{/if}
 {#if review?.output}
@@ -104,7 +95,7 @@
     <section class="card review" aria-labelledby="prepare">
         <h2 id="prepare">Version {r.version}</h2>
         <p>
-            <b>Coverage</b> · {r.scope ? nameOf(r.scope.region, areas) : wiki ? "Worldwide" : "All of it"}{#if wiki}
+            <b>Coverage</b> · {r.scope ? nameOf(r.scope.region, areas) : "Worldwide"}{#if wiki}
                 · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}{/if}
         </p>
         <h3>Inputs</h3>

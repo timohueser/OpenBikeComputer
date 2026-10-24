@@ -87,9 +87,6 @@ export interface PrepareReview {
     args: string[];
 }
 
-/** A reference of a family, such as `terrain-reference/ch`, is listed under its family. */
-export const family = (id: string): string => id.split("/")[0];
-
 /** `90 days` or `manual`. */
 export const policy = (refresh: number | "manual"): string => (refresh === "manual" ? "manual" : `${refresh} days`);
 
@@ -148,22 +145,34 @@ export function requestLabel(request: StoredRequest, areaName: (id: string) => s
         .join(" · ");
 }
 
-/** The reference families, as the References screen names them. A `regional` reference is made
- *  area by area: a version of `terrain` adds an area to the one before. */
-export const FAMILIES = [
-    { family: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps", regional: true, add: "Prepare a newer version" },
+/** The references, as the References screen names them. Each version covers an area. A version of
+ *  a reference of national models, the downloads `<models><country>`, adds its area to the one before. */
+export const REFERENCES: { id: string; title: string; about: string; add: string; models?: { prefix: string; noun: string } }[] = [
+    { id: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps", add: "Prepare a newer version" },
     {
-        family: "terrain",
+        id: "terrain",
         title: "Terrain",
-        about: "The national LiDAR models, merged best first; each version adds an area to the one before",
-        regional: true,
+        about: "The national LiDAR terrain models, merged best first",
         add: "Add an area",
+        models: { prefix: "dtm-", noun: "national terrain model" },
     },
-    { family: "forest-reference", title: "Forest", about: "Canopy height and leaf type, for the Trail View forest", regional: false, add: "Prepare a newer version" },
+    {
+        id: "forest",
+        title: "Forest",
+        about: "Canopy height and leaf type for the Trail View forest, from the national canopy models",
+        add: "Add an area",
+        models: { prefix: "canopy-", noun: "canopy model" },
+    },
 ];
 
-/** Whether `prod` takes a version of an area of reference `id`. */
-export const regional = (id: string): boolean => !!FAMILIES.find((at) => at.family === family(id))?.regional;
+export const referenceOf = (id: string) => REFERENCES.find((reference) => reference.id === id);
+
+/** The national models of reference `id` in `rows`, with their countries: `dtm-de-by` is of `DE`. */
+export function modelsOf(id: string, rows: SourceRow[]): { row: SourceRow; country: string }[] {
+    const prefix = referenceOf(id)?.models?.prefix;
+    if (!prefix) return [];
+    return rows.filter((row) => row.id.startsWith(prefix)).map((row) => ({ row, country: row.id.slice(prefix.length).split("-")[0].toUpperCase() }));
+}
 
 /** Where a reference is: what a person acts on first. */
 export type Coverage = "lock" | "preparing" | "r2" | "local" | "none";
@@ -176,39 +185,30 @@ export const COVERAGE: Record<Coverage, { label: string; color: string }> = {
     none: { label: "Not prepared", color: "var(--ink-faint)" },
 };
 
-/** The coverage of `row` from its locks and the versions that `counts`; `r2` tells which targets
- *  are R2 buckets. */
-function placed(row: SourceRow, r2: (target: string) => boolean, counts: (version: PreparedVersion) => boolean): Coverage {
+/** The coverage of `row` from its locks and versions; `r2` tells which targets are R2 buckets. */
+export function coverage(row: SourceRow, r2: (target: string) => boolean): Coverage {
     const on = Object.entries(row.prepared);
     if (on.some(([, at]) => at.lock && (at.lock.died || at.lock.stale))) return "lock";
     if (on.some(([, at]) => at.lock)) return "preparing";
-    const held = on.filter(([, at]) => at.versions.some(counts)).map(([target]) => target);
+    const held = on.filter(([, at]) => at.versions.length).map(([target]) => target);
     return held.some(r2) ? "r2" : held.length ? "local" : "none";
 }
 
-export const coverage = (row: SourceRow, r2: (target: string) => boolean): Coverage => placed(row, r2, () => true);
-
-/** The boxes of a coverage map: the extent of each member in the state of its versions of all of
- *  it, and above it each regional version that `bounds` finds a box for. */
+/** The boxes of the coverage map of reference `row`: the extent of each of its `models`, not
+ *  prepared, and above them the area of each version that `bounds` finds a box for. */
 export function coverageCells(
-    rows: SourceRow[],
+    row: SourceRow,
+    models: SourceRow[],
     r2: (target: string) => boolean,
     bounds: (region: string) => [number, number, number, number] | null,
 ): { box: [number, number, number, number]; state: Coverage; label: string }[] {
-    const whole = rows.flatMap((row) => {
-        const state = placed(row, r2, (version) => !version.region);
-        // A reference of the whole world shows the areas of its versions only.
-        const world = row.extent && row.extent[2] - row.extent[0] >= 360;
-        return row.extent && !world ? [{ box: row.extent, state, label: `${row.use ?? row.id} · ${COVERAGE[state].label}` }] : [];
-    });
-    const regional = rows.flatMap((row) =>
-        Object.entries(row.prepared).flatMap(([target, at]) =>
-            at.versions.flatMap((version) => {
-                const box = version.region ? bounds(version.region) : null;
-                const state: Coverage = r2(target) ? "r2" : "local";
-                return box ? [{ box, state, label: `${row.use ?? row.id} · ${version.region} · ${COVERAGE[state].label}` }] : [];
-            }),
-        ),
+    const available = models.flatMap((model) => (model.extent ? [{ box: model.extent, state: "none" as Coverage, label: `${model.use ?? model.id} · ${COVERAGE.none.label}` }] : []));
+    const made = Object.entries(row.prepared).flatMap(([target, at]) =>
+        at.versions.flatMap((version) => {
+            const box = version.region ? bounds(version.region) : null;
+            const state: Coverage = r2(target) ? "r2" : "local";
+            return box ? [{ box, state, label: `${version.region} · ${COVERAGE[state].label}` }] : [];
+        }),
     );
-    return [...whole, ...new Map(regional.map((cell) => [cell.label, cell])).values()];
+    return [...available, ...new Map(made.map((cell) => [cell.label, cell])).values()];
 }

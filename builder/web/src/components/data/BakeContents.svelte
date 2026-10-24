@@ -5,7 +5,8 @@
     import type { BakeRoute } from "../../lib/data/screens";
     import type { Started } from "../../lib/data/shapes";
     import { prepareHash } from "../../lib/data/screens";
-    import { regional, type SourceRow } from "../../lib/data/sources";
+    import { list } from "../../lib/data/shapes";
+    import { modelsOf, referenceOf, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
 
     // What the bake makes: one card for each part. A card says what it needs in the area and which
@@ -41,28 +42,29 @@
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on)]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
-    // A reference made area by area goes to R2; another one for this computer covers the area.
-    const prepare = (source: string) => prepareHash(source, regional(source) ? "prod" : "local", area);
+    // A reference goes to R2, where every bake can read it.
+    const prepare = (source: string) => prepareHash(source, "prod", area);
     const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
+    const country = new Intl.DisplayNames(["en"], { type: "region" });
+    /** `Switzerland and Germany`: the countries of the national models of reference `id`. */
+    const modelled = (id: string) => list([...new Set(modelsOf(id, sources ?? []).map((at) => at.country))].map((code) => country.of(code) ?? code));
 </script>
 
 {#if sources}
     <div class="terrain">
         <b>Terrain here</b>
-        {#each terrain.references as reference (reference.source)}
-            {#if reference.version}
-                {@const covers = reference.regions.length ? ` · covers ${reference.regions.join(", ")}` : ""}
-                <span class="ready">
-                    {`National LiDAR models · ${reference.version.version} ${where(reference.version.target)}${covers}.`}
-                    Where it has no tile, the bake uses Copernicus 30 m, and the review says where.
-                    <a href={prepare(reference.source)}>Add this area</a>
-                </span>
-            {:else}
-                <span class="stale">No national LiDAR models yet, so the bake uses Copernicus 30 m. <a href={prepare(reference.source)}>Add this area</a></span>
-            {/if}
+        {#if bounds && !terrain.models.length}
+            <span class="soft">Copernicus 30 m: no national terrain model covers this area.</span>
+        {:else if terrain.reference?.version}
+            {@const covers = terrain.reference.regions.length ? ` · covers ${terrain.reference.regions.join(", ")}` : ""}
+            <span class="ready">
+                {`National LiDAR models · ${terrain.reference.version.version} ${where(terrain.reference.version.target)}${covers}.`}
+                Where it has no tile, the bake uses Copernicus 30 m, and the review says where.
+                <a href={prepare("terrain")}>Add this area</a>
+            </span>
         {:else}
-            <span class="soft">Copernicus 30 m.</span>
-        {/each}
+            <span class="stale">No national LiDAR models yet, so the bake uses Copernicus 30 m. <a href={prepare("terrain")}>Add this area</a></span>
+        {/if}
         <span class="soft">{readers.length ? `Read by ${new Intl.ListFormat("en").format(readers)}.` : "Read by the bike computer maps, the planner map, Trail View and Sun."}</span>
     </div>
 {/if}
@@ -85,18 +87,24 @@
                 {#each needs.credentials as source (source)}
                     <span class="missing">Needs the login for {source}. <a href="#/machine">Credentials</a></span>
                 {/each}
-                {#each needs.references as reference (reference.source)}
-                    {#if reference.version}
-                        <span class="ready">{reference.use} · prepared {reference.version.version} {where(reference.version.target)}</span>
+                {#if content.reference && bounds}
+                    {@const { source, required, without } = content.reference}
+                    {@const about = referenceOf(source)}
+                    {#if !needs.models.length}
+                        <span class={required ? "missing" : "soft"}>
+                            No {about?.models?.noun} covers this area{required ? "" : `: uses ${without}`}. Models exist for {modelled(source) || "no country yet"}.
+                        </span>
+                    {:else if needs.reference?.version}
+                        {@const covers = needs.reference.regions.length ? ` · covers ${needs.reference.regions.join(", ")}` : ""}
+                        <span class="ready">
+                            {about?.title} · {needs.reference.version.version} {where(needs.reference.version.target)}{covers}.
+                            <a href={prepare(source)}>Add this area</a>
+                        </span>
                     {:else}
-                        <span class={content.reference?.required ? "missing" : "stale"}>
-                            {reference.use} · not prepared{content.reference?.required ? "" : `, uses ${content.reference?.without}`}.
-                            <a href={prepare(reference.source)}>Prepare</a>
+                        <span class={required ? "missing" : "stale"}>
+                            {about?.title} · not prepared{required ? "" : `, uses ${without}`}. <a href={prepare(source)}>Prepare this area</a>
                         </span>
                     {/if}
-                {/each}
-                {#if content.reference?.required && bounds && !needs.references.length}
-                    <span class="missing">No {content.reference.family} covers this area.</span>
                 {/if}
             {/if}
         </label>

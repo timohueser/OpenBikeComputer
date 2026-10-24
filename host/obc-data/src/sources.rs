@@ -280,9 +280,8 @@ impl Source {
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         let prepared = self.fetch.kind == FetchKind::Prepared;
-        // A prepared source of a family, such as `forest-reference/ch`, has two parts.
-        if self.id.split('/').count() > 1 + usize::from(prepared) || !self.id.split('/').all(crate::is_kebab) {
-            return fail("the id is not lowercase kebab-case, or two such parts joined by `/` for a prepared source");
+        if !crate::is_kebab(&self.id) {
+            return fail("the id is not lowercase kebab-case");
         }
         if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
             return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
@@ -526,13 +525,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_prepared_source_has_an_id_of_two_parts_and_it_gives_its_bytes_to_others() {
+    fn a_prepared_source_gives_its_bytes_to_others() {
         let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
-        let prepared = OSM
-            .replace("id = \"osm\"", "id = \"terrain-reference/ch\"")
-            .replace(url, "fetch = { kind = \"prepared\" }");
+        let prepared = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
         assert!(!parse_sources(&prepared).unwrap()[0].copied(), "a version is on a target already");
-        assert!(parse_sources(&prepared.replace("/ch\"", "/ch/x\"")).unwrap_err().contains("kebab-case"));
         assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
         let private = prepared.replace("redistribute = true", "redistribute = false");
         assert!(parse_sources(&private).unwrap_err().contains("`redistribute = true`"));

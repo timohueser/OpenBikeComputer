@@ -532,7 +532,7 @@ fn make(
         sources: &sources,
         target: (name, target),
     };
-    let (files, reused, inputs, uploaded, peak_rss_bytes) = {
+    let (files, reused, extends, inputs, uploaded, peak_rss_bytes) = {
         let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
         crate::store::write_atomic(&job.state.join("plan.json"), &serde_json::to_vec(&made).expect("plan serializes"))?;
         job.plan = made;
@@ -540,6 +540,7 @@ fn make(
         (
             job.files().cloned().collect::<Vec<_>>(),
             job.reused().clone(),
+            job.extends().to_vec(),
             job.reads(),
             job.uploaded,
             job.peak_rss_bytes(),
@@ -558,6 +559,7 @@ fn make(
         files,
         reused,
         scope,
+        extends,
         languages: review.languages.clone(),
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
@@ -714,7 +716,7 @@ pub(super) mod tests {
                 }
                 // With `reuse-<path>`, the version keeps the file of the version before.
                 if job.root.join(format!("reuse-{path}")).exists() {
-                    if let Some(previous) = job.previous(self.0)? {
+                    if let Some(previous) = job.extend(self.0)? {
                         job.reuse(&previous, path)?;
                         continue;
                     }

@@ -6,7 +6,6 @@ import sources from "../../../test-support/data/sources.json";
 import example from "../../../test-support/data/status.json";
 import { CliQuery } from "../../lib/data/query.svelte";
 import type { Status } from "../../lib/data/shapes";
-import { family } from "../../lib/data/sources";
 import Downloads from "./Downloads.svelte";
 
 beforeEach(() => {
@@ -51,23 +50,24 @@ it("the example status reads only sources of the example sources", () => {
         ...target.sources.map((at) => at.source),
         ...(target.layers ?? []).flatMap((layer) => [...layer.reads, ...(layer.cause?.source ? [layer.cause.source] : [])]),
     ]);
-    const known = new Set(sources.sources.flatMap((row) => [row.id, family(row.id)]));
+    const known = new Set(sources.sources.map((row) => row.id));
     expect(read.filter((id) => !layers.has(id) && !known.has(id))).toEqual([]);
 });
 
 it("lists the downloads by kind without the references, what needs a hand first", async () => {
     const { shown } = screen("#/downloads");
     try {
-        await vi.waitFor(() => expect(document.querySelectorAll("details h2")).toHaveLength(4));
+        await vi.waitFor(() => expect(document.querySelectorAll("details h2")).toHaveLength(5));
         expect([...document.querySelectorAll("details h2")].map((group) => group.textContent)).toEqual([
             "OpenStreetMap",
             "Elevation",
             "Climate and snow",
+            "Land cover and imagery",
             "Map styles and tools",
         ]);
         const text = document.body.textContent!;
         expect(text).not.toContain("Prepared Wikimedia");
-        expect(text).not.toContain("swissALTI3D");
+        expect(text, "a national model is a download").toContain("swissALTI3D");
         const osm = [...document.querySelectorAll("details")[0].querySelectorAll("li")];
         expect(osm[0].textContent, "a stale download comes first, with why").toContain("Due again for this computer: 7 days old; the policy is 7 days");
         expect(osm[0].textContent).toContain("1 area · 7 days old");

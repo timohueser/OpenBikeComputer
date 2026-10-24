@@ -14,7 +14,7 @@ use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
-use obc_data::regions::{geofabrik, Regions};
+use obc_data::regions::{geofabrik, Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
@@ -26,7 +26,6 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::device::{invalid, text, Models, TILE_LIST};
-use crate::forest_reference;
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 use crate::{functions, python};
@@ -461,7 +460,7 @@ impl Planner {
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
-            steps.extend(trailview_canopy(inputs, store, bounds, &mut wanted)?);
+            steps.extend(trailview_canopy(inputs, store, (bounds, &countries), &mut wanted)?);
         }
         let maps = [
             "basemap",
@@ -733,73 +732,71 @@ fn snow(
     ))
 }
 
-/// The canopy layer of `bounds`: the zoom 12 tiles of each `forest-reference/<key>` that meets
-/// `bounds`, in the order of `data/sources.toml`, which is best first, with the credits of the
-/// sources that their manifests name. None while the store lacks a manifest; then `wanted` has its
-/// fetch. A version made for a region that lacks tiles of `bounds` refuses.
+/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` that the canopy models of
+/// `countries` meet, with the credits of those models and of the leaf type. None while the store
+/// lacks a manifest; then `wanted` has its fetch. A version whose scopes lack one of those tiles
+/// refuses.
 fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
-    bounds: [f64; 4],
+    (bounds, countries): ([f64; 4], &[String]),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    let ((left, top), (right, bottom)) = (mercator(bounds[0], bounds[3], 12), mercator(bounds[2], bounds[1], 12));
-    let span = |from: f64, to: f64| from.floor() as u32..to.ceil() as u32;
-    let inside: HashSet<(u32, u32)> = span(left, right).flat_map(|x| span(top, bottom).map(move |y| (x, y))).collect();
-    let paths: HashSet<String> = inside.iter().map(|(x, y)| format!("12/{x}/{y}.tif")).collect();
-    let (mut reads, mut references, mut credits, asked) = (Vec::new(), Vec::new(), Vec::new(), wanted.len());
-    for source in obc_data::sources::all().iter().filter(|source| source.id.starts_with("forest-reference/")) {
-        if !source.meets(bounds) {
-            continue;
-        }
-        let id = &source.id;
-        let pinned = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
-            Ok(pinned) => pinned,
-            Err(fetch) => {
-                wanted.push(fetch);
-                continue;
-            }
-        };
-        let Some(manifest) = crate::device::manifest(store, id, &pinned, wanted)? else { continue };
-        if let Some(scope) = &manifest.scope {
-            let made: HashSet<_> =
-                forest_reference::tiles(source, Some(scope)).map_err(Unplanned::Failed)?.into_iter().collect();
-            let extent = forest_reference::tiles(source, None).map_err(Unplanned::Failed)?;
-            if extent.iter().any(|tile| inside.contains(tile) && !made.contains(tile)) {
-                let region = &inputs.settings.region;
-                return Err(invalid(format!(
-                    "{id}@{pinned} holds the tiles of the region `{}` only, not all of `{region}`. \
-                     Fix: obc data source prepare {id} --region {region}",
-                    scope.region
-                )));
+    use crate::forest_reference::{model_tiles, models, ID, LEAF_TYPE};
+    let sources = obc_data::sources::all();
+    let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
+    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, String>, Unplanned> {
+        let mut tiles = BTreeMap::new();
+        for (_, model) in models(sources, bbox, countries) {
+            for tile in model_tiles(model, bbox).map_err(Unplanned::Failed)? {
+                tiles.entry(path(tile)).or_insert_with(|| model.id.clone());
             }
         }
-        let files: Vec<String> =
-            manifest.files.iter().map(|file| file.path.clone()).filter(|path| paths.contains(path)).collect();
-        if !files.is_empty() {
-            reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
-            references.push(id.clone());
-            for read in &manifest.inputs {
-                let credit = attribution(&read.source);
-                if !credits.contains(&credit) {
-                    credits.push(credit);
-                }
-            }
-        }
+        Ok(tiles)
+    };
+    let [west, south, east, north] = bounds;
+    let needed = tiles(Some(&Bbox { west, south, east, north }), countries)?;
+    if needed.is_empty() {
+        return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
-    if wanted.len() > asked {
-        return Ok(None);
+    let pinned = match version(inputs, store, ID, &[]).map_err(Unplanned::Failed)? {
+        Ok(pinned) => pinned,
+        Err(fetch) => {
+            wanted.push(fetch);
+            return Ok(None);
+        }
+    };
+    let Some(manifest) = crate::device::manifest(store, ID, &pinned, wanted)? else { return Ok(None) };
+    // A version holds each tile with a pixel in its scope and in the scopes that it extends.
+    let mut covered = BTreeSet::new();
+    for scope in manifest.extends.iter().chain([&manifest.scope]) {
+        let (bbox, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
+        covered.extend(tiles(bbox.as_ref(), &countries)?.into_keys());
     }
-    if reads.is_empty() {
-        return Err(invalid(
-            "the layer trailview-canopy needs a forest reference: none has a tile in the region".into(),
-        ));
+    if needed.keys().any(|tile| !covered.contains(tile)) {
+        let region = &inputs.settings.region;
+        return Err(invalid(format!(
+            "{ID}@{} does not cover all of the region `{region}`. Fix: obc data source prepare {ID} --region {region}",
+            manifest.version
+        )));
+    }
+    let files: Vec<String> =
+        manifest.files.iter().map(|file| file.path.clone()).filter(|path| needed.contains_key(path)).collect();
+    if files.is_empty() {
+        return Err(invalid("the region has no canopy: switch the layer trailview-canopy off".into()));
+    }
+    let mut credits: Vec<&str> = Vec::new();
+    for model in files.iter().map(|path| needed[path].as_str()).chain([LEAF_TYPE]) {
+        let credit = attribution(model);
+        if !credits.contains(&credit) {
+            credits.push(credit);
+        }
     }
     Ok(Some(python(
         &PLANNER_TRAILVIEW_CANOPY,
         "planner/trailview-canopy",
-        reads,
-        json!({"bounds": bounds, "references": references, "attribution": credits.join("; ")}),
+        vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
+        json!({"bounds": bounds, "attribution": credits.join("; ")}),
         ("tools.planner_trailview_canopy", Some("planner-snow")),
         &["trailview-canopy.pmtiles"],
     )))
@@ -1357,23 +1354,24 @@ mod tests {
     }
 
     #[test]
-    fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_made_for_a_smaller_one() {
+    fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_whose_scopes_lack_one() {
         use obc_data::prepared::{Cost, Manifest, Read, Scope, MANIFEST};
         use obc_data::store::sha256_hex;
 
         let temp = temp("planner-canopy");
         let store = Store::at(temp.0.join("store"));
-        let id = "forest-reference/ch";
+        let id = crate::forest_reference::ID;
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
-        let manifest = |scope: Option<Scope>| Manifest {
+        let manifest = |scope: Option<Scope>, extends: Vec<Option<Scope>>| Manifest {
             source: id.into(),
             version: "2026-10-20".into(),
-            format: 1,
+            format: 2,
             revision: 1,
-            inputs: vec![Read { source: "vhm-lidar-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
+            inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
             files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
             reused: BTreeMap::new(),
             scope,
+            extends,
             languages: Vec::new(),
             licence: None,
             attribution: None,
@@ -1385,33 +1383,43 @@ mod tests {
             let bytes = manifest.canonical();
             let pinned = format!("2026-10-20/{}", sha256_hex(&bytes));
             inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
-            (pinned, String::from_utf8(bytes).unwrap())
+            fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+            pinned
+        };
+        let region = |name: &str, west: f64, east: f64| {
+            let text = format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n");
+            Some(Scope { region: name.into(), definitions: [(name.into(), text)].into() })
         };
         // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
-        let bounds = [8.40, 46.81, 8.45, 46.83];
+        let swiss = ([8.40, 46.81, 8.45, 46.83], &["CH".to_string()][..]);
         let mut inputs = Inputs::default();
-        let (pinned, text) = pin(&mut inputs, &manifest(None));
         let mut wanted = Vec::new();
-        assert!(trailview_canopy(&inputs, &store, bounds, &mut wanted).unwrap().is_none());
-        assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned.clone()), params: Vec::new() }]);
+        let first = manifest(None, Vec::new());
+        let pinned = format!("2026-10-20/{}", sha256_hex(&first.canonical()));
+        inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
+        assert!(trailview_canopy(&inputs, &store, swiss, &mut wanted).unwrap().is_none());
+        assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned), params: Vec::new() }]);
 
-        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), text)]);
-        let step = trailview_canopy(&inputs, &store, bounds, &mut Vec::new()).unwrap().unwrap();
+        let pinned = pin(&mut inputs, &first);
+        let step = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().unwrap();
         let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
         assert_eq!((source.as_str(), version), (id, &pinned));
         assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);
-        assert_eq!(step.options["references"], json!([id]));
-        assert_eq!(step.options["attribution"], attribution("vhm-lidar-ch"));
+        let credits = format!("{}; {}", attribution("canopy-ch"), attribution("hrl-dominant-leaf-type"));
+        assert_eq!(step.options["attribution"], credits);
 
-        // A version made for a box that holds the tile 2143/1443 only.
-        let small = "name = \"Small\"\nkind = \"box\"\nbox = [8.40, 46.81, 8.42, 46.83]\n";
-        let scope = Scope { region: "small".into(), definitions: [("small".into(), small.into())].into() };
-        let (pinned, text) = pin(&mut inputs, &manifest(Some(scope)));
-        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), text)]);
-        let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, bounds, &mut Vec::new()) else {
+        // A version of a box that holds the tile 2143/1443 only, then one that extends another box.
+        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), Vec::new()));
+        let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
             panic!("a version of a smaller region refuses")
         };
-        assert!(message.contains("obc data source prepare forest-reference/ch"), "{message}");
+        assert!(message.contains("obc data source prepare forest --region"), "{message}");
+        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
+        assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
+
+        // A region of a country without a canopy model has none.
+        let german = (swiss.0, &["DE".to_string()][..]);
+        assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 
     #[test]

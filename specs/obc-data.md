@@ -17,7 +17,7 @@ One `[[source]]` table per source.
 
 | Key | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `forest-reference/ch` |
+| `id` | string | yes | Unique, lowercase kebab-case |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
 | `group` | string | no | The heading under which the operator page lists a source that is not prepared |
 | `used_by` | array of strings | yes | What reads the source, one or more of the [products](#products) `device` and `planner`, and of `search` and `trailview`, the search and TrailView layers of `planner`. `tools/check_data_sources.py` refuses a source without one, or with another name |
@@ -885,7 +885,7 @@ of the version of `terrain` that the target reads, and `mean/index.json`.
 | `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
-| `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
+| `planner/trailview-canopy` | The tiles of [`forest`](#forest) that the canopy models of the region meet in the bounds. A version whose scope and `extends` lack one of those tiles refuses, and so does a region that no canopy model meets | `bounds`; `attribution`: the credits of the canopy models of those tiles and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
 `terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
@@ -1372,8 +1372,7 @@ as the processing of large dumps. A version is a fixed set of files on a target.
 version as it reads any other source.
 
 A prepared source is a row of `data/sources.toml` with `fetch.kind = "prepared"`. The `obc data`
-binary links a producer for each name: the producer of `<name>` makes the source `<name>` and
-each source `<name>/<key>`. Only a source whose licence lets us give its bytes to others is
+binary links a producer for each name: the producer of `<name>` makes the source `<name>`. Only a source whose licence lets us give its bytes to others is
 prepared. Its raw inputs get no copy on a target.
 
 A prepared source has these keys in the folder `sources/<id>/` of a target:
@@ -1431,6 +1430,7 @@ is compact JSON with the keys of each object in byte order:
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
 | `reused` | Absent, or each path of `files` that an earlier version of the same source on the target holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without an upload |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
+| `extends` | Absent, or the scopes of the earlier versions that this version extends, oldest first: the version keeps their files outside its own `scope` |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
 | `machine`, `time` | The machine that made the version, and when the version was complete |
@@ -1467,8 +1467,8 @@ is compact JSON with the keys of each object in byte order:
 4. A run of a new version deletes the folders of older versions of the source on the target that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock.
-5. The producer writes each file. `terrain` and `forest-reference` run the programs of
-   two tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
+5. The producer writes each file. `terrain` and `forest` run the programs of
+   eight tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the upload
    replaces a key that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
    of the layer `<id>`, with its time, CPU, peak memory and the bytes of its files, so the page
@@ -1478,7 +1478,7 @@ is compact JSON with the keys of each object in byte order:
    run of the version wrote stays when it names the same files. Then a conditional write adds the
    version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
-`--region` and `--box` make a version of that region only. `wiki` and `terrain` can publish a
+`--region` and `--box` make a version of that region only. `wiki`, `terrain` and `forest` can publish a
 regional version to `prod`; other prepared sources restrict regional versions to other targets. `obc data runs RUN --stop` stops a run, and the same command resumes
 it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stopped run left.
 
@@ -1560,19 +1560,25 @@ the same format; `prod` takes a version of a region.
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
 
-#### `forest-reference/<key>`
+#### `forest`
 
-The producer `forest-reference`, format 1, makes the forest of each cell of the zoom 12 tiles at
-256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs:
+The producer `forest`, format 2, makes the forest of each cell of the zoom 12 tiles at
+256 × 256 cells, which [the canopy archive](trailview-tiles.md#canopy) packs. A version adds a
+region to the newest complete version of `forest` on the target before it, in the same format;
+`prod` takes a version of a region.
 
-- The tiles are the zoom 12 tiles whose inside meets the `extent` of the source. A version of a
-  region of boxes has only the tiles that meet the bounds of its boxes. A region of another area
-  refuses.
+- The canopy models are the `canopy-<key>` rows, one per country: the key is the lowercase
+  country code. A version reads each model whose `extent` meets the box of the region and, when
+  the region names `countries`, whose country is one of them; all of them for a version of
+  everything. Its tiles are the zoom 12 tiles whose inside meets the
+  `extent` of a model and the box of the region. A tile that two models meet takes the first.
 - For each tile, `python -m tools.forest_reference fetch <key> --tile 12-<x>-<y>` writes
-  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the sources
-  have no pixel in the tile, it writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The
-  run keeps the SHA-256 or the `.none` of each
-  tile until the version is complete, so a resume makes no tile again that it has.
+  `12/<x>/<y>.tif` and then `12-<x>-<y>.sha256`, the SHA-256 of its pixels. Where the model has no
+  pixel in the tile, it writes the empty `12-<x>-<y>.none`. It keeps no raw raster. The run keeps
+  the SHA-256 or the `.none` of each tile until the version is complete, so a resume makes no tile
+  again that it has.
+- Each tile of the version before that is not a tile of the region stays in `reused`; the
+  manifest names the scope of that version in `extends`.
 - A tile is a GeoTIFF in EPSG:3857 on the cells of the tile: four bands of `uint16`, deflate,
   65535 unknown. The SHA-256 of its pixels is over the bands in order, rows north first, little
   endian.
@@ -1589,11 +1595,12 @@ The producer `forest-reference`, format 1, makes the forest of each cell of the 
   its height, from 1 m to 4 m. Tops of one height within the crown radius of each other, directly
   or through other such tops, are one tree, such as a flat crown; its top is the first in raster
   order.
-- `ch` reads `vhm-lidar-ch` through HTTP range requests, in strips of whole block rows, so each
+- `ch` reads `canopy-ch` through HTTP range requests, in strips of whole block rows, so each
   block of a tile downloads once: at each 0.5 m pixel, the newest acquisition that has it. Its leaf
   type is `hrl-dominant-leaf-type` at 4 × 4 samples per cell, from the image export of its service.
-- The run uploads the tiles in batches of 64. The manifest names each source that the key reads
-  at the date of the version, with the [digest](#keys) of the pixel SHA-256 of the tiles.
+- The run uploads the tiles in batches of 64. The manifest names each model that the version
+  read and `hrl-dominant-leaf-type` at the date of the version, with the [digest](#keys) of the
+  pixel SHA-256 of the tiles that it made.
 
 #### `wiki`
 

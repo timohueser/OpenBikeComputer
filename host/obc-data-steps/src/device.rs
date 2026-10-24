@@ -1201,6 +1201,7 @@ pub(crate) mod tests {
             inputs: Vec::new(),
             files: paths.map(file).collect(),
             reused: BTreeMap::new(),
+            extends: Vec::new(),
             scope: None,
             languages: Vec::new(),
             licence: None,

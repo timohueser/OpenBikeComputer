@@ -2,7 +2,7 @@
 // `obc data update` that only make sense together. The bake adds what a card reads, such as the
 // terrain; `shownBy` names the cards that show it, without which it has no reader.
 import type { Bbox } from "./areas";
-import type { SourceRow } from "./sources";
+import { modelsOf, type SourceRow } from "./sources";
 
 export interface Content {
     id: string;
@@ -11,9 +11,9 @@ export interface Content {
     layers: string[];
     /** Sources that need a credential on this machine. */
     credentials: string[];
-    /** A prepared family, such as `forest-reference`: its members that meet the area. `required`
-     *  cards cannot bake without one; the others fall back to coarser data. */
-    reference?: { family: string; required: boolean; without: string };
+    /** The reference that it reads, such as `forest`. A `required` reference needs a national model
+     *  and a version in the area; the others fall back to coarser data, `without`. */
+    reference?: { source: string; required: boolean; without: string };
     /** The cards that show it; it can be on only while one of them is. */
     shownBy?: string[];
     /** Whether it reads the terrain, which a national model makes finer where it covers the area. */
@@ -28,7 +28,7 @@ export const TERRAIN: Content = {
     about: "",
     layers: [],
     credentials: [],
-    reference: { family: "terrain", required: false, without: "Copernicus 30 m" },
+    reference: { source: "terrain", required: false, without: "Copernicus 30 m" },
 };
 
 export const CONTENTS: Content[] = [
@@ -57,7 +57,7 @@ export const CONTENTS: Content[] = [
         about: "Tree height and leaf type",
         layers: ["trailview-canopy"],
         credentials: [],
-        reference: { family: "forest-reference", required: true, without: "no trees" },
+        reference: { source: "forest", required: true, without: "no trees" },
         shownBy: ["trailview"],
     },
     { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [], shownBy: ["map"], terrain: true },
@@ -85,21 +85,20 @@ export function toggled(on: string[], id: string, checked: boolean): string[] {
     return next;
 }
 
-/** A prepared reference that meets the area: its member, such as `terrain-reference/ch`, and the
- *  target of its newest version, `null` while it has none. */
+/** The reference of a card: the target of its newest version, `null` while it has none, and the
+ *  areas of the versions that a bake reads. */
 export interface Reference {
     source: string;
-    use: string;
     version: { version: string; target: string } | null;
-    /** The areas of the versions that a bake reads, for a reference made area by area. */
     regions: string[];
 }
 
 export interface Needs {
     /** Credentials that this machine lacks, by source. */
     credentials: string[];
-    /** The members of the reference family that meet the area. */
-    references: Reference[];
+    reference: Reference | null;
+    /** The national models of the reference that meet the area. */
+    models: SourceRow[];
     /** Whether the card can bake here. */
     ready: boolean;
 }
@@ -107,31 +106,24 @@ export interface Needs {
 const meets = (extent: [number, number, number, number], area: Bbox) =>
     extent[0] < area.east && area.west < extent[2] && extent[1] < area.north && area.south < extent[3];
 
-/** Whether member `id`, such as `forest-reference/ch`, is of one of `countries`; any member is
- *  when the area names no countries, such as a drawn box, and so is a reference of no country. */
-const ofCountry = (id: string, countries: string[]) =>
-    !countries.length || !id.includes("/") || countries.includes(id.split("/")[1].split("-")[0].toUpperCase());
-
-/** What `content` needs for `area` in `countries` on this machine, from `obc data sources`. A bake
- *  reads the versions of `prod` while it lists one, else those of `local`. */
+/** What `content` needs for `area` in `countries` on this machine, from `obc data sources`. A model
+ *  is of any country when the area names none, such as a drawn box. A bake reads the versions of
+ *  `prod` while it lists one, else those of `local`. */
 export function needs(content: Content, area: Bbox | null, sources: SourceRow[], countries: string[] = []): Needs {
     const credentials = content.credentials.filter((id) => sources.find((source) => source.id === id)?.credential_missing);
-    const family = content.reference?.family;
-    const references: Reference[] =
-        family && area
-            ? sources
-                  .filter((source) => (source.id === family || source.id.startsWith(`${family}/`)) && source.extent && meets(source.extent, area))
-                  .filter((source) => ofCountry(source.id, countries))
-                  .map((source) => {
-                      const target = ["prod", "local"].find((name) => source.prepared[name]?.versions.length);
-                      const listed = target ? source.prepared[target].versions : [];
-                      const newest = listed.at(-1);
-                      const regions = [...new Set(listed.flatMap((version) => (version.region ? [version.region] : [])))];
-                      return { source: source.id, use: source.use ?? source.id, version: newest ? { version: newest.version, target: target! } : null, regions };
-                  })
-            : [];
-    const covered = references.some((reference) => reference.version);
-    return { credentials, references, ready: !credentials.length && (!content.reference?.required || covered) };
+    const id = content.reference?.source;
+    const row = id && sources.find((source) => source.id === id);
+    let reference: Reference | null = null;
+    if (row) {
+        const target = ["prod", "local"].find((name) => row.prepared[name]?.versions.length);
+        const listed = target ? row.prepared[target].versions : [];
+        const newest = listed.at(-1);
+        const regions = [...new Set(listed.flatMap((version) => (version.region ? [version.region] : [])))];
+        reference = { source: row.id, version: newest ? { version: newest.version, target: target! } : null, regions };
+    }
+    const models = id && area ? modelsOf(id, sources).filter(({ row, country }) => row.extent && meets(row.extent, area) && (!countries.length || countries.includes(country))) : [];
+    const covered = !!models.length && !!reference?.version;
+    return { credentials, reference, models: models.map(({ row }) => row), ready: !credentials.length && (!content.reference?.required || covered) };
 }
 
 /** The `--add` and `--remove` flags that switch on exactly the layers of the cards in `on`. */

@@ -506,29 +506,29 @@ redistribute = true
 
 # ── TrailView forest ─────────────────────────────────────────────────────────
 
-# The canopy of each cell of the TrailView canopy layer, from the two sources below. The canopy
-# layer credits the sources that the manifest of its version names.
+# The canopy of each cell of the TrailView canopy layer, from the national canopy models
+# `canopy-<country>` and the leaf type below. A version extends the version before by a region.
 [[source]]
-id = "forest-reference/ch"
+id = "forest"
 kind = "data"
 used_by = ["trailview"]
-use = "Canopy height, cover, stems and leaf type in Switzerland"
+use = "Forest: canopy height, cover, stems and leaf type, where a country has a canopy model"
 licence = "LicenseRef-opendata-swiss-BY AND LicenseRef-Copernicus-CLMS"
 fetch = { kind = "prepared" }
 hosts = ["data.geo.admin.ch", "image.discomap.eea.europa.eu"]
-extent = [5.9, 45.8, 10.5, 47.9]
+extent = [-180.0, -90.0, 180.0, 90.0]
 version = "date"
 refresh = 365
 redistribute = true
 
-# Only the producer of `forest-reference/ch` reads the next two: the rasters of the first through
-# HTTP range requests, the second through the image export of its service.
+# Only the producer of `forest` reads the next two: the rasters of the first through HTTP range
+# requests, the second through the image export of its service.
 [[source]]
-id = "vhm-lidar-ch"
+id = "canopy-ch"
 kind = "data"
 group = "Land cover and imagery"
 used_by = ["trailview"]
-use = "Vegetation height in Switzerland, for the forest reference"
+use = "Vegetation height in Switzerland, for the forest"
 licence = "LicenseRef-opendata-swiss-BY"
 licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
 attribution = "Vegetation Height Model LiDAR NFI © FOEN/WSL"
@@ -544,7 +544,7 @@ id = "hrl-dominant-leaf-type"
 kind = "data"
 group = "Land cover and imagery"
 used_by = ["trailview"]
-use = "Broadleaf or coniferous forest, for the forest reference"
+use = "Broadleaf or coniferous forest, for the forest"
 licence = "LicenseRef-Copernicus-CLMS"
 licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"

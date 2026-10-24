@@ -109,8 +109,7 @@ pub struct Archive {
 
 /// The producer of the source `id`.
 pub(crate) fn producer<'a>(prepared: &[&'a dyn Prepared], id: &str) -> Option<&'a dyn Prepared> {
-    let family = id.split_once('/').map_or(id, |(name, _)| name);
-    prepared.iter().copied().find(|producer| producer.name() == family)
+    prepared.iter().copied().find(|producer| producer.name() == id)
 }
 
 /// The folder of the source `id` on `target`, as a target: its lock, its versions and their files.
@@ -145,6 +144,10 @@ pub struct Manifest {
     pub reused: BTreeMap<String, String>,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
+    /// The scopes of the earlier versions that this version extends, oldest first: it keeps their
+    /// files outside its own scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extends: Vec<Option<Scope>>,
     /// Article languages included in this version; empty for a source without articles. A manifest
     /// of a version made before the field has none.
     #[serde(default)]
@@ -385,6 +388,7 @@ pub struct Job<'a> {
     files: BTreeMap<String, LayerFile>,
     /// The files of `files` that an earlier version holds, with that version.
     reused: BTreeMap<String, String>,
+    extends: Vec<Option<Scope>>,
     inputs: BTreeMap<(String, String), BTreeMap<String, String>>,
     /// The files that this run uploaded.
     pub(crate) uploaded: u64,
@@ -449,6 +453,7 @@ impl<'a> Job<'a> {
             journal: dir.join("journal.jsonl"),
             files: BTreeMap::new(),
             reused: BTreeMap::new(),
+            extends: Vec::new(),
             inputs: BTreeMap::new(),
             uploaded: 0,
             programs: Default::default(),
@@ -565,9 +570,14 @@ impl<'a> Job<'a> {
         &self.reused
     }
 
+    /// The scopes of the earlier versions that this version extends.
+    pub fn extends(&self) -> &[Option<Scope>] {
+        &self.extends
+    }
+
     /// The newest complete version of the source on the target before this one, in `format`: the
-    /// version that this one extends.
-    pub fn previous(&self, format: u32) -> Result<Option<Manifest>, String> {
+    /// version that this one extends, so its manifest names the scopes of that version.
+    pub fn extend(&mut self, format: u32) -> Result<Option<Manifest>, String> {
         let listed: Vec<Version> = match self.folder.get(VERSIONS)? {
             Some(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|e| format!("sources/{}/{VERSIONS}: {e}", self.id))?
@@ -578,7 +588,9 @@ impl<'a> Job<'a> {
         let Some(entry) = before.max_by(|a, b| a.version.cmp(&b.version)) else { return Ok(None) };
         let key = format!("{}/{MANIFEST}", entry.version);
         let bytes = self.folder.get(&key)?.ok_or_else(|| format!("sources/{}/{key} is gone", self.id))?;
-        Manifest::parse(&self.id, &entry.version, &bytes).map(Some)
+        let manifest = Manifest::parse(&self.id, &entry.version, &bytes)?;
+        self.extends = manifest.extends.iter().cloned().chain([manifest.scope.clone()]).collect();
+        Ok(Some(manifest))
     }
 
     /// The file `path` of the earlier version `manifest`, in the store.
