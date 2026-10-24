@@ -255,19 +255,6 @@ fn species_of(region: u32, elevation: f32, leaf: u32, pick: f32) -> u32 {
     return model;
 }
 
-// The region of the ground at a point, from the finest resident ground page; NO_REGION where only a
-// page coarser than REGION_LEVEL holds it.
-fn stable_region(s: vec2f) -> u32 {
-    let held = held_at(s, look.codes.y);
-    if (held.page < 0 || held.level < REGION_LEVEL) {
-        return NO_REGION;
-    }
-    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0).b;
-}
-
-const NO_REGION: u32 = 0xffffffffu;
-
 // Point r of a base cell, if a tree stands there: emitted on the drawn surface. `ground_near` is the
 // height of the middle of the listed cell, and `slope` how far its ground may lie from it.
 fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
@@ -300,16 +287,25 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (!visible(centre, slope + height) || hidden(centre, slope + height)) {
         return;
     }
-    let stood = stand_ground(s, at);
-    let ground = stood.x;
-    let region = stable_region(s);
-    // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
-    let material = finest_cell(s).r;
-    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || (material == forest.orchard && material != NO_CELL.r)) {
+    // The region from the finest resident ground page, of REGION_LEVEL or finer; no data (255) or no
+    // page: no species. The orchards stand their own trees on their cells of the finest pages.
+    let held = held_at(s, look.codes.y);
+    if (held.page < 0 || held.level < REGION_LEVEL) {
         return;
     }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    let found = textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
+    let region = found.b;
+    if (region >= arrayLength(&data.species) / SPECIES || (found.r == forest.orchard && held.level == look.codes.y)) {
+        return;
+    }
+    // The drawn ground costs the most of a tree: it comes last, for the trees that stand.
     let coarse = units_height(at, BAND_LEVEL);
-    let band = select(ground, coarse, known(coarse));
+    var stood = vec2f(NONE, 0.0);
+    if (!known(coarse)) {
+        stood = stand_ground(s, at);
+    }
+    let band = select(stood.x, coarse, known(coarse));
     // The leaf type: a mixed cell is half of each; an unknown one takes any species.
     var leaf = (code >> 14u) & 3u;
     if (leaf == 3u) {
@@ -320,12 +316,25 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (model == 0xffffffffu || on_road(s, CLEAR * models[model].spread * height)) {
         return;
     }
+    if (known(coarse)) {
+        stood = stand_ground(s, at);
+    }
+    if (!known(stood.x)) {
+        return;
+    }
     // Kept trees stand wider, so the forest keeps its cover as it thins.
     let width = min(2.0, inverseSqrt(share));
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
-    emit_tree(model, render_at(s, ground - SINK_M - slope_sink(model, stood.y, height, width, lift)), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
-        unit_float(mix_bits(h + 31u)), snow_at(s), vec3f(0.0));
+    // The snow of the finest resident page of the drawn level: the page found above where none finer than it is resident.
+    let level = u32(ceil(lod(s)));
+    var drawn = held;
+    if (level < held.level) {
+        drawn = held_at(s, level);
+    }
+    let snow = snow_held(drawn);
+    emit_tree(model, render_at(s, stood.x - SINK_M - slope_sink(model, stood.y, height, width, lift)), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
+        unit_float(mix_bits(h + 31u)), snow, vec3f(0.0));
 }
 
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.
