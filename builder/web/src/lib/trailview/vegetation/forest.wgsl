@@ -303,7 +303,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let ground = stand_height(s, at);
     let region = stable_region(s);
     // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
-    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || finest_cell(s).r == forest.orchard) {
+    let material = finest_cell(s).r;
+    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || (material == forest.orchard && material != NO_CELL.r)) {
         return;
     }
     let coarse = units_height(at, BAND_LEVEL);

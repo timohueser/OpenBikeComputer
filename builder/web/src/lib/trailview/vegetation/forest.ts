@@ -42,7 +42,7 @@ export class Forest implements Producer {
     private resources?: Resources;
     private readonly canopy: Canopy;
     private readonly species: Float32Array<ArrayBuffer>;
-    /** The material code of orchards, or none. */
+    /** The material code of orchards, or 0xffffffff for none. */
     private readonly orchard: number;
     private window: [number, number] = [0, 0];
     private side = 0;
