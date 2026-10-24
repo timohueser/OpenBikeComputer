@@ -41,13 +41,15 @@ MOOR_PEAK = 0.1
 # The prototype's colour reaches 156 m texels; zoom 9 has 0.17 km texels at 47° N.
 BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
-# at zoom 12 the texels are 13 m at 47° N, the chroma 26 m and the NDVI in alpha 13 m.
+# at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI in alpha 26 m.
 VARIANTS = {
     "webp-13": ("webp", 13, "4:2:0"), "webp-12": ("webp", 12, "4:2:0"), "webp-11": ("webp", 11, "4:2:0"),
     "avif-12": ("avif", 12, "4:2:0"), "avif-11": ("avif", 11, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
 }
 # Pillow's default WebP quality is 80; AVIF uses the same number.
 QUALITY = 80
+# The step of a stored NDVI code: 0.031 NDVI, a twentieth of the span the cover ramps take.
+NDVI_STEP = 4
 
 
 def smoothstep(low, high, x):
@@ -191,8 +193,20 @@ def average(children):
     return np.concatenate([np.round(255.0 * linear ** (1 / 2.2)), alpha[..., None]], axis=-1).astype(np.uint8)
 
 
+def stored_ndvi(alpha):
+    """The alpha of a quarter as the archives store it: a measured texel takes the mean NDVI code of the
+    measured texels of its aligned 2 × 2 block, rounded half to even, in steps of NDVI_STEP; codes 0 and
+    SNOW_MARK stay. The step buckets meet at code 128, NDVI 0, which the engine's water test reads."""
+    measured = alpha > SNOW_MARK
+    blocks = lambda texels: texels.reshape(tiles.TILE // 2, 2, tiles.TILE // 2, 2).sum(axis=(1, 3))
+    mean = np.round(blocks(np.where(measured, alpha, 0).astype(np.float32)) / np.maximum(blocks(measured), 1))
+    code = 128 + NDVI_STEP * np.floor_divide(mean.astype(np.int32) - 128, NDVI_STEP) + NDVI_STEP // 2
+    return np.where(measured, code.repeat(2, axis=0).repeat(2, axis=1), alpha).astype(np.uint8)
+
+
 def encoder(variant):
-    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`."""
+    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`, with the NDVI
+    of `stored_ndvi`."""
     from PIL import Image
     from pmtiles.tile import TileType
 
@@ -204,7 +218,7 @@ def encoder(variant):
         out = {}
         for q in range(4):
             stream = io.BytesIO()
-            image = Image.fromarray(texels[q], "RGBA")
+            image = Image.fromarray(np.dstack([texels[q][..., :3], stored_ndvi(texels[q][..., 3])]), "RGBA")
             if codec == "webp":
                 image.save(stream, "WEBP", quality=QUALITY, alpha_quality=100)
                 out[f"q{q + 1}"] = (TileType.WEBP, stream.getvalue())
