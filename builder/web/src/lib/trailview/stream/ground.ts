@@ -99,9 +99,10 @@ export class GroundSource {
     /**
      * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
      * has no ground. A failed material tile fails them; a failed tile of another layer leaves that
-     * layer out, and the pages are not complete.
+     * layer out, and the pages are not complete. Without `fine`, pages whose four snow tiles one zoom
+     * finer have not arrived take the one snow tile of zoom z, and are `coarse`.
      */
-    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<GroundResult> {
+    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine = false): Promise<GroundResult> {
         let complete = true;
         const optional = (body: Promise<Body | undefined>) => body.catch(() => void (complete = false));
         const at = (layer: Layer, zoom: number, planar = false) => {
@@ -110,10 +111,12 @@ export class GroundSource {
         };
         const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
-        const snow = this.sources.snow, zs = Math.min(z + 1, snow?.maxZoom ?? -1);
-        const snowBodies = !snow ? [] : zs === z + 1
-            ? [0, 1, 2, 3].map(q => optional(this.body('snow', zs, 2 * x + (q & 1), 2 * y + (q >> 1), zs, true)))
-            : [at('snow', zs, true)];
+        const snow = this.sources.snow, zs = z + 1;
+        const finer = snow !== undefined && zs <= snow.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
+        const coarse = finer.length > 0 && !fine && !finer.every(([sx, sy]) => this.sizes.has(`snow/${zs}/${sx}/${sy}`));
+        const snowBodies = !snow ? [] : finer.length && !coarse
+            ? finer.map(([sx, sy]) => optional(this.body('snow', zs, sx, sy, zs, true)))
+            : [at('snow', z, true)];
         const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
             ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc), at('ndvimax', zc)] : [undefined, undefined, undefined]),
@@ -128,7 +131,7 @@ export class GroundSource {
             this.waiting.set(id, { worker, resolve, reject });
             worker.postMessage({ id, job }, bodies);
         });
-        return { pages: built.pages, complete: complete && built.complete };
+        return { pages: built.pages, complete: complete && built.complete, coarse };
     }
 
     /** The body of the tile of a layer at a zoom that holds tile z/x/y of zoom `of`; undefined where the layer has none. */
