@@ -194,9 +194,7 @@ fn find_cells(@builtin(global_invocation_id) id: vec3u) {
     // The cell's box: its ground within SLOPE_M per base cell of its middle's, and its trees.
     let centre = render_at(s, ground + 0.5 * TALLEST_M);
     let radius = 1.5 * half + SLOPE_M * f32(1u << level) + TALLEST_M;
-    // In view: a box of the cell, with a tenth for render space's bend, and its trees.
-    let box = vec3f(1.1 * half + TALLEST_M, 1.1 * half + TALLEST_M, SLOPE_M * f32(1u << level) + TALLEST_M);
-    if (!known(ground) || !visible_box(centre, box) || hidden(centre, radius)) {
+    if (!known(ground) || !visible(centre, radius) || hidden(centre, radius)) {
         return;
     }
     // The densest canopy that a point of the cell reads, with its jitter of up to half a canopy cell:
@@ -283,13 +281,9 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         return;
     }
     let height = max(3.0, canopy_height(code) * (0.7 + 0.35 * unit_float(mix_bits(h + 13u))));
-    // Kept trees stand wider, so the forest keeps its cover as it thins.
-    let width = min(2.0, inverseSqrt(share));
-    // On the cell's ground, a tree out of view stays out of view on its own: a column as wide as any
-    // tree model and as tall as the cell's ground, the tree and its sink on a slope (slope_sink) allow.
+    // On the cell's ground, a tree out of view stays out of view on its own.
     let centre = render_at(s, ground_near + 0.5 * height);
-    let wide = params.tree_radius * height * max(width, 1.0);
-    if (!visible_box(centre, vec3f(wide, wide, slope + SINK_M + 2.0 * wide)) || hidden(centre, slope + height)) {
+    if (!visible(centre, slope + height) || hidden(centre, slope + height)) {
         return;
     }
     // The region from the finest resident ground page, of REGION_LEVEL or finer; no data (255) or no
@@ -327,6 +321,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (!known(stood.x)) {
         return;
     }
+    // Kept trees stand wider, so the forest keeps its cover as it thins.
+    let width = min(2.0, inverseSqrt(share));
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     // The snow of the finest resident page of the drawn level: the page found above where none finer than it is resident.

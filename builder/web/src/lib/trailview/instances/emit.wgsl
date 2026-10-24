@@ -54,8 +54,7 @@ struct Params {
     // Instances that a frame stages at most.
     capacity: u32,
     detail: f32,
-    // The radius of the largest tree model (a model with a crown), as Model.radius.
-    tree_radius: f32,
+    unused: u32,
 }
 
 // Where a tier of a model ends: a model's last tier ends where the model does, at any resolution.
