@@ -606,6 +606,22 @@ redistribute = true
 
 # The Wikimedia facts, article text and photos of the OSM subjects, prepared from the dumps in the
 # archive cache on the machine that prepares, and from Commons.
+# The national models of each tile, merged best first: `obc data source prepare terrain` adds the
+# tiles of an area to the version before. The index of each version names the model and the credit
+# of each tile.
+[[source]]
+id = "terrain"
+kind = "data"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain from the national LiDAR models, where they have one"
+licence = "LicenseRef-national-terrain-models-per-tile"
+attribution = "national terrain models; the index of each version credits each tile"
+fetch = { kind = "prepared" }
+extent = [-180.0, -90.0, 180.0, 90.0]
+version = "date"
+refresh = 365
+redistribute = true
+
 [[source]]
 id = "wiki"
 kind = "data"

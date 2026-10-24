@@ -39,6 +39,10 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
+    /// Whether `prod` takes a version of a region: the source is made region by region.
+    fn regional(&self) -> bool {
+        false
+    }
     /// Plan the inputs with metadata requests only; never download an archive here.
     fn plan(
         &self,
@@ -74,6 +78,8 @@ pub struct Plan {
 pub struct Planning<'a> {
     pub store: &'a Store,
     pub http: &'a Http,
+    /// The rows of `data/sources.toml`.
+    pub sources: &'a [Source],
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -132,6 +138,10 @@ pub struct Manifest {
     pub inputs: Vec<Read>,
     /// Sorted by path.
     pub files: Vec<LayerFile>,
+    /// The files that an earlier version of the same target holds, by path: the version keeps them
+    /// under `<that version>/<path>`, not under its own folder.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reused: BTreeMap<String, String>,
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     /// Article languages included in this version; empty for a source without articles. A manifest
@@ -262,10 +272,10 @@ pub(crate) fn unpin(pinned: &str) -> Option<(&str, &str)> {
 /// Make `manifest` the manifest of its version on `target`, after a check that the target has each
 /// of its files with its size, then [`list`] the version. A manifest that an earlier run of the
 /// version wrote stays when it names the same files.
-pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
+pub fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
     let (id, version) = (&manifest.source, &manifest.version);
     let (folder, key) = (folder(target, id), format!("{version}/{MANIFEST}"));
-    if let Some(missing) = absent(&folder, version, &manifest.files)?.first() {
+    if let Some(missing) = absent_kept(&folder, version, &manifest.files, &manifest.reused)?.first() {
         return Err(format!("sources/{id}/{missing} is not on the target; no manifest is written"));
     }
     if folder.put(&key, &manifest.canonical(), &Condition::Absent)?.is_none() {
@@ -280,7 +290,19 @@ pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, 
 /// The keys `<version>/<path>` of `files` that the source folder `folder` lacks or holds with
 /// another size.
 pub(crate) fn absent(folder: &Target, version: &str, files: &[LayerFile]) -> Result<Vec<String>, String> {
-    let sizes: Vec<(String, u64)> = files.iter().map(|file| (format!("{version}/{}", file.path), file.size)).collect();
+    absent_kept(folder, version, files, &BTreeMap::new())
+}
+
+/// [`absent`], where `reused` names the earlier version that holds a file.
+fn absent_kept(
+    folder: &Target,
+    version: &str,
+    files: &[LayerFile],
+    reused: &BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let origin = |path: &str| reused.get(path).map_or(version, String::as_str);
+    let sizes: Vec<(String, u64)> =
+        files.iter().map(|file| (format!("{}/{}", origin(&file.path), file.path), file.size)).collect();
     folder.missing(&sizes)
 }
 
@@ -331,6 +353,8 @@ pub(crate) fn started(store: &Store, target: &str, id: &str) -> Result<Option<St
 enum Entry {
     /// A file that is on the target.
     File(LayerFile),
+    /// A file of the earlier version `version` that this version keeps.
+    Reused { file: LayerFile, version: String },
     /// The files of a source version that the prepare read, name to SHA-256.
     Input { source: String, version: String, files: BTreeMap<String, String> },
 }
@@ -358,6 +382,8 @@ pub struct Job<'a> {
     run: &'a mut Run,
     journal: PathBuf,
     files: BTreeMap<String, LayerFile>,
+    /// The files of `files` that an earlier version holds, with that version.
+    reused: BTreeMap<String, String>,
     inputs: BTreeMap<(String, String), BTreeMap<String, String>>,
     /// The files that this run uploaded.
     pub(crate) uploaded: u64,
@@ -421,6 +447,7 @@ impl<'a> Job<'a> {
             run,
             journal: dir.join("journal.jsonl"),
             files: BTreeMap::new(),
+            reused: BTreeMap::new(),
             inputs: BTreeMap::new(),
             uploaded: 0,
             programs: Default::default(),
@@ -432,19 +459,26 @@ impl<'a> Job<'a> {
         }
         // The cleanup of a newer version can delete the keys of the journal: the run makes them again.
         let files: Vec<LayerFile> = job.files.values().cloned().collect();
-        for key in absent(&job.folder, version, &files)? {
-            job.files.remove(&key[version.len() + 1..]);
+        for key in absent_kept(&job.folder, version, &files, &job.reused)? {
+            let path = key.split_once('/').map_or(key.as_str(), |(_, path)| path).to_string();
+            job.files.remove(&path);
+            job.reused.remove(&path);
         }
         Ok(job)
     }
 
     pub fn planning(&self) -> Planning<'_> {
-        Planning { store: self.store, http: self.http }
+        Planning { store: self.store, http: self.http, sources: self.sources }
     }
 
     fn apply(&mut self, entry: Entry) {
         match entry {
             Entry::File(file) => {
+                self.reused.remove(&file.path);
+                self.files.insert(file.path.clone(), file);
+            }
+            Entry::Reused { file, version } => {
+                self.reused.insert(file.path.clone(), version);
                 self.files.insert(file.path.clone(), file);
             }
             Entry::Input { source, version, files } => self.inputs.entry((source, version)).or_default().extend(files),
@@ -472,6 +506,58 @@ impl<'a> Job<'a> {
     /// The files that are on the target, by path.
     pub fn files(&self) -> impl Iterator<Item = &LayerFile> {
         self.files.values()
+    }
+
+    /// The rows of `data/sources.toml`.
+    pub fn sources(&self) -> &'a [Source] {
+        self.sources
+    }
+
+    /// The files that an earlier version holds, with that version.
+    pub fn reused(&self) -> &BTreeMap<String, String> {
+        &self.reused
+    }
+
+    /// The newest complete version of the source on the target before this one, in `format`: the
+    /// version that this one extends.
+    pub fn previous(&self, format: u32) -> Result<Option<Manifest>, String> {
+        let listed: Vec<Version> = match self.folder.get(VERSIONS)? {
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| format!("sources/{}/{VERSIONS}: {e}", self.id))?
+            }
+            None => Vec::new(),
+        };
+        let before = listed.iter().filter(|entry| entry.format == format && entry.version < self.version);
+        let Some(entry) = before.max_by(|a, b| a.version.cmp(&b.version)) else { return Ok(None) };
+        let key = format!("{}/{MANIFEST}", entry.version);
+        let bytes = self.folder.get(&key)?.ok_or_else(|| format!("sources/{}/{key} is gone", self.id))?;
+        Manifest::parse(&self.id, &entry.version, &bytes).map(Some)
+    }
+
+    /// The file `path` of the earlier version `manifest`, in the store.
+    pub fn earlier_file(&self, manifest: &Manifest, path: &str) -> Result<PathBuf, String> {
+        let file = manifest.files.iter().find(|file| file.path == path);
+        let file = file.ok_or_else(|| format!("{}@{} has no file {path}", self.id, manifest.version))?;
+        let object = self.store.object(&file.sha256);
+        if !object.is_file() {
+            let origin = manifest.reused.get(path).unwrap_or(&manifest.version);
+            self.folder
+                .download(&format!("{origin}/{path}"), &file.sha256, self.store)
+                .map_err(|e| format!("sources/{}/{e}", self.id))?
+                .ok_or_else(|| format!("the target has no sources/{}/{origin}/{path}", self.id))?;
+        }
+        Ok(object)
+    }
+
+    /// Keep the file `path` of the earlier version `manifest` in this version, without an upload.
+    pub fn reuse(&mut self, manifest: &Manifest, path: &str) -> Result<(), String> {
+        if self.files.contains_key(path) {
+            return Ok(());
+        }
+        let file = manifest.files.iter().find(|file| file.path == path);
+        let file = file.ok_or_else(|| format!("{}@{} has no file {path}", self.id, manifest.version))?.clone();
+        let version = manifest.reused.get(path).unwrap_or(&manifest.version).clone();
+        self.record(Entry::Reused { file, version })
     }
 
     /// Fetch `wanted` into the store, and give the version and the object of each file by name. The
@@ -654,9 +740,8 @@ pub(crate) fn journaled(store: &Store, target: &str, id: &str, version: &str) ->
 
 /// Give `inputs` the version of each prepared source of `read`, the fetches that the steps of the
 /// target `name` read, in the format of its producer: the serving version of a `manual` source,
-/// else the newest version that the target lists, or, for a target that is not [`PROD`], that
-/// `prod` lists. The entry of the target wins over the one of `prod` with the same name. A source
-/// without one is due, and the listing blocks it.
+/// else the newest version that `prod` lists, or, while `prod` lists none, that the target lists.
+/// A source without one is due, and the listing blocks it.
 pub(crate) fn resolve(
     root: &Path,
     store: &Store,
@@ -677,17 +762,16 @@ pub(crate) fn resolve(
         let key = (source.id.clone(), Vec::new());
         let serving = inputs.serving.get(&key).cloned();
         let format = producer(producers, &source.id).map(|producer| producer.format());
+        let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
         let mut listed = versions(target, &source.id)?;
+        // `prod` is the reference: its versions win. The target's own count only while `prod` has
+        // none, so a version made for a test on this machine never hides one that every target reads.
         match prod.as_ref().map(|prod| versions(prod, &source.id)) {
-            Some(Ok(more)) => {
-                let own: BTreeSet<String> = listed.iter().map(|entry| entry.version.clone()).collect();
-                listed.extend(more.into_iter().filter(|entry| !own.contains(&entry.version)));
-            }
+            Some(Ok(theirs)) if theirs.iter().any(fits) => listed = theirs,
+            Some(Ok(_)) | None => {}
             // A bake from the store needs no network.
             Some(Err(e)) => eprintln!("obc data: `{PROD}` cannot be read ({e}); `{name}` reads the versions it knows"),
-            None => {}
         }
-        let fits = |entry: &Version| format.is_none_or(|format| entry.format == format);
         // A serving version that no list names stays, as on a machine without network.
         let serving = serving.filter(|serving| listed.iter().find(|entry| pinned(entry) == *serving).is_none_or(fits));
         let newest = listed.iter().filter(|entry| fits(entry)).max_by(|a, b| a.version.cmp(&b.version)).map(pinned);
@@ -768,7 +852,8 @@ pub(crate) fn fetch(
         let file = manifest.files.iter().find(|file| &file.path == name);
         let file = file.ok_or_else(|| format!("{id}@{version} has no file {name}"))?;
         if !store.object(&file.sha256).is_file() {
-            let downloaded = folder.download(&format!("{version}/{name}"), &file.sha256, store);
+            let origin = manifest.reused.get(name).map_or(version, String::as_str);
+            let downloaded = folder.download(&format!("{origin}/{name}"), &file.sha256, store);
             downloaded
                 .map_err(|e| format!("sources/{id}/{e}"))?
                 .ok_or_else(|| format!("the target has no sources/{id}/{version}/{name}"))?;

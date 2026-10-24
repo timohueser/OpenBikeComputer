@@ -57,6 +57,10 @@ impl Prepared for Wiki {
         1
     }
 
+    fn regional(&self) -> bool {
+        true
+    }
+
     /// Reuse cached inputs and discover missing inputs from metadata. The review names each
     /// archive and its size; the number of output shards is unknown before the run.
     fn plan(
@@ -441,7 +445,12 @@ esac
             .into(),
         };
         let plan = producer
-            .plan(&obc_data::prepared::Planning { store: &store, http: &http }, &sources[0], Some(&scope), &languages)
+            .plan(
+                &obc_data::prepared::Planning { store: &store, http: &http, sources: &sources },
+                &sources[0],
+                Some(&scope),
+                &languages,
+            )
             .unwrap();
         assert!(plan.inputs.iter().all(|input| input.wanted.source != "osm-planet"));
         let read: Vec<String> = plan

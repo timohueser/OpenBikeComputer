@@ -650,8 +650,8 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// The mean archive of the national models whose tiles meet `bounds`, merged best first into one
-/// archive: the step `planner/reference`. `None` when no model has a tile there.
+/// The mean tiles of `terrain` that meet `bounds`, as one archive: the step `planner/reference`.
+/// `None` when the version has no tile there.
 fn reference(
     inputs: &Inputs,
     store: &Store,
@@ -663,8 +663,9 @@ fn reference(
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
     // Without a layer, the read writes no note and reads no polygon.
+    // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
-    let Some((reads, models)) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
+    let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
         return Ok(None);
     };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
@@ -673,8 +674,8 @@ fn reference(
         ..python(
             &PLANNER_TERRAIN,
             "planner/reference",
-            reads,
-            json!({"models": models, "tiles": tiles, "pool": "mean"}),
+            vec![read],
+            json!({"source": crate::terrain_reference::ID, "tiles": tiles, "pool": "mean"}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
             &["reference"],
         )
@@ -1168,19 +1169,19 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_reads_the_mean_tiles_of_a_national_model_in_its_bounds() {
+    fn the_terrain_reads_the_mean_tiles_of_terrain_in_its_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
         let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
-        let (pinned, manifest) = crate::device::tests::swiss_version(&mut inputs, &paths);
+        let (pinned, manifest) = crate::device::tests::terrain_version(&mut inputs, &paths);
         let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
-        crate::device::tests::stored(&store, "terrain-reference/ch", &pinned, &[], &manifest);
+        crate::device::tests::stored(&store, "terrain", &pinned, &[], &manifest);
         let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
         let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
         assert_eq!(
             (&files[..], &reference.options["pool"]),
-            (&["mean/16/4825/4218.tif".to_string()][..], &json!("mean"))
+            (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
         );
         let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
         assert!(terrain
@@ -1371,6 +1372,7 @@ mod tests {
             revision: 1,
             inputs: vec![Read { source: "vhm-lidar-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
             files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
+            reused: BTreeMap::new(),
             scope,
             languages: Vec::new(),
             licence: None,

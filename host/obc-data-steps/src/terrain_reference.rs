@@ -1,7 +1,8 @@
-//! The producer of `terrain-reference/<key>`: the national terrain model `dtm-<key>` as tiles of
-//! the reference archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum
-//! and `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. The adapter of the
-//! model, `ingest.py fetch`, pools one archive tile at a time.
+//! The producer of `terrain`: the national terrain models `dtm-<key>` as tiles of the reference
+//! archive (`host/obc-dem/reference/README.md`), `16/<ti>/<tj>.tif` of the maximum and
+//! `mean/16/<ti>/<tj>.tif` of the mean, and the `index.json` of each pool. A version extends the
+//! version before: `ingest.py fetch` folds the models that meet its region into each tile of that
+//! region, and the version keeps every other tile of the version before without an upload.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -9,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_bake::coverage::Coverage;
-use obc_data::prepared::{Job, Plan, Prepared, Scope};
+use obc_data::prepared::{Job, Manifest, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
 use obc_data::regions::{Area, Bbox};
 use obc_data::settings::Settings;
@@ -19,6 +20,9 @@ use obc_map_core::grid::CellId;
 
 use crate::device::{box_poly, POLY};
 use crate::prepared_tiles::{self, Tile};
+
+/// The id of the prepared source.
+pub const ID: &str = "terrain";
 
 pub struct TerrainReference {
     /// `ingest.py` of the reference archive, as a command in the repository root.
@@ -37,96 +41,196 @@ fn ingest(root: &Path) -> Result<Command, String> {
 
 impl Prepared for TerrainReference {
     fn name(&self) -> &'static str {
-        "terrain-reference"
+        ID
     }
 
     fn format(&self) -> u32 {
-        2
+        3
     }
 
     fn revision(&self) -> u32 {
         1
     }
 
-    /// The model, and the polygons of its areas. The two pools of the tiles of its extent, in the box
-    /// of a scope of boxes, and their two `index.json` are the files at most.
+    fn regional(&self) -> bool {
+        true
+    }
+
+    /// The models that meet the region, and the polygons of their areas. The two pools of the tiles
+    /// of each model in the box of the region, and the two `index.json`, are the files at most.
     fn plan(
         &self,
-        _: &obc_data::prepared::Planning,
-        source: &Source,
+        planning: &obc_data::prepared::Planning,
+        _: &Source,
         scope: Option<&Scope>,
         _: &[String],
     ) -> Result<Plan, String> {
-        let mut tiles = extent_tiles(source)?;
-        if let Some(bbox) = scope.map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id)) {
-            let inside = box_tiles(&bbox)?;
-            tiles.retain(|tile| inside.contains(tile));
+        let bbox = scope.map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id));
+        let (mut inputs, mut tiles) = (Vec::new(), BTreeSet::new());
+        for model in models(planning.sources, bbox.as_ref()) {
+            let mut inside = extent_tiles(model)?;
+            if let Some(bbox) = &bbox {
+                let held = box_tiles(bbox)?;
+                inside.retain(|tile| held.contains(tile));
+            }
+            tiles.extend(inside);
+            inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
+            inputs.extend(model.areas.iter().map(|area| polygon(area, None)));
         }
-        let model = Wanted { source: model(source), version: None, params: Vec::new() };
-        let polygons = source.areas.iter().map(|area| polygon(area, None));
-        let inputs = std::iter::once(model).chain(polygons).map(|wanted| (wanted, None).into()).collect();
+        let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
         Ok(Plan { inputs, files: Some(2 * tiles.len() as u64 + 2) })
     }
 
-    /// Each tile that the model has a height in: fetched once, then its two pools uploaded with the
-    /// batch of the tile. `state/tiles/` keeps the pixel digests of a fetched tile, or `.none` for a
-    /// tile without a height, so a resume fetches neither again.
+    /// Each tile of the region that a model has a height in: its models fetched once and folded
+    /// into the tile of the version before, then its two pools uploaded with the batch of the tile.
+    /// `state/tiles/` keeps the pixel digests and the sources of a made tile, or `.none` for a tile
+    /// without a height, so a resume fetches neither again.
     fn prepare(&self, job: &mut Job) -> Result<(), String> {
-        let source = job.source;
-        let key = &source.id["terrain-reference/".len()..];
-        let mut tiles = extent_tiles(source)?;
-        if !source.areas.is_empty() {
-            let mut inside = BTreeSet::new();
-            for area in &source.areas {
-                inside.extend(area_tiles(job, area)?);
+        let previous = job.previous(self.format())?;
+        let scope = match job.scope.clone() {
+            Some(scope) => Some(scope_tiles(job, &scope)?),
+            None => None,
+        };
+        let bbox = job.scope.as_ref().map(regions).transpose()?.and_then(|(parts, id)| parts.bounds(&id));
+        // The models of each tile, in the order of `data/sources.toml`.
+        let mut keys: BTreeMap<CellId, Vec<String>> = BTreeMap::new();
+        for model in models(job.sources(), bbox.as_ref()) {
+            let mut tiles = extent_tiles(model)?;
+            if !model.areas.is_empty() {
+                let mut inside = BTreeSet::new();
+                for area in &model.areas {
+                    inside.extend(area_tiles(job, area)?);
+                }
+                tiles.retain(|tile| inside.contains(tile));
             }
-            tiles.retain(|tile| inside.contains(tile));
+            if let Some(scope) = &scope {
+                tiles.retain(|tile| scope.contains(tile));
+            }
+            for tile in tiles {
+                keys.entry(tile).or_default().push(key(model).into());
+            }
         }
-        if let Some(scope) = job.scope.clone() {
-            let inside = scope_tiles(job, &scope)?;
-            tiles.retain(|tile| inside.contains(tile));
-        }
-        // The program writes the tiles and then their digests, the maximum last, or `.none`.
-        let tiles: Vec<Tile> = tiles
-            .into_iter()
+        let before = |pool: &str| previous.as_ref().map(|manifest| index(job, manifest, pool)).transpose();
+        let held = before("")?.map(|index| index.contributors).unwrap_or_default();
+        let tiles: Vec<Tile> = keys
+            .keys()
             .map(|tile| {
-                let (name, path) =
-                    (format!("{:04}-{:04}", tile.i, tile.j), format!("16/{:04}/{:04}.tif", tile.i, tile.j));
+                let name = format!("{:04}-{:04}", tile.i, tile.j);
+                let path = format!("16/{:04}/{:04}.tif", tile.i, tile.j);
                 let files =
                     vec![(format!("mean/{path}"), format!("{name}.mean.sha256")), (path, format!("{name}.sha256"))];
-                Tile { name, files }
+                Tile { name: name.clone(), files, marks: vec![format!("{name}.keys")] }
             })
             .collect();
+        let models: BTreeMap<String, String> =
+            keys.iter().map(|(tile, keys)| (format!("{:04}-{:04}", tile.i, tile.j), keys.join(","))).collect();
+        let base = job.state.join("base");
         let digests = prepared_tiles::make(job, &tiles, |job, name| {
             let mut command = (self.ingest)(job.root)?;
             // A folder per tile: `fetch` removes its `--work` at the end, and two tiles run at once.
-            command.args(["fetch", key, "--tile", name, "--work"]).arg(job.state.join("raw").join(name));
+            command.args(["fetch", &models[name], "--tile", name, "--work"]).arg(job.state.join("raw").join(name));
             command.arg("--out").arg(&job.work);
+            let id = name.replace('-', "/");
+            if let (Some(previous), Some(sources)) = (&previous, held.get(&id)) {
+                for prefix in ["", "mean/"] {
+                    let path = format!("{prefix}16/{id}.tif");
+                    link(&job.earlier_file(previous, &path)?, &base.join(&path))?;
+                }
+                command.arg("--base").arg(&base).args(["--held", &sources.join(",")]);
+            }
             Ok(command)
         })?;
-        // Each index names the tiles of its pool, each with the pixel digest of its mark.
+        // A tile that this version did not make is the tile of the version before.
+        if let Some(previous) = &previous {
+            let kept: Vec<String> = previous
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .filter(|path| path.ends_with(".tif") && !digests.contains_key(path))
+                .collect();
+            for path in kept {
+                job.reuse(previous, &path)?;
+            }
+        }
+        let marks = job.state.join("tiles");
+        let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for tile in tiles.iter().filter(|tile| digests.contains_key(&tile.files[1].0)) {
+            let text = fs::read_to_string(marks.join(&tile.marks[0])).map_err(|e| format!("{}: {e}", tile.marks[0]))?;
+            sources.insert(tile.name.replace('-', "/"), text.trim().split(',').map(String::from).collect());
+        }
+        let fetched: BTreeSet<&String> = keys.values().flatten().collect();
+        let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
+        // Each index names each tile of its pool, with its sources and the pixel digest of its mark.
         for (pool, prefix) in [("max", ""), ("mean", "mean/")] {
-            let tiles: BTreeMap<&str, &String> = digests
+            let made: BTreeMap<String, &String> = digests
                 .iter()
                 .filter_map(|(path, digest)| Some((path.strip_prefix(prefix)?.strip_prefix("16/")?, digest)))
-                .map(|(tile, digest)| (tile.trim_end_matches(".tif"), digest))
+                .map(|(tile, digest)| (tile.trim_end_matches(".tif").to_string(), digest))
                 .collect();
             let listed = job.state.join(format!("{pool}-digests.json"));
-            obc_data::store::write_atomic(&listed, &serde_json::to_vec(&tiles).expect("digests serialize"))?;
+            obc_data::store::write_atomic(&listed, &serde_json::to_vec(&made).expect("digests serialize"))?;
+            let held = job.state.join("keys.json");
+            obc_data::store::write_atomic(&held, &serde_json::to_vec(&sources).expect("keys serialize"))?;
             let mut command = (self.ingest)(job.root)?;
-            command.args(["index-tiles", key, "--pool", pool, "--fetched", &job.version, "--digests"]).arg(&listed);
+            command.args(["index-terrain", "--pool", pool, "--fetched", &job.version, "--models", &fetched.join(",")]);
+            command.arg("--digests").arg(&listed).arg("--keys").arg(&held);
+            if let Some(previous) = &previous {
+                command.arg("--base").arg(job.earlier_file(previous, &format!("{prefix}index.json"))?);
+            }
             job.program(command.arg("--out").arg(job.work.join(format!("{prefix}index.json"))))?;
         }
-        // The model has no versions of its own: the day of the prepare names what it read.
+        // A model has no versions of its own: the day of the prepare names what it read.
         let version = job.version.clone();
-        job.input(&model(source), &version, digests)?;
+        for model in &fetched {
+            let read: BTreeMap<String, String> = digests
+                .iter()
+                .filter(|(path, _)| {
+                    let tile = path.trim_start_matches("mean/").trim_start_matches("16/").trim_end_matches(".tif");
+                    sources.get(tile).is_some_and(|keys| keys.iter().any(|key| key == model))
+                })
+                .map(|(path, digest)| (path.clone(), digest.clone()))
+                .collect();
+            job.input(&format!("dtm-{model}"), &version, read)?;
+        }
         job.finish(&["index.json".into(), "mean/index.json".into()])
     }
 }
 
-/// `dtm-<key>`, the national model of `terrain-reference/<key>`.
-fn model(source: &Source) -> String {
-    format!("dtm-{}", &source.id["terrain-reference/".len()..])
+/// The national models of `sources` that may be given to others and that meet `bbox`, or all of them.
+fn models<'a>(sources: &'a [Source], bbox: Option<&'a Bbox>) -> impl Iterator<Item = &'a Source> {
+    sources.iter().filter(move |source| {
+        source.id.starts_with("dtm-")
+            && source.redistribute
+            && bbox.is_none_or(|b| source.meets([b.west, b.south, b.east, b.north]))
+    })
+}
+
+/// The key of a national model: `dtm-ch` is `ch`.
+fn key(model: &Source) -> &str {
+    &model.id["dtm-".len()..]
+}
+
+/// The sources of each tile of the pool `prefix` of the version before.
+#[derive(serde::Deserialize)]
+struct Index {
+    contributors: BTreeMap<String, Vec<String>>,
+}
+
+fn index(job: &Job, manifest: &Manifest, prefix: &str) -> Result<Index, String> {
+    let path = job.earlier_file(manifest, &format!("{prefix}index.json"))?;
+    serde_json::from_slice(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+        .map_err(|e| format!("{}@{} {prefix}index.json: {e}", job.id, manifest.version))
+}
+
+/// A link of the store object `object` at `path`, for `ingest.py fetch --base`.
+fn link(object: &Path, path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(path.parent().expect("a tile has a folder")).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::hard_link(object, path)
+        .or_else(|_| fs::copy(object, path).map(|_| ()))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn polygon(area: &str, version: Option<String>) -> Wanted {
@@ -201,6 +305,7 @@ mod tests {
     use crate::device::tests::{temp, Temp};
     use obc_data::engine::runs::Run;
     use obc_data::fetch::http::Http;
+    use obc_data::prepared::Manifest;
     use obc_data::prepared::Opening;
     use obc_data::sources::Registry;
     use obc_data::store::Store;
@@ -217,16 +322,26 @@ mod tests {
         extent = [8.0, 46.5, 8.2, 46.6]
         version = "date"
         redistribute = true
+
+        [[source]]
+        id = "terrain"
+        kind = "data"
+        licence = "CC0-1.0"
+        attribution = "Test"
+        fetch = { kind = "prepared" }
+        version = "date"
+        redistribute = true
     "#;
 
     /// `ingest.py` as a script that logs each call to `calls`, and the `--work` of a fetch to
-    /// `works` once it holds a raw file there. A tile with a file
+    /// `works` once it holds a raw file there. A fetch over a tile of the version before logs
+    /// `over` and the sources of that tile. A tile with a file
     /// `none-<tile>` has no height, and one with `fail-<tile>` fails. One with `wait-<tile>` waits
     /// until `works` has as many lines as that file says, and one with `hold-<tile>` runs until a
-    /// signal stops it. `index-tiles` writes the digests that it gets unless `fail-index` exists.
+    /// signal stops it. `index-terrain` writes the digests that it gets unless `fail-index` exists.
     const INGEST: &str = r#"case "$1" in
 fetch)
-    echo "fetch $4" >> calls
+    echo "fetch $4 $2${10:+ over ${12}}" >> calls
     # As `ingest.py fetch` does, it removes its `--work` when it ends, also on SIGTERM.
     trap 'rm -rf "$6"' EXIT && trap 'exit 143' TERM
     mkdir -p "$6" && touch "$6/raw.tif" && echo "$6" >> works
@@ -236,12 +351,15 @@ fetch)
     if [ -e "hold-$4" ]; then while :; do sleep 0.01; done; fi
     [ -e "fail-$4" ] && exit 1
     if [ -e "none-$4" ]; then touch "$8/$4.none"; exit 0; fi
-    for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
+    for pool in "" mean/; do mkdir -p "$8/${pool}16/${4%-*}" && echo "$pool$4 $2" > "$8/${pool}16/${4%-*}/${4#*-}.tif"; done
+    echo "$2" > "$8/$4.keys"
     echo "mean of $4" > "$8/$4.mean.sha256" && echo "pixels of $4" > "$8/$4.sha256" ;;
-index-tiles)
-    echo "$1 $4" >> calls
+index-terrain)
+    over=""; [ $# -gt 13 ] && over=" over"
+    echo "$1 $3$over" >> calls
     [ -e fail-index ] && exit 1
-    cp "$8" "${10}" ;;
+    eval "out=\${$#}"
+    printf '{"contributors": %s, "sha256": %s}' "$(cat "${11}")" "$(cat "$9")" > "$out" ;;
 esac
 "#;
 
@@ -251,8 +369,6 @@ esac
         Ok(command)
     }
 
-    const ID: &str = "terrain-reference/xx";
-
     /// A repository with [`INGEST`], a store and a target for `terrain-reference/xx@2026-10-01`.
     struct Fixture {
         temp: Temp,
@@ -261,6 +377,7 @@ esac
         target: Target,
         /// The tiles of the extent, in the order of the prepare.
         tiles: Vec<String>,
+        cells: Vec<CellId>,
     }
 
     impl Fixture {
@@ -271,11 +388,12 @@ esac
             fs::write(root.join("data/sources.toml"), SOURCES).unwrap();
             fs::write(root.join("ingest.sh"), INGEST).unwrap();
             let sources = Registry::load(&root).unwrap().sources;
-            let tiles = extent_tiles(sources.iter().find(|source| source.id == ID).unwrap()).unwrap();
-            let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}-{:04}", tile.i, tile.j)).collect();
+            let tiles = extent_tiles(sources.iter().find(|source| source.id == "dtm-xx").unwrap()).unwrap();
+            let cells: Vec<CellId> = tiles.into_iter().collect();
+            let tiles: Vec<String> = cells.iter().map(|tile| format!("{:04}-{:04}", tile.i, tile.j)).collect();
             assert!(tiles.len() > 3, "{tiles:?}");
             let (store, target) = (Store::at(temp.0.join("store")), Target::Dir(temp.0.join("target")));
-            Fixture { temp, sources, store, target, tiles }
+            Fixture { temp, sources, store, target, tiles, cells }
         }
 
         fn root(&self) -> PathBuf {
@@ -283,7 +401,7 @@ esac
         }
 
         fn state(&self) -> PathBuf {
-            self.store.root().join("prepared/t/terrain-reference/xx/2026-10-01/state")
+            self.store.root().join("prepared/t/terrain/2026-10-01/state")
         }
 
         /// Write the file `<what>-<tile k>` that changes what [`INGEST`] does.
@@ -293,6 +411,13 @@ esac
 
         /// A run of the prepare, and the calls of the script, sorted: two fetches run at once.
         fn prepare(&self) -> (Result<(), String>, Vec<String>) {
+            let (done, calls, _) = self.version("2026-10-01", None);
+            (done, calls)
+        }
+
+        /// A run of the prepare of `version` for `scope`: its end, the calls of the script, sorted,
+        /// and the job, complete on the target when the run ended well.
+        fn version(&self, version: &str, scope: Option<Scope>) -> (Result<(), String>, Vec<String>, Vec<String>) {
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
             let (producer, http) = (TerrainReference { ingest: script }, Http::new());
@@ -304,17 +429,37 @@ esac
                 sources: &self.sources,
                 target: ("t", &self.target),
             };
-            let done = Job::open(opening, (ID, "2026-10-01"), None, &[], &mut run)
-                .and_then(|mut job| producer.prepare(&mut job));
+            let mut reused = Vec::new();
+            let done = Job::open(opening, (ID, version), scope, &[], &mut run).and_then(|mut job| {
+                producer.prepare(&mut job)?;
+                reused = job.reused().keys().cloned().collect();
+                let manifest = Manifest {
+                    source: ID.into(),
+                    version: version.into(),
+                    format: producer.format(),
+                    revision: producer.revision(),
+                    inputs: Vec::new(),
+                    files: job.files().cloned().collect(),
+                    reused: job.reused().clone(),
+                    scope: job.scope.clone(),
+                    languages: Vec::new(),
+                    licence: None,
+                    attribution: None,
+                    machine: "test".into(),
+                    time: format!("{version}T00:00:00Z"),
+                    cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
+                };
+                obc_data::prepared::complete(&self.target, &manifest).map(|_| ())
+            });
             let mut calls: Vec<String> =
                 fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(String::from).collect();
             calls.sort();
-            (done, calls)
+            (done, calls, reused)
         }
 
         /// The calls of the fetches of tiles `k`, sorted.
         fn fetches(&self, k: impl Iterator<Item = usize>) -> Vec<String> {
-            let mut calls: Vec<String> = k.map(|k| format!("fetch {}", self.tiles[k])).collect();
+            let mut calls: Vec<String> = k.map(|k| format!("fetch {} xx", self.tiles[k])).collect();
             calls.sort();
             calls
         }
@@ -330,7 +475,7 @@ esac
     fn a_resume_fetches_no_tile_that_it_has_and_the_index_holds_the_digest_of_each_tile() {
         let fixture = Fixture::new("terrain-reference");
         let tiles = &fixture.tiles;
-        let index = || vec!["index-tiles max".to_string(), "index-tiles mean".to_string()];
+        let index = || vec!["index-terrain max".to_string(), "index-terrain mean".to_string()];
 
         let last = tiles.len() - 1;
         // Tile 2 fails once tile 3 runs beside it, and the failure stops tile 3.
@@ -364,17 +509,18 @@ esac
         done.unwrap();
         assert_eq!(calls, index(), "a resume fetches no tile that the target has");
         let Target::Dir(dir) = &fixture.target else { unreachable!() };
-        let version = dir.join("sources/terrain-reference/xx/2026-10-01");
+        let version = dir.join("sources/terrain/2026-10-01");
         for (prefix, pixels) in [("", "pixels of"), ("mean/", "mean of")] {
             let digests: BTreeMap<String, String> =
                 tiles[1..].iter().map(|tile| (tile.replace('-', "/"), format!("{pixels} {tile}"))).collect();
-            let index: BTreeMap<String, String> =
+            let index: serde_json::Value =
                 serde_json::from_slice(&fs::read(version.join(format!("{prefix}index.json"))).unwrap()).unwrap();
+            let index: BTreeMap<String, String> = serde_json::from_value(index["sha256"].clone()).unwrap();
             assert_eq!(index, digests, "the tiles of each pool, each with its pixel digest");
             for tile in &tiles[1..] {
                 let (ti, tj) = tile.split_once('-').unwrap();
                 let file = version.join(format!("{prefix}16/{ti}/{tj}.tif"));
-                assert_eq!(fs::read_to_string(file).unwrap(), format!("{prefix}{tile}\n"));
+                assert_eq!(fs::read_to_string(file).unwrap(), format!("{prefix}{tile} xx\n"));
             }
             assert!(!version.join(format!("{prefix}16/{}.tif", tiles[0].replace('-', "/"))).exists());
         }
@@ -401,5 +547,43 @@ esac
         folders.sort();
         assert_eq!(works, folders);
         assert_eq!(fs::read_dir(&raw).unwrap().count(), 0, "each fetch removed its folder before the end");
+    }
+
+    #[test]
+    fn a_version_folds_the_tiles_of_its_region_and_keeps_the_others_of_the_version_before() {
+        let fixture = Fixture::new("terrain-extend");
+        let (done, _, _) = fixture.version("2026-10-01", None);
+        done.unwrap();
+        // A box inside the first tile.
+        let (west, south, east, north) = fixture.cells[0].square();
+        let inner = |a: i64, b: i64| (a + (b - a) / 4) as f64 / 1e6;
+        let definition = format!(
+            "name = \"Box\"\nkind = \"box\"\nbox = [{}, {}, {}, {}]\n",
+            inner(west, east),
+            inner(south, north),
+            inner(east, west),
+            inner(north, south)
+        );
+        let scope = Scope { region: "box".into(), definitions: [("box".to_string(), definition)].into() };
+        let (done, calls, reused) = fixture.version("2026-10-02", Some(scope));
+        done.unwrap();
+        let first = &fixture.tiles[0];
+        let expected =
+            [format!("fetch {first} xx over xx"), "index-terrain max over".into(), "index-terrain mean over".into()];
+        assert_eq!(calls, expected, "only the tile of the region, over the tile before");
+        let kept: Vec<String> = fixture.tiles[1..]
+            .iter()
+            .flat_map(|tile| {
+                let path = format!("16/{}.tif", tile.replace('-', "/"));
+                [format!("mean/{path}"), path]
+            })
+            .collect();
+        let mut kept = kept;
+        kept.sort();
+        assert_eq!(reused, kept, "every other tile stays where the version before has it");
+        let Target::Dir(dir) = &fixture.target else { unreachable!() };
+        let path = format!("16/{}.tif", first.replace('-', "/"));
+        assert!(dir.join("sources/terrain/2026-10-02").join(&path).is_file());
+        assert!(!dir.join("sources/terrain/2026-10-02").join(&kept[0]).exists());
     }
 }

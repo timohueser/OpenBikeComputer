@@ -73,10 +73,11 @@ fn fetch_files(
         FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(root, store, http, request),
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
-        // Only the producer of `terrain-reference/<key>` reads a national model, through its adapter.
-        FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => {
-            Err(format!("source `{}` is read through `terrain-reference/{}`", source.id, &source.id["dtm-".len()..]))
-        }
+        // Only the producer of `terrain` reads a national model, through its adapter.
+        FetchKind::Dtm | FetchKind::ByHand if source.id.starts_with("dtm-") => Err(format!(
+            "source `{}` is read through `terrain`: obc data source prepare terrain --region REGION",
+            source.id
+        )),
         FetchKind::Capture => capture::run(root, store, request, acquisition),
         FetchKind::Dtm | FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",

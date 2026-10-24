@@ -1,5 +1,5 @@
 //! The tiles of a prepared source that a program of its producer makes, one tile per run of the
-//! program: `terrain-reference/<key>` and `forest-reference/<key>`.
+//! program: `terrain` and `forest-reference/<key>`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -14,10 +14,11 @@ const BATCH: usize = 64;
 const RUNNING: usize = 2;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
-/// its pixel digest.
+/// its pixel digest; `marks` are other marks that the program writes before those.
 pub struct Tile {
     pub name: String,
     pub files: Vec<(String, String)>,
+    pub marks: Vec<String>,
 }
 
 /// Make each tile that the version lacks, [`RUNNING`] at a time, and upload its files in batches.
@@ -76,7 +77,7 @@ pub fn make(
 /// Move the marks that the program of `tile` wrote into `marks`, and add its files to the batch.
 fn keep(job: &mut Job, marks: &Path, tile: &Tile, batch: &mut Vec<String>) -> Result<(), String> {
     let none = format!("{}.none", tile.name);
-    let written = tile.files.iter().map(|(_, mark)| mark).chain([&none]);
+    let written = tile.marks.iter().chain(tile.files.iter().map(|(_, mark)| mark)).chain([&none]);
     for mark in written.filter(|mark| job.work.join(mark).exists()) {
         fs::rename(job.work.join(mark), marks.join(mark)).map_err(|e| format!("{mark}: {e}"))?;
     }

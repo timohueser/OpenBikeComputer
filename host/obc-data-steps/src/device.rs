@@ -3,7 +3,7 @@
 //! its map cells of every band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
 //! and peak artifacts per network cell. No client reads the files of the intermediate steps:
 //! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
-//! (`terrain-reference/<key>`) that the terrain cells of the leaf read, and
+//! (`terrain`) that the terrain cells of the leaf read, and
 //! `device/landmark-content` and `device/peak-content` the compiled Wikimedia captures of the region.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -15,7 +15,7 @@ use obc_data::prepared::{Manifest, MANIFEST};
 use obc_data::product::{read, version, BlockedLayer, Inputs, Note, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Bbox, Regions};
 use obc_data::release::{Output, Release};
-use obc_data::sources::{self, attribution, Source};
+use obc_data::sources::{self, Source};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::cell_window;
@@ -516,25 +516,25 @@ fn reference(
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
     let models = Models { tiles: &tiles, pool: "", layer: Some(DEVICE_TERRAIN.name) };
-    let Some((reads, models)) = models.read(inputs, store, shapes, wanted, notes)? else { return Ok(None) };
+    let Some(read) = models.read(inputs, store, shapes, wanted, notes)? else { return Ok(None) };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
         client: Client::None,
         ..crate::python(
             &DEVICE_TERRAIN,
             &leaf_layer("device/reference", leaf),
-            reads,
-            serde_json::json!({"models": models, "tiles": tiles}),
+            vec![read],
+            serde_json::json!({"source": crate::terrain_reference::ID, "tiles": tiles}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
             &["reference"],
         )
     }))
 }
 
-/// The national terrain models of some archive tiles: the files `<pool>16/<ti:04>/<tj:04>.tif` of
-/// those tiles in the version of `terrain-reference/<key>` that the target reads. A model without a
-/// version adds nothing. With a `layer`, `notes` on it say so where the model can have a height: a
-/// new version is a new input.
+/// The tiles of `terrain` among some archive tiles: the files `<pool>16/<ti:04>/<tj:04>.tif` of
+/// those tiles in the version that the target reads, and the `<pool>index.json` of the version.
+/// With a `layer`, `notes` on it say where a national model has a height that the version lacks:
+/// the layer uses GLO-30 there until a version adds that region.
 pub(crate) struct Models<'a> {
     pub tiles: &'a BTreeSet<CellId>,
     /// `""` for the maximum, `"mean/"` for the mean.
@@ -542,12 +542,9 @@ pub(crate) struct Models<'a> {
     pub layer: Option<&'a str>,
 }
 
-/// The input of each model, and its `source`, `version` and `credit` for the options.
-type ModelInputs = (Vec<Input>, Vec<serde_json::Value>);
-
 impl Models<'_> {
-    /// The models with a tile. `None` when no model has one, or while the store lacks a manifest or
-    /// a polygon; then `wanted` has its fetch.
+    /// The input of the tiles of `terrain`. `None` when the version has none of the tiles, or while
+    /// the store lacks a manifest or a polygon; then `wanted` has its fetch.
     pub(crate) fn read(
         &self,
         inputs: &Inputs,
@@ -555,42 +552,40 @@ impl Models<'_> {
         shapes: &mut BTreeMap<String, Shape>,
         wanted: &mut Vec<Wanted>,
         notes: &mut Vec<Note>,
-    ) -> Result<Option<ModelInputs>, Unplanned> {
-        let paths: BTreeSet<String> =
-            self.tiles.iter().map(|tile| format!("{}16/{:04}/{:04}.tif", self.pool, tile.i, tile.j)).collect();
-        let square = |tile: &&CellId| {
-            let (west, south, east, north) = tile.square();
-            [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
+    ) -> Result<Option<Input>, Unplanned> {
+        let id = crate::terrain_reference::ID;
+        let path = |tile: &CellId| format!("{}16/{:04}/{:04}.tif", self.pool, tile.i, tile.j);
+        let (pinned, held) = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
+            Ok(pinned) => match manifest(store, id, &pinned, wanted)? {
+                Some(manifest) => (Some(pinned), manifest.files.into_iter().map(|file| file.path).collect()),
+                None => return Ok(None),
+            },
+            Err(_) => (None, BTreeSet::new()),
         };
-        let (mut reads, mut models) = (Vec::new(), Vec::new());
-        for source in sources::all().iter().filter(|source| source.id.starts_with("terrain-reference/")) {
-            let near: Vec<CellId> = self.tiles.iter().filter(|tile| source.meets(square(tile))).copied().collect();
-            if near.is_empty() {
-                continue;
-            }
-            let id = &source.id;
-            let Ok(pinned) = version(inputs, store, id, &[]).map_err(Unplanned::Failed)? else {
-                let Some(layer) = self.layer else { continue };
-                if in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
-                    let text =
-                        format!("{id} has no version: {layer} uses GLO-30 there. Fix: obc data source prepare {id}");
+        if let Some(layer) = self.layer {
+            let missing: Vec<CellId> = self.tiles.iter().filter(|tile| !held.contains(&path(tile))).copied().collect();
+            let square = |tile: &CellId| {
+                let (west, south, east, north) = tile.square();
+                [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
+            };
+            for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-") && source.redistribute) {
+                let near: Vec<CellId> = missing.iter().filter(|tile| source.meets(square(tile))).copied().collect();
+                if !near.is_empty() && in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
+                    let text = format!(
+                        "{id} has no tile of {} here: {layer} uses GLO-30 there. Fix: add this region to {id}: obc data source prepare {id} --region REGION",
+                        source.id
+                    );
                     let note = Note { layer: layer.into(), text };
                     if !notes.contains(&note) {
                         notes.push(note);
                     }
                 }
-                continue;
-            };
-            let Some(manifest) = manifest(store, id, &pinned, wanted)? else { continue };
-            let files: Vec<String> =
-                manifest.files.into_iter().map(|file| file.path).filter(|path| paths.contains(path)).collect();
-            if !files.is_empty() {
-                // The credit names the day of the data.
-                models.push(serde_json::json!({"source": id, "version": manifest.version, "credit": attribution(id)}));
-                reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
             }
         }
-        Ok((!models.is_empty()).then_some((reads, models)))
+        let mut files: Vec<String> = self.tiles.iter().map(path).filter(|path| held.contains(path)).collect();
+        let Some(pinned) = pinned.filter(|_| !files.is_empty()) else { return Ok(None) };
+        files.push(format!("{}index.json", self.pool));
+        Ok(Some(Input::Snapshot { source: id.into(), version: pinned, params: Vec::new(), files }))
     }
 }
 
@@ -1193,17 +1188,19 @@ pub(crate) mod tests {
         }
     }
 
-    /// A version of `terrain-reference/ch` whose manifest names `paths`, for the inputs of the
-    /// Grimsel: its pin and the bytes of its manifest.
-    pub(crate) fn swiss_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
+    /// A version of `terrain` whose manifest names `paths` and the two indexes, for the inputs of
+    /// the Grimsel: its pin and the bytes of its manifest.
+    pub(crate) fn terrain_version(inputs: &mut Inputs, paths: &[&str]) -> (String, Vec<u8>) {
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
+        let paths = paths.iter().copied().chain(["index.json", "mean/index.json"]);
         let manifest = Manifest {
-            source: "terrain-reference/ch".into(),
+            source: "terrain".into(),
             version: "2026-10-01".into(),
-            format: 1,
+            format: 3,
             revision: 1,
             inputs: Vec::new(),
-            files: paths.iter().map(|path| file(path)).collect(),
+            files: paths.map(file).collect(),
+            reused: BTreeMap::new(),
             scope: None,
             languages: Vec::new(),
             licence: None,
@@ -1214,22 +1211,22 @@ pub(crate) mod tests {
         };
         let bytes = manifest.canonical();
         let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
-        inputs.resolved.insert(("terrain-reference/ch".into(), Vec::new()), pinned.clone());
+        inputs.resolved.insert(("terrain".into(), Vec::new()), pinned.clone());
         (pinned, bytes)
     }
 
     #[test]
-    fn a_leaf_plans_from_the_manifest_of_a_model_and_reads_only_the_tiles_of_its_window() {
+    fn a_leaf_plans_from_the_manifest_of_terrain_and_reads_only_the_tiles_of_its_window() {
         let temp = temp("models");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (mut inputs, regions) = grimsel(&store, "1");
         let (pinned, manifest) =
-            swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"]);
+            terrain_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif", "16/4816/4232.tif"]);
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &inputs, &regions, &store) else {
             panic!("no manifest")
         };
-        let swiss = "terrain-reference/ch".to_string();
+        let swiss = "terrain".to_string();
         assert_eq!(wanted, [Wanted { source: swiss.clone(), version: Some(pinned.clone()), params: Vec::new() }]);
 
         stored(&store, &swiss, &pinned, &[], &[(MANIFEST.into(), manifest)]);
@@ -1240,11 +1237,10 @@ pub(crate) mod tests {
             assert_eq!((source, version), (&swiss, &pinned));
             files.clone()
         };
-        assert_eq!(reads("0037-0032"), ["16/4808/4215.tif"]);
-        assert_eq!(reads("0037-0033"), ["16/4816/4232.tif"]);
+        assert_eq!(reads("0037-0032"), ["16/4808/4215.tif", "index.json"]);
+        assert_eq!(reads("0037-0033"), ["16/4816/4232.tif", "index.json"]);
         let reference = steps.iter().find(|step| step.name == "device/reference/0037-0032").unwrap();
-        let models = serde_json::json!([{"source": swiss, "version": "2026-10-01", "credit": "© swisstopo"}]);
-        assert_eq!(reference.options["models"], models);
+        assert_eq!(reference.options["source"], "terrain");
         assert!(reference.client.is_none(), "only the terrain step reads the national models");
         let terrain = steps.iter().find(|step| step.name == "device/terrain/0037-0032").unwrap();
         assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
@@ -1253,7 +1249,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_leaf_over_a_model_without_a_version_reads_glo30_alone_and_its_first_version_stales_it() {
+    fn a_leaf_without_terrain_tiles_reads_glo30_alone_and_a_version_with_its_tiles_stales_it() {
         use obc_data::engine::{changes, state::Newer};
         let temp = temp("unprepared");
         let store = Store::at(temp.0.join("store"));
@@ -1269,17 +1265,18 @@ pub(crate) mod tests {
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         assert!(!listed.steps.iter().any(|step| step.name.starts_with("device/reference/")));
-        let text = "terrain-reference/ch has no version: device/terrain uses GLO-30 there. \
-                    Fix: obc data source prepare terrain-reference/ch";
-        assert_eq!(listed.notes, [Note { layer: "device/terrain".into(), text: text.into() }]);
+        let text = "terrain has no tile of dtm-ch here: device/terrain uses GLO-30 there. \
+                    Fix: add this region to terrain: obc data source prepare terrain --region REGION";
+        let note = Note { layer: "device/terrain".into(), text: text.into() };
+        assert_eq!(listed.notes, std::slice::from_ref(&note));
         let declared: Vec<Output> = listed.steps.iter().map(|step| declared(step, step.layer.format)).collect();
         let release = declared.iter().map(|output| (output.step.as_str(), output)).collect();
 
-        // Swiss heights in the west leaf only.
-        let (pinned, manifest) = swiss_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif"]);
-        stored(&store, "terrain-reference/ch", &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        // Swiss heights in the west leaf only: the east leaf still says so.
+        let (pinned, manifest) = terrain_version(&mut inputs, &["16/4000/4000.tif", "16/4808/4215.tif"]);
+        stored(&store, "terrain", &pinned, &[], &[(MANIFEST.into(), manifest)]);
         let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
-        assert_eq!(listed.notes, []);
+        assert_eq!(listed.notes, [note]);
         let update = changes::update(&Store::at(temp.0.join("empty")), &listed.steps, &release, &Newer::new(), &[]);
         let update = update.unwrap();
         let terrain: BTreeSet<&str> =

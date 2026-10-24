@@ -19,7 +19,7 @@ use super::api::confirm;
 use super::{cells, print_json, table, Code, Error};
 
 /// The folders of the legacy pipelines that `r2 legacy` lists, sorted. Without `--prefix`, it lists
-/// the first two: `reference/v1` holds terrain until terrain-reference versions replace it.
+/// the first two: `reference/v1` holds terrain until a version of `terrain` holds each of its models.
 const LEGACY: [&str; 3] = ["cell-catalog", "planner", "reference/v1"];
 /// The index of `reference/v1/`: its `sources` names the key of each country that it holds.
 const INDEX: &str = "reference/v1/index.json";
@@ -282,16 +282,19 @@ fn unused((name, target): (&str, &Target), prefix: Option<&str>) -> Result<Legac
     if prefix == Some(LEGACY[2]) {
         let index: Option<Index> = target.get(INDEX)?.and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let index = index.ok_or_else(|| Code::Blocked.error(format!("{INDEX} is missing or does not parse")))?;
-        let mut missing = Vec::new();
-        for key in index.sources.into_keys() {
-            if crate::prepared::versions(target, &format!("terrain-reference/{key}"))?.is_empty() {
-                missing.push(key);
-            }
-        }
+        // The index of the newest version of `terrain` names each model that it holds.
+        let newest = crate::prepared::versions(target, "terrain")?.pop();
+        let held = match newest {
+            Some(newest) => target.get(&format!("sources/terrain/{}/index.json", newest.version))?,
+            None => None,
+        };
+        let held: Option<Index> = held.and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let held = held.map(|held| held.sources).unwrap_or_default();
+        let missing: Vec<String> = index.sources.into_keys().filter(|key| !held.contains_key(key)).collect();
         if !missing.is_empty() {
             return Err(Code::Blocked
-                .error(format!("`{name}` has no terrain-reference version of {} sources of {INDEX}", missing.len()))
-                .fix(format!("Prepare `terrain-reference/<key>` for each key first: {}.", missing.join(", "))));
+                .error(format!("`terrain` on `{name}` lacks {} sources of {INDEX}", missing.len()))
+                .fix(format!("Add their areas to `terrain` first: {}.", missing.join(", "))));
         }
     }
     let mut folders: BTreeMap<String, Vec<LegacyKey>> = BTreeMap::new();
@@ -372,14 +375,15 @@ mod tests {
             |prefix| unused(("local", &target), prefix).map(|l| l.folders.into_values().flatten().map(|k| k.key));
         assert_eq!(keys(None).unwrap().collect::<Vec<_>>(), OLD[..2]);
 
-        // `reference/v1` goes only when each source of its index has a terrain-reference version.
+        // `reference/v1` goes only when the newest version of `terrain` holds each source of its index.
         let reference = || keys(Some("reference/v1")).map(|keys| keys.collect::<Vec<_>>());
         assert_eq!(reference().err().map(|e| e.code), Some(Code::Blocked), "no index.json");
         let put = |key, bytes: &str| target.put(key, bytes.as_bytes(), &crate::target::Condition::Any).unwrap();
         put(INDEX, r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert!(reference().unwrap_err().fix.ends_with(": ch."));
-        let version = r#"[{"version": "2026-10-01", "manifest_sha256": "", "format": 1, "bytes": 1, "time": ""}]"#;
-        put("sources/terrain-reference/ch/versions.json", version);
+        let version = r#"[{"version": "2026-10-01", "manifest_sha256": "", "format": 3, "bytes": 1, "time": ""}]"#;
+        put("sources/terrain/versions.json", version);
+        put("sources/terrain/2026-10-01/index.json", r#"{"sources": {"ch": {"product": "swissALTI3D"}}}"#);
         assert_eq!(reference().unwrap(), [OLD[2], INDEX]);
     }
 

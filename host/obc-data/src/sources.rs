@@ -271,23 +271,6 @@ impl Source {
         self.redistribute && self.fetch.kind != FetchKind::Prepared && !NOT_COPIED.contains(&self.id.as_str())
     }
 
-    /// The prepared source `terrain-reference/<key>` of the national terrain model `dtm-<key>`, with
-    /// its licence, credit and box: the archive tiles that `obc data source prepare` makes of it.
-    fn terrain_reference(&self) -> Option<Source> {
-        let key = self.id.strip_prefix("dtm-").filter(|_| self.redistribute)?;
-        Some(Source {
-            id: format!("terrain-reference/{key}"),
-            fetch: Fetch { kind: FetchKind::Prepared, url: None },
-            hosts: Vec::new(),
-            version: VersionScheme::Date,
-            start: None,
-            // Not `manual`: a target reads a new version once a target lists it.
-            refresh: Refresh::Days(365),
-            credential: None,
-            ..self.clone()
-        })
-    }
-
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
     /// the two boxes overlap. Boxes that only touch do not: their overlap has no area.
     pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
@@ -297,7 +280,7 @@ impl Source {
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         let prepared = self.fetch.kind == FetchKind::Prepared;
-        // A prepared source of a family, such as `terrain-reference/ch`, has two parts.
+        // A prepared source of a family, such as `forest-reference/ch`, has two parts.
         if self.id.split('/').count() > 1 + usize::from(prepared) || !self.id.split('/').all(crate::is_kebab) {
             return fail("the id is not lowercase kebab-case, or two such parts joined by `/` for a prepared source");
         }
@@ -411,12 +394,9 @@ struct SourcesFile {
     source: Vec<Source>,
 }
 
-/// Parse and validate `data/sources.toml`, with the source `terrain-reference/<key>` of each
-/// `dtm-<key>` that we may give to others.
+/// Parse and validate `data/sources.toml`.
 pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
-    let mut file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
-    let derived: Vec<Source> = file.source.iter().filter_map(Source::terrain_reference).collect();
-    file.source.extend(derived);
+    let file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
     let mut seen = BTreeSet::new();
     for source in &file.source {
         source.validate()?;
@@ -658,15 +638,5 @@ mod tests {
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
         assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
-    }
-
-    #[test]
-    fn each_national_model_has_a_prepared_source_with_its_licence_credit_and_box() {
-        let (model, prepared) = (embedded("dtm-dk"), embedded("terrain-reference/dk"));
-        let terms = |s: &'static Source| (&s.licence, &s.attribution, &s.obligations, s.extent, &s.areas);
-        assert_eq!(terms(prepared), terms(model));
-        assert_eq!((prepared.fetch.kind, &prepared.credential), (FetchKind::Prepared, &None), "{prepared:?}");
-        let count = |prefix: &str| all().iter().filter(|source| source.id.starts_with(prefix)).count();
-        assert_eq!(count("terrain-reference/"), count("dtm-"));
     }
 }

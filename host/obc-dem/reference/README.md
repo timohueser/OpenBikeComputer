@@ -5,8 +5,7 @@ holds finer national DTM heights on the OBCT lattice, and the bakery lifts a cre
 `specs/OBCT_Spec.md` §9 for the lift rule.
 
 `ingest.py` fills the archive from a national DTM. It runs once per source release, never during
-a bake. The archive lives on R2 at `<bucket>/reference/v1/`, beside the catalog prefix; a bakery
-run mirrors the tiles it needs.
+a bake.
 
 ## Run it
 
@@ -30,10 +29,10 @@ account and download steps of a source behind a login, then runs the ingest. `ch
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
 
-`obc data source prepare terrain-reference/<key>` runs `ingest.py fetch <key> --tile <ti>-<tj>`
-per tile: both pooled tiles and their pixel SHA-256, then `index-tiles` per pool. `merge.py
---step` is `device/reference/<leaf>` and `planner/reference`: those tiles of each model, best
-first, into an empty archive.
+`obc data source prepare terrain --region R` adds a region to the version before: per tile,
+`ingest.py fetch <keys> --tile <ti>-<tj> --base …` folds each model into the tile before, then
+`index-terrain` runs per pool. `merge.py --step` is `device/reference/<leaf>` and
+`planner/reference`: the tiles of the version, cut to the leaf.
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk

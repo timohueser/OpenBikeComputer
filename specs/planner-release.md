@@ -165,7 +165,7 @@ service and an offline area never load zoom 13:
 `terrain.mbtiles`. An opaque tile can lose its alpha chunk: a decoder then gives alpha 255.
 
 The planner reads zooms 0 to 12; TrailView reads zoom 13 too. The heights are the mean pool of the
-national terrain models (`terrain-reference/<key>`) where they hold the ground, and Copernicus
+national terrain models (`terrain`) where they hold the ground, and Copernicus
 GLO-30 elsewhere. The two meet in a seam that `host/obc-dem/src/planner.rs` defines. The national
 weight is 0 within one coverage cell (about 114 m × 78 m at 47° N) of a cell where the national
 model misses a pixel, and rises to 1 over the next 1 km. GLO-30 takes the median offset of

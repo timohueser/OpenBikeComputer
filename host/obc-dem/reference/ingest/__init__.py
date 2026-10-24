@@ -17,7 +17,7 @@ source pixel wide survives the 7 m step, and writes whole tiles.
 """
 
 from . import publish, wizard
-from .archive import (PRIORITY, best_contributor, contributors, cut_tile, ingest_raster,
+from .archive import (PRIORITY, best_contributor, contributors, cut_tile, fold_tiles, ingest_raster,
                       load_manifests, local_rasters, manifest_dir, merge_tiles, pool_tile, priority_rank,
                       read_index, rebuild_index, source_facts, tile_digest, tile_problems,
                       write_manifest, write_tile)
@@ -37,7 +37,7 @@ __all__ = [
     "PRIORITY", "Refuse",
     "Remote", "SNAP", "SOURCES", "STEP", "Source", "TILE", "TILE_PX", "VOID", "WGS84", "WORLD",
     "Window", "best_contributor", "box_tiles", "check_world", "command_wizard", "contributors",
-    "covering_window", "cut_tile", "ingest_raster", "lattice_indices", "load_manifests",
+    "covering_window", "cut_tile", "fold_tiles", "ingest_raster", "lattice_indices", "load_manifests",
     "local_rasters", "main", "manifest_dir", "merge_index", "merge_tiles", "mirror_plan",
     "open_raster", "parse_bbox", "pixel_index", "pool_onto_lattice", "pool_tile", "priority_rank",
     "publish", "publish_plan", "r2_remote", "read_index", "read_source", "rebuild_index",

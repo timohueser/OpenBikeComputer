@@ -76,6 +76,7 @@ impl Prepared for ForestReference {
             .map(|(x, y)| Tile {
                 name: format!("12-{x}-{y}"),
                 files: vec![(format!("12/{x}/{y}.tif"), format!("12-{x}-{y}.sha256"))],
+                marks: Vec::new(),
             })
             .collect();
         let digests = prepared_tiles::make(job, &tiles, |job, name| {

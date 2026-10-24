@@ -17,7 +17,7 @@ One `[[source]]` table per source.
 
 | Key | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
+| `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `forest-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
 | `group` | string | no | The heading under which the operator page lists a source that is not prepared |
 | `used_by` | array of strings | yes | What reads the source, one or more of the [products](#products) `device` and `planner`, and of `search` and `trailview`, the search and TrailView layers of `planner`. `tools/check_data_sources.py` refuses a source without one, or with another name |
@@ -66,11 +66,9 @@ Rules:
 - A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc` or
   `~/.config/openbikecomputer/cdse-s3.env`.
 
-Each row `dtm-<key>` with `redistribute = true` also gives the `prepared` source
-`terrain-reference/<key>`, which has no row of its own. It has the `licence`, `licence_url`,
-`attribution`, `obligations`, `extent` and `areas` of the row, `version = "date"` and
-`refresh = 365`, and no `credential`. No step reads a `dtm-*` source: only the producer of
-`terrain-reference/<key>` does, see [Prepared sources](#prepared-sources).
+No step reads a `dtm-*` source, a national terrain model: only the producer of the prepared
+source `terrain` does, see [Prepared sources](#prepared-sources). It reads each `dtm-*` row with
+`redistribute = true`.
 
 `attribution` is the one copy of a credit. Every product that carries a credit takes it from
 here:
@@ -336,7 +334,7 @@ version. A file that fails it is deleted.
 | --- | --- |
 | `http`, `geofabrik`, `glo30`, `github` | One file per URL, as above |
 | `capture` | A program writes the files, see below |
-| `dtm`, `by-hand`, `installed` | None; the fetch fails. A `dtm-*` source is read through `terrain-reference/<key>` |
+| `dtm`, `by-hand`, `installed` | None; the fetch fails. A `dtm-*` source is read through `terrain` |
 | `prepared` | The manifest and the files that a step names, from a target, see [Prepared sources](#prepared-sources) |
 
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
@@ -813,27 +811,26 @@ The merge and the map crop run the Osmium of `OBC_OSMIUM`, or else `osmium` on t
 Without it, an update blocks their layers and asks to install Osmium or set `OBC_OSMIUM`. It does
 not download or install a tool.
 
-The steps read `copernicus-glo-30` and the national terrain models (`terrain-reference/<key>`),
+The steps read `copernicus-glo-30` and the national terrain models of `terrain`,
 and the step list reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
 [Versions](#versions)). `copernicus-glo-30` and its tile list are `manual`.
 
 A leaf reads the archive tiles of its terrain cells: those of the windows that the crest rule of
 `OBCT_Spec.md` §9 reads, which have a halo of two postings. A model whose `extent` meets one of
-those tiles reads the version that the target reads (see [Prepared sources](#prepared-sources)):
+those tiles in the version of `terrain` that the target reads (see [Prepared sources](#prepared-sources)):
 the step list reads its manifest, and the leaf reads the files `16/<ti:04>/<tj:04>.tif` of the
-manifest among those tiles. So a machine with an empty store plans a region from the manifests
-alone. A model without such a file adds nothing, and a leaf where no model has one has no
-`device/reference` layer. A model that has no version adds nothing either. Where one of those
-tiles is in the `geofabrik-poly` polygon of one of its `areas`, as the producer selects tiles, a
-note on `device/terrain` names it and the command that prepares it; the first version is a new
-input of the leaves that read it.
+manifest among those tiles and its `index.json`. So a machine with an empty store plans a region
+from the manifest alone. A leaf where the version has none of its tiles has no `device/reference`
+layer. Where a tile that the version lacks is in the `geofabrik-poly` polygon of one of the
+`areas` of a `dtm-*` model, a note on `device/terrain` names the model and the command that adds
+the region; the version that adds it is a new input of the leaves that read it.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `device/region-osm` | The selected PBF of each `device/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `device/osm` | The PBF of one `device/source/<area>`, or `device/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds --generator obc-data` of the square of the leaf and one µdeg around it, without the header options of the input, such as its replication fields. Each Osmium run writes at most two extracts: the rectangle around the leaves is halved along its longer side, and each half is cut from the extract of its parent, until each part is one leaf. Each leaf has the bytes of the direct extract. The metrics name the version (`osmium`) |
 | `device/map/<i>-<j>` | `device/osm`, the file of the leaf; `land-polygons`; `device/terrain/<i>-<j>`, which the contours, the nav graph and the POIs read | `leaf`: `[23, i, j]`; `cells`: for each band of the recommended band table (`OBCA_Spec.md`), `[ci, cj]` of each cell of the band in the leaf that the outline touches; `partial_cells`: the ids of those cells that the source coverage does not hold | `cells/<band>/<ci>/<cj>.obcm` for each cell with content or with partial coverage; `cells/<band>/empty.json`: the ids of the other cells of the band. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks. The step decodes the OSM of the leaf once |
-| `device/reference/<i>-<j>` | Each `terrain-reference/<key>` of the leaf with a tile, without params, those tiles of its version | `models`: `source`, `version` (the date of the version) and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is the date of its version. A Python step with the group `terrain-reference` |
+| `device/reference/<i>-<j>` | `terrain`, without params: those tiles of its version and `index.json`; only when the version has one of them | `source`: `terrain`; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of those tiles, and the `index.json` of the version cut to them. A Python step with the group `terrain-reference` |
 | `device/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `device/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `metadata/empty.json`: the ids of the cells without a height; `metadata/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
 | `device/landmark-content[/<area>]`, `device/peak-content[/<area>]` | Shared `wikidata`, `wikipedia` and `commons` facts requested by exact identity; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json`, device photos, and bounded `shared-content/` fact bundles. Only the bundles are selected publication outputs of this intermediate layer. Final device assets are published by the device cell layers |
 | `device/landmarks/<i>-<j>`, `device/peaks/<i>-<j>` | Every area's landmark content and `device/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf: the `network` list of `cells` of `device/map/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
@@ -861,15 +858,14 @@ at its version (see [Versions](#versions)), as for `device`. The other options c
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
 reads no snapshot. `planner/terrain` reads the mean of the national terrain models as `device`
-reads their maximum: each `terrain-reference/<key>` whose `extent` meets one of the archive tiles of
-its `bounds`, at the version that the target reads, and the files `mean/16/<ti:04>/<tj:04>.tif` of
-its manifest among those tiles. A model without a version adds nothing.
+reads their maximum: the files `mean/16/<ti:04>/<tj:04>.tif` among the archive tiles of its `bounds`
+of the version of `terrain` that the target reads, and `mean/index.json`.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
-| `planner/reference` | Each `terrain-reference/<key>` with a mean tile in `bounds` of `planner/terrain`, without params, those files of its version; only when one has a tile | `models` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of the models, best first by `PRIORITY`: a pixel keeps the best model that has it. A Python step with the group `terrain-reference` |
+| `planner/reference` | `terrain`, without params: the mean tiles in `bounds` of `planner/terrain` and `mean/index.json`; only when the version has one of them | `source` and `tiles` as for `device/reference`, of the tiles of `bounds`; `pool`: `mean` | `reference/`: the mean archive of those tiles. A Python step with the group `terrain-reference` |
 | `planner/terrain` | The GLO-30 tiles of `bounds`; `planner/reference` when there is one | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds; `attribution`: the credit of GLO-30 | `terrain.mbtiles`: the terrain tiles of [the planner release](planner-release.md#terrain-tiles), the bytes that `planner-dem` writes from the same tiles and archive |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`; `attribution` and `terrain_attribution`: the credits of OSM and GLO-30. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |
@@ -1433,6 +1429,7 @@ is compact JSON with the keys of each object in byte order:
 | `revision` | A person changes it in the change that improves the output |
 | `inputs` | Each source version that the prepare read, sorted by source and version, with the [digest](#keys) of the files that it read |
 | `files` | Sorted by `path`. A path is relative, and is not `manifest.json` |
+| `reused` | Absent, or each path of `files` that an earlier version of the same source on the target holds, with that version: the file is at `<that version>/<path>`. A version that extends the one before keeps its files without an upload |
 | `scope` | `null` for every place that the source covers, or `{"region", "definitions"}` as in the [settings of a target](#settings-of-a-target) |
 | `languages` | Article language codes in supported order, each once; empty for a source without articles |
 | `licence`, `attribution` | The licence and the credit of the row in `data/sources.toml` |
@@ -1470,7 +1467,7 @@ is compact JSON with the keys of each object in byte order:
 4. A run of a new version deletes the folders of older versions of the source on the target that
    have no manifest: no run resumes them. Before each 100 deletes, it checks that it still holds
    the lock.
-5. The producer writes each file. `terrain-reference` and `forest-reference` run the programs of
+5. The producer writes each file. `terrain` and `forest-reference` run the programs of
    two tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the upload
    replaces a key that a stopped run left with other bytes.
@@ -1479,8 +1476,8 @@ is compact JSON with the keys of each object in byte order:
    run of the version wrote stays when it names the same files. Then a conditional write adds the
    version to `versions.json`, with the time of the manifest, and the work of the version goes.
 
-`--region` and `--box` make a version of that region only. `wiki` can publish a regional version
-to `prod`; other prepared sources restrict regional versions to other targets. `obc data runs RUN --stop` stops a run, and the same command resumes
+`--region` and `--box` make a version of that region only. `wiki` and `terrain` can publish a
+regional version to `prod`; other prepared sources restrict regional versions to other targets. `obc data runs RUN --stop` stops a run, and the same command resumes
 it. `obc data unlock TARGET --source ID --from MACHINE` frees a lock that a stopped run left.
 
 #### Read
@@ -1491,11 +1488,12 @@ the source on `prod`. So the manifest is the identity of a version: a step reads
 (`copy` is `false`) and the fetch name it. Text output shows it as `<version> (<first 12 hex digits
 of the SHA-256>)`; with `--json`, a command gives the whole version.
 
-A target knows the versions that it lists, and a target other than `prod` also the versions that
-`prod` lists; on one name, its own entry wins. Before an update or the [overview](#overview) lists
-the steps, each prepared source that they read gets a version in the `format` of the producer of
-this `obc data`: the serving version of a `manual` source, else the newest version that the target
-knows. So a new version makes each layer that reads an older one stale, with the cause
+`prod` is the reference: a target other than `prod` reads the versions that `prod` lists, and its
+own versions only while `prod` lists none in the `format` of the producer. So a version made on one
+machine for a test never hides one that every target reads. Before an update or the
+[overview](#overview) lists the steps, each prepared source that they read gets a version in the
+`format` of the producer of this `obc data`: the serving version of a `manual` source, else the
+newest version of that list. So a new version makes each layer that reads an older one stale, with the cause
 `source`, in each target that knows it, and in no target that reads it already. When `prod` cannot
 be read, another target reads the versions that it knows, and a bake from the store needs no
 network. When a target knows no version in that format, the listing blocks the layers that read the
@@ -1520,31 +1518,40 @@ that no release reads, a version without a manifest, and every key that no versi
 The store of a machine keeps the files of a version that a release of one of its targets reads,
 as [Clean](#clean) says, also after the target deleted the version.
 
-#### `terrain-reference/<key>`
+#### `terrain`
 
-The producer `terrain-reference`, format 2, makes the tiles of the reference archive
-(`host/obc-dem/reference/README.md`) of the national terrain model `dtm-<key>`, in two pools: the
-maximum, which `device/terrain` reads, and under `mean/` the mean, which `planner/terrain` reads:
+The producer `terrain`, format 3, makes the tiles of the reference archive
+(`host/obc-dem/reference/README.md`) of the national terrain models `dtm-<key>`, in two pools: the
+maximum, which `device/terrain` reads, and under `mean/` the mean, which `planner/terrain` reads.
+A version adds a region to the newest complete version of `terrain` on the target before it, in
+the same format; `prod` takes a version of a region.
 
-- The tiles are those that meet the `extent` of the source and the `geofabrik-poly` polygon of one
-  of its `areas`: the boundary of the polygon crosses the tile, or the polygon holds the centre of
-  the tile. A version of a region has only the tiles of its boxes and of the polygons of its areas.
-  A run keeps the version of each polygon that the first run of the version read.
-  The review counts the two pools of the tiles of the `extent`, in the box of a region of boxes,
-  and their two `index.json`.
-- For each tile, `host/obc-dem/reference/ingest.py fetch <key> --tile <ti:04>-<tj:04>` pools the
-  rasters of the model in the tile onto the lattice in one pass. It writes `16/<ti:04>/<tj:04>.tif`
-  and `mean/16/<ti:04>/<tj:04>.tif`, and then `<ti:04>-<tj:04>.mean.sha256` and
-  `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where the model has no height in the tile,
-  it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile in
-  the `extent`, and it removes the raw rasters. The run keeps the SHA-256 or the `.none` of each
-  tile until the version is complete, so a resume fetches no tile again that it has.
-- The run uploads the files in batches of 64, one upload each.
-- Last, `ingest.py index-tiles` writes `index.json` and `mean/index.json`: each tile of the pool
-  with the SHA-256 of its pixels, `contributors` `[<key>]`, and the facts of the model with
-  `fetched`, the date of the version. The manifest names the input `dtm-<key>` at that date, with
-  the [digest](#keys) of the pixel SHA-256 of the files.
-- Only the machine that prepares needs the `credential` of `dtm-<key>`. A `by-hand` model reads
+- The models are the `dtm-*` rows with `redistribute = true` whose `extent` meets the box of the
+  region, or all of them for a version of everything. The tiles of a model are those that meet its
+  `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary of the polygon
+  crosses the tile, or the polygon holds the centre of the tile. A version of a region has only
+  those tiles in its boxes and in the polygons of its areas. A run keeps the version of each
+  polygon that the first run of the version read. The review counts the two pools of the tiles of
+  each `extent` in the box of the region, and the two `index.json`.
+- For each tile, `host/obc-dem/reference/ingest.py fetch <keys> --tile <ti:04>-<tj:04>` pools the
+  rasters of each model of the tile onto the lattice in one pass, and folds each into the tile:
+  into the tile of the version before when it has one (`--base`, with `--held`, its sources), by
+  `fold_tiles`. A model keeps the pixels where it has a height when it ranks better by `PRIORITY`
+  than every other source of the tile, also over an older survey of its own; else it fills only
+  the gaps. The program writes `16/<ti:04>/<tj:04>.tif` and `mean/16/<ti:04>/<tj:04>.tif`, then
+  `<ti:04>-<tj:04>.keys`, the sources of the tile best first, then `<ti:04>-<tj:04>.mean.sha256`
+  and `<ti:04>-<tj:04>.sha256`, the SHA-256 of their pixels. Where no model has a height in the
+  tile, it writes the empty `<ti:04>-<tj:04>.none`. It asks a service only for the part of the tile
+  in the `extent`, and it removes the raw rasters. The run keeps the marks of each tile until the
+  version is complete, so a resume fetches no tile again that it has.
+- The run uploads the files in batches of 64, one upload each. Each tile of the version before
+  that the run did not make stays in `reused`.
+- Last, `ingest.py index-terrain` writes `index.json` and `mean/index.json`: the index of the
+  version before with each tile that the run made, its SHA-256 and its `contributors`, and the
+  facts of each model that the run read with `fetched`, the date of the version. The manifest
+  names the input `dtm-<key>` of each model at that date, with the [digest](#keys) of the pixel
+  SHA-256 of the files that it made.
+- Only the machine that prepares needs the `credential` of each model. A `by-hand` model reads
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
@@ -1842,8 +1849,8 @@ Rules:
   is deleted. Legacy keys go only after the cutover, from the list that the owner approved.
 - `legacy` lists each key under `cell-catalog/` and `planner/`, or under the one `--prefix`, that
   `obc data` does not write. It refuses while the target serves no release. It refuses
-  `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the target
-  has no version of `terrain-reference/<key>` for a key of its `sources`. The digest is the
+  `reference/v1` while `reference/v1/index.json` is missing or does not parse, and while the
+  `index.json` of the newest version of `terrain` on the target lacks a key of its `sources`. The digest is the
   SHA-256 of one line `<bytes>  <key>\n` per key, sorted by key. With `--delete`, it lists again,
   refuses when the digest is not `--expect`, and deletes as `delete --legacy` with the counts, the
   bytes and the digest as its plan. With no key, it deletes nothing and exits 0.
