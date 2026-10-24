@@ -528,18 +528,16 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 for point in points:
                     shared[point] = shared.get(point, 0) + 1
 
-    # The lifts wait for the other lifts, and the buildings for the lifts: a station shares the place of
-    # another lift's end and replaces a building.
+    # The lifts wait for the buildings and the other lifts: a station shares their places.
     ways, buildings, lift_entry = [], [], None
     for entry, tags, parts in objects(kinds, pbf, binary):
         if lifts.solves(entry["kind"], tags):
             lift_entry = entry
             ways += [(tags, points) for _, points in parts]
             continue
-        parts = [(outer, points, None) for outer, points in parts]
         if entry["kind"] == "building":
-            buildings.append((entry, tags, parts))
-            continue
+            buildings += [np.array(points) for outer, points in parts if outer]
+        parts = [(outer, points, None) for outer, points in parts]
         solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads, rails) if m.solves(entry["kind"], tags)), None)
         if solver:
             held.append((solver, entry, tags, parts))
@@ -547,14 +545,10 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
-    rings = [[np.array(points) for outer, points, _ in parts if outer] for *_, parts in buildings]
-    rigged, stations, metrics["lifts"] = lifts.rigged(ways, rings, terrain)
-    del rings
-    for tags, points in rigged:
-        place(lift_entry, tags, [(False, points, None)])
-    for n, (entry, tags, parts) in enumerate(buildings):
-        if n not in stations:
-            place(entry, tags, parts)
+    if ways:
+        rigged, metrics["lifts"] = lifts.rigged(ways, buildings, terrain)
+        for tags, points in rigged:
+            place(lift_entry, tags, [(False, points, None)])
     del buildings
     # The heights of a junction need every road that meets there, a river level its whole network, a ford
     # the water it crosses, and a platform its tracks.
