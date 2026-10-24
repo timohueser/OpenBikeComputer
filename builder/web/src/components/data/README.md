@@ -2,7 +2,9 @@
 
 The page of `obc data` on one machine. `obc data ui` builds it and serves it on
 `http://127.0.0.1:8700/`. The page acts only through `POST /api/cli`, which runs
-`obc data --json ARGS` on that machine, and each action shows its command. The
+`obc data --json ARGS` on that machine, and each action shows its command. The Machine screen
+sets a credential through `POST /api/credential`, which gives the values to
+`obc data source credential ID` on standard input. The
 [data contract](../../../../../specs/obc-data.md#the-page) defines the route and its checks.
 
 ## Run
