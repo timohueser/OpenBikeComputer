@@ -107,7 +107,8 @@ time_zone = "Europe/Berlin"
     ];
     let version = |id: &str| if id == "nominatim-country-data" { nominatim.clone() } else { "1".into() };
     let serving = read.map(|id| ((id.to_string(), Vec::new()), version(id)));
-    let settings = Settings { region: AREA.into(), layers: vec!["sun".into()], ..Settings::default() };
+    let layers = ["map", "routing", "search", "sun"].map(String::from).into();
+    let settings = Settings { region: AREA.into(), layers, ..Settings::default() };
     let inputs = Inputs { settings, serving: BTreeMap::from(serving), ..Inputs::default() };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, inputs: &Inputs| {

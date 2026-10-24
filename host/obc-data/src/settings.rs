@@ -17,7 +17,7 @@ pub struct Settings {
     pub region: String,
     /// Full TOML definitions of the region and its union members, keyed by region id.
     pub definitions: BTreeMap<String, String>,
-    /// The optional layers that are on, sorted.
+    /// The parts that are on, sorted.
     pub layers: Vec<String>,
     /// Source id to the policy that replaces the policy of `data/sources.toml`.
     pub refresh: BTreeMap<String, Refresh>,

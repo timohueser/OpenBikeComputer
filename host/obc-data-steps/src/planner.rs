@@ -159,6 +159,9 @@ impl Product for Planner {
 
     fn optional(&self) -> &'static [&'static str] {
         &[
+            "map",
+            "routing",
+            "search",
             "climate",
             "snow",
             "sun",
@@ -168,6 +171,11 @@ impl Product for Planner {
             "trailview-colour",
             "trailview-canopy",
         ]
+    }
+
+    /// The planner bakes while one of its parts is on.
+    fn on(&self, settings: &obc_data::settings::Settings) -> bool {
+        settings.layers.iter().any(|layer| self.optional().contains(&layer.as_str()))
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -548,6 +556,7 @@ impl Planner {
             run: Run::Rust(&functions::PLANNER_CATALOG),
             client: Client::All,
         });
+        prune(&mut steps, &on);
         match wanted.is_empty() {
             true => {
                 let mut listed: Steps = steps.into();
@@ -557,6 +566,51 @@ impl Planner {
             }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
+    }
+}
+
+/// The steps that make each core part of the planner. The other parts are optional layers whose
+/// steps are listed only while they are on.
+const PARTS: [(&str, &[&str]); 3] = [
+    ("map", &["planner/basemap/grid", "planner/places/grid", "planner/assets/grid", "planner/terrain/grid"]),
+    ("routing", &["planner/routing/grid", "planner/overlays/grid"]),
+    ("search", &["planner/model/grid", "planner/search/pois/grid", "planner/search/addresses/grid"]),
+];
+
+/// The steps that gather what the other steps make. They read only the steps that stay.
+const GATHERERS: [&str; 3] = ["planner/fonts/grid", "planner/index", catalog::STEP];
+
+/// Remove the steps of each core part that is off, and then each step that no step reads any more.
+/// A step that a part that is on reads stays, such as the terrain that the sun reads or the POIs
+/// that the places of the map read.
+fn prune(steps: &mut Vec<Step>, on: &dyn Fn(&str) -> bool) {
+    let reads = |steps: &[Step]| -> HashSet<String> {
+        let names = steps.iter().flat_map(|step| &step.inputs);
+        names.filter_map(|input| if let Input::Step { name, .. } = input { Some(name.clone()) } else { None }).collect()
+    };
+    let gatherer = |step: &Step| GATHERERS.contains(&step.name.as_str());
+    let mut gone: HashSet<String> = PARTS
+        .iter()
+        .filter(|(part, _)| !on(part))
+        .flat_map(|(_, roots)| roots.iter().map(|root| root.to_string()))
+        .collect();
+    // Only a step that lost its readers goes, never one that no step read before.
+    let mut collectable = reads(steps);
+    collectable.extend(gone.iter().cloned());
+    while !gone.is_empty() {
+        for step in steps.iter_mut().filter(|step| gatherer(step)) {
+            step.inputs.retain(|input| !matches!(input, Input::Step { name, .. } if gone.contains(name)));
+        }
+        let read = reads(steps);
+        steps.retain(|step| !gone.contains(&step.name) || read.contains(&step.name));
+        let read = reads(steps);
+        let unread = |step: &Step| collectable.contains(&step.name) && !read.contains(&step.name);
+        let empty = |step: &Step| gatherer(step) && step.inputs.is_empty();
+        gone = steps
+            .iter()
+            .filter(|step| step.name != catalog::STEP && (unread(step) || empty(step)))
+            .map(|step| step.name.clone())
+            .collect();
     }
 }
 
@@ -981,7 +1035,8 @@ mod tests {
         let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
         let read = read.into_iter().chain(BASEMAP_SOURCES).map(|source| (source, "1")).chain([("hansen-gfc", "v1.11")]);
         let serving = read.map(|(source, version)| ((source.to_string(), Vec::new()), version.to_string())).collect();
-        let layers = layers.iter().map(|layer| layer.to_string()).collect();
+        // The core parts are on unless a test names its parts.
+        let layers = ["map", "routing", "search"].iter().chain(layers).map(|layer| layer.to_string()).collect();
         Inputs {
             settings: Settings { region: region.into(), layers, ..Settings::default() },
             serving,
@@ -1132,6 +1187,33 @@ mod tests {
             .inputs
             .iter()
             .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+    }
+
+    #[test]
+    fn a_part_that_is_off_keeps_only_the_steps_that_a_part_that_is_on_reads() {
+        let temp = temp("planner-parts");
+        let store = store(&temp, &["2026-10-01"]);
+        let only = |parts: &[&str]| {
+            let mut inputs = inputs(AREA, &[]);
+            inputs.settings.layers = parts.iter().map(|part| part.to_string()).collect();
+            let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+            steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
+        };
+        let sun = only(&["sun"]);
+        assert!(["planner/terrain/grid", "planner/sun/grid", "planner/index", catalog::STEP]
+            .iter()
+            .all(|step| sun.contains(*step)));
+        let core = |step: &String| {
+            ["osm", "routing", "search", "basemap", "places", "fonts"].iter().any(|part| step.contains(part))
+        };
+        assert!(!sun.iter().any(core), "{sun:?}");
+        let map = only(&["map"]);
+        assert!(
+            map.contains("planner/search/pois") && map.contains("planner/fonts/grid"),
+            "the places of the map read the POIs"
+        );
+        let gone = ["planner/search/addresses", "planner/search/pois/grid", "planner/routing", "planner/overlays/grid"];
+        assert!(!gone.iter().any(|step| map.contains(*step)), "{map:?}");
     }
 
     #[test]

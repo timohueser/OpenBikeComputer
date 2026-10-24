@@ -50,7 +50,7 @@ pub struct Review {
     pub after: AfterUpdate,
     /// The arguments after `obc data` that start the update of this review.
     pub args: Vec<String>,
-    /// The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those
+    /// The parts that `--add` and `--remove` name, sorted; `settings.layers` holds those
     /// that are on.
     pub optional: Vec<String>,
     /// What layers bake without, such as a prepared source that no target lists yet.

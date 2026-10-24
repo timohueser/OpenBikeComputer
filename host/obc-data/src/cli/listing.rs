@@ -91,7 +91,8 @@ pub(super) fn steps(
     }
     inputs.fetch_failures.clear();
     let mut listed = Listed { steps: Vec::new(), blocked: Vec::new(), notes: Vec::new() };
-    for product in products {
+    let on: Vec<&dyn Product> = products.iter().copied().filter(|product| product.on(&inputs.settings)).collect();
+    for product in &on {
         let blocked =
             |reason: String| BlockedLayer { step: product.name().into(), layer: product.name().into(), reason };
         let before = inputs.fetch_failures.len();

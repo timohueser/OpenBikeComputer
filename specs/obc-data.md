@@ -106,7 +106,7 @@ reads them, applies its flags, and keeps them in the new release.
 | --- | --- | --- |
 | `region` | string | The id of the region; empty until an update names one |
 | `definitions` | object | The TOML text of the region and of the members of a union, by id |
-| `layers` | array of strings | The optional layers that are on, sorted, each once |
+| `layers` | array of strings | The parts that are on, sorted, each once. A product with parts bakes only while one of its parts is on; an update with no part on refuses |
 | `refresh` | object | Source id to `1` through `65535` whole days, or `"manual"`. This policy replaces the `refresh` of `data/sources.toml` for the target. Days need a date version |
 
 `--region ID` copies the definition of a region of `data/regions/`. `--region PATH[,PATH…]`
@@ -890,9 +890,14 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
-`climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground`,
-`trailview-colour` and `trailview-canopy` are optional layers: a step only when `layers` of the
-settings names it.
+The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`, `sun`,
+`trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
+`trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
+part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
+`routing` the routing and overlays grids, `search` the model and the two search grids; the other
+parts make their own steps. The fonts, the index and the catalog read only the grids that stay.
+So `sun` alone bakes the terrain and the sun, and `map` without `search` still bakes the POIs that
+the places read.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.

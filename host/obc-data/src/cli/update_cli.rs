@@ -430,6 +430,12 @@ pub(super) fn prepare(
             .error(format!("target `{name}` has no region"))
             .fix(format!("Name one: `obc data update {name} --region ID` or `--box W,S,E,N`.")));
     }
+    if !products.iter().any(|product| product.on(&settings)) {
+        return Err(Code::Usage.error(format!("target `{name}` has nothing on to bake")).fix(format!(
+            "Switch parts on: `obc data update {name} --add PART`, from {}.",
+            optional(products).join(", ")
+        )));
+    }
     let regions = settings.regions().map_err(|e| Code::InvalidData.error(e))?;
     let mut sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
     settings.policies(&mut sources).map_err(|e| Code::Usage.error(e))?;
@@ -659,7 +665,9 @@ fn apply(
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
     let fetched = reads(store, &outputs, serving.as_ref(), &sources)?;
-    let next = compose(products, settings, outputs, fetched)?;
+    // A product that the settings switch off has no pointer and nothing to verify in the release.
+    let products: Vec<&dyn Product> = products.iter().copied().filter(|product| product.on(&settings)).collect();
+    let next = compose(&products, settings, outputs, fetched)?;
     let mut updated = Updated {
         target: name.into(),
         review: review.id,
@@ -683,7 +691,7 @@ fn apply(
     }
 
     enter((run, held), name, Phase::Verify)?;
-    for product in products {
+    for product in &products {
         let failed =
             |e: String| Code::VerifyFailed.error(format!("product `{}`: {e}; nothing changed", product.name()));
         product.verify(root, serving.as_ref(), &next, store).map_err(failed)?;

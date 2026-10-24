@@ -74,6 +74,15 @@ impl Product for Device {
         "device"
     }
 
+    /// The device maps are one part.
+    fn optional(&self) -> &'static [&'static str] {
+        &["device"]
+    }
+
+    fn on(&self, settings: &obc_data::settings::Settings) -> bool {
+        settings.layers.iter().any(|layer| layer == "device")
+    }
+
     fn pointer(&self) -> Pointer {
         Pointer { key: "cell-catalog/catalog.json", step: catalog::LAYER, path: "catalog.json" }
     }
