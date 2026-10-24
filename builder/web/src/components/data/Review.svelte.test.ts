@@ -184,7 +184,7 @@ it("a format change names what happens to each reader, and the map draws the cel
         expect(rows[0][4]).toContain("Maps already on a device keep working");
         expect(document.body.textContent).toContain("■ 2 cells bake · ■ 1 cell go");
         await vi.waitFor(() => expect([strokes("var(--running)"), strokes("var(--missing)")]).toEqual([2, 1]));
-        expect(document.body.textContent).toContain("device/terrain · terrain-reference/de has no version");
+        expect(document.body.textContent).toContain("device/terrain · terrain has no tile of dtm-de here");
     } finally {
         await unmount(screen);
     }
@@ -218,7 +218,7 @@ it("counts the params of a fetch, and says which costs are unknown", async () =>
 
 it("shows each note, also two notes of one layer", async () => {
     const note = (country: string) =>
-        `terrain-reference/${country} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/${country}`;
+        `terrain has no tile of dtm-${country} here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION`;
     const notes = ["ch", "de"].map((country) => ({ layer: "device/terrain", text: note(country) }));
     server({ ...planned, review: { ...review, notes } });
     const screen = mount(Review, { target: document.body, props: { ...props, plan: planned.id } });

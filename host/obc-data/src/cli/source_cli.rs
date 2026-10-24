@@ -1,7 +1,8 @@
 //! `obc data source refresh ID`: fetch upstream's newest version of a `digest` source, so that the
 //! next update of each target that serves the version of now reads it. A source whose versions
 //! have no order moves no other way. The fetch can take long, so it is a detached run.
-//! `obc data source prepare ID`: see [`super::prepare_cli`].
+//! `obc data source prepare ID`: see [`super::prepare_cli`]. `obc data source credential ID`: see
+//! [`super::setup_cli`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -22,6 +23,9 @@ pub enum SourceCommand {
     Refresh { id: String },
     /// Make a version of a prepared source and publish it to a target; the same command resumes it.
     Prepare(super::prepare_cli::PrepareArgs),
+    /// Set the credential of a source from standard input, one value per line in the order of
+    /// `fields` in `obc data setup`. Never from an argument, which every process can read.
+    Credential { id: String },
 }
 
 /// What `source refresh` did.
@@ -40,6 +44,7 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
     let id = match command {
         SourceCommand::Refresh { id } => id,
         SourceCommand::Prepare(args) => return super::prepare_cli::command(root, prepared, args, json),
+        SourceCommand::Credential { id } => return super::setup_cli::credential(root, &id, json),
     };
     let store = Store::open()?;
     let work = |_: &mut runs::Run| refresh(root, &store, &Http::new(), &id);

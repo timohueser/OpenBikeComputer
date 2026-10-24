@@ -26,10 +26,10 @@ use crate::target::Target;
 pub struct PrepareArgs {
     /// The prepared source, as `data/sources.toml` names it.
     id: String,
-    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki` accepts a region.
+    /// Only a region of `data/regions/`, or Geofabrik paths joined by `,`. For `prod`, only `wiki`, `terrain` and `forest` take a region.
     #[arg(long, conflicts_with = "bbox")]
     region: Option<String>,
-    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki` accepts a region.
+    /// Only a box: west,south,east,north in degrees. For `prod`, only `wiki`, `terrain` and `forest` take a region.
     #[arg(long = "box", allow_hyphen_values = true)]
     bbox: Option<String>,
     /// Wiki article languages, joined by commas; all supported languages by default.
@@ -238,7 +238,7 @@ fn plan<'a>(
     update_cli::select(root, asked.scope, &mut settings)?;
     let scope = (!settings.region.is_empty())
         .then(|| Scope { region: settings.region.clone(), definitions: settings.definitions.clone() });
-    if scope.is_some() && name == PROD && id != "wiki" {
+    if scope.is_some() && name == PROD && !producer.regional() {
         return Err(Code::Usage
             .error(format!(
                 "a version of a region or a box is not for `{PROD}`, whose versions every target reads; nothing changed"
@@ -283,7 +283,12 @@ fn plan<'a>(
             .map_err(|e| Code::InvalidData.error(e.to_string()))?
     } else {
         producer
-            .plan(&prepared::Planning { store, http: context.http }, &source, scope.as_ref(), &languages)
+            .plan(
+                &prepared::Planning { store, http: context.http, sources: &sources },
+                &source,
+                scope.as_ref(),
+                &languages,
+            )
             .map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?
     };
     let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
@@ -527,12 +532,19 @@ fn make(
         sources: &sources,
         target: (name, target),
     };
-    let (files, inputs, uploaded, peak_rss_bytes) = {
+    let (files, reused, extends, inputs, uploaded, peak_rss_bytes) = {
         let mut job = Job::open(opening, (id, version), scope.clone(), &review.languages, run)?;
         crate::store::write_atomic(&job.state.join("plan.json"), &serde_json::to_vec(&made).expect("plan serializes"))?;
         job.plan = made;
         producer.prepare(&mut job).map_err(|e| Code::RunFailed.error(format!("{id}@{version}: {e}")))?;
-        (job.files().cloned().collect::<Vec<_>>(), job.reads(), job.uploaded, job.peak_rss_bytes())
+        (
+            job.files().cloned().collect::<Vec<_>>(),
+            job.reused().clone(),
+            job.extends().to_vec(),
+            job.reads(),
+            job.uploaded,
+            job.peak_rss_bytes(),
+        )
     };
     if files.is_empty() {
         return Err(Code::RunFailed.error(format!("{id}@{version}: the producer made no file; nothing is published")));
@@ -545,7 +557,9 @@ fn make(
         revision: producer.revision(),
         inputs,
         files,
+        reused,
         scope,
+        extends,
         languages: review.languages.clone(),
         licence: source.licence.clone(),
         attribution: source.attribution.clone(),
@@ -699,6 +713,13 @@ pub(super) mod tests {
             for path in ["a.txt", "b.txt", "c.txt"] {
                 if job.done(path) {
                     continue;
+                }
+                // With `reuse-<path>`, the version keeps the file of the version before.
+                if job.root.join(format!("reuse-{path}")).exists() {
+                    if let Some(previous) = job.extend(self.0)? {
+                        job.reuse(&previous, path)?;
+                        continue;
+                    }
                 }
                 let gate = job.root.join("gate");
                 if gate.is_dir() {
@@ -950,6 +971,21 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_version_reads_a_file_that_it_reuses_from_the_version_before_and_the_collection_keeps_that_one() {
+        let (fixture, prod, _) = setup("prepare-reuse");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        write(&fixture.root().join("reuse-a.txt"), "");
+        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        let manifest = prepared::manifest(&prod, "sample", "2026-10-02").unwrap().unwrap();
+        assert_eq!(manifest.reused, [("a.txt".to_string(), "2026-10-01".to_string())].into());
+        let Target::Dir(dir) = &prod else { unreachable!() };
+        assert!(!dir.join("sources/sample/2026-10-02/a.txt").exists(), "a reused file is not uploaded again");
+        let updated = update(&fixture, ("prod", &prod), &Default::default()).unwrap();
+        assert_eq!(updated.collection.unwrap().versions, Vec::<String>::new(), "2026-10-02 reads a.txt of 2026-10-01");
+        assert!(dir.join("sources/sample/2026-10-01/a.txt").exists());
+    }
+
+    #[test]
     fn a_collection_keeps_the_newest_unused_version_an_incomplete_one_and_older_keys() {
         let (fixture, prod, _) = setup("prepare-collect");
         for day in ["2026-10-01", "2026-10-02"] {
@@ -1038,6 +1074,9 @@ pub(super) mod tests {
             fn revision(&self) -> u32 {
                 1
             }
+            fn regional(&self) -> bool {
+                true
+            }
             fn languages(&self, requested: &[String]) -> Result<Vec<String>, String> {
                 Ok(requested.to_vec())
             }
@@ -1097,7 +1136,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_target_reads_its_own_version_of_a_name_and_prod_reads_the_one_of_prod() {
+    fn a_target_reads_its_own_version_until_prod_has_one_and_then_the_one_of_prod() {
         let (fixture, prod, local) = setup("prepare-identity");
         let boxed = Asked { scope: (None, Some("7,47,8,48")), ..Asked::default() };
         prepare(&fixture, "local", "2026-10-01", boxed).unwrap();
@@ -1108,7 +1147,9 @@ pub(super) mod tests {
         assert_eq!((prod_reads, local_reads), (pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01")));
         assert_ne!(pinned(&prod, "2026-10-01"), pinned(&local, "2026-10-01"), "one name, two versions");
         assert!(prod_bytes.contains("for all") && local_bytes.contains("for box"), "{prod_bytes} {local_bytes}");
-        assert_eq!(changes(&fixture, ("local", &local)), [], "the own version of `local` wins");
+        let read = changes(&fixture, ("local", &local));
+        let next = prepared::show(&pinned(&prod, "2026-10-01"));
+        assert!(read.len() == 1 && read[0].1.ends_with(&next), "`local` reads the version of `prod` next: {read:?}");
     }
 
     #[test]

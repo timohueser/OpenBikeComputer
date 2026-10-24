@@ -173,12 +173,13 @@ export class CoverageMapView {
     private shelfBounds: L.LatLngBounds | null = null;
     private userMoved = false;
 
-    constructor(el: HTMLElement, cb: CoverageMapCallbacks) {
+    /** `background` draws below the overlays: by default the basemap of the active release. */
+    constructor(el: HTMLElement, cb: CoverageMapCallbacks, background: (map: L.Map) => unknown = addBasemap) {
         this.cb = cb;
         // boxZoom off: shift+drag stays free for a future gesture and never fights
         // the box tool.
         this.map = L.map(el, { worldCopyJump: true, boxZoom: false, maxZoom: 18 }).setView([49, 9], 5);
-        void addBasemap(this.map);
+        void background(this.map);
 
         // Draw order bottom-up: shelf, selection, warnings on top of the
         // selection they annotate, preview above everything settled.

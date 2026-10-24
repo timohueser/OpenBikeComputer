@@ -21,7 +21,7 @@ step fails because it did not write its output.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
 public bucket. An update or a rollback of `prod` needs the `OBC_R2_*` variables and rclone. The
-settings of a target (region, optional layers, refresh policies) are in the release that it
+settings of a target (region, parts, refresh policies) are in the release that it
 serves, so they need no commit.
 
 | Configuration or credential | Purpose |
@@ -41,10 +41,12 @@ serves, so they need no commit.
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
+| `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
-Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
+Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
+Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
 
 ## Daily commands
 
@@ -56,8 +58,8 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
 | `obc data update local --region dach --plan` | Plan the update in a run: fetch what the plan reads, with progress, and bake nothing. `obc data runs RUN` gives the review |
 | `obc data update local --expect ID` | Start the update only when its review still has this id |
-| `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
-| `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
+| `obc data update local --add device --add map --add sun` | Switch parts on; `--remove` switches a part off. Parts: `device`, `map`, `routing`, `search`, `climate`, `snow`, `sun`, `trailview-*` |
+| `obc data update local --refresh geofabrik-extracts=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data update prod --dry-run` | Review an update of `prod`; the owner approves its id |
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |

@@ -17,10 +17,10 @@
                 {"source": "geofabrik-extracts", "version": "2026-10-05", "retrieved": "2026-10-06T06:30:00Z"},
                 {"source": "geofabrik-poly", "version": "2026-10-05", "retrieved": "2026-10-06T06:30:00Z"},
                 {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
-                {"source": "terrain-reference/ch", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"}
+                {"source": "terrain", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"}
             ],
             "layers": [
-                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain-reference/ch"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032"], "stale_leaves": []},
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032"], "stale_leaves": []},
                 {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "geofabrik-poly", "land-polygons"], "served_format": 19, "served_revision": 3, "leaves": ["0037-0032"], "stale_leaves": []},
                 {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
@@ -49,11 +49,11 @@
                 {"source": "geofabrik-poly", "version": "2026-10-08", "retrieved": "2026-10-08T05:40:00Z"},
                 {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
                 {"source": "natural-earth", "version": "9f2c1a", "retrieved": "2026-06-03T08:00:00Z"},
-                {"source": "terrain-reference/ch", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"},
+                {"source": "terrain", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"},
                 {"source": "wiki", "version": "2026-06-01", "retrieved": "2026-06-02T11:00:00Z"}
             ],
             "layers": [
-                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain-reference/ch"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": []},
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": []},
                 {"layer": "device/map", "state": "stale", "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3}, "text": "revision 2 → 3: improved output", "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "geofabrik-poly", "land-polygons"], "served_format": 19, "served_revision": 2, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033"]},
                 {"layer": "device/landmarks", "state": "stale", "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"}, "text": "wiki 2026-06-01 → 2026-09-01", "shape": "tiled", "format": 19, "revision": 1, "readers": ["device"], "reads": ["geofabrik-extracts", "wiki"], "served_format": 19, "served_revision": 1, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"]},
                 {"layer": "device/catalog", "state": "stale", "cause": {"kind": "input", "name": "device/map"}, "text": "follows device/map", "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/landmarks", "device/map"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []},
@@ -68,7 +68,7 @@
                 {"layer": "planner/index", "state": "stale", "cause": {"kind": "input", "name": "planner/search"}, "text": "follows planner/search", "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner", "iOS", "search service", "downloads service"], "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
             "blocked": [],
-            "notes": [{"layer": "device/terrain", "text": "terrain-reference/de has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/de"}],
+            "notes": [{"layer": "device/terrain", "text": "terrain has no tile of dtm-de here: device/terrain uses GLO-30 there. Fix: add this region to terrain: obc data source prepare terrain --region REGION"}],
             "drift": [],
             "error": null,
             "fix": null,

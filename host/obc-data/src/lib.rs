@@ -5,6 +5,7 @@
 
 pub mod cli;
 pub mod collection;
+pub mod credentials;
 pub mod date;
 pub mod engine;
 pub mod fetch;

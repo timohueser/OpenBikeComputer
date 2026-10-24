@@ -100,7 +100,7 @@ redistribute = true
 [[source]]
 id = "copernicus-glo-30"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain of the world at 30 m"
 licence = "LicenseRef-Copernicus-DEM"
@@ -116,7 +116,7 @@ redistribute = false
 [[source]]
 id = "copernicus-glo-30-tiles"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "The list of GLO-30 tiles: a square without a tile is sea"
 licence = "LicenseRef-Copernicus-DEM"
@@ -128,7 +128,7 @@ redistribute = true
 [[source]]
 id = "mapzen-terrain-tiles"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device"]
 use = "Terrain of the Peak View test fixtures"
 licence = "LicenseRef-Mapzen-terrain-tiles"
@@ -144,7 +144,7 @@ redistribute = false
 [[source]]
 id = "dtm-at"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Austria: ALS DTM 1 m"
 licence = "CC-BY-4.0"
@@ -158,7 +158,7 @@ redistribute = true
 [[source]]
 id = "dtm-au"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Australia: ELVIS DEM 1–5 m, per order"
 licence = "CC-BY-4.0"
@@ -170,12 +170,12 @@ areas = ["australia-oceania/australia"]
 version = "date"
 redistribute = true
 # The directory of the delivered order, and the vertical datum that its metadata states.
-credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"] }
+credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"], register = "https://elevation.fsdf.org.au", hint = "Order the area, then give the absolute path of the unpacked delivery and its vertical datum, such as AHD." }
 
 [[source]]
 id = "dtm-ca"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Canada: HRDEM DTM 1 m"
 licence = "OGL-Canada-2.0"
@@ -189,7 +189,7 @@ redistribute = true
 [[source]]
 id = "dtm-ch"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Switzerland and Liechtenstein: swissALTI3D 2 m"
 licence = "LicenseRef-swisstopo-open-data"
@@ -205,7 +205,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-bw"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Baden-Württemberg, Germany: DGM1 1 m"
 licence = "DL-DE-BY-2.0"
@@ -219,7 +219,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-by"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Bavaria, Germany: DGM1 1 m"
 licence = "CC-BY-4.0"
@@ -233,7 +233,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-he"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Hesse, Germany: DGM1 1 m"
 licence = "DL-DE-ZERO-2.0"
@@ -247,7 +247,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-mv"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Mecklenburg-Vorpommern, Germany: DGM1 1 m"
 licence = "CC-BY-4.0"
@@ -263,7 +263,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-ni"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Lower Saxony, Germany: DGM1 1 m"
 licence = "CC-BY-4.0"
@@ -277,7 +277,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-nw"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in North Rhine-Westphalia, Germany: DGM1 1 m"
 licence = "DL-DE-ZERO-2.0"
@@ -291,7 +291,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-sn"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Saxony, Germany: DGM1 1 m"
 licence = "DL-DE-BY-2.0"
@@ -305,7 +305,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-st"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Saxony-Anhalt, Germany: DGM1 1 m"
 licence = "DL-DE-BY-2.0"
@@ -319,7 +319,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-th"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Thuringia, Germany: DGM1 1 m"
 licence = "DL-DE-BY-2.0"
@@ -333,7 +333,7 @@ redistribute = true
 [[source]]
 id = "dtm-dk"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Denmark: DHM/Terræn 0.4 m"
 licence = "CC-BY-4.0"
@@ -344,12 +344,12 @@ areas = ["europe/denmark"]
 hosts = ["dataforsyningen.dk"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_DK_TOKEN"] }
+credential = { env = ["OBC_REFERENCE_DK_TOKEN"], register = "https://dataforsyningen.dk", hint = "Make a free account (Opret bruger), then copy a new token from Administrer token til webservices og API'er." }
 
 [[source]]
 id = "dtm-es"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Spain and the Canary Islands: MDT05 5 m"
 licence = "CC-BY-4.0"
@@ -363,7 +363,7 @@ redistribute = true
 [[source]]
 id = "dtm-fi"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Finland: Korkeusmalli 2 m"
 licence = "CC-BY-4.0"
@@ -374,12 +374,12 @@ areas = ["europe/finland"]
 hosts = ["*.maanmittauslaitos.fi"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_FI_TOKEN"] }
+credential = { env = ["OBC_REFERENCE_FI_TOKEN"], register = "https://omatili.maanmittauslaitos.fi", hint = "Make a free NLS account, then create a key for the open data interfaces under API keys and copy it." }
 
 [[source]]
 id = "dtm-fr"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in France: RGE ALTI 1 m"
 licence = "LicenseRef-Licence-Ouverte"
@@ -394,7 +394,7 @@ redistribute = true
 [[source]]
 id = "dtm-it-bz"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in South Tyrol, Italy: DTM 2.5 m"
 licence = "CC0-1.0"
@@ -407,7 +407,7 @@ redistribute = true
 [[source]]
 id = "dtm-it-tn"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Trentino, Italy: DTM 0.5 m"
 licence = "CC-BY-4.0"
@@ -420,7 +420,7 @@ redistribute = true
 [[source]]
 id = "dtm-nl"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in the Netherlands: AHN DTM 0.5 m"
 licence = "CC-BY-4.0"
@@ -434,7 +434,7 @@ redistribute = true
 [[source]]
 id = "dtm-no"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Norway: NHM DTM 1 m"
 licence = "CC-BY-4.0"
@@ -448,7 +448,7 @@ redistribute = true
 [[source]]
 id = "dtm-nz"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in New Zealand: LiDAR DEM 1 m"
 licence = "CC-BY-4.0"
@@ -462,7 +462,7 @@ redistribute = true
 [[source]]
 id = "dtm-se"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in Sweden: Markhöjdmodell 1 m"
 licence = "CC-BY-4.0"
@@ -473,12 +473,12 @@ areas = ["europe/sweden"]
 hosts = ["*.lantmateriet.se"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"] }
+credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
 
 [[source]]
 id = "dtm-uk"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in England: LIDAR Composite DTM 1 m"
 licence = "OGL-UK-3.0"
@@ -492,7 +492,7 @@ redistribute = true
 [[source]]
 id = "dtm-us"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Elevation"
 used_by = ["device", "planner", "trailview"]
 use = "Terrain in the United States: 3DEP 1 m"
 licence = "LicenseRef-public-domain"
@@ -506,30 +506,29 @@ redistribute = true
 
 # ── TrailView forest ─────────────────────────────────────────────────────────
 
-# The canopy of each cell of the TrailView canopy layer, from the two sources below. The canopy
-# layer credits the sources that the manifest of its version names.
+# The canopy of each cell of the TrailView canopy layer, from the national canopy models
+# `canopy-<country>` and the leaf type below. A version extends the version before by a region.
 [[source]]
-id = "forest-reference/ch"
+id = "forest"
 kind = "data"
-group = "TrailView forest"
 used_by = ["trailview"]
-use = "Canopy height, cover, stems and leaf type in Switzerland"
+use = "Forest: canopy height, cover, stems and leaf type, where a country has a canopy model"
 licence = "LicenseRef-opendata-swiss-BY AND LicenseRef-Copernicus-CLMS"
 fetch = { kind = "prepared" }
 hosts = ["data.geo.admin.ch", "image.discomap.eea.europa.eu"]
-extent = [5.9, 45.8, 10.5, 47.9]
+extent = [-180.0, -90.0, 180.0, 90.0]
 version = "date"
 refresh = 365
 redistribute = true
 
-# Only the producer of `forest-reference/ch` reads the next two: the rasters of the first through
-# HTTP range requests, the second through the image export of its service.
+# Only the producer of `forest` reads the next two: the rasters of the first through HTTP range
+# requests, the second through the image export of its service.
 [[source]]
-id = "vhm-lidar-ch"
+id = "canopy-ch"
 kind = "data"
-group = "TrailView forest"
+group = "Land cover and imagery"
 used_by = ["trailview"]
-use = "Vegetation height in Switzerland, for the forest reference"
+use = "Vegetation height in Switzerland, for the forest"
 licence = "LicenseRef-opendata-swiss-BY"
 licence_url = "https://opendata.swiss/en/terms-of-use/#terms_by"
 attribution = "Vegetation Height Model LiDAR NFI © FOEN/WSL"
@@ -543,9 +542,9 @@ redistribute = true
 [[source]]
 id = "hrl-dominant-leaf-type"
 kind = "data"
-group = "TrailView forest"
+group = "Land cover and imagery"
 used_by = ["trailview"]
-use = "Broadleaf or coniferous forest, for the forest reference"
+use = "Broadleaf or coniferous forest, for the forest"
 licence = "LicenseRef-Copernicus-CLMS"
 licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "Dominant Leaf Type 2018 © European Union, Copernicus Land Monitoring Service, European Environment Agency (EEA)"
@@ -562,7 +561,7 @@ redistribute = true
 [[source]]
 id = "wikidata"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Wikimedia"
 used_by = ["device", "search"]
 use = "Facts of landmarks and peaks: names, kinds and links"
 licence = "CC0-1.0"
@@ -577,7 +576,7 @@ redistribute = true
 [[source]]
 id = "wikipedia"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Wikimedia"
 used_by = ["device", "search"]
 use = "Article text of landmarks and peaks"
 licence = "CC-BY-SA-4.0"
@@ -592,7 +591,7 @@ redistribute = true
 [[source]]
 id = "commons"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Wikimedia"
 used_by = ["device", "search"]
 use = "Photos of landmarks and peaks"
 licence = "LicenseRef-Commons-per-file"
@@ -607,10 +606,25 @@ redistribute = true
 
 # The Wikimedia facts, article text and photos of the OSM subjects, prepared from the dumps in the
 # archive cache on the machine that prepares, and from Commons.
+# The national models of each tile, merged best first: `obc data source prepare terrain` adds the
+# tiles of an area to the version before. The index of each version names the model and the credit
+# of each tile.
+[[source]]
+id = "terrain"
+kind = "data"
+used_by = ["device", "planner", "trailview"]
+use = "Terrain from the national LiDAR models, where they have one"
+licence = "LicenseRef-national-terrain-models-per-tile"
+attribution = "national terrain models; the index of each version credits each tile"
+fetch = { kind = "prepared" }
+extent = [-180.0, -90.0, 180.0, 90.0]
+version = "date"
+refresh = 365
+redistribute = true
+
 [[source]]
 id = "wiki"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
 used_by = ["device", "search"]
 use = "Prepared Wikimedia facts, text and photos of the OSM subjects"
 licence = "LicenseRef-Wikimedia-per-record"
@@ -629,7 +643,7 @@ publish_text = true
 [[source]]
 id = "era5-land"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Climate and snow"
 used_by = ["planner"]
 use = "Climate layer: rain, temperature and wind of ten years"
 licence = "CC-BY-4.0"
@@ -639,12 +653,12 @@ hosts = ["confluence.ecmwf.int"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.cdsapirc" }
+credential = { file = "~/.cdsapirc", register = "https://cds.climate.copernicus.eu", hint = "Make a free account, accept the ERA5-Land licence on the dataset page, then copy the personal access token of your profile." }
 
 [[source]]
 id = "modis-snow"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Climate and snow"
 used_by = ["planner"]
 use = "Snow layer outside HR-WSI: daily snow cover at 500 m"
 licence = "LicenseRef-NASA-EOSDIS"
@@ -659,7 +673,7 @@ redistribute = true
 [[source]]
 id = "hr-wsi"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Climate and snow"
 used_by = ["planner"]
 use = "Snow layer in Europe: Sentinel-2 snow phenology at 20 m"
 licence = "LicenseRef-Copernicus-CLMS"
@@ -673,12 +687,12 @@ hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
+credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
 [[source]]
 id = "hansen-gfc"
 kind = "data"
-group = "Elevation, Wikimedia, climate and snow"
+group = "Climate and snow"
 used_by = ["planner"]
 use = "Tree cover of 2000, which corrects the MODIS snow under trees"
 licence = "CC-BY-4.0"
@@ -694,7 +708,7 @@ redistribute = true
 [[source]]
 id = "esa-worldcover"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Land cover at 10 m, the base of the TrailView material"
 licence = "CC-BY-4.0"
@@ -709,7 +723,7 @@ redistribute = true
 [[source]]
 id = "esa-worldcover-grid"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "The list of WorldCover tiles: open sea has none"
 licence = "CC-BY-4.0"
@@ -724,7 +738,7 @@ redistribute = true
 [[source]]
 id = "corine-land-cover"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Land cover classes in Europe for the TrailView material"
 licence = "LicenseRef-Copernicus-CLMS"
@@ -742,7 +756,7 @@ redistribute = true
 [[source]]
 id = "sentinel-2-mosaics"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Quarterly satellite colour for the TrailView colour and material"
 licence = "LicenseRef-Copernicus-Sentinel"
@@ -754,12 +768,12 @@ hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
+credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
 [[source]]
 id = "egdi-geology"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Rock of Europe at 1:1 000 000 for the TrailView lithology"
 licence = "CC-BY-4.0"
@@ -776,7 +790,7 @@ redistribute = true
 [[source]]
 id = "igme5000"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Rock of Europe and the land around it at 1:5 000 000, where EGDI names none"
 licence = "LicenseRef-GeoNutzV"
@@ -793,7 +807,7 @@ redistribute = true
 [[source]]
 id = "resolve-ecoregions"
 kind = "data"
-group = "TrailView ground and colour"
+group = "Land cover and imagery"
 used_by = ["trailview"]
 use = "Ecoregions of the world for the TrailView regions"
 licence = "CC-BY-4.0"
@@ -808,7 +822,7 @@ redistribute = true
 [[source]]
 id = "natural-earth"
 kind = "data"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner", "trailview"]
 use = "Borders, coasts and places at low zoom; the borders of the TrailView regions"
 licence = "LicenseRef-public-domain"
@@ -822,7 +836,7 @@ redistribute = true
 [[source]]
 id = "daylight-landcover"
 kind = "data"
-group = "Basemap, land, assets and tools"
+group = "Land cover and imagery"
 used_by = ["planner"]
 use = "Land cover of the basemap"
 licence = "CC-BY-4.0"
@@ -835,7 +849,7 @@ redistribute = true
 [[source]]
 id = "qrank"
 kind = "data"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "Rank of places by Wikidata page views, for the basemap labels"
 licence = "CC0-1.0"
@@ -849,7 +863,7 @@ redistribute = true
 [[source]]
 id = "pgf-encoding"
 kind = "data"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "Glyph encoding of complex scripts for the basemap labels"
 licence = "CC0-1.0"
@@ -865,7 +879,7 @@ redistribute = true
 [[source]]
 id = "protomaps-assets"
 kind = "asset"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "Fonts and sprites of the basemap"
 licence = "OFL-1.1 AND MIT"
@@ -881,7 +895,7 @@ redistribute = true
 [[source]]
 id = "tangrams-icons"
 kind = "asset"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "The MIT notice of the basemap sprites"
 licence = "MIT"
@@ -896,7 +910,7 @@ redistribute = true
 [[source]]
 id = "query-model"
 kind = "asset"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["search"]
 use = "The model that parses a search query"
 licence = "MIT"
@@ -912,7 +926,7 @@ redistribute = true
 [[source]]
 id = "planetiler"
 kind = "tool"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "The tile engine of the basemap build"
 licence = "Apache-2.0"
@@ -924,7 +938,7 @@ redistribute = false
 [[source]]
 id = "protomaps-basemaps"
 kind = "tool"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["planner"]
 use = "The basemap build: the Protomaps map of OSM"
 licence = "BSD-3-Clause"
@@ -938,7 +952,7 @@ redistribute = false
 [[source]]
 id = "nominatim-country-data"
 kind = "data"
-group = "Basemap, land, assets and tools"
+group = "Map styles and tools"
 used_by = ["search"]
 use = "Country names, postcode formats and address levels for the search"
 licence = "ODbL-1.0 AND GPL-2.0-only AND GPL-3.0-or-later"

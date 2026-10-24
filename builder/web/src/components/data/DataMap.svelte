@@ -1,7 +1,13 @@
 <script lang="ts">
+    import L from "leaflet";
     import "leaflet/dist/leaflet.css";
     import { onMount } from "svelte";
     import { CoverageMapView, type DegPoint } from "../../lib/map/coverageMap";
+
+    // The operator picks areas that no release covers yet, so the map is the OpenStreetMap tiles of
+    // the whole world, not the basemap of a release.
+    const background = (map: L.Map) =>
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
 
     // Squares and an outline on the basemap. With `picking`, a click picks the smallest of `regions`
     // that holds the point; the regions are not drawn. With `drawing`, a drag draws a box.
@@ -38,7 +44,7 @@
             lassoDragLabel: () => "",
             onDrawEnd: () => drawing && view?.armBoxDraw(),
             onWarningClick: () => {},
-        });
+        }, background);
         return () => view?.destroy();
     });
     $effect(() => view?.setCells(cells));

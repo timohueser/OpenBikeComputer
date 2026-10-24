@@ -10,7 +10,16 @@
         ondone,
         query,
         disabled = false,
-    }: { label: string; ondone?: (output: T) => void; disabled?: boolean } & (
+        primary = false,
+        folded = false,
+    }: {
+        label: string;
+        ondone?: (output: T) => void;
+        disabled?: boolean;
+        primary?: boolean;
+        /** The command shows under "In a terminal" instead of beside the button. */
+        folded?: boolean;
+    } & (
         | { args: readonly string[]; query?: never }
         /** The Action runs the args of the query and gives it the answer; the view of the query
          *  shows the error. */
@@ -34,8 +43,12 @@
 </script>
 
 <div class="action">
-    <button type="button" disabled={running || disabled} aria-busy={running} onclick={run}>{label}</button>
-    <code>{command(argv)}</code>
+    <button type="button" class:primary disabled={running || disabled} aria-busy={running} onclick={run}>{label}</button>
+    {#if folded}
+        <details class="terminal"><summary>In a terminal</summary><code>{command(argv)}</code></details>
+    {:else}
+        <code>{command(argv)}</code>
+    {/if}
     {#if error}<Failure {error} />{/if}
 </div>
 
@@ -53,6 +66,14 @@
         background: var(--panel);
         border: 1px solid var(--line-strong);
         border-radius: 6px;
+    }
+    .terminal summary {
+        color: var(--ink-soft);
+        cursor: pointer;
+    }
+    .terminal code {
+        display: block;
+        margin-top: 8px;
     }
     .action > :global(.failure) {
         flex-basis: 100%;

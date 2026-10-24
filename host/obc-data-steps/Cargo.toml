@@ -39,13 +39,15 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 toml = "0.9"
 # The server of `obc data ui`.
 axum = "0.8"
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time", "io-util"] }
 
 [dev-dependencies]
 # A stand-in for the Nominatim archive in the planner build test.
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
+# The empty `wiki` shard of the planner build test.
+zstd = "0.13"
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }
 # The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.

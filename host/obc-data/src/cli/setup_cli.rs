@@ -1,16 +1,19 @@
 //! `obc data setup`: what this machine can do, the tools and credentials that it has, and the
 //! store. A missing tool or credential is part of the output, not an error.
+//! `obc data source credential ID`: set the credential of a source from standard input.
 
 use std::ffi::OsStr;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{print_json, print_table, Code, Error};
+use super::{find, print_json, print_table, registry, Code, Error};
+use crate::credentials;
 use crate::r2::{Bucket, Credentials};
-use crate::sources::Registry;
+use crate::sources::{Credential, Registry, Source};
 use crate::store::Store;
 
 /// What `setup` writes.
@@ -69,6 +72,33 @@ pub struct CredentialState {
     pub name: String,
     pub needed_for: String,
     pub state: Readiness,
+    /// The first source that needs it: `obc data source credential SOURCE` sets it for each
+    /// source that needs it. `null` for the R2 key, which the page does not set.
+    pub source: Option<String>,
+    /// The values that the command reads, one per line, in this order.
+    pub fields: Vec<String>,
+    /// The `use` of each source that it serves.
+    pub uses: Vec<String>,
+    /// Where a person gets it.
+    pub register: Option<String>,
+    /// What to copy there.
+    pub hint: Option<String>,
+}
+
+/// What `source credential` wrote. It never holds a value.
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSet {
+    /// The file that holds the values now.
+    pub file: PathBuf,
+    /// The names of the values that it wrote.
+    pub names: Vec<String>,
+    /// The sources that the credential serves.
+    pub sources: Vec<String>,
+    /// The names that the environment of the command sets, for example from `tools/obc.local`:
+    /// the environment wins over the file, so the new value serves only once they are removed
+    /// there.
+    pub overridden: Vec<String>,
 }
 
 /// A tool: its name, what needs it, the command that gives its version, the lowest major version
@@ -173,21 +203,30 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         name: "R2 key (OBC_R2_*)".into(),
         needed_for: "publish to prod".into(),
         state: if r2 { Readiness::Ready } else { Readiness::Missing },
+        source: None,
+        fields: Vec::new(),
+        uses: Vec::new(),
+        register: None,
+        hint: None,
     }];
     let registry = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?;
-    let mut accounts: Vec<(String, Vec<&str>, bool)> = Vec::new();
+    let mut accounts: Vec<(&Credential, Vec<&Source>)> = Vec::new();
     for source in &registry.sources {
         let Some(credential) = &source.credential else { continue };
-        let name = credential.describe();
-        match accounts.iter_mut().find(|(known, ..)| *known == name) {
-            Some((_, sources, _)) => sources.push(&source.id),
-            None => accounts.push((name, vec![&source.id], credential.present())),
+        match accounts.iter_mut().find(|(known, _)| known.describe() == credential.describe()) {
+            Some((_, sources)) => sources.push(source),
+            None => accounts.push((credential, vec![source])),
         }
     }
-    credentials.extend(accounts.iter().map(|(name, sources, present)| CredentialState {
-        name: name.clone(),
-        needed_for: format!("fetch {}", sources.join(", ")),
-        state: if *present { Readiness::Ready } else { Readiness::Optional },
+    credentials.extend(accounts.iter().map(|(credential, sources)| CredentialState {
+        name: credential.describe(),
+        needed_for: format!("fetch {}", sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>().join(", ")),
+        state: if credential.present() { Readiness::Ready } else { Readiness::Optional },
+        source: Some(sources[0].id.clone()),
+        fields: credentials::place(credential).map(|place| place.names).unwrap_or_default(),
+        uses: sources.iter().filter_map(|source| source.r#use.clone()).collect(),
+        register: credential.register.clone(),
+        hint: credential.hint.clone(),
     }));
     let missing = |names: &[&str]| -> Vec<String> {
         tools
@@ -221,7 +260,7 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
             false => format!("Needs {}. Ask the owner for the key, then put it in tools/obc.local.", list(&publish)),
         },
     };
-    let unset = accounts.iter().filter(|(.., present)| !present).count();
+    let unset = accounts.iter().filter(|(credential, _)| !credential.present()).count();
     let fetch = Job {
         name: "Fetch sources that need an account".into(),
         state: if unset == 0 { Readiness::Ready } else { Readiness::Optional },
@@ -270,6 +309,51 @@ pub fn setup(root: &Path, json: bool) -> Result<(), Error> {
         .free_bytes
         .map_or_else(|| "free space unknown".into(), |free| format!("{} free", super::bytes(free)));
     println!("STORE {} · {} used · {free}", setup.store.path.display(), super::bytes(setup.store.used_bytes));
+    Ok(())
+}
+
+/// Read the values of the credential of source `id` on standard input, one line each, and write
+/// them where [`credentials::place`] says.
+pub fn credential(root: &Path, id: &str, json: bool) -> Result<(), Error> {
+    let registry = registry(root)?;
+    let credential = find(&registry, id)?
+        .credential
+        .as_ref()
+        .ok_or_else(|| Code::Usage.error(format!("source `{id}` needs no credential")))?;
+    let place = credentials::place(credential).ok_or_else(|| Code::InvalidData.error("no writer knows the file"))?;
+    let home = std::env::var_os("HOME").ok_or_else(|| Code::Failed.error("HOME is not set"))?;
+    let home = Path::new(&home);
+    let terminal = std::io::stdin().is_terminal();
+    let mut values = Vec::new();
+    for name in &place.names {
+        if terminal {
+            eprint!("{name}: ");
+        }
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+        values.push(line.trim().to_string());
+    }
+    let before = credentials::env_file(home);
+    let file = credentials::write(home, &place, &values).map_err(|e| Code::Usage.error(e))?;
+    let overridden = match credential.file {
+        Some(_) => Vec::new(),
+        None => place
+            .names
+            .iter()
+            .filter(|name| std::env::var(name).is_ok_and(|now| !now.is_empty() && before.get(*name) != Some(&now)))
+            .cloned()
+            .collect(),
+    };
+    let shares = |source: &&Source| source.credential.as_ref().is_some_and(|c| c.describe() == credential.describe());
+    let sources = registry.sources.iter().filter(shares);
+    let set = CredentialSet { file, names: place.names, sources: sources.map(|s| s.id.clone()).collect(), overridden };
+    if json {
+        return print_json(&set);
+    }
+    println!("Wrote {} to {} for {}.", list(&set.names), set.file.display(), list(&set.sources));
+    if !set.overridden.is_empty() {
+        eprintln!("The environment sets {}, and it wins: remove it from tools/obc.local.", list(&set.overridden));
+    }
     Ok(())
 }
 

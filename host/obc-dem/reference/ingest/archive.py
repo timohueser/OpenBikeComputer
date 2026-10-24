@@ -110,6 +110,21 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
     return np.where(existing != NODATA, existing, incoming)
 
 
+def fold_tiles(existing, incoming, held: set[str], key: str, nodata: int):
+    """The tile of a version of `terrain`: the tile that `key` pooled, folded into the tile of the
+    version before, whose pixels come from the sources `held`.
+
+    `key` keeps the pixels where it has a height when it ranks better than every other source in
+    `held`, also over an older survey of its own; else it only fills the gaps. A pixel does not
+    record its source, so a tile that a better and a worse source share keeps the better one's
+    pixels where both have one, whichever came first.
+    """
+
+    if all(priority_rank(key) < priority_rank(other) for other in held - {key}):
+        return np.where(incoming != nodata, incoming, existing)
+    return np.where(existing != nodata, existing, incoming)
+
+
 def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]], keep=None):
     """Pool one raster onto the lattice and fold it into the archive's tiles.
 

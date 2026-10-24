@@ -1,4 +1,4 @@
-"""The tiles of the prepared source `forest-reference/<key>`, as specs/obc-data.md defines them: per
+"""The tiles of the prepared source `forest`, as specs/obc-data.md defines them: per
 cell of a zoom 12 tile at 256 px, the canopy height, the cover, the stems per hectare and the conifer
 share.
 
@@ -417,7 +417,7 @@ TILES = {"ch": tile_ch}
 
 
 def command_fetch(args):
-    """One tile of `forest-reference/<key>` into `--out`: `12/<x>/<y>.tif`, then
+    """One tile of `forest` from the canopy model `<key>` into `--out`: `12/<x>/<y>.tif`, then
     `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where the source
     has no pixel in the tile."""
     z, x, y = map(int, args.tile.split("-"))

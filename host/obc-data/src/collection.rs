@@ -119,7 +119,7 @@ fn pass(
             && !keep.contains(&listed.key)
             && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
     });
-    let obsolete = crate::prepared::obsolete(&listed, &kept);
+    let obsolete = crate::prepared::obsolete(&listed, &kept, &crate::prepared::reused(target, &listed)?);
     let mut unlisted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut versions = BTreeMap::new();
     for version in &obsolete {

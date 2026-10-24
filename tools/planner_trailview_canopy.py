@@ -1,8 +1,8 @@
 """The TrailView canopy tiles of a region: `trailview-canopy.pmtiles`, as `specs/trailview-tiles.md`
 defines it.
 
-The `obc data` step `planner/trailview-canopy` reads the zoom 12 tiles of the `forest-reference/<key>`
-versions in its snapshots, best first: a cell takes the first reference that knows it."""
+The `obc data` step `planner/trailview-canopy` reads the zoom 12 tiles of the prepared source
+`forest` in its snapshot."""
 
 import argparse
 import io
@@ -49,38 +49,25 @@ def webp(code):
     return out.getvalue()
 
 
-def merged(paths):
-    """The bands of one tile from the reference tiles `paths`, best first."""
+def bands(path):
+    """The bands of the forest tile `path`."""
     import rasterio
 
-    bands = None
-    for path in paths:
-        with rasterio.open(path) as tile:
-            if tile.count != 4 or tile.shape != (SIZE, SIZE):
-                raise ValueError(f"{path}: a reference tile has 4 bands of {SIZE} × {SIZE}")
-            values = tile.read()
-        if bands is None:
-            bands = values
-        else:
-            unknown = bands[0] == NODATA
-            bands[:, unknown] = values[:, unknown]
-    return bands
+    with rasterio.open(path) as tile:
+        if tile.count != 4 or tile.shape != (SIZE, SIZE):
+            raise ValueError(f"{path}: a forest tile has 4 bands of {SIZE} × {SIZE}")
+        return tile.read()
 
 
-def bake(references, bounds, attribution, output):
-    """Write `trailview-canopy.pmtiles` in the folder `output` from `references`, the reference tiles
-    of each source ({x, y: path}) best first, and return its tile bytes. A tile that no reference
-    has stays out."""
+def bake(found, bounds, attribution, output):
+    """Write `trailview-canopy.pmtiles` in the folder `output` from `found`, the forest tiles
+    ({x, y: path}), and return its tile bytes. A tile that the forest lacks stays out."""
     from pmtiles.tile import TileType
 
-    found = {}
-    for reference in references:
-        for tile, path in reference.items():
-            found.setdefault(tile, []).append(path)
     if not found:
-        raise ValueError("No forest reference has a tile in the region: the canopy layer has no tile")
+        raise ValueError("The forest has no tile in the region: the canopy layer has no tile")
     sizes = tiles.pyramid(
-        bounds, [ZOOM], lambda z, x, y: encode(merged(found[x, y])) if (x, y) in found else None, None,
+        bounds, [ZOOM], lambda z, x, y: encode(bands(found[x, y])) if (x, y) in found else None, None,
         lambda code: {"trailview-canopy": (TileType.WEBP, webp(code))}, output,
         {"canopy_format": FORMAT, "attribution": attribution})
     return sizes["trailview-canopy"][ZOOM]
@@ -89,14 +76,11 @@ def bake(references, bounds, attribution, output):
 def step():
     request = step_request.read()
     options = request["options"]
-    references = []
-    for source in options["references"]:
-        reference = {}
-        for name, path in step_request.files(request, source).items():
-            x, y = map(int, re.fullmatch(r"12/(\d+)/(\d+)\.tif", name).groups())
-            reference[x, y] = path
-        references.append(reference)
-    size = bake(references, options["bounds"], options["attribution"], Path(request["output"]))
+    found = {}
+    for name, path in step_request.files(request, "forest").items():
+        x, y = map(int, re.fullmatch(r"12/(\d+)/(\d+)\.tif", name).groups())
+        found[x, y] = path
+    size = bake(found, options["bounds"], options["attribution"], Path(request["output"]))
     step_request.metrics(request, {"bytes": size, "bytes_per_km2": round(size / tiles.km2(options["bounds"]), 1)})
 
 

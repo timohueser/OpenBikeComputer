@@ -1,5 +1,6 @@
-// The page acts only through `POST /api/cli {"args": [...]}`. The server runs `obc data --json ARGS`
-// and answers every request, a refusal too, with `{exit, output}`: `output` is the JSON that the
+// The page acts only through `POST /api/cli {"args": [...]}`, and sets a credential through
+// `POST /api/credential {"source", "values"}`. The server runs `obc data --json ARGS` and answers
+// every request, a refusal too, with `{exit, output}`: `output` is the JSON that the
 // command wrote, and a failed command writes `{"error": {code, message, fix, run?}}`.
 
 /** Why a command failed, and what to do about it: the CLI's `--json` error. */
@@ -30,14 +31,24 @@ function unreachable(message: string): CliResult<never> {
     };
 }
 
-export async function runCli<T>(args: readonly string[]): Promise<CliResult<T>> {
+export function runCli<T>(args: readonly string[]): Promise<CliResult<T>> {
     if (args.includes("--json")) throw new Error("the server adds --json");
+    return post("/api/cli", { args }, args);
+}
+
+/** Sets the credential of `source`. The server gives `values` to `obc data source credential SOURCE`
+ *  on its standard input, so no value is in argv, and the answer never holds one. */
+export function setCredential<T>(source: string, values: readonly string[]): Promise<CliResult<T>> {
+    return post("/api/credential", { source, values }, ["source", "credential", source]);
+}
+
+async function post<T>(route: string, body: object, args: readonly string[]): Promise<CliResult<T>> {
     let response: Response;
     try {
-        response = await fetch("/api/cli", {
+        response = await fetch(route, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ args }),
+            body: JSON.stringify(body),
             signal: AbortSignal.timeout(ANSWER_MS),
         });
     } catch (error) {
@@ -47,14 +58,14 @@ export async function runCli<T>(args: readonly string[]): Promise<CliResult<T>> 
                 : "the page cannot reach `obc data ui`",
         );
     }
-    const body = (await response.json().catch(() => null)) as { exit?: unknown; output?: { error?: CliError } } | null;
-    if (typeof body?.exit !== "number") return unreachable(`\`obc data ui\` answered HTTP ${response.status} with no result`);
-    if (body.exit === 0) return { ok: true, output: body.output as T };
+    const answer = (await response.json().catch(() => null)) as { exit?: unknown; output?: { error?: CliError } } | null;
+    if (typeof answer?.exit !== "number") return unreachable(`\`obc data ui\` answered HTTP ${response.status} with no result`);
+    if (answer.exit === 0) return { ok: true, output: answer.output as T };
     return {
         ok: false,
-        error: body.output?.error ?? {
+        error: answer.output?.error ?? {
             code: "failed",
-            message: `\`${command(args)}\` stopped with exit status ${body.exit} and wrote no error`,
+            message: `\`${command(args)}\` stopped with exit status ${answer.exit} and wrote no error`,
             fix: "Run the command in a terminal to see its output.",
         },
     };

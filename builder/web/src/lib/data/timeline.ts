@@ -21,13 +21,25 @@ export interface Timeline {
 
 const kind = (name: string): Bar["kind"] => (name.startsWith("device/") ? "device" : name.startsWith("planner/") ? "planner" : "other");
 
+/** A fetch as a person tells it apart: its source and what it asked for, such as
+ *  `geofabrik-poly liechtenstein` or `copernicus-glo-30 12 tiles`. */
+function fetchName(source: string, params: [string, string][]): string {
+    const names = [...new Set(params.map(([name]) => name))];
+    const asked = names.map((name) => {
+        // An area by its last part: `europe/liechtenstein` is `liechtenstein`.
+        const values = params.filter(([at]) => at === name).map(([, value]) => (name === "area" ? value.split("/").at(-1)! : value));
+        return values.length === 1 ? values[0] : `${values.length} ${name}s`;
+    });
+    return [source, ...asked].join(" ");
+}
+
 /** The fetches and steps that `view` ran, each in the first row that is free when it starts. One that
  *  did not end runs until `now` while the run runs; else it ended with the run, at the last time
  *  that the run recorded. Unchanged and reused steps did no work in this run. */
 export function timeline(view: RunView, now: number): Timeline {
     const live = view.state === "running" || view.state === "starting";
     const items = [
-        ...view.fetches.map((fetch) => ({ ...fetch, name: `${fetch.source}@${fetch.version}`, kind: "fetch" as const })),
+        ...view.fetches.map((fetch) => ({ ...fetch, name: fetchName(fetch.source, fetch.params), kind: "fetch" as const })),
         ...view.steps.filter((step) => !step.reused && !step.unchanged).map((step) => ({ ...step, name: step.step, kind: kind(step.step) })),
     ]
         .flatMap((item) => (item.start_ms == null ? [] : [{ ...item, start: item.start_ms, stop: item.end_ms ?? null }]))

@@ -88,7 +88,6 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         resolved: String,
-        acquisition: Option<serde_json::Value>,
         /// The size of the files that the fetch gave, downloaded or found in the store.
         bytes: u64,
         wall_ms: u64,
@@ -98,7 +97,6 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         error: String,
-        acquisition: Option<serde_json::Value>,
     },
     StepStarted {
         step: String,
@@ -267,10 +265,16 @@ impl Run {
         let line = self.apply(event);
         self.line(&line)?;
         self.unsaved = true;
-        // A fetch can take long: its status shows that it runs.
+        // A fetch can take long: its status shows that it runs, and that it ended, also when no
+        // event follows for long, such as the tiles of a prepare.
         let now = matches!(
             event,
-            Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. } | Event::Waiting { .. }
+            Event::Phase { .. }
+                | Event::Switched { .. }
+                | Event::FetchStarted { .. }
+                | Event::FetchFinished { .. }
+                | Event::FetchFailed { .. }
+                | Event::Waiting { .. }
         );
         if now || self.saved.elapsed() >= SAVE {
             self.save()?;
@@ -333,7 +337,7 @@ impl Run {
                 status.fetch(source, version, params).start_ms = at;
                 line
             }
-            Event::FetchFinished { source, version, params, resolved, acquisition, bytes: size, wall_ms } => {
+            Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms } => {
                 let line = format!(
                     "{} fetched {resolved} in {}, {}",
                     fetched(&source, &version, &params),
@@ -343,13 +347,13 @@ impl Run {
                 status.bytes_fetched += size;
                 let fetch = status.fetch(source, version, params);
                 (fetch.bytes, fetch.wall_ms, fetch.resolved) = (Some(size), Some(wall_ms), Some(resolved));
-                (fetch.acquisition, fetch.end_ms) = (acquisition, at);
+                fetch.end_ms = at;
                 line
             }
-            Event::FetchFailed { source, version, params, error, acquisition } => {
+            Event::FetchFailed { source, version, params, error } => {
                 let line = format!("{} fetch failed: {error}", fetched(&source, &version, &params));
                 let fetch = status.fetch(source, version, params);
-                (fetch.error, fetch.acquisition, fetch.end_ms) = (Some(error), acquisition, at);
+                (fetch.error, fetch.end_ms) = (Some(error), at);
                 line
             }
             Event::StepStarted { step } => {
@@ -390,8 +394,11 @@ impl Run {
                 let run_step = status.step(&step);
                 run_step.layer = receipt.layer.clone();
                 (run_step.reused, run_step.unchanged) = (reused, unchanged);
-                (run_step.wall_ms, run_step.bytes_out) =
-                    if unchanged { (None, None) } else { (Some(receipt.wall_ms), Some(receipt.bytes_out)) };
+                (run_step.wall_ms, run_step.cpu_ms, run_step.bytes_out) = if unchanged {
+                    (None, None, None)
+                } else {
+                    (Some(receipt.wall_ms), receipt.cpu_ms, Some(receipt.bytes_out))
+                };
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
                 run_step.end_ms = at;
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
@@ -442,6 +449,22 @@ impl Run {
             layers[at].total += 1;
             let leaf = super::leaf(&step.name).filter(|_| step.layer.shape == Shape::Tiled).map(str::to_string);
             self.planned.insert(step.name.clone(), (at, leaf));
+        }
+        self.save()
+    }
+
+    /// Count `steps` as the steps of `layer`, for a job that makes them itself, such as the tiles of
+    /// a prepare: the status shows their progress as it shows that of the steps of a plan.
+    pub fn plan_work(&mut self, layer: &str, steps: &[String]) -> Result<(), String> {
+        let layers = &mut self.status.layers;
+        let at = layers.iter().position(|progress| progress.layer == layer).unwrap_or_else(|| {
+            layers.push(LayerProgress { layer: layer.into(), ..LayerProgress::default() });
+            layers.len() - 1
+        });
+        for step in steps {
+            if self.planned.insert(step.clone(), (at, None)).is_none() {
+                self.status.layers[at].total += 1;
+            }
         }
         self.save()
     }
@@ -727,8 +750,7 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        let mut acquisition = None;
-        match fetch::fetch_recorded(root, store, http, request, names, Some(&mut acquisition)) {
+        match fetch::fetch_recorded(root, store, http, request, names) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -737,7 +759,6 @@ impl Run {
                     version,
                     params,
                     resolved: snapshot.version.clone(),
-                    acquisition,
                     bytes,
                     wall_ms,
                 })?;
@@ -745,7 +766,7 @@ impl Run {
             }
             Err(error) => {
                 let mut failed = format!("fetch {source}@{version}: {error}");
-                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error, acquisition }) {
+                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error }) {
                     failed += &format!("; the run could not record the failure: {journal}");
                 }
                 Err(failed)
@@ -992,8 +1013,6 @@ pub struct RunFetch {
     pub source: String,
     pub version: String,
     pub resolved: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
     /// When it started and when it ended, in milliseconds after the start of the run; `null` before.
     pub start_ms: Option<u64>,
@@ -1019,6 +1038,8 @@ pub struct RunStep {
     pub end_ms: Option<u64>,
     /// `null` while it runs, when it failed, and when it is unchanged.
     pub wall_ms: Option<u64>,
+    /// User plus system CPU time; `null` as `wall_ms` is, and when the system does not report it.
+    pub cpu_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
     pub bytes_out: Option<u64>,
     /// The inputs that it read.

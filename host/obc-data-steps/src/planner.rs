@@ -14,7 +14,7 @@ use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
-use obc_data::regions::{geofabrik, Regions};
+use obc_data::regions::{geofabrik, Bbox, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
@@ -26,7 +26,6 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::device::{invalid, text, Models, TILE_LIST};
-use crate::forest_reference;
 use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 use crate::{functions, python};
@@ -164,6 +163,9 @@ impl Product for Planner {
 
     fn optional(&self) -> &'static [&'static str] {
         &[
+            "map",
+            "routing",
+            "search",
             "climate",
             "snow",
             "sun",
@@ -174,6 +176,11 @@ impl Product for Planner {
             "trailview-snow",
             "trailview-canopy",
         ]
+    }
+
+    /// The planner bakes while one of its parts is on.
+    fn on(&self, settings: &obc_data::settings::Settings) -> bool {
+        settings.layers.iter().any(|layer| self.optional().contains(&layer.as_str()))
     }
 
     fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
@@ -459,7 +466,7 @@ impl Planner {
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
-            steps.extend(trailview_canopy(inputs, store, bounds, &mut wanted)?);
+            steps.extend(trailview_canopy(inputs, store, (bounds, &countries), &mut wanted)?);
         }
         let maps = [
             "basemap",
@@ -554,6 +561,7 @@ impl Planner {
             run: Run::Rust(&functions::PLANNER_CATALOG),
             client: Client::All,
         });
+        prune(&mut steps, &on);
         match wanted.is_empty() {
             true => {
                 let mut listed: Steps = steps.into();
@@ -563,6 +571,51 @@ impl Planner {
             }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
+    }
+}
+
+/// The steps that make each core part of the planner. The other parts are optional layers whose
+/// steps are listed only while they are on.
+const PARTS: [(&str, &[&str]); 3] = [
+    ("map", &["planner/basemap/grid", "planner/places/grid", "planner/assets/grid", "planner/terrain/grid"]),
+    ("routing", &["planner/routing/grid", "planner/overlays/grid"]),
+    ("search", &["planner/model/grid", "planner/search/pois/grid", "planner/search/addresses/grid"]),
+];
+
+/// The steps that gather what the other steps make. They read only the steps that stay.
+const GATHERERS: [&str; 3] = ["planner/fonts/grid", "planner/index", catalog::STEP];
+
+/// Remove the steps of each core part that is off, and then each step that no step reads any more.
+/// A step that a part that is on reads stays, such as the terrain that the sun reads or the POIs
+/// that the places of the map read.
+fn prune(steps: &mut Vec<Step>, on: &dyn Fn(&str) -> bool) {
+    let reads = |steps: &[Step]| -> HashSet<String> {
+        let names = steps.iter().flat_map(|step| &step.inputs);
+        names.filter_map(|input| if let Input::Step { name, .. } = input { Some(name.clone()) } else { None }).collect()
+    };
+    let gatherer = |step: &Step| GATHERERS.contains(&step.name.as_str());
+    let mut gone: HashSet<String> = PARTS
+        .iter()
+        .filter(|(part, _)| !on(part))
+        .flat_map(|(_, roots)| roots.iter().map(|root| root.to_string()))
+        .collect();
+    // Only a step that lost its readers goes, never one that no step read before.
+    let mut collectable = reads(steps);
+    collectable.extend(gone.iter().cloned());
+    while !gone.is_empty() {
+        for step in steps.iter_mut().filter(|step| gatherer(step)) {
+            step.inputs.retain(|input| !matches!(input, Input::Step { name, .. } if gone.contains(name)));
+        }
+        let read = reads(steps);
+        steps.retain(|step| !gone.contains(&step.name) || read.contains(&step.name));
+        let read = reads(steps);
+        let unread = |step: &Step| collectable.contains(&step.name) && !read.contains(&step.name);
+        let empty = |step: &Step| gatherer(step) && step.inputs.is_empty();
+        gone = steps
+            .iter()
+            .filter(|step| step.name != catalog::STEP && (unread(step) || empty(step)))
+            .map(|step| step.name.clone())
+            .collect();
     }
 }
 
@@ -602,8 +655,8 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// The mean archive of the national models whose tiles meet `bounds`, merged best first into one
-/// archive: the step `planner/reference`. `None` when no model has a tile there.
+/// The mean tiles of `terrain` that meet `bounds`, as one archive: the step `planner/reference`.
+/// `None` when the version has no tile there.
 fn reference(
     inputs: &Inputs,
     store: &Store,
@@ -615,8 +668,9 @@ fn reference(
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = window.tiles().map(tile).collect();
     // Without a layer, the read writes no note and reads no polygon.
+    // Without a layer, the read writes no note and reads no polygon.
     let models = Models { tiles: &tiles, pool: "mean/", layer: None };
-    let Some((reads, models)) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
+    let Some(read) = models.read(inputs, store, &mut BTreeMap::new(), wanted, &mut Vec::new())? else {
         return Ok(None);
     };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
@@ -625,8 +679,8 @@ fn reference(
         ..python(
             &PLANNER_TERRAIN,
             "planner/reference",
-            reads,
-            json!({"models": models, "tiles": tiles, "pool": "mean"}),
+            vec![read],
+            json!({"source": crate::terrain_reference::ID, "tiles": tiles, "pool": "mean"}),
             ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
             &["reference"],
         )
@@ -684,73 +738,71 @@ fn snow(
     ))
 }
 
-/// The canopy layer of `bounds`: the zoom 12 tiles of each `forest-reference/<key>` that meets
-/// `bounds`, in the order of `data/sources.toml`, which is best first, with the credits of the
-/// sources that their manifests name. None while the store lacks a manifest; then `wanted` has its
-/// fetch. A version made for a region that lacks tiles of `bounds` refuses.
+/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` that the canopy models of
+/// `countries` meet, with the credits of those models and of the leaf type. None while the store
+/// lacks a manifest; then `wanted` has its fetch. A version whose scopes lack one of those tiles
+/// refuses.
 fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
-    bounds: [f64; 4],
+    (bounds, countries): ([f64; 4], &[String]),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    let ((left, top), (right, bottom)) = (mercator(bounds[0], bounds[3], 12), mercator(bounds[2], bounds[1], 12));
-    let span = |from: f64, to: f64| from.floor() as u32..to.ceil() as u32;
-    let inside: HashSet<(u32, u32)> = span(left, right).flat_map(|x| span(top, bottom).map(move |y| (x, y))).collect();
-    let paths: HashSet<String> = inside.iter().map(|(x, y)| format!("12/{x}/{y}.tif")).collect();
-    let (mut reads, mut references, mut credits, asked) = (Vec::new(), Vec::new(), Vec::new(), wanted.len());
-    for source in obc_data::sources::all().iter().filter(|source| source.id.starts_with("forest-reference/")) {
-        if !source.meets(bounds) {
-            continue;
-        }
-        let id = &source.id;
-        let pinned = match version(inputs, store, id, &[]).map_err(Unplanned::Failed)? {
-            Ok(pinned) => pinned,
-            Err(fetch) => {
-                wanted.push(fetch);
-                continue;
-            }
-        };
-        let Some(manifest) = crate::device::manifest(store, id, &pinned, wanted)? else { continue };
-        if let Some(scope) = &manifest.scope {
-            let made: HashSet<_> =
-                forest_reference::tiles(source, Some(scope)).map_err(Unplanned::Failed)?.into_iter().collect();
-            let extent = forest_reference::tiles(source, None).map_err(Unplanned::Failed)?;
-            if extent.iter().any(|tile| inside.contains(tile) && !made.contains(tile)) {
-                let region = &inputs.settings.region;
-                return Err(invalid(format!(
-                    "{id}@{pinned} holds the tiles of the region `{}` only, not all of `{region}`. \
-                     Fix: obc data source prepare {id} --region {region}",
-                    scope.region
-                )));
+    use crate::forest_reference::{model_tiles, models, ID, LEAF_TYPE};
+    let sources = obc_data::sources::all();
+    let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
+    let tiles = |bbox: Option<&Bbox>, countries: &[String]| -> Result<BTreeMap<String, String>, Unplanned> {
+        let mut tiles = BTreeMap::new();
+        for (_, model) in models(sources, bbox, countries) {
+            for tile in model_tiles(model, bbox).map_err(Unplanned::Failed)? {
+                tiles.entry(path(tile)).or_insert_with(|| model.id.clone());
             }
         }
-        let files: Vec<String> =
-            manifest.files.iter().map(|file| file.path.clone()).filter(|path| paths.contains(path)).collect();
-        if !files.is_empty() {
-            reads.push(Input::Snapshot { source: id.clone(), version: pinned, params: Vec::new(), files });
-            references.push(id.clone());
-            for read in &manifest.inputs {
-                let credit = attribution(&read.source);
-                if !credits.contains(&credit) {
-                    credits.push(credit);
-                }
-            }
-        }
+        Ok(tiles)
+    };
+    let [west, south, east, north] = bounds;
+    let needed = tiles(Some(&Bbox { west, south, east, north }), countries)?;
+    if needed.is_empty() {
+        return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
-    if wanted.len() > asked {
-        return Ok(None);
+    let pinned = match version(inputs, store, ID, &[]).map_err(Unplanned::Failed)? {
+        Ok(pinned) => pinned,
+        Err(fetch) => {
+            wanted.push(fetch);
+            return Ok(None);
+        }
+    };
+    let Some(manifest) = crate::device::manifest(store, ID, &pinned, wanted)? else { return Ok(None) };
+    // A version holds each tile with a pixel in its scope and in the scopes that it extends.
+    let mut covered = BTreeSet::new();
+    for scope in manifest.extends.iter().chain([&manifest.scope]) {
+        let (bbox, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
+        covered.extend(tiles(bbox.as_ref(), &countries)?.into_keys());
     }
-    if reads.is_empty() {
-        return Err(invalid(
-            "the layer trailview-canopy needs a forest reference: none has a tile in the region".into(),
-        ));
+    if needed.keys().any(|tile| !covered.contains(tile)) {
+        let region = &inputs.settings.region;
+        return Err(invalid(format!(
+            "{ID}@{} does not cover all of the region `{region}`. Fix: obc data source prepare {ID} --region {region}",
+            manifest.version
+        )));
+    }
+    let files: Vec<String> =
+        manifest.files.iter().map(|file| file.path.clone()).filter(|path| needed.contains_key(path)).collect();
+    if files.is_empty() {
+        return Err(invalid("the region has no canopy: switch the layer trailview-canopy off".into()));
+    }
+    let mut credits: Vec<&str> = Vec::new();
+    for model in files.iter().map(|path| needed[path].as_str()).chain([LEAF_TYPE]) {
+        let credit = attribution(model);
+        if !credits.contains(&credit) {
+            credits.push(credit);
+        }
     }
     Ok(Some(python(
         &PLANNER_TRAILVIEW_CANOPY,
         "planner/trailview-canopy",
-        reads,
-        json!({"bounds": bounds, "references": references, "attribution": credits.join("; ")}),
+        vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
+        json!({"bounds": bounds, "attribution": credits.join("; ")}),
         ("tools.planner_trailview_canopy", Some("planner-snow")),
         &["trailview-canopy.pmtiles"],
     )))
@@ -1008,6 +1060,8 @@ mod tests {
     ];
     const OPTIONAL: [&str; 7] =
         ["climate", "snow", "sun", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
+    /// The day of the version of `wiki` in the store.
+    const DAY: &str = "2026-10-01";
 
     /// The inputs of `region` with `layers` on, whose serving release reads each source without
     /// params of the planner at `1`, and the canopy at `v1.11`.
@@ -1015,12 +1069,16 @@ mod tests {
         let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
         let read = read.into_iter().chain(BASEMAP_SOURCES).map(|source| (source, "1")).chain([("hansen-gfc", "v1.11")]);
         let serving = read.map(|(source, version)| ((source.to_string(), Vec::new()), version.to_string())).collect();
-        let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Inputs {
+        // The core parts are on unless a test names its parts.
+        let layers = ["map", "routing", "search"].iter().chain(layers).map(|layer| layer.to_string()).collect();
+        let mut inputs = Inputs {
             settings: Settings { region: region.into(), layers, ..Settings::default() },
             serving,
             ..Inputs::default()
-        }
+        };
+        // The version of `wiki` that [`store`] has.
+        inputs.resolved.insert((obc_pack::step::WIKI.into(), Vec::new()), crate::device::tests::wiki(DAY).0);
+        inputs
     }
 
     /// `inputs` with the version `2026-10-01` for each fetch of the optional layers that the steps
@@ -1051,11 +1109,12 @@ mod tests {
     }
 
     /// A store with what the step list of `AREA` reads: its `.poly`, a box near Freiburg; the
-    /// tile list, which names the two squares west of 8°; the land polygons; and the extract of
-    /// each of `days`.
+    /// tile list, which names the two squares west of 8°; the land polygons; a version of `wiki`;
+    /// and the extract of each of `days`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
         crate::device::tests::with_index(&store);
+        crate::device::tests::wiki_in(&store, DAY);
         let area = [("area".to_string(), AREA.to_string())];
         let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
@@ -1147,25 +1206,52 @@ mod tests {
     }
 
     #[test]
-    fn the_terrain_reads_the_mean_tiles_of_a_national_model_in_its_bounds() {
+    fn the_terrain_reads_the_mean_tiles_of_terrain_in_its_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
         let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
-        let (pinned, manifest) = crate::device::tests::swiss_version(&mut inputs, &paths);
+        let (pinned, manifest) = crate::device::tests::terrain_version(&mut inputs, &paths);
         let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
-        crate::device::tests::stored(&store, "terrain-reference/ch", &pinned, &[], &manifest);
+        crate::device::tests::stored(&store, "terrain", &pinned, &[], &manifest);
         let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
         let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
         assert_eq!(
             (&files[..], &reference.options["pool"]),
-            (&["mean/16/4825/4218.tif".to_string()][..], &json!("mean"))
+            (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
         );
         let terrain = steps.iter().find(|step| step.name == "planner/terrain").unwrap();
         assert!(terrain
             .inputs
             .iter()
             .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/reference")));
+    }
+
+    #[test]
+    fn a_part_that_is_off_keeps_only_the_steps_that_a_part_that_is_on_reads() {
+        let temp = temp("planner-parts");
+        let store = store(&temp, &["2026-10-01"]);
+        let only = |parts: &[&str]| {
+            let mut inputs = inputs(AREA, &[]);
+            inputs.settings.layers = parts.iter().map(|part| part.to_string()).collect();
+            let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+            steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
+        };
+        let sun = only(&["sun"]);
+        assert!(["planner/terrain/grid", "planner/sun/grid", "planner/index", catalog::STEP]
+            .iter()
+            .all(|step| sun.contains(*step)));
+        let core = |step: &String| {
+            ["osm", "routing", "search", "basemap", "places", "fonts"].iter().any(|part| step.contains(part))
+        };
+        assert!(!sun.iter().any(core), "{sun:?}");
+        let map = only(&["map"]);
+        assert!(
+            map.contains("planner/search/pois") && map.contains("planner/fonts/grid"),
+            "the places of the map read the POIs"
+        );
+        let gone = ["planner/search/addresses", "planner/search/pois/grid", "planner/routing", "planner/overlays/grid"];
+        assert!(!gone.iter().any(|step| map.contains(*step)), "{map:?}");
     }
 
     #[test]
@@ -1221,6 +1307,8 @@ mod tests {
             intermediate,
             [
                 "planner/source/europe/test",
+                "device/landmark-content",
+                "device/peak-content",
                 "planner/osm",
                 "planner/terrain",
                 "planner/routing",
@@ -1308,22 +1396,24 @@ mod tests {
     }
 
     #[test]
-    fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_made_for_a_smaller_one() {
+    fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_whose_scopes_lack_one() {
         use obc_data::prepared::{Cost, Manifest, Read, Scope, MANIFEST};
         use obc_data::store::sha256_hex;
 
         let temp = temp("planner-canopy");
         let store = Store::at(temp.0.join("store"));
-        let id = "forest-reference/ch";
+        let id = crate::forest_reference::ID;
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
-        let manifest = |scope: Option<Scope>| Manifest {
+        let manifest = |scope: Option<Scope>, extends: Vec<Option<Scope>>| Manifest {
             source: id.into(),
             version: "2026-10-20".into(),
-            format: 1,
+            format: 2,
             revision: 1,
-            inputs: vec![Read { source: "vhm-lidar-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
+            inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
             files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif"].map(file).into(),
+            reused: BTreeMap::new(),
             scope,
+            extends,
             languages: Vec::new(),
             licence: None,
             attribution: None,
@@ -1335,33 +1425,43 @@ mod tests {
             let bytes = manifest.canonical();
             let pinned = format!("2026-10-20/{}", sha256_hex(&bytes));
             inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
-            (pinned, String::from_utf8(bytes).unwrap())
+            fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+            pinned
+        };
+        let region = |name: &str, west: f64, east: f64| {
+            let text = format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n");
+            Some(Scope { region: name.into(), definitions: [(name.into(), text)].into() })
         };
         // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
-        let bounds = [8.40, 46.81, 8.45, 46.83];
+        let swiss = ([8.40, 46.81, 8.45, 46.83], &["CH".to_string()][..]);
         let mut inputs = Inputs::default();
-        let (pinned, text) = pin(&mut inputs, &manifest(None));
         let mut wanted = Vec::new();
-        assert!(trailview_canopy(&inputs, &store, bounds, &mut wanted).unwrap().is_none());
-        assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned.clone()), params: Vec::new() }]);
+        let first = manifest(None, Vec::new());
+        let pinned = format!("2026-10-20/{}", sha256_hex(&first.canonical()));
+        inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
+        assert!(trailview_canopy(&inputs, &store, swiss, &mut wanted).unwrap().is_none());
+        assert_eq!(wanted, [Wanted { source: id.into(), version: Some(pinned), params: Vec::new() }]);
 
-        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), text)]);
-        let step = trailview_canopy(&inputs, &store, bounds, &mut Vec::new()).unwrap().unwrap();
+        let pinned = pin(&mut inputs, &first);
+        let step = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().unwrap();
         let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
         assert_eq!((source.as_str(), version), (id, &pinned));
         assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);
-        assert_eq!(step.options["references"], json!([id]));
-        assert_eq!(step.options["attribution"], attribution("vhm-lidar-ch"));
+        let credits = format!("{}; {}", attribution("canopy-ch"), attribution("hrl-dominant-leaf-type"));
+        assert_eq!(step.options["attribution"], credits);
 
-        // A version made for a box that holds the tile 2143/1443 only.
-        let small = "name = \"Small\"\nkind = \"box\"\nbox = [8.40, 46.81, 8.42, 46.83]\n";
-        let scope = Scope { region: "small".into(), definitions: [("small".into(), small.into())].into() };
-        let (pinned, text) = pin(&mut inputs, &manifest(Some(scope)));
-        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), text)]);
-        let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, bounds, &mut Vec::new()) else {
+        // A version of a box that holds the tile 2143/1443 only, then one that extends another box.
+        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), Vec::new()));
+        let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
             panic!("a version of a smaller region refuses")
         };
-        assert!(message.contains("obc data source prepare forest-reference/ch"), "{message}");
+        assert!(message.contains("obc data source prepare forest --region"), "{message}");
+        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
+        assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
+
+        // A region of a country without a canopy model has none.
+        let german = (swiss.0, &["DE".to_string()][..]);
+        assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 
     #[test]
@@ -1413,8 +1513,8 @@ mod tests {
         // the map leaves split `device/osm` again. A read of the own layer is exempt: a new version
         // of the layer bakes both steps. The reads below bake their step again on such a machine:
         // the POI database is large, and its grid holds it in another form; the landmark and
-        // peak content stays private until the wiki is a prepared source; the TrailView ruleset
-        // step reads only the repository.
+        // peak content is compiled again from the `wiki` shards, which the target holds; the TrailView
+        // ruleset step reads only the repository.
         let mut unheld = Vec::new();
         for step in &steps {
             for input in &step.inputs {
@@ -1438,6 +1538,44 @@ mod tests {
             ("planner/trailview-region", "planner/trailview-rules"),
         ];
         assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
+    }
+
+    /// A new version of `wiki` rebuilds the landmarks and what reads them, such as the search of
+    /// the planner, and nothing of the maps, the terrain or the routing.
+    #[test]
+    fn a_new_wiki_version_stales_the_landmarks_and_the_search() {
+        use obc_data::engine::state::{state, Environment, Newer, Verdict};
+        let temp = temp("planner-wiki");
+        let store = store(&temp, &[DAY]);
+        crate::device::tests::with_model_areas(&store);
+        let mut inputs = inputs(AREA, &[]);
+        let listed = |inputs: &Inputs| {
+            let mut steps = Planner.steps(&root(), inputs, &regions(), &store).unwrap().steps;
+            let device = Device.steps_with_tool(&root(), inputs, &regions(), &store, Ok(())).unwrap().steps;
+            steps.extend(device.into_iter().filter(|step| !step.name.ends_with("-content")));
+            steps
+        };
+        let declared = |step: &Step| (step.name.clone(), crate::device::tests::declared(step, step.layer.format));
+        let release = listed(&inputs).iter().map(declared).collect();
+        let newer = crate::device::tests::wiki_in(&store, "2026-11-01");
+        inputs.resolved.insert((obc_pack::step::WIKI.into(), Vec::new()), newer.clone());
+        let environment = Environment { release, newer: Newer::new() };
+        let states = state(&Store::at(temp.0.join("empty")), &listed(&inputs), &environment).unwrap();
+        let stale: Vec<(&str, &str)> = states
+            .iter()
+            .filter(|layer| layer.state != Verdict::Ok)
+            .map(|layer| (layer.layer.as_str(), layer.text.as_deref().unwrap()))
+            .collect();
+        let show = obc_data::prepared::show;
+        let cause = format!("wiki {} → {}", show(&crate::device::tests::wiki(DAY).0), show(&newer));
+        let expected = [
+            ("device/landmarks", cause.as_str()),
+            ("planner/search", "follows device/landmarks"),
+            ("device/catalog", "follows device/landmarks"),
+            ("planner/places", "follows planner/search"),
+            ("planner/index", "follows planner/places"),
+        ];
+        assert_eq!(stale, expected);
     }
 
     #[test]

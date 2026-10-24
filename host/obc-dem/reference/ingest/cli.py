@@ -28,10 +28,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import rasterio
+
 from . import publish, wizard
-from .archive import (MEAN, ingest_rasters, load_manifests, local_rasters, pool_tile, rebuild_index,
-                      read_index, tile_path, tile_problems, tile_digest, write_manifest, write_tile)
-from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
+from .archive import (MEAN, fold_tiles, ingest_rasters, load_manifests, local_rasters, pool_tile, priority_rank,
+                      rebuild_index, read_index, tile_path, tile_problems, tile_digest, write_manifest, write_tile)
+from .lattice import MEAN_NODATA, NODATA, Refuse, box_tiles, check_world, tile_bounds, tile_id
 from .sources import SOURCES, ManualSource
 
 
@@ -106,10 +108,13 @@ def ingest_today(rasters, source, root: Path) -> None:
 
 
 def command_fetch(args) -> int:
-    """One archive tile of a model into `--out`, for `obc data source prepare`: `16/<ti>/<tj>.tif`,
-    the maximum of the rasters of the tile on the lattice, and `mean/16/<ti>/<tj>.tif`, their mean;
-    then `<ti>-<tj>.mean.sha256` and `<ti>-<tj>.sha256`, the digests of their pixels; or the empty
-    file `<ti>-<tj>.none` where the model has no height in the tile.
+    """One archive tile of a version of `terrain`, for `obc data source prepare`: each model of
+    `source` (keys joined by commas) pooled onto the lattice and folded into the tile of the
+    version before (`--base`, an archive root, whose tile came from `--held`), best rule of
+    `fold_tiles`. It writes `16/<ti>/<tj>.tif`, the maximum, and `mean/16/<ti>/<tj>.tif`, the mean;
+    then `<ti>-<tj>.keys`, the sources of the tile best first; then `<ti>-<tj>.mean.sha256` and
+    `<ti>-<tj>.sha256`, the digests of their pixels. Where no model has a height in the tile it
+    writes only the empty `<ti>-<tj>.none`, and the version keeps the tile before.
 
     The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
     only the rasters of the tiles that run and the store never sees them.
@@ -124,40 +129,35 @@ def command_fetch(args) -> int:
     signal.signal(signal.SIGTERM, stop)
     stop_with_parent()
     ti, tj = parse_tile(args.tile)
-    source = registered(args.source)
     work, out = Path(args.work), Path(args.out)
-    box = tile_bounds(ti, tj)
-    check_world(box, f"--tile {args.tile}")
+    check_world(tile_bounds(ti, tj), f"--tile {args.tile}")
+    held = set(filter(None, (args.held or "").split(",")))
+    folded = {}
+    if args.base:
+        for root in (MEAN, ""):
+            path = tile_path(Path(args.base) / root, ti, tj)
+            if path.is_file():
+                with rasterio.open(path) as src:
+                    folded[root] = src.read(1)
     try:
-        if isinstance(source, ManualSource):
-            # A delivery is like a credential: the environment names its directory and the datum
-            # that the owner read in the order's metadata.
-            prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
-            base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
-            # `obc data` runs the fetch in the repository root, not where the variable was set.
-            if base.name and not base.is_absolute():
-                raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
-            if not base.name or not base.is_dir():
-                raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
-                             f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
-            require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
-            rasters = local_rasters(source, base, box, work)
-        else:
-            source.require_credential()
-            # Outside its `extent` the product has no data, so only the overlap is downloaded.
-            west, south, east, north = source.extent
-            box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
-            rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
-        tiles = pool_tile(rasters, source, ti, tj)
+        fetched = False
+        for key in args.source.split(","):
+            pooled = pool_model(registered(key), ti, tj, work / key)
+            if pooled is None:
+                continue
+            fetched = True
+            for root, tile, nodata in ((MEAN, pooled[1], MEAN_NODATA), ("", pooled[0], NODATA)):
+                folded[root] = tile if root not in folded else fold_tiles(folded[root], tile, held, key, nodata)
+            held.add(key)
         out.mkdir(parents=True, exist_ok=True)
         name = f"{ti:04}-{tj:04}"
-        if tiles is None:
+        if not fetched:
             (out / f"{name}.none").touch()
             return 0
-        maximum, mean = tiles
-        for root, tile, mark in ((MEAN, mean, "mean.sha256"), ("", maximum, "sha256")):
+        (out / f"{name}.keys").write_text(",".join(sorted(held, key=priority_rank)), encoding="utf-8")
+        for root, mark in ((MEAN, "mean.sha256"), ("", "sha256")):
             written, path = tile_path(work / "pooled" / root, ti, tj), tile_path(out / root, ti, tj)
-            write_tile(written, ti, tj, tile)
+            write_tile(written, ti, tj, folded[root])
             path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(written, path)
             # Last, and the maximum last of all: a digest names a whole tile.
@@ -167,17 +167,52 @@ def command_fetch(args) -> int:
     return 0
 
 
-def command_index_tiles(args) -> int:
-    """`index.json` of the tiles of `--pool` in a version of `terrain-reference/<key>`: each tile of
-    `--digests`, a JSON object of tile id to the pixel digest that `fetch` wrote."""
+def pool_model(source, ti: int, tj: int, work: Path):
+    """The maximum and the mean of `source` in tile `ti`, `tj`, or `None` where it has no height."""
 
-    source = registered(args.source)
-    digests = dict(sorted(json.loads(Path(args.digests).read_text(encoding="utf-8")).items()))
-    facts = {"product": source.product, "attribution": source.credit(args.fetched), "licence": source.licence,
-             "vertical_datum": source.vertical_datum, "fetched": args.fetched}
-    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": args.pool, "sources": {source.key: facts},
-             "tiles": {tile: source.key for tile in digests},
-             "contributors": {tile: [source.key] for tile in digests}, "sha256": digests}
+    box = tile_bounds(ti, tj)
+    if isinstance(source, ManualSource):
+        # A delivery is like a credential: the environment names its directory and the datum
+        # that the owner read in the order's metadata.
+        prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
+        base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
+        # `obc data` runs the fetch in the repository root, not where the variable was set.
+        if base.name and not base.is_absolute():
+            raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
+        if not base.name or not base.is_dir():
+            raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
+                         f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
+        require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
+        rasters = local_rasters(source, base, box, work)
+    else:
+        source.require_credential()
+        # Outside its `extent` the product has no data, so only the overlap is downloaded.
+        west, south, east, north = source.extent
+        box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
+        rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
+    return pool_tile(rasters, source, ti, tj)
+
+
+def command_index_terrain(args) -> int:
+    """`index.json` of `--pool` in a version of `terrain`: the index of the version before
+    (`--base`) with each tile of `--digests` (tile id to pixel digest) and `--keys` (tile id to its
+    sources, best first). The models of `--models` were fetched on `--fetched`."""
+
+    base = json.loads(Path(args.base).read_text(encoding="utf-8")) if args.base else {}
+    digests = json.loads(Path(args.digests).read_text(encoding="utf-8"))
+    keys = json.loads(Path(args.keys).read_text(encoding="utf-8"))
+    contributors = {**base.get("contributors", {}), **{tile: keys[tile] for tile in digests}}
+    sources = dict(base.get("sources", {}))
+    for key in filter(None, args.models.split(",")):
+        source = registered(key)
+        sources[key] = {"product": source.product, "attribution": source.credit(args.fetched),
+                        "licence": source.licence, "vertical_datum": source.vertical_datum, "fetched": args.fetched}
+    used = {key for held in contributors.values() for key in held}
+    index = {"schema": 1, "step_log2": 6, "tile_log2": 16, "pool": args.pool,
+             "sources": {key: facts for key, facts in sorted(sources.items()) if key in used},
+             "tiles": {tile: held[0] for tile, held in sorted(contributors.items())},
+             "contributors": dict(sorted(contributors.items())),
+             "sha256": dict(sorted({**base.get("sha256", {}), **digests}.items()))}
     Path(args.out).write_text(json.dumps(index, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
                               encoding="utf-8")
     return 0
@@ -417,20 +452,24 @@ def main(argv=None) -> int:
     for_source("wizard", "walk the account and download steps of a source behind a login",
                command_wizard)
 
-    fetch = commands.add_parser("fetch", help="pool one archive tile of a source into --out, for obc data fetch")
-    fetch.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+    fetch = commands.add_parser("fetch", help="one archive tile of a version of terrain into --out, for obc data")
+    fetch.add_argument("source", help=f"source keys joined by commas: {', '.join(sorted(SOURCES))}")
     fetch.add_argument("--tile", required=True, help="<ti>-<tj>, the archive tile")
     fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
     fetch.add_argument("--out", required=True, help="where the pooled tile goes")
+    fetch.add_argument("--base", help="the archive root of the version before, which holds the tile")
+    fetch.add_argument("--held", help="the sources of the tile of --base, joined by commas")
     fetch.set_defaults(run=command_fetch)
 
-    tiles = commands.add_parser("index-tiles", help="index.json of the tiles that fetch wrote, for obc data")
-    tiles.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
-    tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
-    tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
-    tiles.add_argument("--out", required=True, help="the index.json to write")
+    tiles = commands.add_parser("index-terrain", help="index.json of a version of terrain, for obc data")
     tiles.add_argument("--pool", choices=("max", MEAN), default="max", help="the pool of the tiles")
-    tiles.set_defaults(run=command_index_tiles)
+    tiles.add_argument("--base", help="index.json of the version before")
+    tiles.add_argument("--digests", required=True, help="a JSON object of tile id to pixel digest")
+    tiles.add_argument("--keys", required=True, help="a JSON object of tile id to its sources, best first")
+    tiles.add_argument("--models", required=True, help="the source keys that this version fetched")
+    tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
+    tiles.add_argument("--out", required=True, help="the index.json to write")
+    tiles.set_defaults(run=command_index_terrain)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

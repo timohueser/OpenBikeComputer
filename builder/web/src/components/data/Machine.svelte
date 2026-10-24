@@ -3,6 +3,7 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { count, free, hardware, list, size, type CleanPlan, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
+    import Credential from "./Credential.svelte";
     import Failure from "./Failure.svelte";
 
     let { machine }: { machine: Machine | null } = $props();
@@ -63,9 +64,12 @@
 
         <section class="card" aria-labelledby="credentials">
             <h2 id="credentials">Credentials</h2>
-            <p class="soft">Only whether each is set. Values stay in tools/obc.local or your home folder and never show here.</p>
+            <p class="soft">Only whether each is set. A value goes to a file in your home folder that only you can read, and never shows here.</p>
             {#each report.credentials as credential (credential.name)}
-                <div class="row line">{@render head(credential.state, credential.name)}<span class="wide soft">{credential.needed_for}</span></div>
+                <div class="row line">
+                    {@render head(credential.state, credential.name)}<span class="wide soft">{credential.needed_for}</span>
+                    {#if credential.source}<Credential {credential} source={credential.source} onsaved={() => void setup.refresh()} />{/if}
+                </div>
             {/each}
         </section>
     </div>
@@ -115,9 +119,9 @@
                         Tools are ready. Ask the owner for an R2 key only if you will publish to prod.
                     {/if}
                 </li>
-                <li>Open <a href="#/local">local</a>, choose a small area (the Freiburg preset is quick), and start <b>Update local</b>. It takes a few minutes.</li>
+                <li>Open <a href="#/">Bake</a>, choose a small area, and bake it. A small box takes a few minutes.</li>
                 <li>Start <b>Serve</b> and open the web planner or the map builder from there.</li>
-                <li>Read the <a href="#/">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
+                <li>Read the <a href="#/overview">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
             </ol>
         </section>
     </div>

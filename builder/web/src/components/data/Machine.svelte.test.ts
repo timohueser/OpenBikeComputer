@@ -70,3 +70,33 @@ it("Clean shows the plan, and its confirm posts exactly `clean --apply --yes`", 
         await unmount(screen);
     }
 });
+
+it("a missing credential posts its value to the credential route, and the page never shows it", async () => {
+    const value = "fake-token-not-a-real-credential";
+    const set = { file: "/Users/rider/.config/openbikecomputer/credentials.env", names: ["OBC_REFERENCE_DK_TOKEN"], sources: ["dtm-dk"], overridden: [] };
+    const fetch = vi.fn(async (url: string, _init: { body: string }) => {
+        return new Response(JSON.stringify({ exit: 0, output: url === "/api/credential" ? set : report }));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const screen = mount(Machine, { target: document.body, props: { machine: status.machine } });
+    const input = () => document.querySelector<HTMLInputElement>("input[name=OBC_REFERENCE_DK_TOKEN]");
+    try {
+        await vi.waitFor(() => expect(input()).not.toBeNull());
+        const row = input()!.closest(".row")!;
+        expect(row.textContent).toContain("For Terrain in Denmark");
+        expect(row.querySelector("a")?.getAttribute("href")).toBe("https://dataforsyningen.dk");
+        expect(input()!.type).toBe("password");
+        input()!.value = value;
+        row.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
+        await vi.waitFor(() => expect(row.textContent).toContain("Saved OBC_REFERENCE_DK_TOKEN in"));
+        const posted = fetch.mock.calls.filter(([url]) => url === "/api/credential").map(([, init]) => JSON.parse(init.body));
+        expect(posted).toEqual([{ source: "dtm-dk", values: [value] }]);
+        await vi.waitFor(() => expect(fetch.mock.calls.filter(([url]) => url === "/api/cli")).toHaveLength(2));
+        expect(document.body.innerHTML).not.toContain(value);
+        expect([...document.querySelectorAll("input")].map((input) => input.value)).not.toContain(value);
+        expect(state("~/.cdsapirc")).toBe("ready");
+        expect([...document.querySelectorAll("button")].filter((button) => button.textContent === "Replace")).toHaveLength(1);
+    } finally {
+        await unmount(screen);
+    }
+});

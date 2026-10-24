@@ -6,8 +6,10 @@
 pub mod changes;
 pub mod plan;
 mod process;
-pub use process::{child, peak_rss, python_executable};
+pub use process::{child, peak_rss, python_executable, Usage};
 pub(crate) use process::{copy_lines, ended, panicked};
+#[cfg(unix)]
+pub(crate) use process::{try_wait_pid, wait_pid};
 
 pub mod runs;
 pub mod state;
@@ -96,7 +98,8 @@ impl Client {
         }
     }
 
-    pub(crate) fn sorted(&self) -> Self {
+    /// The client with its paths sorted and without duplicates, as a release records it.
+    pub fn sorted(&self) -> Self {
         match self {
             Self::Paths(paths) => {
                 let mut paths = paths.clone();

@@ -47,7 +47,7 @@ it("a step takes the first row that is free when it starts, so the rows are the 
     const view = run("ok", [step("planner/snow", 10_000, 110_000), step("device/osm", 20_000, 25_500), step("device/peaks/0037-0032", 25_600, 30_000)], 200_000);
     const { bars, lanes, span } = timeline(view, 0);
     const rows = Object.fromEntries(bars.map((bar) => [bar.name, bar.lane]));
-    expect(rows).toEqual({ "hansen-gfc@v1.11": 0, "planner/snow": 0, "device/osm": 1, "device/peaks/0037-0032": 1 });
+    expect(rows).toEqual({ "hansen-gfc": 0, "planner/snow": 0, "device/osm": 1, "device/peaks/0037-0032": 1 });
     expect(lanes).toBe(2);
     expect(span).toBe(200_000);
 });
@@ -62,7 +62,7 @@ it("a failed step ends when it failed, a step without an end runs until now or e
     ];
     const live = timeline(run("running", steps), T0 + 90_000);
     expect(live.bars.map((bar) => [bar.name, bar.state, bar.end])).toEqual([
-        ["hansen-gfc@v1.11", "done", 4000],
+        ["hansen-gfc", "done", 4000],
         ["device/osm", "done", 40_000],
         ["device/coarse/0037-0032", "failed", 15_000],
         ["device/fine/0037-0033", "running", 90_000],
@@ -74,4 +74,13 @@ it("a failed step ends when it failed, a step without an end runs until now or e
 it("a run of 100,000 steps has a timeline", () => {
     const steps = Array.from({ length: 100_000 }, (_, i) => step(`device/terrain/${i}`, 4000 + i * 10, 4000 + i * 10 + 5));
     expect(timeline(run("ok", steps, 1_000_000), 0).lanes).toBe(1);
+});
+
+it("a fetch is named by its source and what it asked for", () => {
+    const view = run("ok", []);
+    view.fetches = [
+        { ...view.fetches[0], source: "geofabrik-poly", params: [["area", "europe/liechtenstein"]] },
+        { ...view.fetches[0], source: "copernicus-glo-30", params: [["tile", "N46_E008"], ["tile", "N47_E008"]] },
+    ];
+    expect(timeline(view, 0).bars.map((bar) => bar.name)).toEqual(["geofabrik-poly liechtenstein", "copernicus-glo-30 2 tiles"]);
 });

@@ -175,13 +175,19 @@ impl std::fmt::Display for Refresh {
 }
 
 /// What a fetch needs before upstream answers: environment variables, or a file.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Where a person gets the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register: Option<String>,
+    /// What to copy there, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl Credential {
@@ -209,7 +215,7 @@ pub(crate) fn expand_home(path: &str) -> PathBuf {
 pub struct Source {
     pub id: String,
     pub kind: Kind,
-    /// The heading under which the operator page lists the source.
+    /// The heading under which the operator page lists a source that is not prepared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// What reads the source: the products `device` and `planner`, or the `search` and `trailview`
@@ -255,31 +261,15 @@ pub struct Source {
     pub publish_text: Option<bool>,
 }
 
-/// The Wikimedia API captures, which a target does not copy.
-const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+/// The Wikimedia sources that only the producer of `wiki` reads, on the machine that prepares: a
+/// target keeps no copy of them.
+pub(crate) const WIKI_INPUTS: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
     /// give the bytes to others. A prepared version is on a target already.
     pub fn copied(&self) -> bool {
-        self.redistribute && self.fetch.kind != FetchKind::Prepared && !NOT_COPIED.contains(&self.id.as_str())
-    }
-
-    /// The prepared source `terrain-reference/<key>` of the national terrain model `dtm-<key>`, with
-    /// its licence, credit and box: the archive tiles that `obc data source prepare` makes of it.
-    fn terrain_reference(&self) -> Option<Source> {
-        let key = self.id.strip_prefix("dtm-").filter(|_| self.redistribute)?;
-        Some(Source {
-            id: format!("terrain-reference/{key}"),
-            fetch: Fetch { kind: FetchKind::Prepared, url: None },
-            hosts: Vec::new(),
-            version: VersionScheme::Date,
-            start: None,
-            // Not `manual`: a target reads a new version once a target lists it.
-            refresh: Refresh::Days(365),
-            credential: None,
-            ..self.clone()
-        })
+        self.redistribute && self.fetch.kind != FetchKind::Prepared && !WIKI_INPUTS.contains(&self.id.as_str())
     }
 
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
@@ -291,9 +281,8 @@ impl Source {
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         let prepared = self.fetch.kind == FetchKind::Prepared;
-        // A prepared source of a family, such as `terrain-reference/ch`, has two parts.
-        if self.id.split('/').count() > 1 + usize::from(prepared) || !self.id.split('/').all(crate::is_kebab) {
-            return fail("the id is not lowercase kebab-case, or two such parts joined by `/` for a prepared source");
+        if !crate::is_kebab(&self.id) {
+            return fail("the id is not lowercase kebab-case");
         }
         if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
             return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
@@ -340,6 +329,12 @@ impl Source {
         if let Some(credential) = &self.credential {
             if credential.env.is_empty() == credential.file.is_none() {
                 return fail("a credential is `env` or `file`");
+            }
+            if crate::credentials::place(credential).is_none() {
+                return fail(&format!("`credential.file` is one of {}", crate::credentials::files()));
+            }
+            if credential.register.as_ref().is_some_and(|url| !url.starts_with("https://")) {
+                return fail("`credential.register` is not https");
             }
         }
         Ok(())
@@ -399,12 +394,9 @@ struct SourcesFile {
     source: Vec<Source>,
 }
 
-/// Parse and validate `data/sources.toml`, with the source `terrain-reference/<key>` of each
-/// `dtm-<key>` that we may give to others.
+/// Parse and validate `data/sources.toml`.
 pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
-    let mut file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
-    let derived: Vec<Source> = file.source.iter().filter_map(Source::terrain_reference).collect();
-    file.source.extend(derived);
+    let file: SourcesFile = toml::from_str(text).map_err(|e| format!("data/sources.toml: {e}"))?;
     let mut seen = BTreeSet::new();
     for source in &file.source {
         source.validate()?;
@@ -534,13 +526,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_prepared_source_has_an_id_of_two_parts_and_it_gives_its_bytes_to_others() {
+    fn a_prepared_source_gives_its_bytes_to_others() {
         let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
-        let prepared = OSM
-            .replace("id = \"osm\"", "id = \"terrain-reference/ch\"")
-            .replace(url, "fetch = { kind = \"prepared\" }");
+        let prepared = OSM.replace("id = \"osm\"", "id = \"terrain\"").replace(url, "fetch = { kind = \"prepared\" }");
         assert!(!parse_sources(&prepared).unwrap()[0].copied(), "a version is on a target already");
-        assert!(parse_sources(&prepared.replace("/ch\"", "/ch/x\"")).unwrap_err().contains("kebab-case"));
         assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
         let private = prepared.replace("redistribute = true", "redistribute = false");
         assert!(parse_sources(&private).unwrap_err().contains("`redistribute = true`"));
@@ -624,7 +613,7 @@ mod tests {
         assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
         assert_eq!(status(&tool, None, &Upstream::CannotCheck, today).state, State::Ok);
-        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
+        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], ..Default::default() }), ..osm() };
         let blocked = status(&keyed, None, &Upstream::CannotCheck, today);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Ok, None));
     }
@@ -646,15 +635,5 @@ mod tests {
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
         assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
-    }
-
-    #[test]
-    fn each_national_model_has_a_prepared_source_with_its_licence_credit_and_box() {
-        let (model, prepared) = (embedded("dtm-dk"), embedded("terrain-reference/dk"));
-        let terms = |s: &'static Source| (&s.licence, &s.attribution, &s.obligations, s.extent, &s.areas);
-        assert_eq!(terms(prepared), terms(model));
-        assert_eq!((prepared.fetch.kind, &prepared.credential), (FetchKind::Prepared, &None), "{prepared:?}");
-        let count = |prefix: &str| all().iter().filter(|source| source.id.starts_with(prefix)).count();
-        assert_eq!(count("terrain-reference/"), count("dtm-"));
     }
 }
