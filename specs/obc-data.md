@@ -1490,7 +1490,8 @@ of the SHA-256>)`; with `--json`, a command gives the whole version.
 `prod` is the reference: a target other than `prod` reads the versions that `prod` lists, and its
 own versions only while `prod` lists none in the `format` of the producer. So a version made on one
 machine for a test never hides one that every target reads. Before an update or the
-[overview](#overview) lists the steps, each prepared source that they read gets a version in the
+[overview](#overview) lists the steps, each prepared source (an update) or each that the steps read
+(the overview) gets a version in the
 `format` of the producer of this `obc data`: the serving version of a `manual` source, else the
 newest version of that list. So a new version makes each layer that reads an older one stale, with the cause
 `source`, in each target that knows it, and in no target that reads it already. When `prod` cannot

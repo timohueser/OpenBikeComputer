@@ -457,7 +457,12 @@ pub(super) fn prepare(
             }
         }
     }
-    crate::prepared::resolve(root, store, (name, target), (&sources, &requests, producers), &mut inputs)?;
+    // The discovery ends at the first fetch that the store lacks, which can be before a step that
+    // reads a prepared source: so every prepared source gets its version.
+    let prepared = sources.iter().filter(|source| source.fetch.kind == FetchKind::Prepared);
+    let read: BTreeSet<_> =
+        requests.iter().cloned().chain(prepared.map(|source| (source.id.clone(), Vec::new()))).collect();
+    crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
     let listed = {
         let mut fetch = listing::fetcher(root, store, http, &sources, run, true);
         // The listing asks for what the store lacks.
