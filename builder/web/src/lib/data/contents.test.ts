@@ -26,6 +26,8 @@ it("terrain falls back without a reference, a prod version wins, and a missing l
 });
 
 it("the flags switch exactly the layers of the cards that are on, and off the others", () => {
+    expect(layerFlags(["map", "snow"]).filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toEqual(["map", "snow"]);
+    expect(layerFlags(["trailview", "snow"]).filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toContain("trailview-snow");
     const flags = layerFlags(["trailview", "sun"]);
     expect(flags.filter(([flag]) => flag === "--add").map(([, layer]) => layer)).toEqual([
         "trailview-features",
@@ -41,6 +43,7 @@ it("the flags switch exactly the layers of the cards that are on, and off the ot
         "search",
         "trailview-canopy",
         "snow",
+        "trailview-snow",
         "climate",
     ]);
 });
