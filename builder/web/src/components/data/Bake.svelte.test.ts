@@ -22,7 +22,7 @@ const areas = {
 // The Swiss terrain reference covers the area; no machine has the ERA5 login.
 const sources = {
     sources: sourcesExample.sources.map((row) =>
-        row.id === "terrain-reference/ch" ? { ...row, extent: [5.9, 45.8, 10.5, 47.9] } : row.id === "era5-land" ? { ...row, credential_missing: true } : row,
+        row.id === "era5-land" ? { ...row, credential_missing: true } : row,
     ),
 };
 
@@ -63,7 +63,7 @@ it("walks area, contents, review and bake, each step from its URL", async () => 
     await unmount(area.shown);
 
     const contents = screen("#/bake?region=central-switzerland&on=trailview");
-    await vi.waitFor(() => expect(text()).toContain("prepared 2026-08-20 on R2"));
+    await vi.waitFor(() => expect(text()).toContain("2026-08-20 on R2 · covers central-switzerland"));
     expect(text()).toContain("Needs the login for era5-land");
     expect(document.querySelector<HTMLInputElement>('input[type="checkbox"]:disabled')).not.toBeNull();
     button("Make the plan").click();

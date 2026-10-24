@@ -4,7 +4,8 @@
     import { planArgs } from "../../lib/data/flags";
     import type { BakeRoute } from "../../lib/data/screens";
     import type { Started } from "../../lib/data/shapes";
-    import type { SourceRow } from "../../lib/data/sources";
+    import { prepareHash } from "../../lib/data/screens";
+    import { regional, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
 
     // What the bake makes: one card for each part. A card says what it needs in the area and which
@@ -40,8 +41,8 @@
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on)]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
-    const prepare = (source: string) =>
-        `#/sources/${encodeURIComponent(source)}/prepare?to=local${area.flag === "--region" ? `&region=${encodeURIComponent(area.value)}` : ""}`;
+    // A reference made area by area goes to R2; another one for this computer covers the area.
+    const prepare = (source: string) => prepareHash(source, regional(source) ? "prod" : "local", area);
     const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
 </script>
 
@@ -50,12 +51,17 @@
         <b>Terrain here</b>
         {#each terrain.references as reference (reference.source)}
             {#if reference.version}
-                <span class="ready">{reference.use} · prepared {reference.version.version} {where(reference.version.target)}</span>
+                {@const covers = reference.regions.length ? ` · covers ${reference.regions.join(", ")}` : ""}
+                <span class="ready">
+                    {`National LiDAR models · ${reference.version.version} ${where(reference.version.target)}${covers}.`}
+                    Where it has no tile, the bake uses Copernicus 30 m, and the review says where.
+                    <a href={prepare(reference.source)}>Add this area</a>
+                </span>
             {:else}
-                <span class="stale">{reference.use} · not prepared, so the bake uses Copernicus 30 m. <a href={prepare(reference.source)}>Prepare</a></span>
+                <span class="stale">No national LiDAR models yet, so the bake uses Copernicus 30 m. <a href={prepare(reference.source)}>Add this area</a></span>
             {/if}
         {:else}
-            <span class="soft">Copernicus 30 m: no national model covers this area.</span>
+            <span class="soft">Copernicus 30 m.</span>
         {/each}
         <span class="soft">{readers.length ? `Read by ${new Intl.ListFormat("en").format(readers)}.` : "Read by the bike computer maps, the planner map, Trail View and Sun."}</span>
     </div>

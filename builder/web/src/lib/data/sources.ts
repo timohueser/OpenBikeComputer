@@ -104,12 +104,22 @@ export function daysOld(version: string, now = Date.now()): number | null {
     return Math.max(0, Math.floor((now - Date.parse(`${version}T00:00:00Z`)) / 86_400_000));
 }
 
-/** The reference families, as the References screen names them. */
+/** The reference families, as the References screen names them. A `regional` reference is made
+ *  area by area: a version of `terrain` adds an area to the one before. */
 export const FAMILIES = [
-    { family: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps" },
-    { family: "terrain-reference", title: "Terrain", about: "National LiDAR terrain models, for the terrain of the maps and Trail View" },
-    { family: "forest-reference", title: "Forest", about: "Canopy height and leaf type, for the Trail View forest" },
+    { family: "wiki", title: "Wiki", about: "Facts, article text and photos of landmarks and peaks, from the Wikimedia dumps", regional: true, add: "Prepare a newer version" },
+    {
+        family: "terrain",
+        title: "Terrain",
+        about: "The national LiDAR models, merged best first; each version adds an area to the one before",
+        regional: true,
+        add: "Add an area",
+    },
+    { family: "forest-reference", title: "Forest", about: "Canopy height and leaf type, for the Trail View forest", regional: false, add: "Prepare a newer version" },
 ];
+
+/** Whether `prod` takes a version of an area of reference `id`. */
+export const regional = (id: string): boolean => !!FAMILIES.find((at) => at.family === family(id))?.regional;
 
 /** Where a reference is: what a person acts on first. */
 export type Coverage = "lock" | "preparing" | "r2" | "local" | "none";
@@ -143,7 +153,9 @@ export function coverageCells(
 ): { box: [number, number, number, number]; state: Coverage; label: string }[] {
     const whole = rows.flatMap((row) => {
         const state = placed(row, r2, (version) => !version.region);
-        return row.extent ? [{ box: row.extent, state, label: `${row.use ?? row.id} · ${COVERAGE[state].label}` }] : [];
+        // A reference of the whole world shows the areas of its versions only.
+        const world = row.extent && row.extent[2] - row.extent[0] >= 360;
+        return row.extent && !world ? [{ box: row.extent, state, label: `${row.use ?? row.id} · ${COVERAGE[state].label}` }] : [];
     });
     const regional = rows.flatMap((row) =>
         Object.entries(row.prepared).flatMap(([target, at]) =>

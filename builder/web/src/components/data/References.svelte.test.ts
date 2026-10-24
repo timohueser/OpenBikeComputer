@@ -61,52 +61,66 @@ const section = (title: string) => [...document.querySelectorAll("section")].fin
 it("shows each family with the state of each member and the action that makes the next version", async () => {
     const { shown } = screen("#/references");
     try {
-        await vi.waitFor(() => expect(text()).toContain("swissALTI3D"));
+        await vi.waitFor(() => expect(text()).toContain("Terrain from the national LiDAR models"));
         expect([...document.querySelectorAll("section h2")].map((h2) => h2.textContent)).toEqual(["Wiki", "Terrain", "Forest"]);
         const terrain = section("Terrain");
-        expect([...terrain.querySelectorAll(".legend li")].map((li) => li.textContent)).toEqual([
+        expect([...terrain.querySelectorAll(".legend li")].map((li) => li.textContent)).toEqual(["On R2 · 1"]);
+        const [row] = [...terrain.querySelectorAll(".members > li")];
+        expect(row.textContent).toContain("2026-08-20 · 5.0 GB · On R2 · Central Switzerland");
+        expect(row.textContent).toContain("This computer cannot be read");
+        const add = row.querySelector<HTMLAnchorElement>("a.act")!;
+        expect([add.textContent, add.getAttribute("href")]).toEqual(["Add an area", "#/references/terrain/prepare?to=prod"]);
+        const forest = section("Forest");
+        expect([...forest.querySelectorAll(".legend li")].map((li) => li.textContent)).toEqual([
             "Lock left by a stopped run · 1",
             "Being prepared · 1",
-            "On R2 · 1",
+            "On this computer only · 1",
         ]);
-        const rows = [...terrain.querySelectorAll(".members > li")];
+        const rows = [...forest.querySelectorAll(".members > li")];
         expect(rows[0].textContent).toContain("A run on laptop stopped without freeing the lock");
-        expect(rows[2].textContent).toContain("2026-08-20 · 5.0 GB · On R2 · all of it");
-        expect(rows[2].textContent).toContain("This computer cannot be read");
         const actions = rows.map((row) => row.querySelector<HTMLAnchorElement>("a.act"));
-        expect([actions[0]!.textContent, actions[0]!.getAttribute("href")]).toEqual(["Prepare", "#/references/terrain-reference%2Fat/prepare?to=prod"]);
+        expect([actions[0]!.textContent, actions[0]!.getAttribute("href")]).toEqual(["Prepare", "#/references/forest-reference%2Fat/prepare?to=prod"]);
         expect(actions[1], "a member that a run prepares has no action").toBeNull();
-        expect(actions[2]!.textContent).toBe("Prepare a newer version");
-        expect(section("Forest").textContent, "a version of this computer names its area").toContain("On this computer · Central Switzerland");
+        expect(forest.textContent, "a version of this computer names its area").toContain("On this computer · Central Switzerland");
     } finally {
         await unmount(shown);
     }
 });
 
-it("the prepare link of the Bake screen opens the review of its area", async () => {
-    const hash = "#/sources/terrain-reference%2Fch/prepare?to=local&region=central-switzerland";
+it("the prepare link of the Bake screen opens the review of its area, and terrain adds an area on R2", async () => {
+    const hash = "#/sources/forest-reference%2Fch/prepare?to=local&region=central-switzerland";
     expect(screenAt(hash).id).toBe("references");
     expect(screenAt("#/sources/natural-earth").id).toBe("downloads");
-    const { shown, posted } = screen(hash);
+    const local = screen(hash);
     try {
         await vi.waitFor(() => expect(text()).toContain("Covers Central Switzerland"));
-        expect(posted(), "a review waits for its button").toEqual([]);
+        expect(local.posted(), "a review waits for its button").toEqual([]);
         button("Review preparation").click();
-        await vi.waitFor(() =>
-            expect(posted()).toEqual([["source", "prepare", "terrain-reference/ch", "--to", "local", "--region", "central-switzerland", "--dry-run"]]),
-        );
+        const args = ["source", "prepare", "forest-reference/ch", "--to", "local", "--region", "central-switzerland", "--dry-run"];
+        await vi.waitFor(() => expect(local.posted()).toEqual([args]));
         button("On R2").click();
-        expect(location.hash).toBe("#/references/terrain-reference%2Fch/prepare?to=prod&region=central-switzerland");
+        expect(location.hash).toBe("#/references/forest-reference%2Fch/prepare?to=prod&region=central-switzerland");
     } finally {
-        await unmount(shown);
+        await unmount(local.shown);
     }
     document.body.replaceChildren();
-    const prod = screen("#/references/terrain-reference%2Fch/prepare?to=prod&region=central-switzerland");
+    const forest = screen("#/references/forest-reference%2Fch/prepare?to=prod&region=central-switzerland");
     try {
-        await vi.waitFor(() => expect(prod.posted()).toEqual([["source", "prepare", "terrain-reference/ch", "--to", "prod", "--dry-run"]]));
-        expect(button("Review preparation"), "R2 holds all of a terrain member").toBeUndefined();
+        await vi.waitFor(() => expect(forest.posted()).toEqual([["source", "prepare", "forest-reference/ch", "--to", "prod", "--dry-run"]]));
+        expect(button("Review preparation"), "R2 holds all of a forest member").toBeUndefined();
     } finally {
-        await unmount(prod.shown);
+        await unmount(forest.shown);
+    }
+    document.body.replaceChildren();
+    const terrain = screen("#/references/terrain/prepare?to=prod&region=central-switzerland");
+    try {
+        await vi.waitFor(() => expect(text()).toContain("Covers Central Switzerland"));
+        expect(text(), "a version of terrain adds an area, never all of the world").not.toContain("All of it");
+        button("Review preparation").click();
+        const args = ["source", "prepare", "terrain", "--to", "prod", "--region", "central-switzerland", "--dry-run"];
+        await vi.waitFor(() => expect(terrain.posted()).toEqual([args]));
+    } finally {
+        await unmount(terrain.shown);
     }
 });
 

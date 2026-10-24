@@ -77,7 +77,7 @@
             {/if}
         {/each}
         {#if state !== "preparing"}
-            <a class="act" href={prepareHash(row.id, "prod")}>{made.length ? "Prepare a newer version" : "Prepare"}</a>
+            <a class="act" href={prepareHash(row.id, "prod")}>{made.length ? (FAMILIES.find((at) => at.family === family(row.id))?.add ?? "Prepare") : "Prepare"}</a>
         {/if}
     </li>
 {/snippet}

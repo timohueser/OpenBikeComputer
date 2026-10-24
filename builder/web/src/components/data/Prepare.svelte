@@ -6,13 +6,13 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { prepareHash, type BakeRoute } from "../../lib/data/screens";
     import { list, size, span, type Started, type Target } from "../../lib/data/shapes";
-    import { family, FAMILIES, type PrepareReview, type SourceRow } from "../../lib/data/sources";
+    import { family, FAMILIES, regional, type PrepareReview, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import BakeArea from "./BakeArea.svelte";
     import Failure from "./Failure.svelte";
 
-    // The review of a new version of reference `id` on target `to`, and its Start. Wiki and a version
-    // for this computer cover an area; R2 holds all of a terrain or forest member.
+    // The review of a new version of reference `id` on target `to`, and its Start. Wiki, terrain and a version
+    // for this computer cover an area; R2 holds all of a forest member.
     let {
         id,
         row,
@@ -28,8 +28,9 @@
     let whole = $state(false);
     let languages = $state(contentLanguages.map(([code]) => code));
     const languageName = new Intl.DisplayNames(["en"], { type: "language" });
-    // Only `wiki` publishes a region to `prod`; the other producers prepare all of it there.
-    const scoped = $derived(wiki || to !== "prod");
+    const scoped = $derived(regional(id) || to !== "prod");
+    // A version of `terrain` adds an area: all of it would be every national model.
+    const terrain = $derived(id === "terrain");
     const covered = $derived(scoped && !whole && area);
     const args = $derived([
         "source", "prepare", id, "--to", to,
@@ -38,7 +39,9 @@
         "--dry-run",
     ]);
     const bounds = $derived(area ? (area.flag === "--box" ? parseBox(area.value) : areas && boundsOf(area.value, areas)) : null);
-    const extent = $derived(row?.extent ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : []);
+    const extent = $derived(
+        row?.extent && !terrain ? [{ west: row.extent[0], south: row.extent[1], east: row.extent[2], north: row.extent[3] }] : [],
+    );
     let query = $state<CliQuery<PrepareReview> | null>(null);
     // A changed selection cannot start an earlier review, including a response still in flight.
     const review = $derived(query?.args.join("\0") === args.join("\0") ? query : null);
@@ -76,7 +79,7 @@
 {#if scoped}
     <form class="card options" onsubmit={(event) => (event.preventDefault(), inspect())}>
         <h2>{wiki ? "Coverage and languages" : "Coverage"}</h2>
-        <label><input type="checkbox" bind:checked={whole} /> {wiki ? "Worldwide" : "All of it"}</label>
+        {#if !terrain}<label><input type="checkbox" bind:checked={whole} /> {wiki ? "Worldwide" : "All of it"}</label>{/if}
         {#if !whole}
             <BakeArea {areas} chosen={area} {bounds} served={extent} choose={(next) => (location.hash = prepareHash(id, to, next))} />
             <p class:soft={!!area} class:missing={!area}>{area ? `Covers ${area.flag === "--box" ? `the box ${area.value}` : nameOf(area.value, areas)}` : "Choose an area."}</p>

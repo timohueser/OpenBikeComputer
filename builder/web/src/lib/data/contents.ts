@@ -28,7 +28,7 @@ export const TERRAIN: Content = {
     about: "",
     layers: [],
     credentials: [],
-    reference: { family: "terrain-reference", required: false, without: "Copernicus 30 m" },
+    reference: { family: "terrain", required: false, without: "Copernicus 30 m" },
 };
 
 export const CONTENTS: Content[] = [
@@ -91,6 +91,8 @@ export interface Reference {
     source: string;
     use: string;
     version: { version: string; target: string } | null;
+    /** The areas of the versions that a bake reads, for a reference made area by area. */
+    regions: string[];
 }
 
 export interface Needs {
@@ -105,23 +107,27 @@ export interface Needs {
 const meets = (extent: [number, number, number, number], area: Bbox) =>
     extent[0] < area.east && area.west < extent[2] && extent[1] < area.north && area.south < extent[3];
 
-/** Whether member `id`, such as `terrain-reference/de-by`, is of one of `countries`; any member is
- *  when the area names no countries, such as a drawn box. */
-const ofCountry = (id: string, countries: string[]) => !countries.length || countries.includes(id.split("/")[1].split("-")[0].toUpperCase());
+/** Whether member `id`, such as `forest-reference/ch`, is of one of `countries`; any member is
+ *  when the area names no countries, such as a drawn box, and so is a reference of no country. */
+const ofCountry = (id: string, countries: string[]) =>
+    !countries.length || !id.includes("/") || countries.includes(id.split("/")[1].split("-")[0].toUpperCase());
 
 /** What `content` needs for `area` in `countries` on this machine, from `obc data sources`. A bake
- *  reads a version from `prod` first, so a `prod` version wins over a `local` one. */
+ *  reads the versions of `prod` while it lists one, else those of `local`. */
 export function needs(content: Content, area: Bbox | null, sources: SourceRow[], countries: string[] = []): Needs {
     const credentials = content.credentials.filter((id) => sources.find((source) => source.id === id)?.credential_missing);
     const family = content.reference?.family;
     const references: Reference[] =
         family && area
             ? sources
-                  .filter((source) => source.id.startsWith(`${family}/`) && source.extent && meets(source.extent, area) && ofCountry(source.id, countries))
+                  .filter((source) => (source.id === family || source.id.startsWith(`${family}/`)) && source.extent && meets(source.extent, area))
+                  .filter((source) => ofCountry(source.id, countries))
                   .map((source) => {
                       const target = ["prod", "local"].find((name) => source.prepared[name]?.versions.length);
-                      const newest = target ? source.prepared[target].versions.at(-1)! : null;
-                      return { source: source.id, use: source.use ?? source.id, version: newest && { version: newest.version, target: target! } };
+                      const listed = target ? source.prepared[target].versions : [];
+                      const newest = listed.at(-1);
+                      const regions = [...new Set(listed.flatMap((version) => (version.region ? [version.region] : [])))];
+                      return { source: source.id, use: source.use ?? source.id, version: newest ? { version: newest.version, target: target! } : null, regions };
                   })
             : [];
     const covered = references.some((reference) => reference.version);

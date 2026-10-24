@@ -7,7 +7,7 @@ const row = (id: string) => rows.find((at) => at.id === id)!;
 const r2 = (target: string) => target === "prod";
 
 it("a member is where its versions are, unless a run holds or left its lock", () => {
-    const states = ["terrain-reference/at", "terrain-reference/ch", "terrain-reference/de", "forest-reference/ch", "wiki"].map((id) => coverage(row(id), r2));
+    const states = ["forest-reference/at", "terrain", "forest-reference/de", "forest-reference/ch", "wiki"].map((id) => coverage(row(id), r2));
     expect(states).toEqual(["lock", "r2", "preparing", "local", "r2"]);
 });
 
