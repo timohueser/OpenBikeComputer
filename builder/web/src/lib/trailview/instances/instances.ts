@@ -89,6 +89,7 @@ interface Resources {
     vertices: GPUBuffer;
     indices: GPUBuffer;
     slots: GPUBuffer;
+    outlines: GPUBuffer;
     bakes: GPUBuffer;
     albedo: GPUTexture;
     normal: GPUTexture;
@@ -153,6 +154,8 @@ export class Instances {
     /** Models whose layer needs a bake. */
     private readonly unbaked = new Set<number>();
     private readonly producers: Producer[] = [];
+    /** The impostor outlines of each mesh and radius (`outline`). */
+    private readonly outlined = new WeakMap<Mesh, { radius: number; outlines: Float32Array<ArrayBuffer> }>();
     /** What `attach` took, for a producer that comes later. */
     private attached?: [Gpu, GPUBuffer, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
@@ -236,6 +239,7 @@ export class Instances {
             vertices: gpu.buffer('instances', VERTEX_POOL, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
             indices: gpu.buffer('instances', INDEX_POOL, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST),
             slots: gpu.buffer('instances', MODELS * 4, uniform),
+            outlines: gpu.buffer('instances', MODELS * FRAMES * 16, storage),
             bakes: gpu.buffer('instances', SLOTS * STRIDE, uniform),
             albedo: atlas(),
             normal: atlas(),
@@ -256,7 +260,7 @@ export class Instances {
         ] });
         const atlasLayout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
-            { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'),
+            { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'), entry(4, V, 'read-only-storage'),
         ] });
         const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V | C, 'uniform', true)] });
         const mipLayout = device.createBindGroupLayout({ entries: [
@@ -332,7 +336,7 @@ export class Instances {
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
             renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
             emptyGroup: group(emptyLayout, []),
-            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots]),
+            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
             bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
             mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
@@ -394,6 +398,7 @@ export class Instances {
             const slot = this.atlas.get(model)?.slot, spec = this.specs[model], placed = this.placed[model];
             if (slot === undefined || !spec?.impostor || !placed.length) continue;
             const [first, count, base] = placed[spec.impostor.from];
+            r.gpu.device.queue.writeBuffer(r.outlines, model * FRAMES * 16, this.outline(spec.tiers[spec.impostor.from].mesh, radius(spec)));
             const data = new ArrayBuffer(16);
             new Uint32Array(data).set([model, 0, slot]);
             new Float32Array(data)[1] = radius(spec);
@@ -517,6 +522,15 @@ export class Instances {
         r.gpu.device.queue.writeBuffer(r.slots, 0, slots);
     }
 
+    /** The outlines of a mesh's impostor (`outlines`), once per mesh and radius. */
+    private outline(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
+        const known = this.outlined.get(mesh);
+        if (known?.radius === radius) return known.outlines;
+        const made = outlines(mesh, radius);
+        this.outlined.set(mesh, { radius, outlines: made });
+        return made;
+    }
+
     /** Writes the models and their meshes into the pools; every impostor bakes again. */
     private upload(r: Resources): void {
         const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models);
@@ -591,6 +605,68 @@ function radius(spec: ModelSpec): number {
     let most = 0;
     for (const { mesh: { position: p } } of spec.tiers) for (let i = 0; i < p.length; i += 3) most = Math.max(most, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));
     return most;
+}
+
+/**
+ * Per frame of a model's impostor (8 × 8, FRAMES of hemi.wgsl), the trapezoid of the frame's square
+ * (−1 to 1 over the sphere of `radius` about (0, 0, 0.5)) that holds the mesh seen along the frame and
+ * along its eight neighbours: its bottom and top, and its half widths there, the least in area.
+ */
+export function outlines(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> {
+    const BANDS = 32, p = mesh.position, n = p.length / 3, own: number[][] = [];
+    const xs = new Float64Array(n), ys = new Float64Array(n);
+    for (let frame = 0; frame < FRAMES; frame++) {
+        // hemi_decode and view_axes of hemi.wgsl.
+        const ex = ((frame % 8) + 0.5) / 4 - 1, ey = (Math.floor(frame / 8) + 0.5) / 4 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
+        const pz = 1 - Math.abs(px) - Math.abs(py), norm = Math.hypot(px, py, pz), d = [px / norm, py / norm, pz / norm];
+        const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
+        const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];
+        let low = Infinity, high = -Infinity;
+        for (let k = 0; k < n; k++) {
+            const x = p[3 * k], y = p[3 * k + 1], z = p[3 * k + 2] - 0.5;
+            xs[k] = Math.abs(x * right[0] + y * right[1] + z * right[2]) / radius;
+            ys[k] = (x * up[0] + y * up[1] + z * up[2]) / radius;
+            low = Math.min(low, ys[k]);
+            high = Math.max(high, ys[k]);
+        }
+        // The widest |x| in each of BANDS bands of height, which the trapezoid holds at both ends of the band.
+        const span = Math.max(high - low, 1e-6), widest = new Float64Array(BANDS).fill(-1);
+        for (let k = 0; k < n; k++) {
+            const band = Math.min(BANDS - 1, Math.floor(((ys[k] - low) / span) * BANDS));
+            widest[band] = Math.max(widest[band], xs[k]);
+        }
+        // The least w0 + w1 where w0 (1 − t) + w1 t ≥ the widest at both ends t of every band: convex in w1.
+        const bottom = (top: number) => {
+            let w = 0;
+            for (let band = 0; band < BANDS; band++) {
+                const x = widest[band];
+                if (x < 0) continue;
+                // At the band's foot; its top binds harder unless it is the trapezoid's top.
+                w = Math.max(w, (x - (top * band) / BANDS) / (1 - band / BANDS));
+                if (band < BANDS - 1) w = Math.max(w, (x - (top * (band + 1)) / BANDS) / (1 - (band + 1) / BANDS));
+            }
+            return w;
+        };
+        // The top band's top needs w1 at least its widest.
+        let a = widest[BANDS - 1], b = Math.max(...widest);
+        for (let step = 0; step < 24; step++) {
+            const m1 = a + (b - a) / 3, m2 = b - (b - a) / 3;
+            if (m1 + bottom(m1) <= m2 + bottom(m2)) b = m2;
+            else a = m1;
+        }
+        own.push([low, high, bottom(b) + 1e-4, b + 1e-4]);
+    }
+    // A trapezoid holds its neighbours' where its edges hold their widest at its bottom and top: the
+    // widest of lines is convex, so it lies under the chord between those.
+    const out = new Float32Array(FRAMES * 4);
+    for (let frame = 0; frame < FRAMES; frame++) {
+        const x = frame % 8, y = Math.floor(frame / 8), near: number[][] = [];
+        for (let j = Math.max(0, y - 1); j <= Math.min(7, y + 1); j++) for (let i = Math.max(0, x - 1); i <= Math.min(7, x + 1); i++) near.push(own[8 * j + i]);
+        const low = Math.min(...near.map(o => o[0])), high = Math.max(...near.map(o => o[1]));
+        const width = (at: number) => Math.max(0, ...near.map(([l, h, w0, w1]) => w0 + ((w1 - w0) * (at - l)) / Math.max(h - l, 1e-6)));
+        out.set([low, high, width(low), width(high)], 4 * frame);
+    }
+    return out;
 }
 
 /** The farthest that a vertex of a model lies from its axis. */

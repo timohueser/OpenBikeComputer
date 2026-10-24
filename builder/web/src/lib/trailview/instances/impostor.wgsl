@@ -10,6 +10,9 @@
 @group(1) @binding(2) var atlas_sampler: sampler;
 // Per model its layer of the atlas.
 @group(1) @binding(3) var<uniform> slots: array<vec4u, 64>;
+// Per model and frame the outline that holds the model in the frame and its neighbours (outlines of
+// instances.ts): its bottom and top in the frame, and its half widths there.
+@group(1) @binding(4) var<storage, read> outlines: array<vec4f>;
 
 // Texels along a frame's side, and the atlas's mip levels: a frame of 32 texels down to 1.
 const FRAME_TEXELS: f32 = 32.0;
@@ -48,25 +51,34 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     let toward = vec3f(t.x * d.x + t.y * d.y, -t.y * d.x + t.x * d.y, d.z);
     let axes = view_axes(d);
     let r = m.radius * i.at.w;
+    let far = length(centre);
+    // A frame spans the sphere's diameter.
+    let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
+    let level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
+    // The quad holds only the part of the frame that the model covers: the outline of the frame that
+    // holds the direction, which holds its neighbours too, as the fragments pick them, and a texel of
+    // the level about it.
+    let margin = exp2(ceil(level)) * 2.0 / FRAME_TEXELS;
+    let at = clamp(vec2i(floor(hemi_encode(toward) * FRAMES)), vec2i(0), vec2i(i32(FRAMES) - 1));
+    let outline = outlines[model * u32(FRAMES * FRAMES) + u32(at.y * i32(FRAMES) + at.x)];
+    let up = 0.5 * v.position.y + 0.5;
+    let corner = clamp(vec2f(v.position.x * (mix(outline.z, outline.w, up) + margin), mix(outline.x, outline.y, up) + v.position.y * margin), vec2f(-1.0), vec2f(1.0));
     // A tree widened by `width` is as wide seen from above as from the side.
-    let p = centre + r * (v.position.x * width * axes[0] + v.position.y * mix(1.0, width, abs(d.z)) * axes[1]);
+    let p = centre + r * (corner.x * width * axes[0] + corner.y * mix(1.0, width, abs(d.z)) * axes[1]);
     var out: ImpostorOut;
     out.clip = frame.view_proj * vec4f(p, 1.0);
     let haze = haze_at(centre);
     out.fog = haze.fog;
     out.air = haze.air;
-    out.corner = v.position.xy;
+    out.corner = corner;
     out.toward = toward;
     out.turn = t;
     out.look = i.look;
     out.slot = slots[model / 4u][model % 4u];
     out.ground = i.ground;
     out.tie = m.tie;
-    let far = length(centre);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
-    // A frame spans the sphere's diameter.
-    let texels = FRAME_TEXELS * far * frame.pixel / (look.screen.z * 2.0 * r);
-    out.level = clamp(log2(max(texels, 1.0)), 0.0, ATLAS_LEVELS - 1.0);
+    out.level = level;
     return out;
 }
 
