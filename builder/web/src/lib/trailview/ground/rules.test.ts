@@ -26,7 +26,6 @@ describe('the rules of the ground', () => {
         expect([SLOT.heather, SLOT.speckle, SLOT.terrain, SLOT.bedding, SLOT.snap].map(slot => slot - SLOT.cliff)).toEqual([1, 2, 3, 4, 5]);
         expect(SLOT.kinds).toBe(SLOT.cliff + 15);
         expect(SLOT.hardness).toBe(SLOT.kinds + 3);
-        expect(SLOT.year).toBe(SLOT.hardness + 2);
     });
 
     it('fades in a paint that one season leaves out, at its own colour', () => {

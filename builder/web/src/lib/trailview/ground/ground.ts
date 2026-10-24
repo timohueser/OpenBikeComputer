@@ -220,7 +220,6 @@ export class Ground {
             ints.set([x * PAGE, y * PAGE, level, slot], 8 * k);
             floats[8 * k + 4] = 2 * Math.PI * EARTH_RADIUS * Math.cos(tileLonLat(x + 0.5, y + 0.5, level)[1] * RAD) / 2 ** (level + 8);
             ints[8 * k + 5] = data ? 3 : 1;
-            floats[8 * k + 6] = this.pages.day;
             if (data) this.upload(r, slot, k, data);
         });
         r.gpu.device.queue.writeBuffer(r.jobs, 0, data);

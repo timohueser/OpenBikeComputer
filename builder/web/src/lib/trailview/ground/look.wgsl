@@ -84,7 +84,6 @@ fn slot_roads() -> i32 { return slot_cliff() + 8; }
 fn slot_road_line() -> i32 { return slot_cliff() + 14; }
 fn slot_kinds() -> i32 { return slot_cliff() + 15; }
 fn slot_hardness() -> i32 { return slot_kinds() + i32(look.codes.z); }
-fn slot_year() -> i32 { return slot_hardness() + i32(look.codes.w); }
 
 // The cover's ramp in the region, low NDVI to high.
 fn ramp(region: u32, cover: u32, t: f32) -> vec3f {
