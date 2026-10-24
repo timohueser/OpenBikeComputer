@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Source } from '../../planner/layers/archive';
+import { FORMAT } from './features';
 import { featureTiles, releaseTiles } from './terrain';
 
 const gets = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../../planner/layers/archive', async original => ({
     ...(await original<typeof import('../../planner/layers/archive')>()),
-    openSource: async () => ({ get: async () => (gets.count++, new Uint8Array([1, 2, 3])) }) as unknown as Source,
+    openSource: async () => ({ metadata: { features_format: FORMAT }, get: async () => (gets.count++, new Uint8Array([1, 2, 3])) }) as unknown as Source,
 }));
 
 const RELEASE = 'https://maps.test/releases/abc';
