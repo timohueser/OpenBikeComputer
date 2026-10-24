@@ -103,6 +103,12 @@ at the quality of the colour, so its codes 0 and 1 are not exact.
 | 1 | The quarter saw snow. The colour is that of the nearest quarter without snow, the previous one first, or black |
 | 2–255 | NDVI = (alpha − 1) / 127 − 1 |
 
+The NDVI has the resolution of the chroma of 4:2:0: a texel with a code of 2 or more takes the rounded
+mean code m of the texels with a code of 2 or more in its 2 × 2 block, stored as
+128 + 4 × floor((m − 128) / 4) + 2. So a stored code is a multiple of 4 plus 2, and the code of a
+negative NDVI stays below 128. Codes 0 and 1 stay as they are. This is the last step of the bake, on
+each tile of each zoom.
+
 In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
 shadow, unless it is snow in shade. Where the third quarter looked, it takes the chroma of the third
 quarter at its own brightness.
@@ -113,12 +119,12 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
 | --- | --- | --- | --- | --- |
-| `webp-13` | lossy WebP, 4:2:0 | 13 | 13 m | 6.5 m |
-| `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 13 m |
-| `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 26 m |
-| `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 13 m |
-| `avif-11` | AVIF, 4:2:0 | 11 | 52 m | 26 m |
-| `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 13 m |
+| `webp-13` | lossy WebP, 4:2:0 | 13 | 13 m | 13 m |
+| `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 26 m |
+| `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 52 m |
+| `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 26 m |
+| `avif-11` | AVIF, 4:2:0 | 11 | 52 m | 52 m |
+| `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 26 m |
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.
 
