@@ -116,6 +116,8 @@ export class Pages {
     /** Tiles whose decoded pages wait in `arrivals`, by name. */
     private readonly queued = new Map<string, number>();
     private readonly refresh = new Set<Page>();
+    /** The tiles that the frame's pages wait for, by name: the frame starts the most needed of them. */
+    private readonly wishes = new Map<string, Node>();
     private frame = 0;
     /** Tile loads and decodes in flight. */
     loads = 0;
@@ -176,7 +178,9 @@ export class Pages {
             if (page) page.used = this.frame;
         }
         const holders = this.holders(wanted, anchor);
+        this.wishes.clear();
         for (const node of wanted) this.want(node, work, holders);
+        this.start(anchor);
         const keys = new Set(wanted.map(key));
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
@@ -386,11 +390,29 @@ export class Pages {
         return this.around(node).flatMap(near => this.pages.get(key(near)) ?? []).filter(page => page.node !== node);
     }
 
-    /** Requests a stored tile, or decodes its kept body again. */
+    /** A tile that a page waits for: the frame loads it if it is among the most needed. */
     private load(z: number, x: number, y: number): void {
         const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
         if ((tile && tile.state !== 'done') || this.queued.get(name)) return;
-        if (this.loads >= LOADS) return;
+        this.wishes.set(name, { level: z, x, y });
+    }
+
+    /**
+     * Starts the wished tiles nearest first in tile sizes, coarse first among the tiles under the eye.
+     * The screen error of the coarser page that draws in a tile's place grows with the tile's size over
+     * its distance, so the fine tile under the eye goes before the coarser tiles away from it, and the
+     * coarse cover, a few levels above the drawn nodes, still goes first. Level by level, the near field
+     * would wait for every coarser tile of the view.
+     */
+    private start(anchor: Anchor): void {
+        const view = (tile: Node) => distances({ anchor, above: 0 }, tile)[0] / (size(tile.level) * anchor.unit);
+        const order = [...this.wishes.values()].map(tile => ({ tile, view: view(tile) })).sort((a, b) => a.view - b.view || a.tile.level - b.tile.level);
+        for (const { tile } of order.slice(0, Math.max(0, LOADS - this.loads))) this.fetch(tile.level, tile.x, tile.y);
+    }
+
+    /** Requests a stored tile, or decodes its kept body again. */
+    private fetch(z: number, x: number, y: number): void {
+        const name = `${z}/${x}/${y}`, tile = this.tiles.get(name);
         const body = this.bodies.get(name);
         this.loads++;
         this.tiles.set(name, { state: body ? 'decoding' : 'loading', empty: tile?.empty });
@@ -441,7 +463,8 @@ export class Pages {
             return undefined;
         }
         // A synthesized page reads its stored ancestors only, and `heights` holds all that they draw.
-        const page: Page = { node, kind, slot, used: this.frame, range: heights, complete: true, ready: false };
+        // A page that the frame does not want counts as used a frame ago: a wanted arrival of the frame can take its slot.
+        const page: Page = { node, kind, slot, used: wanted ? this.frame : this.frame - 1, range: heights, complete: true, ready: false };
         this.pages.set(key(node), page);
         return page;
     }
