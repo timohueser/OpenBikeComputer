@@ -24,8 +24,7 @@ struct Model {
     trunk: f32,
     // How far the model takes its hue from the ground under it (draw.wgsl): 0 for a tree.
     tie: f32,
-    // The tier of its impostor, TIERS for a model without one.
-    impostor: f32,
+    unused: f32,
     // A tree's sink table (sinks of instances.ts), at the slopes SINK_STEP × (k + 1) for k 0 to 3 and
     // 4 to 7: how far a crown vertex lies below the line of that slope through the crown's base, at most.
     sink_low: vec4f,
@@ -225,8 +224,7 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;
     }
-    // The atlas holds an impostor's crown unlifted.
-    let at = base - vec3f(0.0, 0.0, height * slope_sink(m, slope, width, select(lift, 0.0, f32(tier) == m.impostor)));
+    let at = base - vec3f(0.0, 0.0, height * slope_sink(m, slope, width, lift));
     let centre = at + vec3f(0.0, 0.0, 0.5 * height);
     let radius = m.radius * height * max(width, 1.0);
     if (!visible(centre, radius) || hidden(centre, radius)) {

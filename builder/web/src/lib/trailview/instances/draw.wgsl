@@ -21,7 +21,7 @@ struct Model {
     crown: f32,
     trunk: f32,
     tie: f32,
-    impostor: f32,
+    unused: f32,
     sink_low: vec4f,
     sink_high: vec4f,
 }

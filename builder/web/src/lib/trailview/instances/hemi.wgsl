@@ -1,4 +1,6 @@
-// The frames of an impostor: directions over the upper half of the sphere, hemi-octahedral.
+// The frames of an impostor: directions over the upper half of the sphere, hemi-octahedral. Frame k
+// of a side looks along the point k / (FRAMES − 1) of the square, so the frames of its edge look along
+// the horizon, as the eye mostly sees a far tree.
 
 const FRAMES: f32 = 8.0;
 

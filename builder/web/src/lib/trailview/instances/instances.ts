@@ -35,8 +35,8 @@ const ROOM = [0.7, 0.9];
 const SLOTS = 32, FRAMES = 64, UNUSED_FRAMES = 60;
 /** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
 const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
-/** The quad of an impostor: corners at ±1. */
-const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0], normal: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], color: new Array(12).fill(1), index: [0, 1, 2, 2, 1, 3] };
+/** The quad of an impostor: corners at ±1, and a middle row at y 0 that impostor.wgsl places at the crown's base. */
+const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0], normal: new Array(6).fill([0, 0, 1]).flat(), color: new Array(18).fill(1), index: [0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5] };
 
 /**
  * A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per
@@ -584,7 +584,7 @@ export class Instances {
                 f[m * 20 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.impostor ? tiers.length : TIERS, ...sinks(spec)], m * 20 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, 0, ...sinks(spec)], m * 20 + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.
@@ -625,7 +625,7 @@ export function outlines(mesh: Mesh, radius: number): Float32Array<ArrayBuffer> 
     const xs = new Float64Array(n), ys = new Float64Array(n);
     for (let frame = 0; frame < FRAMES; frame++) {
         // hemi_decode and view_axes of hemi.wgsl.
-        const ex = ((frame % 8) + 0.5) / 4 - 1, ey = (Math.floor(frame / 8) + 0.5) / 4 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
+        const ex = (frame % 8) / 3.5 - 1, ey = Math.floor(frame / 8) / 3.5 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
         const pz = 1 - Math.abs(px) - Math.abs(py), norm = Math.hypot(px, py, pz), d = [px / norm, py / norm, pz / norm];
         const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
         const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];

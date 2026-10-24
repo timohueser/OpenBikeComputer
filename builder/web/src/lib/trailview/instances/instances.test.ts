@@ -16,7 +16,7 @@ describe('the impostor outlines', () => {
             const x = frame % 8, y = Math.floor(frame / 8), nears: number[] = [];
             for (let j = Math.max(0, y - 1); j <= Math.min(7, y + 1); j++) for (let i = Math.max(0, x - 1); i <= Math.min(7, x + 1); i++) nears.push(8 * j + i);
             for (const near of nears) {
-                const ex = ((near % 8) + 0.5) / 4 - 1, ey = (Math.floor(near / 8) + 0.5) / 4 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
+                const ex = (near % 8) / 3.5 - 1, ey = Math.floor(near / 8) / 3.5 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
                 const pz = 1 - Math.abs(px) - Math.abs(py), n = Math.hypot(px, py, pz), d = [px / n, py / n, pz / n];
                 const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
                 const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];

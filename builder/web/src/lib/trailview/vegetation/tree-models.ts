@@ -34,7 +34,7 @@ export class TreeModels {
             for (const [key, index] of this.indexes) {
                 const [model, evergreen, tie] = key.split('|');
                 const { tiers, crown } = built.get(`${model}|${evergreen}`)!;
-                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), impostor: { from: 1, until: reach }, crown, tie: Number(tie) });
+                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), impostor: { from: 2, until: reach }, crown, tie: Number(tie) });
             }
             this.rebuilt = true;
             wake();
