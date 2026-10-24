@@ -4,14 +4,17 @@
 import { EXTENT, type Feature } from '../stream/features';
 import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
-import { GROUND, mix, type MeshBuilder, station, type Corner, type Station } from '../structures/mesh';
+import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
 import type { Owns } from '../structures/node';
 import { metresPerUnit, type Line, type Node } from '../terrain/bins';
 
-/** A feature of a tile in world units: each part's x, y in turn, and whether its first and last vertex end the line, not the cut of the tile. */
+/**
+ * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
+ * the tile's buffered square, so a part's first or last vertex that a node of the tile owns ends the line.
+ */
 export interface Placed {
     tags: Record<string, string>;
-    parts: { outer: boolean; xy: number[]; ends: [boolean, boolean] }[];
+    parts: { outer: boolean; xy: number[] }[];
 }
 
 /** A model on the surface for the instances: its foot at world point x, y, its +x turned `yaw` radians counter-clockwise from east, its height in metres, a model of the kind by name and a tint, 0.75 to 1.25. */
@@ -39,13 +42,7 @@ export interface Kind {
 /** A feature of a tile in world units. */
 export function placed({ tags, parts }: Feature, tile: Node): Placed {
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
-    // The cut keeps the segments that meet the buffered square and one vertex more: an end in the square is the line's own.
-    const inside = (xy: Int32Array, v: number) => xy[2 * v] >= 0 && xy[2 * v] <= EXTENT && xy[2 * v + 1] >= 0 && xy[2 * v + 1] <= EXTENT;
-    return {
-        tags, parts: parts.map(({ outer, xy }) => ({
-            outer, xy: Array.from(xy, (v, i) => ((i % 2 ? oy : ox) + v) * scale), ends: [inside(xy, 0), inside(xy, xy.length / 2 - 1)] as [boolean, boolean],
-        })),
-    };
+    return { tags, parts: parts.map(({ outer, xy }) => ({ outer, xy: Array.from(xy, (v, i) => ((i % 2 ? oy : ox) + v) * scale) })) };
 }
 
 /** A model on the surface at each point of a feature that the node owns. */
@@ -82,26 +79,31 @@ export interface Section { corners: Corner[]; colour: (x: number, y: number) => 
 /**
  * A cross-section drawn along each line of a feature on the drawn surface, closed at the line's ends.
  * A segment's pieces are at most `step` metres long, so it follows the ground; the node that owns a
- * segment's first vertex draws it.
+ * segment's first vertex draws it, and the node that owns an end draws its cap.
  */
 export function along(feature: Placed, mesh: MeshBuilder, owns: Owns, { corners, colour, step }: Section): void {
-    for (const { xy, ends } of feature.parts) {
+    for (const { xy } of feature.parts) {
         const n = xy.length / 2;
-        const line = { xy, z: new Array(n).fill(0) } as unknown as Line;
+        if (n < 2) continue;
+        const line: Line = { kind: 0, xy, z: new Array(n).fill(0), h: 0, code: 0, ford: false, profile: 0 };
+        const paint = (v: number) => (colour(xy[2 * v], xy[2 * v + 1]) | (GROUND << 24)) >>> 0;
         for (let v = 0; v + 1 < n; v++) {
             if (!owns(xy[2 * v], xy[2 * v + 1])) continue;
-            const s = station(line, v), t = station(line, v + 1), c = (colour(xy[2 * v], xy[2 * v + 1]) | (GROUND << 24)) >>> 0;
+            const s = station(line, v), t = station(line, v + 1), c = paint(v);
             const pieces = Math.max(1, Math.ceil(Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]) / step));
             for (let k = 0; k < pieces; k++) {
                 const p = mix(s, t, k / pieces), q = mix(s, t, (k + 1) / pieces);
                 corners.slice(1).forEach((b, i) => mesh.strip(p, q, corners[i], b, c, [b[1] - corners[i][1], corners[i][0] - b[0]]));
             }
-            const ux = t.x - s.x, uy = t.y - s.y, l = Math.hypot(ux, uy) || 1;
-            for (const [at, end, sign] of [[s, v === 0 && ends[0], -1], [t, v + 2 === n && ends[1], 1]] as [Station, boolean, number][]) {
-                if (!end) continue;
-                const ring = corners.map(corner => mesh.at(at, corner, c));
-                for (let i = 1; i + 1 < ring.length; i++) mesh.triangle(ring[0], ring[i], ring[i + 1], [sign * ux / l, -sign * uy / l, 0]);
-            }
+        }
+        // A closed line has no ends.
+        const closed = xy[0] === xy[2 * n - 2] && xy[1] === xy[2 * n - 1];
+        for (const [v, w] of [[0, 1], [n - 1, n - 2]]) {
+            if (closed || !owns(xy[2 * v], xy[2 * v + 1])) continue;
+            // The cap faces out of the line, in the colour of the segment that it closes.
+            const at = station(line, v), ux = xy[2 * v] - xy[2 * w], uy = xy[2 * v + 1] - xy[2 * w + 1], l = Math.hypot(ux, uy) || 1;
+            const ring = corners.map(corner => mesh.at(at, corner, paint(Math.min(v, w))));
+            for (let i = 1; i + 1 < ring.length; i++) mesh.triangle(ring[0], ring[i], ring[i + 1], [ux / l, -uy / l, 0]);
         }
     }
 }
