@@ -8,9 +8,13 @@
 // #include ../instances/emit.wgsl
 
 struct Plants {
-    // The first world cell of each grid's window, and its cells a side: ground plants in xy, shrubs in zw.
+    // Per grid the first world cell of its window and its cells a side: the ground plants, the shrubs, and
+    // the blades with the model of their patch in w (NO_PLANT for none).
     ground: vec4i,
     shrubs: vec4i,
+    blades: vec4i,
+    // x: the plant that the blades stand for within BLADES_M, or NO_PLANT.
+    sward: vec4u,
 }
 
 // Per material code (4 to a vec4) its cover, as COVER_ORDER of ground/rules.ts, and MOOR at bit 8.
@@ -29,7 +33,10 @@ struct Data {
 // Units along a cell of the ground plants' grid and of the shrubs' grid: 0.8 m and 6.5 m at 47° N.
 const GROUND_UNITS: i32 = 32;
 const SHRUB_UNITS: i32 = 256;
+const BLADE_UNITS: i32 = 13;
 const GROUND_M: f32 = 60.0;
+const BLADES_M: f32 = 30.0;
+const COVER_CROP: u32 = 3u;
 const FULL_M: f32 = 20.0;
 const SHRUB_M: f32 = 500.0;
 // The eye stands clear of plants this far, and of shrubs this far.
@@ -158,7 +165,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
             break;
         }
     }
-    if (pick == NO_PLANT || on_road(s, 0.3)) {
+    if (pick == NO_PLANT || (pick == plants.sward.x && d < BLADES_M) || on_road(s, 0.3)) {
         return;
     }
     let h = ground_height(s, u);
@@ -237,4 +244,33 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     emit(model, render_at(s, h), height, 6.2831853 * plant_hash(cell, 5u), 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0);
+}
+
+// The near sward: a patch of blades on a grid of 0.33 m within BLADES_M, on grass and crops off the
+// moor, where the blades stand for the plant `sward`.
+@compute @workgroup_size(8, 8)
+fn blades(@builtin(global_invocation_id) id: vec3u) {
+    if (any(id.xy >= vec2u(u32(plants.blades.z)))) {
+        return;
+    }
+    let cell = plants.blades.xy + vec2i(id.xy);
+    let u = grid_point(cell, BLADE_UNITS);
+    let s = lod_space(vec2f(u - surface.anchor));
+    let d = length(s);
+    if (d > BLADES_M || d < 0.5 || !roughly_visible(s, d)) {
+        return;
+    }
+    let ground = cell_at(s);
+    if (ground.x == NO_PLANT) {
+        return;
+    }
+    let cover = cover_of(ground.x);
+    if (((cover & 255u) != COVER_GRASS && (cover & 255u) != COVER_CROP) || (cover & MOOR) != 0u || on_road(s, 0.2)) {
+        return;
+    }
+    let h = plain_height(s);
+    if (!known(h)) {
+        return;
+    }
+    emit(u32(plants.blades.w), render_at(s, h), 0.25 + 0.15 * plant_hash(cell, 4u), 6.2831853 * plant_hash(cell, 5u), 1.0, 0.85 + 0.3 * plant_hash(cell, 6u), 1.0);
 }
