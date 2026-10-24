@@ -17,8 +17,8 @@ const STRIDE = 256;
 /** The mesh pools: vertices and 32-bit indices. */
 const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
 /**
- * The mesh tiers whose instances always draw whole, so they draw without the dither's discard: they
- * end by 150 m, and only the forest fades trees in, past its THIN_M of 600 m.
+ * The mesh tiers that draw without the dither's discard, as WHOLE_TIERS of emit.wgsl: an instance that
+ * draws on a share of its pixels stages in a farther tier.
  */
 const WHOLE_TIERS = 2;
 /** A tree's sink table (`sinks`): its slopes, SINK_STEP apart from SINK_STEP, as in emit.wgsl. */

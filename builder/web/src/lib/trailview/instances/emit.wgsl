@@ -87,7 +87,9 @@ struct Occlusion {
 
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
-// The slopes of the sink table, as SINK_STEP of instances.ts.
+// The mesh tiers that draw without the dither (WHOLE_TIERS of instances.ts), and the slopes of the sink
+// table (SINK_STEP of instances.ts).
+const WHOLE_TIERS: u32 = 2u;
 const SINK_STEP: f32 = 0.25;
 // The hashes of the producers: a place's values come from whole world cells, the same at every distance.
 fn mix_bits(a: u32) -> u32 {
@@ -215,6 +217,10 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
     var tier = 0u;
     while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier) * (1.0 - m.fade * pick)) {
         tier++;
+    }
+    // An instance drawn on a share of its pixels draws with the dither.
+    if (appear < 1.0) {
+        tier = max(tier, WHOLE_TIERS);
     }
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;
