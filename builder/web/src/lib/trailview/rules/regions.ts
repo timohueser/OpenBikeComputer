@@ -5,6 +5,9 @@
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
 export const SEASONS: readonly Season[] = ['winter', 'spring', 'summer', 'autumn'];
+
+/** The season of a date `YYYY-MM-DD`: winter from January. */
+export const seasonOf = (date: string): Season => SEASONS[Math.floor((Number(date.slice(5, 7)) - 1) / 3)];
 export type Ramp = [string, string, string];
 export type Preset = 'sunny' | 'cloudy' | 'rainy';
 
@@ -135,10 +138,10 @@ function inherited(table: Record<string, Record<string, unknown>>, name: string,
     return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
 }
 
-/** The tree model of a pack's orchards, by place. */
+/** The tree model of a pack's orchards. */
 function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): string | undefined {
     if (typeof pack !== 'string' || !packs?.[pack]) return undefined;
-    const model = local(inherited(packs, pack).orchard);
+    const model = inherited(packs, pack).orchard;
     return typeof model === 'string' ? model : undefined;
 }
 

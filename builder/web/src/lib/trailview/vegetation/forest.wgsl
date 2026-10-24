@@ -23,6 +23,9 @@ struct Forest {
     // Trees stand within `reach` metres; past `thin` metres they thin.
     reach: f32,
     thin: f32,
+    // The material code of orchards, whose trees the orchards stand (orchards.ts).
+    orchard: u32,
+    unused: u32,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
 }
@@ -299,8 +302,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let ground = stand_height(s, at);
     let region = stable_region(s);
-    // No data (255) or no page: no species.
-    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES) {
+    // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
+    if (!known(ground) || region >= arrayLength(&data.species) / SPECIES || finest_cell(s).r == forest.orchard) {
         return;
     }
     let coarse = units_height(at, BAND_LEVEL);
@@ -320,7 +323,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     emit_tree(model, render_at(s, ground - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
-        unit_float(mix_bits(h + 31u)), snow_at(s));
+        unit_float(mix_bits(h + 31u)), snow_at(s), vec3f(0.0));
 }
 
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.

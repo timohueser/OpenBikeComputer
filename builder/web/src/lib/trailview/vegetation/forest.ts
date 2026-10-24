@@ -3,17 +3,13 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
-import { SEASONS, type Rules, type Season } from '../rules/regions';
+import { Instances, type Producer, type Surfaces } from '../instances/instances';
+import type { Rules } from '../rules/regions';
 import { AROUND, Canopy, CANOPY_ZOOM } from './canopy';
-import type { BuiltModel } from './model-worker';
+import { TREE_REACH_M, type TreeModels } from './tree-models';
 
-/** Trees stand within this many metres of the eye: the stamps of main roads reach 4 km. */
-const REACH_M = 4500;
 /** Past this many metres the trees thin with the distance; cells of 2^k × 2^k base cells start at 2^k times it. */
 const THIN_M = 600;
-/** The mesh tiers of a tree: the prototype's three levels of detail, and where each ends; impostors follow to the reach. */
-const TIERS_M = [30, 150, 700];
 /** Units along a cell edge, as CELL in forest.wgsl, and blue-noise points per cell. */
 const CELL = 2048, POINTS = 512;
 /** Tree species per region, as SPECIES in forest.wgsl and tools/trailview/rules.py. */
@@ -39,57 +35,46 @@ interface Resources {
 }
 
 /**
- * The forest: the canopy layer about the eye, the tree models of the season, and the producer of
- * instances (forest.wgsl) that places the trees each frame.
+ * The forest: the canopy layer about the eye and the producer of instances (forest.wgsl) that places
+ * the trees of the season's models (tree-models.ts) each frame.
  */
 export class Forest implements Producer {
     private resources?: Resources;
     private readonly canopy: Canopy;
-    /** The models by `model|evergreen`, as instance model indexes. */
-    private readonly models = new Map<string, number>();
-    private readonly worker = new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' });
-    private season?: Season;
-    private building = 0;
-    private next = 0;
-    /** Whether models arrived since the last update. */
-    private rebuilt = false;
-    private species = new Float32Array(0);
+    private readonly species: Float32Array<ArrayBuffer>;
+    /** The material code of orchards, or none. */
+    private readonly orchard: number;
     private window: [number, number] = [0, 0];
     private side = 0;
     /** Base cells a side of the window at the highest latitude that the view serves: the cell list's size. */
     private readonly most: number;
     /** Metres from the eye where trees stand, at the instances' detail 1. */
-    readonly reach = REACH_M;
+    readonly reach = TREE_REACH_M;
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, private readonly instances: Instances, private readonly wake: () => void) {
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void) {
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
         this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
+        this.orchard = rules.vocabulary.materials.findIndex(material => material.id === 'orchard') >>> 0;
         const words = new Uint32Array(rules.regions.length * SPECIES * 4), table = new Float32Array(words.buffer);
         rules.regions.forEach((region, r) => {
             // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
-            region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).forEach((rule, k) => {
-                const name = `${rule.model}|${rule.evergreen ? 1 : 0}`;
-                if (!this.models.has(name)) this.models.set(name, instances.add({ tiers: [] }));
-                words[4 * (r * SPECIES + k)] = this.models.get(name)! | ((rule.leaf === 'broadleaved' ? 1 : 2) << 16);
+            const species = region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).flatMap(rule => {
+                const model = trees.index(rule.model, rule.evergreen);
+                return model === undefined ? [] : [{ ...rule, model }];
+            });
+            species.forEach((rule, k) => {
+                words[4 * (r * SPECIES + k)] = rule.model | ((rule.leaf === 'broadleaved' ? 1 : 2) << 16);
                 table.set([...rule.elevation, rule.weight], 4 * (r * SPECIES + k) + 1);
             });
         });
         this.species = table;
-        this.worker.onmessage = ({ data }: MessageEvent<{ id: number; built?: BuiltModel[]; error?: string }>) => {
-            this.building--;
-            if (data.error || !data.built) return void console.warn(`Tree models: ${data.error}`);
-            if (data.id !== this.next - 1) return;
-            [...this.models.values()].forEach((model, i) => this.instances.replace(model, this.spec(data.built![i])));
-            this.rebuilt = true;
-            this.wake();
-        };
     }
 
     get idle(): boolean {
-        return this.canopy.idle && this.building === 0;
+        return this.canopy.idle;
     }
 
     get requests(): { requests: number; bytes: number; failed: number } {
@@ -133,21 +118,14 @@ export class Forest implements Producer {
         };
     }
 
-    /** Takes the canopy tiles about the eye at (lon, lat), and the models of the date's season. */
-    update(lonLat: [number, number], date: string): void {
-        this.newContent = this.rebuilt;
-        this.rebuilt = false;
+    /** Takes the canopy tiles about the eye at (lon, lat). */
+    update(lonLat: [number, number]): void {
+        this.newContent = false;
         const r = this.resources;
         if (!r) return;
         const [x, y] = worldPixel(lonLat, 2 ** CANOPY_ZOOM), { unit } = anchorAt(...lonLat);
         this.canopy.update(x, y, Math.min(AROUND, Math.ceil(this.reach / (TILE * unit))));
-        this.newContent ||= this.canopy.changed;
-        const season = SEASONS[Math.floor((Number(date.slice(5, 7)) - 1) / 3)];
-        if (season !== this.season) {
-            this.season = season;
-            this.building++;
-            this.worker.postMessage({ id: this.next++, models: [...this.models.keys()].map(name => name.split('|')).map(([model, evergreen]) => ({ model, season: evergreen === '1' ? 'summer' : season })) });
-        }
+        this.newContent = this.canopy.changed;
         const [ux, uy] = worldPixel(lonLat, UNITS);
         this.side = Math.min(this.most, windowSide(lonLat[1]));
         // Whole cells of the coarsest level, as LEVELS of forest.wgsl.
@@ -156,6 +134,7 @@ export class Forest implements Producer {
         ints.set(this.window);
         new Uint32Array(params).set([this.side, POINTS], 2);
         floats.set([this.reach, THIN_M], 4);
+        new Uint32Array(params)[6] = this.orchard;
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
         r.gpu.device.queue.writeBuffer(r.cells, 0, new Uint32Array([0, 1, 1, 0]));
@@ -175,16 +154,11 @@ export class Forest implements Producer {
         pass.setBindGroup(0, r.groups[1]);
         pass.dispatchWorkgroupsIndirect(r.cells, 0);
     }
-
-    /** A tree model's tiers. */
-    private spec({ tiers, crown }: BuiltModel): ModelSpec {
-        return { tiers: tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 1, until: this.reach }, crown };
-    }
 }
 
 /** Base cells a side of the window that holds the reach at a latitude, in whole cells of the coarsest level and their margin. */
 function windowSide(lat: number): number {
-    return 8 * Math.ceil((2 * REACH_M / (CELL * anchorAt(0, lat).unit) + 16) / 8);
+    return 8 * Math.ceil((2 * TREE_REACH_M / (CELL * anchorAt(0, lat).unit) + 16) / 8);
 }
 
 /**

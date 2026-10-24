@@ -18,6 +18,7 @@ import { featureTiles, pageDecoder, releaseTiles } from './stream/terrain';
 import { Terrain, type Audit, type TerrainStats } from './terrain/terrain';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
+import { TreeModels } from './vegetation/tree-models';
 import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import type { Labs } from './labs';
@@ -83,6 +84,7 @@ export class TrailView {
     private readonly groundLook: Ground;
     private readonly houses: Houses;
     private readonly instances = new Instances();
+    private readonly trees: TreeModels;
     private readonly forest: Forest;
     private readonly plants: Plants;
     private readonly orchards: Orchards;
@@ -122,9 +124,10 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
-        this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
-        this.plants = new Plants(this.groundLook.rules, this.instances, labs.grass === 'blades', () => this.request());
-        this.orchards = new Orchards(this.groundLook.rules, this.instances, featureTiles(config), () => this.request());
+        this.trees = new TreeModels(this.instances, () => this.request());
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, labs.grass === 'blades', () => this.request());
+        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
@@ -207,7 +210,7 @@ export class TrailView {
     async waitForIdle(): Promise<void> {
         await this.nextFrame();
         // A tile or a probe that arrives draws the next frame.
-        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
+        while (!this.terrain.idle || !this.groundLook.idle || !this.houses.idle || !this.trees.idle || !this.forest.idle || !this.plants.idle || !this.orchards.idle || !this.instances.idle || !this.settled() || this.converging) await new Promise<void>(resolve => this.rendered.push(resolve));
         await this.gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -332,9 +335,10 @@ export class TrailView {
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
-        this.forest.update(lonLat, this.extras.date);
-        this.plants.update(lonLat, this.extras.date);
-        this.orchards.update(lonLat, this.extras.date, this.groundLook.rules.regions[[...this.groundLook.regionsAt(...lonLat)].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1]);
+        this.trees.update(this.extras.date);
+        this.forest.update(lonLat);
+        this.plants.update(lonLat, this.extras.date, place.above);
+        this.orchards.update(lonLat, (lon, lat) => [...this.groundLook.regionsAt(lon, lat)].sort((a, b) => b[1] - a[1])[0]?.[0]);
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
@@ -342,7 +346,7 @@ export class TrailView {
         if (eye && group) {
             const camera = [...viewProj, eye.east, eye.north, eye.z, scale], extras = JSON.stringify(this.extras);
             moved = camera.some((value, i) => value !== this.camera[i]);
-            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
+            changed = this.terrain.newContent || this.groundLook.newContent || this.houses.newContent || this.trees.newContent || this.forest.newContent || this.plants.newContent || this.orchards.newContent || this.instances.newContent || extras !== this.drawnExtras;
             this.camera = camera;
             this.drawnExtras = extras;
             step = this.temporal.next(moved, changed, debug ? 1 : STILL_FRAMES);
