@@ -1084,7 +1084,7 @@ pub(crate) mod tests {
         let mut era5 = located(FetchKind::Capture, "https://example.org/era5");
         era5.id = "era5-land".into();
         era5.credential =
-            Some(crate::sources::Credential { env: vec![], file: Some("~/.obc-test-no-such-key".into()) });
+            Some(crate::sources::Credential { file: Some("~/.obc-test-no-such-key".into()), ..Default::default() });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
         let request = |params| Request { refresh: false, source: &era5, version: None, params };
         let err =

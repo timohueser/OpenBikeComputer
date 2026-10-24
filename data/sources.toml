@@ -170,7 +170,7 @@ areas = ["australia-oceania/australia"]
 version = "date"
 redistribute = true
 # The directory of the delivered order, and the vertical datum that its metadata states.
-credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"] }
+credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"], register = "https://elevation.fsdf.org.au", hint = "Order the area, then give the absolute path of the unpacked delivery and its vertical datum, such as AHD." }
 
 [[source]]
 id = "dtm-ca"
@@ -344,7 +344,7 @@ areas = ["europe/denmark"]
 hosts = ["dataforsyningen.dk"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_DK_TOKEN"] }
+credential = { env = ["OBC_REFERENCE_DK_TOKEN"], register = "https://dataforsyningen.dk", hint = "Make a free account (Opret bruger), then copy a new token from Administrer token til webservices og API'er." }
 
 [[source]]
 id = "dtm-es"
@@ -374,7 +374,7 @@ areas = ["europe/finland"]
 hosts = ["*.maanmittauslaitos.fi"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_FI_TOKEN"] }
+credential = { env = ["OBC_REFERENCE_FI_TOKEN"], register = "https://omatili.maanmittauslaitos.fi", hint = "Make a free NLS account, then create a key for the open data interfaces under API keys and copy it." }
 
 [[source]]
 id = "dtm-fr"
@@ -473,7 +473,7 @@ areas = ["europe/sweden"]
 hosts = ["*.lantmateriet.se"]
 version = "date"
 redistribute = true
-credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"] }
+credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"], register = "https://geotorget.lantmateriet.se", hint = "Apply for Markhöjdmodell Nedladdning, grid 1+ with Basic authentication, then copy the consumer user name and password." }
 
 [[source]]
 id = "dtm-uk"
@@ -639,7 +639,7 @@ hosts = ["confluence.ecmwf.int"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.cdsapirc" }
+credential = { file = "~/.cdsapirc", register = "https://cds.climate.copernicus.eu", hint = "Make a free account, accept the ERA5-Land licence on the dataset page, then copy the personal access token of your profile." }
 
 [[source]]
 id = "modis-snow"
@@ -673,7 +673,7 @@ hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
+credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
 [[source]]
 id = "hansen-gfc"
@@ -754,7 +754,7 @@ hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
 redistribute = true
-credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
+credential = { file = "~/.config/openbikecomputer/cdse-s3.env", register = "https://eodata-s3keysmanager.dataspace.copernicus.eu", hint = "Sign in with a free Copernicus Data Space account, add a credential, then copy its access key and secret key." }
 
 [[source]]
 id = "egdi-geology"

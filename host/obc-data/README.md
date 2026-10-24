@@ -41,10 +41,12 @@ serves, so they need no commit.
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
+| `~/.config/openbikecomputer/credentials.env` | `env` credentials of sources; the environment wins |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
-Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
+Set a source credential on the Machine screen, or pipe it to `obc data source credential ID`.
+Keep other secrets in the host environment or ignored `tools/obc.local`, never tracked config.
 
 ## Daily commands
 

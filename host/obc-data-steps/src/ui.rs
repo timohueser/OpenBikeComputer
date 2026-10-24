@@ -1,11 +1,14 @@
 //! `obc data ui`: the page of this machine on http://127.0.0.1:8700/. It serves the page that
-//! `npm run build:data` builds into `builder/web/dist/data/`, and one route, `POST /api/cli`, that
-//! runs this binary as `obc data --json ARGS`. So the page can do only what the CLI can.
+//! `npm run build:data` builds into `builder/web/dist/data/`, and two routes: `POST /api/cli` runs
+//! this binary as `obc data --json ARGS`, and `POST /api/credential` runs `obc data --json source
+//! credential SOURCE` with the values on its standard input. So the page can do only what the CLI
+//! can, and a value never goes to argv or to a log.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Request, State};
 use axum::http::{header, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
@@ -32,6 +35,14 @@ struct Page {
 #[serde(deny_unknown_fields)]
 struct Ask {
     args: Vec<String>,
+}
+
+/// The body of `POST /api/credential`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Login {
+    source: String,
+    values: Vec<String>,
 }
 
 /// The answer to every `POST /api/cli`, a refusal too: the exit status and the JSON of the command.
@@ -93,7 +104,12 @@ fn build(web: &Path) -> Result<(), Error> {
 }
 
 fn router(page: Arc<Page>) -> Router {
-    Router::new().route("/api/cli", post(cli)).fallback(file).layer(middleware::from_fn(guard)).with_state(page)
+    Router::new()
+        .route("/api/cli", post(cli))
+        .route("/api/credential", post(credential))
+        .fallback(file)
+        .layer(middleware::from_fn(guard))
+        .with_state(page)
 }
 
 async fn guard(request: Request, next: Next) -> Response {
@@ -143,7 +159,21 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
     if let Some(error) = refused(&ask.args) {
         return (StatusCode::FORBIDDEN, Json(Answer::failed(2, error))).into_response();
     }
-    Json(answer(page.exe.clone(), page.root.clone(), ask.args).await).into_response()
+    Json(answer(page.exe.clone(), page.root.clone(), ask.args, None).await).into_response()
+}
+
+/// The body is read here, not by `Json`, whose refusal can quote a value.
+async fn credential(State(page): State<Arc<Page>>, body: Bytes) -> Response {
+    let login = serde_json::from_slice::<Login>(&body).ok().filter(|login| {
+        !login.source.starts_with('-') && login.values.iter().all(|value| !value.contains(['\n', '\r']))
+    });
+    let Some(Login { source, values }) = login else {
+        let error = Code::Usage.error("the body is {\"source\": ID, \"values\": [one line, …]}");
+        return (StatusCode::BAD_REQUEST, Json(Answer::failed(2, error))).into_response();
+    };
+    let args = ["source", "credential", &source].map(String::from).to_vec();
+    let input = values.iter().map(|value| format!("{value}\n")).collect();
+    Json(answer(page.exe.clone(), page.root.clone(), args, Some(input)).await).into_response()
 }
 
 /// Why the page does not run `obc data ARGS`: it runs only the commands that its screens use, and
@@ -215,21 +245,28 @@ fn prepared(mut rest: &[&str]) -> bool {
     }
 }
 
-/// Run `exe --json ARGS` in `root`; its standard error goes to the log of the page. The command
-/// runs in a task of its own, so a request that ends first (a page that stops waiting, a reload,
-/// a closed tunnel) neither stops the command nor closes the pipe that it writes to.
-async fn answer(exe: PathBuf, root: PathBuf, args: Vec<String>) -> Answer {
+/// Run `exe --json ARGS` in `root`, with `input` or else nothing on its standard input; its
+/// standard error goes to the log of the page. The command runs in a task of its own, so a request
+/// that ends first (a page that stops waiting, a reload, a closed tunnel) neither stops the command
+/// nor closes the pipe that it writes to.
+async fn answer(exe: PathBuf, root: PathBuf, args: Vec<String>, input: Option<String>) -> Answer {
     let command = tokio::spawn(async move {
         let child = tokio::process::Command::new(&exe)
             .arg("--json")
             .args(&args)
             .current_dir(root)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn();
         let output = match child {
-            Ok(child) => child.wait_with_output().await,
+            Ok(mut child) => {
+                if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+                    // A command that stops before it reads answers with its error.
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, input.as_bytes()).await;
+                }
+                child.wait_with_output().await
+            }
             Err(e) => Err(e),
         };
         (output.map_err(|e| format!("{}: {e}", exe.display())), args)
@@ -376,6 +413,7 @@ mod tests {
             &["source", "refresh"],
             &["source", "fetch", "osm"],
             &["source", "prepare", "wiki"],
+            &["source", "credential", "dtm-dk"],
             &["source", "prepare", "wiki", "--yes"],
             &["source", "prepare", "wiki", "--to", "--dry-run"],
             &["source", "prepare", "wiki", "--dry-run", "--expect", "7a1c"],
@@ -452,15 +490,46 @@ mod tests {
 
         let (dir, exe) = stand_in("#!/bin/sh\nprintf '{\"args\":\"%s\",\"in\":\"%s\"}' \"$*\" \"$(pwd)\"\nexit 3\n");
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let answer = runtime.block_on(answer(exe.clone(), dir.path().into(), words(&["setup"])));
+        let answer = runtime.block_on(answer(exe.clone(), dir.path().into(), words(&["setup"]), None));
         let root = dir.path().canonicalize().unwrap();
         assert_eq!(answer.exit, 3);
         assert_eq!(answer.output, json!({ "args": "--json setup", "in": root.to_str().unwrap() }));
 
         std::fs::write(&exe, "#!/bin/sh\necho 'not json'\n").unwrap();
-        let answer = runtime.block_on(super::answer(exe, dir.path().into(), words(&["setup"])));
+        let answer = runtime.block_on(super::answer(exe, dir.path().into(), words(&["setup"]), None));
         assert_eq!(answer.exit, 1);
         assert_eq!(answer.output["error"]["message"], "`obc data setup` wrote no JSON");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_credential_goes_to_standard_input_and_never_to_the_arguments() {
+        let (dir, exe) = stand_in(
+            "#!/bin/sh\nread -r a; read -r b\nprintf '{\"args\":\"%s\",\"in\":\"%s %s\"}' \"$*\" \"$a\" \"$b\"\n",
+        );
+        let page = Arc::new(Page { dir: dir.path().into(), exe, root: dir.path().into() });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let post = |body: &str| {
+            let response = runtime.block_on(credential(State(page.clone()), Bytes::from(body.to_string())));
+            let status = response.status();
+            let body = runtime.block_on(axum::body::to_bytes(response.into_body(), usize::MAX)).unwrap();
+            (status, serde_json::from_slice::<Value>(&body).unwrap())
+        };
+        let (status, answer) = post(r#"{"source": "dtm-se", "values": ["fake-user", "fake-password"]}"#);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            answer["output"],
+            json!({ "args": "--json source credential dtm-se", "in": "fake-user fake-password" })
+        );
+        for body in [
+            r#"{"source": "--help", "values": []}"#,
+            r#"{"source": "dtm-se", "values": ["fake\nsecond-line"]}"#,
+            r#"{"values": "fake-secret"}"#,
+        ] {
+            let (status, answer) = post(body);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(!answer.to_string().contains("fake"), "{answer}");
+        }
     }
 
     #[cfg(unix)]
@@ -471,7 +540,7 @@ mod tests {
         let (dir, exe) = stand_in("#!/bin/sh\nset -e\nsleep 0.3\nhead -c 300000 /dev/zero | tr '\\0' x\ntouch done\n");
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let request = answer(exe, dir.path().into(), words(&["setup"]));
+            let request = answer(exe, dir.path().into(), words(&["setup"]), None);
             assert!(tokio::time::timeout(std::time::Duration::from_millis(100), request).await.is_err());
             for _ in 0..100 {
                 if dir.path().join("done").exists() {

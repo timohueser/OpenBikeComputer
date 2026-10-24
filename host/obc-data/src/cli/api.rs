@@ -321,6 +321,7 @@ mod tests {
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`serve`, when it listens", generator.subschema_for::<serve_cli::Listening>()),
             schema("`setup`", generator.subschema_for::<setup_cli::Setup>()),
+            schema("`source credential`", generator.subschema_for::<setup_cli::CredentialSet>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`, `runs RUN --stop`", generator.subschema_for::<View>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Status>()),
