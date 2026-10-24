@@ -1,5 +1,4 @@
-// Decodes the ground, colour and snow tiles of a material tile and builds its pages, off the main thread.
-import { imagePixels } from '../../planner/layers/terrain';
+// Decodes the ground, colour and snow tiles of a ground tile and builds its pages, off the main thread.
 import { groundPages, type GroundDate, type Raster } from './ground-pages';
 
 /** A tile body: an image, or the bytes of a snow day. */
@@ -7,11 +6,11 @@ export interface Body { key: string; z: number; x: number; y: number; body: Arra
 
 export interface GroundJob {
     z: number; x: number; y: number;
-    material?: Body; lithology?: Body; region?: Body; quarters?: [Body | undefined, Body | undefined]; snow?: (Body | undefined)[];
+    ground?: Body; quarters?: [Body | undefined, Body | undefined]; snow?: Body;
     date: GroundDate; world: number;
 }
 
-/** Decoded images by key, and the bytes of each that has arrived; a coarse tile serves the pages of many material tiles. */
+/** Decoded images by key, and the bytes of each that has arrived; a coarse tile serves the pages of many ground tiles. */
 const decoded = new Map<string, Promise<Raster>>();
 const sizes = new Map<string, number>();
 const BUDGET = 96 * 2 ** 20;
@@ -20,13 +19,12 @@ let held = 0;
 let gl: WebGL2RenderingContext | null | undefined;
 
 /**
- * The RGBA bytes of an image as stored. A 2D canvas premultiplies alpha, which loses the colour under
- * the low alpha codes of the colour tiles, so the pixels go through a WebGL texture. Without WebGL 2
- * the canvas decode stands in: it is exact only where alpha is 255.
+ * The RGBA bytes of an image as stored. A 2D canvas premultiplies alpha, which loses the bytes under
+ * an alpha below 255, as the region of a ground tile, so the pixels go through a WebGL texture.
  */
 async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: Uint8Array }> {
     if (!gl || gl.isContextLost()) gl = new OffscreenCanvas(1, 1).getContext('webgl2');
-    if (!gl) return imagePixels(new Uint8Array(body)).then(image => ({ size: image.width, data: new Uint8Array(image.data.buffer) }));
+    if (!gl) throw new Error('The ground decodes through WebGL 2, which this worker does not have.');
     const bitmap = await createImageBitmap(new Blob([body]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
     const texture = gl.createTexture(), framebuffer = gl.createFramebuffer();
     try {
@@ -47,11 +45,27 @@ async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: 
     }
 }
 
+/**
+ * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. Every ground texel has an alpha
+ * of at most 61, so a decode that premultiplies scales every byte of the ground.
+ */
+const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
+let probed: Promise<void> | undefined;
+
+/** Fails where this worker does not decode the RGB under a low alpha exactly. */
+function probe(): Promise<void> {
+    probed ??= straightPixels(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer).then(({ data }) => {
+        const exact = [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
+        if (!exact) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
+    });
+    return probed;
+}
+
 function raster(body: Body | undefined): Promise<Raster | undefined> {
     if (!body) return Promise.resolve(undefined);
     const { key, z, x, y } = body;
     // A planar body is its raster, and the main thread keeps it.
-    if (body.planar) return Promise.resolve({ z, x, y, size: 256, channels: 1, data: new Uint8Array(body.body) });
+    if (body.planar) return Promise.resolve({ z, x, y, size: Math.sqrt(body.body.byteLength), channels: 1, data: new Uint8Array(body.body) });
     let entry = decoded.get(key);
     if (entry) {
         decoded.delete(key);
@@ -77,17 +91,19 @@ function raster(body: Body | undefined): Promise<Raster | undefined> {
     return entry;
 }
 
-self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job: GroundJob }>) => {
+/** A message without a job asks for the probe. */
+self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job?: GroundJob }>) => {
     try {
-        // A tile of a layer other than the material that does not decode leaves that layer out, and the pages are not complete.
+        if (!job) {
+            await probe();
+            return void self.postMessage({ id });
+        }
+        // A tile of a layer other than the ground that does not decode leaves that layer out, and the pages are not complete.
         let complete = true;
-        const [material, lithology, region, a, b, ...snow] = await Promise.all(
-            [job.material, job.lithology, job.region, ...(job.quarters ?? [undefined, undefined]), ...(job.snow ?? [])]
+        const [ground, a, b, snow] = await Promise.all(
+            [job.ground, ...(job.quarters ?? [undefined, undefined]), job.snow]
                 .map((body, i) => i === 0 ? raster(body) : raster(body).catch(() => void (complete = false))));
-        const pages = groundPages({
-            ...job, material, lithology, region, quarters: a || b ? [a, b] : undefined,
-            snow: snow.some(Boolean) ? snow : undefined,
-        });
+        const pages = groundPages({ ...job, ground, quarters: a || b ? [a, b] : undefined, snow });
         self.postMessage({ id, pages, complete }, { transfer: pages.flatMap(page => (page ? [page.cells.buffer, page.colour.buffer, page.snow.buffer] : [])) });
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });

@@ -63,15 +63,17 @@ def mode(children, no_data=None):
     return np.take_along_axis(four, counts.argmax(axis=0)[None], axis=0)[0]
 
 
-def lossless(texels, green=None):
-    """One byte per texel as lossless WebP: the decoded red channel holds the byte, and green and blue
-    are equal to it. With `green`, green holds that byte and blue is 0."""
+def lossless(texels):
+    """Texels as lossless WebP. One byte per texel decodes with red, green and blue equal to it; two
+    bytes decode as red and green, with blue 0; four bytes as red, green, blue and alpha."""
     from PIL import Image
     from pmtiles.tile import TileType
 
+    if texels.ndim == 3 and texels.shape[-1] == 2:
+        texels = np.concatenate([texels, np.zeros_like(texels[..., :1])], axis=-1)
+    mode = "L" if texels.ndim == 2 else "RGBA" if texels.shape[-1] == 4 else "RGB"
     out = io.BytesIO()
-    image = Image.fromarray(texels, "L") if green is None else Image.fromarray(np.stack([texels, green, np.zeros_like(texels)], axis=-1), "RGB")
-    image.save(out, "WEBP", lossless=True, exact=True)
+    Image.fromarray(texels, mode).save(out, "WEBP", lossless=True, exact=True)
     return TileType.WEBP, out.getvalue()
 
 

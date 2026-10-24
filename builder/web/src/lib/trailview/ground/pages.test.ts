@@ -10,7 +10,7 @@ const EYE: [number, number] = [8.525390625, 46.890231573593994];
 const row = (x0: number, n: number): Node[] => Array.from({ length: n }, (_, i) => ({ level: 14, x: x0 + i, y: 5770 }));
 
 /**
- * Material tiles that answer with four pages, coloured from level 14, except `failing`, which
+ * Ground tiles that answer with four pages, coloured from level 14, except `failing`, which
  * fails its first load, and `absent`, which has no ground; the tiles asked for.
  */
 function tiles(failing?: string, absent?: string): GroundTiles & { asked: string[] } {
@@ -37,7 +37,7 @@ async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, read: N
 const resident = (pages: GroundPages) => [...pages.pages.values()].filter(slot => slot.date >= 0).map(slot => slot.node.x).sort((a, b) => a - b);
 
 describe('the ground pages', () => {
-    it('load a failed material tile again after a wait, and keep an absent one out', async () => {
+    it('load a failed ground tile again after a wait, and keep an absent one out', async () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
         const now = vi.spyOn(Date, 'now').mockReturnValue(0);
         const source = tiles('13/4290/2885', '13/4291/2885'), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
@@ -70,42 +70,6 @@ describe('the ground pages', () => {
         await settle(pages, row(8580, 4), row(8580, 4), [{ level: 10, x: 536, y: 360 }]);
         expect(source.asked[0]).toBe('9/268/180');
         expect(pages.pages.get('10/536/360')?.date).toBe(pages.date);
-    });
-
-    it('load pages with coarser snow again with their own once every kept page has content', async () => {
-        const asked: string[] = [];
-        const source: GroundTiles = {
-            async pages(z, x, y, _quarters, _date, _world, fine) {
-                asked.push(`${z}/${x}/${y}${fine ? ' fine' : ''}`);
-                return { pages: [page(), page(), page(), page()], complete: true, coarse: !fine };
-            },
-        };
-        const pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
-        pages.setDate('2026-08-15');
-        await settle(pages, row(8580, 8));
-        const first = asked.filter(tile => !tile.endsWith(' fine'));
-        expect(first).toContain('13/4293/2885');
-        expect(asked).toEqual([...first, ...first.map(tile => `${tile} fine`)]);
-        expect([...pages.pages.values()].some(slot => slot.coarse)).toBe(false);
-    });
-
-    it('wait longer each time for a page whose own snow fails to load', async () => {
-        const now = vi.spyOn(Date, 'now').mockReturnValue(0), asked: string[] = [];
-        const source: GroundTiles = {
-            coloured: 14,
-            async pages(_z, _x, _y, _quarters, _date, _world, fine) {
-                asked.push(fine ? 'fine' : 'coarse');
-                return { pages: [page(), page(), page(), page()], complete: !fine, coarse: !fine };
-            },
-        };
-        const pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
-        pages.setDate('2026-08-15');
-        for (const t of [0, 2000, 4000, 6000]) {
-            now.mockReturnValue(t);
-            await settle(pages, row(8580, 2));
-        }
-        expect(asked).toEqual(['coarse', 'fine', 'fine', 'fine']);
-        now.mockRestore();
     });
 
     it('keep the openness refreshes that a frame has no room for', async () => {

@@ -73,7 +73,7 @@ def archive(path, kind, vector=None):
                 if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:
                     raise ValueError('Snow tile size differs')
             elif kind.startswith('trailview-snow-'):
-                if len(data) != 256 * 256:
+                if len(data) != 512 * 512:
                     raise ValueError('Snow day tile size differs')
             elif kind == 'climate':
                 # The two fixed layouts of specs/planner-climate-tiles.md.

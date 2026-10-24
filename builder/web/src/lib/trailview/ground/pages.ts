@@ -6,7 +6,7 @@ import { PAGE } from '../stream/heights';
 import { COARSEST, key, MAP, size, type Node } from '../terrain/lod';
 import { dayOfYear, mosaicsAt } from './rules';
 
-/** Pages taken in per frame at most, material tiles in flight, and pages whose openness follows new heights per frame. */
+/** Pages taken in per frame at most, ground tiles in flight, and pages whose openness follows new heights per frame. */
 const ARRIVALS = 8, LOADS = 4, REFRESHES = 8;
 /** Levels that every view keeps: the ground under every other page while its own loads. */
 const COARSE = 8;
@@ -14,20 +14,19 @@ const COARSE = 8;
 const COVER = 2;
 /** The distance factor of a resident page in the order of the pool. */
 const STAY = 0.7;
-/** Milliseconds before a failed material tile loads again: the first wait, doubled per failure up to the last. Chosen so a short outage heals in seconds and a lasting one costs a request a minute. */
+/** Milliseconds before a failed ground tile loads again: the first wait, doubled per failure up to the last. Chosen so a short outage heals in seconds and a lasting one costs a request a minute. */
 const RETRY_MS = 2000, RETRY_MAX_MS = 60_000;
 /** The look at the eye blends the regions at the nodes of this level about it (0.84 km at 47°), with a tent weight of this reach in nodes. */
 const LOOK_LEVEL = 15, LOOK_REACH = 3;
 
-/** The four pages of a material tile, null where it has no ground; not complete when a layer failed to load; coarse when their snow is one level coarser. */
-export interface GroundResult { pages: (GroundPage | null)[]; complete: boolean; coarse?: boolean }
+/** The four pages of a ground tile, null where it has no ground; not complete when a layer failed to load. */
+export interface GroundResult { pages: (GroundPage | null)[]; complete: boolean }
 
-/** The ground pages of material tile z/x/y on a date. */
+/** The ground pages of ground tile z/x/y on a date. */
 export interface GroundTiles {
     /** The coarsest level whose pages carry the satellite colour. */
     readonly coloured?: number;
-    /** `fine`: the pages wait for their own snow instead of taking a coarser tile. */
-    pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine?: boolean): Promise<GroundResult>;
+    pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<GroundResult>;
 }
 
 export interface Slot {
@@ -41,8 +40,6 @@ export interface Slot {
     regions?: Uint8Array;
     /** A layer of the content failed to load: the page loads again after its tile's wait. */
     partial?: boolean;
-    /** The snow is one level coarser: the page loads again with its own once every kept page has content. */
-    coarse?: boolean;
 }
 
 /** The GPU work of a frame. */
@@ -62,9 +59,7 @@ export interface GroundWork {
  * needed pages, and their cover draws in their place. A page takes its slot when its content
  * arrives, so the page it replaces draws until then. A node finer than the ground draws the ground
  * of its ancestor. A tile that has no ground stays out for the page's life; a tile that fails to
- * load, or loads without a layer, loads again after a wait that grows with each failure. A page
- * with coarser snow loads again with its own once every kept page has content, so the first view
- * waits for one snow tile per material tile instead of four.
+ * load, or loads without a layer, loads again after a wait that grows with each failure.
  */
 export class GroundPages {
     wanted = 0;
@@ -75,16 +70,16 @@ export class GroundPages {
     day = 0;
     readonly pages = new Map<string, Slot>();
     private readonly absent = new Set<string>();
-    /** Material tiles that failed to load, by their name without the date: the failures and when the next load may start. */
+    /** Ground tiles that failed to load, by their name without the date: the failures and when the next load may start. */
     private readonly failures = new Map<string, { count: number; until: number }>();
     private free: number[];
     private frame = 0;
     private dateKey = '';
     private today = { quarters: [0, 1] as [number, number], weight: 0, snowIndex: 0 };
     private loads = 0;
-    /** Material tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
+    /** Ground tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
     private readonly loading = new Map<string, number>();
-    private arrivals: { node: Node; page: GroundPage; date: number; partial: boolean; coarse: boolean }[] = [];
+    private arrivals: { node: Node; page: GroundPage; date: number; partial: boolean }[] = [];
     private readonly refresh = new Set<Slot>();
     /** Wanted pages without the content of the date. */
     private missing = 0;
@@ -160,7 +155,6 @@ export class GroundPages {
         // Every kept page is used before the first allocation, so none leaves for a later one of this frame.
         this.kept = new Set(kept.map(key));
         this.reads = [...new Map(kept.flatMap(node => reliefReads(node, this.finest)).map(node => [key(node), node])).values()];
-        const coarse: Node[] = [];
         for (const node of kept) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
@@ -168,23 +162,17 @@ export class GroundPages {
             if (this.waits(node)) continue;
             if (page?.date !== this.date || page.partial) {
                 this.missing++;
-                // A partial page of the date loads with its own snow: a coarse load would end the wait of its failed tile.
-                this.load(node, page?.date === this.date);
-            } else if (page.coarse) {
-                this.missing++;
-                coarse.push(node);
+                this.load(node);
             }
         }
-        if (coarse.length === this.missing) for (const node of coarse) this.load(node, true);
         while (work.uploads.length < ARRIVALS && this.arrivals.length) {
-            const { node, page: data, date, partial, coarse } = this.arrivals.shift()!;
+            const { node, page: data, date, partial } = this.arrivals.shift()!;
             this.settle(tileOf(node, date));
             if (date !== this.date || !this.kept.has(key(node))) continue;
             const page = this.pages.get(key(node)) ?? this.allocate(node);
             if (!page) continue;
             page.date = date;
             page.partial = partial;
-            page.coarse = coarse;
             page.regions ??= new Uint8Array(PAGE * PAGE);
             for (let i = 0; i < PAGE * PAGE; i++) page.regions[i] = data.cells[4 * i + 2];
             this.refresh.delete(page);
@@ -254,23 +242,22 @@ export class GroundPages {
         return undefined;
     }
 
-    /** Requests the four pages of the material tile of a node, on the current date; `fine` with their own snow. */
-    private load(node: Node, fine = false): void {
+    /** Requests the four pages of the ground tile of a node, on the current date. */
+    private load(node: Node): void {
         const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
         if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
         const date = this.date, { quarters, weight, snowIndex } = this.today;
         const quarter = (q: number) => ({ level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) });
         this.loads++;
         this.loading.set(name, 1);
-        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world, fine).then(({ pages, complete, coarse = false }) => {
+        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world).then(({ pages, complete }) => {
             pages.forEach((page, q) => {
                 if (!page) return this.absent.add(key(quarter(q)));
-                this.arrivals.push({ node: quarter(q), page, date, partial: !complete, coarse });
+                this.arrivals.push({ node: quarter(q), page, date, partial: !complete });
                 this.loading.set(name, this.loading.get(name)! + 1);
             });
-            // A coarse load does not prove that the fine one loads.
             if (!complete) this.failed(`${z}/${x}/${y}`);
-            else if (!coarse) this.failures.delete(`${z}/${x}/${y}`);
+            else this.failures.delete(`${z}/${x}/${y}`);
         }).catch(error => {
             console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
             this.failed(`${z}/${x}/${y}`);
@@ -281,19 +268,19 @@ export class GroundPages {
         });
     }
 
-    /** Whether the material tile of a node waits after a failure. */
+    /** Whether the ground tile of a node waits after a failure. */
     private waits(node: Node): boolean {
         return (this.failures.get(tileOf(node))?.until ?? 0) > Date.now();
     }
 
-    /** A material tile failed to load: it waits, longer after each failure, then the frames load it again. */
+    /** A ground tile failed to load: it waits, longer after each failure, then the frames load it again. */
     private failed(tile: string): void {
         const count = (this.failures.get(tile)?.count ?? 0) + 1, wait = Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** (count - 1));
         this.failures.set(tile, { count, until: Date.now() + wait });
         setTimeout(this.changed, wait);
     }
 
-    /** One page of a material tile in flight or waiting is done; the last frees the tile for a new load. */
+    /** One page of a ground tile in flight or waiting is done; the last frees the tile for a new load. */
     private settle(name: string): void {
         const left = (this.loading.get(name) ?? 1) - 1;
         if (left > 0) this.loading.set(name, left);
@@ -342,5 +329,5 @@ export function reliefReads(node: Node, finest: number): Node[] {
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i);
 
-/** The material tile of a node, on a date. */
+/** The ground tile of a node, on a date. */
 const tileOf = ({ level, x, y }: Node, date?: number) => `${level - 1}/${x >> 1}/${y >> 1}${date === undefined ? '' : `/${date}`}`;

@@ -24,8 +24,8 @@ const source = (get = vi.fn(async () => new Uint8Array(1)), metadata = {}) =>
 async function ground(snow?: () => Promise<unknown>) {
     vi.stubGlobal('Worker', FakeWorker);
     opens.clear();
-    opens.set('material', async () => source(undefined, { trailview_format: 2 }));
-    const layers: Record<string, string> = { 'trailview-material': 'material' };
+    opens.set('ground', async () => source(undefined, { trailview_format: 3 }));
+    const layers: Record<string, string> = { 'trailview-ground': 'ground' };
     if (snow) {
         layers[`trailview-snow-${String(snowBand(SNOW_INDEX)).padStart(2, '0')}`] = 'snow';
         opens.set('snow', snow);
@@ -39,7 +39,7 @@ describe('the snow days of the ground', () => {
 
     it('opens a band that failed again, and the pages without it are not complete', async () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const get = vi.fn(async () => new Uint8Array(256 * 256));
+        const get = vi.fn(async () => new Uint8Array(512 * 512));
         const snow = vi.fn()
             .mockRejectedValueOnce(new Error('timeout'))
             .mockRejectedValueOnce(new Error('timeout'))
@@ -53,5 +53,25 @@ describe('the snow days of the ground', () => {
     it('builds complete pages without snow where the release has no band', async () => {
         const pages = await ground();
         expect((await pages()).complete).toBe(true);
+    });
+});
+
+describe('the decode probe', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('fails the ground once where a worker does not decode the bytes under a low alpha', async () => {
+        const terminate = vi.fn();
+        vi.stubGlobal('Worker', class {
+            onmessage?: (event: { data: unknown }) => void;
+            terminate = terminate;
+            postMessage({ id }: { id: number }) {
+                queueMicrotask(() => this.onmessage!({ data: { id, error: 'premultiplied' } }));
+            }
+        });
+        opens.clear();
+        opens.set('ground', async () => source(undefined, { trailview_format: 3 }));
+        const config = { trailview_rules: 'rules', layers: { 'trailview-ground': 'ground' } } as unknown as PlannerConfig;
+        await expect(GroundSource.open(config, DATE)).rejects.toThrow('premultiplied');
+        expect(terminate).toHaveBeenCalledTimes(2);
     });
 });

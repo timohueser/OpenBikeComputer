@@ -22,8 +22,8 @@ the north edge and column 0 is the west edge. The value of a texel is the value 
 
 A tile that the archive does not hold has no data: the engine draws its parent. The release packs
 each archive in PMTiles per zoom 11 parent: `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, with the
-TileJSON `maps/<kind>.json`. The kind is `trailview-material`, `trailview-lithology` and
-`trailview-region` for the ground, and `trailview-colour-<archive>` for the colour.
+TileJSON `maps/<kind>.json`. The kind is `trailview-ground` for the ground, and
+`trailview-colour-<archive>` for the colour.
 
 Decode a tile without colour conversion and without premultiplied alpha (`createImageBitmap`
 with `colorSpaceConversion: 'none'` and `premultiplyAlpha: 'none'`): the bytes are data. A 2D canvas
@@ -33,25 +33,22 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `2` in a ground archive, `1` in a colour archive. A reader reads only the format that it knows |
-| `layer` | `material`, `lithology` or `region`; absent in a colour archive |
-| `archive` | The name of the archive: the layer, or `q1` to `q4` |
+| `trailview_format` | `3` in the ground archive, `1` in a colour archive. A reader reads only the format that it knows |
+| `archive` | The name of the archive: `ground`, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
 
 ## Ground
 
-`trailview-ground` has three archives, as lossless WebP.
+`trailview-ground` has one archive, `ground`, as lossless WebP at zooms 0 to 13. A texel is four
+bytes:
 
-- A lithology or region texel is one byte: red, green and blue are equal to it.
-- A material texel is two bytes: red holds the material byte, green holds the barren share, and blue
-  is 0.
-
-| Archive | Zooms | Byte |
-| --- | --- | --- |
-| `material` | 0 to 13 | The material code and two flags, see below |
-| `lithology` | 0 to 10 | The index of the lithology in `lithologies` of `materials.json`; 0 is unknown |
-| `region` | 0 to 10 | The region id: the index of the region in `regions` of `rules.json`; 255 is no data |
+| Channel | Byte |
+| --- | --- |
+| Red | The material byte: the material code and two flags, see below |
+| Green | The barren share |
+| Blue | The lithology: the index of the lithology in `lithologies` of `materials.json`; 0 is unknown |
+| Alpha | The region id: the index of the region in `regions` of `rules.json`; 255 is no data |
 
 The material byte:
 
@@ -68,10 +65,12 @@ saw snow counts as NDVI −1.
 A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
 a region id is 0 to 254; more regions need a new format, with two bytes.
 
-A tile of the last zoom of an archive comes from the sources. A coarser texel takes the most
-common byte of its four children, the first in reading order on a tie. A material or region texel
-with no data counts only where all four have no data, and a missing child has no data. A coarser
-barren share is the rounded mean of the children with data.
+The material and the barren share come from the sources at zoom 13, the lithology and the region
+at zoom 10. A coarser texel takes the most common byte of its four children, the first in reading
+order on a tie. A material or region texel with no data counts only where all four have no data,
+and a missing child has no data. A coarser barren share is the rounded mean of the children with
+data. At zooms 11 to 13, a lithology or region texel is the zoom 10 texel that holds its centre.
+A tile is in the archive where its material has data.
 
 The material chain refines a baseline. Each step changes a texel only where the step names the
 material more precisely: the table `REFINES` of `ground.py`.
@@ -139,18 +138,20 @@ view reads the snow of its date only. It has one archive per band of day steps,
 `trailview-snow-00` to `trailview-snow-45`. Band b holds the day steps 4b to 4b + 3 and shows day
 step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
 
-The archives differ from the table in [Archives](#archives): a tile is a tile of the snow archive,
-256 × 256 pixels, tile type `unknown` (0) and gzip compression. A tile is 65,536 bytes in row
-order, one byte per pixel:
+The archives differ from the table in [Archives](#archives): a tile is 512 × 512 pixels, tile type
+`unknown` (0) and gzip compression. Tile z/x/y holds the four tiles of zoom z + 1 of the snow
+archive that it covers, so its zooms are one coarser than those of the snow archive. A tile is
+262,144 bytes in row order, one byte per pixel:
 
 | Bits | Meaning |
 | --- | --- |
 | 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
 | 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
 
-A tile where no season has data is not in the archive, so the first zoom can be finer than in the
-snow archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
-metadata of [Archives](#archives) without `layer`, with `archive` `snow-00` to `snow-45`, and:
+A pixel that the snow archive has no tile for has no data. A tile where no season has data is not
+in the archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
+metadata of [Archives](#archives), with `trailview_format` `2`, `archive` `snow-00` to `snow-45`,
+and:
 
 | Key | Value |
 | --- | --- |

@@ -28,12 +28,25 @@ class SnowDaysTest(unittest.TestCase):
         self.assertEqual(days[13, 0], 2 * 16 + 1)
         self.assertEqual(days[0, 0], 2 * 16 + 1)
 
-    def test_a_tile_without_data_has_no_bands(self):
+    def test_a_tile_joins_its_four_snow_tiles_and_a_tile_without_data_has_no_bands(self):
         empty = gzip.compress(tile((snow.NO_DATA, snow.NO_DATA)))
-        self.assertEqual(snow.encode((7, empty, 1)), (7, None))
-        tile_id, bodies = snow.encode((7, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), 1))
+        self.assertEqual(snow.encode((7, [empty, None, None, None], 1)), (7, None))
+        tile_id, bodies = snow.encode((7, [None, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), None, None], 1))
         self.assertEqual(len(bodies), snow.BANDS)
-        self.assertEqual(set(gzip.decompress(bodies[0])), {16})
+        plane = np.frombuffer(gzip.decompress(bodies[0]), np.uint8).reshape(snow.SIZE, snow.SIZE)
+        self.assertTrue((plane[:256, 256:] == 16).all(), "the north-east tile has one season with data")
+        self.assertEqual(int(plane[:256, :256].max()) + int(plane[256:].max()), 0)
+
+    def test_the_snow_tiles_in_tile_order_join_under_their_parents_in_tile_order(self):
+        from pmtiles.tile import zxy_to_tileid
+
+        found = sorted([(0, 0, 0), (1, 0, 0), (1, 1, 1), (2, 3, 1), (2, 2, 0), (2, 1, 1)], key=lambda zxy: zxy_to_tileid(*zxy))
+        joined = [(tile_id, bodies) for tile_id, bodies, _ in snow.parents(((zxy, zxy) for zxy in found), 1)]
+        self.assertEqual(joined, [
+            (zxy_to_tileid(0, 0, 0), [(1, 0, 0), None, None, (1, 1, 1)]),
+            (zxy_to_tileid(1, 0, 0), [None, None, None, (2, 1, 1)]),
+            (zxy_to_tileid(1, 1, 0), [(2, 2, 0), None, None, (2, 3, 1)]),
+        ])
 
     def test_a_snow_archive_without_data_fails_the_bake(self):
         from pmtiles.tile import Compression, TileType

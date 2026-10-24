@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 # each layer in `layers`; the web planner shows snow, climate and sun through its module in
 # builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
 # specs/trailview-features.md and specs/trailview-tiles.md.
-TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
+TRAILVIEW = ("ground", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
     "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
     "trailview-canopy": "canopy_format",
