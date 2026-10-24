@@ -5,6 +5,12 @@
 export const LABS: Record<string, readonly string[]> = {
     // The near sward: the prototype's grass tufts, or a sward of blades within 30 m.
     grass: ['tufts', 'blades'],
+    // Temporary, for the owner: cheaper far trees that change the look. Where the trees end (m), where
+    // the far trees start to thin (m), the texels of an impostor frame, where the coarsest mesh ends (m).
+    reach: ['4500', '2500'],
+    thin: ['600', '300'],
+    atlas: ['32', '16'],
+    meshes: ['700', '400'],
 };
 
 export type Labs = Record<string, string>;

@@ -15,8 +15,8 @@
 @group(1) @binding(4) var<storage, read> outlines: array<vec4f>;
 
 // Texels along a frame's side, and the atlas's mip levels: a frame of 32 texels down to 1.
-const FRAME_TEXELS: f32 = 32.0;
-const ATLAS_LEVELS: f32 = 6.0;
+override FRAME_TEXELS: f32 = 32.0;
+override ATLAS_LEVELS: f32 = 6.0;
 
 struct ImpostorOut {
     @builtin(position) clip: vec4f,

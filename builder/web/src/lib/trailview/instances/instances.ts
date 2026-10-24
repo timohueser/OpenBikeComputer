@@ -30,7 +30,7 @@ const ROOM = [0.7, 0.9];
  * atlas's texels a side, 8 × 8 frames (FRAMES of hemi.wgsl) of 32 texels; its mip levels, as
  * ATLAS_LEVELS of impostor.wgsl; the frames of a bake. A layer leaves only after this many frames unused.
  */
-const SLOTS = 32, ATLAS = 256, ATLAS_LEVELS = 6, FRAMES = 64, UNUSED_FRAMES = 60;
+const SLOTS = 32, FRAMES = 64, UNUSED_FRAMES = 60;
 /** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
 const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
 /** The quad of an impostor: corners at ±1. */
@@ -160,6 +160,14 @@ export class Instances {
     private attached?: [Gpu, GPUBuffer, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
     newContent = false;
+    /** The atlas's texels a side, 8 × 8 frames of `frameTexels`, and its mip levels down to a texel a frame. */
+    private readonly atlasSide: number;
+    private readonly atlasLevels: number;
+
+    constructor(private readonly frameTexels = 32) {
+        this.atlasSide = 8 * frameTexels;
+        this.atlasLevels = Math.log2(frameTexels) + 1;
+    }
 
     get stats(): InstanceStats {
         return this.stats_;
@@ -222,6 +230,7 @@ export class Instances {
         this.unbaked.clear();
         const { device } = gpu, C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, uniform = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+        const ATLAS = this.atlasSide, ATLAS_LEVELS = this.atlasLevels;
         const atlas = () => gpu.texture('instances', {
             size: [ATLAS, ATLAS, SLOTS], mipLevelCount: ATLAS_LEVELS, format: 'rgba8unorm',
             usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
@@ -311,7 +320,7 @@ export class Instances {
             meshPipeline('mesh_fragment_whole'),
             device.createRenderPipelineAsync({
                 label: 'impostors', layout: device.createPipelineLayout({ bindGroupLayouts: [renderLayout, atlasLayout, groundLayout] }),
-                vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout] },
+                vertex: { module: impostorModule, entryPoint: 'impostor_vertex', buffers: [vertexLayout], constants: { FRAME_TEXELS: this.frameTexels, ATLAS_LEVELS } },
                 fragment: { module: impostorModule, entryPoint: 'impostor_fragment', targets: [{ format }] },
                 primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil,
             }),
@@ -421,7 +430,7 @@ export class Instances {
             mips.setBindGroup(1, r.bakeGroup, [slot * STRIDE]);
             r.mipGroups.forEach((group, k) => {
                 mips.setBindGroup(0, group);
-                mips.dispatchWorkgroups(Math.ceil((ATLAS >> (k + 1)) / 8), Math.ceil((ATLAS >> (k + 1)) / 8));
+                mips.dispatchWorkgroups(Math.ceil((this.atlasSide >> (k + 1)) / 8), Math.ceil((this.atlasSide >> (k + 1)) / 8));
             });
             mips.end();
         }

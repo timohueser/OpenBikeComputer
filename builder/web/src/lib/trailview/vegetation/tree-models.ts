@@ -24,7 +24,8 @@ export class TreeModels {
     /** Whether models arrived since the last update. */
     newContent = false;
 
-    constructor(private readonly instances: Instances, wake: () => void) {
+    constructor(private readonly instances: Instances, wake: () => void, readonly reach = TREE_REACH_M, meshes = TIERS_M[2]) {
+        const until = [...TIERS_M.slice(0, 2), meshes];
         this.worker.onmessage = ({ data }: MessageEvent<{ id: number; built?: BuiltModel[]; error?: string }>) => {
             this.building--;
             if (data.error || !data.built) return void console.warn(`Tree models: ${data.error}`);
@@ -33,7 +34,7 @@ export class TreeModels {
             for (const [key, index] of this.indexes) {
                 const [model, evergreen, tie] = key.split('|');
                 const { tiers, crown } = built.get(`${model}|${evergreen}`)!;
-                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 1, until: TREE_REACH_M }, crown, tie: Number(tie) });
+                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), impostor: { from: 1, until: reach }, crown, tie: Number(tie) });
             }
             this.rebuilt = true;
             wake();

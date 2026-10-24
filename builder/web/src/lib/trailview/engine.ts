@@ -83,7 +83,7 @@ export class TrailView {
     private readonly terrain: Terrain;
     private readonly groundLook: Ground;
     private readonly houses: Houses;
-    private readonly instances = new Instances();
+    private readonly instances: Instances;
     private readonly trees: TreeModels;
     private readonly forest: Forest;
     private readonly plants: Plants;
@@ -124,8 +124,9 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
-        this.trees = new TreeModels(this.instances, () => this.request());
-        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
+        this.instances = new Instances(Number(labs.atlas));
+        this.trees = new TreeModels(this.instances, () => this.request(), Number(labs.reach), Number(labs.meshes));
+        this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), Number(labs.thin));
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, labs.grass === 'blades', () => this.request());
         this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
         this.kindPoints = new KindPoints(this.instances);
