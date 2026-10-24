@@ -18,9 +18,10 @@ import subprocess
 from . import region_osm, step_request
 from .trailview import lifts, profiles, structures, water
 
-FORMAT = 1
-EXTENT = 8192
-MIN_ZOOM, MAX_ZOOM = 8, 14
+FORMAT = 2
+# A unit of a zoom-13 tile is about 0.2 m in the Alps, a texel of the finest terrain node.
+EXTENT = 16384
+MIN_ZOOM, MAX_ZOOM = 8, 13
 # The widest stamp, a road cone, reaches 25 m past the road edge: 40 m holds it for a road up to
 # 30 m wide.
 BUFFER_M = 40.0

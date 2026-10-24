@@ -1,7 +1,7 @@
 // What a kind module is, and the shared handlers that most kinds use. A kind module in kinds/ has the name
 // of its entry in data/trailview/kinds.json and default-exports a Kind; the registry (index.ts) finds it,
 // so a new kind changes no other file of the engine.
-import { EXTENT, type Feature } from '../stream/features';
+import { EXTENT, unitScale, type Feature } from '../stream/features';
 import type { ModelSpec } from '../instances/instances';
 import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
@@ -41,7 +41,7 @@ export interface Kind {
 
 /** A feature of a tile in world units. */
 export function placed({ tags, parts }: Feature, tile: Node): Placed {
-    const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
+    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     return { tags, parts: parts.map(({ outer, xy }) => ({ outer, xy: Array.from(xy, (v, i) => ((i % 2 ? oy : ox) + v) * scale) })) };
 }
 
