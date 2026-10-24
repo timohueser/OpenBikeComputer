@@ -28,7 +28,7 @@ const SCREENS = [
   [`#/local/resume/${failed.id}`, 'These settings resume run'],
   ['#/downloads', 'What bakes fetch from the internet'],
   ['#/downloads/geofabrik-extracts', 'Licence and access'],
-  ['#/references', 'On hetzner-bake-1, at build'],
+  ['#/references', 'A run on laptop stopped without freeing the lock'],
   [WIKI, 'When it finishes'],
   ['#/runs', 'The runs of this machine'],
   [`#/runs/${running.id}`, 'Layers in this run'],
