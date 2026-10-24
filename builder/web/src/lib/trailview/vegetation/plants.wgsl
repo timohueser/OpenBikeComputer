@@ -66,15 +66,12 @@ fn plant_hash(cell: vec2i, salt: u32) -> f32 {
 // The ground cell at a point, from the finest resident ground page: material, lithology, region,
 // barren; NO_PLANT in x where no page holds it.
 fn cell_at(s: vec2f) -> vec4u {
-    for (var k = min(u32(ceil(lod(s))), look.codes.y); k >= COARSEST; k--) {
-        let t = texel_of(s, k);
-        let whole = t.whole + vec2i(t.part >= vec2f(0.5));
-        let page = ground_page(k, whole);
-        if (page >= 0) {
-            return textureLoad(cells, in_page(page, whole & vec2i(255)), page_layer(page), 0);
-        }
+    let held = held_at(s, u32(ceil(lod(s))));
+    if (held.page < 0) {
+        return vec4u(NO_PLANT);
     }
-    return vec4u(NO_PLANT);
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
 }
 
 fn cover_of(material: u32) -> u32 {
@@ -155,7 +152,8 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
             break;
         }
     }
-    if (pick == NO_PLANT || (pick == plants.sward.x && d < BLADES_M) || on_road(s, 0.3)) {
+    // Snow covers the share of the ground plants that it lies on.
+    if (pick == NO_PLANT || (pick == plants.sward.x && d < BLADES_M) || on_road(s, 0.3) || plant_hash(cell, 7u) < snow_at(s)) {
         return;
     }
     let h = stand_height(s, u);
@@ -233,7 +231,8 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     if (on_road(s, models[model].spread * height)) {
         return;
     }
-    emit(model, render_at(s, h), height, 6.2831853 * plant_hash(cell, 5u), 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0);
+    let yaw = 6.2831853 * plant_hash(cell, 5u);
+    emit_tree(model, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), snow_at(s));
 }
 
 // The near sward: a patch of blades on a grid of 0.33 m within BLADES_M, on grass and crops off the
@@ -255,7 +254,7 @@ fn blades(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let cover = cover_of(ground.x);
-    if (((cover & 255u) != COVER_GRASS && (cover & 255u) != COVER_CROP) || (cover & MOOR) != 0u || on_road(s, 0.2)) {
+    if (((cover & 255u) != COVER_GRASS && (cover & 255u) != COVER_CROP) || (cover & MOOR) != 0u || on_road(s, 0.2) || plant_hash(cell, 7u) < snow_at(s)) {
         return;
     }
     let h = plain_height(s);

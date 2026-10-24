@@ -77,6 +77,14 @@ fn crown_shade(p: vec3f, m: Model) -> f32 {
     return mix(0.55, 1.0, clamp(0.6 * (up + out), 0.0, 1.0));
 }
 
+// SNOW of ground/rules.ts, linear.
+const SNOW: vec3f = vec3f(0.855, 0.888, 0.922);
+
+// An albedo under the share of snow of an instance's look, which settles on the faces that turn up.
+fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
+    return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
+}
+
 fn far_tone(m: Model, d: f32) -> f32 {
     return select(mix(1.0, FAR_TONE, smoothstep(FAR_FROM_M, FAR_TO_M, d)), 1.0, m.crown < 0.0);
 }
@@ -106,7 +114,7 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.fog = haze.fog;
     out.air = haze.air;
     out.normal = vec3f(t.x * v.normal.x - t.y * v.normal.y, t.y * v.normal.x + t.x * v.normal.y, v.normal.z);
-    out.albedo = linear(v.colour.rgb) * (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * crown_shade(model, m) * far_tone(m, length(p));
+    out.albedo = snowed(linear(v.colour.rgb) * (0.75 + 0.5 * f32(i.look & 255u) / 255.0), v.normal.z, i.look) * crown_shade(model, m) * far_tone(m, length(p));
     out.look = i.look;
     return out;
 }

@@ -79,5 +79,5 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     }
     let local = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level).xyz / albedo.a * 2.0 - 1.0;
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
-    return vec4f(in.fog * light_up(albedo.rgb / albedo.a * in.tint, n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(snowed(albedo.rgb / albedo.a * in.tint, n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }

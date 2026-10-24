@@ -341,7 +341,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     emit_tree(model, render_at(s, ground - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
-        unit_float(mix_bits(h + 31u)));
+        unit_float(mix_bits(h + 31u)), snow_at(s));
 }
 
 // The base cell of rank R of a cell of a level: its low 2 × level bits interleave x and y.
