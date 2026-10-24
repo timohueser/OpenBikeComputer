@@ -88,7 +88,7 @@ export class TreeModels {
         this.install();
     }
 
-    /** Takes a job's models; a job that failed is asked for again with the next jobs. */
+    /** Takes a job's models; a job that failed is asked for again when the next job lands or the date's phases change. */
     private land(worker: Worker, { id, leafy, crowns, error }: ModelAnswer): void {
         const job = this.jobs.get(id)!;
         this.jobs.delete(id);
@@ -126,6 +126,9 @@ export class TreeModels {
     /** Gives the free workers the waiting builds: summer crowns first, each with the models that have the most trees about the eye first. */
     private post(): void {
         if (!this.free.length || !this.waiting.length) return;
+        // Crowns of phases that the date lost: `ask()` queues them again if the date comes back.
+        for (const { model, phase } of this.waiting.flatMap(job => job.crowns)) if (!this.phases.has(phase)) this.asked.delete(`crown:${model}|${phase}`);
+        this.waiting = this.waiting.filter(job => job.crowns.every(({ phase }) => this.phases.has(phase)));
         const near = this.near(), share = (job: Omit<ModelJob, 'id'>) => near.get((job.leafy[0] ?? job.crowns[0]).model) ?? 0;
         this.waiting.sort((a, b) => b.leafy.length - a.leafy.length || share(b) - share(a));
         for (const job of this.waiting.splice(0, this.free.length)) {

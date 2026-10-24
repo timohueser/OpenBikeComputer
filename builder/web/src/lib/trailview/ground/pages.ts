@@ -52,14 +52,14 @@ export interface GroundWork {
 }
 
 /**
- * The ground pages without the GPU: per node of the levels with ground tiles, the ground on the date
- * in a pool of `capacity` slots. The coarse levels, then the pages that the instances read, then the cover of the drawn nodes, then the drawn
- * nodes and their morph parents nearest first, then the rest of the selection take the slots, so a
- * full pool leaves out the farthest and least needed pages, and their cover draws in their place. A
- * page takes its slot when its content arrives, so the page it replaces draws until then. A node
- * finer than the ground draws the ground of its ancestor. A tile that has no ground stays out for
- * the page's life; a tile that fails to load, or loads without a layer, loads again after a wait that
- * grows with each failure.
+ * The ground pages without the GPU: per node of the levels with ground tiles, the ground on the
+ * date in a pool of `capacity` slots. The coarse levels, then the pages that the instances read,
+ * then the cover of the drawn nodes, then the drawn nodes and their morph parents nearest first,
+ * then the rest of the selection take the slots, so a full pool leaves out the farthest and least
+ * needed pages, and their cover draws in their place. A page takes its slot when its content
+ * arrives, so the page it replaces draws until then. A node finer than the ground draws the ground
+ * of its ancestor. A tile that has no ground stays out for the page's life; a tile that fails to
+ * load, or loads without a layer, loads again after a wait that grows with each failure.
  */
 export class GroundPages {
     wanted = 0;
