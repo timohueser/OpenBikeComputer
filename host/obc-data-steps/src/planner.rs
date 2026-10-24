@@ -55,10 +55,11 @@ pub static PLANNER_TRAILVIEW_FEATURES: Layer =
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
-/// The TrailView material, lithology and region tiles. Its format is `trailview_format` of
-/// `specs/trailview-tiles.md`.
+/// The TrailView material, lithology and region tiles. Its format is `trailview_format` of a ground
+/// archive in `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 2, &[&WEB_PLANNER]);
-/// The TrailView colour tiles. Its format is `trailview_format` of `specs/trailview-tiles.md`.
+/// The TrailView colour tiles. Its format is `trailview_format` of a colour archive in
+/// `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1, &[&WEB_PLANNER]);
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1, &[&WEB_PLANNER]);

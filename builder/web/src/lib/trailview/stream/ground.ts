@@ -14,6 +14,8 @@ const NAMES = {
 } as const;
 type Layer = keyof typeof NAMES;
 const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
+/** `trailview_format` of a ground archive: its material tile holds the barren share in green. */
+const GROUND_FORMAT = 2;
 const WORKERS = 2;
 /** Tile bodies kept per layer, so a new device or a page that comes back builds again without a request. */
 const BODIES = 16 * 2 ** 20;
@@ -71,6 +73,8 @@ export class GroundSource {
             if (!url) return [layer, undefined] as const;
             const opened = openSource(url).then(source => {
                 if (layer === 'snow') seasons = snowMeta(source.metadata).seasons;
+                const format = source.metadata.trailview_format;
+                if (layer === 'material' && format !== GROUND_FORMAT) throw new Error(`TrailView reads material format ${GROUND_FORMAT}, not ${format}.`);
                 return source;
             });
             return [layer, await (layer === 'material' ? opened : opened.catch(error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`)))] as const;

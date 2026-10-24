@@ -11,8 +11,6 @@ import numpy as np
 from .. import planner_geo as geo, step_pool
 
 TILE = 512
-# The number that the readers of the archives check: `trailview_format` in their metadata.
-FORMAT = 1
 # Each tile of this zoom, and the tiles below it, bake in one worker.
 CHUNK_ZOOM = 10
 EARTH_M = 2 * math.pi * 6378137.0

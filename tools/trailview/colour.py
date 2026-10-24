@@ -27,6 +27,8 @@ STAC = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mo
 BANDS = ("B02", "B03", "B04", "B08", "observations")
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
+# `trailview_format` of the colour archives, which the readers check.
+FORMAT = 1
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes from summer.
 DARK = 0.025
 # The alpha code of a quarter's texel that saw snow (snow_free); a measured NDVI never takes it.
@@ -222,7 +224,7 @@ def bake(mosaics, bounds, variants, output, metadata):
     encode = lambda texels: {f"{variant}/{name}": data for variant, code in encoders.items() for name, data in code(texels).items()}
     stack = lambda z, x, y: np.stack([q for _, q in sorted(quarters(mosaics, tiles.transform(z, x, y), tiles.texel_m(z, y)).items())])
     sizes = tiles.pyramid(bounds, range(BOTTOM_ZOOM, top + 1), stack, average, encode, output,
-                          {**metadata, "trailview_format": tiles.FORMAT})
+                          {**metadata, "trailview_format": FORMAT})
     return {variant: {name.split("/")[1]: zooms for name, zooms in sizes.items() if name.startswith(f"{variant}/")} for variant in variants}
 
 

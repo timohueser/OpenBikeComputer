@@ -33,7 +33,7 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `1`. A reader reads only the format that it knows |
+| `trailview_format` | `2` in a ground archive, `1` in a colour archive. A reader reads only the format that it knows |
 | `layer` | `material`, `lithology` or `region`; absent in a colour archive |
 | `archive` | The name of the archive: the layer, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
@@ -41,9 +41,11 @@ The archive metadata is a JSON object:
 
 ## Ground
 
-`trailview-ground` has three archives. Each texel is one byte, as lossless WebP: the red channel
-holds the byte, and green and blue are equal to it. A material texel has the barren share in green,
-and blue is 0.
+`trailview-ground` has three archives, as lossless WebP.
+
+- A lithology or region texel is one byte: red, green and blue are equal to it.
+- A material texel is two bytes: red holds the material byte, green holds the barren share, and blue
+  is 0.
 
 | Archive | Zooms | Byte |
 | --- | --- | --- |

@@ -21,6 +21,8 @@ import numpy as np
 from . import tiles
 from .. import planner_geo as geo, step_request
 
+# `trailview_format` of the ground archives, which the readers check.
+FORMAT = 2
 MATERIAL_ZOOM = 13
 LITHOLOGY_ZOOM = REGION_ZOOM = 10
 # The material byte: the code in the low 6 bits, then the barren bit; NO_DATA alone is outside the bake.
@@ -487,7 +489,7 @@ def step():
     options, layers = request["options"], request["layers"]
     bounds, layer = options["bounds"], options["layer"]
     rules = layers["planner/trailview-rules"]
-    metadata = {"trailview_format": tiles.FORMAT, "layer": layer, "attribution": options["attribution"]}
+    metadata = {"trailview_format": FORMAT, "layer": layer, "attribution": options["attribution"]}
     if layer == "region":
         bake, top = Region(json.loads(Path(rules["regions.json"]).read_bytes()), bounds), REGION_ZOOM
     else:

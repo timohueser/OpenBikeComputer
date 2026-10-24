@@ -56,7 +56,7 @@ class ArchiveTest(unittest.TestCase):
         share = np.arange(tiles.TILE, dtype=np.uint8)[:, None].repeat(tiles.TILE, axis=1)
         bake = lambda z, x, y: np.stack([byte(z, x, y), share], axis=-1)
         with tempfile.TemporaryDirectory() as tmp:
-            sizes = ground.bake_layer("material", bake, Z, bounds, Path(tmp), {"trailview_format": tiles.FORMAT})
+            sizes = ground.bake_layer("material", bake, Z, bounds, Path(tmp), {"trailview_format": ground.FORMAT})
             self.assertEqual(sorted(sizes), list(range(Z + 1)))
             with open(Path(tmp) / "material.pmtiles", "rb") as stream:
                 reader = Reader(MmapSource(stream))
