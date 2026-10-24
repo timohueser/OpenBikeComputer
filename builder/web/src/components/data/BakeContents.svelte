@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { Bbox } from "../../lib/data/areas";
-    import { CONTENTS, layerFlags, needs, shows, toggled, unshown } from "../../lib/data/contents";
+    import { CONTENTS, layerFlags, needs, shows, TERRAIN, toggled, unshown } from "../../lib/data/contents";
     import { planArgs } from "../../lib/data/flags";
     import type { BakeRoute } from "../../lib/data/screens";
     import type { Started } from "../../lib/data/shapes";
@@ -35,6 +35,8 @@
     const cards = $derived(
         CONTENTS.map((content) => ({ content, needs: needs(content, bounds, sources ?? [], countries), unshown: unshown(content, on), shows: shows(content) })),
     );
+    const terrain = $derived(needs(TERRAIN, bounds, sources ?? [], countries));
+    const readers = $derived(CONTENTS.filter((content) => content.terrain && on.includes(content.id)).map((content) => content.title));
     const blocked = $derived(cards.filter(({ content, needs }) => on.includes(content.id) && !needs.ready));
     const args = $derived(planArgs(to, [[area.flag, area.value], ...layerFlags(on)]));
     const toggle = (id: string, checked: boolean) => change(toggled(on, id, checked));
@@ -42,6 +44,22 @@
         `#/sources/${encodeURIComponent(source)}/prepare?to=local${area.flag === "--region" ? `&region=${encodeURIComponent(area.value)}` : ""}`;
     const where = (target: string) => (target === "prod" ? "on R2" : "on this computer");
 </script>
+
+{#if sources}
+    <div class="terrain">
+        <b>Terrain here</b>
+        {#each terrain.references as reference (reference.source)}
+            {#if reference.version}
+                <span class="ready">{reference.use} · prepared {reference.version.version} {where(reference.version.target)}</span>
+            {:else}
+                <span class="stale">{reference.use} · not prepared, so the bake uses Copernicus 30 m. <a href={prepare(reference.source)}>Prepare</a></span>
+            {/if}
+        {:else}
+            <span class="soft">Copernicus 30 m: no national model covers this area.</span>
+        {/each}
+        <span class="soft">{readers.length ? `Read by ${new Intl.ListFormat("en").format(readers)}.` : "Read by the bike computer maps, the planner map, Trail View and Sun."}</span>
+    </div>
+{/if}
 
 <div class="cards">
     {#each cards as { content, needs, unshown, shows } (content.id)}
@@ -95,6 +113,14 @@
 <p class="soft">The plan downloads what it needs to count the work, then shows the cost. It changes nothing yet.</p>
 
 <style>
+    .terrain {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 12px 16px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+    }
     .cards {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { CONTENTS, layerFlags, needs, toggled, unshown } from "./contents";
+import { CONTENTS, layerFlags, needs, TERRAIN, toggled, unshown } from "./contents";
 import type { SourceRow } from "./sources";
 
 const card = (id: string) => CONTENTS.find((content) => content.id === id)!;
@@ -18,8 +18,8 @@ it("a card that needs a reference cannot bake until a version covers the area", 
 
 it("terrain falls back without a reference, a prod version wins, and a missing login blocks", () => {
     const terrain = [source("terrain-reference/ch", { extent: swiss, prepared: { ...versions("prod"), local: versions("local").local } })];
-    expect(needs(card("device"), lucerne, terrain)).toMatchObject({ ready: true, references: [{ version: { target: "prod" } }] });
-    expect(needs(card("device"), lucerne, []).ready).toBe(true);
+    expect(needs(TERRAIN, lucerne, terrain)).toMatchObject({ ready: true, references: [{ version: { target: "prod" } }] });
+    expect(needs(TERRAIN, lucerne, []).ready).toBe(true);
     expect(needs(card("climate"), lucerne, [source("era5-land", { credential_missing: true })])).toMatchObject({ ready: false, credentials: ["era5-land"] });
 });
 
@@ -52,6 +52,6 @@ it("a card needs a card that shows it, and goes when the last one goes", () => {
 
 it("an area that names its countries meets only their references", () => {
     const bavaria = [source("terrain-reference/de-by", { extent: [8.9, 47.2, 13.9, 50.6], prepared: versions(null) })];
-    expect(needs(card("device"), lucerne, bavaria, ["CH"]).references).toEqual([]);
-    expect(needs(card("device"), { west: 8.5, south: 47.1, east: 9.2, north: 47.5 }, bavaria).references).toHaveLength(1);
+    expect(needs(TERRAIN, lucerne, bavaria, ["CH"]).references).toEqual([]);
+    expect(needs(TERRAIN, { west: 8.5, south: 47.1, east: 9.2, north: 47.5 }, bavaria).references).toHaveLength(1);
 });

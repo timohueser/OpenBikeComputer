@@ -16,7 +16,20 @@ export interface Content {
     reference?: { family: string; required: boolean; without: string };
     /** The cards that show it; it can be on only while one of them is. */
     shownBy?: string[];
+    /** Whether it reads the terrain, which a national model makes finer where it covers the area. */
+    terrain?: boolean;
 }
+
+/** The terrain that the cards with `terrain` read: a national model where one is prepared, else
+ *  Copernicus 30 m. */
+export const TERRAIN: Content = {
+    id: "terrain",
+    title: "Terrain",
+    about: "",
+    layers: [],
+    credentials: [],
+    reference: { family: "terrain-reference", required: false, without: "Copernicus 30 m" },
+};
 
 export const CONTENTS: Content[] = [
     {
@@ -25,9 +38,9 @@ export const CONTENTS: Content[] = [
         about: "Map, terrain, landmarks and peaks",
         layers: ["device"],
         credentials: [],
-        reference: { family: "terrain-reference", required: false, without: "Copernicus 30 m terrain" },
+        terrain: true,
     },
-    { id: "map", title: "Planner map", about: "Base map, terrain shading and places", layers: ["map"], credentials: [] },
+    { id: "map", title: "Planner map", about: "Base map, terrain shading and places", layers: ["map"], credentials: [], terrain: true },
     { id: "routing", title: "Routing", about: "Routes for each bike profile", layers: ["routing"], credentials: [] },
     { id: "search", title: "Search", about: "Places and addresses by name", layers: ["search"], credentials: [] },
     {
@@ -36,6 +49,7 @@ export const CONTENTS: Content[] = [
         about: "3D ground, roads, water and colour",
         layers: ["trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"],
         credentials: ["sentinel-2-mosaics"],
+        terrain: true,
     },
     {
         id: "trailview-canopy",
@@ -46,7 +60,7 @@ export const CONTENTS: Content[] = [
         reference: { family: "forest-reference", required: true, without: "no trees" },
         shownBy: ["trailview"],
     },
-    { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [], shownBy: ["map"] },
+    { id: "sun", title: "Sun", about: "Sunrise and sunset behind the terrain", layers: ["sun"], credentials: [], shownBy: ["map"], terrain: true },
     { id: "snow", title: "Snow", about: "Typical snow cover through the year", layers: ["snow"], credentials: ["hr-wsi"], shownBy: ["map", "trailview"] },
     { id: "climate", title: "Climate", about: "Monthly temperature and rain", layers: ["climate"], credentials: ["era5-land"], shownBy: ["map"] },
 ];
