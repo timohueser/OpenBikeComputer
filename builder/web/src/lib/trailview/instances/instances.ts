@@ -10,7 +10,7 @@ const DRAWS = MODELS * TIERS;
 const CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
 const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
-/** The phases of a tree's year, as PHASES of emit.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
+/** The phases of a tree's year, as PHASES of phenology.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
 const PHASES = 4, TONE_BYTES = 48;
 /** Lanes of the sort, as LANES in sort.wgsl. */
 const SORT_LANES = 16384;

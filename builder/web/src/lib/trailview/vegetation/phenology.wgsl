@@ -10,6 +10,7 @@ const TURN_FALL: vec3f = vec3f(308.0, 30.0, -0.015);
 const REFERENCE_M: f32 = 500.0;
 const TREELINE_M: f32 = 2500.0;
 // The phases between the turns: winter (bare), spring, summer, autumn.
+const PHASES: u32 = 4u;
 const PHASE_WINTER: u32 = 0u;
 const PHASE_SUMMER: u32 = 2u;
 

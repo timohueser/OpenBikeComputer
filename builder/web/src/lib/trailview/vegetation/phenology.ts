@@ -1,7 +1,7 @@
 // The trees' year. Each tree passes four turns: leaf-out, full green, autumn colour and leaf fall. A
 // stand passes a turn over `days` about its `day`, and each tree on a day of its own, by its hash: the
-// share of trees past a turn rises with the date, and a tree never turns back. Higher up, spring comes
-// later and autumn earlier.
+// share of trees past a turn rises with the date, and a tree passes the turns in their order and never
+// turns back. Higher up, spring comes later and autumn earlier.
 import { TREES } from '../models/library';
 import { Colour, hex, ramp } from '../models/shape';
 import { SEASONS, type Region, type TreeRule } from '../rules/regions';
@@ -12,7 +12,8 @@ export const WINTER = 0, SUMMER = 2;
 /**
  * As TURNS of phenology.wgsl, per turn: its day of the year at REFERENCE_M (0 is 1 January), the days
  * over which a stand passes it, and the days that it comes later per metre higher. A stand passes
- * each turn before any of its trees pass the next.
+ * each turn before any of its trees pass the next, but above about 2320 m it is still passing full
+ * green when its first trees pass autumn colour.
  */
 export const TURNS: readonly (readonly [number, number, number])[] = [
     // Leaf-out, about 20 April.

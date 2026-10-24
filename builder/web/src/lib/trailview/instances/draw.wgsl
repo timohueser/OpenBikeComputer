@@ -112,7 +112,7 @@ fn toned(colour: vec3f, model: u32, ground: u32) -> vec3f {
     if (phase == PHASE_SUMMER) {
         return colour;
     }
-    return max(tones[model * 4u + phase] * colour, vec3f(0.0));
+    return max(tones[model * PHASES + phase] * colour, vec3f(0.0));
 }
 
 fn far_tone(m: Model, d: f32) -> f32 {
