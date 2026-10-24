@@ -52,27 +52,46 @@ fn snap(u: vec2i, level: u32, snapping: bool) -> vec2i {
     return vec2i(round(moved * fade));
 }
 
-// The mesh vertex of a level at a grid point, `u` units about the anchor: an odd vertex slides onto the
-// even one before it by the morph, and its height goes from its own level's to the coarser level's at
-// the even vertex, so a fully morphed edge is the coarser node's edge. Each level snaps its own
-// vertices; the morph keeps to the grid point, so neighbouring nodes meet as without the snap.
-fn grid_vertex(u: vec2i, level: u32, snapping: bool) -> Vertex {
-    let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
+// Where the mesh vertex of a level at a grid point, `u` units about the anchor, lies: an odd vertex
+// slides onto the even one before it by the morph. Each level snaps its own vertices; the morph keeps
+// to the grid point, so neighbouring nodes meet as without the snap.
+struct Place {
+    at: vec2f,
+    moved: vec2i,
+    settled: vec2i,
+    morph: f32,
+}
+
+fn vertex_place(u: vec2i, level: u32, snapping: bool) -> Place {
     let morph = clamp(f32(level) - lod(lod_space(vec2f(u))), 0.0, 1.0);
     let moved = u + snap(u, level, snapping);
     let at = lod_space(vec2f(moved));
     if (morph <= 0.0) {
-        return Vertex(at, units_height(surface.anchor + moved, level));
+        return Place(at, moved, moved, morph);
     }
+    let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
     let settled = even + snap(even, level - 1u, snapping);
-    let base = lod_space(vec2f(settled));
-    let coarse = units_height(surface.anchor + settled, level - 1u);
-    if (morph >= 1.0) {
-        return Vertex(base, coarse);
+    return Place(mix(at, lod_space(vec2f(settled)), morph), moved, settled, morph);
+}
+
+// The height of a placed vertex: from its own level's to the coarser level's at the even vertex by the
+// morph, so a fully morphed edge is the coarser node's edge.
+fn place_height(p: Place, level: u32) -> f32 {
+    if (p.morph <= 0.0) {
+        return units_height(surface.anchor + p.moved, level);
     }
-    let fine = units_height(surface.anchor + moved, level);
-    let h = select(select(fine, coarse, known(coarse)), mix(fine, coarse, morph), known(fine) && known(coarse));
-    return Vertex(mix(at, base, morph), h);
+    let coarse = units_height(surface.anchor + p.settled, level - 1u);
+    if (p.morph >= 1.0) {
+        return coarse;
+    }
+    let fine = units_height(surface.anchor + p.moved, level);
+    return select(select(fine, coarse, known(coarse)), mix(fine, coarse, p.morph), known(fine) && known(coarse));
+}
+
+// The mesh vertex of a level at a grid point.
+fn grid_vertex(u: vec2i, level: u32, snapping: bool) -> Vertex {
+    let p = vertex_place(u, level, snapping);
+    return Vertex(p.at, place_height(p, level));
 }
 
 // The drawn height at a point of LOD space: the mesh triangle that holds it, with the vertices, the
@@ -100,27 +119,37 @@ fn mesh_height(s: vec2f, snapping: bool) -> f32 {
     let snapped = snapping && level >= MASK_LEVEL;
     let n = select(3, 7, snapped);
     let corner = (vec2i(floor(at)) - select(vec2i(0), vec2i(1), snapped)) * block - low;
-    var v: array<Vertex, 49>;
+    // The triangle that holds the point by the vertices' places, then the heights of its three only.
+    var places: array<vec2f, 49>;
     for (var i = 0; i < n * n; i++) {
-        v[i] = grid_vertex(corner + vec2i(i % n, i / n) * cell, level, snapping);
+        places[i] = vertex_place(corner + vec2i(i % n, i / n) * cell, level, snapping).at;
     }
     var best = -1e30;
-    var h = NONE;
+    var held = vec3i(0);
+    var w = vec3f(0.0);
     for (var i = 0; i < (n - 1) * (n - 1); i++) {
         let a = i % (n - 1) + n * (i / (n - 1));
         // The two triangles of a cell, as the index buffer splits it.
         for (var t = 0; t < 2; t++) {
             let p = select(vec3i(a, a + n, a + 1), vec3i(a + 1, a + n, a + n + 1), t == 1);
-            let w = weights(s, v[p.x].s, v[p.y].s, v[p.z].s);
-            let least = min(w.x, min(w.y, w.z));
+            let weight = weights(s, places[p.x], places[p.y], places[p.z]);
+            let least = min(weight.x, min(weight.y, weight.z));
             if (least > best) {
                 best = least;
-                let known_all = known(v[p.x].h) && known(v[p.y].h) && known(v[p.z].h);
-                h = select(NONE, dot(w, vec3f(v[p.x].h, v[p.y].h, v[p.z].h)), known_all);
+                held = p;
+                w = weight;
             }
         }
     }
-    return h;
+    var h = vec3f(0.0);
+    for (var k = 0; k < 3; k++) {
+        let u = corner + vec2i(held[k] % n, held[k] / n) * cell;
+        h[k] = place_height(vertex_place(u, level, snapping), level);
+    }
+    if (!(known(h.x) && known(h.y) && known(h.z))) {
+        return NONE;
+    }
+    return dot(w, h);
 }
 
 // A thing on the drawn surface nearer than this stands on the drawn height; a farther one on the
