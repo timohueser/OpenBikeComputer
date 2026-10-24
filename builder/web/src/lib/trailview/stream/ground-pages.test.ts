@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateColour, groundPages, snowDay, snowState, type Raster } from './ground-pages';
+import { dateColour, groundPages, snowState, type Raster } from './ground-pages';
 
 describe('the ground pages', () => {
     it('blends the two quarters about the date, and a quarter that saw nothing hands its weight to the other', () => {
@@ -16,11 +16,11 @@ describe('the ground pages', () => {
     });
 
     it('has snow where at least the share of seasons with data had snow on the day', () => {
-        // Two seasons over one pixel: onset 10, melt-out 50; no data. And one with snow every day.
-        const day = (tile: number[], index: number): Raster => ({ z: 0, x: 0, y: 0, size: 1, channels: 1, data: snowDay(Uint8Array.from(tile), 2, index) });
-        expect(snowState(day([10, 50, 255, 255], 30), () => 0, [0.5]).map(values => values[0])).toEqual([1, 1, 1]);
-        expect(snowState(day([10, 50, 255, 255], 60), () => 0, [0.5]).map(values => values[0])).toEqual([0, 1, 0]);
-        expect(snowState(day([254, 254, 253, 253], 60), () => 0, [0.6]).map(values => values[0])).toEqual([0, 1, 0.5]);
+        // Seasons with data × 16 + seasons with snow.
+        const day = (byte: number): Raster => ({ z: 0, x: 0, y: 0, size: 1, channels: 1, data: Uint8Array.from([byte]) });
+        expect(snowState(day(2 * 16 + 1), () => 0, [0.5]).map(values => values[0])).toEqual([1, 1, 0.5]);
+        expect(snowState(day(2 * 16 + 1), () => 0, [0.6]).map(values => values[0])).toEqual([0, 1, 0.5]);
+        expect(snowState(day(0), () => 0, [0]).map(values => values[0])).toEqual([0, 0, 0]);
     });
 
     it('splits a material tile into its four pages and resamples the coarser layers onto their texels', () => {

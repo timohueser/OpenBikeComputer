@@ -74,9 +74,10 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
 /** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
 function groundLayers(dir, colour) {
     const files = {
-        'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles', snow: 'snow.pmtiles',
+        'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles',
         'trailview-canopy': 'trailview-canopy.pmtiles',
         ...Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'ndvimax'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+        ...Object.fromEntries(Array.from({ length: 46 }, (_, band) => String(band).padStart(2, '0')).map(band => [`trailview-snow-${band}`, `snow-days/${band}.pmtiles`])),
     };
     return Object.fromEntries(Object.entries(files).filter(([, file]) => existsSync(join(dir, file))).map(([name, file]) => [name, new PMTiles(new FileSource(join(dir, file)))]));
 }

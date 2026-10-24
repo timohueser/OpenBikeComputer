@@ -9,8 +9,6 @@ const TILE = 2 * PAGE;
 const BARREN_BIT = 0x40, NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
 /** The region byte of no data. */
 const NO_REGION = 255;
-/** Snow bytes (specs/planner-snow-tiles.md). */
-const WHOLE_SEASON = 254, NO_SNOW_DATA = 255;
 /** The colour alpha codes: fewer than 3 looks, and a quarter that saw snow. */
 const UNSEEN = 0, SNOW_MARK = 1;
 
@@ -29,7 +27,7 @@ export interface GroundInputs {
     /** The two quarters around the date, and the highest NDVI of the year. */
     quarters?: [Raster | undefined, Raster | undefined];
     ndvimax?: Raster;
-    /** The snow days (`snowDay`) over the material tile: one coarser tile, or four tiles one zoom finer. */
+    /** The snow days over the material tile: one coarser tile, or four tiles one zoom finer. */
     snow?: (Raster | undefined)[];
     date: GroundDate;
     /** The region id that stands for no data. */
@@ -104,26 +102,9 @@ export function dateColour(a: Raster | undefined, b: Raster | undefined, weight:
 }
 
 /**
- * The snow of a day from a snow tile of `seasons` seasons: per pixel, the seasons with data × 16 +
- * the seasons with snow on day step `index`: one byte in place of 2 × `seasons`.
+ * Per pixel of a snow day (specs/trailview-tiles.md#snow-days): snow by the share rule of its region,
+ * whether the data knows, and the share × known.
  */
-export function snowDay(tile: Uint8Array, seasons: number, index: number): Uint8Array<ArrayBuffer> {
-    if (seasons > 15) throw new Error(`A snow day holds 15 seasons, not ${seasons}.`);
-    const area = tile.length / (2 * seasons), day = new Uint8Array(area);
-    for (let i = 0; i < area; i++) {
-        let count = 0, white = 0;
-        for (let s = 0; s < seasons; s++) {
-            const onset = tile[2 * s * area + i], melt = tile[(2 * s + 1) * area + i];
-            if (onset === NO_SNOW_DATA) continue;
-            count++;
-            if (onset === WHOLE_SEASON || (onset <= index && index <= melt)) white++;
-        }
-        day[i] = 16 * count + white;
-    }
-    return day;
-}
-
-/** Per pixel of a snow day: snow by the share rule of its region, whether the data knows, and the share × known. */
 export function snowState(snow: Raster, regionOf: (pixel: number) => number, shares: ArrayLike<number>): Float32Array[] {
     const area = snow.size * snow.size, snowy = new Float32Array(area), known = new Float32Array(area), share = new Float32Array(area);
     for (let i = 0; i < area; i++) {

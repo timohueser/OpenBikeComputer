@@ -1,23 +1,31 @@
 import type { PlannerConfig } from '../../planner/config';
-import { decodedTiles, openSource, requestSignal, type Source, type TileGetter, type Tiles } from '../../planner/layers/archive';
-import { snowMeta } from '../../planner/layers/snow';
+import { decodedTiles, openSource, requestSignal, type Source, type Tiles } from '../../planner/layers/archive';
+import { seasonDay } from '../../planner/layers/snow';
 import { releaseFetch } from '../../planner/release';
 import type { GroundResult } from '../ground/pages';
 import { rulesOf, type Rules } from '../rules/regions';
-import { snowDay, type GroundDate } from './ground-pages';
+import type { GroundDate } from './ground-pages';
 import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
 const NAMES = {
     material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region', ndvimax: 'trailview-colour-ndvimax',
-    q1: 'trailview-colour-q1', q2: 'trailview-colour-q2', q3: 'trailview-colour-q3', q4: 'trailview-colour-q4', snow: 'snow',
+    q1: 'trailview-colour-q1', q2: 'trailview-colour-q2', q3: 'trailview-colour-q3', q4: 'trailview-colour-q4',
 } as const;
 type Layer = keyof typeof NAMES;
 const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
+/** The snow day archives (specs/trailview-tiles.md#snow-days): band b holds the day steps 4b to 4b + 3. */
+const SNOW_BANDS = 46, BAND_STEPS = 4, SNOW_DAY = 256 * 256;
 const WORKERS = 2;
-/** Tile bodies kept per layer, so a new device or a page that comes back builds again without a request. */
+/** Tile bodies kept per archive, so a new device or a page that comes back builds again without a request. */
 const BODIES = 16 * 2 ** 20;
-const SNOW_TILE = 256 * 256 * 2;
+
+/** The snow day band of a day step. */
+export const snowBand = (step: number) => Math.min(SNOW_BANDS - 1, Math.floor(step / BAND_STEPS));
+const snowName = (band: number) => `trailview-snow-${String(band).padStart(2, '0')}`;
+
+/** An open archive and the bodies of its tiles. */
+interface Archive { source: Source; tiles: Tiles<ArrayBuffer> }
 
 /**
  * The ground of a release: the ruleset, the archives of the ground, colour and snow layers, and the
@@ -27,16 +35,16 @@ export class GroundSource {
     requests = 0;
     bytes = 0;
     failed = 0;
-    private readonly bodies: Partial<Record<Layer, Tiles<ArrayBuffer>>>;
-    /** The snow days of one day step: a new day loads the snow tiles again. */
-    private snow?: { index: number; tiles: Tiles<ArrayBuffer> };
+    private readonly archives: Partial<Record<Layer, Archive>>;
+    /** The snow day archive of one band, opened on first use: a date in another band opens its own. */
+    private snow?: { band: number; archive: Promise<Archive | undefined> };
+    private snowCredit = '';
     private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
     private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
-    private constructor(readonly rules: Rules, private readonly sources: Partial<Record<Layer, Source>>, readonly seasons: number) {
-        this.bodies = Object.fromEntries(Object.keys(sources).filter(layer => layer !== 'snow')
-            .map(layer => [layer, decodedTiles(this.counted(layer as Layer), body => body.buffer, BODIES, body => body.byteLength)]));
+    private constructor(readonly rules: Rules, sources: Partial<Record<Layer, Source>>, private readonly urls: Partial<Record<string, string>>) {
+        this.archives = Object.fromEntries(Object.entries(sources).map(([layer, source]) => [layer, { source, tiles: this.kept(source, body => body.buffer) }]));
         for (const worker of this.workers) {
             worker.onmessage = ({ data }) => {
                 const wait = this.waiting.get(data.id);
@@ -56,70 +64,70 @@ export class GroundSource {
     }
 
     /**
-     * The ground of a config; undefined when it has no ruleset or no material archive. Only the rules
-     * and the material fail it: another archive that does not open is left out.
+     * The ground of a config, with the snow of `date` open; undefined when it has no ruleset or no
+     * material archive. Only the rules and the material fail it: another archive that does not open is
+     * left out.
      */
-    static async open(config: PlannerConfig): Promise<GroundSource | undefined> {
+    static async open(config: PlannerConfig, date: string): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
         if (!config.trailview_rules || !urls[NAMES.material]) return undefined;
         const response = await releaseFetch(config.trailview_rules, { signal: requestSignal() });
         if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
         const rules = rulesOf(await response.json());
-        let seasons = 0;
         const entries = await Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
             const url = urls[name];
             if (!url) return [layer, undefined] as const;
-            const opened = openSource(url).then(source => {
-                if (layer === 'snow') seasons = snowMeta(source.metadata).seasons;
-                return source;
-            });
+            const opened = openSource(url);
             return [layer, await (layer === 'material' ? opened : opened.catch(error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`)))] as const;
         }));
-        return new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), seasons);
+        const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls);
+        await ground.snowDays(snowBand(seasonDay(date).index));
+        return ground;
     }
 
     /** The finest level with ground pages: one finer than the material's last zoom. */
     get finest(): number {
-        return this.sources.material!.maxZoom + 1;
+        return this.archives.material!.source.maxZoom + 1;
     }
 
     /** The credits of the layers. */
     get attribution(): string[] {
-        return [...new Set(Object.values(this.sources).map(source => String(source.metadata.attribution ?? '')).filter(Boolean))];
+        const credits = Object.values(this.archives).map(({ source }) => String(source.metadata.attribution ?? ''));
+        return [...new Set([...credits, this.snowCredit].filter(Boolean))];
     }
 
     /** The coarsest level whose pages carry the satellite colour. */
     get coloured(): number {
-        return (this.sources.q1?.minZoom ?? Infinity) + 1;
+        return (this.archives.q1?.source.minZoom ?? Infinity) + 1;
     }
 
     /** The colour variant of the release, from the colour metadata. */
     get colour(): string {
-        return String(this.sources.q1?.metadata.variant ?? 'none');
+        return String(this.archives.q1?.source.metadata.variant ?? 'none');
     }
 
     /**
      * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
      * has no ground. A failed material tile fails them; a failed tile of another layer leaves that
-     * layer out, and the pages are not complete. Without `fine`, pages whose four snow tiles one zoom
-     * finer have not arrived take the one snow tile of zoom z, and are `coarse`.
+     * layer out, and the pages are not complete. The snow is the band of the date's day step. Without
+     * `fine`, pages whose four snow tiles one zoom finer have not arrived take the one snow tile of zoom
+     * z, and are `coarse`.
      */
     async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine = false): Promise<GroundResult> {
         let complete = true;
         const optional = (body: Promise<Body | undefined>) => body.catch(() => void (complete = false));
-        const at = (layer: Layer, zoom: number, planar = false) => {
-            const body = this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar, date.snowIndex);
+        const at = (layer: Layer, zoom: number) => {
+            const archive = this.archives[layer], body = this.body(layer, archive, Math.min(zoom, archive?.source.maxZoom ?? -1), x, y, z);
             return layer === 'material' ? body : optional(body);
         };
-        const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
+        const colour = this.archives.q1?.source, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
-        const snow = this.sources.snow, zs = z + 1;
-        const finer = snow !== undefined && zs <= snow.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
-        const days = snow && this.snowDays(date.snowIndex);
-        const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.loaded(zs, sx, sy) === undefined);
-        const snowBodies = !snow ? [] : finer.length && !coarse
-            ? finer.map(([sx, sy]) => optional(this.body('snow', zs, sx, sy, zs, true, date.snowIndex)))
-            : [at('snow', z, true)];
+        const days = await this.snowDays(snowBand(date.snowIndex)), zs = z + 1;
+        const finer = days && zs <= days.source.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
+        const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.tiles.loaded(zs, sx, sy) === undefined);
+        const snowBodies = !days ? [] : finer.length && !coarse
+            ? finer.map(([sx, sy]) => optional(this.body('snow', days, zs, sx, sy, zs, true)))
+            : [optional(this.body('snow', days, Math.min(z, days.source.maxZoom), x, y, z, true))];
         const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
             ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc), at('ndvimax', zc)] : [undefined, undefined, undefined]),
@@ -137,32 +145,35 @@ export class GroundSource {
         return { pages: built.pages, complete: complete && built.complete, coarse };
     }
 
-    /** The body of the tile of a layer at a zoom that holds tile z/x/y of zoom `of`; undefined where the layer has none. */
-    private async body(layer: Layer, zoom: number, x: number, y: number, of: number, planar = false, index = 0): Promise<Body | undefined> {
-        const source = this.sources[layer];
-        if (!source || zoom < source.minZoom || zoom > of) return undefined;
-        const tx = x >> (of - zoom), ty = y >> (of - zoom);
-        const body = await (layer === 'snow' ? this.snowDays(index) : this.bodies[layer]!).tile(zoom, tx, ty);
+    /** The body of the tile of an archive at a zoom that holds tile z/x/y of zoom `of`; undefined where the archive has none. */
+    private async body(name: string, archive: Archive | undefined, zoom: number, x: number, y: number, of: number, planar = false): Promise<Body | undefined> {
+        if (!archive || zoom < archive.source.minZoom || zoom > of) return undefined;
+        const tx = x >> (of - zoom), ty = y >> (of - zoom), body = await archive.tiles.tile(zoom, tx, ty);
         // A copy for the worker to take: the bodies stay here.
-        return body ? { key: `${layer}/${zoom}/${tx}/${ty}`, z: zoom, x: tx, y: ty, body: body.slice(0), planar } : undefined;
+        return body ? { key: `${name}/${zoom}/${tx}/${ty}`, z: zoom, x: tx, y: ty, body: body.slice(0), planar } : undefined;
     }
 
-    /** The snow days of a day step, kept in place of the snow tiles. */
-    private snowDays(index: number): Tiles<ArrayBuffer> {
-        if (this.snow?.index !== index) {
-            const tiles = decodedTiles(this.counted('snow'), body => {
-                if (body.byteLength !== this.seasons * SNOW_TILE) throw new Error(`A snow tile of ${this.seasons} seasons has ${body.byteLength} bytes.`);
-                return snowDay(body, this.seasons, index).buffer;
-            }, BODIES, day => day.byteLength);
-            this.snow = { index, tiles };
+    /** The snow day archive of a band; undefined where the release has none or it does not open. */
+    private snowDays(band: number): Promise<Archive | undefined> {
+        if (this.snow?.band !== band) {
+            const name = snowName(band), url = this.urls[name];
+            const archive = !url ? Promise.resolve(undefined) : openSource(url).then(source => {
+                this.snowCredit = String(source.metadata.attribution ?? '');
+                return {
+                    source, tiles: this.kept(source, body => {
+                        if (body.byteLength !== SNOW_DAY) throw new Error(`A snow day tile has ${body.byteLength} bytes.`);
+                        return body.buffer;
+                    }),
+                };
+            }, error => void console.warn(`TrailView leaves out ${name}: ${error instanceof Error ? error.message : error}`));
+            this.snow = { band, archive };
         }
-        return this.snow.tiles;
+        return this.snow.archive;
     }
 
-    /** The tiles of a layer, counted in the requests, the bytes and the failures. */
-    private counted(layer: Layer): TileGetter {
-        const source = this.sources[layer]!;
-        return async (z, x, y, signal) => {
+    /** The bodies of the tiles of an archive, counted in the requests, the bytes and the failures. */
+    private kept(source: Source, decode: (body: Uint8Array<ArrayBuffer>) => ArrayBuffer): Tiles<ArrayBuffer> {
+        return decodedTiles(async (z, x, y, signal) => {
             try {
                 const body = await source.get(z, x, y, signal);
                 this.requests++;
@@ -172,6 +183,6 @@ export class GroundSource {
                 this.failed++;
                 throw error;
             }
-        };
+        }, decode, BODIES, body => body.byteLength);
     }
 }
