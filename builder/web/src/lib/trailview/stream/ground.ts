@@ -106,7 +106,7 @@ export class GroundSource {
      * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
      * has no ground. A failed material tile fails them; a failed tile of another layer leaves that
      * layer out, and the pages are not complete. Without `fine`, pages whose four snow tiles one zoom
-     * finer have not arrived take the one snow tile of zoom z, and are `coarse`.
+     * finer have not arrived take the one snow tile of zoom z, and are `coarse` where finer snow can follow.
      */
     async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine = false): Promise<GroundResult> {
         let complete = true;
@@ -118,7 +118,7 @@ export class GroundSource {
         const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
         const snow = this.sources.snow, zs = z + 1;
-        const finer = snow !== undefined && zs <= snow.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
+        const finer = snow !== undefined && zs >= snow.minZoom && zs <= snow.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
         const days = snow && this.snowDays(date.snowIndex);
         const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.loaded(zs, sx, sy) === undefined);
         const snowBodies = !snow ? [] : finer.length && !coarse
@@ -138,7 +138,9 @@ export class GroundSource {
             this.waiting.set(id, { worker, resolve, reject });
             worker.postMessage({ id, job }, bodies);
         });
-        return { pages: built.pages, complete: complete && built.complete, coarse };
+        // Where the snow tile of zoom z is absent, the finer ones are too, unless zoom z is coarser than the snow's first zoom.
+        const refines = coarse && (snowTiles[0] !== undefined || z < snow!.minZoom);
+        return { pages: built.pages, complete: complete && built.complete, coarse: refines };
     }
 
     /** The body of the tile of a layer at a zoom that holds tile z/x/y of zoom `of`; undefined where the layer has none. */

@@ -168,7 +168,8 @@ export class GroundPages {
             if (this.waits(node)) continue;
             if (page?.date !== this.date || page.partial) {
                 this.missing++;
-                this.load(node);
+                // A partial page of the date loads with its own snow: a coarse load would end the wait of its failed tile.
+                this.load(node, page?.date === this.date);
             } else if (page.coarse) {
                 this.missing++;
                 coarse.push(node);
@@ -267,8 +268,9 @@ export class GroundPages {
                 this.arrivals.push({ node: quarter(q), page, date, partial: !complete, coarse });
                 this.loading.set(name, this.loading.get(name)! + 1);
             });
-            if (complete) this.failures.delete(`${z}/${x}/${y}`);
-            else this.failed(`${z}/${x}/${y}`);
+            // A coarse load does not prove that the fine one loads.
+            if (!complete) this.failed(`${z}/${x}/${y}`);
+            else if (!coarse) this.failures.delete(`${z}/${x}/${y}`);
         }).catch(error => {
             console.warn(`Ground tile ${z}/${x}/${y}: ${error instanceof Error ? error.message : error}`);
             this.failed(`${z}/${x}/${y}`);

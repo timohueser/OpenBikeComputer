@@ -359,7 +359,7 @@ export class Instances {
             mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
         this.attached = [gpu, frame, surfaces];
-        for (const producer of this.producers) await attachProducer(producer, gpu, frame, surfaces);
+        await Promise.all(this.producers.map(producer => attachProducer(producer, gpu, frame, surfaces)));
     }
 
     /** Starts a frame: the models when they changed, the detail for the render's height in pixels, and an empty tally. */
