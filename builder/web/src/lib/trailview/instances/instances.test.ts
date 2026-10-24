@@ -8,6 +8,8 @@ describe('the impostor outlines', () => {
         let radius = 0;
         for (let i = 0; i < p.length; i += 3) radius = Math.max(radius, Math.hypot(p[i], p[i + 1], p[i + 2] - 0.5));
         const out = outlines(mesh, radius);
+        // The most that a vertex lies outside an outline, over every frame and neighbour.
+        let outside = -Infinity;
         for (let frame = 0; frame < 64; frame++) {
             const [low, high, w0, w1] = out.slice(4 * frame, 4 * frame + 4);
             // The frame itself and its eight neighbours in the grid, as the dither of impostor.wgsl picks them.
@@ -21,12 +23,11 @@ describe('the impostor outlines', () => {
                 for (let i = 0; i < p.length; i += 3) {
                     const v = [p[i], p[i + 1], p[i + 2] - 0.5];
                     const x = Math.abs(v[0] * right[0] + v[1] * right[1] + v[2] * right[2]) / radius, y = (v[0] * up[0] + v[1] * up[1] + v[2] * up[2]) / radius;
-                    expect(y).toBeGreaterThanOrEqual(low - 1e-5);
-                    expect(y).toBeLessThanOrEqual(high + 1e-5);
-                    expect(x).toBeLessThanOrEqual(w0 + ((w1 - w0) * (y - low)) / (high - low) + 1e-5);
+                    outside = Math.max(outside, low - y, y - high, x - w0 - ((w1 - w0) * (y - low)) / (high - low));
                 }
             }
         }
+        expect(outside).toBeLessThan(1e-5);
         // A spruce is narrow at its top: a side view's outline is a trapezoid, not the frame's square.
         expect(out[3]).toBeLessThan(0.5 * out[2]);
     });
