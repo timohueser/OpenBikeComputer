@@ -323,6 +323,33 @@ class Bake(unittest.TestCase):
         lake, _, river = sorted(overview, key=lambda feature: feature["kind"])
         self.assertIn(river["parts"][0]["xy"][-1], lake["parts"][0]["xy"])
 
+    def test_the_input_holds_what_the_region_can_place_and_nothing_past_it(self):
+        west, north = location(self.COLUMN, self.ROW, 0, 0)
+        east, south = location(self.COLUMN, self.ROW, 2 * features.EXTENT, features.EXTENT)
+        lon, lat = location(self.COLUMN, self.ROW, 1000, 1000)
+        # Way 1 is a building near the region, and way 2 one past the near area, which only zoom 13
+        # places. Way 3 is a lake there, within one tile of zoom 8, which zoom 8 places; way 4 a lake past
+        # that. Way 5 near the region is of no kind.
+        ways = [(1, lon, {"building": "yes"}), (2, lon + 0.6, {"building": "yes"}), (3, lon + 0.6, {"natural": "water"}),
+                (4, lon + 4.0, {"natural": "water"}), (5, lon + 0.002, {"amenity": "bench"})]
+        nodes, points, lines = 0, "", ""
+        for way, x, tags in ways:
+            refs = []
+            for dx, dy in ((0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)):
+                nodes += 1
+                refs.append(nodes)
+                points += f'<node id="{nodes}" version="1" lat="{lat + dy:.7f}" lon="{x + dx:.7f}"/>'
+            tag = "".join(f'<tag k="{key}" v="{value}"/>' for key, value in tags.items())
+            lines += f'<way id="{100 + way}" version="1">' + "".join(f'<nd ref="{ref}"/>' for ref in refs + refs[:1]) + tag + "</way>"
+        with tempfile.TemporaryDirectory() as temporary:
+            root, binary = Path(temporary), region_osm.probe()[0]
+            (root / "region.osm").write_text(f'<osm version="0.6">{points}{lines}</osm>')
+            region_osm.run(binary, "cat", root / "region.osm", "-o", root / "region.osm.pbf")
+            kinds = json.loads(features.TABLE.read_text())
+            chosen = features.selected(kinds, root / "region.osm.pbf", binary, features.Tiles([west, south, east, north]), root)
+            text = region_osm.run(binary, "cat", chosen, "-f", "opl").decode()
+        self.assertEqual([int(line.split()[0][1:]) for line in text.splitlines() if line.startswith("w")], [101, 103])
+
 
 if __name__ == "__main__":
     unittest.main()

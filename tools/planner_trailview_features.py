@@ -14,8 +14,9 @@ import math
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
-from . import region_osm, step_request
+from . import planner_geo as geo, region_osm, step_request
 from .trailview import lifts, profiles, structures, water
 
 FORMAT = 2
@@ -34,6 +35,10 @@ HEIGHTS = ("surface", "pad", "profile", "none")
 FIELDS = {"kind", "geometry", "match", "keep", "height", "min_zoom", "active"}
 EXPORTED = {"Point": "point", "LineString": "line", "MultiPolygon": "area"}
 TABLE = Path(__file__).resolve().parent.parent / "data/trailview/kinds.json"
+# A lift station shares its place with the buildings and the lifts near it: the near area of the
+# input reaches this far past the tiles of the region, more than the longest aerial lift.
+LIFT_REACH_M = 20000.0
+METRES_PER_DEGREE = 111320.0
 
 
 def validate(kinds):
@@ -93,10 +98,57 @@ def world(lon, lat):
     return (lon + 180) / 360, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2
 
 
+def selected(kinds, pbf, binary, tiles, work):
+    """The OSM of `pbf` that the bake can read, in the order of `pbf`: each object that an active kind can
+    select within one zoom-13 tile and LIFT_REACH_M of the region, and each that a kind below zoom 13
+    can select within one tile of its zoom. Osmium cuts and filters, so Python parses only these."""
+    active = [entry for entry in kinds if entry.get("active", True)]
+    low = [entry for entry in active if entry.get("min_zoom", MAX_ZOOM) < MAX_ZOOM]
+
+    def expressions(entries):
+        """A filter that keeps each object that a selector of `entries` matches: by its first key."""
+        firsts = [next(iter(selector.items())) for entry in entries for selector in entry["match"]]
+        return sorted({f"nwr/{key}" if values == "*" else f"nwr/{key}={','.join(values)}" for key, values in firsts})
+
+    def area(zoom, reach_m=0.0):
+        """The tiles of the region at `zoom` and one more tile around them, and `reach_m` more."""
+        c0, r0, c1, r1 = tiles.span(zoom)
+        west, _, _, north = geo.tile_bounds(zoom, c0 - 1, r0 - 1)
+        _, south, east, _ = geo.tile_bounds(zoom, c1 + 1, r1 + 1)
+        dlat = reach_m / METRES_PER_DEGREE
+        dlon = dlat / math.cos(math.radians(min(max(abs(south), abs(north)) + dlat, 85)))
+        box = (max(west - dlon, -180), max(south - dlat, -85), min(east + dlon, 180), min(north + dlat, 85))
+        return ",".join(f"{value:.7f}" for value in box)
+
+    def cut(name, box, entries):
+        """The objects of `pbf` in `box` that a selector of `entries` can match. The cut comes first:
+        the filter keeps the nodes of each way that it keeps, so alone it leaves most of a file."""
+        area_pbf, kept = work / f"{name}-area.osm.pbf", work / f"{name}.osm.pbf"
+        region_osm.run(binary, "extract", "-b", box, "-s", "smart", pbf, "-o", area_pbf)
+        region_osm.run(binary, "tags-filter", area_pbf, *expressions(entries), "-o", kept)
+        area_pbf.unlink()
+        return kept
+
+    paths = [cut("near", area(MAX_ZOOM, LIFT_REACH_M), active)]
+    if low:
+        paths.append(cut("wide", area(min(entry["min_zoom"] for entry in low)), low))
+    out = work / "osm.pbf"
+    region_osm.run(binary, "merge", *paths, "-o", out)
+    return out
+
+
 def objects(kinds, pbf, binary):
     """(entry, tags, parts) of each object of an active kind. A part is (outer, points) in world
-    coordinates; a ring does not repeat its first point, and each outer ring precedes its holes."""
-    command = [binary, "export", pbf, "-f", "geojsonseq", "-x", "print_record_separator=false", "-o", "-"]
+    coordinates; a ring does not repeat its first point, and each outer ring precedes its holes. The points
+    and lines come first and then the areas, each in the order of the file."""
+    # Osmium writes a point or a line as it reads it, but buffers the areas, so in one export an area
+    # lands among the lines where its buffer ran full: an order that changes with the size of the file.
+    for types in ("point,linestring", "polygon"):
+        yield from exported(kinds, pbf, binary, types)
+
+
+def exported(kinds, pbf, binary, types):
+    command = [binary, "export", pbf, "-f", "geojsonseq", "--geometry-types", types, "-x", "print_record_separator=false", "-o", "-"]
     with subprocess.Popen(list(map(str, command)), stdout=subprocess.PIPE, text=True) as process:
         for line in process.stdout:
             feature = json.loads(line)
@@ -529,9 +581,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 for point in points:
                     shared[point] = shared.get(point, 0) + 1
 
+    work = tempfile.TemporaryDirectory(dir=output.parent, prefix=".trailview-osm-")
+    osm = selected(kinds, pbf, binary, tiles, Path(work.name))
     # The lifts wait for the buildings and the other lifts: a station shares their places.
     ways, buildings, lift_entry = [], [], None
-    for entry, tags, parts in objects(kinds, pbf, binary):
+    for entry, tags, parts in objects(kinds, osm, binary):
         if lifts.solves(entry["kind"], tags):
             lift_entry = entry
             ways += [(tags, points) for _, points in parts]
@@ -546,6 +600,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
+    work.cleanup()
     if ways:
         rigged, metrics["lifts"] = lifts.rigged(ways, buildings, terrain)
         for tags, points in rigged:
