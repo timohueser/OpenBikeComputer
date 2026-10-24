@@ -115,9 +115,9 @@
                         Tools are ready. Ask the owner for an R2 key only if you will publish to prod.
                     {/if}
                 </li>
-                <li>Open <a href="#/local">local</a>, choose a small area (the Freiburg preset is quick), and start <b>Update local</b>. It takes a few minutes.</li>
+                <li>Open <a href="#/">Bake</a>, choose a small area, and bake it. A small box takes a few minutes.</li>
                 <li>Start <b>Serve</b> and open the web planner or the map builder from there.</li>
-                <li>Read the <a href="#/">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
+                <li>Read the <a href="#/overview">Overview</a>: sources on the left, layers in the middle, targets on the right.</li>
             </ol>
         </section>
     </div>

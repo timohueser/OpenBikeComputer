@@ -3,6 +3,7 @@
     import { CliQuery } from "../../lib/data/query.svelte";
     import { runAt, SCREENS, screenAt } from "../../lib/data/screens";
     import { elsewhere, free, hardware, title, type RunList, type Status } from "../../lib/data/shapes";
+    import Bake from "./Bake.svelte";
     import Failure from "./Failure.svelte";
     import Machine from "./Machine.svelte";
     import Overview from "./Overview.svelte";
@@ -17,6 +18,11 @@
     const others = $derived(elsewhere(status.output));
     let hash = $state(location.hash);
     const screen = $derived(screenAt(hash));
+    // The Bake tab opens the last bake again, also after a prepare or a run that it linked to.
+    let lastBake = $state("#/");
+    $effect(() => {
+        if (screen.id === "bake") lastBake = hash || "#/";
+    });
 
     onMount(() => {
         const follow = () => (hash = location.hash);
@@ -52,13 +58,15 @@
 
 <nav aria-label="Main">
     {#each SCREENS as item (item.id)}
-        <a href={item.hash} aria-current={item.id === screen.id ? "page" : undefined}>{item.label}</a>
+        <a href={item.id === "bake" ? lastBake : item.hash} aria-current={item.id === screen.id ? "page" : undefined}>{item.label}</a>
     {/each}
 </nav>
 
 <main>
     {#if status.error}<Failure error={status.error} />{/if}
-    {#if screen.id === "machine"}
+    {#if screen.id === "bake"}
+        <Bake {hash} status={status.output} />
+    {:else if screen.id === "machine"}
         <Machine {machine} />
     {:else if screen.id === "runs"}
         <Runs id={runAt(hash)} {runs} {status} />

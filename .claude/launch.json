@@ -29,6 +29,12 @@
       "port": 5173
     },
     {
+      "name": "data-page",
+      "runtimeExecutable": "tools/obc",
+      "runtimeArgs": ["data", "ui"],
+      "port": 8700
+    },
+    {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],

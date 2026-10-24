@@ -1,7 +1,8 @@
 // Hash routes, so that the page works behind any SSH tunnel port with no server rewrites.
 
 export const SCREENS = [
-    { id: "overview", label: "Overview", hash: "#/" },
+    { id: "bake", label: "Bake", hash: "#/" },
+    { id: "overview", label: "Overview", hash: "#/overview" },
     { id: "prod", label: "prod", hash: "#/prod" },
     { id: "local", label: "local", hash: "#/local" },
     { id: "sources", label: "Sources", hash: "#/sources" },
@@ -13,7 +14,7 @@ export type Screen = (typeof SCREENS)[number];
 
 /** The screen of a hash such as `#/runs/ID`: its first segment names the screen. */
 export function screenAt(hash: string): Screen {
-    const first = hash.replace(/^#\/?/, "").split("/")[0];
+    const first = hash.replace(/^#\/?/, "").split(/[/?]/)[0];
     return SCREENS.find((screen) => screen.id === first) ?? SCREENS[0];
 }
 
@@ -47,8 +48,43 @@ export function targetAt(hash: string): {
 
 /** What the Sources screen shows: the list `#/sources`, a source `#/sources/ID`, or the review of a
  *  prepare `#/sources/ID/prepare?to=TARGET`. An id can hold `/`, so it is encoded. */
-export function sourceAt(hash: string): { id: string | null; prepare: string | null } {
+export function sourceAt(hash: string): { id: string | null; prepare: string | null; region: string | null } {
     const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
     const [, id, prepare] = path.split("/");
-    return { id: id ? decodeURIComponent(id) : null, prepare: prepare === "prepare" ? (new URLSearchParams(query).get("to") ?? "prod") : null };
+    const params = new URLSearchParams(query);
+    return { id: id ? decodeURIComponent(id) : null, prepare: prepare === "prepare" ? (params.get("to") ?? "prod") : null, region: params.get("region") };
+}
+
+/** What the Bake screen shows, from `#/bake?to=TARGET&region=ID|box=W,S,E,N&on=CARD,…&plan=RUN&run=RUN`:
+ *  the URL keeps each choice, so that a reload or a link opens the same step. */
+export interface BakeRoute {
+    to: string;
+    area: { flag: "--region" | "--box"; value: string } | null;
+    on: string[];
+    plan: string | null;
+    run: string | null;
+}
+
+export function bakeAt(hash: string): BakeRoute {
+    const params = new URLSearchParams(hash.split("?")[1] ?? "");
+    const region = params.get("region");
+    const box = params.get("box");
+    return {
+        to: params.get("to") ?? "local",
+        area: region ? { flag: "--region", value: region } : box ? { flag: "--box", value: box } : null,
+        on: params.get("on")?.split(",").filter(Boolean) ?? [],
+        plan: params.get("plan"),
+        run: params.get("run"),
+    };
+}
+
+export function bakeHash({ to, area, on, plan, run }: BakeRoute): string {
+    const params = new URLSearchParams();
+    if (to !== "local") params.set("to", to);
+    if (area) params.set(area.flag === "--region" ? "region" : "box", area.value);
+    if (on.length) params.set("on", on.join(","));
+    if (plan) params.set("plan", plan);
+    if (run) params.set("run", run);
+    const query = params.toString().replaceAll("%2C", ",").replaceAll("%2F", "/");
+    return `#/bake${query ? `?${query}` : ""}`;
 }

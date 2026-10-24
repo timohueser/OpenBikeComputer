@@ -7,6 +7,10 @@ export interface SourceRow {
     id: string;
     kind: "data" | "asset" | "tool";
     group?: string;
+    /** What it is, in a few words. */
+    use?: string;
+    /** West, south, east, north in degrees: where it has data. */
+    extent?: [number, number, number, number] | null;
     licence?: string;
     licence_url?: string;
     attribution?: string;
