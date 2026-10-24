@@ -250,6 +250,12 @@ t="${4#12-}"; mkdir -p "$6/12/${t%-*}" && echo "$4" > "$6/12/${t%-*}/${t#*-}.tif
                 cost: obc_data::prepared::Cost { wall_ms: 0, peak_rss_bytes: None },
             };
             obc_data::prepared::complete(&target, &manifest).unwrap();
+            run.flush().unwrap();
+            let status: serde_json::Value = serde_json::from_slice(&std::fs::read(run.status_file()).unwrap()).unwrap();
+            // Each tile that ended while others ran keeps what it used.
+            for step in status["steps"].as_array().unwrap() {
+                assert!(step["cpu_ms"].is_u64() && step["peak_rss_bytes"].is_u64(), "{step}");
+            }
             manifest
         };
         let model = sources.iter().find(|source| source.id == "canopy-ch").unwrap();

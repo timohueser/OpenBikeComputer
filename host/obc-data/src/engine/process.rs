@@ -218,39 +218,27 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
 /// Wait for `child`, and give its exit status, CPU milliseconds and peak. When `stop` is set, the
 /// process group of the child gets SIGTERM, and the wait fails once the child ended.
 #[cfg(unix)]
-fn wait(child: Child, stop: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
+fn wait(child: Child, stop: &AtomicBool) -> Result<End, String> {
     wait_pid(child.id(), stop)
 }
 
-/// Wait for the child `pid` of this process: its exit status, user plus system CPU milliseconds and
-/// peak resident bytes. Once `stop` is set, its process group gets SIGTERM, and the run stopped.
+/// The end of a child: its exit status, user plus system CPU milliseconds and peak resident bytes.
+pub(crate) type End = (ExitStatus, Option<u64>, Option<u64>);
+
+/// Wait for the child `pid` of this process: its [`End`]. Once `stop` is set, its process group
+/// gets SIGTERM, and the run stopped.
 #[cfg(unix)]
-pub(crate) fn wait_pid(pid: u32, stop: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
-    use std::os::unix::process::ExitStatusExt;
-    let pid = pid as libc::pid_t;
+pub(crate) fn wait_pid(pid: u32, stop: &AtomicBool) -> Result<End, String> {
     let (mut stopped, mut pause) = (false, Duration::from_millis(1));
     loop {
-        let mut status = 0;
-        // SAFETY: rusage is plain data, and wait4 fills it.
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        // SAFETY: the pid is our child, which nothing else waits for.
-        match unsafe { libc::wait4(pid, &mut status, libc::WNOHANG, &mut usage) } {
-            0 => {}
-            -1 => {
-                let error = std::io::Error::last_os_error();
-                if error.kind() != ErrorKind::Interrupted {
-                    return Err(format!("wait for the step: {error}"));
-                }
-            }
-            _ if stopped => return Err("the run stopped".into()),
-            _ => {
-                let (cpu, peak) = measure(&usage);
-                return Ok((ExitStatus::from_raw(status), Some(cpu), Some(peak)));
-            }
+        match try_wait_pid(pid)? {
+            Some(_) if stopped => return Err("the run stopped".into()),
+            Some(end) => return Ok(end),
+            None => {}
         }
         if !stopped && stop.load(Ordering::Relaxed) {
             // SAFETY: kill sends a signal. The child is not reaped, so its group is still its own.
-            unsafe { libc::kill(-pid, libc::SIGTERM) };
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
             stopped = true;
         }
         std::thread::sleep(pause);
@@ -258,8 +246,32 @@ pub(crate) fn wait_pid(pid: u32, stop: &AtomicBool) -> Result<(ExitStatus, Optio
     }
 }
 
+/// [`wait_pid`] without the wait: `None` while the child runs.
+#[cfg(unix)]
+pub(crate) fn try_wait_pid(pid: u32) -> Result<Option<End>, String> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut status = 0;
+    // SAFETY: rusage is plain data, and wait4 fills it.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: the pid is our child, which nothing else waits for.
+    match unsafe { libc::wait4(pid as libc::pid_t, &mut status, libc::WNOHANG, &mut usage) } {
+        0 => Ok(None),
+        -1 => {
+            let error = std::io::Error::last_os_error();
+            match error.kind() {
+                ErrorKind::Interrupted => Ok(None),
+                _ => Err(format!("wait for the step: {error}")),
+            }
+        }
+        _ => {
+            let (cpu, peak) = measure(&usage);
+            Ok(Some((ExitStatus::from_raw(status), Some(cpu), Some(peak))))
+        }
+    }
+}
+
 #[cfg(not(unix))]
-fn wait(mut child: Child, _: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
+fn wait(mut child: Child, _: &AtomicBool) -> Result<End, String> {
     Ok((child.wait().map_err(|e| format!("wait for the step: {e}"))?, None, None))
 }
 

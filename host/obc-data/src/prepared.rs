@@ -674,7 +674,7 @@ impl<'a> Job<'a> {
         let (running, most) = &self.programs;
         most.fetch_max(running.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         let (label, running) = (label.map(String::from), Arc::clone(running));
-        Ok(Program { child, name, label, errors, running, started: Instant::now(), reaped: false })
+        Ok(Program { child, name, label, errors, running, started: Instant::now(), ended: None })
     }
 
     /// The peak memory of the run: of this process, or of the most programs that ran at once.
@@ -736,8 +736,8 @@ pub struct Program {
     /// The programs of the job that run.
     running: Arc<AtomicU64>,
     started: Instant,
-    /// Whether [`Program::failed`] collected its end, so that no wait gives its usage.
-    reaped: bool,
+    /// The end that [`Program::failed`] saw: the status, CPU and peak memory, and the wall time.
+    ended: Option<(std::process::ExitStatus, Option<u64>, Option<u64>, u64)>,
 }
 
 impl Program {
@@ -754,25 +754,34 @@ impl Program {
             Some(label) => format!("{label}: {e}"),
             None => e,
         };
-        let (status, cpu_ms, peak_rss_bytes) = waited.map_err(label)?;
+        let (status, cpu_ms, peak_rss_bytes, wall_ms) = waited.map_err(label)?;
         crate::engine::ended(&self.name, status, errors).map_err(label)?;
-        Ok(crate::engine::Usage { wall_ms: self.started.elapsed().as_millis() as u64, cpu_ms, peak_rss_bytes })
+        Ok(crate::engine::Usage { wall_ms, cpu_ms, peak_rss_bytes })
     }
 
-    fn reap(&mut self) -> Result<(std::process::ExitStatus, Option<u64>, Option<u64>), String> {
-        #[cfg(unix)]
-        if !self.reaped {
-            return crate::engine::wait_pid(self.child.id(), &AtomicBool::new(false));
+    fn reap(&mut self) -> Result<(std::process::ExitStatus, Option<u64>, Option<u64>, u64), String> {
+        if let Some(ended) = self.ended {
+            return Ok(ended);
         }
-        let status = self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?;
-        Ok((status, None, None))
+        #[cfg(unix)]
+        let (status, cpu_ms, peak) = crate::engine::wait_pid(self.child.id(), &AtomicBool::new(false))?;
+        #[cfg(not(unix))]
+        let (status, cpu_ms, peak) =
+            (self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?, None, None);
+        Ok((status, cpu_ms, peak, self.started.elapsed().as_millis() as u64))
     }
 
-    /// Whether the program ended and failed.
+    /// Whether the program ended and failed. The end keeps what the program used and when it ended.
     pub fn failed(&mut self) -> bool {
-        let ended = self.child.try_wait().ok().flatten();
-        self.reaped |= ended.is_some();
-        ended.is_some_and(|status| !status.success())
+        if self.ended.is_none() {
+            #[cfg(unix)]
+            let end = crate::engine::try_wait_pid(self.child.id()).ok().flatten();
+            #[cfg(not(unix))]
+            let end = self.child.try_wait().ok().flatten().map(|status| (status, None, None));
+            let wall = self.started.elapsed().as_millis() as u64;
+            self.ended = end.map(|(status, cpu_ms, peak)| (status, cpu_ms, peak, wall));
+        }
+        self.ended.is_some_and(|(status, ..)| !status.success())
     }
 }
 
