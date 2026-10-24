@@ -24,7 +24,9 @@ struct Model {
     trunk: f32,
     // How far the model takes its hue from the ground under it (draw.wgsl): 0 for a tree.
     tie: f32,
-    unused: f32,
+    // The height in metres of an instance whose tiers end at `until`; a taller one keeps each tier
+    // farther, as it draws as large. 0: the tiers end at `until` at every height.
+    sized: f32,
     // A tree's sink table (sinks of instances.ts), at the slopes SINK_STEP × (k + 1) for k 0 to 3 and
     // 4 to 7: how far a crown vertex lies below the line of that slope through the crown's base, at most.
     sink_low: vec4f,
@@ -61,10 +63,11 @@ struct Params {
     unused: u32,
 }
 
-// Where a tier of a model ends: a model's last tier ends where the model does, at any resolution.
-fn tier_end(m: Model, tier: u32) -> f32 {
+// Where a tier of an instance `height` metres tall ends: a model's last tier ends where the model does,
+// at any resolution and height.
+fn tier_end(m: Model, tier: u32, height: f32) -> f32 {
     let last = tier + 1u == TIERS || m.until[tier + 1u] <= 0.0;
-    return m.until[tier] * select(params.lod, params.detail, last);
+    return m.until[tier] * select(params.lod * select(1.0, height / m.sized, m.sized > 0.0), params.detail, last);
 }
 
 @group(0) @binding(1) var<uniform> models: array<Model, 256>;
@@ -214,7 +217,7 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
     }
     let d = length(base);
     var tier = 0u;
-    while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier) * (1.0 - m.fade * pick)) {
+    while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier, height) * (1.0 - m.fade * pick)) {
         tier++;
     }
     // An instance drawn on a share of its pixels draws with the dither.

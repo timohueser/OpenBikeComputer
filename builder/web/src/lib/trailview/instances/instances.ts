@@ -58,6 +58,8 @@ export interface ModelSpec {
     crown?: number;
     /** How far it takes its hue from the ground under it, 0 to 1 (draw.wgsl). */
     tie?: number;
+    /** The height in metres of an instance whose tiers end at `until`; the tiers of others end in proportion. */
+    sized?: number;
 }
 
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
@@ -584,7 +586,7 @@ export class Instances {
                 f[m * 20 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, 0, ...sinks(spec)], m * 20 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.sized ?? 0, ...sinks(spec)], m * 20 + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.

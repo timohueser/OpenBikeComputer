@@ -4,8 +4,11 @@ import type { BuiltModel } from './model-worker';
 
 /** Trees stand within this many metres of the eye: the stamps of main roads reach 4 km. */
 export const TREE_REACH_M = 4500;
-/** The mesh tiers of a tree: the prototype's three levels of detail, and where each ends; impostors follow to the reach. */
-const TIERS_M = [30, 150, 700];
+/**
+ * The mesh tiers of a tree: three levels of detail, and where each ends for a tree TREE_SIZE_M tall; a
+ * tree of another height switches where it draws as large. Impostors follow to the reach.
+ */
+const TIERS_M = [60, 300, 700], TREE_SIZE_M = 25;
 
 /**
  * The tree models of the date's season (model-worker.ts), one build per species for the forest, the
@@ -34,7 +37,7 @@ export class TreeModels {
             for (const [key, index] of this.indexes) {
                 const [model, evergreen, tie] = key.split('|');
                 const { tiers, crown } = built.get(`${model}|${evergreen}`)!;
-                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), impostor: { from: 2, until: reach }, crown, tie: Number(tie) });
+                this.instances.replace(index, { tiers: tiers.map((mesh, t) => ({ mesh, until: until[t] })), impostor: { from: 2, until: reach }, crown, tie: Number(tie), sized: TREE_SIZE_M });
             }
             this.rebuilt = true;
             wake();
