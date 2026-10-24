@@ -24,6 +24,19 @@ fn render_at(s: vec2f, z: f32) -> vec3f {
     return p;
 }
 
+// Whether a box of render space, its middle and half its size along each axis, meets the view's left,
+// right, bottom and top planes.
+fn visible_box(p: vec3f, half: vec3f) -> bool {
+    let row = transpose(frame.view_proj);
+    for (var i = 0u; i < 4u; i++) {
+        let plane = row[3] + select(1.0, -1.0, (i & 1u) == 1u) * row[i >> 1u];
+        if (dot(plane.xyz, p) + plane.w < -dot(abs(plane.xyz), half)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Whether a sphere of render space meets the view's left, right, bottom and top planes.
 fn visible(p: vec3f, radius: f32) -> bool {
     let row = transpose(frame.view_proj);

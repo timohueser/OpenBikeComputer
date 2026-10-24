@@ -138,6 +138,8 @@ export class Instances {
     private detail = 1;
     /** The factor of the tier distances in the last frame. */
     private lod = 1;
+    /** The radius of the largest tree model: a model with a crown. */
+    private treeRadius = 0;
     private frame = 0;
     private stats_: InstanceStats = { staged: 0, dropped: 0, lod: 1, perTier: [0, 0, 0, 0], impostors: 0 };
     /** Per model with an atlas layer: the layer and the frame that last drew the impostor tier. */
@@ -338,7 +340,7 @@ export class Instances {
         if (!this.uploaded) this.upload(r);
         this.lod = this.detail * pixels / REFERENCE_PIXELS;
         const params = new ArrayBuffer(16);
-        new Float32Array(params).set([this.lod, 0, this.detail]);
+        new Float32Array(params).set([this.lod, 0, this.detail, this.treeRadius]);
         new Uint32Array(params)[1] = CAPACITY;
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
         r.gpu.device.queue.writeBuffer(r.tally, 0, new Uint32Array(TALLY_BYTES / 4));
@@ -554,6 +556,7 @@ export class Instances {
         // A model that does not fit the pools draws nothing; the frames go on.
         if (dropped.length) console.warn(`The instance meshes of ${dropped.length} models do not fit their pools.`);
         r.gpu.device.queue.writeBuffer(r.models, 0, models);
+        this.treeRadius = Math.max(0, ...this.specs.filter(spec => spec.crown !== undefined && spec.tiers.length).map(radius));
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         this.uploaded = true;
