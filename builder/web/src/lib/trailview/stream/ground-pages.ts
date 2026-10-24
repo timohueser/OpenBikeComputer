@@ -5,12 +5,10 @@
 import { PAGE } from './heights';
 
 const TILE = 2 * PAGE;
-/** The material byte: bit 6 barren, bit 7 no data (specs/trailview-tiles.md#ground). */
-const BARREN_BIT = 0x40, NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
+/** The material byte in red, bit 7 no data; green holds the barren share (specs/trailview-tiles.md#ground). */
+const NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
 /** The region byte of no data. */
 const NO_REGION = 255;
-/** Snow bytes (specs/planner-snow-tiles.md). */
-const WHOLE_SEASON = 254, NO_SNOW_DATA = 255;
 /** The colour alpha codes: fewer than 3 looks, and a quarter that saw snow. */
 const UNSEEN = 0, SNOW_MARK = 1;
 
@@ -26,10 +24,9 @@ export interface GroundInputs {
     material?: Raster;
     lithology?: Raster;
     region?: Raster;
-    /** The two quarters around the date, and the highest NDVI of the year. */
+    /** The two quarters around the date. */
     quarters?: [Raster | undefined, Raster | undefined];
-    ndvimax?: Raster;
-    /** The snow days (`snowDay`) over the material tile: one coarser tile, or four tiles one zoom finer. */
+    /** The snow days over the material tile: one coarser tile, or four tiles one zoom finer. */
     snow?: (Raster | undefined)[];
     date: GroundDate;
     /** The region id that stands for no data. */
@@ -77,9 +74,6 @@ function bilinear(raster: Raster, values: Float32Array, z: number, x: number, y:
     return out;
 }
 
-/** One channel of a raster as floats. */
-const channel = (raster: Raster, c: number) => Float32Array.from({ length: raster.size * raster.size }, (_, i) => raster.data[i * raster.channels + c]);
-
 /**
  * The satellite on the date at each pixel of the two quarters, as the prototype's `groundOn` blends
  * them: a quarter that saw nothing hands its weight to the other. A quarter that saw snow measured no
@@ -104,26 +98,9 @@ export function dateColour(a: Raster | undefined, b: Raster | undefined, weight:
 }
 
 /**
- * The snow of a day from a snow tile of `seasons` seasons: per pixel, the seasons with data × 16 +
- * the seasons with snow on day step `index`: one byte in place of 2 × `seasons`.
+ * Per pixel of a snow day (specs/trailview-tiles.md#snow-days): snow by the share rule of its region,
+ * whether the data knows, and the share × known.
  */
-export function snowDay(tile: Uint8Array, seasons: number, index: number): Uint8Array<ArrayBuffer> {
-    if (seasons > 15) throw new Error(`A snow day holds 15 seasons, not ${seasons}.`);
-    const area = tile.length / (2 * seasons), day = new Uint8Array(area);
-    for (let i = 0; i < area; i++) {
-        let count = 0, white = 0;
-        for (let s = 0; s < seasons; s++) {
-            const onset = tile[2 * s * area + i], melt = tile[(2 * s + 1) * area + i];
-            if (onset === NO_SNOW_DATA) continue;
-            count++;
-            if (onset === WHOLE_SEASON || (onset <= index && index <= melt)) white++;
-        }
-        day[i] = 16 * count + white;
-    }
-    return day;
-}
-
-/** Per pixel of a snow day: snow by the share rule of its region, whether the data knows, and the share × known. */
 export function snowState(snow: Raster, regionOf: (pixel: number) => number, shares: ArrayLike<number>): Float32Array[] {
     const area = snow.size * snow.size, snowy = new Float32Array(area), known = new Float32Array(area), share = new Float32Array(area);
     for (let i = 0; i < area; i++) {
@@ -163,7 +140,7 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         cells[4 * t] = byte & NO_DATA_BIT ? 0 : byte & MATERIAL_BITS;
         cells[4 * t + 1] = lithology ? input.lithology!.data[lithology[t] * input.lithology!.channels] : 0;
         cells[4 * t + 2] = regionAt(t);
-        cells[4 * t + 3] = byte & BARREN_BIT ? 255 : 0;
+        cells[4 * t + 3] = material.data[t * material.channels + 1];
     }
     const [a, b] = input.quarters ?? [];
     if (a || b) {
@@ -174,11 +151,6 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
             colour[4 * t + 3] = seen[t] < 0.5 ? UNSEEN : Math.min(255, Math.max(2, Math.round((ndvi[t] + 1) * 127 + 1)));
             snow[4 * t + 2] = Math.round(255 * mark[t]);
         }
-    }
-    if (input.ndvimax) {
-        // Barren: the year's highest NDVI is low, softly, where a quarter measured one.
-        const most = bilinear(input.ndvimax, channel(input.ndvimax, 0).map(code => (code > 0 ? 1 - smoothstep(0.15, 0.35, (code - 1) / 127 - 1) : 0)), z, x, y);
-        for (let t = 0; t < n; t++) cells[4 * t + 3] = Math.round(255 * most[t]);
     }
     if (input.snow?.length) {
         const tile = input.snow.length === 4 ? joinSnow(input.snow, z, x, y) : input.snow[0]!;
@@ -208,9 +180,4 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         }
         return any ? { cells: page(cells), colour: page(colour), snow: page(snow) } : null;
     });
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-    const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
-    return t * t * (3 - 2 * t);
 }

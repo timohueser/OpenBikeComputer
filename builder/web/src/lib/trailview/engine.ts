@@ -140,7 +140,7 @@ export class TrailView {
 
     /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. `scale` is the render scale. */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
-        const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const ground = await GroundSource.open(config, view.date).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, scale);
         await engine.attach(gpu);
         engine.request();

@@ -1,6 +1,6 @@
 """Bake the TrailView colour tiles of one region from the Sentinel-2 quarterly mosaics of CDSE, as the
-prototype's `bake.py` reads them: per quarter the colour and the NDVI, and the year's highest NDVI,
-as specs/trailview-tiles.md defines them.
+prototype's `bake.py` reads them: per quarter the colour and the NDVI, as specs/trailview-tiles.md
+defines them.
 
 The `obc data` step is `planner/trailview-colour` (`--step`). `--fetch` is the capture of
 `sentinel-2-mosaics`: the window over a box of each band of each mosaic tile of a year, over CDSE S3
@@ -27,6 +27,8 @@ STAC = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mo
 BANDS = ("B02", "B03", "B04", "B08", "observations")
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
+# `trailview_format` of the colour archives, which the readers check.
+FORMAT = 1
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes from summer.
 DARK = 0.025
 # The alpha code of a quarter's texel that saw snow (snow_free); a measured NDVI never takes it.
@@ -204,7 +206,7 @@ def stored_ndvi(alpha):
 
 def encoder(variant):
     """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`, with the NDVI
-    of `stored_ndvi`, and `ndvimax`, lossless, the highest alpha code of the four."""
+    of `stored_ndvi`."""
     from PIL import Image
     from pmtiles.tile import TileType
 
@@ -223,7 +225,6 @@ def encoder(variant):
             else:
                 image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, max_threads=1)
                 out[f"q{q + 1}"] = (TileType.AVIF, stream.getvalue())
-        out["ndvimax"] = tiles.lossless(texels[..., 3].max(axis=0))
         return out
 
     return encode
@@ -237,7 +238,7 @@ def bake(mosaics, bounds, variants, output, metadata):
     encode = lambda texels: {f"{variant}/{name}": data for variant, code in encoders.items() for name, data in code(texels).items()}
     stack = lambda z, x, y: np.stack([q for _, q in sorted(quarters(mosaics, tiles.transform(z, x, y), tiles.texel_m(z, y)).items())])
     sizes = tiles.pyramid(bounds, range(BOTTOM_ZOOM, top + 1), stack, average, encode, output,
-                          {**metadata, "trailview_format": tiles.FORMAT})
+                          {**metadata, "trailview_format": FORMAT})
     return {variant: {name.split("/")[1]: zooms for name, zooms in sizes.items() if name.startswith(f"{variant}/")} for variant in variants}
 
 

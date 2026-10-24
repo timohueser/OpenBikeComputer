@@ -11,8 +11,6 @@ import numpy as np
 from .. import planner_geo as geo, step_pool
 
 TILE = 512
-# The number that the readers of the archives check: `trailview_format` in their metadata.
-FORMAT = 1
 # Each tile of this zoom, and the tiles below it, bake in one worker.
 CHUNK_ZOOM = 10
 EARTH_M = 2 * math.pi * 6378137.0
@@ -65,13 +63,15 @@ def mode(children, no_data=None):
     return np.take_along_axis(four, counts.argmax(axis=0)[None], axis=0)[0]
 
 
-def lossless(texels):
-    """One byte per texel as lossless WebP: the decoded red channel holds the byte."""
+def lossless(texels, green=None):
+    """One byte per texel as lossless WebP: the decoded red channel holds the byte, and green and blue
+    are equal to it. With `green`, green holds that byte and blue is 0."""
     from PIL import Image
     from pmtiles.tile import TileType
 
     out = io.BytesIO()
-    Image.fromarray(texels, "L").save(out, "WEBP", lossless=True, exact=True)
+    image = Image.fromarray(texels, "L") if green is None else Image.fromarray(np.stack([texels, green, np.zeros_like(texels)], axis=-1), "RGB")
+    image.save(out, "WEBP", lossless=True, exact=True)
     return TileType.WEBP, out.getvalue()
 
 

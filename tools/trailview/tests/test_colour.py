@@ -79,11 +79,9 @@ class ColourTest(unittest.TestCase):
         stack[..., :3] = (np.arange(tiles.TILE) // 2)[None, :, None, None]
         stack[..., 3] = rng.choice([0, 1, 2, 90, 255], (4, tiles.TILE, tiles.TILE))
         encoded = colour.encoder("webp-12")(stack)
-        self.assertEqual(sorted(encoded), ["ndvimax", "q1", "q2", "q3", "q4"])
+        self.assertEqual(sorted(encoded), ["q1", "q2", "q3", "q4"])
         alpha = np.asarray(Image.open(io.BytesIO(encoded["q3"][1])).convert("RGBA"))[..., 3]
         self.assertTrue((alpha == colour.stored_ndvi(stack[2, ..., 3])).all())
-        most = np.asarray(Image.open(io.BytesIO(encoded["ndvimax"][1])).convert("RGB"))[..., 0]
-        self.assertTrue((most == stack[..., 3].max(axis=0)).all())
 
 
 if __name__ == "__main__":

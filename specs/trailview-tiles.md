@@ -33,16 +33,19 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `1`. A reader reads only the format that it knows |
+| `trailview_format` | `2` in a ground archive, `1` in a colour archive. A reader reads only the format that it knows |
 | `layer` | `material`, `lithology` or `region`; absent in a colour archive |
-| `archive` | The name of the archive: the layer, or `q1` to `q4` and `ndvimax` |
+| `archive` | The name of the archive: the layer, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
 
 ## Ground
 
-`trailview-ground` has three archives. Each texel is one byte, as lossless WebP: the red channel
-holds the byte, and green and blue are equal to it.
+`trailview-ground` has three archives, as lossless WebP.
+
+- A lithology or region texel is one byte: red, green and blue are equal to it.
+- A material texel is two bytes: red holds the material byte, green holds the barren share, and blue
+  is 0.
 
 | Archive | Zooms | Byte |
 | --- | --- | --- |
@@ -58,12 +61,17 @@ The material byte:
 | 6 | Barren: the highest NDVI that a quarter of the year measured is below 0.25 |
 | 7 | No data: the texel is outside the region bounds. The other bits are 0 |
 
+The barren share is round(255 × (1 − smoothstep(0.15, 0.35, NDVI))) of the highest NDVI that a
+quarter of the year measured, and 0 where no quarter looked or the texel has no data. A quarter that
+saw snow counts as NDVI −1.
+
 A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
 a region id is 0 to 254; more regions need a new format, with two bytes.
 
 A tile of the last zoom of an archive comes from the sources. A coarser texel takes the most
 common byte of its four children, the first in reading order on a tie. A material or region texel
-with no data counts only where all four have no data, and a missing child has no data.
+with no data counts only where all four have no data, and a missing child has no data. A coarser
+barren share is the rounded mean of the children with data.
 
 The material chain refines a baseline. Each step changes a texel only where the step names the
 material more precisely: the table `REFINES` of `ground.py`.
@@ -85,13 +93,9 @@ the smallest on a tie, until none does.
 
 ## Colour
 
-`trailview-colour` has five archives from the Sentinel-2 quarterly mosaics of one year. Quarter
-q holds the months 3q − 2 to 3q.
-
-| Archive | Content |
-| --- | --- |
-| `q1` to `q4` | RGBA: the colour of the quarter, and its NDVI code in alpha |
-| `ndvimax` | One byte, lossless as in [Ground](#ground): the highest NDVI code of the four quarters |
+`trailview-colour` has four archives from the Sentinel-2 quarterly mosaics of one year, `q1` to
+`q4`. Quarter q holds the months 3q − 2 to 3q. A texel is RGBA: the colour of the quarter, and its
+NDVI code in alpha.
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
 round(255 × refl^(1/2.2)). A WebP variant keeps the alpha lossless. An AVIF variant codes the alpha
@@ -127,6 +131,33 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 | `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 26 m |
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.
+
+## Snow days
+
+`trailview-snow` holds the snow of [the planner snow archive](planner-snow-tiles.md) by day, so a
+view reads the snow of its date only. It has one archive per band of day steps,
+`trailview-snow-00` to `trailview-snow-45`. Band b holds the day steps 4b to 4b + 3 and shows day
+step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
+
+The archives differ from the table in [Archives](#archives): a tile is a tile of the snow archive,
+256 × 256 pixels, tile type `unknown` (0) and gzip compression. A tile is 65,536 bytes in row
+order, one byte per pixel:
+
+| Bits | Meaning |
+| --- | --- |
+| 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
+| 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
+
+A tile where no season has data is not in the archive, so the first zoom can be finer than in the
+snow archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
+metadata of [Archives](#archives) without `layer`, with `archive` `snow-00` to `snow-45`, and:
+
+| Key | Value |
+| --- | --- |
+| `band` | The band |
+| `band_steps` | `4` |
+| `day_step` | The day step that the band shows |
+| `first_season`, `seasons`, `source` | As in the snow archive |
 
 ## Rules
 

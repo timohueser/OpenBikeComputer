@@ -113,7 +113,6 @@ class MapGrid(unittest.TestCase):
 
         webp, avif = tile("WEBP", lossless=True), tile("AVIF")
         for kind, tile_type, data, ok in [("trailview-material", TileType.WEBP, webp, True),
-                                          ("trailview-colour-ndvimax", TileType.WEBP, webp, True),
                                           ("trailview-colour-q1", TileType.AVIF, avif, True),
                                           ("trailview-colour-q1", TileType.WEBP, webp, True),
                                           ("trailview-material", TileType.AVIF, avif, False)]:
