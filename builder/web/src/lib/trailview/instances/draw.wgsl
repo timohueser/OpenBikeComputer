@@ -2,6 +2,7 @@
 // vertex colours under the light and the haze of the ground.
 // #include ../terrain/view.wgsl
 // #include ../light/shade.wgsl
+// #include ../vegetation/phenology.wgsl
 
 struct Instance {
     at: vec4f,
@@ -31,6 +32,8 @@ struct Model {
 @group(0) @binding(3) var<uniform> models: array<Model, 256>;
 // The draw of this draw call: x its model × TIERS + its tier.
 @group(0) @binding(4) var<uniform> draw: vec4u;
+// Per model and phase the colour matrix of its crown in that phase (phases of instances.ts).
+@group(0) @binding(5) var<storage, read> tones: array<mat3x3f>;
 
 // Draws per model, as TIERS of emit.wgsl.
 const TIERS: u32 = 4u;
@@ -103,6 +106,15 @@ fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
     return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
 }
 
+// A crown's colour in the phase of its instance (emit_tree).
+fn toned(colour: vec3f, model: u32, ground: u32) -> vec3f {
+    let phase = ground >> 24u;
+    if (phase == PHASE_SUMMER) {
+        return colour;
+    }
+    return max(tones[model * 4u + phase] * colour, vec3f(0.0));
+}
+
 fn far_tone(m: Model, d: f32) -> f32 {
     return select(mix(1.0, FAR_TONE, smoothstep(FAR_FROM_M, FAR_TO_M, d)), 1.0, m.crown < 0.0);
 }
@@ -140,7 +152,9 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.normal = vec3f(t.x * v.normal.x - t.y * v.normal.y, t.y * v.normal.x + t.x * v.normal.y, v.normal.z);
     // The snow last, as on an impostor, whose atlas holds the shaded crown.
     let tint = 0.75 + 0.5 * f32(i.look & 255u) / 255.0;
-    out.albedo = snowed(tied(linear(v.colour.rgb), tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
+    // The trunk keeps its bark in every phase.
+    let colour = select(toned(linear(v.colour.rgb), draw.x / TIERS, i.ground), linear(v.colour.rgb), v.position.w > 0.0);
+    out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     return out;
 }

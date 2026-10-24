@@ -5,6 +5,7 @@
 // producer's own bindings start at 8. Include it with `// #include ../instances/emit.wgsl`.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/view.wgsl
+// #include ../vegetation/phenology.wgsl
 
 // A model, as instances.ts writes it.
 struct Model {
@@ -34,8 +35,9 @@ struct Model {
 }
 
 // One instance of a draw: its base in render space and its height in metres; its turn and width as
-// the f16 pair (cos, sin) × width; the ground's albedo under it, its square root as unorm8 × 3; its
-// look (tint, lift, snow and appear bytes); the draw, which names its model and tier.
+// the f16 pair (cos, sin) × width; the ground's albedo under it, its square root as unorm8 × 3, and its
+// phase in the high byte; its look (tint, lift, snow and appear bytes); the draw, which names its
+// model and tier.
 struct Instance {
     at: vec4f,
     turn: u32,
@@ -60,7 +62,8 @@ struct Params {
     // Instances that a frame stages at most.
     capacity: u32,
     detail: f32,
-    unused: u32,
+    // The day of the year, 0 for 1 January: the phase of each tree (phenology.wgsl).
+    day: f32,
 }
 
 // Where a tier of an instance `height` metres tall ends: a model's last tier ends where the model does,
@@ -86,6 +89,10 @@ struct Occlusion {
 }
 @group(0) @binding(5) var<uniform> occlusion: Occlusion;
 @group(0) @binding(6) var pyramid: texture_2d<f32>;
+// Per model with phases (phases of instances.ts): x its model in each phase (8 bits each, winter
+// first) for the mesh tiers, z for the impostor tier, and y its impostor tier + 1; y is 0 for a model
+// that draws itself all year.
+@group(0) @binding(7) var<uniform> phases: array<vec4u, 256>;
 
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
@@ -174,7 +181,7 @@ fn byte_of(share: f32) -> u32 {
 // `yaw` and `width` times as wide as its model, its colour times `tint` (0.75 to 1.25), and drawn on
 // the share `appear` of its pixels. Its yaw and height pick where in a tier's fade it switches tiers.
 fn emit(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32) {
-    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0));
+    emit_tree(model, base, height, yaw, width, tint, appear, 0.0, 0.0, pick_of(yaw, height), 0.0, vec3f(0.0), 0.0);
 }
 
 // A share 0 to 1 that is stable per instance, from its yaw and height.
@@ -209,12 +216,21 @@ fn sink_at(m: Model, k: u32) -> f32 {
 // metre, which sinks it (slope_sink), the share `snow` of snow on its upward faces, and the albedo of
 // the `ground` under it for a model with a tie (draw.wgsl). The instance switches to the next tier at
 // the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and past its last tier
-// ends there: a still view draws each instance whole, in one tier.
-fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f) {
-    let m = models[model];
+// ends there: a still view draws each instance whole, in one tier. A model with phases draws the model
+// of the tree's phase on the date, by its pick and its `elevation` in metres, which a producer keeps
+// the same at every distance.
+fn emit_tree(tree: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
     if (appear <= 0.0) {
         return;
     }
+    var model = tree;
+    var phase = PHASE_SUMMER;
+    let year = phases[tree];
+    if (year.y != 0u) {
+        phase = phase_of(unit_float(mix_bits(bitcast<u32>(pick) ^ 0x68e31da4u)), params.day, elevation);
+        model = (year.x >> (8u * phase)) & 255u;
+    }
+    var m = models[model];
     let d = length(base);
     var tier = 0u;
     while (tier < TIERS && m.until[tier] > 0.0 && d > tier_end(m, tier, height) * (1.0 - m.fade * pick)) {
@@ -227,6 +243,10 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
     if (tier == TIERS || m.until[tier] <= 0.0) {
         return;
     }
+    if (tier + 1u == year.y) {
+        model = (year.z >> (8u * phase)) & 255u;
+        m = models[model];
+    }
     let at = base - vec3f(0.0, 0.0, height * slope_sink(m, slope, width, lift));
     let centre = at + vec3f(0.0, 0.0, 0.5 * height);
     let radius = m.radius * height * max(width, 1.0);
@@ -234,5 +254,5 @@ fn emit_tree(model: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f
         return;
     }
     let look = byte_of((tint - 0.75) * 2.0) | (byte_of(lift) << 8u) | (byte_of(snow) << 16u) | (byte_of(appear) << 24u);
-    stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)), look);
+    stage(model * TIERS + tier, vec4f(at, height), pack2x16float(width * vec2f(cos(yaw), sin(yaw))), pack4x8unorm(vec4f(sqrt(ground), 0.0)) | (phase << 24u), look);
 }

@@ -33,8 +33,8 @@ is the palette of the `world` region.
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `structures/` | The houses: a worker makes a record per building of the zoom 14 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
 | `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees and plants without three.js (`shape.ts`, `trees.ts`, `trees/`, `plant-shape.ts`, `plants/`); the models of flat faces of the kinds and the dressing (`flat.ts`, lifts, landmarks, rocks, animals, crosses) |
-| `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
-| `vegetation/` | The tree models of the season, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
+| `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), a model per phase of a tree's year and a colour matrix of its crown, impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
+| `vegetation/` | The trees' year: each tree's phase on the date, which the ground's forest follows past the trees' reach (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on open and rocky ground, placed each frame (`dressing.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
@@ -145,6 +145,9 @@ uv run --locked --group planner-maps python builder/web/tests/browser/trailview/
 - Never let a synthesis read a stamped page: a stored page keeps its raw layer and draws a copy.
 - The ground pool has a fixed size too: the farthest pages past it draw from their cover, two levels
   coarser (`short` in the HUD).
+- The tree models hold every species of every region, with a crown of its own for each phase of the
+  date that a colour matrix cannot draw (bare, or flecks): a date in a turn of the year fills the
+  mesh pools and the impostor atlas the most.
 - A new date builds every ground page again (the rules, the Sentinel-2 quarters and the snow are
   part of a page) and loads most tile bodies again: a view's bodies exceed the 96 MiB cache.
 - The ground noise is in frame metres about the first view: far from it, float32 coarsens its

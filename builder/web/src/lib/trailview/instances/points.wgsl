@@ -32,5 +32,5 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     let height = unpack2x16float(p.height).x;
     let yaw = f32((bits >> 16u) & 255u) / 256.0 * 6.2831853;
     let snow = select(0.0, snow_at(s), models[model].crown >= 0.0);
-    emit_tree(model, render_at(s, ground), height, yaw, 1.0, 0.75 + 0.5 * f32(bits >> 24u) / 255.0, 1.0, 0.0, stood.y, pick_of(yaw, height), snow, vec3f(0.0));
+    emit_tree(model, render_at(s, ground), height, yaw, 1.0, 0.75 + 0.5 * f32(bits >> 24u) / 255.0, 1.0, 0.0, stood.y, pick_of(yaw, height), snow, vec3f(0.0), ground);
 }

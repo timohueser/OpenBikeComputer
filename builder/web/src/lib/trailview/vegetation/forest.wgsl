@@ -337,7 +337,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let snow = snow_held(drawn);
     emit_tree(model, render_at(s, stood.x - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift, stood.y,
-        unit_float(mix_bits(h + 31u)), snow, vec3f(0.0));
+        unit_float(mix_bits(h + 31u)), snow, vec3f(0.0), band);
 }
 
 // The entries of a level's part of the cell list.

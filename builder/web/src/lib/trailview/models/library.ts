@@ -11,3 +11,9 @@ export const TREES = byId<Tree>(import.meta.glob('./trees/*.ts', { eager: true, 
 
 /** A tree model, 1 tall. */
 export const tree = (id: string, season: Season, lod: Lod, seed = 1) => grow(TREES[id], season, lod, seed);
+
+/** Whether a tree model stands bare in a season. */
+export const bareIn = (id: string, season: Season) => {
+    const spec = TREES[id];
+    return (spec.form === 'conifer' ? spec.needles : spec.leaves)[season] === 'bare';
+};

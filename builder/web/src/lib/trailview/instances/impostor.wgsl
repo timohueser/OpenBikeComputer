@@ -37,6 +37,7 @@ struct ImpostorOut {
     // The instance's ground and its model's tie (draw.wgsl).
     @location(9) @interpolate(flat) ground: u32,
     @location(10) @interpolate(flat) tie: f32,
+    @location(11) @interpolate(flat) model: u32,
 }
 
 @vertex
@@ -89,6 +90,7 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     out.slot = slots[model / 4u][model % 4u];
     out.ground = i.ground;
     out.tie = m.tie;
+    out.model = model;
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
     out.level = level;
     return out;
@@ -110,5 +112,5 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     }
     let local = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level).xyz / albedo.a * 2.0 - 1.0;
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
-    return vec4f(in.fog * light_up(snowed(tied(albedo.rgb / albedo.a, in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(snowed(tied(toned(albedo.rgb / albedo.a, in.model, in.ground), in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }

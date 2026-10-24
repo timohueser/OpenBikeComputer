@@ -10,12 +10,14 @@ const DRAWS = MODELS * TIERS;
 const CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
 const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
+/** The phases of a tree's year, as PHASES of emit.wgsl, and the bytes of a colour matrix (`mat3x3f`). */
+const PHASES = 4, TONE_BYTES = 48;
 /** Lanes of the sort, as LANES in sort.wgsl. */
 const SORT_LANES = 16384;
 /** The stride of a dynamic uniform offset: the least that WebGPU allows. */
 const STRIDE = 256;
 /** The mesh pools: vertices and 32-bit indices. */
-const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
+const VERTEX_POOL = 6 * 2 ** 20, INDEX_POOL = 6 * 2 ** 20;
 /**
  * The mesh tiers that draw without the dither's discard, as WHOLE_TIERS of emit.wgsl: an instance that
  * draws on a share of its pixels stages in a farther tier.
@@ -60,6 +62,13 @@ export interface ModelSpec {
     tie?: number;
     /** The height in metres of an instance whose tiers end at `until`; the tiers of others end in proportion. */
     sized?: number;
+    /**
+     * A tree's year (vegetation/phenology.ts): per phase, winter first, the model whose mesh tiers its
+     * instances draw in that phase, the model whose impostor they draw (`model` by default), and the
+     * colour matrix (3 × 3, columns first) of that impostor's model's crown, none for its own colours.
+     * Without phases a model draws itself all year.
+     */
+    phases?: { model: number; impostor?: number; tone?: number[] }[];
 }
 
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
@@ -82,6 +91,8 @@ export interface InstanceStats { staged: number; dropped: number; lod: number; p
 interface Resources {
     gpu: Gpu;
     models: GPUBuffer;
+    phases: GPUBuffer;
+    tones: GPUBuffer;
     meshes: GPUBuffer;
     staged: GPUBuffer;
     tally: GPUBuffer;
@@ -162,6 +173,8 @@ export class Instances {
     private attached?: [Gpu, GPUBuffer, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
     newContent = false;
+    /** The day of the year (0 is 1 January), which sets the phase of each tree. */
+    day = 0;
 
     get stats(): InstanceStats {
         return this.stats_;
@@ -172,23 +185,23 @@ export class Instances {
         return this.unbaked.size === 0;
     }
 
-    /** Layout entries 0 to 6 of a producer's group 0, for its compute stage. */
+    /** Layout entries 0 to 7 of a producer's group 0, for its compute stage. */
     static emitEntries(): GPUBindGroupLayoutEntry[] {
         const C = GPUShaderStage.COMPUTE;
         return [
             { binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'uniform' } },
             { binding: 2, visibility: C, buffer: { type: 'storage' } }, { binding: 3, visibility: C, buffer: { type: 'storage' } },
             { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 5, visibility: C, buffer: { type: 'uniform' } },
-            { binding: 6, visibility: C, texture: { sampleType: 'unfilterable-float' } },
+            { binding: 6, visibility: C, texture: { sampleType: 'unfilterable-float' } }, { binding: 7, visibility: C, buffer: { type: 'uniform' } },
         ];
     }
 
-    /** The resources of entries 0 to 6 of a producer's group 0, after `attach`. */
+    /** The resources of entries 0 to 7 of a producer's group 0, after `attach`. */
     emitResources(frame: GPUBuffer): GPUBindGroupEntry[] {
         const r = this.resources!;
         return [
             ...[frame, r.models, r.staged, r.tally, r.params, r.occlusion].map((buffer, binding) => ({ binding, resource: { buffer } })),
-            { binding: 6, resource: r.pyramid.createView() },
+            { binding: 6, resource: r.pyramid.createView() }, { binding: 7, resource: { buffer: r.phases } },
         ];
     }
 
@@ -230,6 +243,8 @@ export class Instances {
         }, ATLAS * ATLAS * SLOTS * 4 * 4 / 3);
         const b = {
             models: gpu.buffer('instances', MODELS * MODEL_BYTES, uniform),
+            phases: gpu.buffer('instances', MODELS * 16, uniform),
+            tones: gpu.buffer('instances', MODELS * PHASES * TONE_BYTES, storage),
             meshes: gpu.buffer('instances', DRAWS * MESH_BYTES, storage),
             staged: gpu.buffer('instances', CAPACITY * INSTANCE_BYTES, GPUBufferUsage.STORAGE),
             tally: gpu.buffer('instances', TALLY_BYTES, storage | GPUBufferUsage.COPY_SRC),
@@ -259,6 +274,7 @@ export class Instances {
         ] });
         const renderLayout = device.createBindGroupLayout({ entries: [
             entry(0, V | F, 'uniform'), entry(1, V, 'read-only-storage'), entry(2, V, 'read-only-storage'), entry(3, V, 'uniform'), entry(4, V, 'uniform', true),
+            entry(5, V | F, 'read-only-storage'),
         ] });
         const atlasLayout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
@@ -336,7 +352,7 @@ export class Instances {
             gpu, ...b, countDraws, placeDraws, scatter, mesh, whole, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
             occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
-            renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
+            renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16], b.tones]),
             emptyGroup: group(emptyLayout, []),
             atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots, b.outlines]),
             bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
@@ -354,7 +370,7 @@ export class Instances {
         if (!this.uploaded) this.upload(r);
         this.lod = this.detail * pixels / REFERENCE_PIXELS;
         const params = new ArrayBuffer(16);
-        new Float32Array(params).set([this.lod, 0, this.detail]);
+        new Float32Array(params).set([this.lod, 0, this.detail, this.day]);
         new Uint32Array(params)[1] = CAPACITY;
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
         r.gpu.device.queue.writeBuffer(r.tally, 0, new Uint32Array(TALLY_BYTES / 4));
@@ -583,6 +599,19 @@ export class Instances {
         // A model that does not fit the pools draws nothing; the frames go on.
         if (dropped.length) console.warn(`The instance meshes of ${dropped.length} models do not fit their pools.`);
         r.gpu.device.queue.writeBuffer(r.models, 0, models);
+        // Per model the model of each phase (8 bits each, winter first) for the mesh tiers and for the
+        // impostor tier, and its impostor tier + 1 for a model with phases, else 0; per model and phase
+        // the colour matrix of its crown, the identity by default.
+        const phases = new Uint32Array(MODELS * 4), tones = new Float32Array(MODELS * PHASES * TONE_BYTES / 4);
+        for (let k = 0; k < MODELS * PHASES; k++) tones.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], 12 * k);
+        this.specs.forEach((spec, m) => spec.phases?.forEach(({ model, impostor = model, tone }, phase) => {
+            phases[4 * m] |= model << (8 * phase);
+            phases[4 * m + 1] = spec.tiers.length + 1;
+            phases[4 * m + 2] |= impostor << (8 * phase);
+            if (tone) [0, 1, 2].forEach(column => tones.set(tone.slice(3 * column, 3 * column + 3), 12 * (impostor * PHASES + phase) + 4 * column));
+        }));
+        r.gpu.device.queue.writeBuffer(r.phases, 0, phases);
+        r.gpu.device.queue.writeBuffer(r.tones, 0, tones);
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         this.uploaded = true;
