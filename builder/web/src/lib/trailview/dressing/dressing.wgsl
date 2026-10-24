@@ -54,11 +54,8 @@ const NO_CELL: vec4u = vec4u(0xffffffffu);
 const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
 const SLABS: u32 = 3u;
 const STEEPEST: f32 = 0.85;
-// Whether the feature mask keeps a thing off a point: on a road, a path or a track.
-fn on_road(s: vec2f) -> bool {
-    let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < 1.0;
-}
+// Things keep this far off a road, a path or a track.
+const ROAD_CLEAR_M: f32 = 1.0;
 
 fn grazes(herd: Herd, material: u32) -> bool {
     return material < 64u && ((herd.grazes[material >> 5u] >> (material & 31u)) & 1u) == 1u;
@@ -112,7 +109,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 let a = mix_bits(h ^ (i * 2654435761u));
                 let at = middle + vec2i((vec2f(unit_float(mix_bits(a + 5u)), unit_float(mix_bits(a + 6u))) - 0.5) * spread);
                 let s = lod_space(vec2f(at - surface.anchor));
-                if (length(s) < CLEAR_M || !grazes(herd, herd_cell(s).r) || on_road(s)) {
+                if (length(s) < CLEAR_M || !grazes(herd, herd_cell(s).r) || on_road(s, ROAD_CLEAR_M)) {
                     continue;
                 }
                 let ground = stand_height(s, at);
@@ -163,7 +160,7 @@ fn rocks_of(@builtin(global_invocation_id) id: vec3u) {
     let n = drawn_normal(s);
     let slope = sqrt(max(1.0 - n.z * n.z, 0.0)) / max(n.z, 0.1);
     let rocky = max(outcrops * (0.3 + 1.4 * hardness) * clamp(1.4 * slope + 0.6 * (hardness - 0.5) - 0.05, 0.0, 1.0), mapped);
-    if (slope > STEEPEST || pick > rocky || on_road(s)) {
+    if (slope > STEEPEST || pick > rocky || on_road(s, ROAD_CLEAR_M)) {
         return;
     }
     let ground = stand_height(s, at);

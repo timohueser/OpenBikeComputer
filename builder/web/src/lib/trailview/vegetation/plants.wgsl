@@ -73,12 +73,6 @@ fn stand_of(u: vec2i, salt: f32) -> f32 {
     return 0.5 + 0.25 * (sin(p.x / 13.0 + salt) * sin(p.y / 17.0 - 1.7 * salt) + sin((p.x + p.y) / 23.0 + 2.3 * salt) * sin((p.x - p.y) / 19.0 + salt));
 }
 
-// Whether the mask keeps a plant `clear` metres off a road, a path or a track.
-fn on_road(s: vec2f, clear: f32) -> bool {
-    let mask = mask_at(s, u32(ceil(lod(s))), true);
-    return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
-}
-
 // Whether a point may show, before its ground is known: about the ground under the eye, within a
 // slope of 35° from it.
 fn roughly_visible(s: vec2f, d: f32) -> bool {
