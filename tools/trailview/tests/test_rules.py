@@ -77,6 +77,16 @@ class RulesetTest(unittest.TestCase):
         self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith("more than the 32 that the forest holds") for p in problems), problems)
         self.assertIn("regions/alps.json: pack alps: tree swiss-stone-pine has no model swiss-stone-pine", problems)
 
+    def test_a_pack_with_more_shrubs_or_ground_plants_than_the_plants_hold_is_a_problem(self):
+        ruleset = copy.deepcopy(RULESET)
+        pack = ruleset["packs"]["alps"]
+        shrub = next(rule for rule in pack["trees"].values() if rule.get("cover") == "shrub")
+        pack["trees"].update({f"shrub-{i}": shrub for i in range(rules.MAX_PLANT_SLOTS)})
+        pack["ground"].update({f"grass-{i}": {"model": "grass"} for i in range(rules.MAX_PLANT_SLOTS)})
+        problems = rules.validate(ruleset)
+        for kind in ("shrubs", "ground plants"):
+            self.assertTrue(any(p.startswith("regions/alps.json: pack alps has ") and p.endswith(f"{kind}, more than the 16 that the plants hold") for p in problems), problems)
+
     def test_a_number_that_json_does_not_have_is_a_problem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "trailview"

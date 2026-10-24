@@ -28,9 +28,11 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGIONS = 255
-# The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), and the
-# engine's models: one file per tree and per plant, named by its id.
+# The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), its
+# ground plants and its shrubs that the plants hold (SLOTS of vegetation/plants.ts), and the engine's
+# models: one file per tree and per plant, named by its id.
 MAX_TREE_SPECIES = 32
+MAX_PLANT_SLOTS = 16
 MODELS = ROOT / "builder/web/src/lib/trailview/models"
 
 
@@ -269,9 +271,9 @@ def chain(table, name):
 
 
 def model_problems(regions, packs, models=MODELS):
-    """The species of each region's pack, with what it inherits: MAX_TREE_SPECIES trees at most, each
-    tree and orchard with a tree model of the engine, each shrub with a tree or a plant model, each ground
-    plant with a plant model."""
+    """The species of each region's pack, with what it inherits: MAX_TREE_SPECIES trees and
+    MAX_PLANT_SLOTS shrubs and ground plants at most, each tree and orchard with a tree model of the
+    engine, each shrub with a tree or a plant model, each ground plant with a plant model."""
     trees_have, plants_have = ({path.stem for path in (models / kind).glob("*.ts")} for kind in ("trees", "plants"))
     out = []
     for name in sorted(regions):
@@ -288,10 +290,14 @@ def model_problems(regions, packs, models=MODELS):
         own = {species: rule for species, rule in tables["trees"].items() if rule.get("cover") == "tree"}
         if len(own) > MAX_TREE_SPECIES:
             out.append(f"regions/{name}.json: pack {pack} has {len(own)} tree species, more than the {MAX_TREE_SPECIES} that the forest holds")
+        shrubs = [species for species, rule in tables["trees"].items() if rule.get("cover") == "shrub"]
+        for kind, names in (("shrubs", shrubs), ("ground plants", tables["ground"])):
+            if len(names) > MAX_PLANT_SLOTS:
+                out.append(f"regions/{name}.json: pack {pack} has {len(names)} {kind}, more than the {MAX_PLANT_SLOTS} that the plants hold")
         for species, rule in tables["trees"].items():
             model = rule.get("model", species)
             if model not in trees_have and not (rule.get("cover") == "shrub" and model in plants_have):
-                out.append(f"{file}: {'tree' if rule.get('cover') == 'tree' else 'shrub'} {species} has no model {model}")
+                out.append(f"{file}: {'shrub' if rule.get('cover') == 'shrub' else 'tree'} {species} has no model {model}")
         out += [f"{file}: ground plant {species} has no model {rule.get('model', species)}"
                 for species, rule in tables["ground"].items() if rule.get("model", species) not in plants_have]
         orchard = next((data["orchard"] for data in chain(packs, pack) if "orchard" in data), None)
