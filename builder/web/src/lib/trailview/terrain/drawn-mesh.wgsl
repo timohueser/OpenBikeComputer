@@ -107,11 +107,6 @@ fn plain_height(s: vec2f) -> f32 {
 }
 
 fn mesh_height(s: vec2f, snapping: bool) -> f32 {
-    return mesh_ground(s, snapping).x;
-}
-
-// As mesh_height, with the slope of the triangle in y: the rise per metre.
-fn mesh_ground(s: vec2f, snapping: bool) -> vec2f {
     let level = drawn_level(s);
     let cell = 1 << (24u - level);
     let block = 2 * cell;
@@ -152,12 +147,9 @@ fn mesh_ground(s: vec2f, snapping: bool) -> vec2f {
         h[k] = place_height(vertex_place(u, level, snapping), level);
     }
     if (!(known(h.x) && known(h.y) && known(h.z))) {
-        return vec2f(NONE, 0.0);
+        return NONE;
     }
-    let e1 = places[held.y] - places[held.x];
-    let e2 = places[held.z] - places[held.x];
-    let rise = vec2f((h.y - h.x) * e2.y - (h.z - h.x) * e1.y, e1.x * (h.z - h.x) - e2.x * (h.y - h.x)) / (e1.x * e2.y - e1.y * e2.x);
-    return vec2f(dot(w, h), length(rise));
+    return dot(w, h);
 }
 
 // A thing on the drawn surface nearer than this stands on the drawn height; a farther one on the
@@ -166,16 +158,34 @@ const MESH_HEIGHT_M: f32 = 400.0;
 
 // The ground under a point of LOD space, `u` in whole world units: where the mesh draws it.
 fn stand_height(s: vec2f, u: vec2i) -> f32 {
-    return stand_ground(s, u).x;
+    if (length(s) < MESH_HEIGHT_M) {
+        return plain_height(s);
+    }
+    return morphed_ground(u, lod(s)).x;
 }
 
-// As stand_height, with the slope there in y: the rise per metre.
+// The level whose slope a crown stands on (slope_sink of emit.wgsl): texels of 3.3 m at 47° N, about
+// a crown's size. The coarse cover (COVER of lod.ts) holds its pages to the eye.
+const SLOPE_LEVEL: f32 = 15.0;
+
+// As stand_height, with the slope in y, the rise per metre: of SLOPE_LEVEL, so that it holds still as
+// the eye moves; where the mesh draws coarser, of the drawn levels by their morph, so that it changes
+// with the distance as the ground does.
 fn stand_ground(s: vec2f, u: vec2i) -> vec2f {
-    if (length(s) < MESH_HEIGHT_M) {
-        return mesh_ground(s, false);
-    }
-    // As grid_vertex: a node of level `fine` goes to the coarser level's height by its morph.
     let q = lod(s);
+    let slope = morphed_ground(u, min(q, SLOPE_LEVEL));
+    if (length(s) < MESH_HEIGHT_M) {
+        return vec2f(plain_height(s), slope.y);
+    }
+    if (q <= SLOPE_LEVEL) {
+        return slope;
+    }
+    return vec2f(morphed_ground(u, q).x, slope.y);
+}
+
+// The bilinear height and slope at a LOD `q`, as grid_vertex: a node of level `fine` goes to the
+// coarser level's by its morph.
+fn morphed_ground(u: vec2i, q: f32) -> vec2f {
     let fine = u32(ceil(q));
     let h = units_ground(u, fine);
     let morph = f32(fine) - q;
