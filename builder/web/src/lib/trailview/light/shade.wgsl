@@ -32,7 +32,7 @@ struct Look {
     // x: the material code of heath. y: the finest ground level. z, w: the materials and the
     // lithologies of the vocabulary.
     codes: vec4u,
-    // x: the debug view of terrain.wgsl. y, z, w: unused.
+    // x: the debug view of terrain.wgsl. y: the jittered frame's sample, which turns the dithers. z, w: unused.
     modes: vec4u,
     // xy: this frame's jitter in clip space. z: render pixels per output pixel, the render scale. w: unused.
     screen: vec4f,
@@ -41,6 +41,10 @@ struct Look {
 @group(2) @binding(0) var<uniform> look: Look;
 
 const GLOW = vec3f(1.0, 0.62, 0.36);
+
+fn luma(c: vec3f) -> f32 {
+    return dot(c, vec3f(0.3, 0.59, 0.11));
+}
 
 fn sky(dir: vec3f) -> vec3f {
     let up = clamp(dir.z, 0.0, 1.0);

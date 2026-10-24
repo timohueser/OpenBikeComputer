@@ -10,18 +10,18 @@ that the tiles keep. A new kind is one entry in that table. The format does not 
 ## Archive
 
 The archive is PMTiles v3 with tile type 0 (unknown), gzip tile compression and XYZ tile
-addresses at zooms 8 to 14. The grid step packs each tile into the archive of its zoom 11
+addresses at zooms 8 to 13. The grid step packs each tile into the archive of its zoom 11
 parent, or of its own tile below zoom 11 ([`obc-data.md`](obc-data.md)).
 
 | Metadata | Value |
 | --- | --- |
-| `features_format` | 1 |
-| `extent` | 8192: tile units across a tile |
+| `features_format` | 2 |
+| `extent` | 16384: tile units across a tile, about 0.2 m at zoom 13 in the Alps |
 | `buffer_m` | 40: the buffer on the ground, in metres |
 | `attribution` | The credit of OpenStreetMap |
 | `bounds` | West, south, east and north of the region |
 
-Zoom 14 holds every active kind. Zooms 8 to 13 hold the kinds whose `min_zoom` is that zoom or
+Zoom 13 holds every active kind. Zooms 8 to 12 hold the kinds whose `min_zoom` is that zoom or
 lower. A tile that meets `bounds` and that the archive does not hold has no features.
 
 ### Buffer
@@ -39,13 +39,13 @@ the side directly. Such a join lies outside the square. Thus inside the buffered
 tiles that hold a feature hold the same vertices and edges, and a stamp near a tile edge gets
 the same answer in both tiles.
 
-The buffer is for the stamps. A tile owns the points from 0 to less than 8192 on each axis: a
+The buffer is for the stamps. A tile owns the points from 0 to less than 16384 on each axis: a
 reader that draws or places features uses only the part of a feature in that square, so a point
 on a shared edge or in the buffer of two tiles is drawn once.
 
 ### Generalization
 
-Zoom 14 keeps each vertex, and the vertices that the road solver adds (see Heights). Below zoom 14, the bake simplifies each line and ring with
+Zoom 13 keeps each vertex, and the vertices that the road solver adds (see Heights). Below zoom 13, the bake simplifies each line and ring with
 Douglas-Peucker to `extent / 2048` tile units, a quarter texel of a 512-texel terrain node. A
 vertex that two features share stays, and so do the ends of a line. Thus road junctions stay
 joined, and a river keeps its end on the shore of its lake. Then each edge of an area that
@@ -82,10 +82,10 @@ are sorted by key. `geometry` is 0 for a point, 1 for a line and 2 for an area.
 ### Coordinates
 
 Coordinates are Web Mercator tile units with the origin at the north-west corner of the tile, x
-to the east and y to the south. The tile square is 0 to 8192 on both axes. A coordinate in the
-buffer is below 0 or above 8192. For tile column `c` and row `r` at zoom `z`, a point with world
-coordinates `wx`, `wy` in [0, 1] has `x = round(wx × 2^z × 8192) − 8192c` and
-`y = round(wy × 2^z × 8192) − 8192r`, so neighbouring tiles round a point the same way.
+to the east and y to the south. The tile square is 0 to 16384 on both axes. A coordinate in the
+buffer is below 0 or above 16384. For tile column `c` and row `r` at zoom `z`, a point with world
+coordinates `wx`, `wy` in [0, 1] has `x = round(wx × 2^z × 16384) − 16384c` and
+`y = round(wy × 2^z × 16384) − 16384r`, so neighbouring tiles round a point the same way.
 
 `dx` and `dy` are the difference from the vertex before, across the parts of the feature. The
 first vertex of a feature is the difference from (0, 0).
@@ -169,6 +169,7 @@ The bake adds these to the features of the road solver:
 | tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
 | tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
 | point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+| tag `stations` | each `aerialway` with an end that has no station of its own | `start`, `end` or `none`: the ends that have one |
 | point `catenary-mast` | each mast of the contact wire of a `railway` tagged `electrified` `contact_line` or `yes`, but not a funicular | Its height is its track's rail there. Tag `on` `deck` on a bridge |
 
 The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle, or
@@ -190,6 +191,15 @@ within its half-width and 1 m, a river area or a lake. A road is its line within
 half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for a road or a
 `pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
 bridge has no piers.
+
+Each vertex of an `aerialway` between its ends is a pylon. OSM maps the stations at the ends of the way
+and often no pylon between them. A way splits at each vertex where another `aerialway` ends: there is a
+mid-station. Where a span is longer than its rig allows, or where a carrier would come nearer the
+terrain than its clearance, the bake adds a pylon: in the middle of a long span, else at the point of
+the span at least 25 m from both of its ends where the carrier comes nearest. The rigs are those of
+`tools/trailview/lifts.py`. A station at an end that lies inside a mapped building is that building;
+of the ways that end at one point, only the first in the OSM data has the station there. The tag
+`stations` names the ends that have a station of their own.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
@@ -228,7 +238,7 @@ and a selector that matches its tags. An object that no entry takes is not in th
 | `match` | A list of selectors. One selector must match. A selector maps OSM keys to `"*"`, any value other than `no`, or to a list of values. Each key of the selector must match |
 | `keep` | The OSM keys whose values the tiles keep, when the object has them |
 | `height` | `surface`: it stands on the drawn surface and has no height of its own. `pad`: one height for the whole feature, such as a house floor or a lake level. `profile`: a height for each vertex, such as a road or a river level. `none`: no height, such as an outline |
-| `min_zoom` | 8 to 14, 14 when absent: the lowest zoom that holds the kind |
+| `min_zoom` | 8 to 13, 13 when absent: the lowest zoom that holds the kind |
 | `active` | `false`: the entry takes its objects and the bake drops them. `true` when absent |
 
 The bake validates the table before it reads OSM, and `tools/tests/test_planner_trailview_features.py`
@@ -238,16 +248,18 @@ bakes the layer again.
 ### Add a kind
 
 Add one entry at the position where it must take its objects before the entries after it. For
-example, summit crosses:
+example, wayside shrines:
 
 ```json
 {
-  "kind": "summit-cross",
+  "kind": "shrine",
   "geometry": "point",
-  "match": [{"summit:cross": ["yes"]}],
-  "keep": ["material"],
+  "match": [{"historic": ["wayside_shrine"]}],
+  "keep": ["height"],
   "height": "surface"
 }
 ```
 
-Then add the engine module of the kind. The tile format, the bake and the decoder do not change.
+Then add the engine module of the kind, `builder/web/src/lib/trailview/kinds/shrine.ts`, and the model
+that it names, `models/shrine.ts`. The engine finds the module by its file name. The tile format, the
+bake, the decoder and the other engine files do not change.

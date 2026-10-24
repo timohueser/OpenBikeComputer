@@ -11,11 +11,13 @@ from urllib.request import Request, urlopen
 # each layer in `layers`; the web planner shows snow, climate and sun through its module in
 # builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
 # specs/trailview-features.md and specs/trailview-tiles.md.
-TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4", "colour-ndvimax")
+TRAILVIEW = ("material", "lithology", "region", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
     "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
     "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
+    # The bands of the snow days, `BANDS` of tools/trailview/snow.py.
+    **{f"trailview-snow-{band:02}": "trailview_format" for band in range(46)},
 }
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.

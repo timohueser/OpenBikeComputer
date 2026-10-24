@@ -20,7 +20,7 @@
   "silver-birch": { "leaf": "broadleaved", "cover": "tree", "elevation": [300, 2000], "weight": 1 },
   "aspen": { "model": "silver-birch", "latin": "Populus tremula", "leaf": "broadleaved", "cover": "tree", "elevation": [400, 1900], "weight": 0.5 },
   "rowan": { "leaf": "broadleaved", "cover": "tree", "elevation": [700, 2100], "weight": 1 },
-  "whitebeam": { "model": "hawthorn", "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 0.5 },
+  "whitebeam": { "latin": "Sorbus aria", "leaf": "broadleaved", "cover": "tree", "elevation": [500, 1700], "weight": 0.5 },
   "sessile-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1000], "weight": 1 },
   "downy-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 1200], "weight": 1 },
   "pedunculate-oak": { "leaf": "broadleaved", "cover": "tree", "elevation": [200, 900], "weight": 1 },

@@ -16,27 +16,26 @@ describe('the ground pages', () => {
     });
 
     it('has snow where at least the share of seasons with data had snow on the day', () => {
-        // Two seasons over one pixel: onset 10, melt-out 50; no data. And one with snow every day.
-        const snow: Raster = { z: 0, x: 0, y: 0, size: 1, channels: 1, data: Uint8Array.from([10, 50, 255, 255]) };
-        expect(snowState(snow, 2, 30, () => 0, [0.5]).map(values => values[0])).toEqual([1, 1, 1]);
-        expect(snowState(snow, 2, 60, () => 0, [0.5]).map(values => values[0])).toEqual([0, 1, 0]);
-        const whole: Raster = { ...snow, data: Uint8Array.from([254, 254, 253, 253]) };
-        expect(snowState(whole, 2, 60, () => 0, [0.6]).map(values => values[0])).toEqual([0, 1, 0.5]);
+        // Seasons with data × 16 + seasons with snow.
+        const day = (byte: number): Raster => ({ z: 0, x: 0, y: 0, size: 1, channels: 1, data: Uint8Array.from([byte]) });
+        expect(snowState(day(2 * 16 + 1), () => 0, [0.5]).map(values => values[0])).toEqual([1, 1, 0.5]);
+        expect(snowState(day(2 * 16 + 1), () => 0, [0.6]).map(values => values[0])).toEqual([0, 1, 0.5]);
+        expect(snowState(day(0), () => 0, [0]).map(values => values[0])).toEqual([0, 0, 0]);
     });
 
     it('splits a material tile into its four pages and resamples the coarser layers onto their texels', () => {
         const material: Raster = { z: 3, x: 5, y: 2, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
-        for (let i = 0; i < 512 * 512; i++) material.data[4 * i] = i % 512 < 256 ? 13 : 0x80;
+        for (let i = 0; i < 512 * 512; i++) material.data.set([i % 512 < 256 ? 13 : 0x80, 77], 4 * i);
         // A lithology tile two zooms coarser: tile 3/5/2 is its quarter at column 1, row 0... of 4 × 4.
         const lithology: Raster = { z: 1, x: 1, y: 0, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
         for (let j = 0; j < 512; j++) for (let i = 0; i < 512; i++) lithology.data[4 * (j * 512 + i)] = i >= 128 && i < 256 && j >= 256 && j < 384 ? 8 : 1;
         // A region tile of the same zoom: its west half holds region 1, its east half a code that the rules do not have.
         const region: Raster = { z: 3, x: 5, y: 2, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
         for (let i = 0; i < 512 * 512; i++) region.data[4 * i] = i % 512 < 128 ? 1 : 9;
-        const pages = groundPages({ z: 3, x: 5, y: 2, material, lithology, region, seasons: 0, date: { weight: 0, snowIndex: 0, shares: [0.5, 0.5] }, world: 0 });
+        const pages = groundPages({ z: 3, x: 5, y: 2, material, lithology, region, date: { weight: 0, snowIndex: 0, shares: [0.5, 0.5] }, world: 0 });
         expect(pages.map(Boolean)).toEqual([true, false, true, false]);
         const [nw] = pages;
-        expect(Array.from(nw!.cells.subarray(0, 4))).toEqual([13, 8, 1, 0]);
+        expect(Array.from(nw!.cells.subarray(0, 4))).toEqual([13, 8, 1, 77]);
         expect(nw!.cells[4 * 200 + 2]).toBe(0);
     });
 });

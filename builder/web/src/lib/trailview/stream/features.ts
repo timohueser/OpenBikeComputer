@@ -4,7 +4,66 @@
 export type Geometry = 'point' | 'line' | 'area';
 
 /** Tile units across a tile. The buffer lies outside 0..EXTENT. */
-export const EXTENT = 8192;
+export const EXTENT = 16384;
+/** The zoom whose tiles hold every kind, at full detail. */
+export const DEEPEST = 13;
+/** World units (2^30 across the world) per tile unit of a tile of zoom `level`. */
+export const unitScale = (level: number) => 2 ** (30 - level) / EXTENT;
+/** The square of tile `part`, at or under tile `tile`, in the tile units of `tile`: its west and north edges and its size. */
+export function square(tile: { level: number; x: number; y: number }, part: { level: number; x: number; y: number }): [number, number, number] {
+    const size = EXTENT / 2 ** (part.level - tile.level);
+    return [part.x * size - tile.x * EXTENT, part.y * size - tile.y * EXTENT, size];
+}
+/** The archive format of specs/trailview-features.md that this decoder reads. */
+export const FORMAT = 2;
+
+/**
+ * Decoded bytes a worker keeps: four of the largest zoom 13 tile of the box bake, 279 kB of gzip
+ * that decodes to about 8 MB. The four quarters of a tile reach a worker far apart in its queue.
+ */
+const BUDGET = 32 * 2 ** 20;
+const kept = new Map<string, { features: Promise<Feature[]>; bytes: number }>();
+let held = 0;
+
+/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last BUDGET bytes. */
+export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
+    let entry = kept.get(name);
+    if (entry) kept.delete(name);
+    else {
+        // The Promise is kept at once, so a second message for the tile waits for this decode.
+        const created = entry = { features: decodeBody(body), bytes: 0 };
+        created.features.then(features => {
+            if (kept.get(name) !== created) return;
+            created.bytes = decodedBytes(features);
+            held += created.bytes;
+            for (const [old, item] of kept) {
+                if (held <= BUDGET) break;
+                if (item === created) continue;
+                kept.delete(old);
+                held -= item.bytes;
+            }
+        }, () => { if (kept.get(name) === created) kept.delete(name); });
+    }
+    kept.set(name, entry);
+    return entry.features;
+}
+
+async function decodeBody(body: ArrayBuffer): Promise<Feature[]> {
+    let bytes = new Uint8Array(body);
+    // A tile service may hand over the gzip of the archive as it is.
+    if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+    return decodeFeatures(bytes);
+}
+
+/** The heap that `features` hold: their vertices and a cost per feature and per part fitted to the V8 heap of decoded fixture tiles. */
+function decodedBytes(features: Feature[]): number {
+    let bytes = 0;
+    for (const feature of features) {
+        bytes += 300;
+        for (const part of feature.parts) bytes += 400 + part.xy.byteLength + (part.z?.byteLength ?? 0);
+    }
+    return bytes;
+}
 
 export interface FeaturePart {
     /** An outer ring. The rings after it, up to the next outer ring, are its holes. Never set for a point or a line. */

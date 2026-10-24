@@ -5,6 +5,9 @@
 
 export type Season = 'winter' | 'spring' | 'summer' | 'autumn';
 export const SEASONS: readonly Season[] = ['winter', 'spring', 'summer', 'autumn'];
+
+/** The season of a date `YYYY-MM-DD`: winter from January. */
+export const seasonOf = (date: string): Season => SEASONS[Math.floor((Number(date.slice(5, 7)) - 1) / 3)];
 export type Ramp = [string, string, string];
 export type Preset = 'sunny' | 'cloudy' | 'rainy';
 
@@ -49,6 +52,44 @@ export interface Region {
     look: Look;
     /** Indexes in `styles` of the region's pack: its house style, and the style of its cottages and houses. */
     houses: [number, number];
+    /** The trees of the region's pack, by species. */
+    trees: TreeRule[];
+    /** The herds of the region's pack. */
+    herds: HerdRule[];
+    /** The ground plants of the region's pack: what the pack says of each, over its plant model's `ground`. */
+    ground: GroundRule[];
+    /** The tree model of the pack's orchards. */
+    orchard?: string;
+}
+
+/** A herd of a pack: its model, its groups per eye's circle of 400 m, its animals per group and the materials that it grazes. */
+export interface HerdRule {
+    model: string;
+    groups: number;
+    size: [number, number];
+    on: string[];
+}
+
+/** A ground plant of a pack: its model, and the keys of the model's `ground` that the pack changes. */
+export interface GroundRule {
+    model: string;
+    on?: string[];
+    height?: [number, number];
+    share?: number;
+    habitat?: 'moor' | 'lush';
+    own?: true;
+    clumped?: true;
+}
+
+/** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
+export interface TreeRule {
+    model: string;
+    leaf: 'needleleaved' | 'broadleaved';
+    cover: 'tree' | 'shrub';
+    elevation: [number, number];
+    weight: number;
+    /** It keeps its summer leaves all year. */
+    evergreen?: boolean;
 }
 
 /** A house style of `styles/`, as `BuildingStyle` in the prototype's models/buildings.ts. */
@@ -97,6 +138,20 @@ function inherited(table: Record<string, Record<string, unknown>>, name: string,
     return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
 }
 
+/** The tree model of a pack's orchards. */
+function orchardOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): string | undefined {
+    if (typeof pack !== 'string' || !packs?.[pack]) return undefined;
+    const model = inherited(packs, pack).orchard;
+    return typeof model === 'string' ? model : undefined;
+}
+
+/** The trees, herds or ground plants of a pack: one that a child sets to null is dropped, a model defaults to its name. */
+function entriesOf<T extends { model: string }>(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown, field: 'trees' | 'herds' | 'ground'): T[] {
+    if (typeof pack !== 'string' || !packs?.[pack]) return [];
+    const entries = (inherited(packs, pack)[field] ?? {}) as Record<string, Partial<T> | null>;
+    return Object.entries(entries).flatMap(([name, rule]) => (rule ? [{ ...rule, model: rule.model ?? name } as T] : []));
+}
+
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
 export function rulesOf(json: {
     format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }>;
@@ -122,7 +177,9 @@ export function rulesOf(json: {
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack) };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack),
+            trees: entriesOf<TreeRule>(json.packs, resolved.pack, 'trees'), herds: entriesOf<HerdRule>(json.packs, resolved.pack, 'herds'),
+            ground: entriesOf<GroundRule>(json.packs, resolved.pack, 'ground'), orchard: orchardOf(json.packs, resolved.pack) };
     });
     return { vocabulary: json.materials, regions, styles };
 }

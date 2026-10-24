@@ -23,6 +23,7 @@
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
 const COVER_GRASS: u32 = 2u;
+const COVER_CROP: u32 = 3u;
 const COVER_BUILT: u32 = 4u;
 const COVER_BARE: u32 = 5u;
 const COVER_SNOW: u32 = 6u;
@@ -53,10 +54,6 @@ struct Ground {
     coarse_open: f32,
     region: u32,
     lithology: u32,
-}
-
-fn luma(c: vec3f) -> f32 {
-    return dot(c, vec3f(0.3, 0.59, 0.11));
 }
 
 // Dave Hoskins' hash.
@@ -190,6 +187,94 @@ fn ground_page(level: u32, t: vec2i) -> i32 {
     return i32(ground_map[(i32(level) * MAP + slot.y) * MAP + slot.x]) - 1;
 }
 
+// The finest resident ground page of a level or coarser that holds a point: its level, the point's
+// texel there and the page, -1 where none holds it.
+struct Held {
+    level: u32,
+    t: Texel,
+    page: i32,
+}
+
+fn held_at(s: vec2f, level: u32) -> Held {
+    var k = min(level, look.codes.y);
+    var t = texel_of(s, k);
+    var page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
+    while (page < 0 && k > COARSEST) {
+        k--;
+        t = texel_of(s, k);
+        page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
+    }
+    return Held(k, t, page);
+}
+
+// The ground cell at a point from the finest resident ground page of a level or coarser: r the
+// material, g the lithology, b the region.
+fn cell_at(s: vec2f, level: u32) -> vec4u {
+    let held = held_at(s, level);
+    if (held.page < 0) {
+        return vec4u(0u);
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
+}
+
+// The texel of a point in the finest ground pages, as `in_page` places it, and its page's layer; z is -1
+// where that page is not resident. What stands by it stays as finer pages replace coarser ones: a page
+// that arrives adds things but changes none.
+fn finest_texel(s: vec2f) -> vec3i {
+    let t = texel_of(s, look.codes.y);
+    let whole = t.whole + vec2i(t.part >= vec2f(0.5));
+    let page = ground_page(look.codes.y, whole);
+    if (page < 0) {
+        return vec3i(0, 0, -1);
+    }
+    return vec3i(in_page(page, whole & vec2i(255)), page_layer(page));
+}
+
+// The ground cell at a point from the finest ground pages (finest_texel), as `cell_at`; NO_CELL where
+// that page is not resident.
+fn finest_cell(s: vec2f) -> vec4u {
+    let t = finest_texel(s);
+    if (t.z < 0) {
+        return NO_CELL;
+    }
+    return textureLoad(cells, t.xy, t.z, 0);
+}
+
+const NO_CELL: vec4u = vec4u(0xffffffffu);
+// Trees stand within TREE_REACH_M of the eye, as in tree-models.ts. Past it, the floor of woodland
+// stands for their crowns over CROWN_SHARE of the snow: the owner's choice by eye.
+const TREE_REACH_M: f32 = 4500.0;
+const CROWN_SHARE: f32 = 0.5;
+
+// The region of the ground at a point, from the finest resident ground page.
+fn region_at(s: vec2f) -> u32 {
+    return cell_at(s, u32(ceil(lod(s)))).b;
+}
+
+// The snow on the ground at a point on the date, 0 to 1, from the finest resident ground page.
+fn snow_at(s: vec2f) -> f32 {
+    return snow_held(held_at(s, u32(ceil(lod(s)))));
+}
+
+fn snow_held(held: Held) -> f32 {
+    if (held.page < 0) {
+        return 0.0;
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).a);
+}
+
+// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident.
+fn albedo_held(held: Held) -> vec3f {
+    if (held.page < 0) {
+        return vec3f(0.0);
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).rgb;
+    return c * c;
+}
+
 fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }
@@ -248,17 +333,10 @@ fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
 // satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
 // blend across it.
 fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
-    var k = min(level, look.codes.y);
-    var t = texel_of(s, k);
-    var page = -1;
-    loop {
-        t = texel_of(s, k);
-        page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
-        if (page >= 0 || k <= COARSEST) {
-            break;
-        }
-        k--;
-    }
+    let held = held_at(s, level);
+    let k = held.level;
+    let t = held.t;
+    let page = held.page;
     var g: Ground;
     if (page < 0) {
         // No level has ground here yet: the palette's grass of the first region.
@@ -587,9 +665,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         }
         albedo = mix(albedo, face, walled);
     }
-    // Past about 1 km, the eye sees woodland's crowns, not the snow on the ground under them. Snow slides
-    // off walls, which the data's texels are too wide to see.
-    let crowns = g.tree * smoothstep(800.0, 1000.0, length(relative.xy));
+    // The snow under the trees stays at every distance; past their reach the crowns that no longer stand
+    // hide a share of it. Snow slides off walls, which the data's texels are too wide to see.
+    let crowns = g.tree * CROWN_SHARE * smoothstep(0.8 * TREE_REACH_M, TREE_REACH_M, length(relative.xy));
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.

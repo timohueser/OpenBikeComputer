@@ -1,7 +1,7 @@
 // The houses of a feature tile as houses.wgsl reads them: a record per building that the tile owns,
 // and a mesh of walls and a flat roof for the footprints that no template fits. A worker uses it.
 import earcut from 'earcut';
-import { EXTENT, type Feature } from '../stream/features';
+import { EXTENT, square, unitScale, type Feature } from '../stream/features';
 import { metresPerUnit, type Node } from '../terrain/bins';
 
 /** Words of a record, as `House` in houses.wgsl. */
@@ -46,8 +46,6 @@ const NARROW_M = 2.5, MISSED = 0.08;
 const INSET_M = 0.04;
 /** The wall of an outline without levels or a height. */
 const OUTLINE_WALL_M = 8;
-/** World units per tile unit of a zoom 14 tile. */
-const UNITS_PER_TILE_UNIT = 2 ** 30 / 2 ** 14 / EXTENT;
 
 export interface TileHouses {
     records: Uint32Array<ArrayBuffer>;
@@ -153,8 +151,9 @@ function parts(ring: number[][], fit: { x: number; y: number; angle: number }): 
 /** A stable seed from a point. */
 const seedOf = (x: number, y: number) => (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) >>> 16;
 
-/** The houses whose rectangle's middle lies in the square of a zoom 14 tile. */
-export function tileHouses(list: Feature[], tile: Node): TileHouses {
+/** The houses of feature tile `tile` whose rectangle's middle lies in the square of `owned`, a tile at or under it. */
+export function tileHouses(list: Feature[], tile: Node, owned: Node = tile): TileHouses {
+    const scale = unitScale(tile.level), [west, north, size] = square(tile, owned);
     const records: number[] = [], outlines: number[] = [], floats = new Float32Array(1), word = new Uint32Array(floats.buffer);
     const f32 = (v: number) => ((floats[0] = v), word[0]);
     const left = tile.x * EXTENT, top = tile.y * EXTENT;
@@ -163,32 +162,32 @@ export function tileHouses(list: Feature[], tile: Node): TileHouses {
         const tag = feature.tags.building ?? 'yes', part = feature.parts.find(p => p.outer);
         if (SKIPPED.has(tag) || !part || part.xy.length < 6) continue;
         // Metres east and north of the first vertex.
-        const x0 = part.xy[0], y0 = part.xy[1], unit = metresPerUnit((top + y0) * UNITS_PER_TILE_UNIT), m = unit * UNITS_PER_TILE_UNIT;
+        const x0 = part.xy[0], y0 = part.xy[1], unit = metresPerUnit((top + y0) * scale), m = unit * scale;
         let ring: number[][] = [];
         for (let i = 0; i < part.xy.length; i += 2) ring.push([(part.xy[i] - x0) * m, -(part.xy[i + 1] - y0) * m]);
         if (twiceArea(ring) < 0) ring = ring.reverse();
         const area = twiceArea(ring) / 2, fit = rectangle(ring);
         if (area <= 0 || fit.width <= 0 || fit.depth <= 0) continue;
         const tx = x0 + fit.x / m, ty = y0 - fit.y / m;
-        if (tx < 0 || tx >= EXTENT || ty < 0 || ty >= EXTENT) continue;
+        if (tx < west || tx >= west + size || ty < north || ty >= north + size) continue;
         const kind = kindOf(tag, area), levels = parseFloat(feature.tags['building:levels'] ?? ''), height = parseFloat(feature.tags.height ?? '');
         // A large footprint without a kind is a hall or a barn more often than flats.
         const low = LOW.has(tag) || (kind === BLOCK && !BLOCKS.has(tag));
         const wall = levels > 0 ? levels * STOREY_M : height > 0 ? 0.65 * height : low ? 7 : 0;
         const pieces = area / (fit.width * fit.depth) >= RECTANGULAR ? [fit] : parts(ring, fit), outline = !pieces;
         // All parts of a building take the seed of its rectangle, so they share its colours and its pitch.
-        const seed = seedOf(Math.round((left + tx) * UNITS_PER_TILE_UNIT), Math.round((top + ty) * UNITS_PER_TILE_UNIT));
+        const seed = seedOf(Math.round((left + tx) * scale), Math.round((top + ty) * scale));
         const flatRoof = feature.tags['roof:shape'] === 'flat', roof = ROOFS[feature.tags['roof:shape'] ?? ''] ?? 0;
         const index = records.length / RECORD_WORDS;
         for (const piece of pieces ?? [fit]) {
             const [L, W, angle] = piece.width >= piece.depth ? [piece.width, piece.depth, fit.angle] : [piece.depth, piece.width, fit.angle + Math.PI / 2];
-            const x = Math.round((left + x0 + piece.x / m) * UNITS_PER_TILE_UNIT), y = Math.round((top + y0 - piece.y / m) * UNITS_PER_TILE_UNIT);
+            const x = Math.round((left + x0 + piece.x / m) * scale), y = Math.round((top + y0 - piece.y / m) * scale);
             records.push(x, y, f32(angle), f32(L), f32(W), f32(outline ? wall || OUTLINE_WALL_M : wall), f32(unit),
                 (kind | (roof << 3) | (+outline << 5) | (+flatRoof << 6) | (seed << 16)) >>> 0);
         }
         if (!outline) continue;
         // The walls, from the bottom to the top, with the metres along the outline; then the roof.
-        const world = ring.map(([ex, ny]) => [Math.round((left + x0 + ex / m) * UNITS_PER_TILE_UNIT), Math.round((top + y0 - ny / m) * UNITS_PER_TILE_UNIT)]);
+        const world = ring.map(([ex, ny]) => [Math.round((left + x0 + ex / m) * scale), Math.round((top + y0 - ny / m) * scale)]);
         const vertex = ([wx, wy]: number[], up: number, roofed: number, u: number) => outlines.push(wx, wy, (index | (up << 31) | (roofed << 30)) >>> 0, f32(u));
         let along = 0;
         ring.forEach((a, i) => {

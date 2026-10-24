@@ -11,7 +11,7 @@ import { GroundPages, type Slot } from './pages';
 import { packRulesOn, slots } from './rules';
 
 /** Ground pages: whole layers of SIDE × SIDE pages, as GROUND_SIDE in look.wgsl. */
-const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 128;
+const SIDE = 4, LAYER_PAGES = SIDE * SIDE, POOL = 192;
 /** Compute jobs per frame at most: the pages that arrive and the pages whose heights changed, as `GroundPages` takes them. */
 const JOBS = 16, JOB_BYTES = 32;
 const RAD = Math.PI / 180;
@@ -27,6 +27,8 @@ const NEUTRAL: Rules = {
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
         },
         houses: [0, 0],
+        trees: [], herds: [],
+        ground: [],
     }],
     styles: [],
 };
@@ -101,7 +103,8 @@ export class Ground {
 
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        const stages = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
+        // The instances' vertices read the look for the haze.
+        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
         const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
             { binding: 0, visibility: stages, buffer: { type: 'uniform' } },
@@ -110,10 +113,11 @@ export class Ground {
             { binding: 3, visibility: stages, texture: { sampleType: 'unfilterable-float' } },
             { binding: 4, visibility: stages, sampler: {} },
         ];
-        // The compute writes the cache: its bind group does not hold it for sampling.
+        // The compute writes the cache: its bind group does not hold it for sampling. The producers of
+        // instances read the snow in it.
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
-                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT | compute, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [
@@ -186,10 +190,11 @@ export class Ground {
     }
 
     /**
-     * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), on the date
-     * of the view. `refreshed` are the terrain nodes whose heights changed, so the relief that reads them follows.
+     * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), and the pages
+     * that the instances `read`, on the date of the view. `refreshed` are the terrain nodes whose heights
+     * changed, so the relief that reads them follows.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
+    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
         const r = this.resources;
         if (!r) return;
         const day = this.pages.setDate(date);
@@ -197,7 +202,7 @@ export class Ground {
             const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
-        const work = this.pages.update(drawn, wanted, refreshed, origins, eye);
+        const work = this.pages.update(drawn, wanted, refreshed, origins, eye, read);
         for (const { page, data } of work.uploads) this.jobs.push({ page, data });
         for (const page of work.refreshes) this.jobs.push({ page });
         if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);

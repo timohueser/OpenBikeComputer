@@ -1,11 +1,14 @@
 import { PMTiles } from 'pmtiles';
 import type { PlannerConfig } from '../../planner/config';
-import { fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
+import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
+import { FORMAT } from './features';
 import type { PageData } from './heights';
 
 /** The deepest stored zoom: the planner's zooms 0 to 12, and zoom 13 where a national model holds the ground. */
 export const TILE_ZOOM = 13;
 const WORKERS = 2;
+/** Feature tile bodies kept for the terrain, the houses and the orchards, which read the same tiles. */
+const FEATURE_BODIES = 32 * 2 ** 20;
 
 /** Where the stored terrain comes from: the body of tile z/x/y (undefined where it is absent) and its pages. */
 export interface TerrainSource {
@@ -66,16 +69,24 @@ export function pageDecoder(): TerrainSource['decode'] {
 }
 
 /**
- * The feature tiles of a release: the body of tile z/x/y, undefined where it is absent. Undefined
- * when the release has no feature layer.
+ * The feature tiles of a release: a copy of the body of tile z/x/y, undefined where it is absent.
+ * Undefined when the release has no feature layer.
  */
 export function featureTiles(config: PlannerConfig): ((z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>) | undefined {
     const url = (config.layers as Record<string, string | undefined>)['trailview-features'];
     if (!url) return undefined;
-    let source: Promise<Source> | undefined;
-    return async (z, x, y) => {
-        source ??= openSource(url);
-        source.catch(() => (source = undefined));
-        return (await source).get(z, x, y, requestSignal());
+    let source: Promise<Source | undefined> | undefined;
+    const open = async () => {
+        const opened = await openSource(url);
+        if (opened.metadata.features_format === FORMAT) return opened;
+        // Tiles of another format lie at another scale and zoom: drawn, they would be in the wrong place.
+        console.warn(`The TrailView feature archive has features_format ${opened.metadata.features_format}, not ${FORMAT}. TrailView shows no features.`);
+        return undefined;
     };
+    const tiles = decodedTiles(async (z, x, y, signal) => {
+        source ??= open();
+        source.catch(() => (source = undefined));
+        return (await source)?.get(z, x, y, signal);
+    }, body => body.buffer, FEATURE_BODIES, body => body.byteLength);
+    return async (z, x, y) => (await tiles.tile(z, x, y))?.slice(0);
 }

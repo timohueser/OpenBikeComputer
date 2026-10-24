@@ -145,17 +145,16 @@
   {
     "kind": "ruin",
     "geometry": "area",
-    "match": [{"building": "*", "ruins": ["yes"]}, {"building": "*", "historic": ["castle", "tower", "ruins"]},
-              {"building": ["ruins"]}],
+    "match": [{"building": "*", "ruins": ["yes"]}, {"building": "*", "historic": ["ruins"]}, {"building": ["ruins"]}],
     "keep": ["building", "historic", "building:levels", "height"],
-    "height": "pad"
+    "height": "surface"
   },
   {
     "kind": "lighthouse",
     "geometry": "area",
     "match": [{"building": "*", "man_made": ["lighthouse"]}],
     "keep": ["building:levels", "height"],
-    "height": "pad"
+    "height": "surface"
   },
   {
     "kind": "building",
@@ -176,8 +175,8 @@
   {
     "kind": "wall",
     "geometry": "line",
-    "match": [{"barrier": ["wall", "retaining_wall"]}],
-    "keep": ["barrier", "height"],
+    "match": [{"barrier": ["wall"]}],
+    "keep": ["wall", "height"],
     "height": "surface"
   },
   {
@@ -192,21 +191,35 @@
     "geometry": "line",
     "match": [{"aerialway": ["cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "t-bar", "j-bar",
                              "platter"]}],
-    "keep": ["aerialway"],
+    "keep": ["aerialway", "name"],
     "height": "surface"
   },
   {
     "kind": "orchard",
     "geometry": "area",
     "match": [{"landuse": ["orchard"]}],
+    "keep": ["trees", "produce"],
+    "height": "surface"
+  },
+  {
+    "kind": "arete",
+    "geometry": "line",
+    "match": [{"natural": ["arete"]}],
     "keep": [],
     "height": "surface"
   },
   {
-    "kind": "ridge",
-    "geometry": "line",
-    "match": [{"natural": ["arete", "ridge"]}],
-    "keep": ["natural"],
+    "kind": "cross",
+    "geometry": "point",
+    "match": [{"man_made": ["cross"]}, {"historic": ["wayside_cross"]}, {"summit:cross": ["yes"]}],
+    "keep": ["height", "summit:cross", "material"],
+    "height": "surface"
+  },
+  {
+    "kind": "shrine",
+    "geometry": "point",
+    "match": [{"historic": ["wayside_shrine"]}],
+    "keep": ["height"],
     "height": "surface"
   }
 ]

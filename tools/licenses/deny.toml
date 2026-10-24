@@ -33,6 +33,11 @@ ignore = [
     # major bump; drop these when the eframe stack next moves.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # crypto-bigint 0.5 timing side channels. Reached only through p256 in trouble-host,
+    # the nRF54L BLE stack, for the ephemeral ECDH keys of LE Secure Connections pairing; an
+    # attacker would have to time the device's CPU during a pairing. The fix (0.7.6) needs
+    # p256 0.14, which trouble-host does not take yet; drop this when it moves.
+    "RUSTSEC-2026-0387",
 ]
 # Only fail on *unmaintained* crates we depend on directly — the sim's GUI stack (eframe ->
 # egui -> accesskit) drags in deep transitive crates like `paste` (RUSTSEC-2024-0436) we can't

@@ -41,7 +41,7 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
         const url = new URL(route.request().url());
         if (url.hostname !== 'tiles.test') return route.abort();
         if (url.pathname === '/trailview-features.json') {
-            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 14, bounds: [-180, -85, 180, 85] };
+            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 2, extent: 16384 };
             return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
         }
         const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);
@@ -74,8 +74,10 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
 /** The archives of the TrailView bakes in a folder, by their names in the catalogue's `layers`. */
 function groundLayers(dir, colour) {
     const files = {
-        'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles', snow: 'snow.pmtiles',
-        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'ndvimax'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+        'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles',
+        'trailview-canopy': 'trailview-canopy.pmtiles',
+        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+        ...Object.fromEntries(Array.from({ length: 46 }, (_, band) => String(band).padStart(2, '0')).map(band => [`trailview-snow-${band}`, `snow-days/${band}.pmtiles`])),
     };
     return Object.fromEntries(Object.entries(files).filter(([, file]) => existsSync(join(dir, file))).map(([name, file]) => [name, new PMTiles(new FileSource(join(dir, file)))]));
 }

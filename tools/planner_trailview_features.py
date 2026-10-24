@@ -4,7 +4,7 @@
 The `obc data` step `planner/trailview-features` reads the OSM of `planner/osm`, the master terrain of
 the grid of `planner/terrain` and the kind table `data/trailview/kinds.json` from its options. Osmium selects the
 objects and assembles the areas; `trailview/roads.py` sets the heights of roads, `trailview/water.py`
-the levels of rivers and lakes."""
+the levels of rivers and lakes, `trailview/lifts.py` adds the pylons of lifts."""
 
 import argparse
 from functools import lru_cache
@@ -16,11 +16,12 @@ import re
 import subprocess
 
 from . import region_osm, step_request
-from .trailview import profiles, structures, water
+from .trailview import lifts, profiles, structures, water
 
-FORMAT = 1
-EXTENT = 8192
-MIN_ZOOM, MAX_ZOOM = 8, 14
+FORMAT = 2
+# A unit of a zoom-13 tile is about 0.2 m in the Alps, a texel of the finest terrain node.
+EXTENT = 16384
+MIN_ZOOM, MAX_ZOOM = 8, 13
 # The widest stamp, a road cone, reaches 25 m past the road edge: 40 m holds it for a road up to
 # 30 m wide.
 BUFFER_M = 40.0
@@ -510,6 +511,7 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
     `roads.TABLE`); return the metrics."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
+    import numpy as np
     # The road solver and the rails need scipy, which the readers of the tiles do not have.
     from .trailview import rails, roads
 
@@ -527,7 +529,15 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
                 for point in points:
                     shared[point] = shared.get(point, 0) + 1
 
+    # The lifts wait for the buildings and the other lifts: a station shares their places.
+    ways, buildings, lift_entry = [], [], None
     for entry, tags, parts in objects(kinds, pbf, binary):
+        if lifts.solves(entry["kind"], tags):
+            lift_entry = entry
+            ways += [(tags, points) for _, points in parts]
+            continue
+        if entry["kind"] == "building":
+            buildings += [np.array(points) for outer, points in parts if outer]
         parts = [(outer, points, None) for outer, points in parts]
         solver = terrain and tiles.meets(MAX_ZOOM, parts) and next((m for m in (water, roads, rails) if m.solves(entry["kind"], tags)), None)
         if solver:
@@ -536,6 +546,11 @@ def bake(kinds, pbf, bounds, output, attribution, terrain=None, classes=None):
             place(entry, tags, parts)
             if entry["kind"] == "river-area":
                 river_areas.append([points for _, points, _ in parts])
+    if ways:
+        rigged, metrics["lifts"] = lifts.rigged(ways, buildings, terrain)
+        for tags, points in rigged:
+            place(lift_entry, tags, [(False, points, None)])
+    del buildings
     # The heights of a junction need every road that meets there, a river level its whole network, a ford
     # the water it crosses, and a platform its tracks.
     tracks = []

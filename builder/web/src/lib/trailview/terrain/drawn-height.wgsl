@@ -152,9 +152,14 @@ fn decode(page: u32, raw: u32) -> f32 {
 
 // The bilinear height between four texels, or NONE unless all four are known.
 fn bilinear(level: u32, t: Texel) -> f32 {
+    return bilinear_rise(level, t).x;
+}
+
+// The bilinear height between four texels and its rise per texel along x and y; NONE in x unless all four are known.
+fn bilinear_rise(level: u32, t: Texel) -> vec3f {
     let e = entry(level, t.whole) & 0xffffu;
     if (e == 0u) {
-        return NONE;
+        return vec3f(NONE, 0.0, 0.0);
     }
     var a: f32;
     var b: f32;
@@ -174,20 +179,25 @@ fn bilinear(level: u32, t: Texel) -> f32 {
         d = texel_height(level, t.whole + vec2i(1, 1), false);
     }
     if (!(known(a) && known(b) && known(c) && known(d))) {
-        return NONE;
+        return vec3f(NONE, 0.0, 0.0);
     }
-    return mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y);
+    return vec3f(mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y), mix(b - a, d - c, t.part.y), mix(c - a, d - b, t.part.x));
 }
 
 // The height of the finest level up to `top` that knows a point at whole units: a missing height is never 0 m.
 fn units_height(u: vec2i, top: u32) -> f32 {
+    return units_ground(u, top).x;
+}
+
+// As units_height, with the slope there in y: the rise per metre.
+fn units_ground(u: vec2i, top: u32) -> vec2f {
     for (var level = top; level >= COARSEST; level--) {
-        let h = bilinear(level, texel_of_units(u, level));
-        if (known(h)) {
-            return h;
+        let g = bilinear_rise(level, texel_of_units(u, level));
+        if (known(g.x)) {
+            return vec2f(g.x, length(g.yz) / (f32(1 << (22u - level)) * surface.unit));
         }
     }
-    return NONE;
+    return vec2f(NONE, 0.0);
 }
 
 // The LOD at a point: a whole level on its plateau, and between two levels in a morph band.

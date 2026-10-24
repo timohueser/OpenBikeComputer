@@ -59,6 +59,15 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
+    it('load the tile under the eye before the coarser tiles away from it', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(pages, wanted);
+        const at = (z: number) => `${z}/${Math.floor((anchor.whole[0] + anchor.part[0]) / size(z))}/${Math.floor((anchor.whole[1] + anchor.part[1]) / size(z))}`;
+        const away = tiles.fetched.findIndex(name => name.startsWith('12/') && name !== at(12));
+        expect(away).toBeGreaterThan(-1);
+        expect(tiles.fetched.indexOf(at(13))).toBeLessThan(away);
+    });
+
     it('get every page again for a new device, without a request', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted);
@@ -111,6 +120,16 @@ describe('the page pools', () => {
         expect(work.syntheses.map(({ page, stored }) => [key(page.node), stored])).toEqual([[key(at(15)), 13]]);
         expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
         expect(pages.shortage).toBe(1);
+    });
+
+    it('keep the inputs of a synthesis that arrive together in a pool that just holds them', async () => {
+        const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
+        const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
+        // The synthesis reads the stored page of level 13 and its eight neighbours, which no frame wants.
+        const pages = new Pages(source(), { stored: 9, synth: 1 }, [w, n, e, s], () => {});
+        const works = await settle(pages, [at(14)], 100);
+        expect(works.flatMap(work => work.syntheses).map(({ page }) => key(page.node))).toEqual([key(at(14))]);
+        expect(pages.idle).toBe(true);
     });
 });
 

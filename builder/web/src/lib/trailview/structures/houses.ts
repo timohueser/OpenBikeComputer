@@ -3,6 +3,7 @@ import { wgsl } from '../gpu/wgsl';
 import { CURVATURE, type Frame } from '../frame/frame';
 import { MESHES, TEMPLATES } from '../models/house';
 import type { HouseStyle, Rules } from '../rules/regions';
+import { DEEPEST } from '../stream/features';
 import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 
@@ -10,6 +11,7 @@ import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
 /** The houses of the zoom 14 tiles within this many metres of the eye draw; tiles kept, and tile requests in flight at most. */
 const RADIUS_M = 8000, KEPT = 400, REQUESTS = 6;
+/** Each zoom 14 tile takes its houses from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Words of `Kept`, bytes of `Drawn` and words of `Style` in houses.wgsl; the bytes of `Params` and where its styles start; the stride of the dynamic offset of `DrawOf`. */
 const FIT_WORDS = 4, DRAWN_BYTES = 160, STYLE_WORDS = 32, STYLES_AT = 48 + 64 * 16 + 256 * 16, STYLES = 32, PARAMS_BYTES = STYLES_AT + STYLES * STYLE_WORDS * 4, DRAW_STRIDE = 256;
@@ -396,12 +398,12 @@ export class Houses {
     }
 
     private async load(x: number, y: number): Promise<TileHouses | null> {
-        const body = await this.features!(ZOOM, x, y);
+        const up = ZOOM - DEEPEST, tile = { level: DEEPEST, x: x >> up, y: y >> up }, body = await this.features!(tile.level, tile.x, tile.y);
         if (!body) return null;
         const id = this.next++;
         return new Promise(resolve => {
             this.waiting.set(id, resolve);
-            this.worker!.postMessage({ id, tile: { level: ZOOM, x, y }, body }, [body]);
+            this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body }, [body]);
         });
     }
 
