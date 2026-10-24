@@ -1,17 +1,37 @@
 import type { TrailView } from './engine';
+import { dayOfYear } from './ground/rules';
 import { LABS, type Labs } from './labs';
 import { DEBUG_VIEWS, formatView, type DebugView } from './view';
 
-const MIB = 2 ** 20;
 const REFRESH_MS = 250;
+/** A new date builds the ground again, so the date slider takes effect once it rests this long after a change: a step of an arrow key is a change. */
+const DATE_REST_MS = 400;
 
-/** The lab HUD: the GPU time per pass, the CPU time, the MiB per pool, the requests, the terrain, the view, the debug view and the lab variants. H hides it. */
+/**
+ * The HUD: the GPU time of a frame and its passes, the date and the time of day, the debug view and
+ * the lab variants, and a line for what goes wrong. H hides it.
+ */
 export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
     const text = document.createElement('pre');
     const debug = document.createElement('select');
     debug.setAttribute('aria-label', 'Debug view');
     for (const view of DEBUG_VIEWS) debug.add(new Option(`debug: ${view}`, view));
     debug.addEventListener('change', () => (engine.view = { ...engine.view, debug: debug.value as DebugView }));
+    // The time follows its slider as it moves.
+    const [date, dateLabel] = slider('Date', 0, 364, 1);
+    const [time, timeLabel] = slider('Time', 0, 24 * 60 - 15, 15);
+    const dateOf = (day: number) => new Date(Date.UTC(Number(engine.view.date.slice(0, 4)), 0, 1 + day)).toISOString().slice(0, 10);
+    const timeOf = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+    let resting: ReturnType<typeof setTimeout> | undefined;
+    date.addEventListener('input', () => (dateLabel.textContent = dateOf(date.valueAsNumber)));
+    date.addEventListener('change', () => {
+        clearTimeout(resting);
+        resting = setTimeout(() => ((resting = undefined), (engine.view = { ...engine.view, date: dateOf(date.valueAsNumber) })), DATE_REST_MS);
+    });
+    time.addEventListener('input', () => (engine.view = { ...engine.view, time: (timeLabel.textContent = timeOf(time.valueAsNumber)) }));
+    // A control that the pointer used gives the keys back to the eye (controls.ts).
+    for (const range of [date, time]) range.addEventListener('pointerup', () => range.blur());
+    debug.addEventListener('change', () => debug.blur());
     // The engine builds its variants at start, so a change of variant loads the page again at the same view.
     const variants = Object.entries(LABS).map(([name, names]) => {
         const select = document.createElement('select');
@@ -27,34 +47,39 @@ export function hud(element: HTMLElement, engine: TrailView, labs: Labs): void {
         });
         return select;
     });
-    element.replaceChildren(text, debug, ...variants);
+    element.replaceChildren(text, date.parentElement!, time.parentElement!, debug, ...variants);
     addEventListener('keydown', event => {
         if (event.key.toLowerCase() === 'h' && !event.ctrlKey && !event.metaKey) element.hidden = !element.hidden;
     });
-    const lab = Object.entries(labs).map(([name, variant]) => `${name}:${variant}`).join(' ');
     const update = () => {
-        const stats = engine.stats(), view = engine.view;
+        const stats = engine.stats(), view = engine.view, passes = Object.entries(stats.gpu);
         debug.value = view.debug;
-        const passes = Object.entries(stats.gpu).map(([pass, ms]) => `${pass} ${ms.toFixed(2)} ms`).join(' · ') || 'no timestamp queries';
-        const pools = [...stats.pools].map(([pool, bytes]) => `${pool} ${(bytes / MIB).toFixed(1)}`).join(' · ');
-        const height = view.mode === 'walk' ? `eye ${view.height.toFixed(1)} m` : `altitude ${Math.round(view.height)} m`;
+        if (document.activeElement !== date && resting === undefined) [date.valueAsNumber, dateLabel.textContent] = [dayOfYear(view.date), view.date];
+        if (document.activeElement !== time) [time.valueAsNumber, timeLabel.textContent] = [Number(view.time.slice(0, 2)) * 60 + Number(view.time.slice(3)), view.time];
+        const frame = passes.reduce((sum, [, ms]) => sum + ms, 0);
+        const problems = [
+            stats.recoveries && `${stats.recoveries} lost devices recovered`,
+            stats.failed && `${stats.failed} requests failed`,
+            stats.ground.shortage && `${stats.ground.shortage} ground pages short`,
+            stats.instances.dropped && `${stats.instances.dropped} instances dropped`,
+            stats.terrain.quality < 0 && `terrain quality ${stats.terrain.quality}`,
+        ].filter(Boolean);
         text.textContent = [
-            `adapter ${stats.adapter} · lost devices recovered: ${stats.recoveries}`,
-            `gpu   ${passes}`,
-            `cpu   ${stats.cpu.toFixed(2)} ms · render scale ${stats.scale}`,
-            `MiB   ${pools}`,
-            `net   ${stats.requests} requests · ${(stats.bytes / MIB).toFixed(2)} MiB${stats.failed ? ` · ${stats.failed} failed` : ''}`,
-            `nodes ${stats.drawn} · ${(stats.terrain.triangles / 1e6).toFixed(2)} M triangles · selection ${stats.terrain.selection.toFixed(2)} ms · quality ${stats.terrain.quality}`,
-            `pages stored ${stats.terrain.resident.stored} of ${stats.terrain.capacity.stored} · synthesized ${stats.terrain.resident.synth} of ${stats.terrain.capacity.synth}${stats.terrain.waterDropped ? ` · ${stats.terrain.waterDropped} water meshes dropped` : ''}${stats.terrain.structuresDropped ? ` · ${stats.terrain.structuresDropped} structure meshes dropped` : ''}`,
-            `ground ${stats.ground.resident} of ${stats.ground.capacity} pages · ${stats.ground.wanted} wanted${stats.ground.shortage ? ` · ${stats.ground.shortage} short` : ''} · colour ${stats.ground.colour}`,
-            `houses ${stats.houses.houses} in ${stats.houses.tiles} tiles · drawn ${stats.houses.full} in full, ${stats.houses.simple} simple`,
-            `instances ${stats.instances.staged} staged · ${stats.instances.perTier.join(' / ')} by tier · ${stats.instances.impostors} impostors baked${stats.instances.dropped ? ` · ${stats.instances.dropped} dropped` : ''}`,
-            `lab   ${lab}`,
-            `view  ${view.mode} · ${view.lat.toFixed(5)}, ${view.lon.toFixed(5)} · heading ${view.heading.toFixed(0)}° · pitch ${view.pitch.toFixed(0)}° · ${height}`,
-            `light ${view.date} ${view.time} · ${view.weather}`,
-            'keys  W A S D move · drag to look · F walk or fly · wheel altitude · Ctrl+C / Ctrl+V view · H HUD',
+            passes.length ? `frame ${frame.toFixed(2)} ms GPU ≈ ${Math.round(1000 / frame)} fps · cpu ${stats.cpu.toFixed(2)} ms` : 'no timestamp queries',
+            passes.map(([pass, ms]) => `${pass} ${ms.toFixed(2)}`).join(' · '),
+            ...(problems.length ? [`! ${problems.join(' · ')}`] : []),
+            'W A S D move · drag to look · F walk or fly · wheel altitude · Ctrl+C / Ctrl+V view · H HUD',
         ].join('\n');
     };
     update();
     setInterval(update, REFRESH_MS);
+}
+
+/** A labelled range input, and the label's value text. */
+function slider(name: string, min: number, max: number, step: number): [HTMLInputElement, HTMLSpanElement] {
+    const label = document.createElement('label'), input = document.createElement('input'), value = document.createElement('span');
+    Object.assign(input, { type: 'range', min: String(min), max: String(max), step: String(step) });
+    input.setAttribute('aria-label', name);
+    label.append(`${name} `, input, value);
+    return [input, value];
 }

@@ -261,6 +261,16 @@ fn snow_held(held: Held) -> f32 {
     return smoothstep(0.25, 0.75, textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).a);
 }
 
+// The ground's albedo in a held page, from the satellite on the date; 0 where no page is resident.
+fn albedo_held(held: Held) -> vec3f {
+    if (held.page < 0) {
+        return vec3f(0.0);
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    let c = textureLoad(cache, in_page(held.page, whole & vec2i(255)), page_layer(held.page) * 4, 0).rgb;
+    return c * c;
+}
+
 fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }

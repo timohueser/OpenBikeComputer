@@ -10,9 +10,10 @@ export const simplifierReady = MeshoptSimplifier.ready;
 /**
  * Tier k of a tree: the trunk of its own tier, which is a few triangles, and the crown of tier 0 with
  * at most `triangles` triangles, made by collapsing the edges where the place, the normal and the
- * colour change least. So every tier has the same crown parts, outline, normals and colours.
+ * colour change least. So every tier has the same crown parts, outline, normals and colours. `want`
+ * is how bright tier 0 draws (`lit`), which every tier of one tree shares.
  */
-export function simplified(near: Grown, own: Grown, triangles: number): Grown {
+export function simplified(near: Grown, own: Grown, triangles: number, want = lit(near)): Grown {
     const n = near.position.length / 3, crownIndex = crownTriangles(near);
     const attributes = new Float32Array(6 * n);
     for (let k = 0; k < n; k++) attributes.set([near.normal[3 * k], near.normal[3 * k + 1], near.normal[3 * k + 2], near.color[3 * k], near.color[3 * k + 1], near.color[3 * k + 2]], 6 * k);
@@ -29,7 +30,7 @@ export function simplified(near: Grown, own: Grown, triangles: number): Grown {
     };
     // Fewer triangles show the crown's lit and shaded sides in other shares: the crown's colours
     // scale so that it draws as bright as tier 0, seen from the side.
-    const want = lit(near), got = lit(far);
+    const got = lit(far);
     for (let k = 3 * far.trunk; k < far.color.length; k++) far.color[k] *= want[k % 3] / Math.max(got[k % 3], 1e-6);
     return far;
 }

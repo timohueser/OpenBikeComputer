@@ -1,7 +1,8 @@
 // Impostors: a model seen from FRAMES × FRAMES directions over the upper half of the sphere
 // (hemi-octahedral), baked into one layer of an atlas (impostor-bake.wgsl), and drawn far away as one
 // quad that faces the eye and shows the frame of the nearest direction. The atlas holds the colour and
-// the cover, and the normal in the model's frame, so the light of the frame lights an impostor.
+// the cover, and the normal in the model's frame with the trunk's share of the cover, so the light of
+// the frame lights an impostor and its trunk keeps the bark in every phase.
 // #include draw.wgsl
 // #include hemi.wgsl
 
@@ -37,6 +38,9 @@ struct ImpostorOut {
     // The instance's ground and its model's tie (draw.wgsl).
     @location(9) @interpolate(flat) ground: u32,
     @location(10) @interpolate(flat) tie: f32,
+    @location(11) @interpolate(flat) model: u32,
+    // The share of the satellite's colour (satellite_share of draw.wgsl).
+    @location(12) @interpolate(flat) satellite: f32,
 }
 
 @vertex
@@ -89,6 +93,8 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     out.slot = slots[model / 4u][model % 4u];
     out.ground = i.ground;
     out.tie = m.tie;
+    out.model = model;
+    out.satellite = satellite_share(m, i.ground, far);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
     out.level = level;
     return out;
@@ -108,7 +114,11 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     if (albedo.a <= dither(in.clip.xy + vec2f(29.0, 43.0) + f32(in.look & 255u) * vec2f(5.0, 3.0))) {
         discard;
     }
-    let local = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level).xyz / albedo.a * 2.0 - 1.0;
+    let normal = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level) / albedo.a;
+    let local = normal.xyz * 2.0 - 1.0;
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
-    return vec4f(in.fog * light_up(snowed(tied(albedo.rgb / albedo.a, in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    // The phase's colour matrix fits the crown only: the trunk's share keeps its bark.
+    let colour = albedo.rgb / albedo.a;
+    let phased = mix(satellite(toned(colour, in.model, in.ground), colour, in.ground, in.satellite), colour, normal.a);
+    return vec4f(in.fog * light_up(snowed(tied(phased, in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }

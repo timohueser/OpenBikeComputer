@@ -2,10 +2,7 @@
  * The variant registry. Each lab lists its variants, the default first. `?lab=name:variant` selects
  * a variant; `?lab=a:x,b:y` or a repeated `lab` selects several.
  */
-export const LABS: Record<string, readonly string[]> = {
-    // The near sward: the prototype's grass tufts, or a sward of blades within 30 m.
-    grass: ['tufts', 'blades'],
-};
+export const LABS: Record<string, readonly string[]> = {};
 
 export type Labs = Record<string, string>;
 

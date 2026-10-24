@@ -21,7 +21,6 @@ import { Forest } from './vegetation/forest';
 import { TreeModels } from './vegetation/tree-models';
 import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
-import type { Labs } from './labs';
 import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
@@ -116,7 +115,7 @@ export class TrailView {
     /** The last frame that drew, for occlusion culling: its depth, pixels and view projection, and its eye. */
     private lastFrame?: Omit<LastFrame, 'moved'> & { eye: number[] };
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number, labs: Labs) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, private readonly scale: number) {
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
@@ -126,7 +125,7 @@ export class TrailView {
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
         this.trees = new TreeModels(this.instances, () => this.request());
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, labs.grass === 'blades', () => this.request());
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request());
         this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
@@ -139,9 +138,9 @@ export class TrailView {
     }
 
     /** Reads the ruleset and opens the ground layers, compiles the pipelines, then starts the tile loads. `scale` is the render scale. */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, labs: Labs): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const ground = await GroundSource.open(config).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, scale, labs);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, scale);
         await engine.attach(gpu);
         engine.request();
         return engine;

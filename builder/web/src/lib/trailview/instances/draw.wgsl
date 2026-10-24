@@ -2,6 +2,7 @@
 // vertex colours under the light and the haze of the ground.
 // #include ../terrain/view.wgsl
 // #include ../light/shade.wgsl
+// #include ../vegetation/phenology.wgsl
 
 struct Instance {
     at: vec4f,
@@ -31,6 +32,8 @@ struct Model {
 @group(0) @binding(3) var<uniform> models: array<Model, 256>;
 // The draw of this draw call: x its model × TIERS + its tier.
 @group(0) @binding(4) var<uniform> draw: vec4u;
+// Per model and phase the colour matrix of its crown in that phase (phases of instances.ts).
+@group(0) @binding(5) var<storage, read> tones: array<mat3x3f>;
 
 // Draws per model, as TIERS of emit.wgsl.
 const TIERS: u32 = 4u;
@@ -98,9 +101,42 @@ fn tied(colour: vec3f, tint: f32, tie: f32, ground: u32) -> vec3f {
     return mix(own, g * g * clamp(luma(colour) / 0.3, 0.5, 1.2) * tint, tie);
 }
 
+// A forest tree (a crown with no tie) takes the satellite's colour of the ground under it, which emit_tree
+// carries: its hue at the luma of the tree's own colour in summer, which matches the ground's. A near
+// tree takes SATELLITE_NEAR of it, so its season shows as the region's satellite sees it; from
+// SATELLITE_FROM_M to the trees' reach (TREE_REACH_M of tree-models.ts) the share grows to all of it,
+// so the forest goes on past the reach in the ground's colours.
+const SATELLITE_NEAR: f32 = 0.4;
+const SATELLITE_FROM_M: f32 = 1500.0;
+const SATELLITE_TO_M: f32 = 4500.0;
+
+// The share of the satellite's colour that an instance of a model takes at a distance, 0 for none.
+fn satellite_share(m: Model, ground: u32, d: f32) -> f32 {
+    let g = unpack4x8unorm(ground).rgb;
+    return select(0.0, mix(SATELLITE_NEAR, 1.0, smoothstep(SATELLITE_FROM_M, SATELLITE_TO_M, d)), m.crown >= 0.0 && m.tie <= 0.0 && luma(g) > 0.0);
+}
+
+// A crown's colour in its phase taken toward the satellite's by `share`; `summer` is its colour in summer.
+fn satellite(colour: vec3f, summer: vec3f, ground: u32, share: f32) -> vec3f {
+    if (share <= 0.0) {
+        return colour;
+    }
+    let g = unpack4x8unorm(ground).rgb;
+    return mix(colour, g * g * (luma(summer) / max(luma(g * g), 1e-6)), share);
+}
+
 // An albedo under the share of snow of an instance's look, which settles on the faces that turn up.
 fn snowed(albedo: vec3f, up: f32, look: u32) -> vec3f {
     return mix(albedo, SNOW, f32((look >> 16u) & 255u) / 255.0 * smoothstep(0.1, 0.5, up));
+}
+
+// A crown's colour in the phase of its instance (emit_tree).
+fn toned(colour: vec3f, model: u32, ground: u32) -> vec3f {
+    let phase = ground >> 24u;
+    if (phase == PHASE_SUMMER) {
+        return colour;
+    }
+    return max(tones[model * PHASES + phase] * colour, vec3f(0.0));
 }
 
 fn far_tone(m: Model, d: f32) -> f32 {
@@ -140,7 +176,11 @@ fn mesh_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> MeshOut {
     out.normal = vec3f(t.x * v.normal.x - t.y * v.normal.y, t.y * v.normal.x + t.x * v.normal.y, v.normal.z);
     // The snow last, as on an impostor, whose atlas holds the shaded crown.
     let tint = 0.75 + 0.5 * f32(i.look & 255u) / 255.0;
-    out.albedo = snowed(tied(linear(v.colour.rgb), tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
+    // The trunk keeps its bark in every phase.
+    let summer = linear(v.colour.rgb);
+    let crown = satellite(toned(summer, draw.x / TIERS, i.ground), summer, i.ground, satellite_share(m, i.ground, length(p)));
+    let colour = select(crown, summer, v.position.w > 0.0);
+    out.albedo = snowed(tied(colour, tint, m.tie, i.ground) * crown_shade(model, m) * far_tone(m, length(p)), v.normal.z, i.look);
     out.look = i.look;
     return out;
 }

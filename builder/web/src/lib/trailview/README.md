@@ -33,15 +33,15 @@ is the palette of the `world` region.
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `structures/` | The houses: a worker makes a record per building of the zoom 14 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
 | `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees and plants without three.js (`shape.ts`, `trees.ts`, `trees/`, `plant-shape.ts`, `plants/`); the models of flat faces of the kinds and the dressing (`flat.ts`, lifts, landmarks, rocks, animals, crosses) |
-| `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
-| `vegetation/` | The tree models of the season, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants, shrubs and blades about the eye (`plants.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
+| `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), a tree's phase models and crown colours, impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
+| `vegetation/` | Each tree's phase on the date (`phenology.ts`); the tree models of the phases, shared by the forest, the shrubs and the orchards (`tree-models.ts`); the canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`); the ground plants and shrubs about the eye (`plants.wgsl`); the orchards' rows from the feature tiles (`orchards.ts`) |
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on open and rocky ground, placed each frame (`dressing.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
 | `labs.ts` | The variant registry |
 | `view.ts` | The view in the address |
-| `hud.ts` | The lab HUD |
+| `hud.ts` | The HUD |
 
 ## The address
 
@@ -61,9 +61,8 @@ The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 
 ## Labs
 
-A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first. The engine
-builds the variant that `?lab=` selects. The HUD has a menu per lab; a change loads the page again
-at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
+A lab is an entry in `LABS` of `labs.ts`, with its variants and the default first; `?lab=` selects
+one. The HUD has a menu per lab, which loads the page again at the same view. The terrain has no lab: CDLOD by distance, bicubic synthesized levels, and 16-bit
 pages with an offset and a scale per page.
 
 ## Shots and flights
