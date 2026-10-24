@@ -1,75 +1,68 @@
+import { worldPixel } from '../../planner/layers/mercator';
+import { UNITS } from '../frame/space';
 import type { Instances } from '../instances/instances';
-import { packPoints, Points } from '../instances/points';
+import { packPoints, Points, type Point } from '../instances/points';
 import { TREES } from '../models/library';
-import { SEASONS, type Rules, type Season } from '../rules/regions';
+import type { Region } from '../rules/regions';
 import type { FeatureTiles } from '../terrain/stamps';
-import type { BuiltMesh } from './plant-worker';
+import type { TreeModels } from './tree-models';
 
-/** Orchard trees stand within this many metres of the eye, and the pool holds this many. */
+/** Orchard tiles load within this many metres of the eye, and the pool holds this many trees, the nearest. */
 const REACH_M = 2000, CAPACITY = 8192;
-/** The tiers of an orchard tree, as the forest's trees, and its heights in metres. */
-const TIERS_M = [30, 150, 700], HEIGHT_M: [number, number] = [4.5, 6];
+/** An orchard tree's heights in metres. */
+const HEIGHT_M: [number, number] = [4.5, 6];
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Feature tiles kept, and loads in flight at most. */
 const KEPT = 64, LOADS = 4;
+/** World units per zoom 14 tile, and the step of the eye that sorts a full pool again. */
+const TILE_UNITS = UNITS / 2 ** ZOOM, RESORT_UNITS = TILE_UNITS / 4;
 
 /**
- * The orchards of L8's kind `orchard`, in rows (orchard-rows.ts) of the tree model that the pack of the
- * region at the eye names, as point instances. A worker makes the trees of each zoom 14 feature tile
- * about the eye.
+ * The orchards of L8's kind `orchard`, in rows (orchard-rows.ts), as point instances. A worker makes
+ * the trees of each zoom 14 feature tile about the eye; a tile's trees are of the tree model that the
+ * pack of the region at the tile names, the forest's model of that species (tree-models.ts), and a
+ * tile in a region whose pack names none has no trees.
  */
 export class Orchards {
     private readonly pool: Points;
-    private readonly models = new Map<string, number>();
+    /** The instance model of each region's orchard tree. */
+    private readonly models = new Map<number, { model: number; windward: boolean }>();
     private readonly worker = new Worker(new URL('./orchard-worker.ts', import.meta.url), { type: 'module' });
-    private readonly builder = new Worker(new URL('./plant-worker.ts', import.meta.url), { type: 'module' });
     private readonly tiles = new Map<string, Float64Array | null>();
     private readonly waiting = new Map<number, (trees: Float64Array | null) => void>();
     private readonly pending = new Set<string>();
     private next = 0;
-    private season?: Season;
-    private building = 0;
     private drawn = '';
+    private warned = false;
     /** Whether the last update changed what the orchards draw, other than by the camera. */
     newContent = false;
 
-    constructor(rules: Rules, instances: Instances, private readonly features: FeatureTiles | undefined, private readonly wake: () => void) {
+    constructor(rules: { regions: Region[] }, trees: TreeModels, instances: Instances, private readonly features: FeatureTiles | undefined, private readonly wake: () => void) {
         this.pool = new Points(instances, CAPACITY);
-        for (const model of new Set(rules.regions.flatMap(region => (region.orchard && region.orchard in TREES ? [region.orchard] : [])))) {
-            this.models.set(model, instances.add({ tiers: [] }));
-        }
+        rules.regions.forEach((region, r) => {
+            if (!region.orchard || !(region.orchard in TREES)) return;
+            const model = trees.index(region.orchard, region.trees.find(rule => rule.model === region.orchard)?.evergreen);
+            if (model !== undefined) this.models.set(r, { model, windward: !!TREES[region.orchard].keepsHeading });
+        });
         this.worker.onmessage = ({ data }) => {
             const resolve = this.waiting.get(data.id);
             this.waiting.delete(data.id);
             if (data.error) console.warn(`Orchard tile: ${data.error}`);
             resolve?.(data.error ? null : data.trees);
         };
-        this.builder.onmessage = ({ data }: MessageEvent<{ built?: BuiltMesh[][]; error?: string }>) => {
-            this.building--;
-            if (data.error || !data.built) return void console.warn(`Orchard models: ${data.error}`);
-            [...this.models.values()].forEach((model, i) => instances.replace(model, {
-                tiers: data.built![i].map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 1, until: REACH_M },
-            }));
-            this.newContent = true;
-            this.drawn = '';
-            wake();
-        };
     }
 
     get idle(): boolean {
-        return this.pending.size === 0 && this.building === 0;
+        return this.pending.size === 0;
     }
 
-    /** Asks for the feature tiles about the eye at (lon, lat), and puts the trees of the known ones in the pool, of the model of `region`. */
-    update(lonLat: [number, number], date: string, region: { orchard?: string } | undefined): void {
+    /**
+     * Asks for the feature tiles about the eye at (lon, lat), and puts the trees of the known ones in
+     * the pool, each tile's of the model of the region at its middle (`regionAt`).
+     */
+    update(lonLat: [number, number], regionAt: (lon: number, lat: number) => number | undefined): void {
         this.newContent = false;
         if (!this.features || !this.models.size) return;
-        const season = SEASONS[Math.floor((Number(date.slice(5, 7)) - 1) / 3)];
-        if (season !== this.season) {
-            this.season = season;
-            this.building++;
-            this.builder.postMessage({ id: 0, models: [...this.models.keys()].map(model => ({ model, tree: true, season, lods: [0, 1, 2] })) });
-        }
         const n = 2 ** ZOOM, ex = (lonLat[0] + 180) / 360 * n, lat = lonLat[1] * Math.PI / 180;
         const ey = (1 - Math.log(Math.tan(lat) + 1 / Math.cos(lat)) / Math.PI) / 2 * n;
         const reach = REACH_M / (EARTH_M * Math.cos(lat) / n), wanted: string[] = [];
@@ -78,23 +71,35 @@ export class Orchards {
             wanted.push(name);
             if (this.tiles.has(name) || this.pending.has(name) || this.pending.size >= LOADS) continue;
             this.pending.add(name);
-            this.load(x, y).then(trees => this.keep(name, trees), () => this.keep(name, null)).finally(() => {
+            this.load(x, y).then(trees => this.keep(name, trees, ex, ey), () => this.keep(name, null, ex, ey)).finally(() => {
                 this.pending.delete(name);
                 this.wake();
             });
         }
-        const name = region?.orchard && this.models.has(region.orchard) ? region.orchard : this.models.keys().next().value!;
-        const model = this.models.get(name)!, windward = !!TREES[name].keepsHeading;
-        const known = wanted.filter(name => this.tiles.get(name)), drawn = `${model} ${known.join(' ')}`;
+        const known = wanted.flatMap(name => {
+            const trees = this.tiles.get(name), [x, y] = name.split('/').map(Number);
+            if (!trees) return [];
+            const region = regionAt((x + 0.5) / n * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 0.5) / n))) * 180 / Math.PI);
+            const model = region === undefined ? undefined : this.models.get(region);
+            return model ? [{ name, trees, ...model }] : [];
+        });
+        const count = known.reduce((sum, { trees }) => sum + trees.length / 2, 0), [ux, uy] = worldPixel(lonLat, UNITS);
+        // A full pool keeps the nearest trees, sorted again as the eye moves.
+        const drawn = `${known.map(({ name, model }) => `${name}:${model}`).join(' ')}${count > CAPACITY ? ` ${Math.round(ux / RESORT_UNITS)}/${Math.round(uy / RESORT_UNITS)}` : ''}`;
         if (drawn === this.drawn) return;
         this.drawn = drawn;
-        const points = known.flatMap(name => {
-            const trees = this.tiles.get(name)!;
-            return Array.from({ length: trees.length / 2 }, (_, i) => {
-                const x = trees[2 * i], y = trees[2 * i + 1], h = ((x * 73856093) ^ (y * 19349663)) >>> 0;
-                return { x, y, yaw: windward ? 0 : (h % 628) / 100, height: HEIGHT_M[0] + ((h >>> 10) % 100) / 100 * (HEIGHT_M[1] - HEIGHT_M[0]), model, tint: 0.9 + ((h >>> 17) % 20) / 100 };
-            });
-        });
+        let points: (Point & { far: number })[] = known.flatMap(({ trees, model, windward }) => Array.from({ length: trees.length / 2 }, (_, i) => {
+            const x = trees[2 * i], y = trees[2 * i + 1], h = ((x * 73856093) ^ (y * 19349663)) >>> 0;
+            return {
+                x, y, yaw: windward ? 0 : (h % 628) / 100, height: HEIGHT_M[0] + ((h >>> 10) % 100) / 100 * (HEIGHT_M[1] - HEIGHT_M[0]), model,
+                tint: 0.9 + ((h >>> 17) % 20) / 100, far: Math.hypot(x - ux, y - uy),
+            };
+        }));
+        if (points.length > CAPACITY) {
+            if (!this.warned) console.warn(`The orchards about the eye have ${points.length} trees; the nearest ${CAPACITY} stand.`);
+            this.warned = true;
+            points = points.sort((a, b) => a.far - b.far).slice(0, CAPACITY);
+        }
         this.pool.write(packPoints(points));
         this.newContent = true;
     }
@@ -109,11 +114,14 @@ export class Orchards {
         });
     }
 
-    private keep(name: string, trees: Float64Array | null): void {
+    /** Keeps a tile's trees; past KEPT tiles, those farthest from the eye's tile (ex, ey) leave. */
+    private keep(name: string, trees: Float64Array | null, ex: number, ey: number): void {
         this.tiles.set(name, trees && trees.length ? trees : null);
-        for (const old of this.tiles.keys()) {
-            if (this.tiles.size <= KEPT) break;
-            this.tiles.delete(old);
-        }
+        if (this.tiles.size <= KEPT) return;
+        const far = (key: string) => {
+            const [x, y] = key.split('/').map(Number);
+            return Math.hypot(x + 0.5 - ex, y + 0.5 - ey);
+        };
+        for (const old of [...this.tiles.keys()].sort((a, b) => far(b) - far(a)).slice(0, this.tiles.size - KEPT)) this.tiles.delete(old);
     }
 }

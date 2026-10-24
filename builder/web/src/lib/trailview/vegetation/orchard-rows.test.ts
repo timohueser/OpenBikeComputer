@@ -24,4 +24,22 @@ describe('the orchard rows', () => {
         expect(columns.size).toBeCloseTo(400 * metres / ROW_M, -0.5);
         expect(local.filter(([x]) => x < 2000).length).toBeGreaterThan((400 * 1200 - 200 * 200) * metres * metres / (ROW_M * STEP_M) * 0.7);
     });
+
+    it('lay the same trees in each tile that clips an orchard as the whole orchard gives', () => {
+        // A slanting orchard across the border of two tiles; each tile's buffer of 512 clips it.
+        const area = (xy: number[]): Feature => ({ kind: 'orchard', tags: {}, geometry: 'area', parts: [{ outer: true, xy: Int32Array.from(xy), z: null }] });
+        const whole = [7000, 1000, 9400, 1300, 9400, 1700, 7000, 1400];
+        const west = { x: 8530, y: 5770 }, east = { x: 8531, y: 5770 };
+        const shifted = whole.map((v, i) => (i % 2 ? v : v - 8192));
+        const expected = [...orchardRows([area(whole)], west), ...orchardRows([area(shifted)], east)];
+        const found = [...orchardRows([area([7000, 1000, 8704, 1213, 8704, 1613, 7000, 1400])], west), ...orchardRows([area([-512, 1085, 1208, 1300, 1208, 1700, -512, 1485])], east)];
+        expect(expected.length).toBeGreaterThan(40);
+        expect(found.length).toBe(expected.length);
+        expect(found.every((v, i) => Math.abs(v - expected[i]) <= 2)).toBe(true);
+    });
+
+    it('give no trees to an orchard of bushes', () => {
+        const ring = Int32Array.from([1000, 1000, 1400, 1000, 1400, 1400, 1000, 1400]);
+        expect(orchardRows([{ kind: 'orchard', tags: { trees: 'blueberry_plants' }, geometry: 'area', parts: [{ outer: true, xy: ring, z: null }] }], { x: 8530, y: 5770 }).length).toBe(0);
+    });
 });
