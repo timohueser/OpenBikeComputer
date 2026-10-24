@@ -248,16 +248,18 @@ bakes the layer again.
 ### Add a kind
 
 Add one entry at the position where it must take its objects before the entries after it. For
-example, summit crosses:
+example, wayside shrines:
 
 ```json
 {
-  "kind": "summit-cross",
+  "kind": "shrine",
   "geometry": "point",
-  "match": [{"summit:cross": ["yes"]}],
-  "keep": ["material"],
+  "match": [{"historic": ["wayside_shrine"]}],
+  "keep": ["height"],
   "height": "surface"
 }
 ```
 
-Then add the engine module of the kind. The tile format, the bake and the decoder do not change.
+Then add the engine module of the kind, `builder/web/src/lib/trailview/kinds/shrine.ts`, and the model
+that it names, `models/shrine.ts`. The engine finds the module by its file name. The tile format, the
+bake, the decoder and the other engine files do not change.
