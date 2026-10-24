@@ -5018,6 +5018,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "Whether `source refresh` moves the source.",
           "type": "boolean"
         },
+        "requests": {
+          "description": "For a source fetched with params: the newest record in the local store of each set of\nparams, sorted by params.",
+          "items": {
+            "$ref": "#/$defs/StoredRequest"
+          },
+          "type": "array"
+        },
         "snapshots": {
           "description": "The versions in the local store, the one fetched last first.",
           "items": {
@@ -5067,6 +5074,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "copy",
         "targets",
         "snapshots",
+        "requests",
         "credential_missing",
         "refreshable",
         "prepared"
@@ -5394,6 +5402,50 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "version",
         "bytes"
+      ],
+      "type": "object"
+    },
+    "StoredRequest": {
+      "description": "A fetch of a source with params, as the local store records it.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fetched": {
+          "description": "When its newest file was retrieved, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a fetch without\nfiles.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "params",
+        "version",
+        "bytes",
+        "fetched"
       ],
       "type": "object"
     },
