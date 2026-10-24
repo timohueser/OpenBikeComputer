@@ -171,6 +171,14 @@ fn pick_of(yaw: f32, height: f32) -> f32 {
     return f32(((bitcast<u32>(yaw) ^ bitcast<u32>(height)) * 2654435761u) >> 8u) / 16777216.0;
 }
 
+// How deep a tree sinks on a slope so that its crown's lowest edge meets the ground downhill: a crown
+// that starts near the ground reaches out over the slope by up to its radius, past its trunk's foot.
+// `slope` is the rise per metre of the ground (stand_ground).
+fn slope_sink(model: u32, slope: f32, height: f32, width: f32, lift: f32) -> f32 {
+    let m = models[model];
+    return select(max(0.0, m.spread * width * min(slope, 1.0) - max(m.crown, lift)) * height, 0.0, m.crown < 0.0);
+}
+
 // As `emit`, with the crown's base raised to `lift` of the height, the share `snow` of snow on its
 // upward faces, and the albedo of the `ground` under it for a model with a tie (draw.wgsl). The
 // instance switches to the next tier at the share `pick` (0 to 1, stable per instance) of a tier's last

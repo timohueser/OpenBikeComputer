@@ -107,6 +107,11 @@ fn plain_height(s: vec2f) -> f32 {
 }
 
 fn mesh_height(s: vec2f, snapping: bool) -> f32 {
+    return mesh_ground(s, snapping).x;
+}
+
+// As mesh_height, with the slope of the triangle in y: the rise per metre.
+fn mesh_ground(s: vec2f, snapping: bool) -> vec2f {
     let level = drawn_level(s);
     let cell = 1 << (24u - level);
     let block = 2 * cell;
@@ -147,9 +152,12 @@ fn mesh_height(s: vec2f, snapping: bool) -> f32 {
         h[k] = place_height(vertex_place(u, level, snapping), level);
     }
     if (!(known(h.x) && known(h.y) && known(h.z))) {
-        return NONE;
+        return vec2f(NONE, 0.0);
     }
-    return dot(w, h);
+    let e1 = places[held.y] - places[held.x];
+    let e2 = places[held.z] - places[held.x];
+    let rise = vec2f((h.y - h.x) * e2.y - (h.z - h.x) * e1.y, e1.x * (h.z - h.x) - e2.x * (h.y - h.x)) / (e1.x * e2.y - e1.y * e2.x);
+    return vec2f(dot(w, h), length(rise));
 }
 
 // A thing on the drawn surface nearer than this stands on the drawn height; a farther one on the
@@ -158,17 +166,22 @@ const MESH_HEIGHT_M: f32 = 400.0;
 
 // The ground under a point of LOD space, `u` in whole world units: where the mesh draws it.
 fn stand_height(s: vec2f, u: vec2i) -> f32 {
+    return stand_ground(s, u).x;
+}
+
+// As stand_height, with the slope there in y: the rise per metre.
+fn stand_ground(s: vec2f, u: vec2i) -> vec2f {
     if (length(s) < MESH_HEIGHT_M) {
-        return plain_height(s);
+        return mesh_ground(s, false);
     }
     // As grid_vertex: a node of level `fine` goes to the coarser level's height by its morph.
     let q = lod(s);
     let fine = u32(ceil(q));
-    let h = units_height(u, fine);
+    let h = units_ground(u, fine);
     let morph = f32(fine) - q;
     if (morph <= 0.0) {
         return h;
     }
-    let coarse = units_height(u, fine - 1u);
-    return select(select(h, coarse, known(coarse)), mix(h, coarse, morph), known(h) && known(coarse));
+    let coarse = units_ground(u, fine - 1u);
+    return select(select(h, coarse, known(coarse.x)), mix(h, coarse, morph), known(h.x) && known(coarse.x));
 }

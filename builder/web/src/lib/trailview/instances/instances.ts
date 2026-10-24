@@ -33,7 +33,8 @@ const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0], normal: [0, 0
 
 /**
  * A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per
- * triangle. A tree's first `trunk` vertices are its trunk, which stays when its crown lifts (draw.wgsl).
+ * triangle. A tree's first `trunk` vertices are its trunk, which stretches to meet its crown when the
+ * crown lifts (draw.wgsl).
  */
 export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number }
 
@@ -587,12 +588,14 @@ function spread(spec: ModelSpec): number {
 
 /**
  * The vertices of a mesh as the instance pipeline reads them, 16 bytes each: the position over
- * `extent` as snorm16 × 3 and 1 for a vertex of the trunk, the normal as snorm8 × 4 and the colour in
- * sRGB as unorm8 × 4.
+ * `extent` as snorm16 × 3 and, for a vertex of the trunk, the trunk's top in model units (else 0); the
+ * normal as snorm8 × 4 and the colour in sRGB as unorm8 × 4.
  */
 function quantize(mesh: Mesh, extent: number): ArrayBuffer {
     const count = mesh.position.length / 3, out = new ArrayBuffer(count * VERTEX_BYTES);
-    const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out);
+    const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out), trunk = mesh.trunk ?? 0;
+    let top = 0;
+    for (let k = 0; k < trunk; k++) top = Math.max(top, mesh.position[3 * k + 2]);
     const srgb = (c: number) => Math.round(255 * Math.min(1, Math.max(0, c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)));
     for (let k = 0; k < count; k++) {
         for (let d = 0; d < 3; d++) {
@@ -600,7 +603,7 @@ function quantize(mesh: Mesh, extent: number): ArrayBuffer {
             i8[16 * k + 8 + d] = Math.round(127 * (mesh.normal[3 * k + d] ?? 0));
             u8[16 * k + 12 + d] = srgb(mesh.color[3 * k + d] ?? 1);
         }
-        i16[8 * k + 3] = k < (mesh.trunk ?? 0) ? 32767 : 0;
+        i16[8 * k + 3] = k < trunk ? Math.max(1, Math.round(32767 * Math.min(1, top))) : 0;
         u8[16 * k + 15] = 255;
     }
     return out;

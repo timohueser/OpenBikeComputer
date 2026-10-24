@@ -300,7 +300,8 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (!visible(centre, slope + height) || hidden(centre, slope + height)) {
         return;
     }
-    let ground = stand_height(s, at);
+    let stood = stand_ground(s, at);
+    let ground = stood.x;
     let region = stable_region(s);
     // No data (255) or no page: no species. The orchards stand their own trees on their cells of the finest pages.
     let material = finest_cell(s).r;
@@ -323,7 +324,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let width = min(2.0, inverseSqrt(share));
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
-    emit_tree(model, render_at(s, ground - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
+    emit_tree(model, render_at(s, ground - SINK_M - slope_sink(model, stood.y, height, width, lift)), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
         unit_float(mix_bits(h + 31u)), snow_at(s), vec3f(0.0));
 }
 

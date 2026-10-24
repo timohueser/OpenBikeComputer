@@ -213,7 +213,8 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     if (plant_hash(cell, 3u) > share || size <= 0.0) {
         return;
     }
-    let h = stand_height(s, u);
+    let stood = stand_ground(s, u);
+    let h = stood.x;
     if (!known(h)) {
         return;
     }
@@ -255,7 +256,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);
-    emit_tree(model, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), snow_at(s), ground_albedo(t));
+    emit_tree(model, render_at(s, h - slope_sink(model, stood.y, height, 1.0, 0.0)), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), snow_at(s), ground_albedo(t));
 }
 
 // The near sward: a patch of blades on a grid of 0.33 m within BLADES_M, on grass and crops off the
