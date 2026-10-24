@@ -219,16 +219,16 @@ fn sink_at(m: Model, k: u32) -> f32 {
 // metre, which sinks it (slope_sink), the share `snow` of snow on its upward faces, and the albedo of
 // the `ground` under it for a model with a tie (draw.wgsl). The instance switches to the next tier at
 // the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and past its last tier
-// ends there: a still view draws each instance whole, in one tier. A model with phases draws the model
+// ends there: a still view draws each instance whole, in one tier. A `species` with phases draws the model
 // of the tree's phase on the date, by its pick and its `elevation` in metres, which a producer keeps
 // the same at every distance (BAND_LEVEL).
-fn emit_tree(tree: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
+fn emit_tree(species: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
     if (appear <= 0.0) {
         return;
     }
-    var model = tree;
+    var model = species;
     var phase = PHASE_SUMMER;
-    let year = phases[tree];
+    let year = phases[species];
     if (year.y != 0u) {
         phase = phase_of(unit_float(mix_bits(bitcast<u32>(pick) ^ 0x68e31da4u)), params.day, elevation);
         model = (year.x >> (8u * phase)) & 255u;
