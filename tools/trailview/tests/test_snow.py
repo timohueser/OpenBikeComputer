@@ -37,6 +37,17 @@ class SnowDaysTest(unittest.TestCase):
         self.assertTrue((plane[:256, 256:] == 16).all(), "the north-east tile has one season with data")
         self.assertEqual(int(plane[:256, :256].max()) + int(plane[256:].max()), 0)
 
+    def test_the_snow_tiles_in_tile_order_join_under_their_parents_in_tile_order(self):
+        from pmtiles.tile import zxy_to_tileid
+
+        found = sorted([(0, 0, 0), (1, 0, 0), (1, 1, 1), (2, 3, 1), (2, 2, 0), (2, 1, 1)], key=lambda zxy: zxy_to_tileid(*zxy))
+        joined = [(tile_id, bodies) for tile_id, bodies, _ in snow.parents(((zxy, zxy) for zxy in found), 1)]
+        self.assertEqual(joined, [
+            (zxy_to_tileid(0, 0, 0), [(1, 0, 0), None, None, (1, 1, 1)]),
+            (zxy_to_tileid(1, 0, 0), [None, None, None, (2, 1, 1)]),
+            (zxy_to_tileid(1, 1, 0), [(2, 2, 0), None, None, (2, 3, 1)]),
+        ])
+
     def test_a_snow_archive_without_data_fails_the_bake(self):
         from pmtiles.tile import Compression, TileType
         from pmtiles.writer import Writer

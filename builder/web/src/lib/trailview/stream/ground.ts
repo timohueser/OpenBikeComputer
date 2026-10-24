@@ -97,6 +97,11 @@ export class GroundSource {
             snowSource(urls, band).catch(leftOut(snowName(band))),
         ]);
         const ground = new GroundSource(rules, Object.fromEntries(entries.filter(([, source]) => source)), urls);
+        // A worker that cannot decode the ground fails it once, not every tile.
+        await Promise.all(ground.workers.map(worker => ground.post(worker))).catch(error => {
+            for (const worker of ground.workers) worker.terminate();
+            throw error;
+        });
         // A band that did not open opens again on the first load.
         if (snow) ground.snow = { band, archive: Promise.resolve(ground.snowArchive(snow)) };
         return ground;
@@ -142,13 +147,18 @@ export class GroundSource {
             optional(this.snowDays(snowBand(date.snowIndex)).then(days => at('snow', days, z, true))),
         ]);
         const job: GroundJob = { z, x, y, ground, quarters: coloured ? [a, b] : undefined, snow, date, world };
-        const id = this.next++, worker = this.workers[id % WORKERS];
         const bodies = [ground, a, b, snow].flatMap(body => (body ? [body.body] : []));
-        const built = await new Promise<GroundResult>((resolve, reject) => {
-            this.waiting.set(id, { worker, resolve, reject });
-            worker.postMessage({ id, job }, bodies);
-        });
+        const built = await this.post(this.workers[this.next % WORKERS], job, bodies);
         return { pages: built.pages, complete: complete && built.complete };
+    }
+
+    /** The answer of a worker to a job, or to its decode probe without one. */
+    private post(worker: Worker, job?: GroundJob, transfer: ArrayBuffer[] = []): Promise<GroundResult> {
+        const id = this.next++;
+        return new Promise((resolve, reject) => {
+            this.waiting.set(id, { worker, resolve, reject });
+            worker.postMessage({ id, job }, transfer);
+        });
     }
 
     /** The body of the tile of an archive at a zoom that holds tile z/x/y of zoom `of`; undefined where the archive has none. */

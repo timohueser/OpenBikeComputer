@@ -65,10 +65,30 @@ def encode(entry):
     return tile_id, [gzip.compress(plane.tobytes(), compresslevel=6, mtime=0) for plane in planes]
 
 
+def parents(snow_tiles, seasons):
+    """Per parent of a snow tile, in tile order, its tile id and the bodies of its four children, north-west
+    first, from the snow tiles in tile order. Tile ids follow a Hilbert curve per zoom, so the four
+    children of a parent are consecutive and the parents come in tile order."""
+    from pmtiles.tile import zxy_to_tileid
+
+    parent, bodies = None, None
+    for (z, x, y), body in snow_tiles:
+        if z == 0:
+            continue
+        tile_id = zxy_to_tileid(z - 1, x >> 1, y >> 1)
+        if tile_id != parent:
+            if parent is not None:
+                yield parent, bodies, seasons
+            parent, bodies = tile_id, [None] * 4
+        bodies[(y & 1) << 1 | (x & 1)] = body
+    if parent is not None:
+        yield parent, bodies, seasons
+
+
 def bake(snow, output, workers=None):
     """Write `output/<band>.pmtiles` for each band from the snow archive `snow`; return the bytes per band."""
     from pmtiles.reader import MmapSource, Reader, all_tiles
-    from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
+    from pmtiles.tile import Compression, TileType
     from pmtiles.writer import Writer
 
     output.mkdir(parents=True, exist_ok=True)
@@ -85,10 +105,7 @@ def bake(snow, output, workers=None):
         writers = [Writer(stream) for stream in streams]
         sizes = [0] * BANDS
         try:
-            # The snow day tiles in tile order: the parents of the snow tiles.
-            parents = sorted({zxy_to_tileid(z - 1, x >> 1, y >> 1) for (z, x, y), _ in all_tiles(source) if z > 0})
-            children = lambda z, x, y: [reader.get(z + 1, 2 * x + (q & 1), 2 * y + (q >> 1)) for q in range(4)]
-            entries = ((tile_id, children(*tileid_to_zxy(tile_id)), seasons) for tile_id in parents)
+            entries = parents(all_tiles(source), seasons)
             pool = step_pool.pool(workers)
             try:
                 # The tiles go in batches, so the archive is never in memory, and `map` keeps the tile order of the writers.

@@ -55,3 +55,23 @@ describe('the snow days of the ground', () => {
         expect((await pages()).complete).toBe(true);
     });
 });
+
+describe('the decode probe', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('fails the ground once where a worker does not decode the bytes under a low alpha', async () => {
+        const terminate = vi.fn();
+        vi.stubGlobal('Worker', class {
+            onmessage?: (event: { data: unknown }) => void;
+            terminate = terminate;
+            postMessage({ id }: { id: number }) {
+                queueMicrotask(() => this.onmessage!({ data: { id, error: 'premultiplied' } }));
+            }
+        });
+        opens.clear();
+        opens.set('ground', async () => source(undefined, { trailview_format: 3 }));
+        const config = { trailview_rules: 'rules', layers: { 'trailview-ground': 'ground' } } as unknown as PlannerConfig;
+        await expect(GroundSource.open(config, DATE)).rejects.toThrow('premultiplied');
+        expect(terminate).toHaveBeenCalledTimes(2);
+    });
+});

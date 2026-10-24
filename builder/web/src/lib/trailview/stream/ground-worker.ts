@@ -45,6 +45,22 @@ async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: 
     }
 }
 
+/**
+ * A 2 × 2 lossless WebP of (200, 100, 50) under alpha 0, 1, 2 and 255. Every ground texel has an alpha
+ * of at most 61, so a decode that premultiplies scales every byte of the ground.
+ */
+const PROBE = 'UklGRioAAABXRUJQVlA4TB4AAAAvAUAAEB8wZIM8MgKSJP9vDuIBYJANUKYKs4j+xw4=';
+let probed: Promise<void> | undefined;
+
+/** Fails where this worker does not decode the RGB under a low alpha exactly. */
+function probe(): Promise<void> {
+    probed ??= straightPixels(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)).buffer).then(({ data }) => {
+        const exact = [0, 1, 2, 255].every((alpha, i) => [200, 100, 50, alpha].every((byte, c) => data[4 * i + c] === byte));
+        if (!exact) throw new Error('This browser does not decode the RGB under a low alpha exactly, which the ground needs.');
+    });
+    return probed;
+}
+
 function raster(body: Body | undefined): Promise<Raster | undefined> {
     if (!body) return Promise.resolve(undefined);
     const { key, z, x, y } = body;
@@ -75,8 +91,13 @@ function raster(body: Body | undefined): Promise<Raster | undefined> {
     return entry;
 }
 
-self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job: GroundJob }>) => {
+/** A message without a job asks for the probe. */
+self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job?: GroundJob }>) => {
     try {
+        if (!job) {
+            await probe();
+            return void self.postMessage({ id });
+        }
         // A tile of a layer other than the ground that does not decode leaves that layer out, and the pages are not complete.
         let complete = true;
         const [ground, a, b, snow] = await Promise.all(

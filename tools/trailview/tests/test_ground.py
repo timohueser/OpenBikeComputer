@@ -89,22 +89,26 @@ class ArchiveTest(unittest.TestCase):
             return path
 
         ramp = (np.arange(tiles.TILE)[:, None] // 8 + np.arange(tiles.TILE)[None, :] // 8).astype(np.uint8)
-        share = np.full((tiles.TILE, tiles.TILE), 9, np.uint8)
+        share, ids = np.full((tiles.TILE, tiles.TILE), 9, np.uint8), ramp % 7
+        cells = np.stack([ramp, share], axis=-1)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            material = archive(root / "material.pmtiles", {(10, X10, Y10): np.stack([ramp, share], axis=-1), (Z, X, Y): np.stack([ramp, share], axis=-1)})
+            material = archive(root / "material.pmtiles", {(10, X10, Y10): cells, (10, X10, Y10 + 1): cells, (Z, X, Y): cells})
             lithology = archive(root / "lithology.pmtiles", {(10, X10, Y10): ramp})
-            region = archive(root / "region.pmtiles", {(10, X10 + 1, Y10): ramp})
+            region = archive(root / "region.pmtiles", {(10, X10, Y10): ids})
             sizes = ground.join(material, lithology, region, root, {"trailview_format": ground.FORMAT})
             self.assertEqual(sorted(sizes), [10, Z])
             with open(root / "ground.pmtiles", "rb") as stream:
                 reader = Reader(MmapSource(stream))
-                same, finer = (np.asarray(Image.open(io.BytesIO(reader.get(*tile))).convert("RGBA")) for tile in ((10, X10, Y10), (Z, X, Y)))
-        self.assertTrue((same[..., 0] == ramp).all() and (same[..., 1] == 9).all() and (same[..., 2] == ramp).all())
-        self.assertTrue((same[..., 3] == ground.REGION_NO_DATA).all(), "the region archive has no tile of zoom 10 there")
+                same, alone, finer = (np.asarray(Image.open(io.BytesIO(reader.get(*tile))).convert("RGBA"))
+                                      for tile in ((10, X10, Y10), (10, X10, Y10 + 1), (Z, X, Y)))
+        self.assertTrue((same[..., 0] == ramp).all() and (same[..., 1] == 9).all())
+        self.assertTrue((same[..., 2] == ramp).all() and (same[..., 3] == ids).all())
+        self.assertTrue((alone[..., 2] == 0).all() and (alone[..., 3] == ground.REGION_NO_DATA).all(), "no tile of zoom 10 there")
         k = Z - 10
         size, row, col = tiles.TILE >> k, (Y % (1 << k)) * (tiles.TILE >> k), (X % (1 << k)) * (tiles.TILE >> k)
-        self.assertTrue((finer[..., 2] == ramp[row:row + size, col:col + size].repeat(1 << k, 0).repeat(1 << k, 1)).all())
+        under = lambda values: values[row:row + size, col:col + size].repeat(1 << k, 0).repeat(1 << k, 1)
+        self.assertTrue((finer[..., 2] == under(ramp)).all() and (finer[..., 3] == under(ids)).all())
 
 
 def raster(path, bounds, values, dtype="int16", nodata=-32768):
