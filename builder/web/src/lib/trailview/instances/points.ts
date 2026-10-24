@@ -21,7 +21,7 @@ export function packPoints(points: Point[]): Uint32Array<ArrayBuffer> {
 }
 
 /** The bits of a positive number as a float16. */
-function f16(value: number): number {
+export function f16(value: number): number {
     const view = new DataView(new ArrayBuffer(4));
     view.setFloat32(0, value);
     const bits = view.getUint32(0), exponent = ((bits >> 23) & 255) - 127 + 15;

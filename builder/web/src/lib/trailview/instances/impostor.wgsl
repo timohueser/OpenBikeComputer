@@ -9,7 +9,7 @@
 @group(1) @binding(1) var atlas_normal: texture_2d_array<f32>;
 @group(1) @binding(2) var atlas_sampler: sampler;
 // Per model its layer of the atlas.
-@group(1) @binding(3) var<uniform> slots: array<vec4u, 32>;
+@group(1) @binding(3) var<uniform> slots: array<vec4u, 64>;
 
 // Texels along a frame's side, and the atlas's mip levels: a frame of 32 texels down to 1.
 const FRAME_TEXELS: f32 = 32.0;
@@ -29,12 +29,16 @@ struct ImpostorOut {
     @location(6) tint: f32,
     // The atlas's mip level where a texel spans a render pixel.
     @location(8) @interpolate(flat) level: f32,
+    // The instance's ground and its model's tie (draw.wgsl).
+    @location(9) @interpolate(flat) ground: u32,
+    @location(10) @interpolate(flat) tie: f32,
 }
 
 @vertex
 fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> ImpostorOut {
     let i = lists[bases[draw.x] + instance];
-    let m = models[i.model];
+    let model = draw.x / TIERS;
+    let m = models[model];
     let turn = unpack2x16float(i.turn);
     let width = length(turn);
     let t = turn / width;
@@ -55,7 +59,9 @@ fn impostor_vertex(v: MeshIn, @builtin(instance_index) instance: u32) -> Imposto
     out.toward = toward;
     out.turn = t;
     out.look = i.look;
-    out.slot = slots[i.model / 4u][i.model % 4u];
+    out.slot = slots[model / 4u][model % 4u];
+    out.ground = i.ground;
+    out.tie = m.tie;
     let far = length(centre);
     out.tint = (0.75 + 0.5 * f32(i.look & 255u) / 255.0) * far_tone(m, far);
     // A frame spans the sphere's diameter.
@@ -79,5 +85,5 @@ fn impostor_fragment(in: ImpostorOut) -> @location(0) vec4f {
     }
     let local = textureSampleLevel(atlas_normal, atlas_sampler, uv, in.slot, in.level).xyz / albedo.a * 2.0 - 1.0;
     let n = normalize(vec3f(in.turn.x * local.x - in.turn.y * local.y, in.turn.y * local.x + in.turn.x * local.y, local.z));
-    return vec4f(in.fog * light_up(snowed(albedo.rgb / albedo.a * in.tint, n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
+    return vec4f(in.fog * light_up(snowed(tied(albedo.rgb / albedo.a, in.tint, in.tie, in.ground), n.z, in.look), n, 1.0, 1.0, look.horizon.w) + in.air, 1.0);
 }

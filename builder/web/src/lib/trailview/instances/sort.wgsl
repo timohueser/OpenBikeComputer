@@ -5,7 +5,7 @@
 struct Instance {
     at: vec4f,
     turn: u32,
-    model: u32,
+    ground: u32,
     look: u32,
     draw: u32,
 }
@@ -14,7 +14,7 @@ struct Tally {
     staged: u32,
     dropped: u32,
     unused: vec2u,
-    draws: array<atomic<u32>, 512>,
+    draws: array<atomic<u32>, 1024>,
 }
 
 // The mesh of a draw, as instances.ts writes it.
@@ -34,17 +34,17 @@ struct Args {
     first_instance: u32,
 }
 
-const DRAWS: u32 = 512u;
+const DRAWS: u32 = 1024u;
 
 @group(0) @binding(0) var<storage, read_write> tally: Tally;
-@group(0) @binding(1) var<storage, read> meshes: array<Mesh, 512>;
-@group(0) @binding(2) var<storage, read_write> args: array<Args, 512>;
+@group(0) @binding(1) var<storage, read> meshes: array<Mesh, 1024>;
+@group(0) @binding(2) var<storage, read_write> args: array<Args, 1024>;
 // The first list entry of each draw, then the cursor of each draw for `scatter`.
-@group(0) @binding(3) var<storage, read_write> bases: array<atomic<u32>, 1024>;
+@group(0) @binding(3) var<storage, read_write> bases: array<atomic<u32>, 2048>;
 @group(0) @binding(4) var<storage, read> staged: array<Instance>;
 @group(0) @binding(5) var<storage, read_write> lists: array<Instance>;
 
-var<workgroup> counts: array<atomic<u32>, 512>;
+var<workgroup> counts: array<atomic<u32>, 1024>;
 var<workgroup> staged_n: u32;
 
 // The lanes of `count_draws` and `scatter`, as SORT_LANES of instances.ts: each takes every SORT_LANES-th staged instance.
@@ -75,23 +75,29 @@ fn count_draws(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocati
 
 var<workgroup> sums: array<u32, 256>;
 
-// The first list entry of each draw, a scan over the draws, two per lane; and the indirect arguments.
+// Draws per lane of `place_draws`: DRAWS over its 256 lanes.
+const PER_LANE: u32 = DRAWS / 256u;
+
+// The first list entry of each draw, a scan over the draws, PER_LANE per lane; and the indirect arguments.
 @compute @workgroup_size(256)
 fn place_draws(@builtin(local_invocation_index) lane: u32) {
-    let a = atomicLoad(&tally.draws[2u * lane]);
-    let b = atomicLoad(&tally.draws[2u * lane + 1u]);
-    sums[lane] = a + b;
+    var own = 0u;
+    for (var k = 0u; k < PER_LANE; k++) {
+        own += atomicLoad(&tally.draws[PER_LANE * lane + k]);
+    }
+    sums[lane] = own;
     for (var step = 1u; step < 256u; step <<= 1u) {
         workgroupBarrier();
         let add = select(0u, sums[max(lane, step) - step], lane >= step);
         workgroupBarrier();
         sums[lane] += add;
     }
-    let at = sums[lane] - a - b;
-    for (var k = 0u; k < 2u; k++) {
-        let d = 2u * lane + k;
-        let n = select(a, b, k == 1u);
-        atomicStore(&bases[d], at + select(0u, a, k == 1u));
+    var at = sums[lane] - own;
+    for (var k = 0u; k < PER_LANE; k++) {
+        let d = PER_LANE * lane + k;
+        let n = atomicLoad(&tally.draws[d]);
+        atomicStore(&bases[d], at);
+        at += n;
         atomicStore(&bases[DRAWS + d], 0u);
         let mesh = meshes[d];
         args[d] = Args(mesh.index_count, select(0u, n, mesh.index_count > 0u), mesh.first_index, mesh.base_vertex, 0u);

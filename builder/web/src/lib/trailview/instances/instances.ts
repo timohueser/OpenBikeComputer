@@ -3,8 +3,8 @@ import { wgsl } from '../gpu/wgsl';
 
 /** Draws per model: up to three mesh tiers and the impostor tier, as TIERS in emit.wgsl. */
 const TIERS = 4;
-/** Models at most, so models × TIERS draws fit the tally of emit.wgsl. */
-const MODELS = 128;
+/** Models at most, as the uniform arrays of emit.wgsl, draw.wgsl and impostor.wgsl and the draws of sort.wgsl. */
+const MODELS = 256;
 const DRAWS = MODELS * TIERS;
 /** Instances that a frame stages at most; past them it drops instances and lowers the detail. */
 const CAPACITY = 2 ** 17;
@@ -48,6 +48,8 @@ export interface ModelSpec {
     fade?: number;
     /** A tree's crown: its lowest point in model units (draw.wgsl). */
     crown?: number;
+    /** How far it takes its hue from the ground under it, 0 to 1 (draw.wgsl). */
+    tie?: number;
 }
 
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
@@ -176,18 +178,21 @@ export class Instances {
         ];
     }
 
-    /** Adds a model and returns its index. */
-    add(spec: ModelSpec): number {
-        if (this.specs.length === MODELS) throw new Error(`The instances have room for ${MODELS} models.`);
-        this.specs.push(spec);
+    /**
+     * Adds models with consecutive indexes and returns the first. Where they do not fit in MODELS it
+     * warns and returns undefined: they draw nothing, and the rest go on.
+     */
+    add(...specs: ModelSpec[]): number | undefined {
+        if (this.specs.length + specs.length > MODELS) return void console.warn(`The instances have room for ${MODELS} models: ${specs.length} draw nothing.`);
+        this.specs.push(...specs);
         this.uploaded = false;
-        return this.specs.length - 1;
+        return this.specs.length - specs.length;
     }
 
     /** Adds a producer, which `run` encodes each frame. */
     produce(producer: Producer): void {
         this.producers.push(producer);
-        if (this.attached) void producer.attach(...this.attached);
+        if (this.attached) void attachProducer(producer, ...this.attached);
     }
 
     /** Changes a model's meshes, such as for another season. */
@@ -321,7 +326,7 @@ export class Instances {
             mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
         this.attached = [gpu, frame, surfaces];
-        for (const producer of this.producers) await producer.attach(gpu, frame, surfaces);
+        for (const producer of this.producers) await attachProducer(producer, gpu, frame, surfaces);
     }
 
     /** Starts a frame: the models when they changed, the detail for the render's height in pixels, and an empty tally. */
@@ -517,14 +522,23 @@ export class Instances {
             return at;
         };
         this.quad = put(QUAD, 1);
+        // A mesh that models share, such as a tree as a tree and as a shrub, lies once in the pools.
+        const shared = new Map<Mesh, { extent: number; at: [number, number, number] }>();
+        const putOnce = (mesh: Mesh, extent: number) => {
+            const known = shared.get(mesh);
+            if (known?.extent === extent) return known.at;
+            const at = put(mesh, extent);
+            shared.set(mesh, { extent, at });
+            return at;
+        };
         const dropped: number[] = [];
         this.placed = this.specs.map((spec, m) => {
             const { tiers } = spec;
             if (!tiers.length) return [];
-            if (!fits(tiers.map(({ mesh }) => mesh))) return void dropped.push(m), [];
+            if (!fits(tiers.map(({ mesh }) => mesh).filter(mesh => !shared.has(mesh)))) return void dropped.push(m), [];
             const extent = Math.max(...tiers.map(({ mesh }) => largest(mesh.position)));
             const placed = tiers.map(({ mesh, until }, t) => {
-                const at = put(mesh, extent);
+                const at = putOnce(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
                 f[m * 12 + t] = until;
                 return at;
@@ -533,7 +547,7 @@ export class Instances {
                 f[m * 12 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0], m * 12 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0], m * 12 + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.
@@ -543,6 +557,11 @@ export class Instances {
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         this.uploaded = true;
     }
+}
+
+/** Attaches a producer; one that fails logs why and draws nothing, and the rest go on. */
+function attachProducer(producer: Producer, ...args: Parameters<Producer['attach']>): Promise<void> {
+    return producer.attach(...args).catch(error => console.error('A producer of instances failed to attach:', error));
 }
 
 /** The largest absolute value. */

@@ -42,6 +42,10 @@ struct Look {
 
 const GLOW = vec3f(1.0, 0.62, 0.36);
 
+fn luma(c: vec3f) -> f32 {
+    return dot(c, vec3f(0.3, 0.59, 0.11));
+}
+
 fn sky(dir: vec3f) -> vec3f {
     let up = clamp(dir.z, 0.0, 1.0);
     let c = mix(look.horizon.rgb, look.zenith.rgb, sqrt(up));
