@@ -56,7 +56,24 @@ class ColourTest(unittest.TestCase):
         parent = colour.average({(0, 0): np.stack([texels] * 4)})
         self.assertEqual(parent[2, 0, 0].tolist(), [120, 115, 110, 141])
 
-    def test_the_webp_variant_keeps_the_alpha_codes_exactly(self):
+    def test_a_stored_ndvi_code_is_its_block_mean_in_steps_and_keeps_the_marks_and_the_sign(self):
+        alpha = np.full((tiles.TILE, tiles.TILE), 200, np.uint8)
+        alpha[0, :2], alpha[1, :2] = (100, 0), (110, colour.SNOW_MARK)
+        alpha[2:4, 0:2], alpha[2:4, 2:4] = 127, 128
+        stored = colour.stored_ndvi(alpha)
+        self.assertEqual(stored[:2, :2].tolist(), [[106, 0], [106, colour.SNOW_MARK]], "the mean of 100 and 110 in steps of 4")
+        self.assertLess(stored[2, 0], 128, "a negative NDVI stays negative")
+        self.assertGreaterEqual(stored[2, 2], 128)
+        self.assertEqual(stored[4, 4], 202)
+
+    def test_a_stored_ndvi_code_stays_on_the_step_grid_at_its_edges(self):
+        alpha = np.full((tiles.TILE, tiles.TILE), 255, np.uint8)
+        alpha[0:2, 0:2], alpha[0:2, 2:4] = 2, 3
+        stored = colour.stored_ndvi(alpha)
+        self.assertEqual(stored[:2, :4].tolist(), [[2, 2, 2, 2]] * 2)
+        self.assertEqual(stored[4, 4], 254)
+
+    def test_the_webp_variant_stores_the_ndvi_codes_and_the_highest_code_exactly(self):
         rng = np.random.default_rng(1)
         stack = np.zeros((4, tiles.TILE, tiles.TILE, 4), np.uint8)
         stack[..., :3] = (np.arange(tiles.TILE) // 2)[None, :, None, None]
@@ -64,7 +81,7 @@ class ColourTest(unittest.TestCase):
         encoded = colour.encoder("webp-12")(stack)
         self.assertEqual(sorted(encoded), ["ndvimax", "q1", "q2", "q3", "q4"])
         alpha = np.asarray(Image.open(io.BytesIO(encoded["q3"][1])).convert("RGBA"))[..., 3]
-        self.assertTrue((alpha == stack[2, ..., 3]).all())
+        self.assertTrue((alpha == colour.stored_ndvi(stack[2, ..., 3])).all())
         most = np.asarray(Image.open(io.BytesIO(encoded["ndvimax"][1])).convert("RGB"))[..., 0]
         self.assertTrue((most == stack[..., 3].max(axis=0)).all())
 
