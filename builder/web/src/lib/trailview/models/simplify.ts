@@ -44,32 +44,40 @@ const VIEW = 96, SUN = [0.5, -0.5, 0.71], SUN_WEIGHT = 1;
  * inside of the crown counts only where it shows.
  */
 export function lit({ position: p, normal: n, color: c, index }: Grown): number[] {
-    const sum = [0, 0, 0];
+    const sum = [0, 0, 0], vertices = p.length / 3;
+    const x = new Float64Array(vertices), y = new Float64Array(vertices), z = new Float64Array(vertices);
     let count = 0;
     for (let view = 0; view < 4; view++) {
         const a = (view * Math.PI) / 2, cos = Math.cos(a), sin = Math.sin(a);
-        const depth = new Float32Array(VIEW * VIEW).fill(-Infinity), shade = new Float32Array(3 * VIEW * VIEW);
-        const x = (k: number) => (0.5 + cos * p[3 * k] - sin * p[3 * k + 1]) * VIEW, y = (k: number) => (1 - p[3 * k + 2]) * VIEW, z = (k: number) => sin * p[3 * k] + cos * p[3 * k + 1];
+        for (let k = 0; k < vertices; k++) {
+            x[k] = (0.5 + cos * p[3 * k] - sin * p[3 * k + 1]) * VIEW;
+            y[k] = (1 - p[3 * k + 2]) * VIEW;
+            z[k] = sin * p[3 * k] + cos * p[3 * k + 1];
+        }
+        // Per texel the nearest triangle and where in it: only what shows is shaded, once every triangle is drawn.
+        const depth = new Float32Array(VIEW * VIEW).fill(-Infinity), nearest = new Int32Array(VIEW * VIEW), uv = new Float64Array(2 * VIEW * VIEW);
         for (let t = 0; t < index.length; t += 3) {
-            const [i, j, k] = [index[t], index[t + 1], index[t + 2]];
-            const area = (x(j) - x(i)) * (y(k) - y(i)) - (y(j) - y(i)) * (x(k) - x(i));
+            const xi = x[index[t]], yi = y[index[t]], zi = z[index[t]], xj = x[index[t + 1]], yj = y[index[t + 1]], zj = z[index[t + 1]], xk = x[index[t + 2]], yk = y[index[t + 2]], zk = z[index[t + 2]];
+            const area = (xj - xi) * (yk - yi) - (yj - yi) * (xk - xi);
             if (area === 0) continue;
-            for (let py = Math.max(0, Math.floor(Math.min(y(i), y(j), y(k)))); py <= Math.min(VIEW - 1, Math.max(y(i), y(j), y(k))); py++)
-                for (let px = Math.max(0, Math.floor(Math.min(x(i), x(j), x(k)))); px <= Math.min(VIEW - 1, Math.max(x(i), x(j), x(k))); px++) {
-                    const u = ((px + 0.5 - x(i)) * (y(k) - y(i)) - (py + 0.5 - y(i)) * (x(k) - x(i))) / area, v = ((x(j) - x(i)) * (py + 0.5 - y(i)) - (y(j) - y(i)) * (px + 0.5 - x(i))) / area;
+            for (let py = Math.max(0, Math.floor(Math.min(yi, yj, yk))); py <= Math.min(VIEW - 1, Math.max(yi, yj, yk)); py++)
+                for (let px = Math.max(0, Math.floor(Math.min(xi, xj, xk))); px <= Math.min(VIEW - 1, Math.max(xi, xj, xk)); px++) {
+                    const u = ((px + 0.5 - xi) * (yk - yi) - (py + 0.5 - yi) * (xk - xi)) / area, v = ((xj - xi) * (py + 0.5 - yi) - (yj - yi) * (px + 0.5 - xi)) / area;
                     if (u < 0 || v < 0 || u + v > 1) continue;
-                    const w = [1 - u - v, u, v], o = py * VIEW + px, d = w[0] * z(i) + w[1] * z(j) + w[2] * z(k);
+                    const o = py * VIEW + px, d = (1 - u - v) * zi + u * zj + v * zk;
                     if (d <= depth[o]) continue;
                     depth[o] = d;
-                    const at = (values: ArrayLike<number>, e: number) => w[0] * values[3 * i + e] + w[1] * values[3 * j + e] + w[2] * values[3 * k + e];
-                    const nx = at(n, 0), ny = at(n, 1), nz = at(n, 2), l = Math.hypot(nx, ny, nz) || 1;
-                    const sun = Math.max(0, (nx * SUN[0] + ny * SUN[1] + nz * SUN[2]) / l), sky = 0.85 + (0.15 * nz) / l + 0.2 * (1 - Math.abs(nz / l));
-                    for (let e = 0; e < 3; e++) shade[3 * o + e] = at(c, e) * (sky + SUN_WEIGHT * sun);
+                    nearest[o] = t;
+                    uv[2 * o] = u;
+                    uv[2 * o + 1] = v;
                 }
         }
         for (let o = 0; o < VIEW * VIEW; o++) if (depth[o] > -Infinity) {
+            const t = nearest[o], u = uv[2 * o], v = uv[2 * o + 1], w = 1 - u - v, i = 3 * index[t], j = 3 * index[t + 1], k = 3 * index[t + 2];
+            const nx = w * n[i] + u * n[j] + v * n[k], ny = w * n[i + 1] + u * n[j + 1] + v * n[k + 1], nz = w * n[i + 2] + u * n[j + 2] + v * n[k + 2], l = Math.hypot(nx, ny, nz) || 1;
+            const sun = Math.max(0, (nx * SUN[0] + ny * SUN[1] + nz * SUN[2]) / l), sky = 0.85 + (0.15 * nz) / l + 0.2 * (1 - Math.abs(nz / l));
             count++;
-            for (let e = 0; e < 3; e++) sum[e] += shade[3 * o + e];
+            for (let e = 0; e < 3; e++) sum[e] += Math.fround((w * c[i + e] + u * c[j + e] + v * c[k + e]) * (sky + SUN_WEIGHT * sun));
         }
     }
     return sum.map(value => value / Math.max(count, 1));

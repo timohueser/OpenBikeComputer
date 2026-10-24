@@ -14,18 +14,13 @@ const TRIANGLES = [600, 200];
 /** A phase draws the summer crown through a colour matrix where that turns every crown vertex within this many sRGB steps of 255. */
 const FIT = 8;
 
-/**
- * A job: species to build in summer, kept green all year or not, with the crowns of their own that
- * `phases` need, and crowns of a species in a phase.
- */
-export interface ModelJob { id: number; leafy: { model: string; evergreen: boolean }[]; phases: number[]; crowns: { model: string; phase: number }[] }
+/** A job: species to build in summer, kept green all year or not, and crowns of a species in a phase. */
+export interface ModelJob { id: number; leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
 export interface BuiltTier { position: Float32Array; normal: Float32Array; color: Float32Array; index: Uint32Array }
 /** A model's tiers, each with its trunk's vertices first, and its crown's lowest point in model units at every tier. */
 export interface BuiltModel { tiers: (BuiltTier & { trunk: number })[]; crown: number }
-/** The crown of a species in a phase. */
-export interface BuiltCrown extends BuiltModel { model: string; phase: number }
-/** A job's answer: the summer crowns in the order of its `leafy`, and every crown that it built. */
-export interface ModelAnswer { id: number; leafy?: BuiltLeafy[]; crowns?: BuiltCrown[]; error?: string }
+/** A job's answer: the models in the order of its `leafy` and its `crowns`. */
+export interface ModelAnswer { id: number; leafy?: BuiltLeafy[]; crowns?: BuiltModel[]; error?: string }
 /**
  * A species' leafy crown in summer, with per phase (winter first) the colour matrix (3 × 3, columns
  * first) of the least error that turns it into that phase's, and whether the phase needs a crown of its
@@ -33,7 +28,7 @@ export interface ModelAnswer { id: number; leafy?: BuiltLeafy[]; crowns?: BuiltC
  */
 export interface BuiltLeafy extends BuiltModel { tones: (number[] | undefined)[]; own: boolean[] }
 
-self.onmessage = async ({ data: { id, leafy, phases, crowns } }: MessageEvent<ModelJob>) => {
+self.onmessage = async ({ data: { id, leafy, crowns } }: MessageEvent<ModelJob>) => {
     try {
         await simplifierReady;
         const species = leafy.map(({ model, evergreen }): BuiltLeafy => {
@@ -47,10 +42,9 @@ self.onmessage = async ({ data: { id, leafy, phases, crowns } }: MessageEvent<Mo
             });
             return { ...arrays(tiers(summer)), tones, own };
         });
-        const own = leafy.flatMap(({ model }, i) => phases.filter(phase => species[i].own[phase]).map(phase => ({ model, phase })));
-        const built = [...crowns, ...own].map(({ model, phase }): BuiltCrown => {
+        const built = crowns.map(({ model, phase }): BuiltModel => {
             const season: Season = SEASONS[phase], grown = ([0, 1, 2] as Lod[]).map(lod => tree(model, season, lod));
-            return { model, phase, ...arrays(bareIn(model, season) ? grown : tiers(grown)) };
+            return arrays(bareIn(model, season) ? grown : tiers(grown));
         });
         self.postMessage({ id, leafy: species, crowns: built } satisfies ModelAnswer, { transfer: [...species, ...built].flatMap(m => m.tiers).flatMap(t => [t.position.buffer, t.normal.buffer, t.color.buffer, t.index.buffer]) });
     } catch (error) {

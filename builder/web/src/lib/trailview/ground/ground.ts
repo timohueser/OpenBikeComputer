@@ -190,10 +190,11 @@ export class Ground {
     }
 
     /**
-     * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), on the date
-     * of the view. `refreshed` are the terrain nodes whose heights changed, so the relief that reads them follows.
+     * Takes the pages that the drawn nodes and the selection want about the eye (lon, lat), and the pages
+     * that the instances `read`, on the date of the view. `refreshed` are the terrain nodes whose heights
+     * changed, so the relief that reads them follows.
      */
-    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number]): void {
+    update(drawn: Node[], wanted: Node[], refreshed: Node[], origins: [number, number][], date: string, eye: [number, number], read: Node[]): void {
         const r = this.resources;
         if (!r) return;
         const day = this.pages.setDate(date);
@@ -201,7 +202,7 @@ export class Ground {
             const SLOT = slots(this.rules.vocabulary), rows = this.rules.regions.length;
             r.gpu.device.queue.writeTexture({ texture: r.rules }, packRulesOn(this.rules.regions, this.rules.vocabulary, this.pages.day), { bytesPerRow: SLOT.count * 16 }, [SLOT.count, rows]);
         }
-        const work = this.pages.update(drawn, wanted, refreshed, origins, eye);
+        const work = this.pages.update(drawn, wanted, refreshed, origins, eye, read);
         for (const { page, data } of work.uploads) this.jobs.push({ page, data });
         for (const page of work.refreshes) this.jobs.push({ page });
         if (work.map) r.gpu.device.queue.writeBuffer(r.map, 0, work.map);

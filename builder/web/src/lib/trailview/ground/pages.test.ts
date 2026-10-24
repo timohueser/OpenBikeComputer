@@ -27,9 +27,9 @@ function tiles(failing?: string, absent?: string): GroundTiles & { asked: string
 }
 
 /** Frames of one view until the pages are idle. */
-async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, frames = 50): Promise<void> {
+async function settle(pages: GroundPages, drawn: Node[], wanted = drawn, read: Node[] = [], frames = 50): Promise<void> {
     for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
-        pages.update(drawn, wanted, [], [], EYE);
+        pages.update(drawn, wanted, [], [], EYE, read);
         await new Promise(resolve => setTimeout(resolve));
     }
 }
@@ -62,6 +62,14 @@ describe('the ground pages', () => {
         await settle(pages, row(8578, 6), [...row(8578, 6), ...row(8600, 4)]);
         expect(resident(pages)).toEqual([8578, 8579, 8580, 8581]);
         expect(pages.shortage).toBe(6);
+    });
+
+    it('keep the pages that the instances read, where the terrain draws finer ones', async () => {
+        const source = tiles(), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        await settle(pages, row(8580, 4), row(8580, 4), [{ level: 10, x: 536, y: 360 }]);
+        expect(source.asked[0]).toBe('9/268/180');
+        expect(pages.pages.get('10/536/360')?.date).toBe(pages.date);
     });
 
     it('keep the openness refreshes that a frame has no room for', async () => {
