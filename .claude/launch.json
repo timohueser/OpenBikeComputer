@@ -35,6 +35,12 @@
       "port": 8700
     },
     {
+      "name": "data-serve",
+      "runtimeExecutable": "tools/obc",
+      "runtimeArgs": ["data", "serve"],
+      "port": 8710
+    },
+    {
       "name": "landing-page",
       "runtimeExecutable": "trunk",
       "runtimeArgs": ["serve", "--config", "docs/Trunk.toml"],
