@@ -49,8 +49,6 @@ const CIRCLE_M2: f32 = 502655.0;
 // A group of 8 spreads over SPREAD_M; nothing stands within CLEAR_M of the eye.
 const SPREAD_M: f32 = 14.0;
 const CLEAR_M: f32 = 6.0;
-// Herds read the ground of this level: its texels are 1.6 m at 47° N.
-const HERD_LEVEL: u32 = 16u;
 const NO_CELL: vec4u = vec4u(0xffffffffu);
 // Rocks: their heights, their kinds, and the slope past which no boulder lies.
 const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
@@ -66,11 +64,11 @@ fn grazes(herd: Herd, material: u32) -> bool {
     return material < 64u && ((herd.grazes[material >> 5u] >> (material & 31u)) & 1u) == 1u;
 }
 
-// The ground cell of a herd at a point, from the page of HERD_LEVEL, so that a finer page does not move
-// a herd; NO_CELL where that page is not resident yet.
+// The ground cell of a herd at a point, from the finest ground pages only, so that a page that arrives
+// adds herds but moves none; NO_CELL where that page is not resident yet.
 fn herd_cell(s: vec2f) -> vec4u {
-    let held = held_at(s, HERD_LEVEL);
-    if (held.page < 0 || held.level < HERD_LEVEL) {
+    let held = held_at(s, look.codes.y);
+    if (held.page < 0 || held.level < look.codes.y) {
         return NO_CELL;
     }
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
