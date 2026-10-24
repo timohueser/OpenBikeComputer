@@ -1,6 +1,6 @@
 //! The terrain of the planner maps and of TrailView: lossless Terrarium WebP tiles in MBTiles, of
 //! zooms 0 to 12, and of zoom 13 where the reference archive holds the ground. A pixel is the
-//! height at its centre in decimetres: whole metres in R and G, the tenths in B.
+//! height at its centre in quarter metres: whole metres in R and G, the quarters in B.
 //!
 //! One sweep from north to south fills the tiles of every zoom, so each GLO-30 square decodes
 //! once and at most two rows of squares are decoded at a time. The tiles of one row fill on every
@@ -149,13 +149,12 @@ impl Level {
 }
 
 /// The opaque Terrarium pixel of a height: R × 256 + G + B / 256 − 32768 metres, rounded to the
-/// nearest decimetre. B is the tenths × 25.6, rounded, so the nearest decimetre of the decoded
-/// height is the decimetre that was encoded.
+/// nearest quarter metre. B is the quarters × 64, so the decoded height is that quarter exactly.
+/// Four values of B keep the tiles small.
 pub fn terrarium(metres: f64) -> [u8; 4] {
-    let decimetres = (metres * 10.0).round() as i64;
-    let (whole, tenths) = (decimetres.div_euclid(10), decimetres.rem_euclid(10));
-    let rg = (whole + 32768).clamp(0, 65535) as u32;
-    [(rg >> 8) as u8, rg as u8, ((tenths * 256 + 5) / 10) as u8, 255]
+    let quarters = (metres * 4.0).round() as i64;
+    let rg = (quarters.div_euclid(4) + 32768).clamp(0, 65535) as u32;
+    [(rg >> 8) as u8, rg as u8, (quarters.rem_euclid(4) * 64) as u8, 255]
 }
 
 /// Write the tiles of `bounds` (west, south, east, north in degrees) to the new file `output`.
@@ -225,21 +224,20 @@ pub fn write(terrain: &mut Terrain, bounds: [f64; 4], bounds_text: &str, output:
 mod tests {
     use super::terrarium;
 
-    /// A height decodes as MapLibre reads Terrarium, and its nearest decimetre is the decimetre of
-    /// the height: B takes ten values, one per tenth.
+    /// A height decodes as MapLibre reads Terrarium to its nearest quarter metre, exactly: B takes
+    /// four values, one per quarter.
     #[test]
-    fn a_height_comes_back_as_its_decimetre() {
+    fn a_height_comes_back_as_its_quarter_metre() {
         let mut blues = std::collections::BTreeSet::new();
-        for step in -5_000_i64..=90_000 {
-            for offset in [-0.0499, 0.0, 0.0499] {
-                let metres = step as f64 / 10.0 + offset;
+        for step in -2_000_i64..=36_000 {
+            for offset in [-0.1249, 0.0, 0.1249] {
+                let metres = step as f64 / 4.0 + offset;
                 let [r, g, b, a] = terrarium(metres);
                 let decoded = f64::from(r) * 256.0 + f64::from(g) + f64::from(b) / 256.0 - 32768.0;
-                assert_eq!((decoded * 10.0).round() as i64, step, "{metres} m");
-                assert!((decoded - step as f64 / 10.0).abs() < 0.002 && a == 255, "{metres} m");
+                assert!(decoded == step as f64 / 4.0 && a == 255, "{metres} m");
                 blues.insert(b);
             }
         }
-        assert_eq!(blues.into_iter().collect::<Vec<_>>(), [0, 26, 51, 77, 102, 128, 154, 179, 205, 230]);
+        assert_eq!(blues.into_iter().collect::<Vec<_>>(), [0, 64, 128, 192]);
     }
 }

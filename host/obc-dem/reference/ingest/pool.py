@@ -164,7 +164,7 @@ def to_int16(values):
 
 def to_decimetres(total, count):
     """The mean as `int32` decimetres, rounded half away from zero, with `MEAN_NODATA` where
-    no centre landed. A decimetre is the step of the terrain that reads it."""
+    no centre landed. A decimetre is finer than the step of the terrain that reads it."""
 
     valid = count > 0
     mean = np.where(valid, total, 0.0) / np.maximum(count, 1) * 10.0

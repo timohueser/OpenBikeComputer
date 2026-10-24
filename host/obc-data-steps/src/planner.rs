@@ -35,8 +35,10 @@ use crate::{functions, python};
 pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps and of TrailView: its format is that of the terrain tiles of
 /// `specs/planner-release.md`.
-pub static PLANNER_TERRAIN: Layer =
-    whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN, &readers::PLANNER_TRAILVIEW_FEATURES]);
+pub static PLANNER_TERRAIN: Layer = Layer {
+    revision: 2,
+    ..whole("planner/terrain", 2, &[&WEB_PLANNER, &readers::PLANNER_SUN, &readers::PLANNER_TRAILVIEW_FEATURES])
+};
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
     whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
