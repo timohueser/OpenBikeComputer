@@ -273,8 +273,8 @@ export function lathe(profile: [number, number][], segments = 32, rows = profile
     return revolve(points, segments);
 }
 
-/** three.js's CapsuleGeometry along z: radius r, `length` between the caps' centres. */
-function capsule(r: number, length: number, capSegments: number, sides: number): Geometry {
+/** three.js's CapsuleGeometry along z: radius r, `length` between the caps' centres, tapering to radius `tip` at the top. */
+function capsule(r: number, length: number, capSegments: number, sides: number, tip = r): Geometry {
     const points: [number, number][] = [];
     for (let k = 0; k <= capSegments; k++) {
         const a = -Math.PI / 2 + (k / capSegments) * (Math.PI / 2);
@@ -282,15 +282,15 @@ function capsule(r: number, length: number, capSegments: number, sides: number):
     }
     for (let k = 0; k <= capSegments; k++) {
         const a = (k / capSegments) * (Math.PI / 2);
-        points.push([r * Math.cos(a), length / 2 + r * Math.sin(a)]);
+        points.push([tip * Math.cos(a), length / 2 + tip * Math.sin(a)]);
     }
     return revolve(points, sides);
 }
 
-/** A capsule from a to b, painted in the model's frame. */
-export function limb(a: Vec, b: Vec, r: number, shade: Shade, amp = 0.01, sides = 12): Geometry {
+/** A capsule from a to b, of radius r at a and `tip` at b, painted in the model's frame. */
+export function limb(a: Vec, b: Vec, r: number, shade: Shade, amp = 0.01, sides = 12, tip = r): Geometry {
     const dir = v3(...b).sub(v3(...a));
-    const geo = place(soft(capsule(r, dir.length(), Math.max(1, sides >> 2), sides), amp, 8), {
+    const geo = place(soft(capsule(r, dir.length(), Math.max(1, sides >> 2), sides, tip), amp, 8), {
         at: v3(...a).add(v3(...b)).multiplyScalar(0.5), turn: turnFromTo(UP, dir.normalize()),
     });
     return paint(geo, shade);
