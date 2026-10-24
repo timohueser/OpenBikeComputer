@@ -122,6 +122,32 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.
 
+## Snow days
+
+`trailview-snow` holds the snow of [the planner snow archive](planner-snow-tiles.md) by day, so a
+view reads the snow of its date only. It has one archive per band of day steps,
+`trailview-snow-00` to `trailview-snow-45`. Band b holds the day steps 4b to 4b + 3 and shows day
+step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
+
+The archives differ from the table in [Archives](#archives): they have the tiles and the zooms of
+the snow archive, 256 × 256 pixels, tile type `unknown` (0) and gzip compression. A tile is 65,536
+bytes in row order, one byte per pixel:
+
+| Bits | Meaning |
+| --- | --- |
+| 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
+| 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
+
+A tile where no season has data is not in the archive. A snow archive with more than 15 seasons
+needs a new format. Each archive has the metadata of [Archives](#archives) without `layer`, and:
+
+| Key | Value |
+| --- | --- |
+| `band` | The band |
+| `band_steps` | `4` |
+| `day_step` | The day step that the band shows |
+| `first_season`, `seasons`, `source` | As in the snow archive |
+
 ## Rules
 
 `trailview-rules` is one file, `trailview/rules.json`, from `data/trailview/`. The bake rejects a

@@ -870,6 +870,7 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles` and `ndvimax.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
+| `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
 | `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
@@ -878,6 +879,8 @@ Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`,
 producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
 `trailview-colour-<archive>`.
+`planner/trailview-snow/<band>/grid` reads one archive of the snow day step, as the kind
+`trailview-snow-<band>`.
 It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
 archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
 stay the same, except for terrain: it encodes each terrain tile again with the same pixels, and
@@ -891,9 +894,10 @@ The step writes the packed bytes in `objects/<transport sha256>`, and selects `o
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
 `climate`, `snow`, `sun`, `trailview-features`, `trailview-rules`, `trailview-ground`,
-`trailview-colour` and `trailview-canopy` are optional layers: a step only when `layers` of the
-settings names it.
+`trailview-colour`, `trailview-snow` and `trailview-canopy` are optional layers: a step only when
+`layers` of the settings names it.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
+`trailview-snow` needs `snow`.
 All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 

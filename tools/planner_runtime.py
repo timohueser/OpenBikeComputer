@@ -16,6 +16,8 @@ DATA_LAYERS = {
     "snow": "seasons", "climate": "years", "sun": "sun_format", "trailview-features": "features_format",
     "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
+    # The bands of the snow days, `BANDS` of tools/trailview/snow.py.
+    **{f"trailview-snow-{band:02}": "trailview_format" for band in range(46)},
 }
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
