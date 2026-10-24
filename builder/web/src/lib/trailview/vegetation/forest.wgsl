@@ -92,9 +92,8 @@ const CLEAR: f32 = 0.8;
 // CLEAR_SPREAD_M by its hash from it, so trees leave one by one and a still view draws none in part.
 const EYE_CLEAR_M: f32 = 4.0;
 const CLEAR_SPREAD_M: f32 = 3.0;
-// Far trees fade in over this share of a tree: a tree whose rank lies within it of the trees at its
-// distance draws on a share of its pixels.
-const RANK_FADE: f32 = 0.25;
+// A far tree fades out over this share of its own distance, drawn on a share of its pixels.
+const FADE: f32 = 0.1;
 // A tree takes its species by the region of a ground page of REGION_LEVEL, the region layer's own zoom
 // (specs/trailview-tiles.md), or finer, where each page holds the same regions, and by the terrain of BAND_LEVEL (105 m at 47° N), so it keeps its species
 // at every distance. Near the eye the pools hold finer terrain pages only: there the band reads the ground.
@@ -274,13 +273,12 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     }
     let s = lod_at(corner, part);
     let d = length(s);
-    let share = kept(d);
-    // Point r is a tree where r < n, the trees of the base cell; where `kept` gives the density, n holds
-    // still and the last tree stands or not by its hash. Past it n falls with the distance, and each tree fades out
-    // over RANK_FADE of a tree at a distance of its own, so a still view keeps few faded trees.
-    let n = density(code) * f32(CELL * CELL) * surface.unit * surface.unit * share;
-    let over = n - f32(r) - unit_float(mix_bits(h + 23u));
-    let appear = select(clamp(over / RANK_FADE, 0.0, 1.0), select(0.0, 1.0, over > 0.0), share >= forest.density);
+    // Point r is a tree where r plus its hash lies below the base cell's trees at the density. It stands
+    // to a distance of its own, where `thin` keeps fewer trees than its rank, and fades out over the last
+    // FADE of that distance: long in eye travel, and only ever thinner as the eye moves away.
+    let full = density(code) * f32(CELL * CELL) * surface.unit * surface.unit;
+    let rank = f32(r) + unit_float(mix_bits(h + 23u));
+    let appear = select(0.0, clamp((1.0 - rank * max(d, 1.0) / (full * forest.thin)) / FADE, 0.0, 1.0), rank < full * forest.density);
     if (appear <= 0.0 || d < EYE_CLEAR_M + CLEAR_SPREAD_M * unit_float(mix_bits(h + 37u))) {
         return;
     }
@@ -328,7 +326,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     // Kept trees stand wider, so the forest keeps its cover as it thins. In a closed stand the crowns
     // grow narrow and high: their reach shrinks to NARROW of the height as the lift rises.
     let closed = smoothstep(0.5, 0.9, cover_of(code));
-    let width = min(2.0, inverseSqrt(share / forest.density)) * mix(1.0, min(1.0, NARROW / models[model].spread), closed);
+    let width = min(2.0, inverseSqrt(min(1.0, forest.thin * (1.0 - 0.5 * FADE) / (max(d, 1.0) * forest.density)))) * mix(1.0, min(1.0, NARROW / models[model].spread), closed);
     let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * closed;
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     // The snow of the finest resident page of the drawn level: the page found above where none finer than it is resident.
