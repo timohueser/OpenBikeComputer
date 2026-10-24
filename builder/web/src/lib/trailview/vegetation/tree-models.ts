@@ -32,7 +32,7 @@ export class TreeModels {
     private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' }));
     /** The jobs that run, by id. */
     private readonly jobs = new Map<number, Omit<ModelJob, 'id'>>();
-    /** The built summer crowns by `model|evergreen`, the built crowns of a phase by `model|phase`, and what the jobs ask for. */
+    /** The built summer crowns by `model|evergreen`, the built crowns of a phase by `model|phase`, and what the jobs ask for: `leafy:` or `crown:` and the key. */
     private readonly leafy = new Map<string, BuiltLeafy>();
     private readonly crowns = new Map<string, BuiltModel>();
     private readonly asked = new Set<string>();
@@ -90,14 +90,14 @@ export class TreeModels {
 
     /** Posts jobs for the summer crowns not yet asked for, and for the crowns of their own that the date's phases need. */
     private ask(): void {
-        const leafy = this.builds().filter(build => !this.asked.has(build)).map(build => {
-            this.asked.add(build);
+        const leafy = this.builds().filter(build => !this.asked.has(`leafy:${build}`)).map(build => {
+            this.asked.add(`leafy:${build}`);
             const [model, evergreen] = build.split('|');
             return { model, evergreen: evergreen === '1' };
         });
         const crowns = [...this.leafy].flatMap(([build, { own }]) => [...this.phases].filter(phase => own[phase]).map(phase => `${build.split('|')[0]}|${phase}`))
-            .filter(crown => !this.asked.has(crown)).map(crown => {
-                this.asked.add(crown);
+            .filter(crown => !this.asked.has(`crown:${crown}`)).map(crown => {
+                this.asked.add(`crown:${crown}`);
                 const [model, phase] = crown.split('|');
                 return { model, phase: Number(phase) };
             });
