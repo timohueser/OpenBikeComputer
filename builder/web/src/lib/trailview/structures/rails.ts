@@ -35,7 +35,7 @@ export function rails(b: MeshBuilder, wires: AnchoredBuilder, list: Feature[], t
         for (let v = 0; v + 1 < line.z.length; v++) {
             if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
             const span = wires.span([line.xy[2 * v], line.xy[2 * v + 1]], [line.xy[2 * v + 2], line.xy[2 * v + 3]], line.z[v] + WIRE_M, line.z[v + 1] + WIRE_M, 0, ABSOLUTE);
-            wires.cable(span, 0, 1, WIRE);
+            wires.cable(span, 0, WIRE);
         }
     }
     const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;

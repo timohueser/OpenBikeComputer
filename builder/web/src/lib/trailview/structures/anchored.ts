@@ -17,6 +17,11 @@ export const OFFSET_SCALE = 256;
 export const STONE = 32, CABLE = 64;
 /** A point's far end lies this many world units off: its heading is good to 1/HEADING rad. */
 const HEADING = 4096;
+/**
+ * A cable is straight in pieces at most this long. The shader widens each end of a piece to a pixel at
+ * its own distance, so a long piece near the eye would widen to a band.
+ */
+const PIECE_M = 20;
 
 /** The vertices and indices of an anchored mesh, whose anchors are those of its node. */
 export interface AnchoredMesh {
@@ -66,11 +71,10 @@ export class AnchoredBuilder {
         });
     }
 
-    /**
-     * A cable along a span, `across` metres to the right of it, in `segments` pieces: a ribbon that the
-     * vertex shader turns to the eye and widens to a pixel.
-     */
-    cable(anchor: number, across: number, segments: number, colour: number): void {
+    /** A cable along a span, `across` metres to the right of it: a ribbon that the vertex shader turns to the eye and widens to a pixel. */
+    cable(anchor: number, across: number, colour: number): void {
+        const w = this.anchorWords.slice(anchor * ANCHOR_WORDS, anchor * ANCHOR_WORDS + 4);
+        const segments = Math.max(1, Math.ceil(metresBetween([w[0], w[1]], [w[2], w[3]]) / PIECE_M));
         let last: number[] = [];
         for (let k = 0; k <= segments; k++) {
             const edge = [-1, 1].map(w => this.vertex(anchor, k / segments, [across, 0, 0], (colour | (CABLE << 24)) >>> 0, w));
