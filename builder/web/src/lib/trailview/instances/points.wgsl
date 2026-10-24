@@ -1,6 +1,5 @@
 // The producer of stored point instances (points.ts): one lane per instance stands it on the drawn
 // surface and emits it.
-// #include ../terrain/drawn-mesh.wgsl
 // #include emit.wgsl
 
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
@@ -15,10 +14,6 @@ struct Point {
 // x: the points of the pool.
 @group(0) @binding(9) var<uniform> pool: vec4u;
 
-// Points nearer than this stand on drawnHeight, farther ones on the level that draws them: the mesh
-// meets it within its morph, below a pixel there.
-const MESH_HEIGHT_M: f32 = 400.0;
-
 @compute @workgroup_size(64)
 fn stand(@builtin(global_invocation_id) id: vec3u) {
     if (id.x >= pool.x) {
@@ -26,12 +21,7 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     }
     let p = points[id.x];
     let s = lod_space(vec2f(p.at - surface.anchor));
-    var ground: f32;
-    if (length(s) < MESH_HEIGHT_M) {
-        ground = plain_height(s);
-    } else {
-        ground = units_height(p.at, u32(ceil(lod(s))));
-    }
+    let ground = stand_height(s, p.at);
     if (!known(ground)) {
         return;
     }

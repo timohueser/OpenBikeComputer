@@ -112,9 +112,26 @@ interface Broadleaf extends Base {
 /** A species file in trees/. */
 export type Tree = Conifer | Broadleaf;
 
-export function grow(spec: Tree, season: Season, lod: Lod, seed: number): Geometry {
-    return unit(spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed));
+/** A tree 1 tall: its first `trunk` vertices are its trunk, and `crown` is the lowest point of the rest in tree heights. */
+export interface Grown extends Geometry { trunk: number; crown: number }
+
+export function grow(spec: Tree, season: Season, lod: Lod, seed: number): Grown {
+    const { geo, crown, trunk } = spec.form === 'conifer' ? conifer(spec, season, lod, seed) : broadleaf(spec, season, lod, seed);
+    const top = Math.max(...geo.position.filter((_, i) => i % 3 === 2));
+    return Object.assign(unit(geo), { trunk, crown: Math.max(0, crown / top) });
 }
+
+/** The lowest point of some parts. */
+function lowest(parts: Geometry[]): number {
+    let low = Infinity;
+    for (const { position } of parts) for (let k = 2; k < position.length; k += 3) low = Math.min(low, position[k]);
+    return low;
+}
+
+/** A tree and, as in `Grown`, its trunk's vertices first and its crown's lowest point, before `unit`. */
+interface Built { geo: Geometry; trunk: number; crown: number }
+
+const vertices = (parts: Geometry[]) => parts.reduce((sum, part) => sum + part.position.length / 3, 0);
 
 /** Bands of marks up a near marked trunk; each holds up to two dashes. */
 const BANDS = 18;
@@ -212,7 +229,7 @@ function scallop(geo: Geometry, lobes: number, droop: number, seed: number): Geo
 }
 
 /** Stacked tiers along the crown; fewer, taller tiers keep the same outline at a lower detail. */
-function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Geometry {
+function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
     const { sides, rows } = DETAIL[lod];
     // A far tufted pine keeps its whorls, as its tiers are layers apart, not one cone.
     const { tiers } = DETAIL[spec.tufts ? Math.min(lod, 1) : lod];
@@ -282,6 +299,7 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Geometr
         parts.push(place(paint(geo, needles), { at: [shift, shift * 0.5, z], rot: [0, 0, spin], scale: [r, r, height] }));
     }
     if (spec.tufts && !bare) parts.push(tuft([0, 0, 1 - 0.5 * height], 0.35 * spec.radius, -1));
+    const crown = parts.slice(1);
     // Sprouts are too small to see beyond the near trees.
     for (let k = 0; !bare && k < (spec.sprouts ?? 0) >> (2 * lod); k++) {
         const a = rand() * 2 * Math.PI;
@@ -289,10 +307,14 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Geometr
         const at: Vec = [1.2 * spec.trunk * Math.cos(a), 1.2 * spec.trunk * Math.sin(a), spec.base * (0.25 + 0.7 * rand())];
         parts.push(tuft(at, size, 100 + k));
     }
-    if (bare) parts.push(twigs.build());
+    if (bare) {
+        const built = twigs.build();
+        parts.push(built);
+        crown.push(built);
+    }
     const geo = merge(parts);
     if (spec.nod) nod(geo, spec.nod);
-    return geo;
+    return { geo, trunk: vertices(parts.slice(0, 1)), crown: lowest(crown) };
 }
 
 /** Bends the top of the leader over towards +x. */
@@ -344,7 +366,7 @@ function fleck(p: V, n: V, share: number, lod: Lod, seed: number): number {
  * A crown of soft lumps on a trunk. A bare crown is a limb into each lump and twigs from along it
  * out to the lump's far side, with sky between them, so its outline stays at every distance.
  */
-function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Geometry {
+function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Built {
     const { lumps: count, ico } = DETAIL[lod];
     const rand = random(seed);
     const [cz, rx, ry, rz] = spec.crown;
@@ -363,7 +385,8 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Geo
     // A palm or a dragon tree grows its crown from the trunk's top.
     if (spec.fronds || spec.branching) {
         const crown = spec.fronds ? palm(spec, lod, [deep, mid, tip], rand) : dragon(spec, lod, [deep, mid, tip], rand);
-        return merge([trunk(spec, spec.fork, lod, seed), ...crown]);
+        const bole = trunk(spec, spec.fork, lod, seed);
+        return { geo: merge([bole, ...crown]), trunk: vertices([bole]), crown: lowest(crown) };
     }
     const crown = spec.open ? puffs(count + (spec.pads && !lod ? 3 : 0), rand) : lumps(count, rand);
     const parts: Geometry[] = [];
@@ -424,7 +447,8 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Geo
     }
     const geo = merge(parts);
     if (spec.sweep) sweep(geo, spec.sweep);
-    return geo;
+    const trunks = spec.trunk ? stems : 0;
+    return { geo, trunk: vertices(parts.slice(0, trunks)), crown: trunks ? lowest(parts.slice(trunks)) : 0 };
 }
 
 /** A bare limb: round with `sides` sides, or at 0 sides one flat triangle among the twigs. */

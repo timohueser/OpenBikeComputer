@@ -3,11 +3,10 @@ import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type ModelSpec, type Producer } from '../instances/instances';
-import { TREES } from '../models/library';
+import { Instances, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
 import { SEASONS, type Rules, type Season } from '../rules/regions';
-import { Canopy, CANOPY_ZOOM } from './canopy';
-import type { BuiltTier } from './model-worker';
+import { AROUND, Canopy, CANOPY_ZOOM } from './canopy';
+import type { BuiltModel } from './model-worker';
 
 /** Trees stand within this many metres of the eye: the stamps of main roads reach 4 km. */
 const REACH_M = 4500;
@@ -17,13 +16,15 @@ const THIN_M = 600;
 const TIERS_M = [30, 150, 700];
 /** Units along a cell edge, as CELL in forest.wgsl, and blue-noise points per cell. */
 const CELL = 2048, POINTS = 512;
-/** Species per region, as SPECIES in forest.wgsl. */
-const SPECIES = 16;
+/** Tree species per region, as SPECIES in forest.wgsl and tools/trailview/rules.py. */
+const SPECIES = 32;
 /** Trees per hectare of each stems class: the middle of its range, and 700 for 600 or more (specs/trailview-tiles.md#canopy). */
 const STEMS_HA = [25, 75, 125, 175, 250, 350, 500, 700];
 const FOREST_BYTES = 64;
 /** Where `Data` of forest.wgsl holds the points and the species; the canopy window comes first. */
 const POINTS_AT = 272, SPECIES_AT = POINTS_AT + 8 * POINTS;
+/** Units along a canopy tile's edge (zoom CANOPY_ZOOM). */
+const TILE = UNITS / 2 ** CANOPY_ZOOM;
 
 interface Resources {
     gpu: Gpu;
@@ -33,7 +34,8 @@ interface Resources {
     groups: [GPUBindGroup, GPUBindGroup];
     cells: GPUBuffer;
     params: GPUBuffer;
-    side: number;
+    surface: GPUBindGroup;
+    features: GPUBindGroup;
 }
 
 /**
@@ -49,9 +51,13 @@ export class Forest implements Producer {
     private season?: Season;
     private building = 0;
     private next = 0;
+    /** Whether models arrived since the last update. */
+    private rebuilt = false;
     private species = new Float32Array(0);
     private window: [number, number] = [0, 0];
     private side = 0;
+    /** Base cells a side of the window at the highest latitude that the view serves: the cell list's size. */
+    private readonly most: number;
     /** Metres from the eye where trees stand, at the instances' detail 1. */
     readonly reach = REACH_M;
     /** Whether the last update changed what the forest draws, other than by the camera. */
@@ -60,9 +66,11 @@ export class Forest implements Producer {
     constructor(config: PlannerConfig, rules: Rules, private readonly instances: Instances, private readonly wake: () => void) {
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
+        this.most = windowSide(Math.max(Math.abs(config.bounds[1]), Math.abs(config.bounds[3])));
         const words = new Uint32Array(rules.regions.length * SPECIES * 4), table = new Float32Array(words.buffer);
         rules.regions.forEach((region, r) => {
-            region.trees.filter(rule => rule.cover === 'tree' && rule.model in TREES).slice(0, SPECIES).forEach((rule, k) => {
+            // tools/trailview/rules.py checks that a region has SPECIES tree species at most, each with its model.
+            region.trees.filter(rule => rule.cover === 'tree').slice(0, SPECIES).forEach((rule, k) => {
                 const name = `${rule.model}|${rule.evergreen ? 1 : 0}`;
                 if (!this.models.has(name)) this.models.set(name, instances.add({ tiers: [] }));
                 words[4 * (r * SPECIES + k)] = this.models.get(name)! | ((rule.leaf === 'broadleaved' ? 1 : 2) << 16);
@@ -70,12 +78,12 @@ export class Forest implements Producer {
             });
         });
         this.species = table;
-        this.worker.onmessage = ({ data }: MessageEvent<{ id: number; built?: BuiltTier[][]; error?: string }>) => {
+        this.worker.onmessage = ({ data }: MessageEvent<{ id: number; built?: BuiltModel[]; error?: string }>) => {
             this.building--;
             if (data.error || !data.built) return void console.warn(`Tree models: ${data.error}`);
             if (data.id !== this.next - 1) return;
             [...this.models.values()].forEach((model, i) => this.instances.replace(model, this.spec(data.built![i])));
-            this.newContent = true;
+            this.rebuilt = true;
             this.wake();
         };
     }
@@ -89,14 +97,13 @@ export class Forest implements Producer {
         return { requests, bytes, failed };
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup }, ground: GPUBindGroupLayout): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         this.canopy.lost();
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-        const side = 2 * Math.ceil(this.reach / 40 + 1);
         const data = gpu.buffer('vegetation', SPECIES_AT + Math.max(16, this.species.byteLength), storage);
-        const cells = gpu.buffer('vegetation', 16 + 16 * side * side, storage | GPUBufferUsage.INDIRECT);
+        const cells = gpu.buffer('vegetation', 16 + 16 * this.most * this.most, storage | GPUBufferUsage.INDIRECT);
         const params = gpu.buffer('vegetation', FOREST_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         const texture = this.canopy.attach(gpu, data);
         device.queue.writeBuffer(data, POINTS_AT, bluePoints(POINTS));
@@ -118,27 +125,22 @@ export class Forest implements Producer {
             { binding: 9, resource: { buffer: data } }, { binding: 11, resource: { buffer: params } },
         ];
         this.resources = {
-            gpu, findCells, trees, cells, params, side,
+            gpu, findCells, trees, cells, params, surface: surface.group, features: features.group,
             groups: [
                 device.createBindGroup({ layout: layouts[0], entries: [...entries, { binding: 10, resource: { buffer: cells } }] }),
                 device.createBindGroup({ layout: layouts[1], entries: [...entries, { binding: 12, resource: { buffer: cells } }] }),
             ],
         };
-        this.surface = surface.group;
-        this.features = features.group;
-        this.season = undefined;
     }
-
-    private surface?: GPUBindGroup;
-    private features?: GPUBindGroup;
 
     /** Takes the canopy tiles about the eye at (lon, lat), and the models of the date's season. */
     update(lonLat: [number, number], date: string): void {
-        this.newContent = false;
+        this.newContent = this.rebuilt;
+        this.rebuilt = false;
         const r = this.resources;
         if (!r) return;
-        const [x, y] = worldPixel(lonLat, 2 ** CANOPY_ZOOM);
-        this.canopy.update(x, y);
+        const [x, y] = worldPixel(lonLat, 2 ** CANOPY_ZOOM), { unit } = anchorAt(...lonLat);
+        this.canopy.update(x, y, Math.min(AROUND, Math.ceil(this.reach / (TILE * unit))));
         this.newContent ||= this.canopy.changed;
         const season = SEASONS[Math.floor((Number(date.slice(5, 7)) - 1) / 3)];
         if (season !== this.season) {
@@ -147,8 +149,7 @@ export class Forest implements Producer {
             this.worker.postMessage({ id: this.next++, models: [...this.models.keys()].map(name => name.split('|')).map(([model, evergreen]) => ({ model, season: evergreen === '1' ? 'summer' : season })) });
         }
         const [ux, uy] = worldPixel(lonLat, UNITS);
-        // Base cells a side of the window at the eye's latitude, within the pool's.
-        this.side = Math.min(r.side, 8 * Math.ceil((2 * this.reach / (CELL * anchorAt(...lonLat).unit) + 16) / 8));
+        this.side = Math.min(this.most, windowSide(lonLat[1]));
         // Whole cells of the coarsest level, as LEVELS of forest.wgsl.
         this.window = [ux, uy].map(u => 8 * Math.floor((u / CELL - this.side / 2) / 8)) as [number, number];
         const params = new ArrayBuffer(FOREST_BYTES), ints = new Int32Array(params), floats = new Float32Array(params);
@@ -163,11 +164,11 @@ export class Forest implements Producer {
     /** Encodes the placement into a compute pass, with the ground pages in group 2. */
     encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
-        if (!r || !this.surface || !this.features) return;
+        if (!r) return;
         pass.setBindGroup(0, r.groups[0]);
-        pass.setBindGroup(1, this.surface);
+        pass.setBindGroup(1, r.surface);
         pass.setBindGroup(2, ground);
-        pass.setBindGroup(3, this.features);
+        pass.setBindGroup(3, r.features);
         pass.setPipeline(r.findCells);
         pass.dispatchWorkgroups(Math.ceil(this.side / 8), Math.ceil(this.side / 8));
         pass.setPipeline(r.trees);
@@ -176,9 +177,14 @@ export class Forest implements Producer {
     }
 
     /** A tree model's tiers. */
-    private spec(tiers: BuiltTier[]): ModelSpec {
-        return { tiers: tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 1, until: this.reach } };
+    private spec({ tiers, crown }: BuiltModel): ModelSpec {
+        return { tiers: tiers.map((mesh, t) => ({ mesh, until: TIERS_M[t] })), impostor: { from: 1, until: this.reach }, crown };
     }
+}
+
+/** Base cells a side of the window that holds the reach at a latitude, in whole cells of the coarsest level and their margin. */
+function windowSide(lat: number): number {
+    return 8 * Math.ceil((2 * REACH_M / (CELL * anchorAt(0, lat).unit) + 16) / 8);
 }
 
 /**

@@ -2,14 +2,14 @@ import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 
 /** Draws per model: up to three mesh tiers and the impostor tier, as TIERS in emit.wgsl. */
-export const TIERS = 4;
+const TIERS = 4;
 /** Models at most, so models × TIERS draws fit the tally of emit.wgsl. */
-export const MODELS = 128;
+const MODELS = 128;
 const DRAWS = MODELS * TIERS;
 /** Instances that a frame stages at most; past them it drops instances and lowers the detail. */
 const CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 32, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
+const INSTANCE_BYTES = 32, MODEL_BYTES = 48, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
 /** Lanes of the sort, as LANES in sort.wgsl. */
 const SORT_LANES = 16384;
 /** The stride of a dynamic uniform offset: the least that WebGPU allows. */
@@ -20,15 +20,22 @@ const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
 const REFERENCE_PIXELS = 1120;
 /** The share of the capacity that the detail keeps to. */
 const ROOM = [0.7, 0.9];
-/** Impostor layers in the atlas, and the atlas's texels a side: 8 × 8 frames of 32 texels, as FRAMES in hemi.wgsl. */
-const SLOTS = 16, ATLAS = 256, FRAMES = 64;
+/**
+ * Impostor layers in the atlas, more than the tree species of a region (SPECIES of forest.ts); the
+ * atlas's texels a side, 8 × 8 frames (FRAMES of hemi.wgsl) of 32 texels; its mip levels, as
+ * ATLAS_LEVELS of impostor.wgsl; the frames of a bake. A layer leaves only after this many frames unused.
+ */
+const SLOTS = 32, ATLAS = 256, ATLAS_LEVELS = 6, FRAMES = 64, UNUSED_FRAMES = 60;
 /** Texels a side of level 0 of the depth pyramid, its levels, and the bytes of `Occlusion` in emit.wgsl. */
 const PYRAMID = 512, PYRAMID_LEVELS = 10, OCCLUSION_BYTES = 96;
 /** The quad of an impostor: corners at ±1. */
 const QUAD = { position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0], normal: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], color: new Array(12).fill(1), index: [0, 1, 2, 2, 1, 3] };
 
-/** A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per triangle. */
-export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number> }
+/**
+ * A mesh: per vertex a position, a normal and a linear colour, in a model 1 tall; three indices per
+ * triangle. A tree's first `trunk` vertices are its trunk, which stays when its crown lifts (draw.wgsl).
+ */
+export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; color: ArrayLike<number>; index: ArrayLike<number>; trunk?: number }
 
 /**
  * A model: its mesh per tier, finest first, and the distance in metres where each tier ends; then,
@@ -37,15 +44,26 @@ export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; 
 export interface ModelSpec {
     tiers: { mesh: Mesh; until: number }[];
     impostor?: { from: number; until: number };
-    /** The share of a tier's end distance over which it fades into the next tier. */
+    /** The share of a tier's end distance over which its instances switch to the next tier. */
     fade?: number;
+    /** A tree's crown: its lowest point in model units (draw.wgsl). */
+    crown?: number;
 }
 
 /** The last frame, for occlusion culling: its depth, its render pixels, its view projection and the eye's move since then. */
 export interface LastFrame { depth: GPUTexture; pixels: [number, number]; viewProj: Float32Array; moved: [number, number, number] }
 
-/** A compute pass that emits instances (emit.wgsl), with the ground pages in group 2. */
-export interface Producer { encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void }
+/** A bind group and its layout. */
+export interface Bound { layout: GPUBindGroupLayout; group: GPUBindGroup }
+
+/** What a producer binds besides group 0: the terrain's surface (group 1), the layout of the ground pages (group 2) and the feature mask (group 3). */
+export interface Surfaces { surface: Bound; features: Bound; ground: GPUBindGroupLayout }
+
+/** A compute pass that emits instances (emit.wgsl), with the ground pages in group 2. The core attaches it on each device. */
+export interface Producer {
+    attach(gpu: Gpu, frame: GPUBuffer, surfaces: Surfaces): Promise<void>;
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void;
+}
 
 export interface InstanceStats { staged: number; dropped: number; lod: number; perTier: number[]; impostors: number }
 
@@ -74,6 +92,9 @@ interface Resources {
     mesh: GPURenderPipeline;
     impostor: GPURenderPipeline;
     bake: GPURenderPipeline;
+    mips: GPUComputePipeline;
+    /** Per mip level above the first, the group that reads the level below it. */
+    mipGroups: GPUBindGroup[];
     sortGroup: GPUBindGroup;
     renderGroup: GPUBindGroup;
     emptyGroup: GPUBindGroup;
@@ -106,11 +127,14 @@ export class Instances {
     private resources?: Resources;
     private specs: ModelSpec[] = [];
     private placed: Placed[] = [];
+    /** The meshes of the draws, as `Mesh` of sort.wgsl, and where the impostor quad lies. */
+    private meshTable = new Int32Array(0);
+    private quad: [number, number, number] = [0, 0, 0];
     private uploaded = false;
     /** The tier distances' factor of the detail: below 1 while the staged instances fill the pool. */
-    detail = 1;
+    private detail = 1;
     /** The factor of the tier distances in the last frame. */
-    lod = 1;
+    private lod = 1;
     private frame = 0;
     private stats_: InstanceStats = { staged: 0, dropped: 0, lod: 1, perTier: [0, 0, 0, 0], impostors: 0 };
     /** Per model with an atlas layer: the layer and the frame that last drew the impostor tier. */
@@ -118,6 +142,8 @@ export class Instances {
     /** Models whose layer needs a bake. */
     private readonly unbaked = new Set<number>();
     private readonly producers: Producer[] = [];
+    /** What `attach` took, for a producer that comes later. */
+    private attached?: [Gpu, GPUBuffer, Surfaces];
     /** Whether the last frame baked an impostor: what the frames draw changed. */
     newContent = false;
 
@@ -161,6 +187,7 @@ export class Instances {
     /** Adds a producer, which `run` encodes each frame. */
     produce(producer: Producer): void {
         this.producers.push(producer);
+        if (this.attached) void producer.attach(...this.attached);
     }
 
     /** Changes a model's meshes, such as for another season. */
@@ -169,16 +196,19 @@ export class Instances {
         this.uploaded = false;
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout): Promise<void> {
+    /** Takes the pools on a device, then attaches the producers. */
+    async attach(gpu: Gpu, frame: GPUBuffer, format: GPUTextureFormat, depthFormat: GPUTextureFormat, groundLayout: GPUBindGroupLayout, surfaces: Surfaces): Promise<void> {
         this.resources = undefined;
+        this.attached = undefined;
         this.uploaded = false;
         this.atlas.clear();
         this.unbaked.clear();
         const { device } = gpu, C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, uniform = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
         const atlas = () => gpu.texture('instances', {
-            size: [ATLAS, ATLAS, SLOTS], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-        }, ATLAS * ATLAS * SLOTS * 4);
+            size: [ATLAS, ATLAS, SLOTS], mipLevelCount: ATLAS_LEVELS, format: 'rgba8unorm',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+        }, ATLAS * ATLAS * SLOTS * 4 * 4 / 3);
         const b = {
             models: gpu.buffer('instances', MODELS * MODEL_BYTES, uniform),
             meshes: gpu.buffer('instances', DRAWS * MESH_BYTES, storage),
@@ -214,7 +244,11 @@ export class Instances {
             { binding: 0, visibility: F, texture: { viewDimension: '2d-array' } }, { binding: 1, visibility: F, texture: { viewDimension: '2d-array' } },
             { binding: 2, visibility: F, sampler: {} }, entry(3, V, 'uniform'),
         ] });
-        const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V, 'uniform', true)] });
+        const bakeLayout = device.createBindGroupLayout({ entries: [entry(0, V | C, 'uniform', true)] });
+        const mipLayout = device.createBindGroupLayout({ entries: [
+            ...[0, 1].map(binding => ({ binding, visibility: C, texture: { viewDimension: '2d-array' as const } })),
+            ...[2, 3].map(binding => ({ binding, visibility: C, storageTexture: { format: 'rgba8unorm' as const, viewDimension: '2d-array' as const } })),
+        ] });
         const firstLayout = device.createBindGroupLayout({ entries: [
             { binding: 0, visibility: C, texture: { sampleType: 'depth' } }, { binding: 1, visibility: C, storageTexture: { format: 'r32float' } }, entry(4, C, 'uniform'),
         ] });
@@ -236,6 +270,7 @@ export class Instances {
         const emptyLayout = device.createBindGroupLayout({ entries: [] });
         const sortModule = module('instances sort', 'instances/sort.wgsl'), drawModule = module('instances draw', 'instances/draw.wgsl');
         const impostorModule = module('impostor', 'instances/impostor.wgsl'), bakeModule = module('impostor bake', 'instances/impostor-bake.wgsl');
+        const mipModule = module('impostor mips', 'instances/impostor-mips.wgsl');
         const vertexLayout: GPUVertexBufferLayout = {
             arrayStride: VERTEX_BYTES, attributes: [
                 { shaderLocation: 0, offset: 0, format: 'snorm16x4' }, { shaderLocation: 1, offset: 8, format: 'snorm8x4' }, { shaderLocation: 2, offset: 12, format: 'unorm8x4' },
@@ -243,7 +278,7 @@ export class Instances {
         };
         const depthStencil: GPUDepthStencilState = { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' };
         const sortPipeline = device.createPipelineLayout({ bindGroupLayouts: [sortLayout] });
-        const [countDraws, placeDraws, scatter, mesh, impostor, bake] = await Promise.all([
+        const [countDraws, placeDraws, scatter, mesh, impostor, bake, mips] = await Promise.all([
             device.createComputePipelineAsync({ label: 'instances count', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'count_draws' } }),
             device.createComputePipelineAsync({ label: 'instances place', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'place_draws' } }),
             device.createComputePipelineAsync({ label: 'instances scatter', layout: sortPipeline, compute: { module: sortModule, entryPoint: 'scatter' } }),
@@ -267,22 +302,26 @@ export class Instances {
                 primitive: { topology: 'triangle-list', cullMode: 'none' },
                 depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
             }),
+            device.createComputePipelineAsync({ label: 'impostor mips', layout: device.createPipelineLayout({ bindGroupLayouts: [mipLayout, bakeLayout] }), compute: { module: mipModule, entryPoint: 'down' } }),
         ]);
         const group = (layout: GPUBindGroupLayout, resources: (GPUBuffer | [GPUBuffer, number] | GPUTextureView | GPUSampler)[]) => device.createBindGroup({
             layout, entries: resources.map((resource, binding) => ({
                 binding, resource: resource instanceof GPUBuffer ? { buffer: resource } : Array.isArray(resource) ? { buffer: resource[0], size: resource[1] } : resource,
             })),
         });
-        const layers = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
+        const layers = (texture: GPUTexture, level?: number) => texture.createView({ dimension: '2d-array', ...(level === undefined ? {} : { baseMipLevel: level, mipLevelCount: 1 }) });
         this.resources = {
-            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake, pyramid, hizFirst, hizDown, firstLayout, downGroups,
+            gpu, ...b, countDraws, placeDraws, scatter, mesh, impostor, bake, mips, pyramid, hizFirst, hizDown, firstLayout, downGroups,
             occlusion: gpu.buffer('instances', OCCLUSION_BYTES, uniform), viewport: gpu.buffer('instances', 16, uniform),
             sortGroup: group(sortLayout, [b.tally, b.meshes, b.args, b.bases, b.staged, b.lists]),
             renderGroup: group(renderLayout, [frame, b.lists, b.bases, b.models, [b.drawOf, 16]]),
             emptyGroup: group(emptyLayout, []),
-            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear' }), b.slots]),
+            atlasGroup: group(atlasLayout, [layers(b.albedo), layers(b.normal), device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }), b.slots]),
             bakeGroup: group(bakeLayout, [[b.bakes, 16]]),
+            mipGroups: Array.from({ length: ATLAS_LEVELS - 1 }, (_, k) => group(mipLayout, [layers(b.albedo, k), layers(b.normal, k), layers(b.albedo, k + 1), layers(b.normal, k + 1)])),
         };
+        this.attached = [gpu, frame, surfaces];
+        for (const producer of this.producers) await producer.attach(gpu, frame, surfaces);
     }
 
     /** Starts a frame: the models when they changed, the detail for the render's height in pixels, and an empty tally. */
@@ -334,16 +373,16 @@ export class Instances {
     bake(encoder: GPUCommandEncoder): void {
         const r = this.resources;
         this.newContent = false;
-        if (!r || !this.uploaded || !this.unbaked.size) return;
+        if (!r || !this.uploaded) return;
         for (const model of this.unbaked) {
-            const slot = this.atlas.get(model)?.slot, spec = this.specs[model];
-            if (slot === undefined || !spec?.impostor) continue;
-            const [first, count, base] = this.placed[model][spec.impostor.from];
+            const slot = this.atlas.get(model)?.slot, spec = this.specs[model], placed = this.placed[model];
+            if (slot === undefined || !spec?.impostor || !placed.length) continue;
+            const [first, count, base] = placed[spec.impostor.from];
             const data = new ArrayBuffer(16);
-            new Uint32Array(data)[0] = model;
+            new Uint32Array(data).set([model, 0, slot]);
             new Float32Array(data)[1] = radius(spec);
             r.gpu.device.queue.writeBuffer(r.bakes, slot * STRIDE, data);
-            const layer = (texture: GPUTexture) => texture.createView({ dimension: '2d', baseArrayLayer: slot, arrayLayerCount: 1 });
+            const layer = (texture: GPUTexture) => texture.createView({ dimension: '2d', baseArrayLayer: slot, arrayLayerCount: 1, mipLevelCount: 1 });
             const pass = encoder.beginRenderPass({
                 label: 'impostor bake',
                 colorAttachments: [r.albedo, r.normal].map(texture => ({ view: layer(texture), loadOp: 'clear' as const, storeOp: 'store' as const, clearValue: [0, 0, 0, 0] })),
@@ -356,9 +395,32 @@ export class Instances {
             pass.setIndexBuffer(r.indices, 'uint32');
             pass.drawIndexed(count, FRAMES, first, base);
             pass.end();
+            const mips = encoder.beginComputePass({ label: 'impostor mips' });
+            mips.setPipeline(r.mips);
+            mips.setBindGroup(1, r.bakeGroup, [slot * STRIDE]);
+            r.mipGroups.forEach((group, k) => {
+                mips.setBindGroup(0, group);
+                mips.dispatchWorkgroups(Math.ceil((ATLAS >> (k + 1)) / 8), Math.ceil((ATLAS >> (k + 1)) / 8));
+            });
+            mips.end();
         }
+        this.newContent = this.unbaked.size > 0;
         this.unbaked.clear();
-        this.newContent = true;
+        this.aim(r);
+    }
+
+    /** Points each impostor draw at its quad where the atlas holds the model's layer, else at the model's coarsest mesh. */
+    private aim(r: Resources): void {
+        let changed = false;
+        this.specs.forEach((spec, m) => {
+            const placed = this.placed[m];
+            if (!spec.impostor || !placed?.length) return;
+            const [first, count, base] = this.atlas.has(m) ? this.quad : placed[placed.length - 1], at = (m * TIERS + spec.tiers.length) * 4;
+            if (this.meshTable[at] === count && this.meshTable[at + 1] === first) return;
+            this.meshTable.set([count, first, base, 0], at);
+            changed = true;
+        });
+        if (changed) r.gpu.device.queue.writeBuffer(r.meshes, 0, this.meshTable);
     }
 
     /** Runs the producers, then sorts what they staged into the draw lists. */
@@ -409,11 +471,13 @@ export class Instances {
             pass.setBindGroup(0, r.renderGroup, [d * STRIDE]);
             pass.drawIndexedIndirect(r.args, d * 20);
         };
+        // An impostor draw without its layer draws the coarsest mesh (`aim`).
         this.specs.forEach((spec, m) => spec.tiers.forEach((_, t) => indirect(m * TIERS + t)));
+        this.specs.forEach((spec, m) => spec.impostor && !this.atlas.has(m) && indirect(m * TIERS + spec.tiers.length));
         if (!this.atlas.size) return;
         pass.setPipeline(r.impostor);
         pass.setBindGroup(1, r.atlasGroup);
-        for (const [m] of this.atlas) if (!this.unbaked.has(m)) indirect(m * TIERS + this.specs[m].tiers.length);
+        for (const [m] of this.atlas) indirect(m * TIERS + this.specs[m].tiers.length);
     }
 
     /** Gives a model a layer of the atlas, the layer that the frames drew least lately when none is free, and bakes it. */
@@ -423,7 +487,7 @@ export class Instances {
         let slot = this.atlas.size < SLOTS ? this.atlas.size : -1;
         if (slot < 0) {
             const [oldest, entry] = [...this.atlas].reduce((a, b) => (b[1].used < a[1].used ? b : a));
-            if (entry.used >= frame) return;
+            if (entry.used > frame - UNUSED_FRAMES) return;
             this.atlas.delete(oldest);
             slot = entry.slot;
         }
@@ -439,9 +503,12 @@ export class Instances {
         const models = new ArrayBuffer(MODELS * MODEL_BYTES), f = new Float32Array(models);
         const meshes = new Int32Array(DRAWS * MESH_BYTES / 4);
         let vertex = 0, index = 0;
+        const fits = (tiers: Mesh[]) => {
+            const count = tiers.reduce((sum, mesh) => sum + mesh.position.length / 3, 0), indices = tiers.reduce((sum, mesh) => sum + mesh.index.length, 0);
+            return (vertex + count) * VERTEX_BYTES <= VERTEX_POOL && (index + indices) * 4 <= INDEX_POOL;
+        };
         const put = (mesh: Mesh, extent: number): [number, number, number] => {
             const count = mesh.position.length / 3;
-            if ((vertex + count) * VERTEX_BYTES > VERTEX_POOL || (index + mesh.index.length) * 4 > INDEX_POOL) throw new Error('The instance meshes do not fit their pools.');
             r.gpu.device.queue.writeBuffer(r.vertices, vertex * VERTEX_BYTES, quantize(mesh, extent));
             r.gpu.device.queue.writeBuffer(r.indices, index * 4, Uint32Array.from(mesh.index));
             const at: [number, number, number] = [index, mesh.index.length, vertex];
@@ -449,26 +516,30 @@ export class Instances {
             index += mesh.index.length;
             return at;
         };
-        const quad = put(QUAD, 1);
+        this.quad = put(QUAD, 1);
+        const dropped: number[] = [];
         this.placed = this.specs.map((spec, m) => {
             const { tiers } = spec;
             if (!tiers.length) return [];
+            if (!fits(tiers.map(({ mesh }) => mesh))) return void dropped.push(m), [];
             const extent = Math.max(...tiers.map(({ mesh }) => largest(mesh.position)));
             const placed = tiers.map(({ mesh, until }, t) => {
                 const at = put(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
-                f[m * 8 + t] = until;
+                f[m * 12 + t] = until;
                 return at;
             });
             if (spec.impostor) {
-                meshes.set([quad[1], quad[0], quad[2], 0], (m * TIERS + tiers.length) * 4);
-                f[m * 8 + tiers.length] = spec.impostor.until;
+                f[m * 12 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec)], m * 8 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0], m * 12 + 4);
             return placed;
         });
+        // A model that does not fit the pools draws nothing; the frames go on.
+        if (dropped.length) console.warn(`The instance meshes of ${dropped.length} models do not fit their pools.`);
         r.gpu.device.queue.writeBuffer(r.models, 0, models);
+        this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         this.uploaded = true;
     }
@@ -497,9 +568,10 @@ function spread(spec: ModelSpec): number {
 
 /**
  * The vertices of a mesh as the instance pipeline reads them, 16 bytes each: the position over
- * `extent` as snorm16 × 4, the normal as snorm8 × 4 and the colour in sRGB as unorm8 × 4.
+ * `extent` as snorm16 × 3 and 1 for a vertex of the trunk, the normal as snorm8 × 4 and the colour in
+ * sRGB as unorm8 × 4.
  */
-export function quantize(mesh: Mesh, extent: number): ArrayBuffer {
+function quantize(mesh: Mesh, extent: number): ArrayBuffer {
     const count = mesh.position.length / 3, out = new ArrayBuffer(count * VERTEX_BYTES);
     const i16 = new Int16Array(out), i8 = new Int8Array(out), u8 = new Uint8Array(out);
     const srgb = (c: number) => Math.round(255 * Math.min(1, Math.max(0, c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)));
@@ -509,6 +581,7 @@ export function quantize(mesh: Mesh, extent: number): ArrayBuffer {
             i8[16 * k + 8 + d] = Math.round(127 * (mesh.normal[3 * k + d] ?? 0));
             u8[16 * k + 12 + d] = srgb(mesh.color[3 * k + d] ?? 1);
         }
+        i16[8 * k + 3] = k < (mesh.trunk ?? 0) ? 32767 : 0;
         u8[16 * k + 15] = 255;
     }
     return out;

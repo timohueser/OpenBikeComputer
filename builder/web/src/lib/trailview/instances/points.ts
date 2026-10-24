@@ -1,6 +1,6 @@
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
-import { Instances, type Producer } from './instances';
+import { Instances, type Producer, type Surfaces } from './instances';
 
 /** Words of a point, as `Point` in points.wgsl. */
 export const POINT_WORDS = 4;
@@ -30,7 +30,7 @@ function f16(value: number): number {
     return Math.min(0x7bff, (exponent << 10) + ((bits >> 13) & 0x3ff) + ((bits >> 12) & 1));
 }
 
-interface Resources { device: GPUDevice; pipeline: GPUComputePipeline; group: GPUBindGroup; points: GPUBuffer; pool: GPUBuffer }
+interface Resources { device: GPUDevice; pipeline: GPUComputePipeline; group: GPUBindGroup; points: GPUBuffer; pool: GPUBuffer; surface: GPUBindGroup; features: GPUBindGroup }
 
 /**
  * A pool of stored point instances, such as the rocks or the herds of a kind: a producer that stands
@@ -46,7 +46,7 @@ export class Points implements Producer {
         instances.produce(this);
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup }): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const points = gpu.buffer('instances', Math.max(16, this.capacity * POINT_WORDS * 4), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -54,24 +54,16 @@ export class Points implements Producer {
         const layout = device.createBindGroupLayout({ entries: [
             ...Instances.emitEntries(), { binding: 8, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 9, visibility: C, buffer: { type: 'uniform' } },
         ] });
-        const empty = device.createBindGroupLayout({ entries: [] });
         const pipeline = await device.createComputePipelineAsync({
-            label: 'points', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface.layout, empty, features.layout] }),
+            label: 'points', layout: device.createPipelineLayout({ bindGroupLayouts: [layout, surface.layout, ground, features.layout] }),
             compute: { module: device.createShaderModule({ label: 'points', code: wgsl('instances/points.wgsl') }), entryPoint: 'stand' },
         });
         this.resources = {
-            device, pipeline, points, pool,
+            device, pipeline, points, pool, surface: surface.group, features: features.group,
             group: device.createBindGroup({ layout, entries: [...this.instances.emitResources(frame), { binding: 8, resource: { buffer: points } }, { binding: 9, resource: { buffer: pool } }] }),
         };
-        this.surface = surface.group;
-        this.features = features.group;
-        this.empty = device.createBindGroup({ layout: empty, entries: [] });
         if (this.pending) this.write(this.pending);
     }
-
-    private surface?: GPUBindGroup;
-    private features?: GPUBindGroup;
-    private empty?: GPUBindGroup;
 
     /** Replaces the points of the pool, POINT_WORDS words each (`packPoints`); those past its capacity are left out. */
     write(points: Uint32Array<ArrayBuffer>): void {
@@ -83,14 +75,14 @@ export class Points implements Producer {
         r.device.queue.writeBuffer(r.pool, 0, new Uint32Array([this.count, 0, 0, 0]));
     }
 
-    encode(pass: GPUComputePassEncoder): void {
+    encode(pass: GPUComputePassEncoder, ground: GPUBindGroup): void {
         const r = this.resources;
-        if (!r || !this.count || !this.surface || !this.features || !this.empty) return;
+        if (!r || !this.count) return;
         pass.setPipeline(r.pipeline);
         pass.setBindGroup(0, r.group);
-        pass.setBindGroup(1, this.surface);
-        pass.setBindGroup(2, this.empty);
-        pass.setBindGroup(3, this.features);
+        pass.setBindGroup(1, r.surface);
+        pass.setBindGroup(2, ground);
+        pass.setBindGroup(3, r.features);
         pass.dispatchWorkgroups(Math.ceil(this.count / 64));
     }
 }
