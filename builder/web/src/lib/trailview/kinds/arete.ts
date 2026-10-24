@@ -1,4 +1,4 @@
-// Crags along mapped aretes and ridges: they give back the knife edge that the terrain rounds off. Their
+// Crags along mapped aretes: they give back the knife edge that the terrain rounds off. Their
 // places come from hashes of the world point, so every tile and every load puts them in the same place.
 import { geometry } from '../models/flat';
 import { rock } from '../models/rocks';

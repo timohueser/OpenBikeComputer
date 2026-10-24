@@ -175,8 +175,8 @@
   {
     "kind": "wall",
     "geometry": "line",
-    "match": [{"barrier": ["wall", "retaining_wall"]}],
-    "keep": ["barrier", "wall", "height"],
+    "match": [{"barrier": ["wall"]}],
+    "keep": ["wall", "height"],
     "height": "surface"
   },
   {
@@ -191,7 +191,7 @@
     "geometry": "line",
     "match": [{"aerialway": ["cable_car", "gondola", "mixed_lift", "chair_lift", "drag_lift", "t-bar", "j-bar",
                              "platter"]}],
-    "keep": ["aerialway"],
+    "keep": ["aerialway", "name"],
     "height": "surface"
   },
   {
@@ -202,10 +202,10 @@
     "height": "surface"
   },
   {
-    "kind": "ridge",
+    "kind": "arete",
     "geometry": "line",
-    "match": [{"natural": ["arete", "ridge"]}],
-    "keep": ["natural"],
+    "match": [{"natural": ["arete"]}],
+    "keep": [],
     "height": "surface"
   },
   {

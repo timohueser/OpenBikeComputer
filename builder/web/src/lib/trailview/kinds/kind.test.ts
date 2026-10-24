@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import TABLE from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
-import type { Feature } from '../stream/features';
-import { ANCHOR_WORDS, POINT } from '../structures/anchored';
+import { EXTENT, type Feature } from '../stream/features';
 import { OWNER, structureMeshes } from '../structures/node';
 import { KINDS } from '.';
 
@@ -11,15 +10,14 @@ describe('kinds', () => {
         expect([...KINDS.keys()].filter(name => !names.has(name))).toEqual([]);
     });
 
-    it('stands a station at the end of a lift, not where its tile cuts it', () => {
-        // A chair lift from inside its tile past the east edge, with a pylon between; the node holds both.
-        const tile = { level: 14, x: 8600, y: 5800 }, node = { level: OWNER, x: 2 * tile.x, y: 2 * tile.y };
-        const lift: Feature = { kind: 'aerialway', tags: { aerialway: 'chair_lift' }, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([100, 100, 4000, 100, 9000, 100]), z: null }] };
-        const { anchors, far } = structureMeshes([lift], tile, node);
-        const words = new Uint32Array(anchors!), flags = Array.from({ length: words.length / ANCHOR_WORDS }, (_, i) => words[i * ANCHOR_WORDS + 7]);
-        // The station and the pylon are points; the two spans hang the cables.
-        expect(flags.filter(f => f & POINT).length).toBe(2);
-        expect(flags.filter(f => !(f & POINT)).length).toBe(2);
-        expect(far.anchored).not.toBeNull();
+    it('closes a wall at its end in the node that owns the end, also past a tile border', () => {
+        // A wall from the west half of tile a into tile b, east of it; each tile holds the whole segment.
+        const a = { level: 14, x: 8600, y: 5800 }, b = { ...a, x: a.x + 1 };
+        const wall = (x0: number, x1: number): Feature[] => [{ kind: 'wall', tags: {}, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([x0, 100, x1, 100]), z: null }] }];
+        const triangles = (list: Feature[], tile: typeof a, x: number) => (structureMeshes(list, tile, { level: OWNER, x, y: 2 * tile.y }).near.structures?.indices.length ?? 0) / 3;
+        // The node of b that holds the end draws only its cap; the node of a draws the faces and the cap at the start.
+        expect(triangles(wall(1000 - EXTENT, 300), b, 2 * b.x)).toBe(2);
+        expect((triangles(wall(1000, EXTENT + 300), a, 2 * a.x) - 2) % 6).toBe(0);
+        expect(triangles(wall(1000, EXTENT + 300), a, 2 * a.x + 1)).toBe(0);
     });
 });
