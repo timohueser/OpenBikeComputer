@@ -9,12 +9,6 @@ export * from './shape';
 export const byHeight = ([deep, mid, tip]: Colour[], top: number) => (p: V) =>
     deep.clone().lerp(mid, smooth(0, 0.4 * top, p.z)).lerp(tip, smooth(0.5 * top, top, p.z));
 
-/** A ramp's colour at `t`, clamped to [0, 1]: the shade at 0, the body at 0.5, the tip at 1. */
-export function rampAt([shade, body, tip]: Colour[], t: number): Colour {
-    const u = Math.min(1, Math.max(0, t));
-    return u < 0.5 ? shade.clone().lerp(body, u * 2) : body.clone().lerp(tip, u * 2 - 1);
-}
-
 /** three.js's CatmullRomCurve3, centripetal, open: points by arc length with `at`. */
 export function curve(points: V[]) {
     const n = points.length;

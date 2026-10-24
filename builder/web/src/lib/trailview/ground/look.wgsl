@@ -23,6 +23,7 @@
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
 const COVER_GRASS: u32 = 2u;
+const COVER_CROP: u32 = 3u;
 const COVER_BUILT: u32 = 4u;
 const COVER_BARE: u32 = 5u;
 const COVER_SNOW: u32 = 6u;
@@ -53,10 +54,6 @@ struct Ground {
     coarse_open: f32,
     region: u32,
     lithology: u32,
-}
-
-fn luma(c: vec3f) -> f32 {
-    return dot(c, vec3f(0.3, 0.59, 0.11));
 }
 
 // Dave Hoskins' hash.
@@ -220,6 +217,31 @@ fn cell_at(s: vec2f, level: u32) -> vec4u {
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
     return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
 }
+
+// The texel of a point in the finest ground pages, as `in_page` places it, and its page's layer; z is -1
+// where that page is not resident. What stands by it stays as finer pages replace coarser ones: a page
+// that arrives adds things but changes none.
+fn finest_texel(s: vec2f) -> vec3i {
+    let t = texel_of(s, look.codes.y);
+    let whole = t.whole + vec2i(t.part >= vec2f(0.5));
+    let page = ground_page(look.codes.y, whole);
+    if (page < 0) {
+        return vec3i(0, 0, -1);
+    }
+    return vec3i(in_page(page, whole & vec2i(255)), page_layer(page));
+}
+
+// The ground cell at a point from the finest ground pages (finest_texel), as `cell_at`; NO_CELL where
+// that page is not resident.
+fn finest_cell(s: vec2f) -> vec4u {
+    let t = finest_texel(s);
+    if (t.z < 0) {
+        return NO_CELL;
+    }
+    return textureLoad(cells, t.xy, t.z, 0);
+}
+
+const NO_CELL: vec4u = vec4u(0xffffffffu);
 
 // The region of the ground at a point, from the finest resident ground page.
 fn region_at(s: vec2f) -> u32 {
