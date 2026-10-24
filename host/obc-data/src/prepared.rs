@@ -181,6 +181,9 @@ pub struct Version {
     pub bytes: u64,
     /// When it was complete, `YYYY-MM-DDTHH:MM:SSZ`.
     pub time: String,
+    /// The region of its scope; absent for a version of every place that the source covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 impl Manifest {
@@ -293,6 +296,7 @@ pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, 
         format: manifest.format,
         bytes: manifest.files.iter().map(|file| file.size).sum(),
         time: manifest.time,
+        region: manifest.scope.map(|scope| scope.region),
     };
     edit_versions(&folder, |versions| {
         if !versions.iter().any(|listed| listed.version == entry.version) {

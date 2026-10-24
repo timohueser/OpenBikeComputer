@@ -19,7 +19,7 @@ One `[[source]]` table per source.
 | --- | --- | --- | --- |
 | `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
-| `group` | string | no | The heading under which the operator page lists the source |
+| `group` | string | no | The heading under which the operator page lists a source that is not prepared |
 | `used_by` | array of strings | yes | What reads the source, one or more of the [products](#products) `device` and `planner`, and of `search` and `trailview`, the search and TrailView layers of `planner`. `tools/check_data_sources.py` refuses a source without one, or with another name |
 | `use` | string | yes | What `used_by` reads the source for, in one line. `tools/check_data_sources.py` refuses a source without it |
 | `licence` | string | no | SPDX licence expression: ids or `LicenseRef-…`, joined by `AND`, `OR`, `WITH` and parentheses |
@@ -4825,7 +4825,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/Fetch"
         },
         "group": {
-          "description": "The heading under which the operator page lists the source.",
+          "description": "The heading under which the operator page lists a source that is not prepared.",
           "type": [
             "string",
             "null"
@@ -5695,6 +5695,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "manifest_sha256": {
           "type": "string"
+        },
+        "region": {
+          "description": "The region of its scope; absent for a version of every place that the source covers.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "time": {
           "description": "When it was complete, `YYYY-MM-DDTHH:MM:SSZ`.",
