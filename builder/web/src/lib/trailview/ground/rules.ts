@@ -5,6 +5,7 @@
  */
 
 import { SEASONS, type Ramp, type Region, type Vocabulary } from '../rules/regions';
+import { forestYear, leafOf, LEAVES, SUMMER, YEAR_KNOTS } from '../vegetation/phenology';
 
 /** WorldCover's groups in the order of the ramps; `COVER_*` in look.wgsl. */
 export const COVER_ORDER = ['tree', 'shrub', 'grass', 'crop', 'built', 'bare', 'snow', 'water', 'wetland', 'mangrove', 'moss'] as const;
@@ -55,13 +56,14 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
 
 /**
  * The slots: three ramp colours per cover; a paint per material, alpha 1 where the region names one;
- * per material the share of the satellite's hue that its paint keeps; a colour per lithology, alpha
- * 1 where it is banded; the cliff (alpha 1 where named), the heather (alpha its share), the speckle
- * (alpha its share), the terrain scalars (outcrops, cos turf_deg, snow_share; alpha the speckle
- * size), the bedding normal (alpha the season's bare_luma, 0 for none) and the palette snap; the
- * sea's deep and shallow colours, the road surfaces and the edge line of main roads. Then the
- * vocabulary, the same in every row: per material its cover, moor, rocky and rough; per lithology
- * its hardness.
+ * per material the share of the satellite's hue that its paint keeps and its leaf type (`leafOf`); a
+ * colour per lithology, alpha 1 where it is banded; the cliff (alpha 1 where named), the heather
+ * (alpha its share), the speckle (alpha its share), the terrain scalars (outcrops, cos turf_deg,
+ * snow_share; alpha the speckle size), the bedding normal (alpha the season's bare_luma, 0 for none)
+ * and the palette snap; the sea's deep and shallow colours, the road surfaces and the edge line of
+ * main roads. Then the vocabulary, the same in every row: per material its cover, moor, rocky and
+ * rough; per lithology its hardness. Last the forest's colours in winter, spring and autumn per leaf
+ * type and elevation (`forestYear` of vegetation/phenology.ts).
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
@@ -69,19 +71,24 @@ export function slots(vocabulary: Vocabulary) {
     const kinds = roads + ROADS.length + 1, hardness = kinds + m;
     return {
         materials, satellite, lithologies, cliff, heather: cliff + 1, speckle: cliff + 2, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, roads, roadLine: roads + ROADS.length, kinds, hardness, count: hardness + l,
+        sea: cliff + 6, roads, roadLine: roads + ROADS.length, kinds, hardness, year: hardness + l, count: hardness + l + 3 * YEAR_KNOTS * LEAVES,
     };
 }
 
-/** The cover ramps of a season, three colours each in COVER_ORDER; woodland mixes needle and broad by the leaf. */
+/**
+ * The cover ramps of a season, three colours each in COVER_ORDER; woodland mixes needle and broad by
+ * the leaf, in summer: the trees' phases change it (ground.wgsl).
+ */
 export function ramps(season: number, region: Region): number[][] {
-    const own = Object.fromEntries(Object.entries(region.look.ramps).flatMap(([cover, ramp]) => {
-        const now = Array.isArray(ramp) ? ramp : ramp?.[SEASONS[season]];
-        return now ? [[cover, now]] : [];
-    }));
-    const table: Record<string, Ramp> = { ...FIXED, ...SEASONAL[season], ...own };
-    const tree = table.needle.map((needle, i) => lerp(linear(needle), linear(table.broad[i]), DECIDUOUS[region.leaf]));
-    return COVER_ORDER.flatMap(cover => (cover === 'tree' ? tree : table[cover].map(linear)));
+    const table = (of: number): Record<string, Ramp> => ({
+        ...FIXED, ...SEASONAL[of], ...Object.fromEntries(Object.entries(region.look.ramps).flatMap(([cover, ramp]) => {
+            const now = Array.isArray(ramp) ? ramp : ramp?.[SEASONS[of]];
+            return now ? [[cover, now]] : [];
+        })),
+    });
+    const [now, summer] = [table(season), table(SUMMER)];
+    const tree = summer.needle.map((needle, i) => lerp(linear(needle), linear(summer.broad[i]), DECIDUOUS[region.leaf]));
+    return COVER_ORDER.flatMap(cover => (cover === 'tree' ? tree : now[cover].map(linear)));
 }
 
 /** The rows of a season (0 winter to 3 autumn). */
@@ -96,7 +103,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
             const yearly = look.materials?.[id]?.colour;
             const paint = typeof yearly === 'string' ? yearly : yearly?.[SEASONS[season]];
             set(SLOT.materials + i, linear(paint ?? '#000000'), paint ? 1 : 0);
-            set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, 0, 0], 1);
+            set(SLOT.satellite + i, [look.materials?.[id]?.satellite ?? 0, Math.max(0, leafOf(id)), 0], 1);
             const cover = COVER_ORDER.indexOf(vocabulary.materials[i].cover as (typeof COVER_ORDER)[number]);
             const open = OPEN.includes(vocabulary.materials[i].cover) && id !== 'pasture';
             set(SLOT.kinds + i, [cover, +MOOR.includes(id), +ROCKY.includes(id)], +open);
@@ -119,6 +126,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         set(SLOT.sea + 1, linear(look.sea.shallow), 1);
         (look.roads ?? ROADS).forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
         set(SLOT.roadLine, linear(look.roadLine ?? ROAD_LINE), 1);
+        forestYear(region).forEach((c, i) => set(SLOT.year + i, c, 1));
     });
     return data;
 }

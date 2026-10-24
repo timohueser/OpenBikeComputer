@@ -2,6 +2,7 @@
 // region's rules; when it arrives and when its heights change, the relief of each texel. look.wgsl
 // reads both filtered, so a pixel never runs the rules.
 // #include look.wgsl
+// #include ../vegetation/phenology.wgsl
 
 struct Job {
     // The node's first texel at its level.
@@ -13,7 +14,9 @@ struct Job {
     metres: f32,
     // 1: the relief, 2: the ground parameters too.
     work: u32,
-    unused: vec2u,
+    // The day of the year, 0 for 1 January.
+    day: f32,
+    unused: u32,
 }
 
 @group(0) @binding(0) var<storage, read> jobs: array<Job>;
@@ -87,6 +90,26 @@ fn dry_texel(page: i32, layer: i32, job: u32, c: vec2i) -> vec2i {
     return c;
 }
 
+// The forest's colours per leaf type and elevation (YEAR_STEP_M and YEAR_KNOTS of vegetation/phenology.ts).
+const YEAR_STEP_M: f32 = 300.0;
+const YEAR_KNOTS: i32 = 10;
+
+// A forest texel on a day: its own colour in the share of its trees in summer, and in the shares of the
+// other phases the mean crown colour of the trees of its leaf type at its elevation in that phase
+// (forestYear of vegetation/phenology.ts), at its own luma. So the forest past the trees' reach turns
+// as they do.
+fn forest_on(albedo: vec3f, region: u32, material: u32, elevation: f32, day: f32) -> vec3f {
+    let shares = phase_shares(day, elevation);
+    let leaf = i32(rule(region, slot_satellite() + i32(material)).y + 0.5);
+    let k = clamp(elevation / YEAR_STEP_M, 0.0, f32(YEAR_KNOTS - 1));
+    let low = slot_year() + 3 * (leaf * YEAR_KNOTS + i32(k));
+    let high = slot_year() + 3 * (leaf * YEAR_KNOTS + min(i32(k) + 1, YEAR_KNOTS - 1));
+    let f = fract(k);
+    let turned = shares.x * mix(rule(region, low).rgb, rule(region, high).rgb, f) + shares.y * mix(rule(region, low + 1).rgb, rule(region, high + 1).rgb, f)
+        + shares.w * mix(rule(region, low + 2).rgb, rule(region, high + 2).rgb, f);
+    return shares.z * albedo + luma(albedo) * turned;
+}
+
 @compute @workgroup_size(16, 16)
 fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     let job = jobs[id.z];
@@ -114,8 +137,12 @@ fn ground_main(@builtin(global_invocation_id) id: vec3u) {
     // past about 47° are rock. Hard rock stands bare from about 37°; soft marl and clay hold scrub on their slopes.
     let bare_from = mix(0.62, 0.766, smoothstep(0.2, 0.6, parts.hardness));
     let dry = 1.0 - parts.water;
-    // Woodland is crowns and the shade between them, darker than its leaves.
-    let albedo = albedo_of(parts, region, cell.r, sat, barren) * mix(1.0, 0.68, parts.tree);
+    // Woodland is crowns and the shade between them, darker than its leaves, in the trees' phases.
+    var albedo = albedo_of(parts, region, cell.r, sat, barren);
+    if (parts.tree > 0.0) {
+        let elevation = height_at(job.level, job.texel + source);
+        albedo = mix(albedo, forest_on(albedo, region, cell.r, select(REFERENCE_M, elevation, known(elevation)), job.day), parts.tree) * mix(1.0, 0.68, parts.tree);
+    }
     textureStore(cache_out, at, 4 * layer, vec4f(sqrt(albedo), (data.r + (1.0 - data.g) * data.b) * dry));
     textureStore(cache_out, at, 4 * layer + 1, vec4f(parts.tree, parts.rough, parts.moor, green));
     textureStore(cache_out, at, 4 * layer + 2, vec4f(mix(bare_from, min(bare_from, rule(region, slot_cliff() + 3).y), green), barren * dry,

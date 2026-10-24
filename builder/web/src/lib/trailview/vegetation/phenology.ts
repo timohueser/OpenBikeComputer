@@ -2,6 +2,9 @@
 // stand passes a turn over `days` about its `day`, and each tree on a day of its own, by its hash: the
 // share of trees past a turn rises with the date, and a tree never turns back. Higher up, spring comes
 // later and autumn earlier.
+import { TREES } from '../models/library';
+import { Colour, hex, ramp } from '../models/shape';
+import { SEASONS, type Region, type TreeRule } from '../rules/regions';
 
 /** The phases between the turns, in the order of SEASONS: winter (bare), spring, summer, autumn. */
 export const WINTER = 0, SUMMER = 2;
@@ -51,4 +54,52 @@ export function phasesOn(day: number): Set<number> {
         phaseShares(day, elevation).forEach((share, phase) => share > 0 && phases.add(phase));
     }
     return phases;
+}
+
+/** The elevations of the forest's colours (forestYear): every YEAR_STEP_M metres from 0, YEAR_KNOTS of them, as in ground.wgsl. */
+export const YEAR_STEP_M = 300, YEAR_KNOTS = 10;
+/** The leaf types of a woodland, as `leafOf` gives them and the forest's canopy codes: any, broadleaved, needleleaved, mixed. */
+export const LEAVES = 4;
+/** The phases whose colours the ground takes from the trees; in summer it keeps its own. */
+const TURNED = [WINTER, 1, 3];
+
+/** The leaf type of a woodland material, as LEAVES orders them. */
+export const leafOf = (material: string) => ['forest', 'broadleaf-forest', 'needleleaf-forest', 'mixed-forest'].indexOf(material);
+
+/**
+ * A region's forest per leaf type (LEAVES), elevation (YEAR_STEP_M) and phase (winter, spring and
+ * autumn): the mean crown colour of the trees that stand there, in linear light, per unit of the luma
+ * of their mean in summer. The trees are those that the forest picks (forest.wgsl): of the leaf type in
+ * their band, else in their band, else of the leaf type, else all, by weight; a mixed wood half of
+ * each leaf type. ground.wgsl gives a forest texel these colours at its own luma, in the share of the
+ * trees in each phase.
+ */
+export function forestYear(region: Region): number[][] {
+    const trees = region.trees.filter(rule => rule.cover === 'tree' && rule.model in TREES && rule.weight > 0);
+    const kinds = ['broadleaved', 'needleleaved'];
+    // The trees of a leaf type (0 any) at an elevation, by weight.
+    const stand = (leaf: number, e: number) => {
+        const rules = [(t: TreeRule) => inBand(t, e) && t.leaf === kinds[leaf - 1], (t: TreeRule) => inBand(t, e), (t: TreeRule) => t.leaf === kinds[leaf - 1], () => true];
+        const first = rules.find(rule => trees.some(rule));
+        return first ? trees.filter(first).map(t => ({ t, w: t.weight })) : [];
+    };
+    const weighed = (list: { t: TreeRule; w: number }[]) => list.map(({ t, w }) => ({ t, w: w / list.reduce((sum, x) => sum + x.w, 0) }));
+    return Array.from({ length: LEAVES }, (_, leaf) => Array.from({ length: YEAR_KNOTS }, (_, k) => {
+        const e = k * YEAR_STEP_M;
+        const list = leaf === 3 ? [...weighed(stand(1, e)), ...weighed(stand(2, e))] : stand(leaf, e);
+        const mean = (phase: number) => [0, 1, 2].map(c => list.reduce((sum, { t, w }) => sum + w * crown(t.model, t.evergreen ? SUMMER : phase)[c], 0));
+        const summer = mean(SUMMER), luma = 0.3 * summer[0] + 0.59 * summer[1] + 0.11 * summer[2];
+        return TURNED.map(phase => (luma > 0 ? mean(phase).map(c => c / luma) : [1, 1, 1]));
+    }).flat()).flat();
+}
+
+const inBand = ({ elevation: [low, high] }: TreeRule, e: number) => e >= low && e <= high;
+
+/** The mean colour of a tree model's crown in a phase, in linear light: its ramp, or its twigs when bare, and its flecks. */
+function crown(model: string, phase: number): number[] {
+    const spec = TREES[model], season = SEASONS[phase], own = spec.form === 'conifer' ? spec.needles[season] : spec.leaves[season];
+    const [deep, mid, tip] = ramp(own === 'bare' ? spec.twigs! : own), fleck = spec.form === 'broadleaf' && spec.flecks?.[season];
+    const mean = new Colour((deep.r + mid.r + tip.r) / 3, (deep.g + mid.g + tip.g) / 3, (deep.b + mid.b + tip.b) / 3);
+    if (fleck) mean.lerp(hex(fleck[0]), fleck[1]);
+    return [mean.r, mean.g, mean.b];
 }
