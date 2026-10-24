@@ -390,8 +390,11 @@ impl Run {
                 let run_step = status.step(&step);
                 run_step.layer = receipt.layer.clone();
                 (run_step.reused, run_step.unchanged) = (reused, unchanged);
-                (run_step.wall_ms, run_step.bytes_out) =
-                    if unchanged { (None, None) } else { (Some(receipt.wall_ms), Some(receipt.bytes_out)) };
+                (run_step.wall_ms, run_step.cpu_ms, run_step.bytes_out) = if unchanged {
+                    (None, None, None)
+                } else {
+                    (Some(receipt.wall_ms), receipt.cpu_ms, Some(receipt.bytes_out))
+                };
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
                 run_step.end_ms = at;
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
@@ -1019,6 +1022,8 @@ pub struct RunStep {
     pub end_ms: Option<u64>,
     /// `null` while it runs, when it failed, and when it is unchanged.
     pub wall_ms: Option<u64>,
+    /// User plus system CPU time; `null` as `wall_ms` is, and when the system does not report it.
+    pub cpu_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
     pub bytes_out: Option<u64>,
     /// The inputs that it read.

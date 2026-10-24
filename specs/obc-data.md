@@ -4499,6 +4499,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "cpu_ms": {
+          "default": null,
+          "description": "User plus system CPU time; `null` as `wall_ms` is, and when the system does not report it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "end_ms": {
           "default": null,
           "format": "uint64",
@@ -4597,6 +4607,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "start_ms",
         "end_ms",
         "wall_ms",
+        "cpu_ms",
         "peak_rss_bytes",
         "bytes_out",
         "reads",

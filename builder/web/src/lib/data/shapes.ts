@@ -279,9 +279,13 @@ export interface RunStep {
     start_ms?: number | null;
     end_ms?: number | null;
     wall_ms: number | null;
+    /** User plus system CPU time; `null` as `wall_ms` is. */
+    cpu_ms?: number | null;
     peak_rss_bytes: number | null;
     bytes_out: number | null;
     error: string | null;
+    /** Its wall time in the newest earlier run that built it. */
+    last_wall_ms?: number | null;
 }
 
 /** `colour` is the header background, behind white text. `os` is `linux` or `macos`. A size is
