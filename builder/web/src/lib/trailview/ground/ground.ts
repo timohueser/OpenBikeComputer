@@ -27,6 +27,7 @@ const NEUTRAL: Rules = {
             rock: '#8c877d', sea: { deep: '#2c5874', shallow: '#4f8088' }, grade: { shadow: [-0.004, 0, 0.012], light: [0.01, 0.004, -0.008], saturation: 1.08 },
         },
         houses: [0, 0],
+        trees: [],
     }],
     styles: [],
 };
@@ -101,7 +102,8 @@ export class Ground {
 
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        const stages = GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
+        // The instances' vertices read the look for the haze.
+        const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
         const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
             { binding: 0, visibility: stages, buffer: { type: 'uniform' } },

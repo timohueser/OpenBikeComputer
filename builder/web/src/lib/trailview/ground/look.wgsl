@@ -190,6 +190,36 @@ fn ground_page(level: u32, t: vec2i) -> i32 {
     return i32(ground_map[(i32(level) * MAP + slot.y) * MAP + slot.x]) - 1;
 }
 
+// The finest resident ground page of a level or coarser that holds a point: its level, the point's
+// texel there and the page, -1 where none holds it.
+struct Held {
+    level: u32,
+    t: Texel,
+    page: i32,
+}
+
+fn held_at(s: vec2f, level: u32) -> Held {
+    var k = min(level, look.codes.y);
+    var t = texel_of(s, k);
+    var page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
+    while (page < 0 && k > COARSEST) {
+        k--;
+        t = texel_of(s, k);
+        page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
+    }
+    return Held(k, t, page);
+}
+
+// The region of the ground at a point, from the finest resident ground page.
+fn region_at(s: vec2f) -> u32 {
+    let held = held_at(s, u32(ceil(lod(s))));
+    if (held.page < 0) {
+        return 0u;
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0).b;
+}
+
 fn in_page(page: i32, c: vec2i) -> vec2i {
     return clamp(c, vec2i(0), vec2i(255)) + 256 * vec2i(page % GROUND_SIDE, (page / GROUND_SIDE) % GROUND_SIDE);
 }
@@ -248,17 +278,10 @@ fn cache_read(level: u32, home: i32, base: vec2i, p: vec2f) -> array<vec4f, 4> {
 // satellite decides snow only where the data has none, and a snow edge is crisper than the texels'
 // blend across it.
 fn ground_at(level: u32, s: vec2f, world: vec2f, footprint: f32) -> Ground {
-    var k = min(level, look.codes.y);
-    var t = texel_of(s, k);
-    var page = -1;
-    loop {
-        t = texel_of(s, k);
-        page = ground_page(k, t.whole + vec2i(t.part >= vec2f(0.5)));
-        if (page >= 0 || k <= COARSEST) {
-            break;
-        }
-        k--;
-    }
+    let held = held_at(s, level);
+    let k = held.level;
+    let t = held.t;
+    let page = held.page;
     var g: Ground;
     if (page < 0) {
         // No level has ground here yet: the palette's grass of the first region.

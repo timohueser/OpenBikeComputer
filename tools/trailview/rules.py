@@ -28,6 +28,10 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGIONS = 255
+# The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), and the
+# engine's tree models, one file each.
+MAX_TREE_SPECIES = 32
+TREE_MODELS = ROOT / "builder/web/src/lib/trailview/models/trees"
 
 
 # A check takes a value and its key path, and returns its problems, each "key.path: what is wrong".
@@ -251,6 +255,37 @@ def validate(ruleset):
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"
         add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
+    # The packs' trees resolve through the chains, which must be sound first.
+    return out or tree_problems(regions, packs)
+
+
+def chain(table, name):
+    """A file and the files that it extends, nearest first."""
+    out = []
+    while name in table:
+        out.append(table[name])
+        name = table[name].get("extends")
+    return out
+
+
+def tree_problems(regions, packs, models=TREE_MODELS):
+    """The tree species of each region's pack: MAX_TREE_SPECIES at most, each with a model of the engine."""
+    have = {path.stem for path in models.glob("*.ts")}
+    out = []
+    for name in sorted(regions):
+        pack = next((data["pack"] for data in chain(regions, name) if "pack" in data), None)
+        trees = {}
+        for data in reversed(chain(packs, pack)):
+            for species, rule in (data.get("trees") or {}).items():
+                if rule is None:
+                    trees.pop(species, None)
+                else:
+                    trees[species] = {**trees.get(species, {}), **rule}
+        own = {species: rule for species, rule in trees.items() if rule.get("cover") == "tree"}
+        if len(own) > MAX_TREE_SPECIES:
+            out.append(f"regions/{name}.json: pack {pack} has {len(own)} tree species, more than the {MAX_TREE_SPECIES} that the forest holds")
+        out += [f"regions/{name}.json: pack {pack}: tree {species} has no model {rule.get('model', species)}"
+                for species, rule in own.items() if rule.get("model", species) not in have]
     return out
 
 

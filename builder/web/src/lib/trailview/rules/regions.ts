@@ -49,6 +49,19 @@ export interface Region {
     look: Look;
     /** Indexes in `styles` of the region's pack: its house style, and the style of its cottages and houses. */
     houses: [number, number];
+    /** The trees of the region's pack, by species. */
+    trees: TreeRule[];
+}
+
+/** A tree species of a pack: its model, leaf type, cover, elevation band in metres and weight. */
+export interface TreeRule {
+    model: string;
+    leaf: 'needleleaved' | 'broadleaved';
+    cover: 'tree' | 'shrub';
+    elevation: [number, number];
+    weight: number;
+    /** It keeps its summer leaves all year. */
+    evergreen?: boolean;
 }
 
 /** A house style of `styles/`, as `BuildingStyle` in the prototype's models/buildings.ts. */
@@ -97,6 +110,13 @@ function inherited(table: Record<string, Record<string, unknown>>, name: string,
     return typeof up === 'string' ? merge(inherited(table, up, [...seen, name]), own) : own;
 }
 
+/** The trees of a pack: a species that a child sets to null is dropped, a model defaults to the species. */
+function treesOf(packs: Record<string, Record<string, unknown>> | undefined, pack: unknown): TreeRule[] {
+    if (typeof pack !== 'string' || !packs?.[pack]) return [];
+    const trees = (inherited(packs, pack).trees ?? {}) as Record<string, Partial<TreeRule> | null>;
+    return Object.entries(trees).flatMap(([species, rule]) => (rule ? [{ ...rule, model: rule.model ?? species } as TreeRule] : []));
+}
+
 /** The resolved regions of a `rules.json`; a chain that misses a file or loops throws. */
 export function rulesOf(json: {
     format: number; materials: Vocabulary; regions: Entry[]; overlays?: Record<string, { look?: Record<string, unknown> }>;
@@ -122,7 +142,7 @@ export function rulesOf(json: {
         const ramps = Object.assign({}, ...files.map(file => (file.look as Look | undefined)?.ramps));
         const overlaid = chain.reduce((look, name) => merge(look, json.overlays?.[name]?.look ?? {}), resolved.look as Record<string, unknown>);
         const look = { ...overlaid, ramps, roadLine: local(overlaid.roadLine) } as Look;
-        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack) };
+        return { id, chain, leaf: resolved.leaf as Region['leaf'], look, houses: styleOf(resolved.pack), trees: treesOf(json.packs, resolved.pack) };
     });
     return { vocabulary: json.materials, regions, styles };
 }

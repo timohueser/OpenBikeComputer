@@ -31,7 +31,9 @@ is the palette of the `world` region.
 | `structures/` | The bridges (`bridges.ts`), tunnels and their portals (`tunnels.ts`), galleries (`galleries.ts`) and the masts, contact wires and platforms of the tracks (`rails.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), and their pool and draw (`structures.ts`, `structures.wgsl`) |
 | `ground/` | The ground pages, `look.wgsl` (the ground shading of the prototype), the road paint (`roads.wgsl`), the rules packing and the per-page compute |
 | `structures/` | The houses: a worker makes a record per building of the zoom 14 feature tiles (`house-records.ts`); `houses.wgsl` fits each to the drawn surface with a basement, culls it, picks its level of detail and draws it from a template, and lights its windows at night |
-| `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house |
+| `models/` | The house templates: the prototype's buildings as faces whose coordinates name slots that `houses.wgsl` fills per house; the prototype's trees without three.js (`shape.ts`, `trees.ts`, `trees/`) |
+| `instances/` | Instances on the drawn surface: producers emit them (`emit.wgsl`), one indirect draw per model and tier (`sort.wgsl`, `draw.wgsl`), impostors, culling by the last frame's depth (`hiz.wgsl`), point pools of kinds (`points.ts`) |
+| `vegetation/` | The canopy tiles about the eye (`canopy.ts`) and the forest placed from them each frame (`forest.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
 | `rules/` | The regions of `rules.json`, resolved |
@@ -84,7 +86,7 @@ whose `bounds` are its box. `--lab NAME:VARIANT` adds the lab to each view. `--c
 `debug=cracks`; such a flight looks down on known terrain only, as `cracks.json` does over the box.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
-does: `DIR/rules.json`, `DIR/{material,lithology,region,snow}.pmtiles` and
+does: `DIR/rules.json`, `DIR/{material,lithology,region,snow,trailview-canopy}.pmtiles` and
 `DIR/colour/<variant>/{q1,q2,q3,q4,ndvimax}.pmtiles`; `--colour` picks the variant (`webp-12`). Build
 the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
 `trailview_rules` is `https://tiles.test/trailview/rules.json`.
