@@ -16,6 +16,7 @@ const ANSWERS = {
   [JSON.stringify(['runs', failed.id])]: failed,
   [JSON.stringify(['runs', planned.id])]: planned,
 };
+const WIKI = '#/references/wiki/prepare?to=prod&region=europe/dach';
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
   ['#/', 'Country, region or saved area'],
@@ -25,10 +26,10 @@ const SCREENS = [
   ['#/local/review', 'Choose what local serves'],
   [`#/local/review?plan=${planned.id}`, `Plan ${planned.review.id}`],
   [`#/local/resume/${failed.id}`, 'These settings resume run'],
-  ['#/sources', 'Each external dataset'],
-  ['#/sources/wiki', 'Prepared versions'],
-  ['#/sources/terrain-reference', 'preparing on hetzner-bake-1'],
-  ['#/sources/wiki/prepare?to=prod', 'When it finishes'],
+  ['#/downloads', 'What bakes fetch from the internet'],
+  ['#/downloads/geofabrik-extracts', 'Licence and access'],
+  ['#/references', 'On hetzner-bake-1, at build'],
+  [WIKI, 'When it finishes'],
   ['#/runs', 'The runs of this machine'],
   [`#/runs/${running.id}`, 'Layers in this run'],
   [`#/runs/${failed.id}`, 'The next update reuses them'],
@@ -47,8 +48,7 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
   await expect(page.getByText('This page runs on')).toBeVisible();
   for (const [hash, shows] of SCREENS) {
     await page.evaluate(next => { location.hash = next; }, hash);
-    if (hash === '#/sources/wiki/prepare?to=prod') {
-      await page.getByLabel('Geofabrik area').fill('europe/dach');
+    if (hash === WIKI) {
       await page.getByLabel('French').uncheck();
       await page.getByLabel('Spanish').uncheck();
       expect(await page.evaluate(() => document.documentElement.scrollWidth), 'wiki options').toBeLessThanOrEqual(390);
@@ -57,7 +57,7 @@ test('every screen fits a phone with no horizontal page scroll', async ({ page }
     await expect(page.locator('nav a[aria-current="page"]')).toHaveAttribute('href', hash.split('/').slice(0, 2).join('/'));
     await expect(page.getByText(shows).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth), hash).toBeLessThanOrEqual(390);
-    if (hash === '#/sources/wiki/prepare?to=prod') {
+    if (hash === WIKI) {
       await expect(page.getByText(/· Cached/)).toBeVisible();
       await expect(page.getByText(/Start downloads missing archives/)).toBeVisible();
       await page.getByLabel('German').uncheck();

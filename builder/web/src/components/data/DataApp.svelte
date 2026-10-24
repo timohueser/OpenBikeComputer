@@ -4,11 +4,12 @@
     import { runAt, SCREENS, screenAt } from "../../lib/data/screens";
     import { elsewhere, free, hardware, title, type RunList, type Status } from "../../lib/data/shapes";
     import Bake from "./Bake.svelte";
+    import Downloads from "./Downloads.svelte";
     import Failure from "./Failure.svelte";
     import Machine from "./Machine.svelte";
     import Overview from "./Overview.svelte";
+    import References from "./References.svelte";
     import Runs from "./Runs.svelte";
-    import Sources from "./Sources.svelte";
     import TargetScreen from "./Target.svelte";
 
     const status = new CliQuery<Status>([]);
@@ -74,8 +75,10 @@
         <Overview {status} />
     {:else if screen.id === "prod" || screen.id === "local"}
         {#key screen.id}<TargetScreen name={screen.id} {hash} {status} {runs} />{/key}
+    {:else if screen.id === "downloads"}
+        <Downloads {hash} {status} />
     {:else}
-        <Sources {hash} {status} />
+        <References {hash} {status} />
     {/if}
 </main>
 
