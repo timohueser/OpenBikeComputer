@@ -111,6 +111,30 @@ it("shows the prepared versions of each target and the chips of a family", async
     }
 });
 
+it("a terrain prepare asks for a region on local, and reviews all of it at once for prod", async () => {
+    const local = screen("#/sources/terrain-reference%2Fch/prepare?to=local");
+    try {
+        await vi.waitFor(() => expect(button("Review preparation")).toBeDefined());
+        expect(local.posted(), "a local prepare waits for its region").toEqual([]);
+        const area = document.querySelector<HTMLInputElement>('input[placeholder="europe/dach"]')!;
+        area.value = "central-switzerland";
+        area.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        button("Review preparation").click();
+        await vi.waitFor(() => expect(local.posted()).toEqual([["source", "prepare", "terrain-reference/ch", "--to", "local", "--region", "central-switzerland", "--dry-run"]]));
+    } finally {
+        await unmount(local.shown);
+    }
+    document.body.replaceChildren();
+    const prod = screen("#/sources/terrain-reference%2Fch/prepare?to=prod");
+    try {
+        await vi.waitFor(() => expect(prod.posted()).toEqual([["source", "prepare", "terrain-reference/ch", "--to", "prod", "--dry-run"]]));
+        expect(button("Review preparation"), "prod has no region field").toBeUndefined();
+    } finally {
+        await unmount(prod.shown);
+    }
+});
+
 it("a wiki review pins the region and languages, and changing them hides Start", async () => {
     const { shown, posted, status } = screen("#/sources/wiki/prepare?to=prod", false);
     try {

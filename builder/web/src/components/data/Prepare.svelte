@@ -18,9 +18,12 @@
     let worldwide = $state(false);
     let languages = $state(contentLanguages.map(([code]) => code));
     const languageName = new Intl.DisplayNames(["en"], { type: "language" });
+    // Only `wiki` publishes a region to `prod`; the other producers prepare all of it there.
+    const scoped = $derived(id === "wiki" || (to !== undefined && to !== "prod"));
     const args = $derived([
         "source", "prepare", id, "--to", to ?? "prod",
-        ...(id === "wiki" ? [...(worldwide ? [] : ["--region", area.trim()]), "--languages", languages.join(",")] : []),
+        ...(scoped && !worldwide ? ["--region", area.trim()] : []),
+        ...(id === "wiki" ? ["--languages", languages.join(",")] : []),
         "--dry-run",
     ]);
     let query = $state<CliQuery<PrepareReview> | null>(null);
@@ -30,7 +33,7 @@
         query = new CliQuery<PrepareReview>(args);
         void query.refresh();
     }
-    onMount(() => { if (to && id !== "wiki") inspect(); });
+    onMount(() => { if (to && !scoped) inspect(); });
     const start = $derived(review?.output ? [...review.output.args, ...(kind === "r2" ? ["--yes"] : [])] : []);
     const names = $derived([...new Set(rows.flatMap((row) => Object.keys(row.prepared)))]);
     let target = $state("prod");
@@ -45,22 +48,24 @@
 {#if to}
     <h1>Prepare {id} for {to}</h1>
     <a href="#/sources/{encodeURIComponent(id)}">Back to {id}</a>
-    {#if id === "wiki"}
+    {#if scoped}
         <form class="card options" onsubmit={(event) => { event.preventDefault(); inspect(); }}>
-            <h2>Coverage and languages</h2>
-            <label><input type="checkbox" bind:checked={worldwide} /> Worldwide</label>
+            <h2>{id === "wiki" ? "Coverage and languages" : "Coverage"}</h2>
+            <label><input type="checkbox" bind:checked={worldwide} /> {id === "wiki" ? "Worldwide" : `All of ${id}`}</label>
             {#if !worldwide}
-                <label>Geofabrik area <input required bind:value={area} placeholder="europe/dach" /></label>
+                <label>Region or Geofabrik area <input required bind:value={area} placeholder="europe/dach" /></label>
             {/if}
-            <fieldset>
-                <legend>Article languages</legend>
-                {#each contentLanguages as [code] (code)}
-                    <label><input type="checkbox" bind:group={languages} value={code} /> {languageName.of(code)}</label>
-                {/each}
-            </fieldset>
-            <p class="soft">Photos are fetched only for selected subjects in this coverage. The selected language archives are worldwide inputs.</p>
+            {#if id === "wiki"}
+                <fieldset>
+                    <legend>Article languages</legend>
+                    {#each contentLanguages as [code] (code)}
+                        <label><input type="checkbox" bind:group={languages} value={code} /> {languageName.of(code)}</label>
+                    {/each}
+                </fieldset>
+                <p class="soft">Photos are fetched only for selected subjects in this coverage. The selected language archives are worldwide inputs.</p>
+            {/if}
             <code>{command(args)}</code>
-            <button type="submit" disabled={!languages.length || (!worldwide && !area.trim())}>Review preparation</button>
+            <button type="submit" disabled={(id === "wiki" && !languages.length) || (!worldwide && !area.trim())}>Review preparation</button>
         </form>
     {/if}
     {#if review?.error}<Failure error={review.error} />{/if}
@@ -70,6 +75,8 @@
             <h2 id="prepare">Review {r.id}: version {r.version} of {r.source}</h2>
             {#if id === "wiki"}
                 <p><b>Coverage</b> · {r.scope?.region ?? "Worldwide"} · <b>Languages</b> · {list(r.languages.map((code) => languageName.of(code) ?? code))}</p>
+            {:else}
+                <p><b>Coverage</b> · {r.scope?.region ?? `all of ${r.source}`}</p>
             {/if}
             <h3>Inputs</h3>
             <ul class="inputs">
