@@ -479,8 +479,9 @@ export class Instances {
             pass.setBindGroup(0, r.renderGroup, [d * STRIDE]);
             pass.drawIndexedIndirect(r.args, d * 20);
         };
-        // An impostor draw without its layer draws the coarsest mesh (`aim`).
-        this.specs.forEach((spec, m) => spec.tiers.forEach((_, t) => indirect(m * TIERS + t)));
+        // Nearer tiers first, so that they fill the depth before the farther ones shade. An impostor draw
+        // without its layer draws the coarsest mesh (`aim`).
+        for (let t = 0; t < TIERS - 1; t++) this.specs.forEach((spec, m) => t < spec.tiers.length && indirect(m * TIERS + t));
         this.specs.forEach((spec, m) => spec.impostor && !this.atlas.has(m) && indirect(m * TIERS + spec.tiers.length));
         if (!this.atlas.size) return;
         pass.setPipeline(r.impostor);
