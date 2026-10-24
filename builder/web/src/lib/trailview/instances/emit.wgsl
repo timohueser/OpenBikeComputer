@@ -100,6 +100,9 @@ const TIERS: u32 = 4u;
 // table (SINK_STEP of instances.ts).
 const WHOLE_TIERS: u32 = 2u;
 const SINK_STEP: f32 = 0.25;
+// The terrain level whose height gives a tree its species and phase (105 m at 47° N), the same at every
+// distance. Near the eye the pools hold finer terrain pages only: there a tree takes the drawn ground.
+const BAND_LEVEL: u32 = 12u;
 // The hashes of the producers: a place's values come from whole world cells, the same at every distance.
 fn mix_bits(a: u32) -> u32 {
     var x = a * 747796405u + 2891336453u;
@@ -218,7 +221,7 @@ fn sink_at(m: Model, k: u32) -> f32 {
 // the share `pick` (0 to 1, stable per instance) of a tier's last share `fade`, and past its last tier
 // ends there: a still view draws each instance whole, in one tier. A model with phases draws the model
 // of the tree's phase on the date, by its pick and its `elevation` in metres, which a producer keeps
-// the same at every distance.
+// the same at every distance (BAND_LEVEL).
 fn emit_tree(tree: u32, base: vec3f, height: f32, yaw: f32, width: f32, tint: f32, appear: f32, lift: f32, slope: f32, pick: f32, snow: f32, ground: vec3f, elevation: f32) {
     if (appear <= 0.0) {
         return;

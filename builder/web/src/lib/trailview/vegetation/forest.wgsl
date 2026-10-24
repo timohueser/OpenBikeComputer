@@ -95,10 +95,9 @@ const CLEAR_SPREAD_M: f32 = 3.0;
 // A far tree fades out over this share of its own distance, drawn on a share of its pixels.
 const FADE: f32 = 0.1;
 // A tree takes its species by the region of a ground page of REGION_LEVEL, the region layer's own zoom
-// (specs/trailview-tiles.md), or finer, where each page holds the same regions, and by the terrain of BAND_LEVEL (105 m at 47° N), so it keeps its species
-// at every distance. Near the eye the pools hold finer terrain pages only: there the band reads the ground.
+// (specs/trailview-tiles.md), or finer, where each page holds the same regions, and by the terrain of BAND_LEVEL (emit.wgsl), so it keeps its species
+// at every distance.
 const REGION_LEVEL: u32 = 10u;
-const BAND_LEVEL: u32 = 12u;
 // In a closed stand the crown starts at LIFT of the height, and up to LIFT_SPREAD of the height higher,
 // and reaches NARROW of the height from the trunk at most, as forest-grown trees do.
 const LIFT: f32 = 0.3;
