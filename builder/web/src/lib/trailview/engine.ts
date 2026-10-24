@@ -222,9 +222,12 @@ export class TrailView {
         this.temporal.reset();
         const layouts = this.groundLook.layouts(gpu.device);
         await this.terrain.attach(gpu, uniform, targets.format, DEPTH, layouts.render);
-        await Promise.all([this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render)]);
-        await this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH);
-        await this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render, { surface: this.terrain.surface!, features: this.terrain.features!, ground: layouts.render });
+        // The rest needs only the terrain's surface: their pipelines compile side by side.
+        await Promise.all([
+            this.groundLook.attach(gpu, look, this.terrain.surface!), this.sky.attach(gpu, layouts.render, targets.format, DEPTH), this.resolve.attach(gpu, layouts.render),
+            this.houses.attach(gpu, uniform, this.terrain.surface!, this.terrain.features!, { render: layouts.render, compute: layouts.compute[1] }, targets.format, DEPTH),
+            this.instances.attach(gpu, uniform, targets.format, DEPTH, layouts.render, { surface: this.terrain.surface!, features: this.terrain.features!, ground: layouts.render }),
+        ]);
         // A lost device is created again and gets every pool again, without a reload of the page.
         gpu.device.lost.then(async info => {
             console.warn(`The WebGPU device was lost (${info.reason}): ${info.message}`);
