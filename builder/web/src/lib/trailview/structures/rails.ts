@@ -3,7 +3,7 @@
 // heights from the bake, whose sides reach down into the drawn surface. Each node draws the part of an
 // area platform inside its square.
 import earcut from 'earcut';
-import { EXTENT, type Feature } from '../stream/features';
+import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, RAIL, RAIL_CODE, type Line, type Node } from '../terrain/bins';
 import { ABSOLUTE, type AnchoredBuilder } from './anchored';
 import { GROUND, MeshBuilder, rgb, station } from './mesh';
@@ -38,7 +38,7 @@ export function rails(b: MeshBuilder, wires: AnchoredBuilder, list: Feature[], t
             wires.cable(span, 0, WIRE);
         }
     }
-    const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
+    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number): [number, number] => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
     for (const { kind, tags, parts } of list) {
         if (kind === 'catenary-mast') {

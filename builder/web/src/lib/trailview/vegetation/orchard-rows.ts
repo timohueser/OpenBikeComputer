@@ -1,8 +1,8 @@
-import { EXTENT, type Feature } from '../stream/features';
-import { metresPerUnit } from '../terrain/bins';
+import { EXTENT, square, unitScale, type Feature } from '../stream/features';
+import { metresPerUnit, type Node } from '../terrain/bins';
 
-/** World units per tile unit of a zoom 14 feature tile, and along a row of zoom 8 tiles. */
-const UNITS_PER_TILE_UNIT = 2 ** 30 / 2 ** 14 / EXTENT, ROW_UNITS = 2 ** 30 / 2 ** 8;
+/** World units along a row of zoom 8 tiles. */
+const ROW_UNITS = 2 ** 30 / 2 ** 8;
 /** Metres between the rows of an orchard and between its trees in a row: the high-stem orchards of the Alps' foreland. */
 export const ROW_M = 10, STEP_M = 9;
 /** Orchards of berries and bushes have no trees. */
@@ -28,17 +28,17 @@ function clipped(xy: Int32Array, i: number, j: number): boolean {
 }
 
 /**
- * The trees of the orchards of a zoom 14 feature tile: rows ROW_M apart along the longest side of
+ * The trees of the orchards of feature tile `tile` in the square of `owned`, a tile at or under it: rows ROW_M apart along the longest side of
  * each area, a tree every STEP_M, inside the area and out of its holes. The rows lie on that side's
  * line and the trees on a lattice of the world along it, so the tiles that hold an orchard, each
  * clipped by its own buffer, lay the same trees; each gives only those inside the tile itself.
  * Orchards of berries or bushes (`trees=*_plants`) have none. Each tree is x, y in whole world units.
  */
-export function orchardRows(features: Feature[], tile: { x: number; y: number }): Float64Array {
-    const out: number[] = [], left = tile.x * EXTENT, top = tile.y * EXTENT;
+export function orchardRows(features: Feature[], tile: Node, owned: Node = tile): Float64Array {
+    const out: number[] = [], left = tile.x * EXTENT, top = tile.y * EXTENT, scale = unitScale(tile.level), [west, north, size] = square(tile, owned);
     // Metres per world unit at the middle of the tile's row of zoom 8 tiles: the same for the tiles about it.
-    const m = metresPerUnit((Math.floor(top * UNITS_PER_TILE_UNIT / ROW_UNITS) + 0.5) * ROW_UNITS);
-    const world = (xy: Int32Array, i: number) => [(left + xy[2 * i]) * UNITS_PER_TILE_UNIT, (top + xy[2 * i + 1]) * UNITS_PER_TILE_UNIT];
+    const m = metresPerUnit((Math.floor(top * scale / ROW_UNITS) + 0.5) * ROW_UNITS);
+    const world = (xy: Int32Array, i: number) => [(left + xy[2 * i]) * scale, (top + xy[2 * i + 1]) * scale];
     for (const feature of features) {
         if (feature.kind !== 'orchard' || feature.geometry !== 'area' || BUSHES.has(feature.tags.produce) || feature.tags.trees?.endsWith('_plants')) continue;
         for (let p = 0; p < feature.parts.length; p++) {
@@ -65,8 +65,8 @@ export function orchardRows(features: Feature[], tile: { x: number; y: number })
                 for (let u = (Math.floor(Math.min(...us) / STEP_M) + 0.5) * STEP_M; u < Math.max(...us); u += STEP_M) {
                     if (!inside([u, v], ring) || rings.some(hole => inside([u, v], hole))) continue;
                     const x = a[0] + dir[0] * (u / m - along) - dir[1] * v / m, y = a[1] + dir[1] * (u / m - along) + dir[0] * v / m;
-                    const tx = x / UNITS_PER_TILE_UNIT - left, ty = y / UNITS_PER_TILE_UNIT - top;
-                    if (tx < 0 || ty < 0 || tx >= EXTENT || ty >= EXTENT) continue;
+                    const tx = x / scale - left, ty = y / scale - top;
+                    if (tx < west || ty < north || tx >= west + size || ty >= north + size) continue;
                     out.push(Math.round(x), Math.round(y));
                 }
             }
