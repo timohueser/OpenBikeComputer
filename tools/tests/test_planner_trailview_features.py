@@ -38,8 +38,8 @@ class Codec(unittest.TestCase):
 
 
 def location(column, row, u, v):
-    """Longitude and latitude of the point (u, v) in tile units of the zoom-14 tile (column, row)."""
-    x, y = (column + u / features.EXTENT) / (1 << 14), (row + v / features.EXTENT) / (1 << 14)
+    """Longitude and latitude of the point (u, v) in tile units of the deepest tile (column, row)."""
+    x, y = (column + u / features.EXTENT) / (1 << features.MAX_ZOOM), (row + v / features.EXTENT) / (1 << features.MAX_ZOOM)
     return x * 360 - 180, math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y))))
 
 
@@ -194,9 +194,9 @@ class Bridges(unittest.TestCase):
 
 
 class Bake(unittest.TestCase):
-    # A zoom-14 tile in Engelberg. Each node is (id, u, v) in its tile units.
-    COLUMN, ROW = 8574, 5778
-    NODES = [(1, 7000, 4000), (2, 9500, 4000), (3, 3000, 3000), (4, 3400, 3000), (5, 3400, 3400), (6, 3000, 3400),
+    # A zoom-13 tile in Engelberg. Each node is (id, u, v) in its tile units.
+    COLUMN, ROW = 4286, 2889
+    NODES = [(1, 7000, 4000), (2, 17500, 4000), (3, 3000, 3000), (4, 3400, 3000), (5, 3400, 3400), (6, 3000, 3400),
              (7, 3100, 3100), (8, 3100, 3200), (9, 3200, 3200), (10, 3200, 3100), (11, 5000, 5000), (12, 5100, 5000),
              (13, 5100, 5100), (14, 1000, 6000), (15, 1500, 6000), (16, 1000, 7000), (17, 2000, 7000),
              (18, 2000, 1000), (19, 2600, 1000), (20, 2600, 1600), (21, 2000, 1600), (22, 1500, 500),
@@ -230,27 +230,28 @@ class Bake(unittest.TestCase):
         return f'<osm version="0.6">{nodes}{ways}{relation}</osm>'
 
     def terrain(self, root):
-        """The grid of `planner/terrain` with one zoom-13 tile under the two zoom-14 tiles: a plane that
-        rises 5 cm per pixel to the east."""
+        """The grid of `planner/terrain` with a zoom-13 tile under each of the two feature tiles: a plane
+        that rises 5 cm per pixel to the east."""
         from PIL import Image
         from pmtiles.tile import Compression, TileType, zxy_to_tileid
         from pmtiles.writer import Writer
 
-        heights = 1000 + 0.05 * np.arange(512, dtype=np.float64)[None, :].repeat(512, 0)
-        code = np.round((heights + 32768) * 256).astype(np.int64)
-        rgba = np.stack([code >> 16, (code >> 8) & 255, code & 255, np.full(code.shape, 255)], -1).astype(np.uint8)
-        data = io.BytesIO()
-        Image.fromarray(rgba, "RGBA").save(data, format="WEBP", lossless=True, exact=True)
-        x, y = self.COLUMN >> 1, self.ROW >> 1
+        x, y = self.COLUMN, self.ROW
         (root / "objects").mkdir()
         with (root / "objects/archive").open("wb") as stream:
             writer = Writer(stream)
-            writer.write_tile(zxy_to_tileid(13, x, y), data.getvalue())
+            for east in (0, 1):
+                heights = 1000 + 0.05 * (512 * east + np.arange(512, dtype=np.float64))[None, :].repeat(512, 0)
+                code = np.round((heights + 32768) * 256).astype(np.int64)
+                rgba = np.stack([code >> 16, (code >> 8) & 255, code & 255, np.full(code.shape, 255)], -1).astype(np.uint8)
+                data = io.BytesIO()
+                Image.fromarray(rgba, "RGBA").save(data, format="WEBP", lossless=True, exact=True)
+                writer.write_tile(zxy_to_tileid(13, x + east, y), data.getvalue())
             writer.finalize({"tile_type": TileType.WEBP, "tile_compression": Compression.NONE}, {})
         name = f"maps/tiles/terrain/13/11-{x >> 2}-{y >> 2}.pmtiles"
         (root / "index.json").write_text(json.dumps({"files": {name: {"sha256": "archive"}}}))
         files = {"index.json": str(root / "index.json"), "objects/archive": str(root / "objects/archive")}
-        # The height at u tile units east in the zoom-14 tile COLUMN: its pixel of zoom 13 is u / 32.
+        # The height at u tile units east in the tile COLUMN: its pixel of zoom 13 is u / 32.
         return files, lambda u: 1000 + 0.05 * (u / 32 - 0.5)
 
     def test_a_small_region_bakes_into_buffered_tiles_at_every_zoom(self):
@@ -263,7 +264,7 @@ class Bake(unittest.TestCase):
             # The step reads a store object, which has no file extension.
             region_osm.run(region_osm.probe()[0], "cat", root / "region.osm", "-f", "pbf", "-o", root / "object")
             west, north = location(self.COLUMN, self.ROW, 0, 0)
-            east, south = location(self.COLUMN, self.ROW, 8192 * 2, 8192)
+            east, south = location(self.COLUMN, self.ROW, 2 * features.EXTENT, features.EXTENT)
             bounds = [west, south, east, north]
             (root / "output").mkdir()
             kinds = json.loads(features.TABLE.read_text())
@@ -279,25 +280,25 @@ class Bake(unittest.TestCase):
                 self.assertEqual(reader.metadata()["features_format"], features.FORMAT)
                 self.assertEqual(reader.metadata()["bounds"], bounds)
                 tiles = {key: features.decode(gzip.decompress(data)) for key, data in all_tiles(source)}
-        left, right = tiles[(14, self.COLUMN, self.ROW)], tiles[(14, self.COLUMN + 1, self.ROW)]
+        left, right = tiles[(features.MAX_ZOOM, self.COLUMN, self.ROW)], tiles[(features.MAX_ZOOM, self.COLUMN + 1, self.ROW)]
         kinds = lambda tile: sorted(feature["kind"] for feature in tile)
         self.assertEqual(kinds(left), ["building", "dam", "dam-area", "dam-area", "dam-point", "lake", "main-road", "railway",
                                        "river", "road", "ruin"])
         self.assertEqual(kinds(right), ["road"])
-        self.assertEqual({key[0] for key in tiles}, set(range(8, 15)))
+        self.assertEqual({key[0] for key in tiles}, set(range(features.MIN_ZOOM, features.MAX_ZOOM + 1)))
         dam = next(feature for feature in left if feature["kind"] == "dam")
         self.assertEqual(len(dam["parts"][0]["xy"]), 2, "a closed dam way is an area, not a ring line")
         # A tunnel with no terrain over it runs on the ground, as a road.
         tunnel = next(feature for feature in left if feature["kind"] == "main-road")
         self.assertEqual(tunnel["tags"], {"highway": "secondary"})
-        buffer = features.pad(14, self.ROW)
+        buffer = features.pad(features.MAX_ZOOM, self.ROW)
         road = next(feature for feature in left if feature["kind"] == "road")
         self.assertEqual(road["tags"], {"highway": "track", "surface": "gravel"})
         # A cut keeps the segment whole, so both tiles hold the same one, and its heights follow the terrain.
-        self.assertEqual(road["parts"][0]["xy"], [[7000, 4000], [9500, 4000]])
-        self.assertEqual(right[0]["parts"][0]["xy"], [[7000 - 8192, 4000], [9500 - 8192, 4000]])
+        self.assertEqual(road["parts"][0]["xy"], [[7000, 4000], [17500, 4000]])
+        self.assertEqual(right[0]["parts"][0]["xy"], [[7000 - features.EXTENT, 4000], [17500 - features.EXTENT, 4000]])
         for tile in (road, right[0]):
-            self.assertEqual(tile["parts"][0]["z"], [round(height(7000), 2), round(height(9500), 2)])
+            self.assertEqual(tile["parts"][0]["z"], [round(height(7000), 2), round(height(17500), 2)])
         # A tunnel that meets no road takes the terrain at its ends: nothing else gives it heights.
         for z, u in zip(tunnel["parts"][0]["z"], (1000, 1500)):
             self.assertAlmostEqual(z, height(u), delta=0.05)
@@ -310,12 +311,12 @@ class Bake(unittest.TestCase):
         stream = next(feature for feature in left if feature["kind"] == "river")["parts"][0]["z"]
         self.assertEqual(stream, sorted(stream, reverse=True))
         self.assertLess(abs(stream[-1] - level[0]), 0.05)
-        ground = features.EQUATOR_M * math.cos(math.radians(north)) / (1 << 14) / features.EXTENT
+        ground = features.EQUATOR_M * math.cos(math.radians(north)) / (1 << features.MAX_ZOOM) / features.EXTENT
         self.assertGreater(buffer * ground, features.BUFFER_M - 1e-9)
         building = next(feature for feature in left if feature["kind"] == "building")
         self.assertEqual([part["outer"] for part in building["parts"]], [True, False])
         self.assertEqual(len(building["parts"][1]["xy"]), 4)
-        # Above zoom 14 a tile holds the water and the main roads only, and the river still ends on
+        # Above zoom 13 a tile holds the water and the main roads only, and the river still ends on
         # the shore of the lake.
         overview = next(tile for (zoom, _, _), tile in tiles.items() if zoom == 11)
         self.assertEqual(kinds(overview), ["lake", "main-road", "river"])

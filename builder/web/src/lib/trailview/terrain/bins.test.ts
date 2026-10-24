@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, EXTENT } from '../stream/features';
+import { decodeFeatures, EXTENT, unitScale } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { roadHeight } from './audit-samples';
 import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, shows, SLEEPER_M, STREAM, surfaceOf, SURFACES, TUNNEL, WARP_M, type Line, type Profile } from './bins';
@@ -9,8 +9,8 @@ import { BRIDGE, CELL, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insid
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
     decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`../../../../tests/browser/trailview/fixture/features/${z}/${x}/${y}.bin`, import.meta.url)))));
-/** Trübsee: the zoom-14 tile, and the level-17 node over its middle. */
-const TILE = { level: 14, x: 8573, y: 5776 };
+/** Trübsee: the zoom-13 tile, and the level-17 node over its middle. */
+const TILE = { level: 13, x: 4286, y: 2888 };
 /** The entries of cell c of a node's stamp data, and the origin of its lake crossings, as stamp-core.wgsl reads them. */
 function cellOf(data: Uint32Array, node: { level: number; x: number; y: number }, c: number) {
     const head = 2 + GRID * GRID + 1, offset = data[2 + c], shift = 22 - node.level, cell = CELL * 2 ** shift;
@@ -166,8 +166,8 @@ describe('the sleepers of a track', () => {
 describe('the plane of a junction', () => {
     it('tilts a side road across its mouth to the surface of the through road, and not past the fade', () => {
         // A secondary road climbs east at 8 % through a junction; a residential road leaves it to the north.
-        const tile = { level: 14, x: 8574, y: 5778 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * 2 ** 3);
-        const metres = 2 ** (17 - tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
+        const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+        const metres = unitScale(tile.level) * unit, at = (x: number) => 1000 + 0.08 * (x - 3000) * metres;
         const road = (kind: string, highway: string, xy: number[], z: number[]) => ({ kind, tags: { highway }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z) }] });
         const { lines } = features([
             road('main-road', 'secondary', [1000, 4000, 3000, 4000, 5000, 4000], [at(1000), at(3000), at(5000)]),

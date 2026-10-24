@@ -1,7 +1,7 @@
 // The bridges of a node: a deck along each bridge line at its solved heights, with parapets for a road,
 // a railing for a path, cables for a bridge that hangs and walls and a roof for a covered one, and a pier
 // at each `bridge-pier` point of the bake, down into the drawn surface.
-import { EXTENT, type Feature } from '../stream/features';
+import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, type Line, type Node } from '../terrain/bins';
 import type { Owns } from './node';
 import { GROUND, MeshBuilder, mix, PAINT, posts, rgb, stationsOf, type Corner, type Station } from './mesh';
@@ -213,7 +213,7 @@ function covered(b: MeshBuilder, s: Station, t: Station, h: number, length: numb
 
 /** A pier at each `bridge-pier` point near the node, across its bridge line, from under the deck down into the drawn surface. */
 function piers(b: MeshBuilder, list: Feature[], tile: Node, lines: Line[], owns: Owns): void {
-    const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
+    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     for (const { kind, parts } of list) {
         if (kind !== 'bridge-pier') continue;
         for (const { xy } of parts) {
