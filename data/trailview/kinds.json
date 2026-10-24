@@ -214,5 +214,12 @@
     "match": [{"man_made": ["cross"]}, {"historic": ["wayside_cross"]}, {"summit:cross": ["yes"]}],
     "keep": ["height", "summit:cross", "material"],
     "height": "surface"
+  },
+  {
+    "kind": "shrine",
+    "geometry": "point",
+    "match": [{"historic": ["wayside_shrine"]}],
+    "keep": ["height"],
+    "height": "surface"
   }
 ]
