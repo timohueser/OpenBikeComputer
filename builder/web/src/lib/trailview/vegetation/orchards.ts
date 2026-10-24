@@ -1,4 +1,3 @@
-import type { Gpu } from '../gpu/device';
 import type { Instances } from '../instances/instances';
 import { packPoints, Points } from '../instances/points';
 import { TREES } from '../models/library';
@@ -59,12 +58,6 @@ export class Orchards {
 
     get idle(): boolean {
         return this.pending.size === 0 && this.building === 0;
-    }
-
-    attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup }): Promise<void> {
-        this.season = undefined;
-        this.drawn = '';
-        return this.pool.attach(gpu, frame, surface, features);
     }
 
     /** Asks for the feature tiles about the eye at (lon, lat), and puts the trees of the known ones in the pool, of the model of `region`. */

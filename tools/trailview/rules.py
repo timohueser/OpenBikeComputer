@@ -28,43 +28,10 @@ PLACE = re.compile(r"^([a-z]{2}(-[a-z0-9]{1,3})?|\*)$")
 OVERLAY_LOOK = {}
 # A region id is one byte of the region tiles, and 255 is no data there.
 MAX_REGIONS = 255
-# The engine's models: one file per tree and per plant, named by its id.
+# The tree species of a region that the engine's forest holds (SPECIES of vegetation/forest.ts), and the
+# engine's models: one file per tree and per plant, named by its id.
+MAX_TREE_SPECIES = 32
 MODELS = ROOT / "builder/web/src/lib/trailview/models"
-
-
-def models():
-    """The ids of the engine's tree and plant models."""
-    return ({path.stem for path in (MODELS / "trees").glob("*.ts")}, {path.stem for path in (MODELS / "plants").glob("*.ts")})
-
-
-def merged(a, b):
-    """Objects merge, any other value replaces, as the engine resolves a file that extends another."""
-    out = dict(a)
-    for key, value in b.items():
-        out[key] = merged(a[key], value) if isinstance(value, dict) and isinstance(a.get(key), dict) else value
-    return out
-
-
-def model_problems(packs, trees, plants):
-    """The models that a pack names, with what it inherits, and that the engine does not have: a tree of
-    `trees`, a shrub of `trees` or `plants`, a ground plant of `plants`, an orchard of `trees`."""
-    def resolved(name, seen=()):
-        up = packs[name].get("extends")
-        base = resolved(up, (*seen, name)) if isinstance(up, str) and up in packs and up not in seen else {}
-        return merged(base, packs[name])
-    out = []
-    for name in packs:
-        pack, file = resolved(name), f"packs/{name}.json"
-        for species, rule in (pack.get("trees") or {}).items():
-            model = rule and rule.get("model", species)
-            if rule and model not in trees and not (rule.get("cover") == "shrub" and model in plants):
-                out.append(f"{file}: trees.{species}: the engine has no model {model}")
-        for species, rule in (pack.get("ground") or {}).items():
-            if rule and rule.get("model", species) not in plants:
-                out.append(f"{file}: ground.{species}: the engine has no plant {rule.get('model', species)}")
-        if isinstance(pack.get("orchard"), str) and pack["orchard"] not in trees:
-            out.append(f"{file}: orchard: the engine has no tree {pack['orchard']}")
-    return out
 
 
 # A check takes a value and its key path, and returns its problems, each "key.path: what is wrong".
@@ -288,7 +255,49 @@ def validate(ruleset):
     for name, overlay in ruleset["overlays"].items():
         file = f"overlays/{name}.json"
         add(file, overlay_check(overlay, "") if name in regions else [f"has no regions/{name}.json"])
-    return out + model_problems(packs, *models())
+    # The packs' trees resolve through the chains, which must be sound first.
+    return out or model_problems(regions, packs)
+
+
+def chain(table, name):
+    """A file and the files that it extends, nearest first."""
+    out = []
+    while name in table:
+        out.append(table[name])
+        name = table[name].get("extends")
+    return out
+
+
+def model_problems(regions, packs, models=MODELS):
+    """The species of each region's pack, with what it inherits: MAX_TREE_SPECIES trees at most, each
+    tree and orchard with a tree model of the engine, each shrub with a tree or a plant model, each ground
+    plant with a plant model."""
+    trees_have, plants_have = ({path.stem for path in (models / kind).glob("*.ts")} for kind in ("trees", "plants"))
+    out = []
+    for name in sorted(regions):
+        pack = next((data["pack"] for data in chain(regions, name) if "pack" in data), None)
+        file = f"regions/{name}.json: pack {pack}"
+        tables = {"trees": {}, "ground": {}}
+        for data in reversed(chain(packs, pack)):
+            for table, entries in tables.items():
+                for species, rule in (data.get(table) or {}).items():
+                    if rule is None:
+                        entries.pop(species, None)
+                    else:
+                        entries[species] = {**entries.get(species, {}), **rule}
+        own = {species: rule for species, rule in tables["trees"].items() if rule.get("cover") == "tree"}
+        if len(own) > MAX_TREE_SPECIES:
+            out.append(f"regions/{name}.json: pack {pack} has {len(own)} tree species, more than the {MAX_TREE_SPECIES} that the forest holds")
+        for species, rule in tables["trees"].items():
+            model = rule.get("model", species)
+            if model not in trees_have and not (rule.get("cover") == "shrub" and model in plants_have):
+                out.append(f"{file}: {'tree' if rule.get('cover') == 'tree' else 'shrub'} {species} has no model {model}")
+        out += [f"{file}: ground plant {species} has no model {rule.get('model', species)}"
+                for species, rule in tables["ground"].items() if rule.get("model", species) not in plants_have]
+        orchard = next((data["orchard"] for data in chain(packs, pack) if "orchard" in data), None)
+        if isinstance(orchard, str) and orchard not in trees_have:
+            out.append(f"{file}: orchard has no model {orchard}")
+    return out
 
 
 def bundle(ruleset):

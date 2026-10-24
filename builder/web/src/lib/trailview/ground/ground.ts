@@ -103,7 +103,7 @@ export class Ground {
 
     /** The bind group layouts: group 2 of the terrain and the sky, and groups 0 and 2 of the ground compute. */
     layouts(device: GPUDevice): { render: GPUBindGroupLayout; compute: GPUBindGroupLayout[] } {
-        // The terrain's vertices read the woodland of the cache for the shell.
+        // The instances' vertices read the look for the haze.
         const stages = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, compute = GPUShaderStage.COMPUTE;
         const array = (sampleType: GPUTextureSampleType): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({ texture: { sampleType, viewDimension: '2d-array' } });
         const entries: GPUBindGroupLayoutEntry[] = [
@@ -116,7 +116,7 @@ export class Ground {
         // The compute writes the cache: its bind group does not hold it for sampling.
         this.layout = {
             render: device.createBindGroupLayout({ entries: [
-                ...entries, { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                ...entries, { binding: 5, visibility: GPUShaderStage.FRAGMENT, ...array('float') }, { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
             ] }),
             compute: [
                 device.createBindGroupLayout({ entries: [

@@ -52,8 +52,6 @@ const HABITAT_MOOR: u32 = 1u << 12u;
 const HABITAT_LUSH: u32 = 1u << 13u;
 const CLUMPED: u32 = 1u << 14u;
 const NO_PLANT: u32 = 0xffffu;
-// Plants stand on drawnHeight nearer than this, farther on the level that draws them.
-const MESH_HEIGHT_M: f32 = 400.0;
 
 fn plant_bits(a: u32) -> u32 {
     var x = a * 747796405u + 2891336453u;
@@ -93,14 +91,6 @@ fn stand_of(u: vec2i, salt: f32) -> f32 {
 fn on_road(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
     return mask.level != 0u && mask.kind.x != 0u && mask_metres(mask.shape.x) < clear;
-}
-
-// The drawn surface at a point, or the level that draws it far away.
-fn ground_height(s: vec2f, u: vec2i) -> f32 {
-    if (length(s) < MESH_HEIGHT_M) {
-        return plain_height(s);
-    }
-    return units_height(u, u32(ceil(lod(s))));
 }
 
 // Whether a point may show, before its ground is known: about the ground under the eye, within a
@@ -168,7 +158,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     if (pick == NO_PLANT || (pick == plants.sward.x && d < BLADES_M) || on_road(s, 0.3)) {
         return;
     }
-    let h = ground_height(s, u);
+    let h = stand_height(s, u);
     if (!known(h)) {
         return;
     }
@@ -202,7 +192,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     if (plant_hash(cell, 3u) > share) {
         return;
     }
-    let h = ground_height(s, u);
+    let h = stand_height(s, u);
     if (!known(h)) {
         return;
     }

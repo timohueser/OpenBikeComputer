@@ -3,7 +3,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import { COVER_ORDER } from '../ground/rules';
-import { Instances, type ModelSpec, type Producer } from '../instances/instances';
+import { Instances, type ModelSpec, type Producer, type Surfaces } from '../instances/instances';
 import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
 import { SEASONS, type Rules, type Season } from '../rules/regions';
@@ -107,9 +107,8 @@ export class Plants implements Producer {
         return this.building === 0;
     }
 
-    async attach(gpu: Gpu, frame: GPUBuffer, surface: { layout: GPUBindGroupLayout; group: GPUBindGroup }, features: { layout: GPUBindGroupLayout; group: GPUBindGroup }, ground: GPUBindGroupLayout): Promise<void> {
+    async attach(gpu: Gpu, frame: GPUBuffer, { surface, features, ground }: Surfaces): Promise<void> {
         this.resources = undefined;
-        this.season = undefined;
         const { device } = gpu, C = GPUShaderStage.COMPUTE;
         const data = gpu.buffer('vegetation', this.data.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const params = gpu.buffer('vegetation', 64, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);

@@ -22,8 +22,6 @@ export interface LookInput {
     /** This frame's jitter in clip space, and the render scale. */
     jitter: [number, number];
     scale: number;
-    /** Metres from the eye where the trees end and woodland turns into its shell. */
-    shell: number;
 }
 
 /** `Look` of shade.wgsl. */
@@ -43,6 +41,6 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, input.sample, 0, 0], 64);
-    floats.set([...input.jitter, input.scale, input.shell], 68);
+    floats.set([...input.jitter, input.scale, 0], 68);
     return data;
 }
