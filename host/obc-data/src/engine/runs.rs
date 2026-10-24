@@ -267,10 +267,16 @@ impl Run {
         let line = self.apply(event);
         self.line(&line)?;
         self.unsaved = true;
-        // A fetch can take long: its status shows that it runs.
+        // A fetch can take long: its status shows that it runs, and that it ended, also when no
+        // event follows for long, such as the tiles of a prepare.
         let now = matches!(
             event,
-            Event::Phase { .. } | Event::Switched { .. } | Event::FetchStarted { .. } | Event::Waiting { .. }
+            Event::Phase { .. }
+                | Event::Switched { .. }
+                | Event::FetchStarted { .. }
+                | Event::FetchFinished { .. }
+                | Event::FetchFailed { .. }
+                | Event::Waiting { .. }
         );
         if now || self.saved.elapsed() >= SAVE {
             self.save()?;
