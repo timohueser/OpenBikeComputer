@@ -5,8 +5,8 @@ import type { Gpu } from '../gpu/device';
 
 /** The canopy layer's zoom and cells a side (specs/trailview-tiles.md#canopy). */
 export const CANOPY_ZOOM = 12, CELLS = 256;
-/** Tiles on the GPU, tiles along a side of the window about the eye that the map indexes, and tile loads in flight. */
-const SLOTS = 32, WINDOW = 8, LOADS = 4;
+/** Tiles on the GPU, tiles along a side of the window about the eye that the map indexes, and tile loads in flight: the 3 × 3 tiles about the eye at once. */
+const SLOTS = 32, WINDOW = 8, LOADS = 9;
 /** Mip levels of a tile, 256 cells a side to 1. */
 const MIPS = 9;
 /** A view wants the tiles within this many tiles of the eye's at most: 5 × 5 fit the slots and the window. */

@@ -1,6 +1,7 @@
 import type { PlannerConfig } from '../../planner/config';
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
+import { size, type Node } from '../terrain/lod';
 import type { Gpu } from '../gpu/device';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, type Producer, type Surfaces } from '../instances/instances';
@@ -23,6 +24,8 @@ const FOREST_BYTES = 96;
 const POINTS_AT = 272, SPECIES_AT = POINTS_AT + 8 * POINTS;
 /** Units along a canopy tile's edge (zoom CANOPY_ZOOM). */
 const TILE = UNITS / 2 ** CANOPY_ZOOM;
+/** The level of the ground pages whose regions the trees take, as REGION_LEVEL of forest.wgsl. */
+const REGION_LEVEL = 10;
 
 interface Resources {
     gpu: Gpu;
@@ -110,6 +113,19 @@ export class Forest implements Producer {
                 device.createBindGroup({ layout: layouts[1], entries: [...entries, { binding: 12, resource: { buffer: cells } }] }),
             ],
         };
+    }
+
+    /**
+     * The ground pages of REGION_LEVEL within the reach of the eye at (lon, lat): a tree takes its
+     * species from them, also where the terrain draws finer pages, so they come with the first pages.
+     */
+    regionPages(lonLat: [number, number]): Node[] {
+        const [ux, uy] = worldPixel(lonLat, UNITS), reach = this.reach / anchorAt(...lonLat).unit, side = size(REGION_LEVEL), nodes: Node[] = [];
+        for (let y = Math.floor((uy - reach) / side); y <= Math.floor((uy + reach) / side); y++) {
+            for (let x = Math.floor((ux - reach) / side); x <= Math.floor((ux + reach) / side); x++) nodes.push({ level: REGION_LEVEL, x, y });
+        }
+        const far = ({ x, y }: Node) => Math.hypot((x + 0.5) * side - ux, (y + 0.5) * side - uy);
+        return nodes.sort((a, b) => far(a) - far(b));
     }
 
     /** Takes the canopy tiles about the eye at (lon, lat). */

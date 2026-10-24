@@ -242,6 +242,10 @@ fn finest_cell(s: vec2f) -> vec4u {
 }
 
 const NO_CELL: vec4u = vec4u(0xffffffffu);
+// Trees stand within TREE_REACH_M of the eye, as in tree-models.ts. Past it, the floor of woodland
+// stands for their crowns over CROWN_SHARE of the snow: the owner's choice by eye.
+const TREE_REACH_M: f32 = 4500.0;
+const CROWN_SHARE: f32 = 0.5;
 
 // The region of the ground at a point, from the finest resident ground page.
 fn region_at(s: vec2f) -> u32 {
@@ -661,9 +665,9 @@ fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32) -> vec3f 
         }
         albedo = mix(albedo, face, walled);
     }
-    // Past about 1 km, the eye sees woodland's crowns, not the snow on the ground under them. Snow slides
-    // off walls, which the data's texels are too wide to see.
-    let crowns = g.tree * smoothstep(800.0, 1000.0, length(relative.xy));
+    // The snow under the trees stays at every distance; past their reach the crowns that no longer stand
+    // hide a share of it. Snow slides off walls, which the data's texels are too wide to see.
+    let crowns = g.tree * CROWN_SHARE * smoothstep(0.8 * TREE_REACH_M, TREE_REACH_M, length(relative.xy));
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z);
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.

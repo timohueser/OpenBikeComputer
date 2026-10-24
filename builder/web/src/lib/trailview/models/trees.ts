@@ -32,6 +32,8 @@ const DETAIL = [
  * its outline and covers as much.
  */
 const TWIGS = 400, TWIG_WIDTH = 0.004;
+/** The branches that a bare broadleaf limb forks into. */
+const BRANCHES = 3;
 
 interface Bark {
     /** Trunk radius at the ground, and the root flare in trunk radii. */
@@ -277,7 +279,7 @@ function conifer(spec: Conifer, season: Season, lod: Lod, seed: number): Built {
                 const from = v3(0, 0, z + 0.3 * height);
                 const end = v3(shift + r * Math.cos(a), r * Math.sin(a), z - spec.droop * height);
                 // Branches thinner than a broadleaf's limbs go flat a level sooner.
-                bough(parts, twigs, from, end, spec.trunk * 0.3, () => mid, DETAIL[lod + 1]?.limbs ?? 0, 5 * i + k);
+                bough(parts, twigs, from, end, spec.trunk * 0.3, () => mid, DETAIL[lod + 1]?.limbs ?? 0, 5 * i + k, spec.trunk * 0.1);
                 // A conifer's crown is narrow, so each branch has a thirtieth of a broadleaf crown's twigs.
                 for (let j = 0; j < TWIGS / 30; j++) {
                     const root = from.clone().lerp(end, 0.3 + 0.7 * rand());
@@ -370,7 +372,7 @@ function fleck(p: V, n: V, share: number, lod: Lod, seed: number): number {
 }
 
 /**
- * A crown of soft lumps on a trunk. A bare crown is a limb into each lump and twigs from along it
+ * A crown of soft lumps on a trunk. A bare crown is a limb into each lump, its branches and twigs
  * out to the lump's far side, with sky between them, so its outline stays at every distance.
  */
 function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Built {
@@ -418,17 +420,25 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
         const weep = spec.weep ?? 0;
         let kept = 0;
         for (const [n, { at, r }] of crown.entries()) {
-            const out = at.clone().normalize();
-            const end = toTree(at.clone().addScaledVector(out, 0.5 * r));
+            const out = at.clone().normalize(), centre = toTree(at), rise = rand();
             // No limb leaves the trunk above its top, so the top lump of an open crown grows from it.
-            const from = v3(0, 0, spec.stagger ? Math.min(top, Math.max(spec.fork, end.z - 0.6 * Math.hypot(end.x, end.y))) : spec.fork);
-            bough(parts, twigs, from, end, spec.trunk * 0.45, bark, DETAIL[lod].limbs, n);
-            for (let k = 0; k < TWIGS / crown.length; k++) {
-                const root = from.clone().lerp(end, 0.5 + 0.5 * rand());
-                // Twigs reach out to the lump's far side; a weeping tree's droop to its underside and hang below.
-                const reach = toTree(at.clone().addScaledVector(v3(rand() - 0.5, rand() - 0.5, rand() - 0.5 - weep).normalize().add(out).normalize(), r));
-                reach.z -= weep * rand() * r * rz;
-                twig(twigs, root, reach, rand() < share ? [dead, dead] : [mid, tip], rand, lod, kept++);
+            // Without a stagger the limbs leave over the lowest part of the way from the fork to their lumps.
+            const fork = spec.stagger ? Math.max(spec.fork, centre.z - 0.6 * Math.hypot(centre.x, centre.y)) : lerp(spec.fork, Math.max(spec.fork, centre.z), 0.3 * rise);
+            const from = v3(0, 0, Math.min(top, fork));
+            bough(parts, twigs, from, centre, spec.trunk * 0.45, bark, DETAIL[lod].limbs, n, spec.trunk * 0.2);
+            // The limb forks into branches that rise as they spread, and short twigs fan from their
+            // outer parts to the lump's far side: a tree's tapering fork, not spikes from one point.
+            for (let b = 0; b < BRANCHES; b++) {
+                const way = v3(rand() - 0.5, rand() - 0.5, rand() - 0.2 - weep).multiplyScalar(1.6).add(out).normalize();
+                const end = at.clone().addScaledVector(way, 0.6 * r);
+                bough(parts, twigs, centre, toTree(end), spec.trunk * 0.2, bark, lod ? 0 : 4, BRANCHES * n + b, spec.trunk * 0.04);
+                for (let k = 0; k < TWIGS / crown.length / BRANCHES; k++) {
+                    const root = at.clone().lerp(end, 0.3 + 0.7 * rand());
+                    const reach = root.clone().addScaledVector(v3(rand() - 0.5, rand() - 0.5, rand() - 0.3 - weep).add(way).normalize(), (0.2 + 0.25 * rand()) * r);
+                    // A weeping tree's twigs hang below.
+                    reach.z -= weep * rand() * r;
+                    twig(twigs, toTree(root), toTree(reach), rand() < share ? [dead, dead] : [mid, tip], rand, lod, kept++);
+                }
             }
         }
         parts.push(twigs.build());
@@ -461,11 +471,12 @@ function broadleaf(spec: Broadleaf, season: Season, lod: Lod, seed: number): Bui
 }
 
 /**
- * Bare limb `k`: round with `sides` sides, or at 0 sides one upright triangle among the twigs, which
- * faces by k and draws no random number, so every level draws the same twigs.
+ * Bare limb `k`, `radius` at its root and `tip` at its end: round with `sides` sides, or at 0 sides one
+ * upright triangle among the twigs, which faces by k and draws no random number, so every level draws
+ * the same twigs.
  */
-function bough(parts: Geometry[], twigs: Sheet, from: V, to: V, radius: number, bark: (p: V) => Colour, sides: number, k: number): void {
-    if (sides) parts.push(limb(from.toArray(), to.toArray(), radius, bark, 0, sides));
+function bough(parts: Geometry[], twigs: Sheet, from: V, to: V, radius: number, bark: (p: V) => Colour, sides: number, k: number, tip = radius): void {
+    if (sides) parts.push(limb(from.toArray(), to.toArray(), radius, bark, 0, sides, tip));
     else upright(twigs, from, to, 2 * radius, [bark(from), bark(to)], k % 2 ? -1 : 1);
 }
 

@@ -123,7 +123,7 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
-        this.trees = new TreeModels(this.instances, () => this.request());
+        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear());
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request());
         this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
@@ -294,6 +294,15 @@ export class TrailView {
         return this.eye() ?? { east: this.pose.east, north: this.pose.north, above: this.pose.height };
     }
 
+    /** The tree models of the regions about the eye, each by its weight in their packs. */
+    private treesNear(): Map<string, number> {
+        const [lon, lat] = this.frame.lonLat(this.pose.east, this.pose.north), near = new Map<string, number>();
+        for (const [region, share] of this.groundLook.regionsAt(lon, lat)) {
+            for (const { model, weight } of this.groundLook.rules.regions[region]?.trees ?? []) near.set(model, (near.get(model) ?? 0) + share * weight);
+        }
+        return near;
+    }
+
     /** Degrees clockwise from the frame's north to true north at a point. */
     private convergence(east: number, north: number): number {
         const [lon, lat] = this.frame.lonLat(east, north), [e, n] = this.frame.local(lon, lat + 1e-4);
@@ -332,7 +341,7 @@ export class TrailView {
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
-        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
+        this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         this.trees.update(this.extras.date);
         this.forest.update(lonLat);
