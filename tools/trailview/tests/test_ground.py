@@ -42,10 +42,19 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(parent[-1, -1], 128, "a missing child is no data")
         self.assertEqual(tiles.mode({(0, 0): child(128, 128, 128, 4)}, 128)[0, 0], 4)
 
-    def test_the_archive_holds_each_byte_in_red_and_leaves_out_tiles_without_data_and_a_coarser_region_tile_has_no_data_where_its_children_are_missing(self):
+    def test_a_coarser_material_texel_takes_the_mean_barren_share_of_its_children_with_data(self):
+        child = lambda byte, *four: np.stack([np.tile(np.array(byte, np.uint8).reshape(2, 2), (tiles.TILE // 2, tiles.TILE // 2)),
+                                              np.tile(np.array(four, np.uint8).reshape(2, 2), (tiles.TILE // 2, tiles.TILE // 2))], axis=-1)
+        parent = ground.material_parent({(0, 0): child([5, 5, 5, ground.NO_DATA], 0, 255, 255, 0), (1, 0): None})
+        self.assertEqual(parent[0, 0].tolist(), [5, 170])
+        self.assertEqual(parent[0, -1].tolist(), [ground.NO_DATA, 0], "a missing child is no data")
+
+    def test_the_archive_holds_each_byte_in_red_and_the_barren_share_in_green_and_leaves_out_tiles_without_data_and_a_coarser_region_tile_has_no_data_where_its_children_are_missing(self):
         west, south, east, north = geo.tile_bounds(Z, X, Y)
         bounds = [west, south, west + (east - west) / 3, north]
-        bake = lambda z, x, y: np.where(tiles.inside(bounds, z, x, y), np.arange(tiles.TILE, dtype=np.uint8)[None, :] % 64, 128).astype(np.uint8)
+        byte = lambda z, x, y: np.where(tiles.inside(bounds, z, x, y), np.arange(tiles.TILE, dtype=np.uint8)[None, :] % 64, 128).astype(np.uint8)
+        share = np.arange(tiles.TILE, dtype=np.uint8)[:, None].repeat(tiles.TILE, axis=1)
+        bake = lambda z, x, y: np.stack([byte(z, x, y), share], axis=-1)
         with tempfile.TemporaryDirectory() as tmp:
             sizes = ground.bake_layer("material", bake, Z, bounds, Path(tmp), {"trailview_format": tiles.FORMAT})
             self.assertEqual(sorted(sizes), list(range(Z + 1)))
@@ -54,8 +63,8 @@ class ArchiveTest(unittest.TestCase):
                 rgb = np.asarray(Image.open(io.BytesIO(reader.get(Z, X, Y))).convert("RGB"))
                 self.assertEqual(reader.metadata()["archive"], "material")
                 self.assertIsNone(reader.get(Z, X + 1, Y))
-        self.assertTrue((rgb[..., 0] == bake(Z, X, Y)).all())
-        self.assertTrue((rgb[..., 0] == rgb[..., 2]).all())
+        self.assertTrue((rgb[..., :2] == bake(Z, X, Y)).all())
+        self.assertTrue((rgb[..., 2] == 0).all())
 
         west, south, east, north = geo.tile_bounds(10, X10, Y10)
         inner = [west + 1e-6, south + 1e-6, east - 1e-6, north - 1e-6]
@@ -114,11 +123,11 @@ class MaterialTest(unittest.TestCase):
                                        colour.mosaics(files))
             texels = material(Z, X, Y)
         n, w, s, e = 100, 100, 412, 300
-        self.assertEqual(texels[n, w], M["needleleaf-forest"])
-        self.assertEqual(texels[s, w], M["forest"], "heath does not name a forest more precisely")
-        self.assertEqual(texels[n, e], M["heath"], "the satellite's heath; natural grassland refines only grassland")
-        self.assertEqual(texels[s, e], M["rough-grass"] | ground.BARREN)
-        self.assertEqual(texels[s, -1], ground.NO_DATA)
+        self.assertEqual(texels[n, w].tolist(), [M["needleleaf-forest"], 0])
+        self.assertEqual(texels[s, w, 0], M["forest"], "heath does not name a forest more precisely")
+        self.assertEqual(texels[n, e, 0], M["heath"], "the satellite's heath; natural grassland refines only grassland")
+        self.assertEqual(texels[s, e].tolist(), [M["rough-grass"] | ground.BARREN, 255])
+        self.assertEqual(texels[s, -1].tolist(), [ground.NO_DATA, 0])
 
 
 class LithologyTest(unittest.TestCase):

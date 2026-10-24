@@ -57,7 +57,7 @@ pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
 /// The TrailView material, lithology and region tiles. Its format is `trailview_format` of
 /// `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 1, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 2, &[&WEB_PLANNER]);
 /// The TrailView colour tiles. Its format is `trailview_format` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1, &[&WEB_PLANNER]);
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
@@ -833,7 +833,7 @@ fn trailview(
         steps.push(ground("region", vec![rules("regions.json")], credit(&["resolve-ecoregions", "natural-earth"])));
     }
     if on("trailview-colour") {
-        let archives = ["q1", "q2", "q3", "q4", "ndvimax"];
+        let archives = ["q1", "q2", "q3", "q4"];
         let outputs = archives.map(|archive| format!("{archive}.pmtiles"));
         let colour = python(
             &PLANNER_TRAILVIEW_COLOUR,
@@ -1496,14 +1496,14 @@ mod tests {
             .filter(|step| step.name.starts_with("planner/trailview") && step.name.ends_with("/grid"))
             .map(|step| (step.name.as_str(), &step.options["kind"]))
             .collect();
-        assert_eq!(grids.len(), 9, "the ruleset, three ground archives and five colour archives: {grids:?}");
+        assert_eq!(grids.len(), 8, "the ruleset, three ground archives and four colour archives: {grids:?}");
         let q1 = get("planner/trailview-colour/q1/grid");
         assert_eq!(read(q1), [r#"planner/trailview-colour["q1.pmtiles"]"#]);
         let index = get("planner/index");
         assert!(index
             .inputs
             .iter()
-            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/trailview-colour/ndvimax/grid")));
+            .any(|input| matches!(input, Input::Step { name, .. } if name == "planner/trailview-colour/q4/grid")));
     }
 
     #[test]

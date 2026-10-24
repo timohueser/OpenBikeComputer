@@ -76,7 +76,7 @@ function groundLayers(dir, colour) {
     const files = {
         'trailview-material': 'material.pmtiles', 'trailview-lithology': 'lithology.pmtiles', 'trailview-region': 'region.pmtiles', snow: 'snow.pmtiles',
         'trailview-canopy': 'trailview-canopy.pmtiles',
-        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'ndvimax'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
+        ...Object.fromEntries(['q1', 'q2', 'q3', 'q4'].map(name => [`trailview-colour-${name}`, `colour/${colour}/${name}.pmtiles`])),
     };
     return Object.fromEntries(Object.entries(files).filter(([, file]) => existsSync(join(dir, file))).map(([name, file]) => [name, new PMTiles(new FileSource(join(dir, file)))]));
 }

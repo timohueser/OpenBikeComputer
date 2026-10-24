@@ -46,8 +46,10 @@ REFINES = {
 }
 # Not on sparse ground: a green pixel there is grass beside bare stone, as on a river's gravel bar.
 MOOR_ON = OPEN - {"sparse"}
-# Barren where the year's highest NDVI is below the middle of the prototype shader's ramp from 0.15 to 0.35.
-BARREN_NDVI = 0.25
+# Barren by the year's highest NDVI: softly from 0.35 down to 0.15, as the prototype shader's ramp; the
+# barren bit below the middle.
+BARREN_RAMP = (0.15, 0.35)
+BARREN_NDVI = sum(BARREN_RAMP) / 2
 CLC_PX_M = 100.0
 CLC_MAX_PX = 4096
 CLC_SERVICE = "https://image.discomap.eea.europa.eu/arcgis/rest/services/Corine/CLC{version}_LAEA/MapServer"
@@ -310,9 +312,33 @@ def worldcover(paths, transform, size=tiles.TILE):
     return out
 
 
+def barren_share(most):
+    """The barren share × 255 of the year's highest NDVI codes; 0 where no quarter looked."""
+    from . import colour
+
+    share = np.where(most > 0, 1 - colour.smoothstep(*BARREN_RAMP, colour.ndvi(most)), 0)
+    return np.round(255 * share).astype(np.uint8)
+
+
+def material_parent(children):
+    """A coarser material tile from its four children {(dx, dy): texels or None}: the most common byte,
+    as `tiles.mode`, and the mean barren share of the children with data."""
+    mosaic = np.zeros((2 * tiles.TILE, 2 * tiles.TILE, 2), np.uint8)
+    mosaic[..., 0] = NO_DATA
+    for (dx, dy), child in children.items():
+        if child is not None:
+            mosaic[dy * tiles.TILE:(dy + 1) * tiles.TILE, dx * tiles.TILE:(dx + 1) * tiles.TILE] = child
+    four = lambda a: np.stack([a[0::2, 0::2], a[0::2, 1::2], a[1::2, 0::2], a[1::2, 1::2]])
+    data, share = four(mosaic[..., 0] != NO_DATA), four(mosaic[..., 1]).astype(np.float32)
+    mean = np.round((share * data).sum(axis=0) / np.maximum(data.sum(axis=0), 1)).astype(np.uint8)
+    byte = tiles.mode({at: None if child is None else child[..., 0] for at, child in children.items()}, NO_DATA)
+    return np.stack([byte, mean], axis=-1)
+
+
 class Material:
     """The material chain on one tile: WorldCover, then the satellite's heath, OSM's forests with a leaf
-    type, CORINE, and OSM's natural and landuse areas, each refining the one before."""
+    type, CORINE, and OSM's natural and landuse areas, each refining the one before. A texel is the
+    material byte and the barren share."""
 
     def __init__(self, vocabulary, bounds, worldcover, corine, forests, areas, mosaics):
         self.vocabulary, self.bounds, self.worldcover = vocabulary, bounds, worldcover
@@ -334,8 +360,9 @@ class Material:
         material = v.refine(material, onto(transform, self.corine, "EPSG:3035", Resampling.nearest))
         material = v.refine(material, self.areas.burn(transform))
         material = np.where(barren, material | BARREN, material).astype(np.uint8)
-        material[~tiles.inside(self.bounds, z, x, y)] = NO_DATA
-        return material
+        share, outside = barren_share(most), ~tiles.inside(self.bounds, z, x, y)
+        material[outside], share[outside] = NO_DATA, 0
+        return np.stack([material, share], axis=-1)
 
 
 def lithology_units(paths, layers, bounds, vocabulary):
@@ -483,10 +510,15 @@ def step():
 
 def bake_layer(layer, bake, top, bounds, output, metadata):
     """Write `<layer>.pmtiles` from zoom 0 to `top`; return its bytes per zoom. A tile with no data is
-    left out."""
+    left out. A material texel has the barren share in green."""
     no_data = {"material": NO_DATA, "region": REGION_NO_DATA}.get(layer)
-    encode = lambda texels: {} if no_data is not None and (texels == no_data).all() else {layer: tiles.lossless(texels)}
-    sizes = tiles.pyramid(bounds, range(top + 1), bake, lambda children: tiles.mode(children, no_data), encode, output, metadata)
+    parent = material_parent if layer == "material" else lambda children: tiles.mode(children, no_data)
+
+    def encode(texels):
+        byte, green = (texels[..., 0], texels[..., 1]) if layer == "material" else (texels, None)
+        return {} if no_data is not None and (byte == no_data).all() else {layer: tiles.lossless(byte, green)}
+
+    sizes = tiles.pyramid(bounds, range(top + 1), bake, parent, encode, output, metadata)
     return sizes.get(layer, {})
 
 

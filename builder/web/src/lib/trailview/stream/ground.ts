@@ -9,7 +9,7 @@ import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
 const NAMES = {
-    material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region', ndvimax: 'trailview-colour-ndvimax',
+    material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region',
     q1: 'trailview-colour-q1', q2: 'trailview-colour-q2', q3: 'trailview-colour-q3', q4: 'trailview-colour-q4', snow: 'snow',
 } as const;
 type Layer = keyof typeof NAMES;
@@ -120,16 +120,16 @@ export class GroundSource {
         const snowBodies = !snow ? [] : finer.length && !coarse
             ? finer.map(([sx, sy]) => optional(this.body('snow', zs, sx, sy, zs, true, date.snowIndex)))
             : [at('snow', z, true)];
-        const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
+        const [material, lithology, region, a, b, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
-            ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc), at('ndvimax', zc)] : [undefined, undefined, undefined]),
+            ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc)] : [undefined, undefined]),
             ...snowBodies,
         ]);
         const job: GroundJob = {
-            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, ndvimax, snow: snowTiles, date, world,
+            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, snow: snowTiles, date, world,
         };
         const id = this.next++, worker = this.workers[id % WORKERS];
-        const bodies = [material, lithology, region, a, b, ndvimax, ...snowTiles].flatMap(body => (body ? [body.body] : []));
+        const bodies = [material, lithology, region, a, b, ...snowTiles].flatMap(body => (body ? [body.body] : []));
         const built = await new Promise<GroundResult>((resolve, reject) => {
             this.waiting.set(id, { worker, resolve, reject });
             worker.postMessage({ id, job }, bodies);

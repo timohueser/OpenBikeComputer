@@ -1,6 +1,6 @@
 """Bake the TrailView colour tiles of one region from the Sentinel-2 quarterly mosaics of CDSE, as the
-prototype's `bake.py` reads them: per quarter the colour and the NDVI, and the year's highest NDVI,
-as specs/trailview-tiles.md defines them.
+prototype's `bake.py` reads them: per quarter the colour and the NDVI, as specs/trailview-tiles.md
+defines them.
 
 The `obc data` step is `planner/trailview-colour` (`--step`). `--fetch` is the capture of
 `sentinel-2-mosaics`: the window over a box of each band of each mosaic tile of a year, over CDSE S3
@@ -190,8 +190,7 @@ def average(children):
 
 
 def encoder(variant):
-    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`,
-    and `ndvimax`, lossless, the highest alpha code of the four."""
+    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`."""
     from PIL import Image
     from pmtiles.tile import TileType
 
@@ -210,7 +209,6 @@ def encoder(variant):
             else:
                 image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, max_threads=1)
                 out[f"q{q + 1}"] = (TileType.AVIF, stream.getvalue())
-        out["ndvimax"] = tiles.lossless(texels[..., 3].max(axis=0))
         return out
 
     return encode

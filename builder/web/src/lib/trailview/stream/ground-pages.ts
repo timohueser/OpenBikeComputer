@@ -5,8 +5,8 @@
 import { PAGE } from './heights';
 
 const TILE = 2 * PAGE;
-/** The material byte: bit 6 barren, bit 7 no data (specs/trailview-tiles.md#ground). */
-const BARREN_BIT = 0x40, NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
+/** The material byte in red, bit 7 no data; green holds the barren share (specs/trailview-tiles.md#ground). */
+const NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
 /** The region byte of no data. */
 const NO_REGION = 255;
 /** Snow bytes (specs/planner-snow-tiles.md). */
@@ -26,9 +26,8 @@ export interface GroundInputs {
     material?: Raster;
     lithology?: Raster;
     region?: Raster;
-    /** The two quarters around the date, and the highest NDVI of the year. */
+    /** The two quarters around the date. */
     quarters?: [Raster | undefined, Raster | undefined];
-    ndvimax?: Raster;
     /** The snow days (`snowDay`) over the material tile: one coarser tile, or four tiles one zoom finer. */
     snow?: (Raster | undefined)[];
     date: GroundDate;
@@ -76,9 +75,6 @@ function bilinear(raster: Raster, values: Float32Array, z: number, x: number, y:
     }
     return out;
 }
-
-/** One channel of a raster as floats. */
-const channel = (raster: Raster, c: number) => Float32Array.from({ length: raster.size * raster.size }, (_, i) => raster.data[i * raster.channels + c]);
 
 /**
  * The satellite on the date at each pixel of the two quarters, as the prototype's `groundOn` blends
@@ -163,7 +159,7 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         cells[4 * t] = byte & NO_DATA_BIT ? 0 : byte & MATERIAL_BITS;
         cells[4 * t + 1] = lithology ? input.lithology!.data[lithology[t] * input.lithology!.channels] : 0;
         cells[4 * t + 2] = regionAt(t);
-        cells[4 * t + 3] = byte & BARREN_BIT ? 255 : 0;
+        cells[4 * t + 3] = material.data[t * material.channels + 1];
     }
     const [a, b] = input.quarters ?? [];
     if (a || b) {
@@ -174,11 +170,6 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
             colour[4 * t + 3] = seen[t] < 0.5 ? UNSEEN : Math.min(255, Math.max(2, Math.round((ndvi[t] + 1) * 127 + 1)));
             snow[4 * t + 2] = Math.round(255 * mark[t]);
         }
-    }
-    if (input.ndvimax) {
-        // Barren: the year's highest NDVI is low, softly, where a quarter measured one.
-        const most = bilinear(input.ndvimax, channel(input.ndvimax, 0).map(code => (code > 0 ? 1 - smoothstep(0.15, 0.35, (code - 1) / 127 - 1) : 0)), z, x, y);
-        for (let t = 0; t < n; t++) cells[4 * t + 3] = Math.round(255 * most[t]);
     }
     if (input.snow?.length) {
         const tile = input.snow.length === 4 ? joinSnow(input.snow, z, x, y) : input.snow[0]!;
@@ -208,9 +199,4 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         }
         return any ? { cells: page(cells), colour: page(colour), snow: page(snow) } : null;
     });
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-    const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
-    return t * t * (3 - 2 * t);
 }

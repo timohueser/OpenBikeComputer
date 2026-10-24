@@ -35,14 +35,15 @@ The archive metadata is a JSON object:
 | --- | --- |
 | `trailview_format` | `1`. A reader reads only the format that it knows |
 | `layer` | `material`, `lithology` or `region`; absent in a colour archive |
-| `archive` | The name of the archive: the layer, or `q1` to `q4` and `ndvimax` |
+| `archive` | The name of the archive: the layer, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
 
 ## Ground
 
 `trailview-ground` has three archives. Each texel is one byte, as lossless WebP: the red channel
-holds the byte, and green and blue are equal to it.
+holds the byte, and green and blue are equal to it. A material texel has the barren share in green,
+and blue is 0.
 
 | Archive | Zooms | Byte |
 | --- | --- | --- |
@@ -58,12 +59,17 @@ The material byte:
 | 6 | Barren: the highest NDVI that a quarter of the year measured is below 0.25 |
 | 7 | No data: the texel is outside the region bounds. The other bits are 0 |
 
+The barren share is round(255 × (1 − smoothstep(0.15, 0.35, NDVI))) of the highest NDVI that a
+quarter of the year measured, and 0 where no quarter looked or the texel has no data. A quarter that
+saw snow counts as NDVI −1.
+
 A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
 a region id is 0 to 254; more regions need a new format, with two bytes.
 
 A tile of the last zoom of an archive comes from the sources. A coarser texel takes the most
 common byte of its four children, the first in reading order on a tie. A material or region texel
-with no data counts only where all four have no data, and a missing child has no data.
+with no data counts only where all four have no data, and a missing child has no data. A coarser
+barren share is the rounded mean of the children with data.
 
 The material chain refines a baseline. Each step changes a texel only where the step names the
 material more precisely: the table `REFINES` of `ground.py`.
@@ -85,13 +91,9 @@ the smallest on a tie, until none does.
 
 ## Colour
 
-`trailview-colour` has five archives from the Sentinel-2 quarterly mosaics of one year. Quarter
-q holds the months 3q − 2 to 3q.
-
-| Archive | Content |
-| --- | --- |
-| `q1` to `q4` | RGBA: the colour of the quarter, and its NDVI code in alpha |
-| `ndvimax` | One byte, lossless as in [Ground](#ground): the highest NDVI code of the four quarters |
+`trailview-colour` has four archives from the Sentinel-2 quarterly mosaics of one year, `q1` to
+`q4`. Quarter q holds the months 3q − 2 to 3q. A texel is RGBA: the colour of the quarter, and its
+NDVI code in alpha.
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
 round(255 × refl^(1/2.2)). A WebP variant keeps the alpha lossless. An AVIF variant codes the alpha
