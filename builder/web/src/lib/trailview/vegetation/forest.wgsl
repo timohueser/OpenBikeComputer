@@ -47,8 +47,8 @@ struct Data {
 
 // A cell of the list: its corner in base cells, its trees at most in the low 16 bits and its level in
 // the high bits, and the height of its middle (as bits of an f32). The list holds the cells of each
-// level in a part of its own, the nearer levels first, so the trees stage roughly from near to far and
-// the near ones fill the depth before the far ones shade.
+// level in a part of its own, the nearer levels first, so the workgroups of `trees` that run side by
+// side hold cells of one level, with as many trees as far apart, and do the same work.
 struct CellList {
     // The workgroups of `trees`: one per cell of the list.
     groups: atomic<u32>,
