@@ -112,12 +112,8 @@ fn structure_vertex(v: StructureIn) -> StructureOut {
     return out;
 }
 
-// Anchors nearer than this stand on the drawn surface, farther ones on the level that draws them: the
-// mesh meets it within its morph, below a pixel there. As MESH_HEIGHT_M of instances/points.wgsl.
-const ANCHOR_MESH_M: f32 = 400.0;
-
-// The heights of the frame's anchors, one lane per end: the drawn surface there, or under the eye where
-// no page knows it. A point's far end takes the height of its near one.
+// The heights of the frame's anchors, one lane per end: the drawn surface there (`stand_height`), NONE
+// where no page knows it. A point's far end takes the height of its near one.
 @compute @workgroup_size(64)
 fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
     let i = id.x >> 1u;
@@ -131,9 +127,8 @@ fn anchor_heights(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let u = select(an.a, an.b, end == 1u && (an.flags & POINT_ANCHOR) == 0u);
-    let s = lod_space(vec2f(u - surface.anchor));
-    let h = select(units_height(u, u32(ceil(lod(s)))), plain_height(s), length(s) < ANCHOR_MESH_M);
-    anchor_out[id.x] = select(frame.eye - surface.above, h, known(h)) + an.over[end];
+    let h = stand_height(lod_space(vec2f(u - surface.anchor)), u);
+    anchor_out[id.x] = select(NONE, h + an.over[end], known(h));
 }
 
 struct AnchoredIn {
@@ -171,7 +166,8 @@ fn anchored_vertex(v: AnchoredIn, @builtin(instance_index) first: u32) -> Struct
     }
     p.z -= frame.curvature * dot(p.xy, p.xy);
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    if (frame.debug == 3u || frame.debug == 4u) {
+    // Where no page knows the height of an end yet, the vertex collapses.
+    if (frame.debug == 3u || frame.debug == 4u || !known(z.x) || !known(z.y)) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = mix(ua, ub, t);

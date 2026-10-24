@@ -49,24 +49,13 @@ const CIRCLE_M2: f32 = 502655.0;
 // A group of 8 spreads over SPREAD_M; nothing stands within CLEAR_M of the eye.
 const SPREAD_M: f32 = 14.0;
 const CLEAR_M: f32 = 6.0;
+// Herds read the ground of this level: its texels are 1.6 m at 47° N.
+const HERD_LEVEL: u32 = 16u;
+const NO_CELL: vec4u = vec4u(0xffffffffu);
 // Rocks: their heights, their kinds, and the slope past which no boulder lies.
 const ROCK_HEIGHT_M: vec2f = vec2f(0.25, 1.3);
 const SLABS: u32 = 3u;
 const STEEPEST: f32 = 0.85;
-fn mix_bits(a: u32) -> u32 {
-    var x = a * 747796405u + 2891336453u;
-    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
-    return (x >> 22u) ^ x;
-}
-
-fn mix_bits3(x: i32, y: i32, z: u32) -> u32 {
-    return mix_bits(u32(x) ^ mix_bits(u32(y) ^ mix_bits(z)));
-}
-
-fn unit_float(h: u32) -> f32 {
-    return f32(h >> 8u) / 16777216.0;
-}
-
 // Whether the feature mask keeps a thing off a point: on a road, a path or a track.
 fn on_road(s: vec2f) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
@@ -77,6 +66,17 @@ fn grazes(herd: Herd, material: u32) -> bool {
     return material < 64u && ((herd.grazes[material >> 5u] >> (material & 31u)) & 1u) == 1u;
 }
 
+// The ground cell of a herd at a point, from the page of HERD_LEVEL, so that a finer page does not move
+// a herd; NO_CELL where that page is not resident yet.
+fn herd_cell(s: vec2f) -> vec4u {
+    let held = held_at(s, HERD_LEVEL);
+    if (held.page < 0 || held.level < HERD_LEVEL) {
+        return NO_CELL;
+    }
+    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
+    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
+}
+
 var<workgroup> cell_region: u32;
 
 @compute @workgroup_size(64)
@@ -85,9 +85,12 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
     let size = 1 << HERD_SHIFT;
     let corner = cell << vec2u(HERD_SHIFT);
     if (lane == 0u) {
-        cell_region = region_at(lod_space(vec2f(corner - surface.anchor) + 0.5 * f32(size)));
+        cell_region = herd_cell(lod_space(vec2f(corner - surface.anchor) + 0.5 * f32(size))).b;
     }
     let region = workgroupUniformLoad(&cell_region);
+    if (region == NO_CELL.b) {
+        return;
+    }
     let area = f32(size) * f32(size) * surface.unit * surface.unit;
     for (var k = 0u; k < HERDS; k++) {
         let herd = herds[region * HERDS + k];
@@ -102,7 +105,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
             }
             let middle = corner + vec2i(vec2f(unit_float(mix_bits(h + 1u)), unit_float(mix_bits(h + 2u))) * f32(size));
             let centre = lod_space(vec2f(middle - surface.anchor));
-            if (length(centre) > dressing.reach.x || !grazes(herd, cell_at(centre, u32(ceil(lod(centre)))).r)) {
+            if (length(centre) > dressing.reach.x || !grazes(herd, herd_cell(centre).r)) {
                 continue;
             }
             let count = u32(herd.size.x + unit_float(mix_bits(h + 3u)) * (herd.size.y - herd.size.x + 1.0));
@@ -111,7 +114,7 @@ fn herds_of(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index
                 let a = mix_bits(h ^ (i * 2654435761u));
                 let at = middle + vec2i((vec2f(unit_float(mix_bits(a + 5u)), unit_float(mix_bits(a + 6u))) - 0.5) * spread);
                 let s = lod_space(vec2f(at - surface.anchor));
-                if (length(s) < CLEAR_M || !grazes(herd, cell_at(s, u32(ceil(lod(s)))).r) || on_road(s)) {
+                if (length(s) < CLEAR_M || !grazes(herd, herd_cell(s).r) || on_road(s)) {
                     continue;
                 }
                 let ground = stand_height(s, at);
