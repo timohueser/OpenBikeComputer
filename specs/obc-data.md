@@ -1514,7 +1514,8 @@ each is its key.
 After a switch, the [collection](#collection) of a target deletes a complete version of a prepared
 source only when no kept release reads it and a kept release reads a newer version. It removes the
 version from `versions.json` first, then deletes its files, the manifest last. The newest version
-that no release reads, a version without a manifest, and every key that no version holds stay.
+that no release reads, a version without a manifest, a version that a later version names in
+`reused`, and every key that no version holds stay.
 The store of a machine keeps the files of a version that a release of one of its targets reads,
 as [Clean](#clean) says, also after the target deleted the version.
 

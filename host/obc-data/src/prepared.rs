@@ -903,9 +903,13 @@ pub(crate) struct Obsolete<'a> {
 
 /// The complete versions of prepared sources in `listed`, the keys of a target, that no release of
 /// `kept` reads while one reads a newer version of the source. The newest version that no release
-/// reads and a version without a manifest stay. A prepared source is a folder `sources/<id>/` with
-/// `versions.json`.
-pub(crate) fn obsolete<'a>(listed: &'a BTreeMap<String, Listed>, kept: &[Release]) -> Vec<Obsolete<'a>> {
+/// reads, a version without a manifest, and a version of `reused` stay. A prepared source is a
+/// folder `sources/<id>/` with `versions.json`.
+pub(crate) fn obsolete<'a>(
+    listed: &'a BTreeMap<String, Listed>,
+    kept: &[Release],
+    reused: &BTreeSet<(String, String)>,
+) -> Vec<Obsolete<'a>> {
     let ids = listed.keys().filter_map(|key| key.strip_prefix("sources/")?.strip_suffix(&format!("/{VERSIONS}")));
     let mut obsolete = Vec::new();
     for id in ids {
@@ -925,7 +929,8 @@ pub(crate) fn obsolete<'a>(listed: &'a BTreeMap<String, Listed>, kept: &[Release
         }
         for (version, mut keys) in versions {
             let manifest = format!("{prefix}{version}/{MANIFEST}");
-            if version >= *newest || read.contains(version) || !keys.iter().any(|file| file.key == manifest) {
+            let holds = reused.contains(&(id.to_string(), version.to_string()));
+            if version >= *newest || read.contains(version) || holds || !keys.iter().any(|file| file.key == manifest) {
                 continue;
             }
             keys.sort_by_key(|file| file.key == manifest);
@@ -933,6 +938,20 @@ pub(crate) fn obsolete<'a>(listed: &'a BTreeMap<String, Listed>, kept: &[Release
         }
     }
     obsolete
+}
+
+/// Each `(id, version)` on `target` whose folder holds a file that a later version reuses: a
+/// collection keeps that version.
+pub(crate) fn reused(target: &Target, listed: &BTreeMap<String, Listed>) -> Result<BTreeSet<(String, String)>, String> {
+    let ids = listed.keys().filter_map(|key| key.strip_prefix("sources/")?.strip_suffix(&format!("/{VERSIONS}")));
+    let mut held = BTreeSet::new();
+    for id in ids {
+        for entry in versions(target, id)? {
+            let Some(manifest) = manifest(target, id, &entry.version)? else { continue };
+            held.extend(manifest.reused.into_values().map(|version| (id.to_string(), version)));
+        }
+    }
+    Ok(held)
 }
 
 /// Remove `versions` of `id` from `versions.json` on `target`, so no reader takes one.

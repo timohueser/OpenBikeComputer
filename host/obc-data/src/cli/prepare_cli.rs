@@ -712,6 +712,13 @@ pub(super) mod tests {
                 if job.done(path) {
                     continue;
                 }
+                // With `reuse-<path>`, the version keeps the file of the version before.
+                if job.root.join(format!("reuse-{path}")).exists() {
+                    if let Some(previous) = job.previous(self.0)? {
+                        job.reuse(&previous, path)?;
+                        continue;
+                    }
+                }
                 let gate = job.root.join("gate");
                 if gate.is_dir() {
                     write(&gate.join("waiting"), "");
@@ -959,6 +966,21 @@ pub(super) mod tests {
         let cause = format!("sample {} → {}", show("2026-10-01"), show("2026-10-02"));
         assert_eq!(changes(&fixture, ("prod", &prod)), [("reads".to_string(), cause)]);
         assert_eq!(changes(&fixture, ("local", &local)), [], "it reads the new version already");
+    }
+
+    #[test]
+    fn a_version_reads_a_file_that_it_reuses_from_the_version_before_and_the_collection_keeps_that_one() {
+        let (fixture, prod, _) = setup("prepare-reuse");
+        prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
+        write(&fixture.root().join("reuse-a.txt"), "");
+        prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        let manifest = prepared::manifest(&prod, "sample", "2026-10-02").unwrap().unwrap();
+        assert_eq!(manifest.reused, [("a.txt".to_string(), "2026-10-01".to_string())].into());
+        let Target::Dir(dir) = &prod else { unreachable!() };
+        assert!(!dir.join("sources/sample/2026-10-02/a.txt").exists(), "a reused file is not uploaded again");
+        let updated = update(&fixture, ("prod", &prod), &Default::default()).unwrap();
+        assert_eq!(updated.collection.unwrap().versions, Vec::<String>::new(), "2026-10-02 reads a.txt of 2026-10-01");
+        assert!(dir.join("sources/sample/2026-10-01/a.txt").exists());
     }
 
     #[test]
