@@ -71,6 +71,7 @@ npm run pretest:trailview                  # the page against the fixture
 node trailview/shoot.mjs [--views FILE] [--out DIR] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--hud] [--gpu] [--audit]
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--lab LAB] [--cracks N] [--audit N]
 node trailview/skyline.mjs [--tiles FILE] [--lab LAB] [--gpu]
+trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
 ```
 
