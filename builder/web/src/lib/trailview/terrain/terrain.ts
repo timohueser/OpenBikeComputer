@@ -151,8 +151,8 @@ interface Resources {
     check: GPURenderPipeline;
     stamp: GPUComputePipeline;
     snap: GPUComputePipeline;
-    audit: GPUComputePipeline;
-    apron: GPUComputePipeline;
+    /** The audit's pipelines, compiled on its first run: SwiftShader takes half a minute for them, and only tests audit. */
+    audits: () => Promise<GPUComputePipeline[]>;
     probeLayout: GPUBindGroupLayout;
     checkLayout: GPUBindGroupLayout;
     auditLayout: GPUBindGroupLayout;
@@ -300,7 +300,7 @@ export class Terrain {
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'normalGroup' | 'quantizeGroup' | 'probeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup' | 'mesh' | 'plainMesh' | 'holedMesh' | 'synthesize' | 'normalsOf' | 'quantize'
-            | 'probe' | 'check' | 'stamp' | 'snap' | 'audit' | 'apron' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
+            | 'probe' | 'check' | 'stamp' | 'snap' | 'audits' | 'probeLayout' | 'checkLayout' | 'auditLayout' | 'surfaceLayout' | 'emptyLayout' | 'featureLayout'> = {
             gpu, heights, normals,
             mask, snaps,
             masks: buffer('features', (1 + pages) * 4, storage),
@@ -376,7 +376,8 @@ export class Terrain {
             primitive: { topology: 'triangle-list', cullMode: paint ? 'none' : 'back' },
             depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'greater' },
         });
-        const [mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron] = await Promise.all([
+        let audits: Promise<GPUComputePipeline[]> | undefined;
+        const [mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap] = await Promise.all([
             terrainPipeline(true), terrainPipeline(false), terrainPipeline(true, true),
             compute('pages', 'synthesize', pipelineLayout(jobLayout, surfaceLayout)),
             compute('pages', 'normals_of', pipelineLayout(jobLayout, surfaceLayout)),
@@ -390,8 +391,6 @@ export class Terrain {
             }),
             compute('stamp', 'stamp', pipelineLayout(stampLayout, surfaceLayout)),
             compute('stamp', 'snap', pipelineLayout(snapLayout)),
-            compute('audit', 'audit', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
-            compute('audit', 'apron', pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout)),
         ]);
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
@@ -399,7 +398,8 @@ export class Terrain {
         await this.water.attach(gpu, frameUniform, r.nodes, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         await this.structures.attach(gpu, frameUniform, surfaceLayout, groundLayout, featureLayout, format, depthFormat);
         this.resources = {
-            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, audit, apron, probeLayout, checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
+            ...r, mesh, plainMesh, holedMesh, synthesize, normalsOf, quantize, probe, check, stamp, snap, probeLayout,
+            audits: () => (audits ??= Promise.all(['audit', 'apron'].map(entry => compute('audit', entry, pipelineLayout(auditLayout, surfaceLayout, emptyLayout, featureLayout))))), checkLayout, auditLayout, surfaceLayout, emptyLayout, featureLayout,
             stampGroup: group(stampLayout, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: snapLayout, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
@@ -671,17 +671,18 @@ export class Terrain {
         const buffers = [storage(samples.subarray(0, Math.max(1, n) * SAMPLE_WORDS)), storage(packed), storage(new Uint32Array(COUNTS)), storage(new Uint32Array(FOUND * 8)),
             storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
+        const [audit, apron] = await r.audits();
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.auditLayout, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, r.emptyGroup);
         pass.setBindGroup(3, r.featureGroup);
         if (n) {
-            pass.setPipeline(r.audit);
+            pass.setPipeline(audit);
             pass.dispatchWorkgroups(Math.ceil(n / 64));
         }
         if (pairs.length) {
-            pass.setPipeline(r.apron);
+            pass.setPipeline(apron);
             pass.dispatchWorkgroups(512 / 64, pairs.length / 8);
         }
         pass.end();

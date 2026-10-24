@@ -89,6 +89,25 @@ describe('the ground pages', () => {
         expect([...pages.pages.values()].some(slot => slot.coarse)).toBe(false);
     });
 
+    it('wait longer each time for a page whose own snow fails to load', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(0), asked: string[] = [];
+        const source: GroundTiles = {
+            coloured: 14,
+            async pages(_z, _x, _y, _quarters, _date, _world, fine) {
+                asked.push(fine ? 'fine' : 'coarse');
+                return { pages: [page(), page(), page(), page()], complete: !fine, coarse: !fine };
+            },
+        };
+        const pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        pages.setDate('2026-08-15');
+        for (const t of [0, 2000, 4000, 6000]) {
+            now.mockReturnValue(t);
+            await settle(pages, row(8580, 2));
+        }
+        expect(asked).toEqual(['coarse', 'fine', 'fine', 'fine']);
+        now.mockRestore();
+    });
+
     it('keep the openness refreshes that a frame has no room for', async () => {
         const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
         pages.setDate('2026-08-15');
