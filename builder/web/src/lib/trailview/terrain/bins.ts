@@ -1,7 +1,7 @@
 // The stamp data of a terrain node from the feature tile above it: the segments, lake edges and
 // junctions near the node, binned into a grid of cells, as stamp.wgsl reads them. A worker uses it.
 import { EARTH_RADIUS } from '../frame/frame';
-import { EXTENT, type Feature } from '../stream/features';
+import { DEEPEST, EXTENT, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 
@@ -28,8 +28,8 @@ export const FORD = 1, CORE_A = 2, CORE_B = 4, CONE_A = 8, CONE_B = 16, JOIN_A =
 const REACH_M = 40;
 /** The levels whose pages get the feature mask: they bin every road, also one that their level cannot show. */
 export const NEAR = 16;
-/** The lowest feature zoom, and the deepest. */
-const LOW = 8, DEEP = 14;
+/** The lowest feature zoom. */
+const LOW = 8;
 const UNITS = 2 ** 30;
 
 /**
@@ -98,11 +98,10 @@ export interface Node { level: number; x: number; y: number }
 
 /**
  * The feature tile that a node reads: the zoom above its own level, as a terrain tile holds four
- * nodes; none above zoom 8.
- * which holds every kind at the deepest stored level.
+ * nodes, or DEEPEST, which holds every kind; none above zoom 8.
  */
 export function featureTile({ level, x, y }: Node): Node | undefined {
-    const z = Math.min(level - 1, DEEP);
+    const z = Math.min(level - 1, DEEPEST);
     return z < LOW ? undefined : { level: z, x: x >> (level - z), y: y >> (level - z) };
 }
 
@@ -196,7 +195,7 @@ export function features(list: Feature[], tile: Node): Shapes {
 }
 
 function shapesOf(list: Feature[], tile: Node): Shapes {
-    const scale = 2 ** (17 - tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
+    const scale = unitScale(tile.level), ox = tile.x * EXTENT, oy = tile.y * EXTENT;
     const world = (xy: Int32Array, v: number) => [(ox + xy[2 * v]) * scale, (oy + xy[2 * v + 1]) * scale];
     const lines: Line[] = [], lakes: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });

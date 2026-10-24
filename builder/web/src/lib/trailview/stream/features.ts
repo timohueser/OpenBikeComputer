@@ -4,7 +4,35 @@
 export type Geometry = 'point' | 'line' | 'area';
 
 /** Tile units across a tile. The buffer lies outside 0..EXTENT. */
-export const EXTENT = 8192;
+export const EXTENT = 16384;
+/** The zoom whose tiles hold every kind, at full detail. */
+export const DEEPEST = 13;
+/** World units (2^30 across the world) per tile unit of a tile of zoom `level`. */
+export const unitScale = (level: number) => 2 ** (30 - level) / EXTENT;
+/** The square of tile `part`, at or under tile `tile`, in the tile units of `tile`: its west and north edges and its size. */
+export function square(tile: { level: number; x: number; y: number }, part: { level: number; x: number; y: number }): [number, number, number] {
+    const size = EXTENT / 2 ** (part.level - tile.level);
+    return [part.x * size - tile.x * EXTENT, part.y * size - tile.y * EXTENT, size];
+}
+/** Decoded tiles a worker keeps. */
+const KEPT = 24;
+const kept = new Map<string, Feature[]>();
+
+/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last KEPT. */
+export async function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
+    let features = kept.get(name);
+    if (features) {
+        kept.delete(name);
+    } else {
+        let bytes = new Uint8Array(body);
+        // A tile service may hand over the gzip of the archive as it is.
+        if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+        features = decodeFeatures(bytes);
+    }
+    kept.set(name, features);
+    if (kept.size > KEPT) kept.delete(kept.keys().next().value!);
+    return features;
+}
 
 export interface FeaturePart {
     /** An outer ring. The rings after it, up to the next outer ring, are its holes. Never set for a point or a line. */

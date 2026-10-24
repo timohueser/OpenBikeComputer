@@ -41,7 +41,7 @@ export async function routeFixture(page, tiles, ground, colour = 'webp-12', feat
         const url = new URL(route.request().url());
         if (url.hostname !== 'tiles.test') return route.abort();
         if (url.pathname === '/trailview-features.json') {
-            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 14, bounds: [-180, -85, 180, 85] };
+            const tilejson = { tilejson: '3.0.0', tiles: ['https://tiles.test/trailview-features/{z}/{x}/{y}.bin'], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85] };
             return route.fulfill({ body: JSON.stringify(tilejson), contentType: 'application/json', headers: cors });
         }
         const feature = /^\/trailview-features\/(\d+\/\d+\/\d+\.bin)$/.exec(url.pathname);

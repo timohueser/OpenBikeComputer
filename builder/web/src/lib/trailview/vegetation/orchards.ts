@@ -4,6 +4,7 @@ import type { Instances } from '../instances/instances';
 import { packPoints, Points, type Point } from '../instances/points';
 import { TREES } from '../models/library';
 import type { Region } from '../rules/regions';
+import { DEEPEST } from '../stream/features';
 import type { FeatureTiles } from '../terrain/stamps';
 import type { TreeModels } from './tree-models';
 
@@ -11,6 +12,7 @@ import type { TreeModels } from './tree-models';
 const REACH_M = 2000, CAPACITY = 8192;
 /** An orchard tree's heights in metres. */
 const HEIGHT_M: [number, number] = [4.5, 6];
+/** Each zoom 14 tile takes its orchards from its quarter of the zoom 13 feature tile. */
 const ZOOM = 14, EARTH_M = 40075016.686;
 /** Feature tiles kept, and loads in flight at most. */
 const KEPT = 64, LOADS = 4;
@@ -19,7 +21,7 @@ const TILE_UNITS = UNITS / 2 ** ZOOM, RESORT_UNITS = TILE_UNITS / 4;
 
 /**
  * The orchards of L8's kind `orchard`, in rows (orchard-rows.ts), as point instances. A worker makes
- * the trees of each zoom 14 feature tile about the eye; a tile's trees are of the tree model that the
+ * the trees of each zoom 14 tile about the eye; a tile's trees are of the tree model that the
  * pack of the region at the tile names, the forest's model of that species (tree-models.ts), and a
  * tile in a region whose pack names none has no trees.
  */
@@ -105,12 +107,12 @@ export class Orchards {
     }
 
     private async load(x: number, y: number): Promise<Float64Array | null> {
-        const body = await this.features!(ZOOM, x, y);
+        const up = ZOOM - DEEPEST, tile = { level: DEEPEST, x: x >> up, y: y >> up }, body = await this.features!(tile.level, tile.x, tile.y);
         if (!body) return null;
         const id = this.next++;
         return new Promise(resolve => {
             this.waiting.set(id, resolve);
-            this.worker.postMessage({ id, tile: { x, y }, body }, [body]);
+            this.worker.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body }, [body]);
         });
     }
 

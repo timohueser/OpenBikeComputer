@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { Feature } from '../stream/features';
+import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { metresPerUnit } from './bins';
 import { DRAPED, EDGE_M, WATER_VERTEX, waterMesh } from './water-mesh';
 
-/** A zoom-12 tile at Engelberg, 8192 tile units of about 0.8 m; world units per tile unit. */
-const TILE = { level: 12, x: 2143, y: 1444 }, SCALE = 2 ** (17 - TILE.level);
-const X0 = TILE.x * 8192 * SCALE, Y0 = TILE.y * 8192 * SCALE;
-/** The south-west level-13 node of the tile: tile units 0 to 4096 in x and 4096 to 8192 in y; a mesh cell of 64 of them. */
-const NODE = { level: 13, x: 2 * TILE.x, y: 2 * TILE.y + 1 }, CELL = 64 * SCALE, TEXEL = 16 * SCALE;
+/** A zoom-12 tile at Engelberg, 16384 tile units of about 0.4 m; world units per tile unit. */
+const TILE = { level: 12, x: 2143, y: 1444 }, SCALE = unitScale(TILE.level);
+const X0 = TILE.x * EXTENT * SCALE, Y0 = TILE.y * EXTENT * SCALE;
+/** The south-west level-13 node of the tile: tile units 0 to 8192 in x and 8192 to 16384 in y; a mesh cell of 128 of them. */
+const NODE = { level: 13, x: 2 * TILE.x, y: 2 * TILE.y + 1 }, CELL = 128 * SCALE, TEXEL = 32 * SCALE;
 /** A square lake 3.3 km across, and a river 20 m wide that flows east, down from 1010 m to 1000 m. */
-const lake = { kind: 'lake', tags: {}, parts: [{ outer: true, xy: new Int32Array([1000, 1000, 5000, 1000, 5000, 5000, 1000, 5000]), z: new Float32Array(4).fill(1000) }] };
-const river = { kind: 'river', tags: { waterway: 'river', width: '20' }, parts: [{ outer: false, xy: new Int32Array([500, 7000, 7000, 7500]), z: new Float32Array([1010, 1000]) }] };
+const lake = { kind: 'lake', tags: {}, parts: [{ outer: true, xy: new Int32Array([2000, 2000, 10000, 2000, 10000, 10000, 2000, 10000]), z: new Float32Array(4).fill(1000) }] };
+const river = { kind: 'river', tags: { waterway: 'river', width: '20' }, parts: [{ outer: false, xy: new Int32Array([1000, 14000, 14000, 15000]), z: new Float32Array([1010, 1000]) }] };
 
 describe('the water mesh of a node', () => {
     const mesh = waterMesh([lake, river] as Feature[], TILE, NODE)!;
@@ -22,7 +22,7 @@ describe('the water mesh of a node', () => {
     const triangles = Array.from({ length: mesh.indices.length / 3 }, (_, t) => [0, 1, 2].map(k => vertices[mesh.indices[3 * t + k]]));
 
     it('cuts a lake to the node, and a texel past it, into triangles that cover it, no edge longer than EDGE_M and no vertex on the edge of another triangle', () => {
-        const surface = triangles.filter(t => t.every(v => v.half === 0)), box = [1000 * SCALE, 4096 * SCALE - TEXEL, 4096 * SCALE + TEXEL, 5000 * SCALE];
+        const surface = triangles.filter(t => t.every(v => v.half === 0)), box = [2000 * SCALE, 8192 * SCALE - TEXEL, 8192 * SCALE + TEXEL, 10000 * SCALE];
         const area = surface.reduce((sum, [a, b, c]) => sum + Math.abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2, 0);
         expect(area / ((box[2] - box[0]) * (box[3] - box[1]))).toBeCloseTo(1, 5);
         const uses = new Map<string, number>();
@@ -56,7 +56,7 @@ describe('the water mesh of a node', () => {
     });
 
     it('draws a river area after the ribbons and the lakes, on the drawn surface, in triangles of 4 mesh cells at most that cover it', () => {
-        const strip = { kind: 'river-area', tags: {}, parts: [{ outer: true, xy: new Int32Array([1000, 5500, 4000, 5500, 4000, 6500, 1000, 6500]) }] };
+        const strip = { kind: 'river-area', tags: {}, parts: [{ outer: true, xy: new Int32Array([2000, 11000, 8000, 11000, 8000, 13000, 2000, 13000]) }] };
         const withArea = waterMesh([lake, river, strip] as Feature[], TILE, NODE)!, words = new Float32Array(withArea.vertices), ints = new Int32Array(withArea.vertices);
         expect(withArea.indices.slice(0, withArea.ribbons + withArea.lakes)).toEqual(mesh.indices);
         const area = withArea.indices.slice(withArea.ribbons + withArea.lakes);
@@ -68,6 +68,6 @@ describe('the water mesh of a node', () => {
             for (const [px, py, qx, qy] of [[ax, ay, bx, by], [bx, by, cx, cy], [cx, cy, ax, ay]]) expect(Math.hypot(px - qx, py - qy)).toBeLessThanOrEqual(4 * CELL + 1);
             covered += Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2;
         }
-        expect(covered / (3000 * 1000 * SCALE * SCALE)).toBeCloseTo(1, 5);
+        expect(covered / (6000 * 2000 * SCALE * SCALE)).toBeCloseTo(1, 5);
     });
 });
