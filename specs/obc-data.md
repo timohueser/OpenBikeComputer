@@ -815,7 +815,8 @@ those tiles in the version of `terrain` that the target reads (see [Prepared sou
 the step list reads its manifest, and the leaf reads the files `16/<ti:04>/<tj:04>.tif` of the
 manifest among those tiles and its `index.json`. So a machine with an empty store plans a region
 from the manifest alone. A leaf where the version has none of its tiles has no `device/reference`
-layer. Where a tile that the version lacks is in the `geofabrik-poly` polygon of one of the
+layer. Where a tile that the version lacks meets the outline of the region and is in the
+`geofabrik-poly` polygon of one of the
 `areas` of a `dtm-*` model, a note on `device/terrain` names the model and the command that adds
 the region; the version that adds it is a new input of the leaves that read it.
 

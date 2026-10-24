@@ -152,8 +152,9 @@ impl Device {
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let (mut steps, mut blocked, mut notes, mut shapes) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
+        let region: BTreeSet<CellId> = outlines.iter().flat_map(|outline| outline.cells(TILE_LOG2.into())).collect();
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
-            let reference = reference(inputs, store, (leaf, cells), &mut shapes, &mut wanted, &mut notes)?;
+            let reference = reference(inputs, store, (leaf, cells, &region), &mut shapes, &mut wanted, &mut notes)?;
             let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
             steps.extend(reference);
             steps.push(terrain);
@@ -511,7 +512,7 @@ fn in_areas(
 fn reference(
     inputs: &Inputs,
     store: &Store,
-    (leaf, cells): (LeafId, &[CellId]),
+    (leaf, cells, region): (LeafId, &[CellId], &BTreeSet<CellId>),
     shapes: &mut BTreeMap<String, Shape>,
     wanted: &mut Vec<Wanted>,
     notes: &mut Vec<Note>,
@@ -523,7 +524,7 @@ fn reference(
     let windows = cells.iter().map(|cell| window_of(cell).expect("a terrain cell has a window"));
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
-    let models = Models { tiles: &tiles, pool: "", layer: Some(DEVICE_TERRAIN.name) };
+    let models = Models { tiles: &tiles, pool: "", layer: Some((DEVICE_TERRAIN.name, region)) };
     let Some(read) = models.read(inputs, store, shapes, wanted, notes)? else { return Ok(None) };
     let tiles: Vec<String> = tiles.iter().map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
     Ok(Some(Step {
@@ -547,7 +548,9 @@ pub(crate) struct Models<'a> {
     pub tiles: &'a BTreeSet<CellId>,
     /// `""` for the maximum, `"mean/"` for the mean.
     pub pool: &'a str,
-    pub layer: Option<&'a str>,
+    /// The layer that notes a missing tile, and the archive tiles of the region: a cell reaches past
+    /// the region, where it takes GLO-30 without a note.
+    pub layer: Option<(&'a str, &'a BTreeSet<CellId>)>,
 }
 
 impl Models<'_> {
@@ -570,12 +573,17 @@ impl Models<'_> {
             },
             Err(_) => (None, BTreeSet::new()),
         };
-        if let Some(layer) = self.layer {
-            let missing: Vec<CellId> = self.tiles.iter().filter(|tile| !held.contains(&path(tile))).copied().collect();
+        if let Some((layer, region)) = self.layer {
             let square = |tile: &CellId| {
                 let (west, south, east, north) = tile.square();
                 [west, south, east, north].map(|udeg| udeg as f64 / 1e6)
             };
+            let missing: Vec<CellId> = self
+                .tiles
+                .iter()
+                .filter(|tile| !held.contains(&path(tile)) && region.contains(tile))
+                .copied()
+                .collect();
             for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-") && source.redistribute) {
                 let near: Vec<CellId> = missing.iter().filter(|tile| source.meets(square(tile))).copied().collect();
                 if !near.is_empty() && in_areas(inputs, store, (source, &near), shapes, wanted)? == Some(true) {
@@ -1357,5 +1365,20 @@ pub(crate) mod tests {
         let terrain: BTreeSet<&str> =
             builds(&update.plan).into_iter().filter(|step| step.starts_with("device/terrain/")).collect();
         assert_eq!(terrain, ["device/terrain/0037-0032"].into(), "the leaf without a Swiss tile is kept");
+
+        // Every tile in the box of the region: the cells read tiles past it, which take GLO-30
+        // without a note.
+        let Area::Box { bbox } = &regions.get("grimsel").unwrap().area else { unreachable!() };
+        let tiles = Coverage::parse_poly(&box_poly(bbox)).unwrap().cells(TILE_LOG2.into());
+        let paths: Vec<String> = tiles.iter().map(|tile| format!("16/{:04}/{:04}.tif", tile.i, tile.j)).collect();
+        let (pinned, manifest) = terrain_version(&mut inputs, &paths.iter().map(String::as_str).collect::<Vec<_>>());
+        stored(&store, "terrain", &pinned, &[], &[(MANIFEST.into(), manifest)]);
+        let listed = map_steps(&root(), &inputs, &regions, &store).unwrap();
+        assert_eq!(listed.notes, []);
+        let past = listed.steps.iter().filter(|step| step.name.starts_with("device/reference/")).any(|step| {
+            let Input::Snapshot { files, .. } = &step.inputs[0] else { panic!() };
+            step.options["tiles"].as_array().unwrap().len() > files.len() - 1
+        });
+        assert!(past, "a cell reads a tile past the region");
     }
 }
