@@ -120,13 +120,14 @@ export class TrailView {
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
-        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, featureTiles(config), config.bounds, () => this.request());
+        const features = featureTiles(config);
+        this.terrain = new Terrain(this.frame, { fetch: releaseTiles(config), decode: pageDecoder() }, features, config.bounds, () => this.request());
         this.groundLook = new Ground(ground, () => this.request());
-        this.houses = new Houses(this.frame, featureTiles(config), this.groundLook.rules, () => this.request());
+        this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request());
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear());
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request());
         this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request());
-        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, featureTiles(config), () => this.request());
+        this.orchards = new Orchards(this.groundLook.rules, this.trees, this.instances, features, () => this.request());
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {

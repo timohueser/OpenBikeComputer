@@ -1,10 +1,10 @@
 import type { PlannerConfig } from '../../planner/config';
-import { openSource, requestSignal, type Source } from '../../planner/layers/archive';
+import { decodedTiles, openSource, requestSignal, type Source, type TileGetter, type Tiles } from '../../planner/layers/archive';
 import { snowMeta } from '../../planner/layers/snow';
 import { releaseFetch } from '../../planner/release';
 import type { GroundResult } from '../ground/pages';
 import { rulesOf, type Rules } from '../rules/regions';
-import type { GroundDate } from './ground-pages';
+import { snowDay, type GroundDate } from './ground-pages';
 import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
@@ -15,8 +15,8 @@ const NAMES = {
 type Layer = keyof typeof NAMES;
 const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
 const WORKERS = 2;
-/** Encoded tile bodies kept, so a new date or a new device builds the pages again without a request. */
-const BODIES = 96 * 2 ** 20;
+/** Tile bodies kept per layer, so a new device or a page that comes back builds again without a request. */
+const BODIES = 16 * 2 ** 20;
 const SNOW_TILE = 256 * 256 * 2;
 
 /**
@@ -27,14 +27,16 @@ export class GroundSource {
     requests = 0;
     bytes = 0;
     failed = 0;
-    private readonly bodies = new Map<string, Promise<ArrayBuffer | undefined>>();
-    private readonly sizes = new Map<string, number>();
-    private held = 0;
+    private readonly bodies: Partial<Record<Layer, Tiles<ArrayBuffer>>>;
+    /** The snow days of one day step: a new day loads the snow tiles again. */
+    private snow?: { index: number; tiles: Tiles<ArrayBuffer> };
     private readonly workers = Array.from({ length: WORKERS }, () => new Worker(new URL('./ground-worker.ts', import.meta.url), { type: 'module' }));
     private readonly waiting = new Map<number, { worker: Worker; resolve: (data: GroundResult) => void; reject: (error: Error) => void }>();
     private next = 0;
 
     private constructor(readonly rules: Rules, private readonly sources: Partial<Record<Layer, Source>>, readonly seasons: number) {
+        this.bodies = Object.fromEntries(Object.keys(sources).filter(layer => layer !== 'snow')
+            .map(layer => [layer, decodedTiles(this.counted(layer as Layer), body => body.buffer, BODIES, body => body.byteLength)]));
         for (const worker of this.workers) {
             worker.onmessage = ({ data }) => {
                 const wait = this.waiting.get(data.id);
@@ -106,16 +108,17 @@ export class GroundSource {
         let complete = true;
         const optional = (body: Promise<Body | undefined>) => body.catch(() => void (complete = false));
         const at = (layer: Layer, zoom: number, planar = false) => {
-            const body = this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar);
+            const body = this.body(layer, Math.min(zoom, this.sources[layer]?.maxZoom ?? -1), x, y, z, planar, date.snowIndex);
             return layer === 'material' ? body : optional(body);
         };
         const colour = this.sources.q1, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
         const snow = this.sources.snow, zs = z + 1;
         const finer = snow !== undefined && zs <= snow.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
-        const coarse = finer.length > 0 && !fine && !finer.every(([sx, sy]) => this.sizes.has(`snow/${zs}/${sx}/${sy}`));
+        const days = snow && this.snowDays(date.snowIndex);
+        const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.loaded(zs, sx, sy) === undefined);
         const snowBodies = !snow ? [] : finer.length && !coarse
-            ? finer.map(([sx, sy]) => optional(this.body('snow', zs, sx, sy, zs, true)))
+            ? finer.map(([sx, sy]) => optional(this.body('snow', zs, sx, sy, zs, true, date.snowIndex)))
             : [at('snow', z, true)];
         const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
@@ -123,7 +126,7 @@ export class GroundSource {
             ...snowBodies,
         ]);
         const job: GroundJob = {
-            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, ndvimax, snow: snowTiles, seasons: this.seasons, date, world,
+            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, ndvimax, snow: snowTiles, date, world,
         };
         const id = this.next++, worker = this.workers[id % WORKERS];
         const bodies = [material, lithology, region, a, b, ndvimax, ...snowTiles].flatMap(body => (body ? [body.body] : []));
@@ -135,42 +138,40 @@ export class GroundSource {
     }
 
     /** The body of the tile of a layer at a zoom that holds tile z/x/y of zoom `of`; undefined where the layer has none. */
-    private async body(layer: Layer, zoom: number, x: number, y: number, of: number, planar = false): Promise<Body | undefined> {
+    private async body(layer: Layer, zoom: number, x: number, y: number, of: number, planar = false, index = 0): Promise<Body | undefined> {
         const source = this.sources[layer];
         if (!source || zoom < source.minZoom || zoom > of) return undefined;
-        const tx = x >> (of - zoom), ty = y >> (of - zoom), key = `${layer}/${zoom}/${tx}/${ty}`;
-        let entry = this.bodies.get(key);
-        if (entry) {
-            this.bodies.delete(key);
-            this.bodies.set(key, entry);
-        } else {
-            entry = source.get(zoom, tx, ty, requestSignal()).then(body => {
-                this.requests++;
-                if (body && planar && body.byteLength % SNOW_TILE) throw new Error(`Snow tile ${key} has ${body.byteLength} bytes.`);
-                this.keep(key, body?.byteLength ?? 0);
-                return body;
-            });
-            this.bodies.set(key, entry);
-            entry.catch(() => {
-                this.failed++;
-                this.bodies.delete(key);
-            });
-        }
-        const body = await entry;
-        // A copy for the worker to take: the bodies stay here for the next date.
-        return body && { key, z: zoom, x: tx, y: ty, body: body.slice(0), planar };
+        const tx = x >> (of - zoom), ty = y >> (of - zoom);
+        const body = await (layer === 'snow' ? this.snowDays(index) : this.bodies[layer]!).tile(zoom, tx, ty);
+        // A copy for the worker to take: the bodies stay here.
+        return body ? { key: `${layer}/${zoom}/${tx}/${ty}`, z: zoom, x: tx, y: ty, body: body.slice(0), planar } : undefined;
     }
 
-    private keep(key: string, bytes: number): void {
-        this.bytes += bytes;
-        this.sizes.set(key, bytes);
-        this.held += bytes;
-        for (const old of this.bodies.keys()) {
-            if (this.held <= BODIES) break;
-            if (old === key) continue;
-            this.bodies.delete(old);
-            this.held -= this.sizes.get(old) ?? 0;
-            this.sizes.delete(old);
+    /** The snow days of a day step, kept in place of the snow tiles. */
+    private snowDays(index: number): Tiles<ArrayBuffer> {
+        if (this.snow?.index !== index) {
+            const tiles = decodedTiles(this.counted('snow'), body => {
+                if (body.byteLength !== this.seasons * SNOW_TILE) throw new Error(`A snow tile of ${this.seasons} seasons has ${body.byteLength} bytes.`);
+                return snowDay(body, this.seasons, index).buffer;
+            }, BODIES, day => day.byteLength);
+            this.snow = { index, tiles };
         }
+        return this.snow.tiles;
+    }
+
+    /** The tiles of a layer, counted in the requests, the bytes and the failures. */
+    private counted(layer: Layer): TileGetter {
+        const source = this.sources[layer]!;
+        return async (z, x, y, signal) => {
+            try {
+                const body = await source.get(z, x, y, signal);
+                this.requests++;
+                this.bytes += body?.byteLength ?? 0;
+                return body;
+            } catch (error) {
+                this.failed++;
+                throw error;
+            }
+        };
     }
 }
