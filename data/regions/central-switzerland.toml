@@ -1,6 +1,6 @@
 name = "Central Switzerland"
 kind = "box"
 # west, south, east, north
-box = [7.6, 46.46, 8.95, 47.25]
+box = [7.6, 46.47, 8.95, 47.25]
 countries = ["CH"]
 time_zone = "Europe/Zurich"
