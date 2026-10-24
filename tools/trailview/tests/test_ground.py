@@ -176,5 +176,22 @@ class RegionTest(unittest.TestCase):
         self.assertEqual(region[256, column(west + 15 * km)], 2, "30 km from the ecoregion")
 
 
+class OsmAreasTest(unittest.TestCase):
+    def test_a_forest_of_a_store_object_is_read(self):
+        import osmium
+
+        with tempfile.TemporaryDirectory() as directory:
+            pbf = Path(directory) / "forest.osm.pbf"
+            with osmium.SimpleWriter(str(pbf)) as writer:
+                corners = [(8.0, 47.0), (8.01, 47.0), (8.01, 47.01), (8.0, 47.01)]
+                for node, location in enumerate(corners, 1):
+                    writer.add_node(osmium.osm.mutable.Node(id=node, location=location))
+                tags = {"landuse": "forest", "leaf_type": "needleleaved"}
+                writer.add_way(osmium.osm.mutable.Way(id=1, nodes=[1, 2, 3, 4, 1], tags=tags))
+            # The store names an object by its digest, with no extension that names its format.
+            forests, _ = ground.osm_areas(pbf.rename(Path(directory) / "7b0bf1524a29"), VOCABULARY)
+        self.assertEqual(len(forests), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

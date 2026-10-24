@@ -211,7 +211,9 @@ def osm_areas(path, vocabulary):
     forests, areas = [], []
     keys = osmium.filter.KeyFilter("natural", "landuse")
     factory = osmium.geom.WKBFactory()
-    for area in osmium.FileProcessor(str(path)).with_areas(keys).with_filter(osmium.filter.EntityFilter(osmium.osm.AREA)):
+    # A store object has no file extension that names its format.
+    osm = osmium.io.File(str(path), "pbf")
+    for area in osmium.FileProcessor(osm).with_areas(keys).with_filter(osmium.filter.EntityFilter(osmium.osm.AREA)):
         tags = dict(area.tags)
         forest, other = forest_material(tags), area_material(tags)
         if not (forest or other):
