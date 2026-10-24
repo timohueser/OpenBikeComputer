@@ -169,6 +169,7 @@ The bake adds these to the features of the road solver:
 | tag `bridge:structure` | each way of a bridge that hangs | `simple-suspension`, where OSM does not tag a cable bridge: a path bridge longer than 40 m that runs more than 25 m over the terrain |
 | tag `uphill` | each `gallery` | `left` or `right` of its way: the side where the terrain 10 m from it lies higher on average |
 | point `bridge-pier` | each pier of a bridge | Its height is the bridge's road there. Its kind has the `min_zoom` of its bridge |
+| tag `stations` | each `aerialway` with an end that has no station of its own | `start`, `end` or `none`: the ends that have one |
 | point `catenary-mast` | each mast of the contact wire of a `railway` tagged `electrified` `contact_line` or `yes`, but not a funicular | Its height is its track's rail there. Tag `on` `deck` on a bridge |
 
 The masts of a track stand evenly along each of its ways, at most 50 m apart, 3 m beside its middle, or
@@ -190,6 +191,15 @@ within its half-width and 1 m, a river area or a lake. A road is its line within
 half-width: half its `width` (at least 0.4 m), else 6 m for a main road, 3 m for a road or a
 `pedestrian` way, 1.5 m for a `cycleway`, 0.6 m for a `via_ferrata` and 1 m for another path. A cable
 bridge has no piers.
+
+Each vertex of an `aerialway` between its ends is a pylon. OSM maps the stations at the ends of the way
+and often no pylon between them. A way splits at each vertex where another `aerialway` ends: there is a
+mid-station. Where a span is longer than its rig allows, or where a carrier would come nearer the
+terrain than its clearance, the bake adds a pylon: in the middle of a long span, else at the point of
+the span at least 25 m from both of its ends where the carrier comes nearest. The rigs are those of
+`tools/trailview/lifts.py`. A station at an end that lies inside a mapped building is that building;
+of the ways that end at one point, only the first in the OSM data has the station there. The tag
+`stations` names the ends that have a station of their own.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
@@ -238,16 +248,18 @@ bakes the layer again.
 ### Add a kind
 
 Add one entry at the position where it must take its objects before the entries after it. For
-example, summit crosses:
+example, wayside shrines:
 
 ```json
 {
-  "kind": "summit-cross",
+  "kind": "shrine",
   "geometry": "point",
-  "match": [{"summit:cross": ["yes"]}],
-  "keep": ["material"],
+  "match": [{"historic": ["wayside_shrine"]}],
+  "keep": ["height"],
   "height": "surface"
 }
 ```
 
-Then add the engine module of the kind. The tile format, the bake and the decoder do not change.
+Then add the engine module of the kind, `builder/web/src/lib/trailview/kinds/shrine.ts`, and the model
+that it names, `models/shrine.ts`. The engine finds the module by its file name. The tile format, the
+bake, the decoder and the other engine files do not change.

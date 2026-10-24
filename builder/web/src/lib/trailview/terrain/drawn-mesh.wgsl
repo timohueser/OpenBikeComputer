@@ -122,3 +122,24 @@ fn mesh_height(s: vec2f, snapping: bool) -> f32 {
     }
     return h;
 }
+
+// A thing on the drawn surface nearer than this stands on the drawn height; a farther one on the
+// bilinear heights of the two levels that the mesh blends there, which meet the mesh within a pixel.
+const MESH_HEIGHT_M: f32 = 400.0;
+
+// The ground under a point of LOD space, `u` in whole world units: where the mesh draws it.
+fn stand_height(s: vec2f, u: vec2i) -> f32 {
+    if (length(s) < MESH_HEIGHT_M) {
+        return plain_height(s);
+    }
+    // As grid_vertex: a node of level `fine` goes to the coarser level's height by its morph.
+    let q = lod(s);
+    let fine = u32(ceil(q));
+    let h = units_height(u, fine);
+    let morph = f32(fine) - q;
+    if (morph <= 0.0) {
+        return h;
+    }
+    let coarse = units_height(u, fine - 1u);
+    return select(select(h, coarse, known(coarse)), mix(h, coarse, morph), known(h) && known(coarse));
+}

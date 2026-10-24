@@ -21,6 +21,8 @@ import { Forest } from './vegetation/forest';
 import { Orchards } from './vegetation/orchards';
 import { Plants } from './vegetation/plants';
 import type { Labs } from './labs';
+import { Dressing } from './dressing/dressing';
+import { KindPoints } from './structures/kind-points';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
 const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'resolve'];
@@ -84,6 +86,8 @@ export class TrailView {
     private readonly forest: Forest;
     private readonly plants: Plants;
     private readonly orchards: Orchards;
+    private readonly kindPoints: KindPoints;
+    private readonly dressing: Dressing;
     private readonly sky = new Sky();
     private readonly resolve = new Resolve();
     private readonly temporal = new Temporal();
@@ -121,6 +125,8 @@ export class TrailView {
         this.forest = new Forest(config, this.groundLook.rules, this.instances, () => this.request());
         this.plants = new Plants(this.groundLook.rules, this.instances, labs.grass === 'blades', () => this.request());
         this.orchards = new Orchards(this.groundLook.rules, this.instances, featureTiles(config), () => this.request());
+        this.kindPoints = new KindPoints(this.instances);
+        this.dressing = new Dressing(this.groundLook.rules, this.instances);
         this.controls = new Controls(canvas, {
             pose: () => this.pose,
             moved: pose => { this.pose = pose; this.moved = true; this.request(); },
@@ -322,12 +328,14 @@ export class TrailView {
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
+        this.kindPoints.update(this.terrain.kindPoints);
         const { drawn, wanted, refreshed, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, refreshed, origins, this.extras.date, lonLat);
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
         this.forest.update(lonLat, this.extras.date);
         this.plants.update(lonLat, this.extras.date);
         this.orchards.update(lonLat, this.extras.date, this.groundLook.rules.regions[[...this.groundLook.regionsAt(...lonLat)].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1]);
+        this.dressing.update(lonLat);
         const group = this.groundLook.group;
         this.drawing = !!(eye && group);
         let step: Step | undefined, offset: [number, number] = [0, 0], ndc: [number, number] = [0, 0], moved = true, changed = false;
@@ -406,6 +414,8 @@ export class TrailView {
         this.instances.bake(encoder);
         const pass = encoder.beginComputePass({ label: 'vegetation', timestampWrites: timing() });
         this.instances.run(pass, ground);
+        // The anchored meshes' heights share the pass: a pass of their own costs more than their work.
+        this.terrain.encodeAnchors(pass);
         pass.end();
         return this.instances.read(encoder);
     }

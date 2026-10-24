@@ -63,17 +63,6 @@ fn plant_hash(cell: vec2i, salt: u32) -> f32 {
     return f32(plant_bits(u32(cell.x) ^ plant_bits(u32(cell.y) ^ plant_bits(salt))) >> 8u) / 16777216.0;
 }
 
-// The ground cell at a point, from the finest resident ground page: material, lithology, region,
-// barren; NO_PLANT in x where no page holds it.
-fn cell_at(s: vec2f) -> vec4u {
-    let held = held_at(s, u32(ceil(lod(s))));
-    if (held.page < 0) {
-        return vec4u(NO_PLANT);
-    }
-    let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
-}
-
 fn cover_of(material: u32) -> u32 {
     return data.covers[material / 4u][material % 4u];
 }
@@ -121,8 +110,8 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     if (plant_hash(cell, 3u) > keep) {
         return;
     }
-    let ground = cell_at(s);
-    if (ground.x == NO_PLANT || (ground.z + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
+    let ground = cell_at(s, u32(ceil(lod(s))));
+    if ((ground.z + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
         return;
     }
     let cover = cover_of(ground.x);
@@ -180,8 +169,8 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
     if (!roughly_visible(s, d)) {
         return;
     }
-    let ground = cell_at(s);
-    if (ground.x == NO_PLANT || (ground.z + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
+    let ground = cell_at(s, u32(ceil(lod(s))));
+    if ((ground.z + 1u) * REGION_WORDS > arrayLength(&data.regions)) {
         return;
     }
     let cover = cover_of(ground.x) & 255u;
@@ -249,10 +238,7 @@ fn blades(@builtin(global_invocation_id) id: vec3u) {
     if (d > BLADES_M || d < 0.5 || !roughly_visible(s, d)) {
         return;
     }
-    let ground = cell_at(s);
-    if (ground.x == NO_PLANT) {
-        return;
-    }
+    let ground = cell_at(s, u32(ceil(lod(s))));
     let cover = cover_of(ground.x);
     if (((cover & 255u) != COVER_GRASS && (cover & 255u) != COVER_CROP) || (cover & MOOR) != 0u || on_road(s, 0.2) || plant_hash(cell, 7u) < snow_at(s)) {
         return;

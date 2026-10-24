@@ -1,6 +1,7 @@
 // What a producer of instances includes: `emit` puts one instance on the drawn surface into the draw of
-// its model's tier. A producer is a compute pass that finds its instances and stands them on `stand_height`;
-// instances.ts sorts what the producers stage into one list per draw. Group 0 holds bindings 0 to 6; a
+// its model's tier, and the hashes of a place. A producer is a compute pass that finds its instances and
+// stands them on `stand_height` (drawn-mesh.wgsl); instances.ts sorts what the producers stage into one
+// list per draw. Group 0 holds bindings 0 to 6; a
 // producer's own bindings start at 8. Include it with `// #include ../instances/emit.wgsl`.
 // #include ../terrain/drawn-mesh.wgsl
 // #include ../terrain/view.wgsl
@@ -78,25 +79,19 @@ struct Occlusion {
 
 // Draws per model: three mesh tiers and the far tier, as TIERS of instances.ts.
 const TIERS: u32 = 4u;
-// Instances nearer than this stand on the drawn height; farther ones on the bilinear heights of the two
-// levels that the mesh blends there, which meet the mesh within a pixel.
-const MESH_HEIGHT_M: f32 = 400.0;
+// The hashes of the producers: a place's values come from whole world cells, the same at every distance.
+fn mix_bits(a: u32) -> u32 {
+    var x = a * 747796405u + 2891336453u;
+    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+    return (x >> 22u) ^ x;
+}
 
-// The ground under a point of LOD space, `u` in whole world units: where the mesh draws it.
-fn stand_height(s: vec2f, u: vec2i) -> f32 {
-    if (length(s) < MESH_HEIGHT_M) {
-        return plain_height(s);
-    }
-    // As grid_vertex: a node of level `fine` goes to the coarser level's height by its morph.
-    let q = lod(s);
-    let fine = u32(ceil(q));
-    let h = units_height(u, fine);
-    let morph = f32(fine) - q;
-    if (morph <= 0.0) {
-        return h;
-    }
-    let coarse = units_height(u, fine - 1u);
-    return select(select(h, coarse, known(coarse)), mix(h, coarse, morph), known(h) && known(coarse));
+fn mix_bits3(x: i32, y: i32, z: u32) -> u32 {
+    return mix_bits(u32(x) ^ mix_bits(u32(y) ^ mix_bits(z)));
+}
+
+fn unit_float(h: u32) -> f32 {
+    return f32(h >> 8u) / 16777216.0;
 }
 
 // The NDC span of a sphere in front of the eye along the clip axis `row`, `w` the clip w row: the two
