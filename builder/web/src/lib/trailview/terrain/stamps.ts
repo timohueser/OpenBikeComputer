@@ -5,8 +5,8 @@ import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
 
-/** Feature tile bodies kept, and the bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
-const BODIES = 32 * 2 ** 20, NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
+/** The bytes of the binned nodes and their water meshes kept; an entry costs ENTRY_BYTES more. */
+const NODE_BYTES = 64 * 2 ** 20, ENTRY_BYTES = 64;
 /** Requests to the worker in flight at most. */
 const REQUESTS = 8;
 
@@ -47,9 +47,6 @@ export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
     private readonly pending = new Set<string>();
-    private readonly bodies = new Map<string, Promise<ArrayBuffer | undefined>>();
-    private readonly sizes = new Map<string, number>();
-    private bodyBytes = 0;
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
@@ -118,35 +115,12 @@ export class Stamps implements StampSource {
     }
 
     private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
-        const body = await this.body(tile);
+        const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
             this.worker!.postMessage({ id, tile, node, body, what });
         });
-    }
-
-    private body(tile: Node): Promise<ArrayBuffer | undefined> {
-        const name = key(tile);
-        let body = this.bodies.get(name);
-        if (body) {
-            this.bodies.delete(name);
-            this.bodies.set(name, body);
-            return body;
-        }
-        body = this.tiles!(tile.level, tile.x, tile.y);
-        this.bodies.set(name, body);
-        body.then(data => {
-            this.sizes.set(name, data?.byteLength ?? 0);
-            this.bodyBytes += data?.byteLength ?? 0;
-            for (const [old] of this.bodies) {
-                if (this.bodyBytes <= BODIES) break;
-                this.bodies.delete(old);
-                this.bodyBytes -= this.sizes.get(old) ?? 0;
-                this.sizes.delete(old);
-            }
-        }, () => this.bodies.delete(name));
-        return body;
     }
 }

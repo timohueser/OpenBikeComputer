@@ -2,16 +2,16 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { groundPages, type GroundDate, type Raster } from './ground-pages';
 
-/** A tile body: an image, or the planar bytes of a snow tile. */
+/** A tile body: an image, or the bytes of a snow day. */
 export interface Body { key: string; z: number; x: number; y: number; body: ArrayBuffer; planar?: boolean }
 
 export interface GroundJob {
     z: number; x: number; y: number;
     material?: Body; lithology?: Body; region?: Body; quarters?: [Body | undefined, Body | undefined]; ndvimax?: Body; snow?: (Body | undefined)[];
-    seasons: number; date: GroundDate; world: number;
+    date: GroundDate; world: number;
 }
 
-/** Decoded tiles by key, and the bytes of each that has arrived; a coarse tile serves the pages of many material tiles. */
+/** Decoded images by key, and the bytes of each that has arrived; a coarse tile serves the pages of many material tiles. */
 const decoded = new Map<string, Promise<Raster>>();
 const sizes = new Map<string, number>();
 const BUDGET = 96 * 2 ** 20;
@@ -50,15 +50,15 @@ async function straightPixels(body: ArrayBuffer): Promise<{ size: number; data: 
 function raster(body: Body | undefined): Promise<Raster | undefined> {
     if (!body) return Promise.resolve(undefined);
     const { key, z, x, y } = body;
+    // A planar body is its raster, and the main thread keeps it.
+    if (body.planar) return Promise.resolve({ z, x, y, size: 256, channels: 1, data: new Uint8Array(body.body) });
     let entry = decoded.get(key);
     if (entry) {
         decoded.delete(key);
         decoded.set(key, entry);
         return entry;
     }
-    entry = body.planar
-        ? Promise.resolve({ z, x, y, size: 256, channels: 1, data: new Uint8Array(body.body) })
-        : straightPixels(body.body).then(({ size, data }) => ({ z, x, y, size, channels: 4, data }));
+    entry = straightPixels(body.body).then(({ size, data }) => ({ z, x, y, size, channels: 4, data }));
     decoded.set(key, entry);
     entry.then(out => {
         if (decoded.get(key) !== entry) return;
