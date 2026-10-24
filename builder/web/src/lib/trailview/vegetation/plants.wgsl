@@ -183,7 +183,7 @@ fn ground_plants(@builtin(global_invocation_id) id: vec3u) {
     let height = mix(heights.x, heights.y, plant_hash(cell, 4u)) / sqrt(sqrt(thin)) * size;
     let yaw = 6.2831853 * plant_hash(cell, 5u);
     let seed = mix_bits3(cell.x, cell.y, 11u) % SEEDS;
-    emit_tree(pick + seed, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t));
+    emit_tree(pick + seed, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t));
 }
 
 @compute @workgroup_size(8, 8)
@@ -256,7 +256,7 @@ fn shrubs(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let yaw = 6.2831853 * plant_hash(cell, 5u);
-    emit_tree(model, render_at(s, h - slope_sink(model, stood.y, height, 1.0, 0.0)), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), snow_at(s), ground_albedo(t));
+    emit_tree(model, render_at(s, h), height, yaw, 1.0, 0.88 + 0.24 * plant_hash(cell, 6u), 1.0, 0.0, stood.y, pick_of(yaw, height), snow_at(s), ground_albedo(t));
 }
 
 // The near sward: a patch of blades on a grid of 0.33 m within BLADES_M, on grass and crops off the
@@ -288,5 +288,5 @@ fn blades(@builtin(global_invocation_id) id: vec3u) {
     }
     let height = (0.25 + 0.15 * plant_hash(cell, 4u)) * size;
     let yaw = 6.2831853 * plant_hash(cell, 5u);
-    emit_tree(u32(plants.blades.w), render_at(s, h), height, yaw, 1.0, 0.85 + 0.3 * plant_hash(cell, 6u), 1.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t));
+    emit_tree(u32(plants.blades.w), render_at(s, h), height, yaw, 1.0, 0.85 + 0.3 * plant_hash(cell, 6u), 1.0, 0.0, 0.0, pick_of(yaw, height), 0.0, ground_albedo(t));
 }

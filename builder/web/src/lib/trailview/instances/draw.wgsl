@@ -21,7 +21,9 @@ struct Model {
     crown: f32,
     trunk: f32,
     tie: f32,
-    unused2: f32,
+    impostor: f32,
+    sink_low: vec4f,
+    sink_high: vec4f,
 }
 
 @group(0) @binding(1) var<storage, read> lists: array<Instance>;

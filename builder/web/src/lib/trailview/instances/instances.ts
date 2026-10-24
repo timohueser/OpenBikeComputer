@@ -9,7 +9,7 @@ const DRAWS = MODELS * TIERS;
 /** Instances that a frame stages at most; past them it drops instances and lowers the detail. */
 const CAPACITY = 2 ** 17;
 /** Bytes of `Instance`, `Model`, `Tally` and `Mesh` in the WGSL, and of a vertex. */
-const INSTANCE_BYTES = 32, MODEL_BYTES = 48, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
+const INSTANCE_BYTES = 32, MODEL_BYTES = 80, TALLY_BYTES = 16 + 4 * DRAWS, MESH_BYTES = 16, VERTEX_BYTES = 16;
 /** Lanes of the sort, as LANES in sort.wgsl. */
 const SORT_LANES = 16384;
 /** The stride of a dynamic uniform offset: the least that WebGPU allows. */
@@ -21,6 +21,8 @@ const VERTEX_POOL = 4 * 2 ** 20, INDEX_POOL = 4 * 2 ** 20;
  * end by 150 m, and only the forest fades trees in, past its THIN_M of 600 m.
  */
 const WHOLE_TIERS = 2;
+/** A tree's sink table (`sinks`): its slopes, SINK_STEP apart from SINK_STEP, as in emit.wgsl. */
+const SINK_STEP = 0.25, SINK_SLOPES = 8;
 /** The render height in pixels that the tier distances are for. */
 const REFERENCE_PIXELS = 1120;
 /** The share of the capacity that the detail keeps to. */
@@ -575,14 +577,14 @@ export class Instances {
             const placed = tiers.map(({ mesh, until }, t) => {
                 const at = putOnce(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
-                f[m * 12 + t] = until;
+                f[m * 20 + t] = until;
                 return at;
             });
             if (spec.impostor) {
-                f[m * 12 + tiers.length] = spec.impostor.until;
+                f[m * 20 + tiers.length] = spec.impostor.until;
                 if (this.atlas.has(m)) this.unbaked.add(m);
             }
-            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0], m * 12 + 4);
+            f.set([extent, radius(spec), spec.fade ?? 0.15, spread(spec), spec.crown ?? -1, tiers.some(({ mesh }) => mesh.trunk) ? 1 : 0, spec.tie ?? 0, spec.impostor ? tiers.length : TIERS, ...sinks(spec)], m * 20 + 4);
             return placed;
         });
         // A model that does not fit the pools draws nothing; the frames go on.
@@ -680,6 +682,22 @@ function spread(spec: ModelSpec): number {
     let most = 0;
     for (const { mesh: { position: p } } of spec.tiers) for (let i = 0; i < p.length; i += 3) most = Math.max(most, Math.hypot(p[i], p[i + 1]));
     return most;
+}
+
+/**
+ * A tree's sink table (slope_sink of emit.wgsl): per slope SINK_STEP × (k + 1), the most that the drop
+ * of the ground under a crown vertex, the slope × its reach, exceeds its height above the crown's base;
+ * a vertex below the base counts as at it. Over the vertices of every tier but their trunks'.
+ */
+export function sinks(spec: ModelSpec): number[] {
+    const out = new Array<number>(SINK_SLOPES).fill(0), crown = spec.crown;
+    if (crown === undefined) return out;
+    for (const { mesh: { position: p, trunk = 0 } } of spec.tiers)
+        for (let i = 3 * trunk; i < p.length; i += 3) {
+            const reach = Math.hypot(p[i], p[i + 1]), above = Math.max(0, p[i + 2] - crown);
+            for (let k = 0; k < SINK_SLOPES; k++) out[k] = Math.max(out[k], SINK_STEP * (k + 1) * reach - above);
+        }
+    return out;
 }
 
 /**

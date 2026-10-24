@@ -332,7 +332,7 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
         drawn = held_at(s, level);
     }
     let snow = snow_held(drawn);
-    emit_tree(model, render_at(s, stood.x - SINK_M - slope_sink(model, stood.y, height, width, lift)), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift,
+    emit_tree(model, render_at(s, stood.x - SINK_M), height, yaw, width, 0.88 + 0.24 * unit_float(mix_bits(h + 19u)), appear, lift, stood.y,
         unit_float(mix_bits(h + 31u)), snow, vec3f(0.0));
 }
 
