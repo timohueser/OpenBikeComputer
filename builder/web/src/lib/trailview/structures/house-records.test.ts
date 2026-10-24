@@ -22,6 +22,9 @@ describe('the house records of a feature tile', () => {
         expect(records.length).toBe(RECORD_WORDS);
         expect(outlines.length).toBe(0);
         expect(tileHouses([building('church', rectangle(4000, 4000, 400, 160, 0.5))], TILE, { level: 14, x: 2 * TILE.x + 1, y: 2 * TILE.y }).records.length).toBe(0);
+        const southEast = [building('yes', rectangle(12000, 12000, 20, 20, 0))];
+        expect(tileHouses(southEast, TILE, { level: 14, x: 2 * TILE.x + 1, y: 2 * TILE.y + 1 }).records.length).toBe(RECORD_WORDS);
+        expect(tileHouses(southEast, TILE, { level: 14, x: 2 * TILE.x, y: 2 * TILE.y }).records.length).toBe(0);
         const floats = new Float32Array(records.buffer), metres = 8 * metresPerUnit(TILE.y * EXTENT * 8 + 4000 * 8);
         expect(records[0] / 8 - TILE.x * EXTENT).toBeCloseTo(4000, 0);
         expect(records[1] / 8 - TILE.y * EXTENT).toBeCloseTo(4000, 0);

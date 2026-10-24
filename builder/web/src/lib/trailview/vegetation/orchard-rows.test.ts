@@ -23,6 +23,9 @@ describe('the orchard rows', () => {
         const metres = 2 * Math.PI * 6371008.8 * Math.cos(47 * Math.PI / 180) / 2 ** 13 / EXTENT;
         expect(columns.size).toBeCloseTo(400 * metres / ROW_M, -0.5);
         expect(local.filter(([x]) => x < 2000).length).toBeGreaterThan((400 * 1200 - 200 * 200) * metres * metres / (ROW_M * STEP_M) * 0.7);
+        const southEast = [{ ...orchard, parts: [{ outer: true, xy: ring(11800, 11800, 12200, 12200), z: null }] }];
+        expect(orchardRows(southEast, tile, { level: 14, x: 2 * tile.x + 1, y: 2 * tile.y + 1 }).length).toBeGreaterThan(0);
+        expect(orchardRows(southEast, tile, { level: 14, x: 2 * tile.x, y: 2 * tile.y }).length).toBe(0);
     });
 
     it('lay the same trees in each tile that clips an orchard as the whole orchard gives', () => {
