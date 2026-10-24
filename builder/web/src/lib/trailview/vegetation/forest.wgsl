@@ -25,7 +25,8 @@ struct Forest {
     thin: f32,
     // The material code of orchards, whose trees the orchards stand (orchards.ts).
     orchard: u32,
-    unused: u32,
+    // The share of the canopy's trees that stand.
+    density: f32,
     // Trees per square metre of each stems class (specs/trailview-tiles.md#canopy).
     stems: array<vec4f, 2>,
     // Per level of a cell the first entry of its part of the cell list, and the entries of the list.
@@ -99,9 +100,11 @@ const RANK_FADE: f32 = 0.25;
 // at every distance. Near the eye the pools hold finer terrain pages only: there the band reads the ground.
 const REGION_LEVEL: u32 = 10u;
 const BAND_LEVEL: u32 = 12u;
-// In a closed stand the crown starts at LIFT of the height, and up to LIFT_SPREAD of the height higher.
+// In a closed stand the crown starts at LIFT of the height, and up to LIFT_SPREAD of the height higher,
+// and reaches NARROW of the height from the trunk at most, as forest-grown trees do.
 const LIFT: f32 = 0.3;
 const LIFT_SPREAD: f32 = 0.2;
+const NARROW: f32 = 0.25;
 // The ground of a base cell lies within SLOPE_M of its middle's, and no tree is taller than TALLEST_M.
 const SLOPE_M: f32 = 60.0;
 const TALLEST_M: f32 = 64.0;
@@ -148,9 +151,10 @@ fn density(code: u32) -> f32 {
     return max(stems, 0.5 * cover / (3.14159 * crown * crown));
 }
 
-// The share of the trees that stand at a distance.
+// The share of the canopy's trees that stand at a distance: `density` near, and as few as `thin` keeps
+// farther. A lower density takes the last points of each cell and moves no tree's own distance.
 fn kept(d: f32) -> f32 {
-    return min(1.0, forest.thin / max(d, 1.0));
+    return min(forest.density, forest.thin / max(d, 1.0));
 }
 
 // The point of LOD space of whole world units plus a part.
@@ -271,12 +275,12 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     let s = lod_at(corner, part);
     let d = length(s);
     let share = kept(d);
-    // Point r is a tree where r < n, the trees of the base cell; within `thin`, n holds still and the
-    // last tree stands or not by its hash. Past it n falls with the distance, and each tree fades out
+    // Point r is a tree where r < n, the trees of the base cell; where `kept` gives the density, n holds
+    // still and the last tree stands or not by its hash. Past it n falls with the distance, and each tree fades out
     // over RANK_FADE of a tree at a distance of its own, so a still view keeps few faded trees.
     let n = density(code) * f32(CELL * CELL) * surface.unit * surface.unit * share;
     let over = n - f32(r) - unit_float(mix_bits(h + 23u));
-    let appear = select(clamp(over / RANK_FADE, 0.0, 1.0), select(0.0, 1.0, over > 0.0), share >= 1.0);
+    let appear = select(clamp(over / RANK_FADE, 0.0, 1.0), select(0.0, 1.0, over > 0.0), share >= forest.density);
     if (appear <= 0.0 || d < EYE_CLEAR_M + CLEAR_SPREAD_M * unit_float(mix_bits(h + 37u))) {
         return;
     }
@@ -321,9 +325,11 @@ fn tree(cell: vec2i, r: u32, ground_near: f32, slope: f32) {
     if (!known(stood.x)) {
         return;
     }
-    // Kept trees stand wider, so the forest keeps its cover as it thins.
-    let width = min(2.0, inverseSqrt(share));
-    let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * smoothstep(0.5, 0.9, cover_of(code));
+    // Kept trees stand wider, so the forest keeps its cover as it thins. In a closed stand the crowns
+    // grow narrow and high: their reach shrinks to NARROW of the height as the lift rises.
+    let closed = smoothstep(0.5, 0.9, cover_of(code));
+    let width = min(2.0, inverseSqrt(share / forest.density)) * mix(1.0, min(1.0, NARROW / models[model].spread), closed);
+    let lift = (LIFT + LIFT_SPREAD * unit_float(mix_bits(h + 29u))) * closed;
     let yaw = 6.2831853 * unit_float(mix_bits(h + 17u));
     // The snow of the finest resident page of the drawn level: the page found above where none finer than it is resident.
     let level = u32(ceil(lod(s)));

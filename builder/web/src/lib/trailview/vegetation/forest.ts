@@ -53,7 +53,7 @@ export class Forest implements Producer {
     /** Whether the last update changed what the forest draws, other than by the camera. */
     newContent = false;
 
-    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, private readonly thin = THIN_M) {
+    constructor(config: PlannerConfig, rules: Rules, trees: TreeModels, private readonly instances: Instances, wake: () => void, private readonly thin = THIN_M, private readonly density = 1) {
         this.reach = trees.reach;
         instances.produce(this);
         this.canopy = new Canopy(config, wake);
@@ -128,6 +128,7 @@ export class Forest implements Producer {
         new Uint32Array(params).set([this.side, POINTS], 2);
         floats.set([this.reach, this.thin], 4);
         new Uint32Array(params)[6] = this.orchard;
+        floats[7] = this.density;
         floats.set(STEMS_HA.map(n => n / 1e4), 8);
         new Uint32Array(params).set(listParts(this.most), 16);
         r.gpu.device.queue.writeBuffer(r.params, 0, params);
