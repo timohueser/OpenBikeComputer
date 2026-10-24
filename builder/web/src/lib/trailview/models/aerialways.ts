@@ -2,7 +2,8 @@
 // the cable, ported from the prototype's src/models/aerialways.ts. One seed per line gives its pylons,
 // stations and carriers the same steel and livery; a gondola line takes a seed per cabin, so its cabins
 // come in many colours.
-import { srgb, Model, outline, pick, roof, shade, type Vec } from './flat';
+import { rgb } from '../structures/mesh';
+import { footing, Model, outline, pick, roof, shade, type Vec } from './flat';
 
 export type Rig = 'cable_car' | 'gondola' | 'chair_lift' | 'drag_lift';
 
@@ -10,17 +11,15 @@ export type Rig = 'cable_car' | 'gondola' | 'chair_lift' | 'drag_lift';
 export const TRACK_HALF_M: Record<Rig, number> = { cable_car: 4, gondola: 2.7, chair_lift: 2.2, drag_lift: 1.2 };
 /** A station's cables leave at x = ±TRACK_HALF_M, y = 0, this high over its ground, along +y. */
 export const CABLE_AT_STATION_M: Record<Rig, number> = { cable_car: 8.4, gondola: 6, chair_lift: 4.2, drag_lift: 4.5 };
-/** Footings reach this far below the ground at the anchor, so a slope does not show under them. */
-const FOOTING_M = 3;
 
 /** Galvanised, reseda green and blue-grey paint. */
-const STEEL = ['#a3aaab', '#86a08c', '#8c979f'].map(srgb);
-const LIVERY = ['#d0402f', '#2f6db0', '#e8b530', '#3f9a5c', '#e5702d'].map(srgb);
-const TRAM = ['#c8372d', '#2f5f9e'].map(srgb);
-const DARK = srgb('#30363a'), CONCRETE = srgb('#b8b2a6'), RENDER = srgb('#e6dfcf'), GLASS = srgb('#3b4c58');
+const STEEL = ['#a3aaab', '#86a08c', '#8c979f'].map(h => rgb(h));
+const LIVERY = ['#d0402f', '#2f6db0', '#e8b530', '#3f9a5c', '#e5702d'].map(h => rgb(h));
+const TRAM = ['#c8372d', '#2f5f9e'].map(h => rgb(h));
+const DARK = rgb('#30363a'), CONCRETE = rgb('#b8b2a6'), RENDER = rgb('#e6dfcf'), GLASS = rgb('#3b4c58');
 /** A hall's big panes, lighter than a cabin's windows: they hold the sky. */
-const PANES = srgb('#7790a0');
-const WHITE = srgb('#eeece6'), TIMBER = srgb('#8f6440'), SLATE = srgb('#5a5652');
+const PANES = rgb('#7790a0');
+const WHITE = rgb('#eeece6'), TIMBER = rgb('#8f6440'), SLATE = rgb('#5a5652');
 
 /** A flat bar of width w from a to b, facing `out`: the angle iron in a tower's face. */
 function strip(m: Model, a: Vec, b: Vec, w: number, out: Vec, colour: number): void {
@@ -38,7 +37,7 @@ function lattice(m: Model, height: number, steel: number): void {
     const T = TRACK_HALF_M.cable_car, head = height - 0.9, top = [1.1, 0.8], base = [top[0] + 0.065 * head, top[1] + 0.05 * head];
     const n = Math.min(8, Math.max(3, Math.round(head / 6))), q = (top[0] / base[0]) ** (1 / n);
     const zs = Array.from({ length: n + 1 }, (_, i) => ((1 - q ** i) / (1 - q ** n)) * head);
-    const SQUARE = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+    const SQUARE = [[1, 1], [-1, 1], [-1, -1], [1, -1]], deep = footing(Math.hypot(base[0], base[1]) + 0.55);
     const corner = (z: number, k: number): Vec => {
         const t = z / head, [sx, sy] = SQUARE[k % 4];
         return [sx * (base[0] + (top[0] - base[0]) * t), sy * (base[1] + (top[1] - base[1]) * t), z];
@@ -46,7 +45,7 @@ function lattice(m: Model, height: number, steel: number): void {
     for (let k = 0; k < 4; k++) {
         const [x, y] = corner(0, k), [a, b] = [SQUARE[k], SQUARE[(k + 1) % 4]], l = Math.hypot(a[0] + b[0], a[1] + b[1]);
         const out: Vec = [(a[0] + b[0]) / l, (a[1] + b[1]) / l, 0];
-        m.beam(corner(-FOOTING_M, k), corner(head, k), 0.42, steel).box([x, y, 0.25 - FOOTING_M / 2], [1.1, 1.1, 0.9 + FOOTING_M], CONCRETE);
+        m.beam(corner(-deep, k), corner(head, k), 0.42, steel).box([x, y, 0.25 - deep / 2], [1.1, 1.1, 0.9 + deep], CONCRETE);
         for (let i = 0; i < n; i++) {
             strip(m, corner(zs[i], k), corner(zs[i + 1], k + 1), 0.2, out, steel);
             strip(m, corner(zs[i], k + 1), corner(zs[i + 1], k), 0.2, out, steel);
@@ -68,7 +67,8 @@ const MAST: Record<Exclude<Rig, 'cable_car'>, { r: [number, number]; wheels: num
 /** A tubular mast with a T cross-arm, and at each end a sheave train under the cable. The arm stops inside the tracks: the hangers bend out past the sheaves. */
 function mast(m: Model, rig: Exclude<Rig, 'cable_car'>, height: number, steel: number): void {
     const T = TRACK_HALF_M[rig], { r: [r0, r1], wheels, wheel } = MAST[rig], axle = height - wheel, arm = axle - wheel - 0.3, dark = shade(steel, 0.8);
-    m.box([0, 0, 0.15 - FOOTING_M / 2], [4 * r0 + 0.5, 4 * r0 + 0.5, 0.7 + FOOTING_M], CONCRETE);
+    const side = 4 * r0 + 0.5, deep = footing(side / Math.SQRT2);
+    m.box([0, 0, 0.15 - deep / 2], [side, side, 0.7 + deep], CONCRETE);
     m.beam([0, 0, 0], [0, 0, arm], 2 * r0, steel, { sides: 8, w1: 2 * r1 });
     m.box([0, 0, arm], [2.4 * r1, 2.4 * r1, 0.8], dark).box([0, 0, arm], [2 * (T - 0.14), 1.6 * r1, 0.4], steel);
     const pitch = 2 * wheel + 0.08;
@@ -92,8 +92,8 @@ export function pylon(rig: Rig, height: number, seed = 1): Model {
 
 /** An operator's hut on a concrete plinth: timber walls, a band of windows and a gable roof. */
 function hut(m: Model, [x, y]: [number, number], livery: number): void {
-    const [w, l, h] = [2.6, 3.2, 2.7];
-    m.box([x, y, (0.3 - FOOTING_M) / 2], [w + 0.3, l + 0.3, 0.3 + FOOTING_M], CONCRETE).box([x, y, 0.3 + h / 2], [w, l, h], TIMBER).box([x, y, 2.05], [w + 0.08, l + 0.08, 0.9], GLASS);
+    const [w, l, h] = [2.6, 3.2, 2.7], deep = footing(Math.hypot(Math.abs(x) + w / 2 + 0.15, Math.abs(y) + l / 2 + 0.15));
+    m.box([x, y, (0.3 - deep) / 2], [w + 0.3, l + 0.3, 0.3 + deep], CONCRETE).box([x, y, 0.3 + h / 2], [w, l, h], TIMBER).box([x, y, 2.05], [w + 0.08, l + 0.08, 0.9], GLASS);
     roof(m, [x, y, 0.3 + h], w, l, 30, 0.45, livery, TIMBER);
 }
 
@@ -106,8 +106,9 @@ function tramStation(m: Model, livery: number): void {
     const T = TRACK_HALF_M.cable_car, cable = CABLE_AT_STATION_M.cable_car, [hx, hy, back, nose] = [T + 3, 8, 1, 2];
     const [floor, bay, low, high] = [cable - 5.4, cable + 0.8, cable, cable + 3.6], [depth, mid] = [hy - back, (hy + back) / 2];
     const rise = (high - low) / (2 * hy), eave = (y: number) => low + (y + hy) * rise, dim = shade(RENDER, 0.35), [o, front, t] = [0.8, 1.8, 0.45];
-    m.box([0, 0, (floor - FOOTING_M) / 2], [2 * hx + 0.3, 2 * hy + 0.3, floor + FOOTING_M], CONCRETE);
-    m.box([0, hy + nose / 2, (floor - FOOTING_M) / 2], [2 * T + 3.4, nose, floor + FOOTING_M], CONCRETE);
+    const deep = footing(Math.hypot(hx + 0.15, hy + nose));
+    m.box([0, 0, (floor - deep) / 2], [2 * hx + 0.3, 2 * hy + 0.3, floor + deep], CONCRETE);
+    m.box([0, hy + nose / 2, (floor - deep) / 2], [2 * T + 3.4, nose, floor + deep], CONCRETE);
     side(m, [[-hy, floor], [back, floor], [back, eave(back)], [-hy, low]], 2 * hx, RENDER);
     m.box([0, back + 0.03, (floor + bay) / 2], [2 * hx - 1.4, 0.06, bay - floor], dim);
     m.box([-hx + 0.35, mid, (floor + bay) / 2], [0.7, depth, bay - floor], RENDER).box([hx - 0.35, mid, (floor + bay) / 2], [0.7, depth, bay - floor], RENDER);
@@ -122,7 +123,8 @@ function tramStation(m: Model, livery: number): void {
 function gondolaStation(m: Model, livery: number, steel: number): void {
     const T = TRACK_HALF_M.gondola, cable = CABLE_AT_STATION_M.gondola, [hx, hy, floor, eave, bay] = [T + 2, 7, cable - 3.8, cable + 1, 2];
     const [wx, y0, y1] = [hx - 0.2, 0.2 - hy, hy - 0.2 - bay];
-    m.box([0, 0, (floor - FOOTING_M) / 2], [2 * hx, 2 * hy, floor + FOOTING_M], CONCRETE);
+    const deep = footing(Math.hypot(hx, hy));
+    m.box([0, 0, (floor - deep) / 2], [2 * hx, 2 * hy, floor + deep], CONCRETE);
     m.box([0, (y0 + y1) / 2, (floor + eave) / 2], [2 * wx, y1 - y0, eave - floor], [PANES, PANES, shade(CONCRETE, 0.5), PANES, PANES, PANES]);
     roof(m, [0, 0, eave], 2 * hx, 2 * hy, 14, 0.9, livery, shade(livery, 0.8));
     for (const sx of [-1, 1]) {
@@ -152,12 +154,12 @@ function liftStation(m: Model, rig: 'chair_lift' | 'drag_lift', livery: number, 
         const c = Math.cos((k * Math.PI) / 4), s = Math.sin((k * Math.PI) / 4);
         m.beam([0.3 * c, 0.3 * s, z], [(T - 0.1) * c, (T - 0.1) * s, z], 0.14, DARK);
     }
-    const legAt = (h: number) => spread * (1 - (0.45 * (h + FOOTING_M)) / (z + FOOTING_M));
+    const deep = footing(Math.hypot(spread + 0.45, Math.abs(rear) + 0.45)), legAt = (h: number) => spread * (1 - (0.45 * (h + deep)) / (z + deep));
     m.box([0, rear, z + 0.1], [2 * legAt(z) + 0.6, 0.6, 0.5], steel);
     hut(m, [T + (chairs ? 3.2 : 2.4), 1.2], livery);
     for (const s of [-1, 1]) {
-        m.beam([s * spread, rear, -FOOTING_M], [s * legAt(z), rear, z], 0.42, steel, { capped: true });
-        m.box([s * spread, rear, (0.35 - FOOTING_M) / 2], [0.9, 0.9, 0.35 + FOOTING_M], CONCRETE);
+        m.beam([s * spread, rear, -deep], [s * legAt(z), rear, z], 0.42, steel, { capped: true });
+        m.box([s * spread, rear, (0.35 - deep) / 2], [0.9, 0.9, 0.35 + deep], CONCRETE);
     }
 }
 

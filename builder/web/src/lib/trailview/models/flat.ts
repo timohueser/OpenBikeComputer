@@ -5,10 +5,14 @@ import { random, type Geometry, type Vec } from './shape';
 
 export { random, type Vec };
 
-/** sRGB bytes of a `#rrggbb` colour, red in the low byte. */
-export const srgb = (h: string) => parseInt(h.slice(1, 3), 16) | (parseInt(h.slice(3, 5), 16) << 8) | (parseInt(h.slice(5, 7), 16) << 16);
 /** A colour k times as bright. */
 export const shade = (c: number, k: number) => [0, 8, 16].reduce((out, bit) => out | (Math.min(255, Math.round(((c >> bit) & 255) * k)) << bit), 0);
+/**
+ * How far a part of a model on the surface reaches below the ground at the model's origin, `reach` metres
+ * from the origin at most: a model stands at the ground of one point, so its parts reach down past ground
+ * as steep as 45°.
+ */
+export const footing = (reach: number) => 2 + reach;
 /** The item of a list that a seed picks: consecutive seeds pick different items. */
 export const pick = <T>(list: T[], seed: number, salt = 0) => list[Math.abs(Math.floor(seed) + salt) % list.length];
 

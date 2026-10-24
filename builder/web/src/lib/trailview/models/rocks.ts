@@ -1,11 +1,12 @@
 // Rocks 1 m tall with their base at the origin, z up: faceted lumps sunk into the ground, each face in its
 // own colour, from the prototype's src/models/rocks.ts. A slab is wider than tall, a boulder rounder, a
 // crag a leaning blade taller than wide.
-import { srgb, Model, type Vec } from './flat';
+import { rgb } from '../structures/mesh';
+import { Model, type Vec } from './flat';
 
 /** Grey body, a lit top and lichen. A wall face in GREY takes the colour of the rock under it. */
-export const GREY = srgb('#8e908a');
-const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(srgb), LICHEN = srgb('#9c9a72');
+export const GREY = rgb('#8e908a');
+const BODY = ['#7d7f78', '#8e908a', '#a3a49c'].map(h => rgb(h)), LICHEN = rgb('#9c9a72');
 
 /** An icosahedron cut once: 80 faces on the unit sphere. */
 function lump(): Vec[][] {

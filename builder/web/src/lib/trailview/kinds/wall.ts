@@ -1,13 +1,13 @@
 // Walls as dry-stone walls in the colour of the rock under them, a cross-section that narrows to its top;
 // noise barriers as tall thin concrete.
+import { rgb } from '../structures/mesh';
 import { GREY } from '../models/rocks';
-import { srgb } from '../models/flat';
 import { STONE } from '../structures/anchored';
 import { along, type Kind } from './kind';
 
 /** The width at the foot and the top and the height; a `height` tag wins. Both stand SUNK_M in the ground. */
 const DRY = { foot: 0.75, top: 0.35, height: 1.4, colour: GREY | (STONE << 24) };
-const NOISE = { foot: 0.3, top: 0.25, height: 3.5, colour: srgb('#9c9a94') };
+const NOISE = { foot: 0.3, top: 0.25, height: 3.5, colour: rgb('#9c9a94') };
 const SUNK_M = 0.3;
 
 export default {
