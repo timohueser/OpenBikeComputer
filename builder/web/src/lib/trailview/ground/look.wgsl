@@ -210,14 +210,20 @@ fn held_at(s: vec2f, level: u32) -> Held {
     return Held(k, t, page);
 }
 
-// The region of the ground at a point, from the finest resident ground page.
-fn region_at(s: vec2f) -> u32 {
-    let held = held_at(s, u32(ceil(lod(s))));
+// The ground cell at a point from the finest resident ground page of a level or coarser: r the
+// material, g the lithology, b the region.
+fn cell_at(s: vec2f, level: u32) -> vec4u {
+    let held = held_at(s, level);
     if (held.page < 0) {
-        return 0u;
+        return vec4u(0u);
     }
     let whole = held.t.whole + vec2i(held.t.part >= vec2f(0.5));
-    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0).b;
+    return textureLoad(cells, in_page(held.page, whole & vec2i(255)), page_layer(held.page), 0);
+}
+
+// The region of the ground at a point, from the finest resident ground page.
+fn region_at(s: vec2f) -> u32 {
+    return cell_at(s, u32(ceil(lod(s)))).b;
 }
 
 fn in_page(page: i32, c: vec2i) -> vec2i {

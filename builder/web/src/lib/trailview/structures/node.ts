@@ -1,4 +1,8 @@
+import { KINDS, POINT_MODELS } from '../kinds';
+import { placed, type Build, type Placement } from '../kinds/kind';
+import { packPoints, type Point } from '../instances/points';
 import type { Feature } from '../stream/features';
+import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
 import { BRIDGE, features, metresPerUnit, TUNNEL, type Node } from '../terrain/bins';
 import { bridges, deckHalf } from './bridges';
 import { galleries } from './galleries';
@@ -62,15 +66,35 @@ export function portalBoxes(list: Feature[], tile: Node, node: Node): Float64Arr
     return out.length ? new Float64Array(out) : null;
 }
 
-/** The structure mesh of a node of the OWNER level from the features of its feature tile, null without structures. */
-export function structureMesh(list: Feature[], tile: Node, node: Node): StructureMesh | null {
-    if (node.level !== OWNER) return null;
+/** Meshes of one reach: the structures, and the anchored mesh. */
+export interface Meshes { structures: StructureMesh | null; anchored: AnchoredMesh | null }
+/**
+ * A node's meshes: those that draw at any distance, those that draw only near the eye, and the anchors of
+ * both; and the models on the surface of its kinds, as `packPoints` packs them, the model the number of
+ * POINT_MODELS.
+ */
+export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | null; points: Uint32Array<ArrayBuffer> | null }
+
+/** The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the registry. */
+export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMeshes {
+    const none = { structures: null, anchored: null };
+    if (node.level !== OWNER) return { far: none, near: none, anchors: null, points: null };
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
-    const b = new MeshBuilder(), { lines } = features(list, tile);
-    bridges(b, list, tile, lines, owns);
-    tunnels(b, lines, owns);
-    galleries(b, lines, owns);
-    rails(b, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
-    return b.mesh();
+    const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
+    const { lines } = features(list, tile);
+    bridges(far.mesh, list, tile, lines, owns);
+    tunnels(far.mesh, lines, owns);
+    galleries(far.mesh, lines, owns);
+    rails(far.mesh, far.anchored, list, tile, lines, owns, [x0, y0, x0 + side, y0 + side]);
+    const points: Point[] = [];
+    let kind = '';
+    const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
+    const out: Build = { far, near, owns, place };
+    for (const feature of list) {
+        kind = feature.kind;
+        KINDS.get(kind)?.build(placed(feature, tile), out);
+    }
+    const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
+    return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }
