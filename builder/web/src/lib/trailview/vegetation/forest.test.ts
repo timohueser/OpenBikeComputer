@@ -27,8 +27,9 @@ function lookup(table: Uint32Array, region: number, elevation: number, leaf: num
     return model;
 }
 
-/** The scan of every species that the table stands for: the first rule with any weight, then by weight. */
-function scan(species: Species[], elevation: number, leaf: number, pick: number): number {
+/** The scan of every species that the table stands for, up to the first without weight: the first rule with any weight, then by weight. */
+function scan(all: Species[], elevation: number, leaf: number, pick: number): number {
+    const ended = all.findIndex(s => !(Math.fround(s.weight) > 0)), species = ended < 0 ? all : all.slice(0, ended);
     const rules = species.map(s => {
         const band = elevation >= Math.fround(s.band[0]) && elevation <= Math.fround(s.band[1]), same = leaf === 0 || s.leaf === leaf;
         return [band && same, band, same, true];
@@ -51,10 +52,14 @@ describe('the forest', () => {
             [{ model: 3, leaf: 2, band: [800, 1900], weight: 4 }, { model: 5, leaf: 1, band: [400, 1200], weight: 2.5 }, { model: 7, leaf: 2, band: [1500, 2300], weight: 1 }, { model: 9, leaf: 1, band: [0, 900], weight: 0.3 }],
             [{ model: 11, leaf: 1, band: [1000, 1000], weight: 1 }],
             [],
+            // A weight of 0 ends the list.
+            [{ model: 13, leaf: 1, band: [0, 1500], weight: 1 }, { model: 15, leaf: 2, band: [1000, 3000], weight: 0 }, { model: 17, leaf: 2, band: [0, 3000], weight: 2 }],
+            // A full pack: 32 species of every band and leaf type.
+            Array.from({ length: 32 }, (_, k) => ({ model: 20 + k, leaf: 1 + (k % 2), band: [(k * 137) % 2000, (k * 137) % 2000 + 300 + ((k * 53) % 900)] as [number, number], weight: 0.25 + ((k * 7) % 5) })),
         ];
         const table = speciesTable(regions);
         for (const [r, species] of regions.entries())
-            for (const elevation of [-1e30, 0, 350, 400, 899.9, 900, 1000, 1150, 1200, 1499, 1900, 2299.5, 2300, 4000])
+            for (const elevation of [-1e30, 0, 350, 899.9, 1150, 2299.5, 4000, ...species.flatMap(({ band }) => band.flatMap(e => [e - 0.5, e, e + 0.5]))])
                 for (const leaf of [0, 1, 2])
                     for (const pick of [0, 0.2, 0.5, 0.71, 0.999])
                         expect(lookup(table, r, Math.fround(elevation), leaf, pick)).toBe(scan(species, Math.fround(elevation), leaf, pick));

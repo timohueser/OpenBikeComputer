@@ -10,8 +10,10 @@ describe('the impostor outlines', () => {
         const out = outlines(mesh, radius);
         for (let frame = 0; frame < 64; frame++) {
             const [low, high, w0, w1] = out.slice(4 * frame, 4 * frame + 4);
-            // The frame itself and a neighbour, as the dither of impostor.wgsl picks them.
-            for (const near of [frame, frame % 8 < 7 ? frame + 1 : frame, frame >= 8 ? frame - 9 + (frame % 8 ? 0 : 1) : frame]) {
+            // The frame itself and its eight neighbours in the grid, as the dither of impostor.wgsl picks them.
+            const x = frame % 8, y = Math.floor(frame / 8), nears: number[] = [];
+            for (let j = Math.max(0, y - 1); j <= Math.min(7, y + 1); j++) for (let i = Math.max(0, x - 1); i <= Math.min(7, x + 1); i++) nears.push(8 * j + i);
+            for (const near of nears) {
                 const ex = ((near % 8) + 0.5) / 4 - 1, ey = (Math.floor(near / 8) + 0.5) / 4 - 1, px = (ex + ey) / 2, py = (ex - ey) / 2;
                 const pz = 1 - Math.abs(px) - Math.abs(py), n = Math.hypot(px, py, pz), d = [px / n, py / n, pz / n];
                 const flat = Math.hypot(d[0], d[1]), right = Math.abs(d[2]) < 0.999 ? [-d[1] / flat, d[0] / flat, 0] : [1, 0, 0];
