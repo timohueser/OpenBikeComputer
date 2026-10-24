@@ -15,7 +15,7 @@ export default {
     winter: 'bare',
     // The leaves open bronze after red catkins.
     spring: ['#56562a', '#86863c', '#bcb866'],
-    summer: ['#2c4c22', '#487232', '#7ea450'],
+    summer: ['#283f19', '#435f26', '#75893e'],
     autumn: ['#8a781c', '#baa02c', '#e0ca56'],
   },
   twigs: ['#56503e', '#766e58', '#928a74'],

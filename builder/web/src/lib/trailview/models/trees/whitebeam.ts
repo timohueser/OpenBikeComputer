@@ -15,7 +15,7 @@ export default {
     winter: 'bare',
     // Leaves white-felted beneath, so the crown reads grey-green.
     spring: ['#5e7a4a', '#86a06a', '#b8c8a0'],
-    summer: ['#3a5432', '#566e46', '#7e9068'],
+    summer: ['#354626', '#4f5b36', '#747852'],
     autumn: ['#7a5a26', '#a07a34', '#c49a4a'],
   },
   twigs: ['#56504a', '#726a62', '#8e867c'],
