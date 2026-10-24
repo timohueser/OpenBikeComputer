@@ -114,14 +114,8 @@ fn steps(store: &Store, inputs: &Inputs, regions: &Regions) -> Result<obc_data::
 
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTreeMap<String, Vec<u8>> {
-    let mut inputs = inputs.clone();
-    if let Err(Unplanned::NeedsFetch(wanted)) = steps(store, &inputs, regions) {
-        assert!(wanted.iter().all(|request| matches!(request.source.as_str(), "wikidata" | "wikipedia" | "commons")));
-        inputs.fetch_failures.extend(
-            wanted.into_iter().map(|request| (request, "this terrain fixture has no landmark or peak capture".into())),
-        );
-    }
-    let listed = steps(store, &inputs, regions).unwrap();
+    // The store has no version of `wiki`: the content blocks, and the catalog with it.
+    let listed = steps(store, inputs, regions).unwrap();
     assert!(listed.blocked.iter().any(|blocked| blocked.step == "device/catalog"), "terrain alone cannot publish");
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("device/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
