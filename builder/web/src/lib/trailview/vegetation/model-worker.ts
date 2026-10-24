@@ -8,7 +8,7 @@ import type { Lod } from '../models/trees';
  * The crown triangles of tiers 1 and 2, which the simplifier makes from tier 0. A bare crown's tiers
  * stay as the models build them: their twigs grow fewer and wider with the distance.
  */
-const TRIANGLES = [1000, 300];
+const TRIANGLES = [600, 200];
 
 /** The models to build, each in a season. */
 export interface ModelJob { id: number; models: { model: string; season: Season }[] }
