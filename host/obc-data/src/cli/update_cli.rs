@@ -430,7 +430,7 @@ pub(super) fn prepare(
             .error(format!("target `{name}` has no region"))
             .fix(format!("Name one: `obc data update {name} --region ID` or `--box W,S,E,N`.")));
     }
-    if !products.iter().any(|product| product.on(&settings)) {
+    if !products.is_empty() && !products.iter().any(|product| product.on(&settings)) {
         return Err(Code::Usage.error(format!("target `{name}` has nothing on to bake")).fix(format!(
             "Switch parts on: `obc data update {name} --add PART`, from {}.",
             optional(products).join(", ")

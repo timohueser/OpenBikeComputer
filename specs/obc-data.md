@@ -4181,7 +4181,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "optional": {
-          "description": "The optional layers that `--add` and `--remove` name, sorted; `settings.layers` holds those\nthat are on.",
+          "description": "The parts that `--add` and `--remove` name, sorted; `settings.layers` holds those\nthat are on.",
           "items": {
             "type": "string"
           },
@@ -4678,7 +4678,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         "layers": {
-          "description": "The optional layers that are on, sorted.",
+          "description": "The parts that are on, sorted.",
           "items": {
             "type": "string"
           },
