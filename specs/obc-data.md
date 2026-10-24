@@ -32,7 +32,7 @@ One `[[source]]` table per source.
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The Wikimedia API captures `wikidata`, `wikipedia` and `commons` have no copy |
-| `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
+| `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory. `register`: the `https://` page where a person gets it, and `hint`: what to copy there, in one line. See [Credentials of sources](#credentials-of-sources) |
 | `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -63,7 +63,8 @@ Rules:
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
 - A `prepared` source has `version = "date"` and `redistribute = true`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
-- A credential has `env` or `file`, not both.
+- A credential has `env` or `file`, not both. A `file` is `~/.cdsapirc` or
+  `~/.config/openbikecomputer/cdse-s3.env`.
 
 Each row `dtm-<key>` with `redistribute = true` also gives the `prepared` source
 `terrain-reference/<key>`, which has no row of its own. It has the `licence`, `licence_url`,
@@ -388,6 +389,24 @@ no fetcher yet; the fetch fails.
   that version, so requests over several days have one version.
 - A source with a `credential` that is not on this machine fails before the program runs, and
   the error names the variables or the file.
+
+### Credentials of sources
+
+`obc data source credential ID` reads the values of the credential of source ID on standard
+input, one line each, in the order of `fields` in `obc data setup`. It never takes a value as an
+argument. It writes them to a file under the home directory, with mode 0600, and makes a missing
+directory with mode 0700. The file keeps its other lines. The output names the file and the
+values, never a value.
+
+| Credential | File | Lines |
+| --- | --- | --- |
+| `env` | `~/.config/openbikecomputer/credentials.env` | `NAME=VALUE` |
+| `file = "~/.cdsapirc"` | `~/.cdsapirc` | `key: VALUE` |
+| `file = "~/.config/openbikecomputer/cdse-s3.env"` | that file | `CDSE_S3_ACCESS_KEY=VALUE` and `CDSE_S3_SECRET_KEY=VALUE` |
+
+Each `obc data` command but `obc data ui` loads `credentials.env` when it starts, and its steps get
+the variables. A variable that the environment already sets wins. `overridden` in the output
+names such variables: the new value serves only after they are removed from the environment.
 
 Each acquisition check has 15 seconds. The store keeps its answer or failure for one hour.
 Equal normalized requests share a check. A changed acquisition URL or check kind invalidates
@@ -1718,6 +1737,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
+| `obc data source credential ID [--json]` | Reads the values of the credential of a source on standard input and writes them, as [Credentials of sources](#credentials-of-sources) says. Writes the file and the names of the values |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
@@ -1726,7 +1746,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data runs RUN --follow [--json]` | The log of the run as it comes, until it ends; with `--json`, its status each time it changes. Ctrl-C ends only the following. The exit status is the one of the run |
 | `obc data runs RUN --stop [--json]` | Stops a run that runs, as [Runs](#runs) says. With `--json`, writes the run as `runs RUN` does |
 | `obc data serve [TARGET] [--detach] [--json]` | [Serves](#serve) a target until Ctrl-C. Writes its origin on the machine, and for a `dir` target its origin on the network and how each app opens it. With `--detach`, it serves in a detached [run](#runs) and writes `{run}`; `runs RUN --stop` stops it. That run does not hold the store for [Clean](#clean) |
-| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
+| `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set, and how to set it), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
 
@@ -1757,6 +1777,11 @@ addition:
   (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
   `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
   `--expect ID` (with `--yes`), `obc data clean`, and `obc data clean --apply --yes`.
+- `POST /api/credential` with the body `{"source": ID, "values": [VALUE, …]}`: it runs
+  `obc data --json source credential ID` the same way, with each value on a line of its own on
+  standard input, and answers in the same form. A body that is not of this form, an ID that starts
+  with `-`, or a value with a line break gets HTTP 400 and the code `usage`. The page logs no body,
+  and no answer holds a value.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -1890,6 +1915,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `clean`, `clean --apply` | `CleanPlan` |
 | `serve`, when it listens | `Listening` |
 | `setup` | `Setup` |
+| `source credential` | `CredentialSet` |
 | `runs` | `RunList` |
 | `runs RUN`, `runs RUN --stop` | `View` |
 | `runs RUN --follow`, one per line | `Status` |
@@ -2251,27 +2277,119 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "string",
             "null"
           ]
+        },
+        "hint": {
+          "description": "What to copy there, in one line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "register": {
+          "description": "Where a person gets the credential.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
+      "type": "object"
+    },
+    "CredentialSet": {
+      "additionalProperties": false,
+      "description": "What `source credential` wrote. It never holds a value.",
+      "properties": {
+        "file": {
+          "description": "The file that holds the values now.",
+          "type": "string"
+        },
+        "names": {
+          "description": "The names of the values that it wrote.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "overridden": {
+          "description": "The names that the environment of the command sets, for example from `tools/obc.local`:\nthe environment wins over the file, so the new value serves only once they are removed\nthere.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "description": "The sources that the credential serves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "file",
+        "names",
+        "sources",
+        "overridden"
+      ],
       "type": "object"
     },
     "CredentialState": {
       "additionalProperties": false,
       "properties": {
+        "fields": {
+          "description": "The values that the command reads, one per line, in this order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hint": {
+          "description": "What to copy there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
         "needed_for": {
           "type": "string"
         },
+        "register": {
+          "description": "Where a person gets it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The first source that needs it: `obc data source credential SOURCE` sets it for each\nsource that needs it. `null` for the R2 key, which the page does not set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "$ref": "#/$defs/Readiness"
+        },
+        "uses": {
+          "description": "The `use` of each source that it serves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
         "name",
         "needed_for",
-        "state"
+        "state",
+        "source",
+        "fields",
+        "uses",
+        "register",
+        "hint"
       ],
       "type": "object"
     },

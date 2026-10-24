@@ -39,7 +39,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 toml = "0.9"
 # The server of `obc data ui`.
 axum = "0.8"
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "process", "fs", "time", "io-util"] }
 
 [dev-dependencies]
 # A stand-in for the Nominatim archive in the planner build test.

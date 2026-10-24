@@ -315,7 +315,30 @@ export interface Setup {
     /** `detail` is the version found, or the command that installs the tool. */
     tools: { name: string; needed_for: string; state: Readiness; detail: string }[];
     /** Only whether each credential is set; never its value. */
-    credentials: { name: string; needed_for: string; state: Readiness }[];
+    credentials: CredentialState[];
+}
+
+export interface CredentialState {
+    name: string;
+    needed_for: string;
+    state: Readiness;
+    /** The source that `obc data source credential SOURCE` sets it for; null for the R2 key. */
+    source: string | null;
+    /** The values that the command reads, in this order. */
+    fields: string[];
+    /** The `use` of each source that it serves. */
+    uses: string[];
+    register: string | null;
+    hint: string | null;
+}
+
+/** What `obc data source credential SOURCE --json` writes. It never holds a value. */
+export interface CredentialSet {
+    file: string;
+    names: string[];
+    sources: string[];
+    /** Names that the environment of the page sets: they win over the file. */
+    overridden: string[];
 }
 
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];

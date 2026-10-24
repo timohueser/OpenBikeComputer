@@ -175,13 +175,19 @@ impl std::fmt::Display for Refresh {
 }
 
 /// What a fetch needs before upstream answers: environment variables, or a file.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Where a person gets the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register: Option<String>,
+    /// What to copy there, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl Credential {
@@ -340,6 +346,12 @@ impl Source {
         if let Some(credential) = &self.credential {
             if credential.env.is_empty() == credential.file.is_none() {
                 return fail("a credential is `env` or `file`");
+            }
+            if crate::credentials::place(credential).is_none() {
+                return fail(&format!("`credential.file` is one of {}", crate::credentials::files()));
+            }
+            if credential.register.as_ref().is_some_and(|url| !url.starts_with("https://")) {
+                return fail("`credential.register` is not https");
             }
         }
         Ok(())
@@ -624,7 +636,7 @@ mod tests {
         assert_eq!(status(&unlicensed, Some("2024-01-09"), &Upstream::CannotCheck, today).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
         assert_eq!(status(&tool, None, &Upstream::CannotCheck, today).state, State::Ok);
-        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
+        let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], ..Default::default() }), ..osm() };
         let blocked = status(&keyed, None, &Upstream::CannotCheck, today);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Ok, None));
     }
