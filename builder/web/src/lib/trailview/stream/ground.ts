@@ -9,15 +9,15 @@ import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
 const NAMES = {
-    material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region',
+    ground: 'trailview-ground',
     q1: 'trailview-colour-q1', q2: 'trailview-colour-q2', q3: 'trailview-colour-q3', q4: 'trailview-colour-q4',
 } as const;
 type Layer = keyof typeof NAMES;
 const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
-/** `trailview_format` of a ground archive: its material tile holds the barren share in green. */
-const GROUND_FORMAT = 2;
+/** `trailview_format` of the ground archive: a tile holds the material, the barren share, the lithology and the region. */
+const GROUND_FORMAT = 3;
 /** The snow day archives (specs/trailview-tiles.md#snow-days): band b holds the day steps 4b to 4b + 3. */
-const SNOW_BANDS = 46, BAND_STEPS = 4, SNOW_DAY = 256 * 256;
+const SNOW_BANDS = 46, BAND_STEPS = 4, SNOW_DAY = 512 * 512;
 const WORKERS = 2;
 /** Tile bodies kept per archive, so a new device or a page that comes back builds again without a request. */
 const BODIES = 16 * 2 ** 20;
@@ -37,7 +37,7 @@ interface Archive { source: Source; tiles: Tiles<ArrayBuffer> }
 
 /**
  * The ground of a release: the ruleset, the archives of the ground, colour and snow layers, and the
- * workers that build the ground pages of a material tile on a date.
+ * workers that build the ground pages of a ground tile on a date.
  */
 export class GroundSource {
     requests = 0;
@@ -73,12 +73,12 @@ export class GroundSource {
 
     /**
      * The ground of a config, with the snow of `date` open; undefined when it has no ruleset or no
-     * material archive. Only the rules and the material fail it: another archive that does not open is
+     * ground archive. Only the rules and the ground fail it: another archive that does not open is
      * left out.
      */
     static async open(config: PlannerConfig, date: string): Promise<GroundSource | undefined> {
         const urls = config.layers as Partial<Record<string, string>>;
-        if (!config.trailview_rules || !urls[NAMES.material]) return undefined;
+        if (!config.trailview_rules || !urls[NAMES.ground]) return undefined;
         const response = await releaseFetch(config.trailview_rules, { signal: requestSignal() });
         if (!response.ok) throw new Error(`The TrailView rules answered ${response.status}.`);
         const rules = rulesOf(await response.json());
@@ -89,10 +89,10 @@ export class GroundSource {
                 if (!url) return [layer, undefined] as const;
                 const opened = openSource(url).then(source => {
                     const format = source.metadata.trailview_format;
-                    if (layer === 'material' && format !== GROUND_FORMAT) throw new Error(`TrailView reads material format ${GROUND_FORMAT}, not ${format}.`);
+                    if (layer === 'ground' && format !== GROUND_FORMAT) throw new Error(`TrailView reads ground format ${GROUND_FORMAT}, not ${format}.`);
                     return source;
                 });
-                return [layer, await (layer === 'material' ? opened : opened.catch(leftOut(name)))] as const;
+                return [layer, await (layer === 'ground' ? opened : opened.catch(leftOut(name)))] as const;
             })),
             snowSource(urls, band).catch(leftOut(snowName(band))),
         ]);
@@ -102,9 +102,9 @@ export class GroundSource {
         return ground;
     }
 
-    /** The finest level with ground pages: one finer than the material's last zoom. */
+    /** The finest level with ground pages: one finer than the ground's last zoom. */
     get finest(): number {
-        return this.archives.material!.source.maxZoom + 1;
+        return this.archives.ground!.source.maxZoom + 1;
     }
 
     /** The credits of the layers. */
@@ -124,44 +124,31 @@ export class GroundSource {
     }
 
     /**
-     * The four pages of material tile z/x/y on a date, with the two quarters around it; null where it
-     * has no ground. A failed material tile fails them; a failed tile of another layer leaves that
-     * layer out, and the pages are not complete. The snow is the band of the date's day step. Without
-     * `fine`, pages whose four snow tiles one zoom finer have not arrived take the one snow tile of zoom
-     * z, and are `coarse` where finer snow can follow.
+     * The four pages of ground tile z/x/y on a date, with the two quarters around it and the snow of
+     * the date's band; null where it has no ground. A failed ground tile fails them; a failed tile of
+     * another layer leaves that layer out, and the pages are not complete.
      */
-    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number, fine = false): Promise<GroundResult> {
+    async pages(z: number, x: number, y: number, quarters: [number, number], date: GroundDate, world: number): Promise<GroundResult> {
         let complete = true;
         const optional = (body: Promise<Body | undefined>) => body.catch(() => void (complete = false));
-        const at = (layer: Layer, zoom: number) => {
-            const archive = this.archives[layer], body = this.body(layer, archive, Math.min(zoom, archive?.source.maxZoom ?? -1), x, y, z);
-            return layer === 'material' ? body : optional(body);
-        };
+        const at = (name: string, archive: Archive | undefined, zoom: number, planar = false) =>
+            this.body(name, archive, Math.min(zoom, archive?.source.maxZoom ?? -1), x, y, z, planar);
         const colour = this.archives.q1?.source, zc = Math.min(z, colour?.maxZoom ?? -1);
         const coloured = colour !== undefined && zc >= colour.minZoom;
-        const days = await this.snowDays(snowBand(date.snowIndex)).catch(() => void (complete = false)), zs = z + 1;
-        const finer = days && zs >= days.source.minZoom && zs <= days.source.maxZoom ? [0, 1, 2, 3].map(q => [2 * x + (q & 1), 2 * y + (q >> 1)]) : [];
-        const coarse = finer.length > 0 && !fine && finer.some(([sx, sy]) => days!.tiles.loaded(zs, sx, sy) === undefined);
-        const snowBodies = !days ? [] : finer.length && !coarse
-            ? finer.map(([sx, sy]) => optional(this.body('snow', days, zs, sx, sy, zs, true)))
-            : [optional(this.body('snow', days, Math.min(z, days.source.maxZoom), x, y, z, true))];
-        const [material, lithology, region, a, b, ...snowTiles] = await Promise.all([
-            at('material', z), at('lithology', z), at('region', z),
-            ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc)] : [undefined, undefined]),
-            ...snowBodies,
+        const quarter = (q: number) => optional(at(QUARTERS[q], this.archives[QUARTERS[q]], zc));
+        const [ground, a, b, snow] = await Promise.all([
+            at('ground', this.archives.ground, z),
+            ...(coloured ? quarters.map(quarter) : [undefined, undefined]),
+            optional(this.snowDays(snowBand(date.snowIndex)).then(days => at('snow', days, z, true))),
         ]);
-        const job: GroundJob = {
-            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, snow: snowTiles, date, world,
-        };
+        const job: GroundJob = { z, x, y, ground, quarters: coloured ? [a, b] : undefined, snow, date, world };
         const id = this.next++, worker = this.workers[id % WORKERS];
-        const bodies = [material, lithology, region, a, b, ...snowTiles].flatMap(body => (body ? [body.body] : []));
+        const bodies = [ground, a, b, snow].flatMap(body => (body ? [body.body] : []));
         const built = await new Promise<GroundResult>((resolve, reject) => {
             this.waiting.set(id, { worker, resolve, reject });
             worker.postMessage({ id, job }, bodies);
         });
-        // Where the snow tile of zoom z is absent, the finer ones are too, unless zoom z is coarser than the snow's first zoom.
-        const refines = coarse && (snowTiles[0] !== undefined || z < days!.source.minZoom);
-        return { pages: built.pages, complete: complete && built.complete, coarse: refines };
+        return { pages: built.pages, complete: complete && built.complete };
     }
 
     /** The body of the tile of an archive at a zoom that holds tile z/x/y of zoom `of`; undefined where the archive has none. */

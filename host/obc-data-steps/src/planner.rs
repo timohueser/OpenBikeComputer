@@ -55,14 +55,14 @@ pub static PLANNER_TRAILVIEW_FEATURES: Layer =
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
     whole("planner/trailview-rules", 1, &[&WEB_PLANNER, &readers::PLANNER_TRAILVIEW_GROUND]);
-/// The TrailView material, lithology and region tiles. Its format is `trailview_format` of a ground
-/// archive in `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 2, &[&WEB_PLANNER]);
+/// The TrailView ground tiles: the material, the lithology and the region in one tile. Its format is
+/// `trailview_format` of the ground archive in `specs/trailview-tiles.md`.
+pub static PLANNER_TRAILVIEW_GROUND: Layer = whole("planner/trailview-ground", 3, &[&WEB_PLANNER]);
 /// The TrailView colour tiles. Its format is `trailview_format` of a colour archive in
 /// `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 1, &[&WEB_PLANNER]);
 /// The TrailView snow days. Its format is `trailview_format` of `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 1, &[&WEB_PLANNER]);
+pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 2, &[&WEB_PLANNER]);
 /// The bands of the snow days, `BANDS` of `tools/trailview/snow.py`.
 pub const SNOW_BANDS: usize = 46;
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
@@ -470,9 +470,7 @@ impl Planner {
             "snow",
             "sun",
             "trailview-features",
-            "trailview-material",
-            "trailview-lithology",
-            "trailview-region",
+            "trailview-ground",
             "trailview-canopy",
         ];
         let grids = steps
@@ -758,7 +756,9 @@ fn trailview_canopy(
 
 /// The TrailView layers of `bounds`, as `specs/trailview-tiles.md` defines them. The ruleset step is the
 /// one reader of `data/trailview/`: its option `ruleset` is the digest of the files, and the ground
-/// steps read its outputs, so the region ids of the tiles are those of `rules.json`.
+/// steps read its outputs, so the region ids of the tiles are those of `rules.json`. The material, the
+/// lithology and the region bake in their own steps, so a change of the regions does not bake the
+/// material again, and `planner/trailview-ground` joins them.
 fn trailview(
     root: &Path,
     inputs: &Inputs,
@@ -813,14 +813,13 @@ fn trailview(
     if let Some(grid) = grid {
         let rules = |file: &str| layer_files("planner/trailview-rules", &[file]);
         let tiles = worldcover_tiles(bounds, &grid)?.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
-        let ground = |layer: &str, reads: Vec<Input>, text: String| {
-            let options = json!({"layer": layer, "bounds": bounds, "attribution": text});
+        let ground = |layer: &str, reads: Vec<Input>| {
             let output = format!("{layer}.pmtiles");
             python(
                 &PLANNER_TRAILVIEW_GROUND,
                 &format!("planner/trailview-{layer}"),
                 reads,
-                options,
+                json!({"layer": layer, "bounds": bounds}),
                 tool("tools.trailview.ground"),
                 &[&output],
             )
@@ -832,14 +831,27 @@ fn trailview(
             snapshot(inputs, store, "corine-land-cover", vec![bbox.clone()], wanted)?,
             snapshot(inputs, store, "sentinel-2-mosaics", mosaics.clone(), wanted)?,
         ];
-        let sources = ["esa-worldcover", "sentinel-2-mosaics", "corine-land-cover", "osm-planet"];
-        steps.push(ground("material", material, credit(&sources)));
         let maps = ["egdi-geology", "igme5000"];
         let lithology = std::iter::once(Ok(rules("materials.json")))
             .chain(maps.map(|source| snapshot(inputs, store, source, Vec::new(), wanted)))
             .collect::<Result<_, _>>()?;
-        steps.push(ground("lithology", lithology, credit(&maps)));
-        steps.push(ground("region", vec![rules("regions.json")], credit(&["resolve-ecoregions", "natural-earth"])));
+        let parts = [("material", material), ("lithology", lithology), ("region", vec![rules("regions.json")])];
+        let joined = parts
+            .iter()
+            .map(|(layer, _)| layer_files(&format!("planner/trailview-{layer}"), &[&format!("{layer}.pmtiles")]));
+        let mut joined = ground("ground", joined.collect());
+        joined.options["attribution"] = json!(credit(&[
+            "esa-worldcover",
+            "sentinel-2-mosaics",
+            "corine-land-cover",
+            "osm-planet",
+            "egdi-geology",
+            "igme5000",
+            "resolve-ecoregions",
+            "natural-earth"
+        ]));
+        steps.extend(parts.into_iter().map(|(layer, reads)| Step { client: Client::None, ..ground(layer, reads) }));
+        steps.push(joined);
     }
     if on("trailview-colour") {
         let archives = ["q1", "q2", "q3", "q4"];
@@ -1392,7 +1404,7 @@ mod tests {
                 ["planner", "sun", ..] => "planner/sun",
                 ["planner", "trailview-features", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
-                ["planner", "trailview-material" | "trailview-lithology" | "trailview-region", ..] => {
+                ["planner", "trailview-material" | "trailview-lithology" | "trailview-region" | "trailview-ground", ..] => {
                     "planner/trailview-ground"
                 }
                 ["planner", "trailview-colour", ..] => "planner/trailview-colour",
@@ -1525,13 +1537,21 @@ mod tests {
             ]
         );
         assert_eq!(read(get("planner/trailview-region")), [r#"planner/trailview-rules["regions.json"]"#]);
+        assert_eq!(
+            read(get("planner/trailview-ground")),
+            [
+                r#"planner/trailview-material["material.pmtiles"]"#,
+                r#"planner/trailview-lithology["lithology.pmtiles"]"#,
+                r#"planner/trailview-region["region.pmtiles"]"#,
+            ]
+        );
         assert_eq!(worldcover_squares([7.79, 47.99, 7.82, 48.02]), ["N45E006", "N48E006"]);
         let grids: Vec<(&str, &serde_json::Value)> = steps
             .iter()
             .filter(|step| step.name.starts_with("planner/trailview") && step.name.ends_with("/grid"))
             .map(|step| (step.name.as_str(), &step.options["kind"]))
             .collect();
-        assert_eq!(grids.len(), 8, "the ruleset, three ground archives and four colour archives: {grids:?}");
+        assert_eq!(grids.len(), 6, "the ruleset, the ground archive and four colour archives: {grids:?}");
         let q1 = get("planner/trailview-colour/q1/grid");
         assert_eq!(read(q1), [r#"planner/trailview-colour["q1.pmtiles"]"#]);
         let index = get("planner/index");

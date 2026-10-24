@@ -24,8 +24,8 @@ const source = (get = vi.fn(async () => new Uint8Array(1)), metadata = {}) =>
 async function ground(snow?: () => Promise<unknown>) {
     vi.stubGlobal('Worker', FakeWorker);
     opens.clear();
-    opens.set('material', async () => source(undefined, { trailview_format: 2 }));
-    const layers: Record<string, string> = { 'trailview-material': 'material' };
+    opens.set('ground', async () => source(undefined, { trailview_format: 3 }));
+    const layers: Record<string, string> = { 'trailview-ground': 'ground' };
     if (snow) {
         layers[`trailview-snow-${String(snowBand(SNOW_INDEX)).padStart(2, '0')}`] = 'snow';
         opens.set('snow', snow);
@@ -39,7 +39,7 @@ describe('the snow days of the ground', () => {
 
     it('opens a band that failed again, and the pages without it are not complete', async () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const get = vi.fn(async () => new Uint8Array(256 * 256));
+        const get = vi.fn(async () => new Uint8Array(512 * 512));
         const snow = vi.fn()
             .mockRejectedValueOnce(new Error('timeout'))
             .mockRejectedValueOnce(new Error('timeout'))

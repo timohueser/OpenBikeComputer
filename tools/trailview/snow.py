@@ -1,6 +1,7 @@
 """Bake the TrailView snow days of one region from the planner snow archive, as specs/trailview-tiles.md
 defines them: per band of day steps an archive whose tiles hold, per pixel, the seasons with data and
-the seasons with snow on the band's day step. A view reads the band of its date only.
+the seasons with snow on the band's day step. A tile of zoom z holds the four snow tiles of zoom z + 1,
+so it covers the material tile of zoom z at full detail. A view reads the band of its date only.
 
 The `obc data` step is `planner/trailview-snow` (`--step`). Without `--step`, it bakes `--snow` into
 `--output` and prints the bytes per band.
@@ -20,15 +21,18 @@ import numpy as np
 from . import tiles
 from .. import step_pool, step_request
 
+# `trailview_format` of the snow day archives.
+FORMAT = 2
 # The day steps of a season (specs/planner-snow-tiles.md), the steps per band, and the bands.
 DAY_STEPS = 183
 BAND_STEPS = 4
 BANDS = -(-DAY_STEPS // BAND_STEPS)
 # Snow sentinels of specs/planner-snow-tiles.md.
 NO_SNOW, WHOLE_SEASON, NO_DATA = 253, 254, 255
-AREA = 256 * 256
-# Snow tiles per batch of the workers.
-BATCH = 256
+# The pixels of a snow tile, and the pixels a side of a snow day tile.
+AREA, SIZE = 256 * 256, 512
+# Snow day tiles per batch of the workers: the bands of a batch wait in memory.
+BATCH = 64
 
 
 def day_step(band):
@@ -48,9 +52,14 @@ def days(body, seasons):
 
 
 def encode(entry):
-    """The gzip bodies of the bands of one tile; none where no season has data."""
-    tile_id, body, seasons = entry
-    planes = days(gzip.decompress(body), seasons)
+    """The gzip bodies of the bands of one snow day tile from its four snow tiles (north-west first, None
+    where the snow archive has none); none where no season has data."""
+    tile_id, bodies, seasons = entry
+    planes, half = np.zeros((BANDS, SIZE, SIZE), np.uint8), SIZE // 2
+    for q, body in enumerate(bodies):
+        if body is not None:
+            row, col = (q >> 1) * half, (q & 1) * half
+            planes[:, row:row + half, col:col + half] = days(gzip.decompress(body), seasons).reshape(BANDS, half, half)
     if not planes.any():
         return tile_id, None
     return tile_id, [gzip.compress(plane.tobytes(), compresslevel=6, mtime=0) for plane in planes]
@@ -59,7 +68,7 @@ def encode(entry):
 def bake(snow, output, workers=None):
     """Write `output/<band>.pmtiles` for each band from the snow archive `snow`; return the bytes per band."""
     from pmtiles.reader import MmapSource, Reader, all_tiles
-    from pmtiles.tile import Compression, TileType, zxy_to_tileid
+    from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
     from pmtiles.writer import Writer
 
     output.mkdir(parents=True, exist_ok=True)
@@ -76,7 +85,10 @@ def bake(snow, output, workers=None):
         writers = [Writer(stream) for stream in streams]
         sizes = [0] * BANDS
         try:
-            entries = ((zxy_to_tileid(z, x, y), data, seasons) for (z, x, y), data in all_tiles(source))
+            # The snow day tiles in tile order: the parents of the snow tiles.
+            parents = sorted({zxy_to_tileid(z - 1, x >> 1, y >> 1) for (z, x, y), _ in all_tiles(source) if z > 0})
+            children = lambda z, x, y: [reader.get(z + 1, 2 * x + (q & 1), 2 * y + (q >> 1)) for q in range(4)]
+            entries = ((tile_id, children(*tileid_to_zxy(tile_id)), seasons) for tile_id in parents)
             pool = step_pool.pool(workers)
             try:
                 # The tiles go in batches, so the archive is never in memory, and `map` keeps the tile order of the writers.
@@ -92,7 +104,7 @@ def bake(snow, output, workers=None):
             keys = ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "center_zoom", "center_lon_e7", "center_lat_e7")
             for band, (writer, stream) in enumerate(zip(writers, streams)):
                 writer.finalize({"tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP, **{key: header[key] for key in keys}}, {
-                    "trailview_format": tiles.FORMAT, "archive": f"snow-{band:02}", "band": band, "band_steps": BAND_STEPS, "day_step": day_step(band),
+                    "trailview_format": FORMAT, "archive": f"snow-{band:02}", "band": band, "band_steps": BAND_STEPS, "day_step": day_step(band),
                     "first_season": metadata["first_season"], "seasons": seasons, "source": metadata["source"],
                     "attribution": metadata["attribution"],
                 })

@@ -1,34 +1,41 @@
 """Bake the TrailView ground tiles of one region, as specs/trailview-tiles.md defines them: the material
-chain of the prototype's `bake.py` on Web Mercator tiles, the lithology and the region.
+chain of the prototype's `bake.py` on Web Mercator tiles, the lithology and the region, joined into one
+archive.
 
-The `obc data` steps (`--step`) are `planner/trailview-material`, `planner/trailview-lithology` and
-`planner/trailview-region`; the option `layer` names the one to bake. `--fetch-corine` is the
-capture of `corine-land-cover`: the map images of the EEA service over a box, and its legend.
+The `obc data` steps (`--step`) are `planner/trailview-material`, `planner/trailview-lithology`,
+`planner/trailview-region` and `planner/trailview-ground`; the option `layer` names the one to bake.
+`ground` joins the other three. `--fetch-corine` is the capture of `corine-land-cover`: the map images
+of the EEA service over a box, and its legend.
 """
 
 import argparse
 import base64
 import io
+import itertools
 import json
 import math
+import os
 import re
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 
 import numpy as np
 
 from . import tiles
-from .. import planner_geo as geo, step_request
+from .. import planner_geo as geo, step_pool, step_request
 
-# `trailview_format` of the ground archives, which the readers check.
-FORMAT = 2
+# `trailview_format` of the ground archive, which the readers check.
+FORMAT = 3
 MATERIAL_ZOOM = 13
 LITHOLOGY_ZOOM = REGION_ZOOM = 10
 # The material byte: the code in the low 6 bits, then the barren bit; NO_DATA alone is outside the bake.
 BARREN, NO_DATA = 0x40, 0x80
 # A region byte with no region: no ecoregion while the walk runs, and no data in a tile.
 REGION_NO_DATA = 255
+# Ground tiles per batch of the workers.
+BATCH = 256
 WORLDCOVER_PX_M = 10.0
 WORLDCOVER_MATERIALS = {10: "forest", 20: "scrub", 30: "grassland", 40: "arable", 50: "built-up", 60: "sparse",
                         70: "glacier", 80: "inland-water", 90: "marsh", 95: "marsh", 100: "moss-lichen"}
@@ -487,9 +494,14 @@ class Region:
 def step():
     request = step_request.read()
     options, layers = request["options"], request["layers"]
-    bounds, layer = options["bounds"], options["layer"]
+    bounds, layer, output = options["bounds"], options["layer"], Path(request["output"])
+    if layer == "ground":
+        archives = [Path(layers[f"planner/trailview-{name}"][f"{name}.pmtiles"]) for name in ("material", "lithology", "region")]
+        metadata = {"trailview_format": FORMAT, "archive": "ground", "attribution": options["attribution"]}
+        sizes = join(*archives, output, metadata)
+        step_request.metrics(request, {"bytes_per_zoom": sizes, "bytes_per_km2": round(sum(sizes.values()) / tiles.km2(bounds), 1)})
+        return
     rules = layers["planner/trailview-rules"]
-    metadata = {"trailview_format": FORMAT, "layer": layer, "attribution": options["attribution"]}
     if layer == "region":
         bake, top = Region(json.loads(Path(rules["regions.json"]).read_bytes()), bounds), REGION_ZOOM
     else:
@@ -506,8 +518,7 @@ def step():
             corine = clc_images(step_request.files(request, "corine-land-cover"), vocabulary)
             worldcovers = sorted(step_request.files(request, "esa-worldcover").values())
             bake, top = Material(vocabulary, bounds, worldcovers, corine, forests, areas, mosaics), MATERIAL_ZOOM
-    sizes = bake_layer(layer, bake, top, bounds, Path(request["output"]), metadata)
-    step_request.metrics(request, {"bytes_per_zoom": sizes, "bytes_per_km2": round(sum(sizes.values()) / tiles.km2(bounds), 1)})
+    bake_layer(layer, bake, top, bounds, output, {"layer": layer})
 
 
 def bake_layer(layer, bake, top, bounds, output, metadata):
@@ -517,11 +528,79 @@ def bake_layer(layer, bake, top, bounds, output, metadata):
     parent = material_parent if layer == "material" else lambda children: tiles.mode(children, no_data)
 
     def encode(texels):
-        byte, green = (texels[..., 0], texels[..., 1]) if layer == "material" else (texels, None)
-        return {} if no_data is not None and (byte == no_data).all() else {layer: tiles.lossless(byte, green)}
+        byte = texels[..., 0] if layer == "material" else texels
+        return {} if no_data is not None and (byte == no_data).all() else {layer: tiles.lossless(texels)}
 
     sizes = tiles.pyramid(bounds, range(top + 1), bake, parent, encode, output, metadata)
     return sizes.get(layer, {})
+
+
+def pixels(body):
+    """The texels of a lossless WebP tile: (TILE, TILE, channels)."""
+    from PIL import Image
+
+    return np.asarray(Image.open(io.BytesIO(body)).convert("RGBA"))
+
+
+def under(byte, levels, x, y):
+    """The texels of tile x/y of a zoom `levels` finer than the tile `byte` that holds it: each takes
+    the texel under its centre."""
+    size, mask = tiles.TILE >> levels, (1 << levels) - 1
+    block = byte[(y & mask) * size:((y & mask) + 1) * size, (x & mask) * size:((x & mask) + 1) * size]
+    return block.repeat(1 << levels, axis=0).repeat(1 << levels, axis=1)
+
+
+def ground_tile(entry):
+    """The ground tile of one material tile: the material texels with the lithology and the region of
+    their tiles, each (zoom, body or None, the byte of no tile)."""
+    (z, x, y), body, planes = entry
+    texels = pixels(body).copy()
+    for channel, (zoom, coarse, empty) in zip((2, 3), planes):
+        texels[..., channel] = empty if coarse is None else under(pixels(coarse)[..., 0], z - zoom, x, y)
+    return tiles.lossless(texels)[1]
+
+
+def join(material, lithology, region, output, metadata, workers=None):
+    """Write `output/ground.pmtiles`: each tile of the material archive, with the lithology in blue and
+    the region in alpha from their tile of the same zoom, or of their last zoom under a finer tile.
+    Return its bytes per zoom."""
+    from pmtiles.reader import MmapSource, Reader, all_tiles
+    from pmtiles.tile import Compression, TileType, zxy_to_tileid
+    from pmtiles.writer import Writer
+
+    output.mkdir(parents=True, exist_ok=True)
+    with material.open("rb") as land, lithology.open("rb") as rock, region.open("rb") as area:
+        source, coarse = MmapSource(land), [(Reader(MmapSource(rock)), 0), (Reader(MmapSource(area)), REGION_NO_DATA)]
+        header = Reader(source).header()
+        tops = [reader.header()["max_zoom"] for reader, _ in coarse]
+
+        def entry(zxy, body):
+            z, x, y = zxy
+            zooms = [min(z, top) for top in tops]
+            return zxy, body, [(zoom, reader.get(zoom, x >> (z - zoom), y >> (z - zoom)), empty)
+                               for zoom, (reader, empty) in zip(zooms, coarse)]
+
+        sizes = {}
+        with tempfile.NamedTemporaryFile(dir=output, prefix=".ground-", delete=False) as stream:
+            try:
+                writer, entries = Writer(stream), (entry(zxy, body) for zxy, body in all_tiles(source))
+                pool = step_pool.pool(workers)
+                try:
+                    # Batches keep the archive out of memory, and `map` keeps the tile order.
+                    while batch := list(itertools.islice(entries, BATCH)):
+                        for (zxy, _, _), data in zip(batch, pool.map(ground_tile, batch)):
+                            writer.write_tile(zxy_to_tileid(*zxy), data)
+                            sizes[zxy[0]] = sizes.get(zxy[0], 0) + len(data)
+                finally:
+                    pool.shutdown(cancel_futures=True)
+                keys = ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7", "center_zoom", "center_lon_e7", "center_lat_e7")
+                writer.finalize({"tile_type": TileType.WEBP, "tile_compression": Compression.NONE, **{key: header[key] for key in keys}}, metadata)
+                stream.close()
+                os.replace(stream.name, output / "ground.pmtiles")
+            except BaseException:
+                os.unlink(stream.name)
+                raise
+    return sizes
 
 
 def igme_shapefile(files):

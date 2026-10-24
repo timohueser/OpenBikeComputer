@@ -112,10 +112,10 @@ class MapGrid(unittest.TestCase):
             return image.getvalue()
 
         webp, avif = tile("WEBP", lossless=True), tile("AVIF")
-        for kind, tile_type, data, ok in [("trailview-material", TileType.WEBP, webp, True),
+        for kind, tile_type, data, ok in [("trailview-ground", TileType.WEBP, webp, True),
                                           ("trailview-colour-q1", TileType.AVIF, avif, True),
                                           ("trailview-colour-q1", TileType.WEBP, webp, True),
-                                          ("trailview-material", TileType.AVIF, avif, False)]:
+                                          ("trailview-ground", TileType.AVIF, avif, False)]:
             with self.subTest(kind=kind, tile_type=tile_type), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "archive.pmtiles"
                 with write(path) as writer:

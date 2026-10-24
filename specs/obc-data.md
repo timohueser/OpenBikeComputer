@@ -431,7 +431,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/basemap` | `planner/basemap`, `planner/assets` and their grids |
 | `planner/terrain` | `planner/reference`, `planner/terrain` and its grid |
 | `planner/places`, `planner/climate`, `planner/snow`, `planner/sun`, `planner/trailview-features`, `planner/trailview-rules`, `planner/trailview-colour` | The step of the same name and its grids |
-| `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` and their grids |
+| `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
 | `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
@@ -866,16 +866,17 @@ its manifest among those tiles. A model without a version adds nothing.
 | `planner/sun` | `planner/terrain/grid` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_grid_sha256` binds the canonical terrain grid index. The step verifies the portable terrain tiles and reads them from their grid archives |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json` and `materials.json`: the region areas, the ecoregions and the vocabulary that the ground steps read |
-| `planner/trailview-material` | `materials.json` of `planner/trailview-rules`; `osm.pbf` of `planner/osm`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `corine-land-cover`, `bbox=<bounds>`; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>` | `layer`: `material`; `bounds`; `attribution` of its sources | `material.pmtiles`: [the material archive](trailview-tiles.md#ground) |
-| `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds`; `attribution` of its sources | `lithology.pmtiles` |
-| `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds`; `attribution` of `resolve-ecoregions` and `natural-earth` | `region.pmtiles` |
+| `planner/trailview-material` | `materials.json` of `planner/trailview-rules`; `osm.pbf` of `planner/osm`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; `corine-land-cover`, `bbox=<bounds>`; `sentinel-2-mosaics`, `bbox=<bounds>`, `year=<trailview.colour_year>` | `layer`: `material`; `bounds` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
+| `planner/trailview-lithology` | `materials.json` of `planner/trailview-rules`; `egdi-geology`, `igme5000` | `layer`: `lithology`; `bounds` | `lithology.pmtiles`: the lithology bytes |
+| `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds` | `region.pmtiles`: the region bytes |
+| `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | `sentinel-2-mosaics`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
 | `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
 | `planner/trailview-canopy` | The zoom 12 tiles in the bounds of each `forest-reference/<key>` whose `extent` meets the bounds. A version whose scope lacks a tile of the bounds in the `extent` refuses | `bounds`; `references`: the ids of those sources in the order of `data/sources.toml`, best first; `attribution`: the credits of the sources that their manifests name | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-material`,
-`trailview-lithology`, `trailview-region` or `trailview-canopy`. It reads only the archive of its
+`terrain`, `overlays`, `climate`, `snow`, `sun`, `trailview-features`, `trailview-ground` or
+`trailview-canopy`. It reads only the archive of its
 producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
 `trailview-colour-<archive>`.
