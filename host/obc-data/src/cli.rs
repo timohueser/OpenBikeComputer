@@ -392,6 +392,9 @@ struct SourceRow {
     targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
+    /// For a source fetched with params: the newest record in the local store of each set of
+    /// params, sorted by params.
+    requests: Vec<StoredRequest>,
     credential_missing: bool,
     /// Whether `source refresh` moves the source.
     refreshable: bool,
@@ -440,6 +443,41 @@ struct Stored {
     bytes: u64,
 }
 
+/// A fetch of a source with params, as the local store records it.
+#[derive(Serialize, JsonSchema)]
+struct StoredRequest {
+    params: Vec<(String, String)>,
+    version: String,
+    /// The size of its files.
+    bytes: u64,
+    /// When its newest file was retrieved, `YYYY-MM-DDTHH:MM:SSZ`; `null` for a fetch without
+    /// files.
+    fetched: Option<String>,
+}
+
+/// The newest record of each set of params of `source` whose version is in `snapshots`.
+fn stored_requests(store: &Store, source: &str, snapshots: &[Snapshot]) -> Result<Vec<StoredRequest>, String> {
+    let mut newest = BTreeMap::<Vec<(String, String)>, StoredRequest>::new();
+    for record in store.requests_of(source)? {
+        let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.version == record.version) else {
+            continue;
+        };
+        let files: Vec<&FileRecord> = snapshot.files.iter().filter(|file| record.files.contains(&file.name)).collect();
+        let request = StoredRequest {
+            bytes: files.iter().map(|file| file.size).sum(),
+            fetched: files.iter().map(|file| file.retrieved.clone()).max(),
+            version: record.version,
+            params: record.params,
+        };
+        let key = crate::store::sorted(&request.params);
+        let newer = |kept: &StoredRequest| (&request.fetched, &request.version) > (&kept.fetched, &kept.version);
+        if newest.get(&key).is_none_or(newer) {
+            newest.insert(key, request);
+        }
+    }
+    Ok(newest.into_values().collect())
+}
+
 fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let mut sorted = registry(root)?.sources;
@@ -469,6 +507,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             targets.insert(name.clone(), SourceTarget { refresh: policy[0].refresh, state, requests });
         }
         let mut snapshots = store.snapshots(&source.id)?;
+        let requests = stored_requests(&store, &source.id, &snapshots)?;
         snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
         let snapshots = snapshots
             .into_iter()
@@ -485,6 +524,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             source,
             targets,
             snapshots,
+            requests,
             credential_missing,
             refreshable,
             prepared,
@@ -664,6 +704,48 @@ pub(crate) mod tests {
         &update_cli::tests::COPY_LEAF,
         &prepare_cli::tests::COPY,
     ];
+
+    #[test]
+    fn a_source_lists_the_newest_fetch_of_each_area_with_its_version_size_and_day() {
+        let dir = Scratch::new("stored-requests");
+        let store = Store::at(&dir.0);
+        let fetch = |version: &str, area: &str, size, retrieved: &str| {
+            let name = format!("{area}.poly");
+            let file = FileRecord {
+                name: name.clone(),
+                url: format!("https://download.geofabrik.de/{name}"),
+                size,
+                sha256: "aa".into(),
+                retrieved: retrieved.into(),
+            };
+            let mut snapshot = store.snapshot("poly", version).unwrap().unwrap_or(Snapshot {
+                source: "poly".into(),
+                version: version.into(),
+                files: Vec::new(),
+            });
+            snapshot.files.push(file);
+            store.put_snapshot(&snapshot).unwrap();
+            let params = vec![("area".to_string(), area.to_string())];
+            store
+                .put_requested("poly", &crate::store::Requested { version: version.into(), params, files: vec![name] })
+                .unwrap();
+        };
+        fetch("2026-10-01", "europe/germany/hessen", 300, "2026-10-01T08:00:00Z");
+        fetch("2026-10-01", "europe/germany/bayern", 500, "2026-10-01T09:00:00Z");
+        fetch("2026-10-15", "europe/germany/bayern", 700, "2026-10-15T09:00:00Z");
+        let requests = stored_requests(&store, "poly", &store.snapshots("poly").unwrap()).unwrap();
+        let listed: Vec<_> = requests
+            .iter()
+            .map(|r| (r.params[0].1.as_str(), r.version.as_str(), r.bytes, r.fetched.as_deref().unwrap()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("europe/germany/bayern", "2026-10-15", 700, "2026-10-15T09:00:00Z"),
+                ("europe/germany/hessen", "2026-10-01", 300, "2026-10-01T08:00:00Z"),
+            ]
+        );
+    }
 
     #[test]
     fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {

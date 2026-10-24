@@ -1,10 +1,11 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { nameOf, type Areas } from "../../lib/data/areas";
     import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { sourceAt } from "../../lib/data/screens";
     import { list, size, type Status } from "../../lib/data/shapes";
-    import { daysOld, GROUPS, hostsOf, isReference, PARTS, policy, type SourceRow } from "../../lib/data/sources";
+    import { daysOld, GROUPS, hostsOf, isReference, PARTS, policy, requestAge, requestLabel, requestsLine, type SourceRow } from "../../lib/data/sources";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
 
@@ -12,7 +13,11 @@
     let { hash, status }: { hash: string; status: CliQuery<Status> } = $props();
 
     const sources = new CliQuery<{ sources: SourceRow[] }>(["sources"]);
-    onMount(() => void sources.refresh());
+    const areas = new CliQuery<Areas>(["areas"]);
+    onMount(() => {
+        void sources.refresh();
+        void areas.refresh();
+    });
     const rows = $derived((sources.output?.sources ?? []).filter((row) => !isReference(row)));
     const groups = $derived([...GROUPS, ...new Set(rows.map((row) => row.group ?? "Other").filter((group) => !GROUPS.includes(group)))]);
     const row = $derived(rows.find((row) => row.id === sourceAt(hash).id));
@@ -25,13 +30,22 @@
         );
     const needsAction = (row: SourceRow) => row.credential_missing || due(row).length > 0;
     function here(row: SourceRow): string | null {
+        const total = row.snapshots.reduce((sum, snapshot) => sum + snapshot.bytes, 0);
+        if (row.requests.length) return requestsLine(row.requests, total);
         const newest = row.snapshots[0];
         if (!newest) return null;
         const days = daysOld(newest.version);
-        const total = row.snapshots.reduce((sum, snapshot) => sum + snapshot.bytes, 0);
         const versions = row.snapshots.length > 1 ? ` in ${row.snapshots.length} versions` : "";
         return `${newest.version}${days === null ? "" : ` · ${days} ${days === 1 ? "day" : "days"} old`} · ${size(total)}${versions}`;
     }
+    /** Each request of `row` in the store, the oldest first, and whether its refresh is due. */
+    const requests = (row: SourceRow) =>
+        row.requests
+            .map((request) => {
+                const age = requestAge(request);
+                return { request, age, due: typeof row.refresh === "number" && age !== null && age > row.refresh };
+            })
+            .sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
     const parts = (row: SourceRow) => (row.used_by ?? []).map((part) => PARTS[part] ?? part);
 
     let days = $state<Record<string, string>>({});
@@ -53,10 +67,16 @@
     <p class="soft">{row.group ?? "Other"} · from {list(hostsOf(row)) || "this machine"}</p>
     <section class="card" aria-labelledby="here">
         <h2 id="here">On this machine</h2>
-        {#each row.snapshots as snapshot (snapshot.version)}
-            <p>{snapshot.version} · {size(snapshot.bytes)}</p>
+        {#each requests(row) as { request, age, due }, i (i)}
+            <p>
+                {requestLabel(request, (id) => nameOf(id, areas.output))} · {request.version}{age === null ? "" : ` · ${age} ${age === 1 ? "day" : "days"} old`} · {size(request.bytes)}{#if due}{" · "}<span class="stale">older than its refresh of {policy(row.refresh)}</span>{/if}
+            </p>
         {:else}
-            <p class="soft">Not downloaded yet. A bake that needs it fetches it.</p>
+            {#each row.snapshots as snapshot (snapshot.version)}
+                <p>{snapshot.version} · {size(snapshot.bytes)}</p>
+            {:else}
+                <p class="soft">Not downloaded yet. A bake that needs it fetches it.</p>
+            {/each}
         {/each}
         {#if parts(row).length}<p><b>Used by</b> · {list(parts(row))}</p>{/if}
     </section>

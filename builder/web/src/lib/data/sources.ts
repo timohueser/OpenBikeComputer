@@ -1,5 +1,5 @@
 // What `obc data sources --json` and `source prepare --dry-run --json` write.
-import type { Holder } from "./shapes";
+import { list, size, type Holder } from "./shapes";
 
 export type SourceState = "blocked" | "stale" | "ok" | "unused";
 
@@ -29,6 +29,8 @@ export interface SourceRow {
     refreshable: boolean;
     /** The versions in this machine's store, the one fetched last first. */
     snapshots: { version: string; bytes: number }[];
+    /** For a source fetched with params: the newest fetch of each set of params in this store. */
+    requests: StoredRequest[];
     /** By target: its policy, and each request that its serving release reads. */
     targets: Record<
         string,
@@ -47,6 +49,14 @@ export interface SourceRow {
     /** A prepared source, by target: its complete versions, and the run that prepares it there.
      *  `error` says why they cannot be read. */
     prepared: Record<string, { versions: PreparedVersion[]; lock: Holder | null; error: string | null }>;
+}
+
+export interface StoredRequest {
+    params: [string, string][];
+    version: string;
+    bytes: number;
+    /** When its newest file was retrieved; `null` for a fetch without files. */
+    fetched: string | null;
 }
 
 export interface PreparedVersion {
@@ -102,6 +112,40 @@ export function hostsOf(row: SourceRow): string[] {
 export function daysOld(version: string, now = Date.now()): number | null {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(version)) return null;
     return Math.max(0, Math.floor((now - Date.parse(`${version}T00:00:00Z`)) / 86_400_000));
+}
+
+/** What the first param of a request names, singular and plural. */
+const NOUNS: Record<string, [string, string]> = { area: ["area", "areas"], bbox: ["box", "boxes"], tile: ["tile", "tiles"] };
+
+const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+
+/** The age in days of `request`: since its fetch, else since its date version. */
+export const requestAge = (request: StoredRequest, now = Date.now()): number | null => daysOld(request.fetched?.slice(0, 10) ?? request.version, now);
+
+/** `16 areas · 8–16 days old · 6.3 GB`: the requests of a source in the store, and the `bytes` of
+ *  its versions there. Requests can share files, so their sizes do not add up. */
+export function requestsLine(requests: StoredRequest[], bytes: number, now = Date.now()): string {
+    const key = requests[0].params[0]?.[0];
+    const [one, many] = NOUNS[key] ?? ["request", "requests"];
+    const values = new Set(requests.flatMap((request) => request.params.filter(([name]) => name === key).map(([, value]) => value)));
+    const count = NOUNS[key] ? values.size : requests.length;
+    const ages = requests.map((request) => requestAge(request, now)).filter((age) => age !== null);
+    const [young, old] = [Math.min(...ages), Math.max(...ages)];
+    const age = ages.length ? [`${young === old ? days(old) : `${young}–${days(old)}`} old`] : [];
+    return [`${count} ${count === 1 ? one : many}`, ...age, size(bytes)].join(" · ");
+}
+
+/** What a request fetches: area names, a box as W,S,E,N, tiles as a count with the first few. */
+export function requestLabel(request: StoredRequest, areaName: (id: string) => string): string {
+    return [...new Set(request.params.map(([name]) => name))]
+        .map((name) => {
+            const values = request.params.filter(([at]) => at === name).map(([, value]) => value);
+            if (name === "area") return list(values.map(areaName));
+            if (name === "bbox") return `box ${values.join("; ")}`;
+            if (name === "tile" && values.length > 3) return `${values.length} tiles: ${values.slice(0, 3).join(", ")}, …`;
+            return `${NOUNS[name]?.[values.length === 1 ? 0 : 1] ?? name} ${values.join(", ")}`;
+        })
+        .join(" · ");
 }
 
 /** The reference families, as the References screen names them. */
