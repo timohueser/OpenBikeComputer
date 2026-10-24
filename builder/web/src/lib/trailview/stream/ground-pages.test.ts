@@ -25,7 +25,7 @@ describe('the ground pages', () => {
 
     it('splits a material tile into its four pages and resamples the coarser layers onto their texels', () => {
         const material: Raster = { z: 3, x: 5, y: 2, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
-        for (let i = 0; i < 512 * 512; i++) material.data[4 * i] = i % 512 < 256 ? 13 : 0x80;
+        for (let i = 0; i < 512 * 512; i++) material.data.set([i % 512 < 256 ? 13 : 0x80, 77], 4 * i);
         // A lithology tile two zooms coarser: tile 3/5/2 is its quarter at column 1, row 0... of 4 × 4.
         const lithology: Raster = { z: 1, x: 1, y: 0, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
         for (let j = 0; j < 512; j++) for (let i = 0; i < 512; i++) lithology.data[4 * (j * 512 + i)] = i >= 128 && i < 256 && j >= 256 && j < 384 ? 8 : 1;
@@ -35,7 +35,7 @@ describe('the ground pages', () => {
         const pages = groundPages({ z: 3, x: 5, y: 2, material, lithology, region, date: { weight: 0, snowIndex: 0, shares: [0.5, 0.5] }, world: 0 });
         expect(pages.map(Boolean)).toEqual([true, false, true, false]);
         const [nw] = pages;
-        expect(Array.from(nw!.cells.subarray(0, 4))).toEqual([13, 8, 1, 0]);
+        expect(Array.from(nw!.cells.subarray(0, 4))).toEqual([13, 8, 1, 77]);
         expect(nw!.cells[4 * 200 + 2]).toBe(0);
     });
 });

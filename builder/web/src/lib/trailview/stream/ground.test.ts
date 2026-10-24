@@ -18,13 +18,13 @@ class FakeWorker {
 }
 
 const DATE = '2026-01-15', SNOW_INDEX = seasonDay(DATE).index;
-const source = (get = vi.fn(async () => new Uint8Array(1))) =>
-    ({ metadata: {}, minZoom: 0, maxZoom: 12, bounds: [-180, -85, 180, 85], get }) as unknown as Source;
+const source = (get = vi.fn(async () => new Uint8Array(1)), metadata = {}) =>
+    ({ metadata, minZoom: 0, maxZoom: 12, bounds: [-180, -85, 180, 85], get }) as unknown as Source;
 
 async function ground(snow?: () => Promise<unknown>) {
     vi.stubGlobal('Worker', FakeWorker);
     opens.clear();
-    opens.set('material', async () => source());
+    opens.set('material', async () => source(undefined, { trailview_format: 2 }));
     const layers: Record<string, string> = { 'trailview-material': 'material' };
     if (snow) {
         layers[`trailview-snow-${String(snowBand(SNOW_INDEX)).padStart(2, '0')}`] = 'snow';

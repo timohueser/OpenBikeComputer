@@ -7,7 +7,7 @@ export interface Body { key: string; z: number; x: number; y: number; body: Arra
 
 export interface GroundJob {
     z: number; x: number; y: number;
-    material?: Body; lithology?: Body; region?: Body; quarters?: [Body | undefined, Body | undefined]; ndvimax?: Body; snow?: (Body | undefined)[];
+    material?: Body; lithology?: Body; region?: Body; quarters?: [Body | undefined, Body | undefined]; snow?: (Body | undefined)[];
     date: GroundDate; world: number;
 }
 
@@ -81,11 +81,11 @@ self.onmessage = async ({ data: { id, job } }: MessageEvent<{ id: number; job: G
     try {
         // A tile of a layer other than the material that does not decode leaves that layer out, and the pages are not complete.
         let complete = true;
-        const [material, lithology, region, a, b, ndvimax, ...snow] = await Promise.all(
-            [job.material, job.lithology, job.region, ...(job.quarters ?? [undefined, undefined]), job.ndvimax, ...(job.snow ?? [])]
+        const [material, lithology, region, a, b, ...snow] = await Promise.all(
+            [job.material, job.lithology, job.region, ...(job.quarters ?? [undefined, undefined]), ...(job.snow ?? [])]
                 .map((body, i) => i === 0 ? raster(body) : raster(body).catch(() => void (complete = false))));
         const pages = groundPages({
-            ...job, material, lithology, region, quarters: a || b ? [a, b] : undefined, ndvimax,
+            ...job, material, lithology, region, quarters: a || b ? [a, b] : undefined,
             snow: snow.some(Boolean) ? snow : undefined,
         });
         self.postMessage({ id, pages, complete }, { transfer: pages.flatMap(page => (page ? [page.cells.buffer, page.colour.buffer, page.snow.buffer] : [])) });

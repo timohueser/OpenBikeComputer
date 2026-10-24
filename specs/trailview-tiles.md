@@ -33,16 +33,19 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `1`. A reader reads only the format that it knows |
+| `trailview_format` | `2` in a ground archive, `1` in a colour archive. A reader reads only the format that it knows |
 | `layer` | `material`, `lithology` or `region`; absent in a colour archive |
-| `archive` | The name of the archive: the layer, or `q1` to `q4` and `ndvimax` |
+| `archive` | The name of the archive: the layer, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
 
 ## Ground
 
-`trailview-ground` has three archives. Each texel is one byte, as lossless WebP: the red channel
-holds the byte, and green and blue are equal to it.
+`trailview-ground` has three archives, as lossless WebP.
+
+- A lithology or region texel is one byte: red, green and blue are equal to it.
+- A material texel is two bytes: red holds the material byte, green holds the barren share, and blue
+  is 0.
 
 | Archive | Zooms | Byte |
 | --- | --- | --- |
@@ -58,12 +61,17 @@ The material byte:
 | 6 | Barren: the highest NDVI that a quarter of the year measured is below 0.25 |
 | 7 | No data: the texel is outside the region bounds. The other bits are 0 |
 
+The barren share is round(255 × (1 − smoothstep(0.15, 0.35, NDVI))) of the highest NDVI that a
+quarter of the year measured, and 0 where no quarter looked or the texel has no data. A quarter that
+saw snow counts as NDVI −1.
+
 A material code above 63 needs a new format. The ruleset check rejects more than 255 regions, so
 a region id is 0 to 254; more regions need a new format, with two bytes.
 
 A tile of the last zoom of an archive comes from the sources. A coarser texel takes the most
 common byte of its four children, the first in reading order on a tie. A material or region texel
-with no data counts only where all four have no data, and a missing child has no data.
+with no data counts only where all four have no data, and a missing child has no data. A coarser
+barren share is the rounded mean of the children with data.
 
 The material chain refines a baseline. Each step changes a texel only where the step names the
 material more precisely: the table `REFINES` of `ground.py`.
@@ -85,13 +93,9 @@ the smallest on a tie, until none does.
 
 ## Colour
 
-`trailview-colour` has five archives from the Sentinel-2 quarterly mosaics of one year. Quarter
-q holds the months 3q − 2 to 3q.
-
-| Archive | Content |
-| --- | --- |
-| `q1` to `q4` | RGBA: the colour of the quarter, and its NDVI code in alpha |
-| `ndvimax` | One byte, lossless as in [Ground](#ground): the highest NDVI code of the four quarters |
+`trailview-colour` has four archives from the Sentinel-2 quarterly mosaics of one year, `q1` to
+`q4`. Quarter q holds the months 3q − 2 to 3q. A texel is RGBA: the colour of the quarter, and its
+NDVI code in alpha.
 
 The colour is the visible reflectance `refl` of the red, green and blue bands, as
 round(255 × refl^(1/2.2)). A WebP variant keeps the alpha lossless. An AVIF variant codes the alpha
@@ -103,6 +107,12 @@ at the quality of the colour, so its codes 0 and 1 are not exact.
 | 1 | The quarter saw snow. The colour is that of the nearest quarter without snow, the previous one first, or black |
 | 2–255 | NDVI = (alpha − 1) / 127 − 1 |
 
+The NDVI has half the resolution of the texels: a texel with a code of 2 or more takes the mean code
+m of the texels with a code of 2 or more in its aligned 2 × 2 block, which starts at even texel
+coordinates. m is rounded half to even and stored as 128 + 4 × floor((m − 128) / 4) + 2. So a stored
+code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they are. This is the last step of the bake, on
+each tile of each zoom.
+
 In the first and the last quarter, a texel darker than 0.025 in visible reflectance is terrain
 shadow, unless it is snow in shade. Where the third quarter looked, it takes the chroma of the third
 quarter at its own brightness.
@@ -113,12 +123,12 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 
 | Variant | Codec | Last zoom | Chroma at 47° N | NDVI at 47° N |
 | --- | --- | --- | --- | --- |
-| `webp-13` | lossy WebP, 4:2:0 | 13 | 13 m | 6.5 m |
-| `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 13 m |
-| `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 26 m |
-| `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 13 m |
-| `avif-11` | AVIF, 4:2:0 | 11 | 52 m | 26 m |
-| `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 13 m |
+| `webp-13` | lossy WebP, 4:2:0 | 13 | 13 m | 13 m |
+| `webp-12` | lossy WebP, 4:2:0 | 12 | 26 m | 26 m |
+| `webp-11` | lossy WebP, 4:2:0 | 11 | 52 m | 52 m |
+| `avif-12` | AVIF, 4:2:0 | 12 | 26 m | 26 m |
+| `avif-11` | AVIF, 4:2:0 | 11 | 52 m | 52 m |
+| `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 26 m |
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.
 

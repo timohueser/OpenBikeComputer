@@ -1,6 +1,6 @@
 """Bake the TrailView colour tiles of one region from the Sentinel-2 quarterly mosaics of CDSE, as the
-prototype's `bake.py` reads them: per quarter the colour and the NDVI, and the year's highest NDVI,
-as specs/trailview-tiles.md defines them.
+prototype's `bake.py` reads them: per quarter the colour and the NDVI, as specs/trailview-tiles.md
+defines them.
 
 The `obc data` step is `planner/trailview-colour` (`--step`). `--fetch` is the capture of
 `sentinel-2-mosaics`: the window over a box of each band of each mosaic tile of a year, over CDSE S3
@@ -27,6 +27,8 @@ STAC = "https://stac.dataspace.copernicus.eu/v1/collections/sentinel-2-global-mo
 BANDS = ("B02", "B03", "B04", "B08", "observations")
 # A pixel with fewer valid looks in its quarter falls back to the palette.
 MIN_OBSERVATIONS = 3
+# `trailview_format` of the colour archives, which the readers check.
+FORMAT = 1
 # Below this visible reflectance a winter pixel is mostly terrain shadow, so its chroma comes from summer.
 DARK = 0.025
 # The alpha code of a quarter's texel that saw snow (snow_free); a measured NDVI never takes it.
@@ -39,13 +41,15 @@ MOOR_PEAK = 0.1
 # The prototype's colour reaches 156 m texels; zoom 9 has 0.17 km texels at 47° N.
 BOTTOM_ZOOM = 9
 # Variant: codec, last zoom and chroma subsampling. 4:2:0 halves the chroma resolution of the texels:
-# at zoom 12 the texels are 13 m at 47° N, the chroma 26 m and the NDVI in alpha 13 m.
+# at zoom 12 the texels are 13 m at 47° N, and the chroma and the NDVI in alpha 26 m.
 VARIANTS = {
     "webp-13": ("webp", 13, "4:2:0"), "webp-12": ("webp", 12, "4:2:0"), "webp-11": ("webp", 11, "4:2:0"),
     "avif-12": ("avif", 12, "4:2:0"), "avif-11": ("avif", 11, "4:2:0"), "avif444-12": ("avif", 12, "4:4:4"),
 }
 # Pillow's default WebP quality is 80; AVIF uses the same number.
 QUALITY = 80
+# The step of a stored NDVI code: 0.031 NDVI, a twentieth of the span the cover ramps take.
+NDVI_STEP = 4
 
 
 def smoothstep(low, high, x):
@@ -189,9 +193,20 @@ def average(children):
     return np.concatenate([np.round(255.0 * linear ** (1 / 2.2)), alpha[..., None]], axis=-1).astype(np.uint8)
 
 
+def stored_ndvi(alpha):
+    """The alpha of a quarter as the archives store it: a measured texel takes the mean NDVI code of the
+    measured texels of its aligned 2 × 2 block, rounded half to even, in steps of NDVI_STEP; codes 0 and
+    SNOW_MARK stay. The step buckets meet at code 128, NDVI 0, which the engine's water test reads."""
+    measured = alpha > SNOW_MARK
+    blocks = lambda texels: texels.reshape(tiles.TILE // 2, 2, tiles.TILE // 2, 2).sum(axis=(1, 3))
+    mean = np.round(blocks(np.where(measured, alpha, 0).astype(np.float32)) / np.maximum(blocks(measured), 1))
+    code = 128 + NDVI_STEP * np.floor_divide(mean.astype(np.int32) - 128, NDVI_STEP) + NDVI_STEP // 2
+    return np.where(measured, code.repeat(2, axis=0).repeat(2, axis=1), alpha).astype(np.uint8)
+
+
 def encoder(variant):
-    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`,
-    and `ndvimax`, lossless, the highest alpha code of the four."""
+    """The encode of a tile of the four quarters: an archive per quarter, `q1` to `q4`, with the NDVI
+    of `stored_ndvi`."""
     from PIL import Image
     from pmtiles.tile import TileType
 
@@ -203,14 +218,13 @@ def encoder(variant):
         out = {}
         for q in range(4):
             stream = io.BytesIO()
-            image = Image.fromarray(texels[q], "RGBA")
+            image = Image.fromarray(np.dstack([texels[q][..., :3], stored_ndvi(texels[q][..., 3])]), "RGBA")
             if codec == "webp":
                 image.save(stream, "WEBP", quality=QUALITY, alpha_quality=100)
                 out[f"q{q + 1}"] = (TileType.WEBP, stream.getvalue())
             else:
                 image.save(stream, "AVIF", quality=QUALITY, subsampling=subsampling, max_threads=1)
                 out[f"q{q + 1}"] = (TileType.AVIF, stream.getvalue())
-        out["ndvimax"] = tiles.lossless(texels[..., 3].max(axis=0))
         return out
 
     return encode
@@ -224,7 +238,7 @@ def bake(mosaics, bounds, variants, output, metadata):
     encode = lambda texels: {f"{variant}/{name}": data for variant, code in encoders.items() for name, data in code(texels).items()}
     stack = lambda z, x, y: np.stack([q for _, q in sorted(quarters(mosaics, tiles.transform(z, x, y), tiles.texel_m(z, y)).items())])
     sizes = tiles.pyramid(bounds, range(BOTTOM_ZOOM, top + 1), stack, average, encode, output,
-                          {**metadata, "trailview_format": tiles.FORMAT})
+                          {**metadata, "trailview_format": FORMAT})
     return {variant: {name.split("/")[1]: zooms for name, zooms in sizes.items() if name.startswith(f"{variant}/")} for variant in variants}
 
 

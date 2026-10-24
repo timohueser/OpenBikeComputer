@@ -90,9 +90,9 @@ test('the stamps hold along the roads of a village, where debug=mask draws them,
 });
 
 test('a ground worker keeps the colour under the snow mark of a colour tile', async ({ page }) => {
-    // Lossless WebP (cwebp -lossless -exact): a 512 px material tile of code 13, and a 64 px quarter of
+    // Lossless WebP (cwebp -lossless -exact): a 512 px material tile of code 13 and barren share 77, and a 64 px quarter of
     // colour (90, 140, 60) with alpha 1, the snow mark, which a premultiplied decode turns into (0, 255, 0).
-    const MATERIAL = 'UklGRiwAAABXRUJQVlA4TCAAAAAv/8F/AAcQbYj+BwQCyf7eMxTR/4z//Oc///nPf/7zfw==';
+    const MATERIAL = 'UklGRi4AAABXRUJQVlA4TCEAAAAv/8F/AAfQpjZE/wMCgWR/7xmK6H/Gf/7zn//85z//+T8A';
     const QUARTER = 'UklGRiIAAABXRUJQVlA4TBYAAAAvP8APEAdQxmqVJwNAQvj/Xovof+oH';
     const worker = readdirSync(`${DIST}assets`).find(file => file.startsWith('ground-worker-'));
     await page.goto('/third-party-licenses.txt');
@@ -102,8 +102,8 @@ test('a ground worker keeps the colour under the snow mark of a colour tile', as
         const job = { z: 3, x: 5, y: 2, material: tile('material', material), quarters: [tile('q1', quarter), undefined], seasons: 0, date: { weight: 0, snowIndex: 0, shares: [0.5] }, world: 0 };
         const ground = new Worker(`/assets/${worker}`, { type: 'module' });
         const { data } = await new Promise(resolve => { ground.onmessage = resolve; ground.postMessage({ id: 0, job }); });
-        return [...data.pages[0].colour.subarray(0, 4), data.pages[0].snow[2]];
+        return [...data.pages[0].colour.subarray(0, 4), data.pages[0].snow[2], data.pages[0].cells[3]];
     }, { worker, material: MATERIAL, quarter: QUARTER });
-    // The colour, the NDVI code of a quarter that saw snow, and the snow mark.
-    expect(texel).toEqual([90, 140, 60, 128, 255]);
+    // The colour, the NDVI code of a quarter that saw snow, the snow mark and the barren share.
+    expect(texel).toEqual([90, 140, 60, 128, 255, 77]);
 });

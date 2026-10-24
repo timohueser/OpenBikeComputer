@@ -9,11 +9,13 @@ import type { Body, GroundJob } from './ground-worker';
 
 /** The archives of the release (specs/trailview-tiles.md), by their names in the catalogue's `layers`. */
 const NAMES = {
-    material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region', ndvimax: 'trailview-colour-ndvimax',
+    material: 'trailview-material', lithology: 'trailview-lithology', region: 'trailview-region',
     q1: 'trailview-colour-q1', q2: 'trailview-colour-q2', q3: 'trailview-colour-q3', q4: 'trailview-colour-q4',
 } as const;
 type Layer = keyof typeof NAMES;
 const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
+/** `trailview_format` of a ground archive: its material tile holds the barren share in green. */
+const GROUND_FORMAT = 2;
 /** The snow day archives (specs/trailview-tiles.md#snow-days): band b holds the day steps 4b to 4b + 3. */
 const SNOW_BANDS = 46, BAND_STEPS = 4, SNOW_DAY = 256 * 256;
 const WORKERS = 2;
@@ -85,7 +87,11 @@ export class GroundSource {
             Promise.all(Object.entries(NAMES).map(async ([layer, name]) => {
                 const url = urls[name];
                 if (!url) return [layer, undefined] as const;
-                const opened = openSource(url);
+                const opened = openSource(url).then(source => {
+                    const format = source.metadata.trailview_format;
+                    if (layer === 'material' && format !== GROUND_FORMAT) throw new Error(`TrailView reads material format ${GROUND_FORMAT}, not ${format}.`);
+                    return source;
+                });
                 return [layer, await (layer === 'material' ? opened : opened.catch(leftOut(name)))] as const;
             })),
             snowSource(urls, band).catch(leftOut(snowName(band))),
@@ -139,16 +145,16 @@ export class GroundSource {
         const snowBodies = !days ? [] : finer.length && !coarse
             ? finer.map(([sx, sy]) => optional(this.body('snow', days, zs, sx, sy, zs, true)))
             : [optional(this.body('snow', days, Math.min(z, days.source.maxZoom), x, y, z, true))];
-        const [material, lithology, region, a, b, ndvimax, ...snowTiles] = await Promise.all([
+        const [material, lithology, region, a, b, ...snowTiles] = await Promise.all([
             at('material', z), at('lithology', z), at('region', z),
-            ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc), at('ndvimax', zc)] : [undefined, undefined, undefined]),
+            ...(coloured ? [at(QUARTERS[quarters[0]], zc), at(QUARTERS[quarters[1]], zc)] : [undefined, undefined]),
             ...snowBodies,
         ]);
         const job: GroundJob = {
-            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, ndvimax, snow: snowTiles, date, world,
+            z, x, y, material, lithology, region, quarters: coloured ? [a, b] : undefined, snow: snowTiles, date, world,
         };
         const id = this.next++, worker = this.workers[id % WORKERS];
-        const bodies = [material, lithology, region, a, b, ndvimax, ...snowTiles].flatMap(body => (body ? [body.body] : []));
+        const bodies = [material, lithology, region, a, b, ...snowTiles].flatMap(body => (body ? [body.body] : []));
         const built = await new Promise<GroundResult>((resolve, reject) => {
             this.waiting.set(id, { worker, resolve, reject });
             worker.postMessage({ id, job }, bodies);
