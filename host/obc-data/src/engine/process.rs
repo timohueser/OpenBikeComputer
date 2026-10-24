@@ -219,8 +219,15 @@ fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String
 /// process group of the child gets SIGTERM, and the wait fails once the child ended.
 #[cfg(unix)]
 fn wait(child: Child, stop: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
+    wait_pid(child.id(), stop)
+}
+
+/// Wait for the child `pid` of this process: its exit status, user plus system CPU milliseconds and
+/// peak resident bytes. Once `stop` is set, its process group gets SIGTERM, and the run stopped.
+#[cfg(unix)]
+pub(crate) fn wait_pid(pid: u32, stop: &AtomicBool) -> Result<(ExitStatus, Option<u64>, Option<u64>), String> {
     use std::os::unix::process::ExitStatusExt;
-    let pid = child.id() as libc::pid_t;
+    let pid = pid as libc::pid_t;
     let (mut stopped, mut pause) = (false, Duration::from_millis(1));
     loop {
         let mut status = 0;

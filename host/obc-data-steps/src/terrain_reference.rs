@@ -425,13 +425,17 @@ esac
 
         /// A run of the prepare, and the calls of the script, sorted: two fetches run at once.
         fn prepare(&self) -> (Result<(), String>, Vec<String>) {
-            let (done, calls, _) = self.version("2026-10-01", None);
+            let (done, calls, _, _) = self.version("2026-10-01", None);
             (done, calls)
         }
 
         /// A run of the prepare of `version` for `scope`: its end, the calls of the script, sorted,
-        /// and the job, complete on the target when the run ended well.
-        fn version(&self, version: &str, scope: Option<Scope>) -> (Result<(), String>, Vec<String>, Vec<String>) {
+        /// the reused files, complete on the target when the run ended well, and the status of the run.
+        fn version(
+            &self,
+            version: &str,
+            scope: Option<Scope>,
+        ) -> (Result<(), String>, Vec<String>, Vec<String>, serde_json::Value) {
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
             let (producer, http) = (TerrainReference { ingest: script }, Http::new());
@@ -468,7 +472,9 @@ esac
             let mut calls: Vec<String> =
                 fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(String::from).collect();
             calls.sort();
-            (done, calls, reused)
+            run.flush().unwrap();
+            let status = serde_json::from_slice(&fs::read(run.status_file()).unwrap()).unwrap();
+            (done, calls, reused, status)
         }
 
         /// The calls of the fetches of tiles `k`, sorted.
@@ -566,7 +572,7 @@ esac
     #[test]
     fn a_version_folds_the_tiles_of_its_region_and_keeps_the_others_of_the_version_before() {
         let fixture = Fixture::new("terrain-extend");
-        let (done, _, _) = fixture.version("2026-10-01", None);
+        let (done, _, _, _) = fixture.version("2026-10-01", None);
         done.unwrap();
         // A box inside the first tile.
         let (west, south, east, north) = fixture.cells[0].square();
@@ -579,9 +585,17 @@ esac
             inner(north, south)
         );
         let scope = Scope { region: "box".into(), definitions: [("box".to_string(), definition)].into() };
-        let (done, calls, reused) = fixture.version("2026-10-02", Some(scope));
+        let (done, calls, reused, status) = fixture.version("2026-10-02", Some(scope));
         done.unwrap();
         let first = &fixture.tiles[0];
+        // The run shows the tile that it made as a step of `terrain`, with its time.
+        assert_eq!(
+            (&status["layers"][0]["layer"], &status["layers"][0]["done"], &status["layers"][0]["total"]),
+            (&"terrain".into(), &1.into(), &1.into())
+        );
+        let tile = &status["steps"][0];
+        assert_eq!(tile["step"], format!("terrain/{first}"));
+        assert!(tile["wall_ms"].is_u64() && tile["bytes_out"].as_u64() > Some(0), "{tile}");
         let expected =
             [format!("fetch {first} xx over xx"), "index-terrain max over".into(), "index-terrain mean over".into()];
         assert_eq!(calls, expected, "only the tile of the region, over the tile before");

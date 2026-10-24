@@ -455,6 +455,22 @@ impl Run {
         self.save()
     }
 
+    /// Count `steps` as the steps of `layer`, for a job that makes them itself, such as the tiles of
+    /// a prepare: the status shows their progress as it shows that of the steps of a plan.
+    pub fn plan_work(&mut self, layer: &str, steps: &[String]) -> Result<(), String> {
+        let layers = &mut self.status.layers;
+        let at = layers.iter().position(|progress| progress.layer == layer).unwrap_or_else(|| {
+            layers.push(LayerProgress { layer: layer.into(), ..LayerProgress::default() });
+            layers.len() - 1
+        });
+        for step in steps {
+            if self.planned.insert(step.clone(), (at, None)).is_none() {
+                self.status.layers[at].total += 1;
+            }
+        }
+        self.save()
+    }
+
     pub fn check_stop(&self, store: &Store) -> Result<(), String> {
         if self.stop.load(Ordering::Relaxed) {
             return Err("the run stopped: another run took the lock of its target".into());

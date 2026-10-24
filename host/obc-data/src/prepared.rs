@@ -9,8 +9,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -508,6 +509,52 @@ impl<'a> Job<'a> {
         self.files.values()
     }
 
+    /// Show `steps`, the pieces that the programs of the producer make, such as the tiles of a
+    /// version, as the steps of a layer of the run named after the source, with their progress.
+    pub fn plan_steps(&mut self, steps: &[String]) -> Result<(), String> {
+        self.run.plan_work(&self.id, steps)
+    }
+
+    /// Record that the program of the step `step` of [`Job::plan_steps`] started.
+    pub fn step_started(&mut self, step: &str) -> Result<(), String> {
+        self.run.record(&crate::engine::runs::Event::StepStarted { step: step.into() })
+    }
+
+    /// Record that the step `step` ended: what its program used, and the bytes of its files.
+    pub fn step_finished(&mut self, step: &str, usage: &crate::engine::Usage, bytes_out: u64) -> Result<(), String> {
+        let receipt = crate::engine::Receipt {
+            layer: self.id.clone(),
+            step: step.into(),
+            format: 0,
+            revision: 0,
+            key: String::new(),
+            inputs: Vec::new(),
+            options: serde_json::Value::Null,
+            digest: String::new(),
+            files: Vec::new(),
+            built: crate::date::timestamp(crate::date::now()),
+            wall_ms: usage.wall_ms,
+            cpu_ms: usage.cpu_ms,
+            peak_rss_bytes: usage.peak_rss_bytes,
+            own_process: true,
+            bytes_in: 0,
+            bytes_out,
+            metrics: BTreeMap::new(),
+        };
+        let event = crate::engine::runs::Event::StepFinished {
+            step: step.into(),
+            reused: false,
+            unchanged: false,
+            receipt: Box::new(receipt),
+        };
+        self.run.record(&event)
+    }
+
+    /// Record that the step `step` failed.
+    pub fn step_failed(&mut self, step: &str, error: &str) -> Result<(), String> {
+        self.run.record(&crate::engine::runs::Event::StepFailed { step: step.into(), error: error.into() })
+    }
+
     /// The rows of `data/sources.toml`.
     pub fn sources(&self) -> &'a [Source] {
         self.sources
@@ -614,7 +661,8 @@ impl<'a> Job<'a> {
         let errors = Some(crate::engine::copy_lines(child.stderr.take(), label.unwrap_or_default()));
         let (running, most) = &self.programs;
         most.fetch_max(running.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
-        Ok(Program { child, name, label: label.map(String::from), errors, running: Arc::clone(running) })
+        let (label, running) = (label.map(String::from), Arc::clone(running));
+        Ok(Program { child, name, label, errors, running, started: Instant::now(), reaped: false })
     }
 
     /// The peak memory of the run: of this process, or of the most programs that ran at once.
@@ -675,25 +723,44 @@ pub struct Program {
     errors: Option<std::sync::mpsc::Receiver<String>>,
     /// The programs of the job that run.
     running: Arc<AtomicU64>,
+    started: Instant,
+    /// Whether [`Program::failed`] collected its end, so that no wait gives its usage.
+    reaped: bool,
 }
 
 impl Program {
     /// Wait for the program; its error is that of [`Job::program`].
-    pub fn wait(mut self) -> Result<(), String> {
+    pub fn wait(self) -> Result<(), String> {
+        self.wait_usage().map(|_| ())
+    }
+
+    /// [`Program::wait`], and the time, CPU and peak memory of the program.
+    pub fn wait_usage(mut self) -> Result<crate::engine::Usage, String> {
         let errors = self.errors.take().expect("a program is waited for once");
-        let ended = match self.child.wait() {
-            Ok(status) => crate::engine::ended(&self.name, status, errors),
-            Err(e) => Err(format!("wait for `{}`: {e}", self.name)),
-        };
-        ended.map_err(|e| match &self.label {
+        let waited = self.reap();
+        let label = |e: String| match &self.label {
             Some(label) => format!("{label}: {e}"),
             None => e,
-        })
+        };
+        let (status, cpu_ms, peak_rss_bytes) = waited.map_err(label)?;
+        crate::engine::ended(&self.name, status, errors).map_err(label)?;
+        Ok(crate::engine::Usage { wall_ms: self.started.elapsed().as_millis() as u64, cpu_ms, peak_rss_bytes })
+    }
+
+    fn reap(&mut self) -> Result<(std::process::ExitStatus, Option<u64>, Option<u64>), String> {
+        #[cfg(unix)]
+        if !self.reaped {
+            return crate::engine::wait_pid(self.child.id(), &AtomicBool::new(false));
+        }
+        let status = self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?;
+        Ok((status, None, None))
     }
 
     /// Whether the program ended and failed.
     pub fn failed(&mut self) -> bool {
-        self.child.try_wait().is_ok_and(|status| status.is_some_and(|status| !status.success()))
+        let ended = self.child.try_wait().ok().flatten();
+        self.reaped |= ended.is_some();
+        ended.is_some_and(|status| !status.success())
     }
 }
 

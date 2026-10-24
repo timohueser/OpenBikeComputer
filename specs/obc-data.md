@@ -1470,7 +1470,9 @@ is compact JSON with the keys of each object in byte order:
 5. The producer writes each file. `terrain` and `forest-reference` run the programs of
    two tiles at a time. The run uploads each file at once, records its SHA-256 in the journal
    and deletes it from the work. No reader reads a version before its manifest, so the upload
-   replaces a key that a stopped run left with other bytes.
+   replaces a key that a stopped run left with other bytes. The run shows each tile that a program makes as a step `<id>/<tile>`
+   of the layer `<id>`, with its time, CPU, peak memory and the bytes of its files, so the page
+   shows its progress as it shows the steps of an update.
 6. The run checks that it still holds the lock, and that the target has each file of the journal
    with its size. It writes the manifest only when the key is absent: a manifest that an earlier
    run of the version wrote stays when it names the same files. Then a conditional write adds the
